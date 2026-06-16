@@ -1062,3 +1062,12 @@ def test_maybe_restore_runs_once_the_workflow_has_settled():
             sess, _volume_recording_cam(restored)
         )
         assert restored == [-20.0], settled
+
+
+def test_needs_noise_capture_offers_cancel_in_ui():
+    # The stranded-noise-capture dead-end: needs_noise_capture waits on an
+    # automatic browser upload that can fail (denied mic / backgrounded tab),
+    # so the UI must offer Cancel there — pairs with the server-side watchdog.
+    js = _module_js()
+    block = js.split("var cancellableStates = [", 1)[1].split("]", 1)[0]
+    assert "'needs_noise_capture'" in block

@@ -174,3 +174,42 @@ async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
     # Renderers were paused/restored; voice was skipped.
     assert ("stop", "librespot.service") in systemctl_calls
     assert ("start", "librespot.service") in systemctl_calls
+
+
+@pytest.mark.asyncio
+async def test_concurrent_measurement_window_is_rejected(monkeypatch):
+    """Only one window may be open. A second concurrent window would let
+    whichever exits first send MEASURE_RESUME + restart renderers while the
+    other is still measuring, corrupting its capture. The second entry fails
+    fast; the flag is released when the first closes."""
+    monkeypatch.setattr(coordinator, "_window_active", False)  # clean slate
+
+    async with measurement_window(skip_voice_pause=True, skip_renderer_pause=True):
+        with pytest.raises(MeasurementWindowError, match="already in progress"):
+            async with measurement_window(
+                skip_voice_pause=True, skip_renderer_pause=True,
+            ):
+                pass
+
+    # Flag released after the outer window closed — a later window opens fine.
+    assert coordinator._window_active is False
+    async with measurement_window(skip_voice_pause=True, skip_renderer_pause=True):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_window_flag_released_when_precondition_fails(monkeypatch):
+    """A precondition failure (active voice session) must clear the window
+    flag, or every later measurement would falsely report 'already in
+    progress'."""
+    monkeypatch.setattr(coordinator, "_window_active", False)
+
+    async def fake_uds(path, cmd, **kw):
+        return {"state": "SESSION"}  # active voice session
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+
+    with pytest.raises(MeasurementWindowError, match="Voice session"):
+        async with measurement_window(skip_renderer_pause=True):
+            pass
+    assert coordinator._window_active is False

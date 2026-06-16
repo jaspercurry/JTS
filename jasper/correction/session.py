@@ -390,10 +390,38 @@ class SessionConfig:
 # is generous headroom. Mirrors voice_daemon's measurement-window auto-clear.
 AWAITING_CAPTURE_TIMEOUT_SEC = 120.0
 
-_AWAITING_CAPTURE_STATES = frozenset({
+# States the stranded-capture watchdog guards: every state where the session
+# is parked waiting on the BROWSER to upload audio it records automatically,
+# with no user action in the loop. If that upload never arrives — denied mic
+# permission, a backgrounded iOS tab, a closed page — the session would wedge
+# forever and block every future /start. needs_noise_capture is included
+# because it is exactly that shape: an automatic pre-sweep noise recording,
+# entered before any measurement window opens (so a wedge there never leaves
+# the speaker muted — see begin_noise_capture / prepare_and_play_sweep). The
+# user-paced needs_next_position / needs_repeat_capture states are deliberately
+# NOT guarded: the user may legitimately take minutes to reposition the phone,
+# and those states already carry their own Cancel affordance.
+_CAPTURE_TIMEOUT_STATES = frozenset({
+    SessionState.NEEDS_NOISE_CAPTURE,
     SessionState.AWAITING_CAPTURE,
     SessionState.AWAITING_REPEAT_CAPTURE,
     SessionState.AWAITING_VERIFY_CAPTURE,
+})
+
+# States reset() refuses, because a fire-and-forget sweep/analysis task is
+# actively running and will set the next state AFTER reset() sets IDLE —
+# leaving the session looking reset for an instant and then jumping back.
+# These are exactly the states the wizard never offers Cancel / Reset from
+# (see cancellableStates in correction/js/main.js), so rejecting them here
+# breaks no UI affordance; it only fences a stale/buggy client off the race.
+# Every settled, parked, or wedged state (idle / needs_* / awaiting_* / ready
+# / applied / verified / failed) still resets, so the escape hatch keeps
+# working when the user actually needs it.
+_RESET_BUSY_STATES = frozenset({
+    SessionState.PREPARING,
+    SessionState.SWEEPING,
+    SessionState.ANALYZING,
+    SessionState.VERIFYING,
 })
 
 
@@ -605,11 +633,11 @@ class MeasurementSession:
         prev = self.state
         self.state = state
         # Re-arm the stranded-capture watchdog on every transition: cancel any
-        # pending timer, then start a fresh one only when entering an
-        # awaiting_*_capture state. An upload (or any other transition) cancels
-        # it for free.
+        # pending timer, then start a fresh one only when entering a state that
+        # waits on an automatic browser upload. An upload (or any other
+        # transition) cancels it for free.
         self._cancel_capture_timeout()
-        if state in _AWAITING_CAPTURE_STATES:
+        if state in _CAPTURE_TIMEOUT_STATES:
             self._arm_capture_timeout(state)
         payload = {"state": state.value, "prev": prev.value, **extra}
         self._emit("state", payload)
@@ -1844,6 +1872,12 @@ class MeasurementSession:
         self,
         camilla_set_config: Callable[[str], Awaitable[bool]],
     ) -> None:
+        async with self._lock:
+            if self.state in _RESET_BUSY_STATES:
+                raise RuntimeError(
+                    f"cannot reset while {self.state.value} — a sweep or "
+                    "analysis is in progress; wait for it to finish"
+                )
         try:
             ok = await camilla_set_config(str(self.cfg.base_config_path))
             if not ok:

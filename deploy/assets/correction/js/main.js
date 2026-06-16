@@ -1899,9 +1899,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // browser and no background task is about to overwrite the state. During
     // preparing/sweeping/analyzing/verifying a fire-and-forget sweep/analysis
     // task is running; /reset would race it (the task sets AWAITING_CAPTURE
-    // *after* reset's IDLE), so Cancel would appear to fail. Those phases take
-    // seconds and land in a waiting state on their own, where Cancel is shown.
+    // *after* reset's IDLE) and the server now rejects it outright, so Cancel
+    // would appear to fail. Those phases take seconds and land in a waiting
+    // state on their own, where Cancel is shown. needs_noise_capture is a
+    // waiting state too: the browser auto-records pre-sweep room noise, and if
+    // mic permission is denied or the tab is backgrounded the upload never
+    // arrives — without Cancel here the user was stranded until the
+    // server-side watchdog fired (~120 s).
     var cancellableStates = [
+      'needs_noise_capture',
       'awaiting_capture', 'awaiting_repeat_capture', 'awaiting_verify_capture',
       'needs_next_position', 'needs_repeat_capture',
     ];

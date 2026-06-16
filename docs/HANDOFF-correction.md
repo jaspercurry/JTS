@@ -353,12 +353,17 @@
   instead of the USB mic; (c) a session stranded in `awaiting_capture`
   wedged forever; (d) the auto-level "maxed out" copy hardcoded a wrong
   ceiling. Two new operator-visible invariants landed:
-  - **Stranded-capture watchdog.** A session left in any
-    `awaiting_*_capture` state (browser never uploaded the recording) is
-    abandoned to `FAILED` after `AWAITING_CAPTURE_TIMEOUT_SEC` (120 s, in
-    `jasper/correction/session.py`), so `/start` is never permanently
-    blocked. A **Cancel measurement** button (shown in the waiting/needs
-    states) and `POST /reset` recover it manually. The measurement window
+  - **Stranded-capture watchdog.** A session parked in any state that waits
+    on an automatic browser upload — `needs_noise_capture` (pre-sweep room
+    noise) and the three `awaiting_*_capture` states (the post-sweep
+    recording) — is abandoned to `FAILED` after `AWAITING_CAPTURE_TIMEOUT_SEC`
+    (120 s, `_CAPTURE_TIMEOUT_STATES` in `jasper/correction/session.py`), so
+    `/start` is never permanently blocked. The user-paced
+    `needs_next_position` / `needs_repeat_capture` states are deliberately NOT
+    guarded (the user may take minutes to reposition). A **Cancel measurement**
+    button (shown in those waiting/needs states, including
+    `needs_noise_capture`) and `POST /reset` recover it manually. No
+    measurement window is open during `needs_noise_capture`, and the window
     closes before `awaiting_capture`, so a wedge never leaves the speaker
     muted. Logs `event=correction_capture_timeout`.
   - **Calibration↔device mismatch reject.** `POST /start` returns 400 when
