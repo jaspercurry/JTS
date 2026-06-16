@@ -59,6 +59,12 @@ pub struct AlsaBackend {
     pub content_negotiated: NegotiatedPcm,
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
+    /// Runtime DAC/content width carried as data — a coherent single DAC reads
+    /// and writes this many channels end-to-end. `2` is byte-identical to the
+    /// previous compile-time `CHANNELS`; the reconciler emits wider values
+    /// (DAC8x = 8) via `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The reference/chip-ref
+    /// width stays `CHANNELS=2` (the published reference is always stereo).
+    channels: u16,
 }
 
 /// Paired-composite transport: two clock-independent child DACs driven as one
@@ -118,16 +124,17 @@ impl AlsaBackend {
             &dac,
             config.sample_rate,
             config.period_frames,
-            CHANNELS,
+            config.content_channels,
             config.dac_buffer_frames,
             true,
         )
         .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm))?;
 
         eprintln!(
-            "event=outputd.alsa.opened content_pcm={} dac_pcm={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
+            "event=outputd.alsa.opened content_pcm={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
             config.content_pcm,
             config.dac_pcm,
+            config.content_channels,
             dac_negotiated.sample_rate,
             content_negotiated.period_frames,
             content_negotiated.buffer_frames,
@@ -143,7 +150,13 @@ impl AlsaBackend {
             content_negotiated,
             dac_negotiated,
             counters: IoCounters::default(),
+            channels: config.content_channels,
         })
+    }
+
+    /// The runtime DAC/content channel width this backend reads and writes.
+    pub fn channels(&self) -> u16 {
+        self.channels
     }
 
     pub fn counters(&self) -> IoCounters {
@@ -158,11 +171,11 @@ impl AlsaBackend {
     }
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
-        let requested_frames = out.len() / (CHANNELS as usize);
+        let requested_frames = out.len() / (self.channels as usize);
         match self.read_content_available(out)? {
             ContentRead::Frames(frames) => {
                 if frames < requested_frames {
-                    let active = frames * (CHANNELS as usize);
+                    let active = frames * (self.channels as usize);
                     out[active..].fill(0);
                 }
                 Ok(frames)
@@ -175,7 +188,7 @@ impl AlsaBackend {
     }
 
     pub fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
-        let requested_frames = out.len() / (CHANNELS as usize);
+        let requested_frames = out.len() / (self.channels as usize);
         let io = self
             .content
             .io_i16()
@@ -227,7 +240,7 @@ impl AlsaBackend {
     }
 
     pub fn write_dac_period(&mut self, samples: &[i16]) -> Result<()> {
-        let frames_total = samples.len() / (CHANNELS as usize);
+        let frames_total = samples.len() / (self.channels as usize);
         let io = self
             .dac
             .io_i16()
@@ -236,7 +249,7 @@ impl AlsaBackend {
         let mut recoveries = 0u32;
 
         while frames_done < frames_total {
-            let offset = frames_done * (CHANNELS as usize);
+            let offset = frames_done * (self.channels as usize);
             match io.writei(&samples[offset..]) {
                 Ok(n) => {
                     frames_done += n;

@@ -548,12 +548,20 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   the card-index drift class is fail-closed before Stage 1/2 ride the plan). *Red:*
   any `test_dac_*`/`test_output_topology`/`test_active_speaker_*`/`test_output_layout`
   or `ruff` failure.
-- **Stage 1 — Rust transport, fake backend.** `SinkMode` rename + parse alias;
-  runtime `dac_channels` at the DAC-write sites; `DacSink` trait; unify the loop
-  (ledger + clip unconditional, `OutputCore`/TTS conditional on `tts_socket_path`);
-  `fold_reference` (`PairwiseAverage` byte-identical + N-lane clip-proof 1/N).
-  Migrate the `test_outputd_wiring.py` + `/state` + doctor contracts. *Red:*
-  `cargo test --locked` failure; the byte-identical width-2 / `PairwiseAverage`
+- **Stage 1 — Rust transport, fake backend.** `SinkMode` rename + parse alias
+  (**1a landed**: `DualApple`→`Composite` shape, `DualAppleBackend`→
+  `PairedCompositeSink`, wire value held stable); runtime DAC width carried as
+  data at the `SingleAlsaSink` open/read/write sites via
+  `JASPER_OUTPUTD_ACTIVE_CHANNELS` (2..=8), `fold_reference` (N-lane clip-proof
+  1/N mono → stereo reference), real clip accounting replacing the hardwired 0
+  (**1b landed**: a coherent single DAC of any width — DAC8x 8ch — rides the
+  single path; width-2 is byte-identical; the wide path fails closed against the
+  stereo-only bridge/fifo/tts features). Migrate the `test_outputd_wiring.py`
+  contracts. **Deferred (coupled to the Stage-7 `run_alsa_dual_apple` deletion,
+  since it already works): the `DacSink` trait + folding the *composite* path
+  into the unified loop so it also gains the ledger + real clip + `PairwiseAverage`
+  fold.** *Red:* `cargo test --locked` failure (built on a Linux+ALSA box —
+  jts3 — since the crate needs system ALSA); the byte-identical width-2
   regression tests must pass.
 - **Stage 2 — reconciler + wide content lane, dry-run.** `kind`-dispatched
   `OutputTransportPlan` env; route from `dac_channel_map`; the
