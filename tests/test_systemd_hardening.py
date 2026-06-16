@@ -204,3 +204,33 @@ def test_install_creates_every_dropped_user():
                 f"{user} must be in supplementary group {g} (matches the unit's "
                 "SupplementaryGroups=)"
             )
+
+
+# The root audio daemons whose UDS the now-non-root voice/mux must connect to.
+# A UNIX socket needs WRITE permission to connect(), so these stay root but join
+# the `jasper` group with UMask=0007 — making their umask-derived sockets
+# root:jasper 0770 instead of 0755 (which only root could connect to). Removing
+# either directive silently re-bricks the non-root voice/mux (the exact failure
+# caught during 3b-1 hardware validation), so it gets its own guard.
+_CROSS_USER_IPC_DAEMONS = {
+    "jasper-fanin": ROOT / "deploy/systemd/jasper-fanin.service",
+    "jasper-outputd": ROOT / "deploy/systemd/jasper-outputd.service",
+}
+
+
+@pytest.mark.parametrize("unit,path", sorted(_CROSS_USER_IPC_DAEMONS.items()))
+def test_cross_user_ipc_socket_contract(unit, path):
+    pairs = set(_directives(path))
+    assert ("Group", "jasper") in pairs, (
+        f"{unit}: must join Group=jasper so its UDS is group-`jasper` (the "
+        "non-root jasper-voice/jasper-mux connect to it)."
+    )
+    assert ("UMask", "0007") in pairs, (
+        f"{unit}: must set UMask=0007 so its bind()'d socket is 0770 (group "
+        "write) — connect() needs write permission; the umask-default 0755 "
+        "only let root connect, which crash-looped non-root voice in 3b-1."
+    )
+    assert ("RuntimeDirectoryMode", "0750") in pairs, (
+        f"{unit}: RuntimeDirectory must be 0750 (root:jasper) so the `jasper` "
+        "group can traverse to the socket."
+    )
