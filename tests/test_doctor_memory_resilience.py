@@ -478,21 +478,27 @@ _EXPECTED_CONFIG = {
 }
 
 
-def _make_oom_run(pid_map, config_map):
-    """Build a `_run` mock for check_oom_score_adj's two BATCHED
-    systemctl calls. Real wire format: when called with multiple
-    units AND --value, systemctl uses `\\n\\n` (blank line) between
-    values — NOT a single newline. Reproduce that here so tests
-    catch regressions in the parser.
+def _make_oom_run(pid_map, config_map, load_map=None):
+    """Build a `_run` mock for check_oom_score_adj's BATCHED systemctl
+    calls (LoadState, MainPID, OOMScoreAdjust). Real wire format: when
+    called with multiple units AND --value, systemctl uses `\\n\\n`
+    (blank line) between values — NOT a single newline. Reproduce that
+    here so tests catch regressions in the parser.
 
       `systemctl show -p MainPID --value u1 u2 u3` →
         "1234\\n\\n5678\\n\\n9012\\n"
+
+    `load_map` overrides LoadState per unit (default: every unit
+    "loaded", i.e. installed). Pass "not-found"/"masked" to simulate a
+    profile that doesn't install a unit (e.g. streambox + voice/AEC).
     """
     def fake_run(cmd, **kwargs):
         prop = cmd[3]
         units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
         result = MagicMock()
-        if prop == "MainPID":
+        if prop == "LoadState":
+            values = [(load_map or {}).get(u, "loaded") for u in units]
+        elif prop == "MainPID":
             values = [pid_map.get(u, "0") for u in units]
         elif prop == "OOMScoreAdjust":
             values = [config_map.get(u, "0") for u in units]
@@ -502,6 +508,39 @@ def _make_oom_run(pid_map, config_map):
         result.stdout = "\n\n".join(values) + "\n" if values else "\n"
         return result
     return fake_run
+
+
+def test_oom_score_adj_skips_units_not_installed_on_streambox():
+    """A streambox does not install the voice/AEC stack; those units are
+    LoadState=not-found and must NOT be reported as OOM drift (the
+    full-speaker EXPECTED map applies only to units this profile runs)."""
+    absent = {
+        "jasper-voice": "not-found",
+        "jasper-aec-bridge": "not-found",
+        "jasper-input": "not-found",
+    }
+    # Absent units default to 0 (would be drift if not skipped); present
+    # units match expected and have no live process drift.
+    config = dict(_EXPECTED_CONFIG)
+    pid_map = dict(_PID_MAP)
+    for u in absent:
+        config[u] = "0"
+        pid_map[u] = "0"
+
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        return _LIVE_OK.get(pid_str, "0") + "\n"
+
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_oom_run(pid_map, config, absent)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+
+    assert r.status == "ok", r.detail
+    for unit in absent:
+        assert unit not in r.detail
+    # The remaining 6 installed daemons are still verified.
+    assert "6 critical daemons protected" in r.detail
 
 
 _LIVE_OK = {
@@ -693,15 +732,23 @@ def test_systemctl_show_property_handles_empty_values():
 # --- check_start_limit_action (T5.1) ------------------------------------
 
 
-def _make_start_limit_action_run(actions: dict[str, str]):
-    """Build a _run mock for `systemctl show -p StartLimitAction
-    --value <unit>.service`. Returns the value from `actions`."""
+def _make_start_limit_action_run(actions: dict[str, str], load_map=None):
+    """Build a _run mock for check_start_limit_action's calls: the
+    BATCHED `systemctl show -p LoadState --value u1 u2 ...` installed-unit
+    filter, then the per-unit `systemctl show -p StartLimitAction
+    --value <unit>.service`. `load_map` overrides LoadState per unit
+    (default: every unit "loaded")."""
     def fake_run(cmd, **kwargs):
-        # cmd = ["systemctl", "show", "-p", "StartLimitAction",
-        #        "--value", "X.service"]
-        unit = cmd[5].rsplit(".", 1)[0]
+        prop = cmd[3]
         result = MagicMock()
-        result.stdout = actions.get(unit, "none") + "\n"
+        if prop == "LoadState":
+            units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
+            values = [(load_map or {}).get(u, "loaded") for u in units]
+            result.stdout = "\n\n".join(values) + "\n" if values else "\n"
+        else:
+            # Per-unit StartLimitAction: cmd[5] is a single "X.service".
+            unit = cmd[5].rsplit(".", 1)[0]
+            result.stdout = actions.get(unit, "none") + "\n"
         return result
     return fake_run
 
@@ -715,11 +762,12 @@ def test_start_limit_action_all_set_to_reboot():
         "jasper-voice": "reboot",
         "jasper-control": "reboot",
     }
-    with patch.object(doctor.resilience, "_run",
-                      side_effect=_make_start_limit_action_run(actions)):
+    mock = _make_start_limit_action_run(actions)
+    with patch.object(doctor.resilience, "_run", side_effect=mock), \
+         patch.object(doctor._shared, "_run", side_effect=mock):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
-    assert "5 critical daemons" in r.detail
+    assert "5 installed critical daemons" in r.detail
 
 
 def test_start_limit_action_drift_one_unit_lost_directive():
@@ -732,8 +780,9 @@ def test_start_limit_action_drift_one_unit_lost_directive():
         "jasper-voice": "reboot",
         "jasper-control": "none",   # drifted to default
     }
-    with patch.object(doctor.resilience, "_run",
-                      side_effect=_make_start_limit_action_run(actions)):
+    mock = _make_start_limit_action_run(actions)
+    with patch.object(doctor.resilience, "_run", side_effect=mock), \
+         patch.object(doctor._shared, "_run", side_effect=mock):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
     assert "T5.1" in r.detail
@@ -751,11 +800,34 @@ def test_start_limit_action_drift_wrong_action():
         "jasper-voice": "reboot-force",   # wrong shape
         "jasper-control": "reboot",
     }
-    with patch.object(doctor.resilience, "_run",
-                      side_effect=_make_start_limit_action_run(actions)):
+    mock = _make_start_limit_action_run(actions)
+    with patch.object(doctor.resilience, "_run", side_effect=mock), \
+         patch.object(doctor._shared, "_run", side_effect=mock):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
     assert "jasper-voice=reboot-force" in r.detail
+
+
+def test_start_limit_action_skips_units_not_installed_on_streambox():
+    """A streambox does not install jasper-voice/jasper-aec-bridge; those
+    units are LoadState=not-found and must NOT count as escalation drift
+    even though they report StartLimitAction=none."""
+    actions = {
+        "jasper-outputd": "reboot",
+        "jasper-camilla": "reboot",
+        "jasper-control": "reboot",
+        "jasper-aec-bridge": "none",   # absent → must be ignored
+        "jasper-voice": "none",        # absent → must be ignored
+    }
+    load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
+    mock = _make_start_limit_action_run(actions, load_map)
+    with patch.object(doctor.resilience, "_run", side_effect=mock), \
+         patch.object(doctor._shared, "_run", side_effect=mock):
+        r = doctor.check_start_limit_action()
+    assert r.status == "ok", r.detail
+    assert "jasper-voice" not in r.detail
+    assert "jasper-aec-bridge" not in r.detail
+    assert "3 installed critical daemons" in r.detail
 
 
 def test_start_limit_action_skips_on_dev_host():
@@ -764,7 +836,11 @@ def test_start_limit_action_skips_on_dev_host():
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("systemctl not found")
 
-    with patch.object(doctor.resilience, "_run", side_effect=fake_run):
+    # Patch both namespaces: the installed-unit LoadState filter runs
+    # through _shared._run, the per-unit StartLimitAction read through
+    # resilience._run. The first (LoadState) raise → clean skip.
+    with patch.object(doctor.resilience, "_run", side_effect=fake_run), \
+         patch.object(doctor._shared, "_run", side_effect=fake_run):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
     assert "skipped" in r.detail

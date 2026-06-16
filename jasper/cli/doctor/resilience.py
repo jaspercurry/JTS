@@ -22,6 +22,7 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _RUNTIME_STATE_UNITS,
+    _installed_units,
     _run,
     _service_runtime_states,
 )
@@ -63,8 +64,23 @@ def check_start_limit_action() -> CheckResult:
     escalation. Doctor surfaces this — without StartLimitAction=reboot
     we're back to Tier 5's "PID 1 alive but userspace dead" gap.
     See docs/HANDOFF-tier5-watchdog-liveness.md."""
+    # Only verify daemons this install profile actually installs. The
+    # expected set is the full-speaker one; a streambox does not install
+    # the voice/AEC stack, so those absent units are not escalation drift.
+    installed = _installed_units(list(_EXPECTED_START_LIMIT_ACTION.keys()))
+    if installed is None:
+        return CheckResult(
+            "StartLimitAction", "ok",
+            "systemctl unavailable — skipped (not Linux?)",
+        )
+    if not installed:
+        return CheckResult(
+            "StartLimitAction", "ok", "no managed critical daemons installed",
+        )
     drift = []
     for unit, want in _EXPECTED_START_LIMIT_ACTION.items():
+        if unit not in installed:
+            continue
         got = _start_limit_action_of_unit(unit)
         if got is None:
             # systemctl unavailable (dev host) — skip cleanly
@@ -82,8 +98,8 @@ def check_start_limit_action() -> CheckResult:
         )
     return CheckResult(
         "StartLimitAction", "ok",
-        f"T5.1 reboot escalation active on all {len(_EXPECTED_START_LIMIT_ACTION)} "
-        "critical daemons",
+        f"T5.1 reboot escalation active on all {len(installed)} "
+        "installed critical daemons",
     )
 
 @doctor_check(order=40, group="resilience")
