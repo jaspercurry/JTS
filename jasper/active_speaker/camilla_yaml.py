@@ -558,6 +558,255 @@ pipeline:
     return yaml
 
 
+def _output_commission_mute_name(index: int) -> str:
+    return f"as_out{index}_commission_mute"
+
+
+def audible_outputs_for_role(preset: ActiveSpeakerPreset, role: str) -> frozenset[int]:
+    """All physical output indices carrying ``role`` (both sides for stereo).
+
+    A convenience for callers isolating a whole role (e.g. a mono test, or the
+    summed check). Single-output isolation is just ``{index}``.
+    """
+    return frozenset(
+        output.index
+        for output in preset.channel_map.outputs
+        if output.driver_role == role
+    )
+
+
+def _commissioning_driver_filter_chain(
+    preset: ActiveSpeakerPreset,
+    role: str,
+) -> list[str]:
+    """The startup chain minus the per-role mute.
+
+    Commissioning isolates one *physical output* (not a whole role — a stereo
+    woofer pair shares a role), so the role-level startup mute is dropped and a
+    per-output mute layer is applied in the pipeline instead. Everything that
+    protects a driver — protective tweeter high-pass, crossover, delay,
+    limiter — is preserved exactly as the running graph has it.
+    """
+    role_mute = _driver_mute_name(role)
+    return [name for name in _driver_filter_chain(preset, role) if name != role_mute]
+
+
+def _emit_commissioning_filter_definitions(
+    preset: ActiveSpeakerPreset,
+    *,
+    startup_headroom_db: float,
+    limiter_clip_limit_db: float,
+    audible_outputs: frozenset[int],
+) -> str:
+    lines: list[str] = []
+    lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
+    for region in _ordered_regions(preset):
+        lines.extend(emit_linkwitz_riley(
+            _crossover_filter_name(region.lower_driver, region, highpass=False),
+            highpass=False,
+            freq_hz=region.fc_hz,
+            order=region.order,
+        ))
+        lines.extend(emit_linkwitz_riley(
+            _crossover_filter_name(region.upper_driver, region, highpass=True),
+            highpass=True,
+            freq_hz=region.fc_hz,
+            order=region.order,
+        ))
+    for role in required_driver_roles(preset.way_count):
+        protective_freq = _protective_tweeter_hp_frequency(preset, role)
+        if protective_freq is not None:
+            lines.extend(emit_linkwitz_riley(
+                _protective_tweeter_hp_name(role),
+                highpass=True,
+                freq_hz=protective_freq,
+                order=4,
+            ))
+        lines.extend(_emit_delay_filter(_driver_delay_name(role)))
+        lines.extend(_emit_limiter_filter(
+            _driver_limiter_name(role),
+            clip_limit_db=limiter_clip_limit_db,
+            soft_clip=True,
+        ))
+    # Per-output commissioning mute: only audible outputs pass; the rest are
+    # hard-muted so exactly one physical driver is excited through the real
+    # graph. Default (empty set) is fully muted — the safe initial load.
+    for index in range(_output_count(preset)):
+        lines.extend(emit_gain_filter(
+            _output_commission_mute_name(index),
+            STARTUP_MUTE_GAIN_DB,
+            mute=index not in audible_outputs,
+        ))
+    return "\n".join(lines)
+
+
+def _emit_commissioning_pipeline(preset: ActiveSpeakerPreset) -> str:
+    lines = [
+        "  - type: Filter",
+        "    channels: [0, 1]",
+        "    names: [active_startup_headroom]",
+        "  - type: Mixer",
+        f"    name: split_active_{preset.way_count}way",
+    ]
+    for role in required_driver_roles(preset.way_count):
+        channels = _channels_for_role(preset, role)
+        chain = ", ".join(_commissioning_driver_filter_chain(preset, role))
+        lines.extend([
+            "  - type: Filter",
+            f"    channels: [{', '.join(str(ch) for ch in channels)}]",
+            f"    names: [{chain}]",
+        ])
+    for index in range(_output_count(preset)):
+        lines.extend([
+            "  - type: Filter",
+            f"    channels: [{index}]",
+            f"    names: [{_output_commission_mute_name(index)}]",
+        ])
+    return "\n".join(lines)
+
+
+def emit_active_speaker_commissioning_config(
+    preset: ActiveSpeakerPreset,
+    *,
+    playback_device: str,
+    audible_outputs: frozenset[int] | set[int] | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int = DEFAULT_CHUNKSIZE,
+    target_level: int = DEFAULT_TARGET_LEVEL,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
+    startup_headroom_db: float = STARTUP_HEADROOM_DB,
+    limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
+    out_path: str | Path | None = None,
+    baseline_id: str | None = None,
+) -> str:
+    """Build the **production** active-speaker graph with a per-output mask.
+
+    This is the single-audio-path commissioning config: the same protected
+    graph the speaker runs (volume ceiling 0 dB, startup headroom, protective
+    tweeter high-pass, per-driver limiters), but with each physical output
+    individually mutable. Loading it with ``audible_outputs={k}`` excites
+    exactly one driver through its real crossover/limiter chain; an empty set
+    is fully muted (the safe initial load); the full set is every driver live
+    for the summed check.
+
+    It replaces the old direct-DAC diagnostic bypass: validation now happens on
+    the production path, so the commissioned config *is* what gets frozen as the
+    durable profile. Like the other emitters it does not load or reload
+    CamillaDSP, and it refuses the existing stereo outputd lane as a playback
+    device.
+    """
+
+    preset.validate()
+    playback_device = _yaml_string(playback_device, "playback_device")
+    forbidden_token = _forbidden_playback_token(playback_device)
+    if forbidden_token:
+        raise ActiveSpeakerConfigError(
+            "active-speaker templates require an explicit active playback "
+            f"device, not the existing {forbidden_token} lane"
+        )
+    capture_device = _yaml_string(capture_device, "capture_device")
+    capture_format = _yaml_string(capture_format, "capture_format")
+    playback_format = _yaml_string(playback_format, "playback_format")
+    sample_rate = _positive_int(sample_rate, "sample_rate")
+    chunksize = _positive_int(chunksize, "chunksize")
+    target_level = _positive_int(target_level, "target_level")
+    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
+    startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
+    limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
+    if volume_limit_db > 0:
+        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    if startup_headroom_db < 0 or startup_headroom_db > 80:
+        raise ActiveSpeakerConfigError("startup_headroom_db must be between 0 and 80")
+    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
+        raise ActiveSpeakerConfigError(
+            "limiter_clip_limit_db must be between -120 and 0 dB"
+        )
+
+    output_count = _output_count(preset)
+    audible: frozenset[int] = frozenset(audible_outputs or ())
+    for index in audible:
+        if not isinstance(index, int) or not 0 <= index < output_count:
+            raise ActiveSpeakerConfigError(
+                f"audible_outputs index {index!r} out of range for "
+                f"{output_count} outputs"
+            )
+
+    filter_yaml = _emit_commissioning_filter_definitions(
+        preset,
+        startup_headroom_db=startup_headroom_db,
+        limiter_clip_limit_db=limiter_clip_limit_db,
+        audible_outputs=audible,
+    )
+    mixer_yaml = _emit_split_mixer(preset)
+    pipeline_yaml = _emit_commissioning_pipeline(preset)
+    metadata_comments = [
+        f"# preset_id={preset.preset_id}",
+        f"# audible_outputs={sorted(audible)}",
+    ]
+    if baseline_id:
+        baseline_id = _yaml_string(baseline_id, "baseline_id")
+        metadata_comments.append(f"# baseline_id={baseline_id}")
+    metadata_yaml = "\n".join(metadata_comments)
+
+    yaml = f"""---
+# Auto-generated active-speaker commissioning config.
+# Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_commissioning_config
+{metadata_yaml}
+# DO NOT HAND-EDIT. Single-audio-path bring-up: the production graph with a
+# per-output mute mask so one driver at a time is tested through its real
+# crossover/limiter chain. Tweeter paths keep an extra protective high-pass and
+# the software volume ceiling stays 0 dB.
+
+devices:
+  samplerate: {sample_rate}
+  chunksize: {chunksize}
+  queuelimit: 4
+  target_level: {target_level}
+  volume_limit: {volume_limit_db:.1f}
+  enable_rate_adjust: true
+  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}
+  playback:
+    type: Alsa
+    channels: {output_count}
+    device: "{playback_device}"
+    format: {playback_format}
+
+filters:
+{filter_yaml}
+
+mixers:
+{mixer_yaml}
+
+pipeline:
+{pipeline_yaml}
+"""
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+        logger.info(
+            "event=active_speaker_commissioning_config_written "
+            "path=%s preset_id=%s way_count=%d outputs=%d audible=%s",
+            out_path,
+            preset.preset_id,
+            preset.way_count,
+            output_count,
+            sorted(audible),
+        )
+    return yaml
+
+
 def emit_active_speaker_baseline_config(
     preset: ActiveSpeakerPreset,
     *,

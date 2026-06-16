@@ -27,7 +27,9 @@ from .camilla_yaml import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
+    audible_outputs_for_role,
     emit_active_speaker_baseline_config,
+    emit_active_speaker_commissioning_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -255,6 +257,8 @@ __all__ = [
     "load_calibration_level_state",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
+    "audible_outputs_for_role",
+    "emit_active_speaker_commissioning_config",
     "build_safe_tone_plan",
     "build_bringup_preflight",
     "build_commissioning_rehearsal",
