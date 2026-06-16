@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from ..volume_coordinator import VolumeCoordinator
     from ..wake_events import WakeEventStore
     from ..weather import WeatherClient
-    from . import ToolRegistry
+    from . import ToolRegistry, UntrustedContentMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,12 @@ class ToolDeps:
     timer_scheduler: TimerScheduler | None
     google_clients: GoogleClients | None
     wake_event_store: WakeEventStore | None
+    # Shared untrusted-content taint monitor: the gmail/calendar packs stamp
+    # it (they return third-party text); the home_assistant pack reads it to
+    # gate consequential actions. Optional/last so existing ToolDeps(...)
+    # construction (tests) is unaffected; None is fail-safe (gmail no-ops its
+    # mark, home_assistant always confirms). The daemon passes a real one.
+    untrusted_monitor: UntrustedContentMonitor | None = None
 
 
 @dataclass(frozen=True)
@@ -112,15 +118,21 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
     ToolPack("transit", lambda d: d.transit_tools),
     # home_assistant + diagnostic self-gate inside the factory (return []
     # on a None dep), so no pack gate is needed — default always-on
-    # reproduces today's behavior exactly.
-    ToolPack("home_assistant", lambda d: make_home_assistant_tools(d.ha)),
+    # reproduces today's behavior exactly. home_assistant reads the shared
+    # taint monitor to gate consequential actions.
+    ToolPack("home_assistant",
+             lambda d: make_home_assistant_tools(d.ha, monitor=d.untrusted_monitor)),
     ToolPack("time", lambda _d: make_time_tools()),
     # timer's factory does NOT self-gate on None, so the gate is load-bearing.
     ToolPack("timer", lambda d: make_timer_tools(d.timer_scheduler),
              gate=lambda d: d.timer_scheduler is not None),
-    ToolPack("calendar", lambda d: make_calendar_tools(d.google_clients),
+    # calendar + gmail stamp the shared taint monitor when they return
+    # third-party text (arming home_assistant's confirmation window).
+    ToolPack("calendar",
+             lambda d: make_calendar_tools(d.google_clients, monitor=d.untrusted_monitor),
              gate=_google_ready),
-    ToolPack("gmail", lambda d: make_gmail_tools(d.google_clients),
+    ToolPack("gmail",
+             lambda d: make_gmail_tools(d.google_clients, monitor=d.untrusted_monitor),
              gate=_google_ready),
     ToolPack("diagnostic", lambda d: make_diagnostic_tools(d.wake_event_store)),
 )

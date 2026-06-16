@@ -59,7 +59,7 @@ EXPECTED_TOOL_NAMES = [
     "spotify_play", "spotify_play_latest_by_artist", "spotify_queue",
     "get_weather",
     "get_subway_arrivals", "get_bus_arrivals", "get_citibike_status",
-    "home_assistant",
+    "home_assistant", "home_assistant_confirm",
     "get_current_time",
     "set_timer", "list_timers", "cancel_timer", "update_timer",
     "calendar_today_summary", "calendar_upcoming",
@@ -82,7 +82,7 @@ def _transit_tools():
 
 
 def _full_deps():
-    """Deps that satisfy EVERY pack gate, so the full 28-tool registry
+    """Deps that satisfy EVERY pack gate, so the full 29-tool registry
     builds. Each factory captures its dep lazily, so sentinels suffice:
     timer needs only a non-None scheduler; google needs ≥1 account name."""
     google = types.SimpleNamespace(list_account_names=lambda: ["jasper"])
@@ -162,7 +162,7 @@ def test_data_driven_walk_equals_legacy_sequence():
     # Full registry must be the complete shipped set, in order — guards
     # against a stub silently dropping a pack on BOTH sides.
     assert list(walk_reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(walk_reg.tools) == 28
+    assert len(walk_reg.tools) == 29
 
     # Byte-identical ordered serialization (names, descriptions,
     # parameters, providers, timeouts, AND order — all at once).
@@ -198,7 +198,7 @@ def test_real_build_registry_wrapper_produces_full_set():
     )
 
     assert list(reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(reg.tools) == 28
+    assert len(reg.tools) == 29
 
 
 def test_load_bearing_gates_drop_their_tools_when_unsatisfied():

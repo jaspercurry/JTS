@@ -20,7 +20,7 @@ from ..home_assistant import HAClient, build_ha_client
 from ..renderer import RendererClient
 from ..spotify_router import BuildResult, Router, build_clients
 from ..timers import Timer, TimerScheduler, announcement_text
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, register_packs
 from ..usage import (
     ConnectionUptimeMeter,
@@ -297,6 +297,13 @@ def _build_registry(
     wake_event_store: "WakeEventStore | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
+    # One shared "did we read untrusted content recently?" monitor: the
+    # gmail/calendar packs stamp it when they return third-party text; the
+    # home_assistant pack reads it so a clean voice session runs "unlock the
+    # door" directly and only the post-email window asks to confirm. Threaded
+    # to the relevant packs via ToolDeps below. See
+    # jasper/tools/__init__.py UntrustedContentMonitor.
+    untrusted_monitor = UntrustedContentMonitor()
     # Reuse the router built once for the coordinator; if not passed,
     # build it here for backward-compat with any caller that doesn't
     # plumb the shared instance through. Resolved once into the deps
@@ -323,6 +330,7 @@ def _build_registry(
         timer_scheduler=timer_scheduler,
         google_clients=google_clients,
         wake_event_store=wake_event_store,
+        untrusted_monitor=untrusted_monitor,
     )
     register_packs(registry, deps)
     return registry
