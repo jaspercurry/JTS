@@ -673,9 +673,13 @@ place to get it right and the most expensive to get wrong later.
 > (verify on jts3 at Stage 3/4):** outputd opening the DAC at W < its physical
 > channel count must succeed and idle the undriven outputs safely; if a future
 > DAC requires native-width opens, that becomes a per-DAC `DacProfile` property,
-> not a reason to pad universally. **Still pending (2b):** wiring the masked
-> commissioning emitter into staging (per-output mute mask; crash recovery lands
-> muted) — see [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)
+> not a reason to pad universally. **2b landed:** the masked commissioning emitter
+> is wired into staging — `stage_protected_startup_config` stages the production
+> graph with `audible_outputs=frozenset()` (the all-muted boot config), the
+> software guard proves the tweeter is muted via its per-output
+> `as_out{idx}_commission_mute`, and a `staged_candidate_fully_muted` gate
+> enforces crash-recovery-MUTED on every staged boot config — see
+> [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)
 > critical-path step 2.
 
 **4. One wide snd-aloop content substream — width on the substream, not more
