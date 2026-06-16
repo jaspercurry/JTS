@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from scipy.io import wavfile
-from scipy.signal import firwin, fftconvolve
+from scipy.signal import firwin, firwin2, fftconvolve
 
 from jasper.active_speaker import driver_acoustics as da
 from jasper.correction import sweep as sweep_mod
@@ -109,6 +109,37 @@ def test_silent_capture_reads_silent(tmp_path):
     assert result.verdict == "silent"
     assert result.present is False
     assert result.peak_dbfs <= da.SILENT_PEAK_DBFS
+
+
+def test_marginal_weak_driver_in_band_still_reads_present(tmp_path):
+    """A driver only marginally weaker in-band than out — band separation in the
+    [OUT_OF_BAND_SEPARATION_DB, PRESENT_MIN_SEPARATION_DB) range — is a
+    real-but-quiet driver, not a wrong one, so it must read "present". This pins
+    the OUT_OF_BAND_SEPARATION_DB boundary: a future refactor that folded the
+    marginal range into "out_of_band" would silently reject quiet-but-correct
+    drivers, and this test would go red."""
+    sig, meta = _reference_sweep()
+    # A gentle ~+4 dB high-shelf above the woofer band leaves slightly more
+    # energy outside (40-400 Hz) than inside it — a small negative separation —
+    # while the capture stays well above the silent floor.
+    nyq = SR / 2
+    g = 10 ** (4.0 / 20)
+    ir = firwin2(1023, [0.0, 400 / nyq, 800 / nyq, 1.0], [1.0, 1.0, g, g]).astype(
+        np.float64
+    )
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "marginal.wav", captured)
+
+    result = da.analyze_driver_capture(path, meta, passband_hz=(40.0, 400.0))
+    assert result.verdict == "present"
+    assert result.present is True
+    assert result.peak_dbfs > da.SILENT_PEAK_DBFS
+    # Lands in the marginal band — not the strong-present (>= 0) branch.
+    assert (
+        da.OUT_OF_BAND_SEPARATION_DB
+        <= result.band_separation_db
+        < da.PRESENT_MIN_SEPARATION_DB
+    )
 
 
 def test_driver_energy_outside_band_reads_out_of_band(tmp_path):

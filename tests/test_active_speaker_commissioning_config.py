@@ -80,10 +80,19 @@ def test_commissioning_config_preserves_production_safety():
     assert parsed["devices"]["volume_limit"] == 0.0
     # No per-role startup mute survives (isolation is per-output now).
     assert not any("_startup_mute" in name for name in parsed["filters"])
-    # Protective tweeter high-pass is still present.
-    assert any("_protective_hp" in name for name in parsed["filters"])
-    # Per-driver limiters preserved.
-    assert any("_startup_limiter" in name for name in parsed["filters"])
+    # Protective tweeter high-pass is present AND correct: a Linkwitz-Riley
+    # high-pass an octave above the crossover (1600 Hz * 2.0 = 3200 Hz). Assert
+    # the parameters, not just the name — a HP at the wrong frequency is a
+    # driver-damage hazard the name alone would not catch.
+    hp = parsed["filters"]["as_tweeter_protective_hp"]["parameters"]
+    assert hp["type"] == "LinkwitzRileyHighpass"
+    assert hp["freq"] == 3200.0
+    assert hp["order"] == 4
+    # Per-driver limiters preserved at the startup clip ceiling.
+    for role in ("woofer", "tweeter"):
+        limiter = parsed["filters"][f"as_{role}_startup_limiter"]["parameters"]
+        assert limiter["clip_limit"] == -12.0
+        assert limiter["soft_clip"] is True
 
 
 def test_commissioning_config_rejects_outputd_lane():
