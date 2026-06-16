@@ -21,16 +21,7 @@ from ..renderer import RendererClient
 from ..spotify_router import BuildResult, Router, build_clients
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry
-from ..tools.audio import make_audio_tools
-from ..tools.calendar import make_calendar_tools
-from ..tools.diagnostic import make_diagnostic_tools
-from ..tools.gmail import make_gmail_tools
-from ..tools.home_assistant import make_home_assistant_tools
-from ..tools.spotify import make_spotify_tools
-from ..tools.time import make_time_tools
-from ..tools.timer import make_timer_tools
-from ..tools.transport import make_transport_tools
-from ..tools.weather import make_weather_tools
+from ..tools.packs import ToolDeps, register_packs
 from ..usage import (
     ConnectionUptimeMeter,
     SpendCap,
@@ -306,62 +297,34 @@ def _build_registry(
     wake_event_store: "WakeEventStore | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    for fn in make_audio_tools(volume_coordinator):
-        registry.register(fn)
     # Reuse the router built once for the coordinator; if not passed,
     # build it here for backward-compat with any caller that doesn't
-    # plumb the shared instance through.
+    # plumb the shared instance through. Resolved once into the deps
+    # bundle so transport + spotify capture the same Router.
     router = spotify_router if spotify_router is not None else _build_router(cfg)
-    for fn in make_transport_tools(renderer, router):
-        registry.register(fn)
-    for fn in make_spotify_tools(
-        router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
-    ):
-        registry.register(fn)
-    for fn in make_weather_tools(weather):
-        registry.register(fn)
-    # Transit (subway / bus / Citi Bike, and future city packs): one flat
-    # list of tools the household's ENABLED city packs produced — built by
-    # jasper.transit.active_transit. Each provider self-gates (a mode
-    # with no config, or a Citi Bike pack with no saved stations, yields no
-    # tool), so an empty list is correct, not a bug.
-    for fn in transit_tools:
-        registry.register(fn)
-    # Home Assistant — single tool surface (home_assistant) that wraps
-    # HA's /api/conversation/process endpoint. Gated on ha being non-None
-    # so the model never sees a tool whose every call would fail when
-    # HA isn't configured. See docs/HANDOFF-homeassistant.md for the
-    # architecture rationale (conversation API, not MCP).
-    for fn in make_home_assistant_tools(ha):
-        registry.register(fn)
-    for fn in make_time_tools():
-        registry.register(fn)
-    if timer_scheduler is not None:
-        for fn in make_timer_tools(timer_scheduler):
-            registry.register(fn)
-    # Calendar + Gmail are gated on (a) CLIENT_ID/SECRET being present
-    # AND (b) at least one account having an OAuth refresh token. The
-    # tool factories return [] when their accessor is unusable, but we
-    # also skip registration when there are zero accounts so the model
-    # doesn't see tools whose every call would fail with "no accounts
-    # linked". The wizard at /google triggers a daemon restart on add,
-    # so a fresh OAuth flow makes the tools appear on the next session.
-    if google_clients is not None and google_clients.list_account_names():
-        for fn in make_calendar_tools(google_clients):
-            registry.register(fn)
-        for fn in make_gmail_tools(google_clients):
-            registry.register(fn)
-    # Diagnostic tools (flag_recent_issue). Gated on the wake-event
-    # store being open — when telemetry is disabled the flag tool
-    # can't actually persist anything, so the model never sees it.
-    # See jasper/tools/diagnostic.py + jasper/wake_events.py
-    # `record_flag` for the storage semantics. Registered HERE (not
-    # later) because the LLM session sends `session.update` with the
-    # tool list immediately after WS handshake; tools registered
-    # after that point are invisible to the live session until the
-    # next reconnect.
-    for fn in make_diagnostic_tools(wake_event_store):
-        registry.register(fn)
+    # Tool registration is data-driven: the ordered TOOL_PACKS registry
+    # in jasper.tools.packs replaces the old hardcoded per-subsystem
+    # block. The inline gates that used to live here (timer's
+    # `is not None`, calendar/gmail's `list_account_names()`) are lifted
+    # into each pack's `gate` predicate; the rest self-gate inside their
+    # factory. The walk is fault-isolated per pack — see register_packs.
+    # `camilla`, `volume_persistence`, and `cues_manager` are
+    # accepted-but-unused here (kept in the signature for the re-export
+    # shim / call site); they are deliberately NOT in ToolDeps.
+    deps = ToolDeps(
+        volume_coordinator=volume_coordinator,
+        renderer=renderer,
+        router=router,
+        weather=weather,
+        spotify_device_name=cfg.spotify_device_name,
+        spotify_setup_url=cfg.spotify_setup_url,
+        transit_tools=transit_tools,
+        ha=ha,
+        timer_scheduler=timer_scheduler,
+        google_clients=google_clients,
+        wake_event_store=wake_event_store,
+    )
+    register_packs(registry, deps)
     return registry
 
 

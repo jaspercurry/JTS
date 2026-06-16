@@ -57,6 +57,14 @@ _PY_TO_JSON = {
 DEFAULT_TOOL_TIMEOUT_SEC = 12.0
 
 
+# Version of the derived tool-manifest shape (Tool.to_manifest_entry).
+# Bump when a manifest field is added/removed/renamed so a consumer can
+# detect a breaking change. The manifest is a stable, provider-neutral
+# description built straight from existing Tool fields — additive, with
+# no effect on dispatch or the provider serializers.
+MANIFEST_SCHEMA_VERSION = 1
+
+
 @dataclass
 class Tool:
     """A registered voice tool.
@@ -87,6 +95,40 @@ class Tool:
     # Tools whose args carry close-to-verbatim user requests opt out so
     # the start line still shows shape without household utterances.
     log_args: bool = True
+    # Optional model-facing description override. When None (default),
+    # the serializers emit the full docstring `description` — so NO
+    # shipped tool's model-facing text changes. Set via
+    # @tool(llm_description="...") to send the model a SHORTER text than
+    # the engineer-facing docstring. The docstring stays the human
+    # source of truth; the model-facing text — this override when set,
+    # else the docstring — is what BOTH the serializers and the
+    # manifest's `description` emit (they agree until a tool sets this).
+    # Mass-migrating the 28 tools to short llm_descriptions is a later,
+    # eval-gated follow-up, NOT this change.
+    llm_description: str | None = None
+
+    def model_facing_description(self) -> str:
+        """What the LLM sees: the `llm_description` override when set,
+        else the full docstring `description`. Default (None) preserves
+        today's behavior verbatim."""
+        return self.llm_description if self.llm_description is not None else self.description
+
+    def to_manifest_entry(self) -> dict[str, Any]:
+        """One tool's manifest record — a stable, provider-neutral
+        description of the tool built straight from existing Tool fields
+        (reuses build_tool's output; no new concepts). `description` is
+        the MODEL-FACING text (llm_description override or docstring).
+        `providers` is None for "all providers"."""
+        return {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "name": self.name,
+            "description": self.model_facing_description(),
+            "input_schema": self.parameters,
+            "compatibility": {
+                "providers": sorted(self.providers) if self.providers else None,
+            },
+            "timeout": self.timeout,
+        }
 
 
 @dataclass
@@ -130,7 +172,7 @@ class ToolRegistry:
         return [
             {
                 "name": t.name,
-                "description": t.description,
+                "description": t.model_facing_description(),
                 "parameters": t.parameters,
             }
             for t in self._visible_to(provider)
@@ -150,11 +192,17 @@ class ToolRegistry:
             {
                 "type": "function",
                 "name": t.name,
-                "description": t.description,
+                "description": t.model_facing_description(),
                 "parameters": t.parameters,
             }
             for t in self._visible_to(provider)
         ]
+
+    def to_manifest(self) -> list[dict[str, Any]]:
+        """All registered tools as manifest entries, in registration
+        order. Additive surface; does not affect dispatch or the
+        provider serializers."""
+        return [t.to_manifest_entry() for t in self.tools.values()]
 
 
 def tool(
@@ -162,6 +210,7 @@ def tool(
     *,
     providers: Iterable[str] | None = None,
     timeout: float | None = None,
+    llm_description: str | None = None,
     log_payload: bool = True,
     log_args: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -176,6 +225,13 @@ def tool(
     session adapters' `asyncio.wait_for` seam. None (default) keeps
     `DEFAULT_TOOL_TIMEOUT_SEC`; raise it for a tool whose backend is
     legitimately slow (e.g. an LLM-backed Home Assistant agent).
+
+    `llm_description` overrides the MODEL-FACING description only. None
+    (default) sends the model the full docstring `description` — so no
+    shipped tool's model-facing text changes. Set it to a shorter string
+    when the engineer-facing docstring is longer than the model needs;
+    the docstring stays the source of truth for humans and the manifest.
+
     `log_payload=False` keeps the INFO dispatch line redacted for
     content-bearing tool results; `log_args=False` does the same for
     content-bearing tool arguments.
@@ -188,6 +244,8 @@ def tool(
             fn.__jasper_tool_providers__ = frozenset(providers)  # type: ignore[attr-defined]
         if timeout is not None:
             fn.__jasper_tool_timeout__ = timeout  # type: ignore[attr-defined]
+        if llm_description is not None:
+            fn.__jasper_tool_llm_description__ = llm_description  # type: ignore[attr-defined]
         fn.__jasper_tool_log_payload__ = log_payload  # type: ignore[attr-defined]
         fn.__jasper_tool_log_args__ = log_args  # type: ignore[attr-defined]
         return fn
@@ -216,6 +274,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     params = _params_schema(fn)
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
+    decl_llm_desc = getattr(fn, "__jasper_tool_llm_description__", None)
     decl_log_payload = getattr(fn, "__jasper_tool_log_payload__", True)
     decl_log_args = getattr(fn, "__jasper_tool_log_args__", True)
     if not asyncio.iscoroutinefunction(fn):
@@ -242,6 +301,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         timeout=decl_timeout,
         log_payload=decl_log_payload,
         log_args=decl_log_args,
+        llm_description=decl_llm_desc,
     )
 
 

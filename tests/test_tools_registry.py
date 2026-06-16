@@ -358,3 +358,45 @@ def test_build_tool_is_silent_for_coroutine_fn(caplog):
     assert not [
         r for r in caplog.records if "event=tool.sync_fn" in r.getMessage()
     ]
+
+
+# ---- llm_description seam (model-facing description override) --------------
+
+
+def test_llm_description_defaults_to_docstring():
+    """No `llm_description` on the decorator → the model sees the full
+    docstring. Default (None) preserves today's behavior verbatim."""
+    @tool()
+    async def get_volume() -> dict:
+        """Return the current speaker volume in dB."""
+        return {}
+
+    built = build_tool(get_volume)
+    assert built.llm_description is None
+    assert built.model_facing_description() == built.description
+    assert built.model_facing_description() == "Return the current speaker volume in dB."
+
+
+def test_llm_description_overrides_model_facing_only():
+    """`@tool(llm_description=...)` changes what the MODEL sees in both
+    serializers, but the docstring stays the engineer-facing
+    `description` (the manifest's human/source-of-truth text)."""
+    @tool(llm_description="Set volume.")
+    async def set_volume(level_db: float) -> dict:
+        """Set the speaker volume in dB. Long engineer-facing docstring
+        with when-to-call rules, response shape, and voice-answer style
+        that the model does not need verbatim."""
+        return {}
+
+    built = build_tool(set_volume)
+    assert built.llm_description == "Set volume."
+    # Engineer-facing + manifest description is the full docstring.
+    assert built.description.startswith("Set the speaker volume in dB.")
+    assert built.model_facing_description() == "Set volume."
+
+    reg = ToolRegistry()
+    reg.register(set_volume)
+    assert reg.function_declarations()[0]["description"] == "Set volume."
+    assert reg.openai_tools()[0]["description"] == "Set volume."
+    # But the source Tool's description is unchanged.
+    assert reg.get("set_volume").description.startswith("Set the speaker volume in dB.")
