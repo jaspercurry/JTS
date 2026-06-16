@@ -456,6 +456,80 @@ still must satisfy the safety gates before sound-emitting active use:
   autolevel/test tones, USB Audio Input, startup/reload states, and
   any direct `jasper_out` rollback path.
 
+## Single audio path commissioning
+
+> **Status: design-of-record, 2026-06-16 — partially built.** This is the
+> agreed target architecture for the `/sound/` active-crossover flow. It
+> replaces the earlier two-path model (a direct-DAC diagnostic bypass for test
+> tones plus an outputd lane for durable apply) with **one** audio path.
+
+**Principle.** Commission and validate the speaker *through the production
+audio path* — the outputd-owned active CamillaDSP graph — and "save" simply
+freezes the commissioned config as the durable profile. There is no separate
+validation path. Validating on a path you won't run is both pointless (it has to
+be re-set-up for production anyway) and unsafe: the old direct-DAC bypass wrote a
+tone straight to `hw:CARD=…,DEV=0`, so a tweeter test had **no** protective
+high-pass. Through the production graph, every driver is tested behind its own
+crossover/limiter exactly as it will run.
+
+**Why the old direct-DAC path was useless.** Durable apply has always required an
+outputd-owned active lane, so a config tested via direct-DAC could be compiled
+but **never applied** (`compiled_apply_blocked`). It could not produce a working
+speaker — dead-end functionality.
+
+### Critical path
+
+1. **DAC8x outputd active lane** (the hard prerequisite). The single path needs
+   the DAC the speaker uses to have an outputd active lane. Today only the
+   dual-Apple 4-channel composite declares one; the HiFiBerry DAC8x (8ch single
+   coherent DAC, the natural active-speaker DAC) does not. This is a new
+   multichannel transport in `jasper-outputd` (new `SinkMode`, configurable
+   channel width, single-PCM N-channel backend, reconciler branch, width-aware
+   ALSA lane + cutover gate). Full design + change set:
+   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+   "Planned: single-coherent-DAC multichannel active lane (DAC8x)".
+
+2. **Commissioning orchestration** (substrate built; wiring pending). Per driver:
+   compile the preset from the saved crossover preview
+   (`staging.compile_preset_from_crossover_preview`), emit the production graph
+   with a per-output mute mask
+   (`camilla_yaml.emit_active_speaker_commissioning_config`, **built**, audible
+   = {target output}), load it muted through the guarded path, open
+   `correction.coordinator.measurement_window()`, play an ESS sweep into the
+   production fan-in lane (`correction.playback.play_sweep`), capture the phone
+   mic in the browser (reuse
+   [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js)),
+   analyze with `active_speaker.driver_acoustics.analyze_driver_capture`
+   (**built** — per-driver verdict + real `observed_mic_dbfs`), and record via
+   `measurement.record_driver_measurement`. Advance to the next driver; then
+   unmute all for the summed check (`analyze_summed_crossover`, **built**);
+   then freeze the commissioned config as the durable profile
+   (`baseline_profile.build_baseline_profile_candidate` / `apply_baseline_profile`).
+   Per-driver isolation is the CamillaDSP **mute mask**, not a channel-targeted
+   WAV — so `driver_acoustics.write_driver_sweep_wav` is superseded and removed
+   when this lands.
+
+3. **Delete the direct-DAC path** (do last, against working hardware).
+   Remove `DirectDacTonePlaybackBackend` (`playback.py`), `DIRECT_DAC_SOURCE` /
+   `resolve_diagnostic_playback_device` / the `diagnostic` route variant
+   (`playback_route.py` — collapse to one resolver/capability), the
+   `requires_protected_startup` branch in `_active_speaker_prepare_driver_test_payload`
+   (`web/sound_setup.py`), and the direct-DAC handling in the `/sound/` JS.
+   Rewrite the staging/topology tests that assert the direct-DAC route to the
+   single-path expectation (an install with no outputd active lane reports
+   active crossover unavailable — one honest capability gate). This deletion is
+   coupled to step 1: removing the bypass before the DAC8x active lane exists
+   leaves driver testing with no playback backend, so it lands only once the
+   production path works on hardware.
+
+### Sequencing + safety
+
+Build and verify on jts3 (real bi/tri-amp speaker, live drivers) step by step;
+never delete the old path before the new one is hardware-verified. Every
+on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
+per-driver limiters, and the protective tweeter high-pass are preserved by the
+commissioning emitter (guarded by `test_commissioning_config_preserves_production_safety`).
+
 ## Layer Boundary
 
 Keep DSP ownership separate, and be explicit about logical ownership

@@ -479,6 +479,91 @@ What is still intentionally not done:
   accounting) still need Pi validation after an operator-approved
   deploy.
 
+## Planned: single-coherent-DAC multichannel active lane (DAC8x)
+
+> **Status: design-of-record, 2026-06-16 — not yet built.** This is the
+> agreed blueprint for giving a single coherent multichannel DAC (HiFiBerry
+> DAC8x, 8 physical outputs) an outputd active lane, so an active-crossover
+> speaker can be commissioned and run through the production path. It is the
+> hard prerequisite for the active-speaker single-audio-path flow in
+> [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) "Single audio
+> path commissioning". Today the only active lane is the dual-Apple 4-channel
+> composite; DAC8x active output is documented as blocked there.
+
+### Why it's a build, not a flag flip
+
+The Python/eligibility/Camilla-emit layers are already declarative: flip
+`supports_active_outputd_lane=True` + `active_outputd_lane_channels` on the
+`HIFIBERRY_DAC8X` profile and `playback_route._profile_outputd_lane_device`
+routes the lane; `camilla_yaml.emit_active_speaker_*` already sizes
+`playback channels: {output_count}` from the preset. But that would route audio
+into a transport that cannot carry it. The only active-lane transport,
+`DualAppleBackend` (`rust/jasper-outputd/src/alsa_backend.rs`), is welded to two
+stereo USB DACs: it opens exactly two child PCMs, `snd_pcm_link`s them, tracks
+inter-DAC drift, and `deinterleave_4ch_to_dual_stereo` splits a 4-channel period
+into ch0/1→DAC A, ch2/3→DAC B. The DAC-side width is the compile-time constant
+`CHANNELS: u16 = 2` (`types.rs`), and `content_channels` is hardcoded per
+`SinkMode` (`config.rs`: SingleAlsa=2, DualApple=4). The active ALSA lane
+`outputd_active_content_*` is fixed at `channels 4` (`deploy/alsa/asoundrc.jasper`),
+and the reconciler cutover gate literally greps the active config for
+`channels: 4` (`deploy/bin/jasper-audio-hardware-reconcile`).
+
+A single coherent 8-channel DAC is *simpler* in clocking — one PCM, one clock,
+no `snd_pcm_link`, no drift tracking — but there is no single-PCM multichannel
+active backend. So this is new transport code.
+
+### The change set (build to this)
+
+1. **New sink mode `SingleAlsaMulti`** in `rust/jasper-outputd/src/config.rs`
+   `enum SinkMode`. Its `content_pcm` is the active capture lane
+   (`outputd_active_content_capture`), its `dac_pcm` is `outputd_dac`, and its
+   `content_channels`/DAC width come from a new env
+   `JASPER_OUTPUTD_ACTIVE_CHANNELS` (parsed, bounded 2..=8) — **not** a constant.
+   Selected when the reconciler sets `JASPER_OUTPUTD_SINK=single_alsa_multi`.
+2. **Make DAC width configurable.** Replace the compile-time `CHANNELS: u16 = 2`
+   assumption on the DAC-write path with a runtime width carried on the backend.
+   `run_alsa` already opens one PCM; the new backend is `run_alsa` generalized to
+   open the DAC at N channels and write N-channel interleaved periods straight
+   through (no deinterleave, no link). Keep the stereo path
+   (`SingleAlsa`, N=2) byte-identical.
+3. **New backend `SingleAlsaMultiBackend`** (or generalize `AlsaBackend` to a
+   width parameter): one PCM at N channels, period = whole N-channel frame,
+   passthrough. The reference downmix for AEC takes ch0/1 (or a defined
+   stereo fold of the active output) so AEC still sees "what the speaker emits"
+   — define the active→reference fold explicitly here before coding.
+4. **Reconciler branch** in `jasper-audio-hardware-reconcile`
+   `apply_audio_runtime_env()`: when `OUTPUT_DAC_ID == hifiberry_dac8x` (and
+   future single-coherent active DACs) and an active baseline is loaded, write
+   `JASPER_OUTPUTD_SINK=single_alsa_multi`,
+   `JASPER_OUTPUTD_ACTIVE_CHANNELS=<profile.active_outputd_lane_channels>`,
+   `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture`,
+   `JASPER_OUTPUTD_DAC_PCM=outputd_dac`. No `snd_pcm_link`/child-PCM env
+   (single-device path); no `apply_observed_composite_policy` (composite-only).
+5. **Width-aware ALSA lane.** Parameterize `outputd_active_content_playback` /
+   `_capture` in `asoundrc.jasper` (or add an 8ch variant) so the active lane
+   width matches `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The snd-aloop substream must
+   carry N channels end-to-end (CamillaDSP playback → loopback → outputd capture).
+6. **Width-aware cutover gate.** Replace the `channels: 4` grep in the
+   reconciler's active-graph status check with a width-aware assertion
+   (active config channels == profile active lane channels).
+7. **Profile flip (last):** set `supports_active_outputd_lane=True`,
+   `active_outputd_lane_channels=<N>` on `HIFIBERRY_DAC8X` once 1–6 land, so the
+   Python route only resolves the lane when the transport can actually carry it.
+
+### Safety + verification (jts3, real bi/tri-amp speaker, live drivers)
+
+- `volume_limit: 0.0` (the JTS ceiling) holds in the active config; per-driver
+  limiters and the protective tweeter high-pass live in the CamillaDSP graph and
+  protect every output. Bring-up loads the config muted and unmutes one output
+  at the calibration floor (see active-speaker doc).
+- Verify on jts3 in this order: (a) `cargo build/test` off-device; (b) deploy,
+  load a muted 8ch active config, confirm outputd opens the DAC8x at 8 channels
+  with no xrun (`journalctl -u jasper-outputd`); (c) unmute ONE output at the
+  floor, confirm only that driver sounds; (d) full active config, confirm clean
+  stereo→active cutover and AEC reference still equals emitted audio; (e) soak.
+- Single-DAC has no drift/link to validate (the dual-Apple soak requirements do
+  not apply), but the stereo↔active `SinkMode` cutover and xrun behavior do.
+
 ## Problem Boundaries
 
 This is primarily an output problem, not an input problem.
