@@ -121,7 +121,7 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
             }
         return payload
 
-    @tool()
+    @tool(labels=("music", "volume"))
     async def get_volume() -> dict:
         """Return the current speaker volume as a percentage 0-100.
 
@@ -141,7 +141,7 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
             return {"percent": int(fwd.get("percent", 0))}
         return {"percent": coordinator.get_listening_level()}
 
-    @tool()
+    @tool(labels=("music", "volume"))
     async def set_volume(percent: int) -> dict:
         """Set speaker volume to an absolute percentage 0-100.
 
@@ -159,7 +159,7 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         applied = await coordinator.set_listening_level(percent)
         return {"ok": True, "percent": applied}
 
-    @tool()
+    @tool(labels=("music", "volume"))
     async def adjust_volume(delta_percent: int) -> dict:
         """Adjust speaker volume by a relative delta in percent
         (positive louder, negative softer).
@@ -181,7 +181,7 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         applied = await coordinator.adjust_listening_level(int(delta_percent))
         return {"ok": True, "percent": applied}
 
-    @tool()
+    @tool(labels=("music", "volume", "mute"))
     async def mute() -> dict:
         """Mute the speaker. Unmute restores the prior level.
 
@@ -195,7 +195,7 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         await coordinator.mute()
         return {"ok": True, "muted": True}
 
-    @tool()
+    @tool(labels=("music", "volume", "mute"))
     async def unmute() -> dict:
         """Restore speaker to its pre-mute level (50% if nothing
         saved).

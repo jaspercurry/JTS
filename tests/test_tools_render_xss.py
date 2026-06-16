@@ -1,9 +1,10 @@
 """XSS regression guard for the /tools/ catalog renderer.
 
-render.js builds card markup from catalog fields (name, description, labels,
-setup_url) and assigns it via innerHTML. The /tools/ catalog is the
-marketplace's future home for THIRD-PARTY tool text, so the rendering is a
-security boundary. Two distinct defenses, both exercised here:
+render.js builds card/detail markup from catalog fields (name, summary,
+description, details, labels, category, pack, setup_url) and assigns it via
+innerHTML. The /tools/ catalog is the marketplace's future home for
+THIRD-PARTY tool text, so the rendering is a security boundary. Two distinct
+defenses, both exercised here:
 
   * Element/attribute content (name, description, labels, data-tool) is run
     through escapeHtml, so a `<script>`/`<img>`/`<svg>` payload can't break out.

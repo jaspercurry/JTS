@@ -92,6 +92,44 @@ def test_full_registry_empty_disabled_all_active():
     assert _CATALOG_HIDDEN and not (_CATALOG_HIDDEN & names)
 
 
+def test_catalog_includes_display_metadata_without_forcing_packs():
+    by_name = {
+        t["name"]: t
+        for t in build_catalog(_full_live_registry(), frozenset())["tools"]
+    }
+
+    spotify = by_name["spotify_play"]
+    assert spotify["category"] == "Music"
+    assert spotify["pack"] == {
+        "id": "spotify",
+        "title": "Spotify",
+        "summary": "Search, play, and queue music through configured Spotify accounts.",
+        "setup_url": "/spotify/",
+    }
+
+    # Multiple internal registration packs can share one display pack.
+    assert by_name["calendar_today_summary"]["pack"]["id"] == "google"
+    assert by_name["gmail_unread_summary"]["pack"]["id"] == "google"
+
+    # Standalone tools deliberately have no pack; the UI groups them directly
+    # under their category rather than inventing a fake display pack.
+    assert by_name["get_weather"]["category"] == "Utilities"
+    assert by_name["get_weather"]["pack"] is None
+    assert by_name["get_current_time"]["category"] == "Utilities"
+    assert by_name["get_current_time"]["pack"] is None
+
+    assert by_name["get_weather"]["summary"]
+    assert "\n" not in by_name["get_weather"]["summary"]
+    assert len(by_name["get_weather"]["summary"]) <= 183  # 180 + "..."
+    assert by_name["get_weather"]["details"]
+
+
+def test_visible_first_party_tools_have_search_labels():
+    cat = build_catalog(_full_live_registry(), frozenset())
+    missing = [t["name"] for t in cat["tools"] if not t["labels"]]
+    assert not missing
+
+
 def test_minimal_registry_gated_tools_need_setup():
     cat = build_catalog(_minimal_live_registry(), frozenset())
     by_name = {t["name"]: t for t in cat["tools"]}

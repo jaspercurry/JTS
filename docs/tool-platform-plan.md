@@ -4,7 +4,7 @@
 > truth about shipped code. Captures the vision for turning JTS's
 > integrations into an extensible foundation, the research behind it,
 > what we decided, and how we'll get there.
-> **Last updated: 2026-06-15.**
+> **Last updated: 2026-06-16.**
 
 ---
 
@@ -259,7 +259,15 @@ doesn't choke as the catalog grows.** That's the whole first version.
    the catalog `jasper-voice` writes to `/run/jasper/tools.json`
    ([`jasper/tools/catalog.py`](../jasper/tools/catalog.py)) and never
    imports `jasper.tools` (the transit lazy-import lesson — keep the
-   wizard light). **Toggle stages, Apply commits — two steps on purpose.**
+   wizard light). The catalog payload now carries scan-friendly `summary`
+   copy, full `details`, a `category`, and an optional display `pack`
+   ([`CatalogPack`](../jasper/tools/packs.py)). Display packs are a UI
+   affordance, not a runtime container: multiple internal registration
+   packs can share one display pack (`calendar` + `gmail` → Google), and
+   standalone tools simply have `pack: null`. The `/tools/` page groups by
+   category and pack, and each visible tool gets a generated
+   `/tools/tool/<name>/` detail page from the same catalog JSON. **Toggle
+   stages, Apply commits — two steps on purpose.**
    A toggle only writes the disabled-set to the wizard-owned SSOT
    `/var/lib/jasper/tool_state.env`
    (`JASPER_DISABLED_TOOLS`, [`jasper/tool_state.py`](../jasper/tool_state.py),
@@ -332,8 +340,9 @@ A `labels` facet now rides the tool/manifest contract (`@tool(labels=...)`
 to the model** (it never enters the provider serializers — zero token
 cost). It is the catalog's sort/filter/search primitive — how a household
 will find tools in the future `/tool-store/`, and how third-party tools
-categorize themselves. The transit tools are tagged today
-(`("transit","nyc","subway")`, etc.).
+categorize themselves. The shipped first-party tools are tagged today
+(`("transit","nyc","subway")`, `("music","spotify")`,
+`("productivity","google","gmail")`, etc.).
 
 This resolves a transit design question. Today a city is a first-class
 `CityPack` + a `JASPER_TRANSIT_CITIES` toggle — but a city carries no
@@ -351,6 +360,23 @@ the Phase-2 `/tool-store/` UI (to host the filter + per-tool enable) and a
 real examples, not one). Until then `CityPack` is the right-sized solution
 and stays. Labels are organization; enablement is separate state — keep a
 single source of truth for "is this tool on."
+
+### Display packs and categories — organization, not a source/provider model
+
+The built-in catalog now has two human-facing organization levels:
+`category` (Music, Transit, Smart Home, Productivity, Utilities, System)
+and optional `CatalogPack` display groups (Spotify, NYC Transit, Google,
+Timers, Playback, Home Assistant). This is intentionally the smallest
+useful shape for the current problem: make the built-in catalog browsable,
+shorten card copy, and give each tool a detail/configuration page.
+
+This does **not** make "Spotify" a new runtime source abstraction, and it
+does **not** make "OpenAI/Gemini/Grok" a generalized provider package.
+Those may become larger opt-in modules later (sources, voice providers,
+hardware profiles), but they should be pulled by concrete needs and use the
+repo's existing Pattern-2 registry / reconciler decision tree. For now,
+display packs are allowed to be absent, and standalone tools should remain
+natural rather than being stuffed into fake packs.
 
 ### Phase 3 — "champagne problem" (build only if it ever arrives)
 The trigger is one of: you want to run tools you *haven't* personally

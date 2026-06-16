@@ -176,6 +176,29 @@ def test_data_driven_walk_equals_legacy_sequence():
     assert _serialize(walk_reg) == _serialize(ref_reg)
 
 
+def test_register_packs_records_internal_pack_for_catalog_metadata():
+    """The live registry keeps a tool -> internal pack index for catalog-only
+    display metadata. It is not a runtime dispatch surface, but it lets the
+    catalog map tools back to their category/display pack without hardcoding
+    per-tool names."""
+    reg = ToolRegistry()
+    register_packs(reg, _full_deps(), disabled=frozenset())
+
+    assert reg.tool_packs["spotify_play"] == "spotify"
+    assert reg.tool_packs["get_volume"] == "audio"
+    assert reg.tool_packs["calendar_today_summary"] == "calendar"
+    assert reg.tool_packs["gmail_unread_summary"] == "gmail"
+    assert set(reg.tool_packs) == set(reg.tools)
+
+
+def test_disabled_tools_are_removed_from_pack_index_too():
+    reg = ToolRegistry()
+    register_packs(reg, _full_deps(), disabled=frozenset({"spotify_play"}))
+
+    assert "spotify_play" not in reg.tools
+    assert "spotify_play" not in reg.tool_packs
+
+
 def test_real_build_registry_wrapper_produces_full_set():
     """Pin the PRODUCTION entry point, not just the pack walk.
 

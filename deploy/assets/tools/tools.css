@@ -1,9 +1,9 @@
 /* tools.css — page-specific layout for the /tools/ catalog wizard.
  *
- * Shared primitives (.page, .info-card, .badge, .toggle, .btn) come from
- * app.css; this sheet adds only the search box, the card list grid, and the
- * per-tool head/label visuals. No tokens, no @font-face, no focus rings —
- * those live in (and are gated to) app.css. */
+ * Shared primitives (.page, .info-card, .badge, .toggle, .btn, .deflist)
+ * come from app.css; this sheet adds only the catalog grouping, detail-page,
+ * and per-tool visuals. No tokens, no @font-face, no focus rings — those live
+ * in (and are gated to) app.css. */
 
 .tools-search {
   margin-bottom: 16px;
@@ -24,7 +24,74 @@
 #tools-list {
   display: flex;
   flex-direction: column;
+  gap: 22px;
+}
+
+.tool-category {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+}
+.tool-category__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.tool-pack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 2px;
+}
+.tool-pack__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 2px;
+}
+.tool-pack__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.tool-pack__summary {
+  margin: 3px 0 0;
+  max-width: 58ch;
+  font-size: 13px;
+  color: var(--muted);
+}
+.tool-pack__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: none;
+}
+.tool-pack__setup {
+  white-space: nowrap;
+}
+.tool-pack__tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+}
+.tool-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .tool-card__head {
@@ -44,11 +111,18 @@
   font-family: var(--font-display);
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--text);
   word-break: break-word;
 }
+.tool-name[href] {
+  text-decoration: none;
+}
+.tool-name[href]:hover {
+  color: var(--accent);
+}
 .tool-desc {
+  margin: 10px 0 0;
   font-size: 13px;
   color: var(--muted);
 }
@@ -113,9 +187,80 @@
   color: var(--muted);
 }
 
+.tool-detail {
+  max-width: 760px;
+}
+.tool-detail__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.tool-back {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+}
+.tool-back:hover {
+  color: var(--accent);
+}
+.tool-back::before {
+  content: "<";
+  margin-right: 6px;
+}
+.tool-detail__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+.tool-detail__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: none;
+}
+.tool-detail__meta {
+  margin-top: 18px;
+}
+.tool-detail__description {
+  margin-top: 18px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .status-line {
   margin-top: 16px;
   font-size: 13px;
   color: var(--muted);
   min-height: 1em;
+}
+
+@media (max-width: 640px) {
+  .tool-pack__head,
+  .tool-detail__head,
+  .tools-apply {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .tool-pack__meta,
+  .tool-detail__actions {
+    justify-content: flex-start;
+  }
+  .tool-card__head {
+    gap: 12px;
+  }
+  .tool-detail__title {
+    font-size: 24px;
+  }
 }

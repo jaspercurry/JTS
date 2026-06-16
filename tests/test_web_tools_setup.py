@@ -129,6 +129,40 @@ def test_get_root_renders_canonical_page(tmp_path):
     assert '<script type="module" src="/assets/tools/js/main.js">' in out
 
 
+def test_get_tool_detail_renders_canonical_page(tmp_path):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [_tool("get_weather")])
+    h = _make_request(
+        _handler_cls(str(cat), str(tmp_path / "state.env")),
+        "/tool/get_weather/",
+    )
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert "/assets/app.css?v=" in out
+    assert "/assets/tools/tools.css?v=" in out
+    assert 'class="app-header"' in out
+    assert 'href="/tools/"' in out
+    assert 'id="tool-detail-data"' in out
+    assert '"name": "get_weather"' in out
+    assert '<script type="module" src="/assets/tools/js/detail.js">' in out
+
+
+def test_get_tool_detail_json_island_escapes_tool_name(tmp_path):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [_tool("get_weather")])
+    h = _make_request(
+        _handler_cls(str(cat), str(tmp_path / "state.env")),
+        "/tool/%3C%2Fscript%3E",
+    )
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert '{"name": "\\u003C/script\\u003E"}' in out
+    assert '{"name": "</script>"}' not in out
+    assert "\\u003C/script\\u003E" in out
+
+
 def test_get_root_rejects_dns_rebinding_host(tmp_path):
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [])
@@ -147,6 +181,17 @@ def test_get_unknown_route_404s(tmp_path):
     h = _make_request(
         _handler_cls(str(cat), str(tmp_path / "state.env")),
         "/not-a-route", headers={"Host": "evil.example"},
+    )
+    h.do_GET()
+    assert h.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+def test_get_unknown_tool_route_404s_before_host_guard(tmp_path):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [])
+    h = _make_request(
+        _handler_cls(str(cat), str(tmp_path / "state.env")),
+        "/tool/too/deep", headers={"Host": "evil.example"},
     )
     h.do_GET()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)

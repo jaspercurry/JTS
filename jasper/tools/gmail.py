@@ -275,7 +275,11 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
     if clients is None:
         return []
 
-    @tool(log_payload=False, untrusted_output=True)
+    @tool(
+        log_payload=False,
+        labels=("productivity", "google", "gmail"),
+        untrusted_output=True,
+    )
     async def gmail_unread_summary(limit: int = _DEFAULT_UNREAD, account: str = "") -> dict:
         """Return the top-N unread inbox messages for a household
         member's Gmail account, filtered to skip Gmail's promotions
@@ -381,7 +385,11 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
             "messages": out,
         }
 
-    @tool(log_payload=False, untrusted_output=True)
+    @tool(
+        log_payload=False,
+        labels=("productivity", "google", "gmail"),
+        untrusted_output=True,
+    )
     async def gmail_read_thread(thread_id: str, account: str = "") -> dict:
         """Return the full body text of a Gmail thread, with one
         entry per message (oldest first).

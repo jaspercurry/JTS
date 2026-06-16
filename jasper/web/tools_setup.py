@@ -59,6 +59,7 @@ from ._common import (
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    json_island,
     read_active_provider,
     reject_csrf,
     restart_voice_daemon,
@@ -160,6 +161,33 @@ def _index_html(csrf_token: str = "") -> bytes:
     )
 
 
+def _tool_name_from_path(path: str) -> str | None:
+    """Return the URL-decoded tool slug from /tool/<name>, if valid."""
+    prefix = "/tool/"
+    if not path.startswith(prefix):
+        return None
+    raw = path[len(prefix):].strip("/")
+    if not raw or "/" in raw:
+        return None
+    return urllib.parse.unquote(raw)
+
+
+def _detail_html(tool_name: str, csrf_token: str = "") -> bytes:
+    body = f"""
+{canonical_header("Tool", back_href="/tools/", back_label="Tools")}
+<main class="page">
+  <div id="tool-detail" aria-busy="true">
+    <div class="info-card tool-empty"><p>Loading the tool&hellip;</p></div>
+  </div>
+  {json_island("tool-detail-data", {"name": tool_name})}
+</main>
+<script type="module" src="/assets/tools/js/detail.js"></script>
+"""
+    return canonical_page(
+        "Tool", body, csrf_token=csrf_token, page_css_href=TOOLS_PAGE_CSS_HREF,
+    )
+
+
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     cfg.setdefault(
         "apply_ts_path",
@@ -181,6 +209,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # "/catalog.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            detail_name = _tool_name_from_path(path)
             if path == "/":
                 if not guard_read_request(self):
                     return
@@ -192,6 +221,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 view = catalog_view(cfg["catalog_path"], cfg["state_path"])
                 send_proxy_json(self, json.dumps(view).encode(), status=200)
+                return
+            if detail_name is not None:
+                if not guard_read_request(self):
+                    return
+                ctx = begin_request(self)
+                send_html_response(self, _detail_html(detail_name, ctx["csrf_token"]))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
