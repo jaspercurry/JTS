@@ -132,9 +132,13 @@ fn run_alsa(
     let mut backend = AlsaBackend::new(config)?;
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    let mut content_buf = vec![0i16; period_samples];
-    let mut content_read_buf = vec![0i16; period_samples];
+    // Content/DAC width is carried as data (coherent single DAC of any width);
+    // the published reference is always stereo (a wide sink folds to L == R).
+    let content_channels = config.content_channels as usize;
+    let content_period_samples = (config.period_frames as usize) * content_channels;
+    let mut content_buf = vec![0i16; content_period_samples];
+    let mut content_read_buf = vec![0i16; content_period_samples];
+    let mut reference_buf = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
     let mut content_bridge = match config.content_bridge_mode {
         ContentBridgeMode::Direct => None,
         ContentBridgeMode::RateMatch => {
@@ -204,7 +208,7 @@ fn run_alsa(
     } else {
         None
     };
-    let zero_period = vec![0i16; period_samples];
+    let zero_period = vec![0i16; content_period_samples];
     let prime_periods = prime_periods(
         backend.dac_negotiated.buffer_frames,
         backend.dac_negotiated.period_frames,
@@ -325,9 +329,21 @@ fn run_alsa(
                     backend.dac_negotiated.buffer_frames as u64
                 }
             };
-            ref_outputs.publish(&content_buf);
+            // Real clip accounting (replaces the hardwired 0): the passthrough
+            // never clips, so a full-scale sample means CamillaDSP hit the
+            // ceiling upstream — the honest signal the Stage-6 no-clip gate
+            // needs (it was vacuously green against a hardwired 0).
+            let clipped = count_full_scale_samples(&content_buf);
+            if content_channels == CHANNELS as usize {
+                // Byte-identical stereo path: the content IS the reference.
+                ref_outputs.publish(&content_buf);
+            } else {
+                // Wide sink: fold the driven lanes to the stereo reference.
+                fold_reference(&content_buf, content_channels, &mut reference_buf);
+                ref_outputs.publish(&reference_buf);
+            }
             reference_sequence = reference_sequence.saturating_add(1);
-            state.mark_period(backend.counters(), reference_sequence, 0);
+            state.mark_period(backend.counters(), reference_sequence, clipped);
         }
         if once {
             eprintln!(
@@ -428,6 +444,46 @@ fn downmix_dual_active_reference(samples_4ch: &[i16], out_stereo: &mut [i16]) {
 
 fn average_i16(a: i16, b: i16) -> i16 {
     (((a as i32) + (b as i32)) / 2) as i16
+}
+
+/// Fold an N-channel coherent-single DAC content period into the published
+/// stereo reference (L == R) as a clip-proof 1/N mono sum of all driven lanes.
+///
+/// Both AEC consumers collapse the reference to mono (software AEC3 sums
+/// L+R -> mono; the chip USB-IN producer downmixes), so a mono fold loses
+/// nothing. Scale by 1/N (NOT 1/sqrt(N)): N correlated full-scale lanes sum to
+/// N x full-scale, so 1/N keeps the result in range for ANY correlation. A
+/// clipped reference is uniquely harmful — the linear AEC cannot model the
+/// nonlinearity — so the conservative 1/N is deliberate; band-splitting keeps
+/// the real reference well below the N x worst case, so the conservatism costs
+/// no SNR. Accumulate in i32 to avoid intermediate overflow.
+fn fold_reference(content_nch: &[i16], channels: usize, out_stereo: &mut [i16]) {
+    debug_assert!(channels >= 1);
+    debug_assert_eq!(content_nch.len() % channels, 0);
+    debug_assert_eq!(
+        out_stereo.len(),
+        (content_nch.len() / channels) * (CHANNELS as usize)
+    );
+    for (frame, out) in content_nch
+        .chunks_exact(channels)
+        .zip(out_stereo.chunks_exact_mut(CHANNELS as usize))
+    {
+        let sum: i32 = frame.iter().map(|&s| s as i32).sum();
+        let mono = (sum / (channels as i32)) as i16;
+        out[0] = mono;
+        out[1] = mono;
+    }
+}
+
+/// Count samples at digital full-scale (`i16::MIN`/`i16::MAX`) in a written
+/// period. outputd's active path is a passthrough (CamillaDSP owns gain), so a
+/// healthy commissioned config reports ~0; a full-scale sample is a saturation
+/// proxy meaning the content hit the ceiling upstream.
+fn count_full_scale_samples(samples: &[i16]) -> u32 {
+    samples
+        .iter()
+        .filter(|&&s| s == i16::MAX || s == i16::MIN)
+        .count() as u32
 }
 
 /// In-place linear attenuation for the program duck (gain <= 1.0, so
@@ -958,6 +1014,47 @@ mod tests {
         );
 
         assert_eq!(out, vec![200, 2000, -200, -2000]);
+    }
+
+    #[test]
+    fn fold_reference_sums_lanes_to_mono_clip_proof() {
+        // 8-channel content -> stereo reference: mono = sum/8, L == R.
+        let mut out = vec![0i16; 2 * 2]; // 2 frames, stereo
+        fold_reference(
+            &[
+                800, 1600, 2400, 3200, 4000, 4800, 5600, 6400, // sum 28800 / 8 = 3600
+                -800, -1600, -2400, -3200, -4000, -4800, -5600, -6400, // -3600
+            ],
+            8,
+            &mut out,
+        );
+        assert_eq!(out, vec![3600, 3600, -3600, -3600]);
+    }
+
+    #[test]
+    fn fold_reference_one_over_n_cannot_clip_at_full_scale() {
+        // The clip-proof claim: N full-scale lanes sum to N x, and 1/N keeps
+        // the result exactly at full-scale (never beyond) for any width.
+        for channels in [2usize, 4, 8] {
+            let mut content = vec![i16::MAX; channels];
+            let mut out = vec![0i16; 2];
+            fold_reference(&content, channels, &mut out);
+            assert_eq!(out, vec![i16::MAX, i16::MAX], "max width {channels}");
+
+            content.fill(i16::MIN);
+            fold_reference(&content, channels, &mut out);
+            assert_eq!(out, vec![i16::MIN, i16::MIN], "min width {channels}");
+        }
+    }
+
+    #[test]
+    fn count_full_scale_samples_counts_saturation_only() {
+        assert_eq!(count_full_scale_samples(&[0, 100, -100, 32766, -32767]), 0);
+        assert_eq!(
+            count_full_scale_samples(&[i16::MAX, 5, i16::MIN, i16::MAX, -3]),
+            3
+        );
+        assert_eq!(count_full_scale_samples(&[]), 0);
     }
 
     #[test]

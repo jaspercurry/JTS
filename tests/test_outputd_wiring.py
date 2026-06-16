@@ -285,6 +285,31 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "delay divergence" in alsa_rs
 
 
+def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
+    """The coherent single sink carries width as DATA (a DAC8x rides the same
+    path as a 2ch Apple), publishes a stereo reference via a clip-proof 1/N mono
+    fold for wide sinks, and counts real clipping instead of a hardwired 0."""
+    config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+
+    # Width is reconciler-supplied data, validated, with the composite shape
+    # pinned at 4 and the wide single path kept a pure passthrough.
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS" in config_rs
+    assert "fixed at 4 (two stereo children)" in config_rs
+
+    # The single backend reads + writes the runtime width, not a 2ch literal.
+    assert "channels: u16," in alsa_rs
+    assert "self.channels as usize" in alsa_rs
+
+    # Mono reference fold (1/N, clip-proof) + honest clip accounting.
+    assert "fn fold_reference(" in main_rs
+    assert "fn count_full_scale_samples(" in main_rs
+    # The wide path folds; the 2ch path stays byte-identical (publishes content).
+    assert "fold_reference(&content_buf, content_channels, &mut reference_buf);" in main_rs
+    assert "ref_outputs.publish(&content_buf);" in main_rs
+
+
 def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
     read_dual = alsa_rs.split(
@@ -368,9 +393,15 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     # the TTS branch's multi-line call.
     content_read = run_alsa.index("backend.read_content_period(&mut content_buf)?;")
     dac_write = run_alsa.index("backend.write_dac_period(&content_buf)?;")
+    # Width-2 (byte-identical) branch publishes the content directly; the wide
+    # sink folds to a stereo reference first. Either way the publish follows the
+    # DAC write (inv-A) and precedes the period mark.
     publish = run_alsa.index("ref_outputs.publish(&content_buf);")
+    # Solo branch now reports REAL clip accounting (a full-scale-sample count)
+    # rather than the old hardwired 0, so the no-clip commissioning gate is not
+    # vacuously green.
     state = run_alsa.index(
-        "state.mark_period(backend.counters(), reference_sequence, 0);"
+        "state.mark_period(backend.counters(), reference_sequence, clipped);"
     )
     assert content_read < dac_write < publish < state
 

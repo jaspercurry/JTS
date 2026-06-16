@@ -281,9 +281,26 @@ impl Config {
             SinkMode::SingleAlsa => "outputd_dac",
             SinkMode::Composite => "dual_apple_usb_c_dac_4ch",
         };
+        // Active-lane width carried as DATA (not a per-DAC branch): the
+        // reconciler emits JASPER_OUTPUTD_ACTIVE_CHANNELS from the DacProfile's
+        // active_outputd_lane_channels. A coherent single DAC reads + writes
+        // this width end-to-end (single Apple 2ch == today; DAC8x 8ch); the
+        // composite shape is fixed at 4 (two stereo children).
+        let active_channels = env_optional_u16("JASPER_OUTPUTD_ACTIVE_CHANNELS", 2, 8)?;
         let content_channels = match sink_mode {
-            SinkMode::SingleAlsa => 2,
-            SinkMode::Composite => 4,
+            SinkMode::SingleAlsa => active_channels.unwrap_or(2),
+            SinkMode::Composite => {
+                if let Some(width) = active_channels {
+                    if width != 4 {
+                        anyhow::bail!(
+                            "JASPER_OUTPUTD_ACTIVE_CHANNELS={} is invalid for the \
+                             composite sink, which is fixed at 4 (two stereo children)",
+                            width
+                        );
+                    }
+                }
+                4
+            }
         };
         let dual_dac_a_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_A_PCM");
         let dual_dac_b_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_B_PCM");
@@ -377,6 +394,39 @@ impl Config {
                  attenuates; positive gain on the program is never allowed)",
                 tts_program_duck_db
             );
+        }
+
+        // The wide active single path is a width-exact passthrough: the
+        // rate-match bridge, the round-trip FIFO, and the outputd TTS lane are
+        // all stereo-only features (their buffers/mixers are 2-channel). Reject
+        // them on a >2-channel single sink so a misconfiguration fails CLOSED
+        // at startup rather than mis-sizing a buffer on live drivers. (The
+        // reconciler never combines them; this is the fail-loud floor.)
+        if sink_mode == SinkMode::SingleAlsa && content_channels > 2 {
+            if content_bridge_mode != ContentBridgeMode::Direct {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_ACTIVE_CHANNELS={} (wide single sink) requires \
+                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the rate-match bridge is \
+                     a stereo-only path)",
+                    content_channels
+                );
+            }
+            if dac_content_fifo.is_some() {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_ACTIVE_CHANNELS={} (wide single sink) is \
+                     incompatible with JASPER_OUTPUTD_DAC_CONTENT_FIFO (the \
+                     round-trip lane is a stereo grouping-member path)",
+                    content_channels
+                );
+            }
+            if tts_socket_path.is_some() {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_ACTIVE_CHANNELS={} (wide single sink) is \
+                     incompatible with JASPER_OUTPUTD_TTS_SOCKET (the outputd TTS \
+                     mixer is stereo-only; active-mode voice rides fanin instead)",
+                    content_channels
+                );
+            }
         }
 
         Ok(Self {
@@ -504,6 +554,24 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
             Ok(parsed)
         }
         _ => Ok(default),
+    }
+}
+
+/// Parse an optional channel-width env var, validated to `[lo, hi]` when set.
+/// `None` (unset) lets the caller fall back to the per-shape default.
+fn env_optional_u16(name: &str, lo: u16, hi: u16) -> Result<Option<u16>> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => {
+            let parsed = s
+                .trim()
+                .parse::<u16>()
+                .with_context(|| format!("{} must be an integer; got {:?}", name, s))?;
+            if parsed < lo || parsed > hi {
+                anyhow::bail!("{} must be between {} and {}; got {}", name, lo, hi, parsed);
+            }
+            Ok(Some(parsed))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -807,6 +875,91 @@ mod tests {
     }
 
     #[test]
+    fn single_sink_defaults_to_stereo_width_byte_identical() {
+        with_env(&[], || {
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
+            assert_eq!(cfg.content_channels, 2);
+        });
+    }
+
+    #[test]
+    fn single_sink_takes_active_channels_width() {
+        with_env(
+            &[("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8"))],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
+                assert_eq!(cfg.content_channels, 8);
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_active_channels_out_of_range() {
+        for bad in ["1", "9", "0"] {
+            with_env(&[("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some(bad))], || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(
+                    err.contains("JASPER_OUTPUTD_ACTIVE_CHANNELS"),
+                    "{err}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn composite_rejects_active_channels_other_than_four() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("fixed at 4"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn wide_single_rejects_stereo_only_features() {
+        // The wide passthrough cannot host the stereo-only bridge / fifo / tts.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("CONTENT_BRIDGE=direct"), "{err}");
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
+                ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_TTS_SOCKET"), "{err}");
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("4")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_DAC_CONTENT_FIFO"), "{err}");
+            },
+        );
+    }
+
+    #[test]
     fn dual_apple_sink_requires_both_child_pcms() {
         with_env(&[("JASPER_OUTPUTD_SINK", Some("dual_apple"))], || {
             let err = Config::from_env().unwrap_err();
@@ -964,7 +1117,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[test]
     fn pair_trim_accepts_attenuation_rejects_boost_and_floor() {
         // Hearing safety: the trim can only attenuate (the LOUDER
