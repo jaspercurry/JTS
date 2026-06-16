@@ -248,13 +248,26 @@ def handle_analyze(wav_bytes: bytes) -> tuple[dict, int]:
     return payload, HTTPStatus.OK
 
 
-def handle_apply() -> tuple[dict, int]:
+def handle_apply(handler) -> tuple[dict, int]:
     """Apply leader-owned acoustic delays through the grouping writer.
 
     This writes only the leader's grouping state. Fixed endpoint-path
     latency is a separate Snapcast client-latency apply path.
+
+    ``handler`` carries the browser-supplied ``X-JTS-Token``; we forward it
+    to the leader's /grouping/set just like the /rooms bond fan-out. That
+    route is one of jasper-control's MANDATORY token-gated mutations (WS1
+    Phase 2), so the loopback write would otherwise be rejected 403 on a
+    gate-armed speaker — and since sync only writes self, a missing token
+    fails the apply outright.
     """
-    from .rooms_setup import _post_grouping_to_member, _self_addresses
+    from .rooms_setup import (
+        _post_grouping_to_member,
+        _request_control_token,
+        _self_addresses,
+    )
+
+    token = _request_control_token(handler)
 
     with _lock:
         if _state["phase"] != "analyzed" or not _state["recommendation"]:
@@ -281,7 +294,8 @@ def handle_apply() -> tuple[dict, int]:
         "left_delay_ms": rec["left_delay_ms"],
         "right_delay_ms": rec["right_delay_ms"],
     }
-    ok, detail = _post_grouping_to_member("", body, _self_addresses())
+    ok, detail = _post_grouping_to_member(
+        "", body, _self_addresses(), token=token)
     if ok:
         with _lock:
             _state["phase"] = "applied"

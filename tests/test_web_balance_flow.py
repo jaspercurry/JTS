@@ -135,8 +135,8 @@ def pair_env(loop_thread, monkeypatch):
     monkeypatch.setattr(
         balance_flow, "_ramp_wav_path", lambda ch: f"/tmp/{ch}.wav")
 
-    def fake_post(addr, body, known=None):
-        calls["posted"].append((addr, dict(body)))
+    def fake_post(addr, body, known=None, *, token=None):
+        calls["posted"].append((addr, dict(body), token))
         return True, "HTTP 200"
 
     monkeypatch.setattr(rooms, "_post_grouping_to_member", fake_post)
@@ -173,11 +173,14 @@ def pair_env(loop_thread, monkeypatch):
 
 
 class FakeHandler:
-    """Just enough of BaseHTTPRequestHandler for _read_json."""
+    """Just enough of BaseHTTPRequestHandler for _read_json plus the
+    optional X-JTS-Token the apply path forwards to /grouping/set."""
 
-    def __init__(self, body: bytes = b"{}"):
+    def __init__(self, body: bytes = b"{}", *, token: str | None = None):
         import io
         self.headers = {"Content-Length": str(len(body))}
+        if token is not None:
+            self.headers["X-JTS-Token"] = token
         self.rfile = io.BytesIO(body)
 
 
@@ -450,9 +453,9 @@ def analyzed_state(pair_env):
 
 def test_apply_writes_peer_first_then_self(pair_env):
     analyzed_state(pair_env)
-    payload, status = balance_flow.handle_apply()
+    payload, status = balance_flow.handle_apply(FakeHandler(token="tok-abc"))
     assert status == 200 and payload["ok"]
-    addrs = [a for a, _ in pair_env["posted"]]
+    addrs = [a for a, _b, _t in pair_env["posted"]]
     assert addrs == ["192.168.1.92", ""]  # peer hop first, self last
     peer_body = pair_env["posted"][0][1]
     self_body = pair_env["posted"][1][1]
@@ -464,21 +467,33 @@ def test_apply_writes_peer_first_then_self(pair_env):
     assert balance_flow.handle_status()["phase"] == "applied"
 
 
+def test_apply_forwards_control_token_to_every_member(pair_env):
+    """Regression: /grouping/set is a MANDATORY token-gated mutation, so a
+    tokenless write — notably the loopback self-write — is 403'd. Apply
+    must forward the browser's X-JTS-Token to BOTH members (the cross-LAN
+    peer and self), exactly as the /rooms bond fan-out does."""
+    analyzed_state(pair_env)
+    payload, status = balance_flow.handle_apply(FakeHandler(token="tok-xyz"))
+    assert status == 200 and payload["ok"]
+    forwarded = [t for _a, _b, t in pair_env["posted"]]
+    assert forwarded == ["tok-xyz", "tok-xyz"]
+
+
 def test_apply_partial_failure_reports_and_stops(pair_env, monkeypatch):
     analyzed_state(pair_env)
 
-    def fail_post(addr, body, known=None):
+    def fail_post(addr, body, known=None, *, token=None):
         return False, "connection refused"
 
     monkeypatch.setattr(rooms, "_post_grouping_to_member", fail_post)
-    payload, status = balance_flow.handle_apply()
+    payload, status = balance_flow.handle_apply(FakeHandler())
     assert status == 502 and not payload["ok"]
     assert len(payload["writes"]) == 1  # stopped at the first failure
     assert balance_flow.handle_status()["phase"] != "applied"
 
 
 def test_apply_without_analysis_conflicts(pair_env):
-    payload, status = balance_flow.handle_apply()
+    payload, status = balance_flow.handle_apply(FakeHandler())
     assert status == HTTPStatus.CONFLICT
 
 

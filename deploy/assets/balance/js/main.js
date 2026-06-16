@@ -14,9 +14,11 @@ import {
   openMonoMic,
   rmsToDbfs,
 } from '/assets/shared/js/measurement-audio.js';
+// jsonHeaders attaches X-CSRF-Token AND the X-JTS-Token control token
+// (meta[name=jts-control-token]); the latter is required for /balance/apply,
+// which fans out to each speaker's token-gated /grouping/set.
+import { jsonHeaders } from '/assets/shared/js/http.js';
 
-const csrf =
-  (document.querySelector('meta[name="jts-csrf"]') || {}).content || '';
 const els = {};
 for (const id of ['status', 'meter', 'meter-fill', 'meter-target',
   'meter-row', 'meter-db', 'progress', 'verdict', 'start', 'stop',
@@ -43,10 +45,6 @@ let session = null;  // {channel, target, hits, timer, pollTimer}
 function setStatus(text, tone) {
   els.status.textContent = text || '';
   els.status.dataset.tone = tone || '';
-}
-
-function jsonHeaders() {
-  return { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf };
 }
 
 async function post(path, body) {
