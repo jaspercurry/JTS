@@ -97,6 +97,51 @@ class ToolPack:
     gate: Callable[[ToolDeps], bool] = lambda _d: True
 
 
+@dataclass(frozen=True)
+class PackOutcome:
+    """The observability record for one pack's registration — what makes
+    a silently-missing tool family visible WITHOUT grepping the journal.
+
+    `status` is one of:
+      - "registered": the pack's gate passed and `build` returned without
+        raising. `tool_count` is how many tools it contributed (0 is
+        legitimate — a factory that self-gates on a None dep, e.g.
+        home_assistant unconfigured, builds successfully but empty).
+      - "skipped": the pack's `gate` predicate returned False (timer with
+        no scheduler, calendar/gmail with no linked account). Expected,
+        not a fault.
+      - "failed": `build` RAISED (ImportError in a tool module, a factory
+        that throws). The tool family is silently missing from voice;
+        this is the alarm condition `check_tool_packs` fails on. `error`
+        carries the exception repr.
+
+    Surfaced via jasper-voice STATUS -> /state.voice.tool_packs and
+    cross-checked by jasper-doctor's check_tool_packs. Mirrors and
+    slightly improves on transit.active_transit, which today logs a
+    failed provider only to the journal."""
+    name: str
+    status: str  # "registered" | "skipped" | "failed"
+    tool_count: int = 0
+    error: str | None = None
+
+
+def outcomes_to_state(outcomes: Iterable[PackOutcome]) -> list[dict[str, Any]]:
+    """JSON-serializable view of pack outcomes for /state.voice.tool_packs.
+
+    The single home for the wire shape, so the daemon emitter
+    (WakeLoop.session_status) and the doctor consumer (_assess_tool_packs)
+    can't drift."""
+    return [
+        {
+            "name": o.name,
+            "status": o.status,
+            "tool_count": o.tool_count,
+            "error": o.error,
+        }
+        for o in outcomes
+    ]
+
+
 def _google_ready(d: ToolDeps) -> bool:
     # Stricter than make_calendar_tools' own `clients is None` self-gate:
     # the daemon also required ≥1 linked account so the model never sees a
@@ -144,7 +189,7 @@ def register_packs(
     deps: ToolDeps,
     *,
     disabled: "frozenset[str] | None" = None,
-) -> None:
+) -> list[PackOutcome]:
     """Walk TOOL_PACKS in order; gate, build, and register each pack's
     tools onto `registry`. Each pack's build runs behind try/except for
     fault isolation — a broken pack (ImportError in a tool module, a
@@ -156,22 +201,34 @@ def register_packs(
     off (jasper.tool_state). A disabled tool is not registered, so the
     model never sees it — the user's explicit choice, NOT a failure (no
     cue). None (default) reads the SSOT file fail-safe; pass an explicit
-    set in tests."""
+    set in tests.
+
+    Returns one PackOutcome per pack (in TOOL_PACKS order) so the
+    registration result is observable beyond the journal — the daemon
+    stashes it on the registry and surfaces it via STATUS ->
+    /state.voice.tool_packs, and jasper-doctor cross-checks it. `tool_count`
+    is the number of tools the pack actually CONTRIBUTED to the registry
+    (after user-disabled removals), so sum(tool_count) == len(registry.tools).
+    The return is additive: existing callers that ignore it are unaffected."""
     if disabled is None:
         from ..tool_state import read_disabled_tools
         disabled = read_disabled_tools()
+    outcomes: list[PackOutcome] = []
     for pack in TOOL_PACKS:
         if not pack.gate(deps):
+            outcomes.append(PackOutcome(pack.name, "skipped"))
             continue
         try:
             # Materialize inside the guard so a factory returning a lazy
             # generator that raises mid-iteration is still fault-isolated.
             fns = list(pack.build(deps))
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             logger.exception(
                 "event=tool_pack.build_failed pack=%s", pack.name,
             )
+            outcomes.append(PackOutcome(pack.name, "failed", error=repr(e)))
             continue
+        registered = 0
         for fn in fns:
             t = registry.register(fn)
             if t.name in disabled:
@@ -180,3 +237,9 @@ def register_packs(
                 # regardless of declared @tool name vs fn.__name__.
                 del registry.tools[t.name]
                 log_event(logger, "tool.disabled", name=t.name, pack=pack.name)
+                continue
+            registered += 1
+        outcomes.append(
+            PackOutcome(pack.name, "registered", tool_count=registered),
+        )
+    return outcomes

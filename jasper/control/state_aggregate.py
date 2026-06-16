@@ -608,6 +608,13 @@ async def _get_state(
             # fields explicitly, so a new session_status field must be
             # pulled through here too.
             "wake_legs": (voice_st or {}).get("wake_legs"),
+            # Per-pack tool-registration outcomes from jasper-voice's
+            # session_status (added with the data-driven tool-pack
+            # registry). jasper-doctor's check_tool_packs reads this to
+            # flag a tool family that silently failed to build. Curated
+            # explicitly here like the other voice fields, so a new
+            # session_status field must be pulled through.
+            "tool_packs": (voice_st or {}).get("tool_packs"),
             "reachable": voice_st is not None,
         },
         "audio": {

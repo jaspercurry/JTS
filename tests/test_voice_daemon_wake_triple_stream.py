@@ -561,6 +561,31 @@ def test_session_status_reports_only_armed_legs_when_optional_absent():
     assert wl.session_status()["wake_legs"] == ["on", "off"]
 
 
+def test_session_status_surfaces_tool_pack_outcomes():
+    """session_status surfaces the per-pack tool-registration outcomes so a
+    pack that silently failed to build (event=tool_pack.build_failed) is
+    visible in /state.voice + jasper-doctor, not only the journal. The
+    field is opaque passthrough — whatever outcomes_to_state produced."""
+    wl = _make_wake_loop_triple()
+    _prep_session_status(wl)
+    packs = [
+        {"name": "audio", "status": "registered", "tool_count": 5,
+         "error": None},
+        {"name": "spotify", "status": "failed", "tool_count": 0,
+         "error": "ImportError('spotipy')"},
+    ]
+    wl._tool_packs = packs
+    assert wl.session_status()["tool_packs"] == packs
+
+
+def test_session_status_tool_packs_defaults_empty():
+    """Built without the pack walk (the test seam / a caller that omits
+    tool_packs), the field is an empty list, never missing."""
+    wl = _make_wake_loop_triple()
+    _prep_session_status(wl)
+    assert wl.session_status()["tool_packs"] == []
+
+
 # ---------------------------------------------------------------------------
 # _ring_noise_floor_dbfs — fire-time ambient floor for the condition estimator
 # ---------------------------------------------------------------------------
