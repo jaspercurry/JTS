@@ -22,12 +22,14 @@ pinned by a staleness check so an entry can't outlive its migration.
 Detection is AST-based and deliberately precise: it flags a ``Call`` whose
 function is an attribute access ending in a logging-level method
 (``debug``/``info``/``warning``/``warn``/``error``/``exception``/``critical``)
-whose first positional argument is a string (a plain ``str`` constant or an
-f-string) whose literal text starts with ``event=``. That keys on the
-``event=`` *prefix in a logging call*, so docstring ``journalctl | grep event=``
-examples, ``# event=...`` comments, and ``log_event(logger, "domain.action")``
-calls (which pass the bare name, no ``event=`` prefix) are all correctly
-ignored.
+whose first positional argument — or the generic ``<logger>.log(LEVEL, …)``
+form, whose *second* argument (after the level) — is a string (a plain ``str``
+constant or an f-string) whose literal text starts with ``event=``. That keys on
+the ``event=`` *prefix in a logging call*, so docstring ``journalctl | grep
+event=`` examples, ``# event=...`` comments, ``log_event(logger,
+"domain.action")`` calls (which pass the bare name, no ``event=`` prefix), and
+the emitter's own ``logger.log(level, message)`` (a *variable* message) are all
+correctly ignored.
 """
 from __future__ import annotations
 
@@ -111,6 +113,24 @@ def _event_name(prefix: str) -> str:
     return after.split()[0] if after.split() else ""
 
 
+def _message_arg(node: ast.Call) -> ast.expr | None:
+    """The message-string arg of a logging call, or None if not a logging call.
+
+    Covers `<obj>.{debug,info,warning,…}("event=…")` (message is the 1st arg)
+    and the generic `<obj>.log(LEVEL, "event=…")` (message is the 2nd arg, after
+    the level). log_event's own internal `logger.log(level, message)` passes a
+    *variable* message, so it never trips the literal-prefix check below.
+    """
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if func.attr in _LOG_METHODS and node.args:
+        return node.args[0]
+    if func.attr == "log" and len(node.args) >= 2:
+        return node.args[1]
+    return None
+
+
 def _violations_in(path: Path) -> list[tuple[int, str]]:
     """(lineno, event_name) for each hand-written event= logger call in path."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -118,12 +138,10 @@ def _violations_in(path: Path) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr in _LOG_METHODS):
+        arg = _message_arg(node)
+        if arg is None:
             continue
-        if not node.args:
-            continue
-        prefix = _literal_prefix(node.args[0])
+        prefix = _literal_prefix(arg)
         if prefix is None or not prefix.startswith("event="):
             continue
         found.append((node.lineno, _event_name(prefix)))
@@ -204,3 +222,21 @@ def test_deferred_entries_are_active_zone_only():
         f"(prefixes {_ACTIVE_ZONE_PREFIXES}); these are not: {misplaced}. "
         "A non-active-zone file should be migrated to log_event, not deferred."
     )
+
+
+def test_detector_catches_both_logging_forms(tmp_path):
+    """The detector flags `logger.<level>("event=…")` AND the generic
+    `logger.log(LEVEL, "event=…")` form, while ignoring a variable message
+    (the emitter's own internal call) and a canonical `log_event(…)` call."""
+    src = (
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        'logger.info("event=demo.level_method k=v")\n'
+        'logger.log(logging.WARNING, "event=demo.log_form k=v")\n'
+        "logger.log(logging.INFO, _rendered)\n"  # variable message -> ignored
+        'log_event(logger, "demo.canonical")\n'  # bare name, no prefix -> ignored
+    )
+    snippet = tmp_path / "snippet.py"
+    snippet.write_text(src)
+    names = sorted(name for _, name in _violations_in(snippet))
+    assert names == ["demo.level_method", "demo.log_form"]

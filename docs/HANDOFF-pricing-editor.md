@@ -159,7 +159,8 @@ conservative $0.30. The `Pricing` dataclass itself is unchanged.
 When the active model is in neither the bundled JSON nor the override (a
 bleeding-edge discovered model, or a hand-set custom ID) we genuinely have
 no price. Behaviour: estimate **$0** and **surface loudly** — a startup
-`logger.warning("event=pricing.unpriced model=<id> ...")`, the `/voice`
+`event=pricing.unpriced model=<id> ...` warning (emitted via the canonical
+`log_event` emitter), the `/voice`
 editor renders the model with empty "needs pricing" fields, and `/system`
 can flag it. We do **not** invent a rate.
 - **RESOLVED (maintainer, 2026-05-30):** don't fabricate a value where
