@@ -145,8 +145,8 @@ money — see cost notice above).
 | Scenario | What it asks | Tool | Oracle | Side-effects | Status |
 |---|---|---|---|---|---|
 | `test_subway.py::test_next_train_d_uptown` | "when's the next train?" | `get_subway_arrivals` | `oracles.subway_arrivals` (Subway Now) | none | expected pass |
-| `test_weather.py::test_sunset_today` | "what time does the sun set today?" | `get_weather` | `oracles.weather_sunset` (Open-Meteo) | none | **fails until sunset fix lands** |
-| `test_time.py::test_what_time_is_it` | "what time is it?" | `get_current_time` | `oracles.time_now_local()` | none | **fails until time tool lands** |
+| `test_weather.py::test_sunset_today` | "what time does the sun set today?" | `get_weather` | `oracles.weather_sunset` (Open-Meteo) | none | expected pass (sunset landed) |
+| `test_time.py::test_what_time_is_it` | "what time is it?" | `get_current_time` | `oracles.time_now_local()` | none | expected pass (time tool landed) |
 | `test_spotify.py::test_play_owned_playlist_covers` | "play my Covers playlist" | `spotify_play` | shape check (resolved name contains "cover") | **starts playback on the speaker** | **fails until pagination lands** |
 | `test_volume.py::test_set_volume_absolute` | "set the volume to 20 percent" | `set_volume` | coordinator level matches applied % | **changes speaker volume** (restored in `finally`) | expected pass (on-Pi) |
 | `test_volume.py::test_get_volume_reports_current_level` | "what's the volume?" | `get_volume` | spoken % matches seeded level | **changes speaker volume** (restored in `finally`) | expected pass (on-Pi) |
@@ -158,10 +158,12 @@ function — `test_volume.py` also covers `adjust_volume` + mute/unmute,
 `test_calendar.py` covers `calendar_upcoming`, and `test_gmail.py`
 covers `gmail_unread_summary`.)
 
-The "fails until X lands" scenarios are deliberate. They document
-the bug in test form *now*, fail *now*, and turn green when the
-fix lands — exactly the regression-test discipline the policy
-commits to.
+The "fails until X lands" pattern is deliberate — document the bug
+in test form *now*, fail *now*, and turn green when the fix lands.
+The sunset and time-tool fixes have since landed (rows above updated
+to "expected pass"); the subway row was separately failing on a
+stale response-schema assertion (`next_arrivals_minutes` → the
+current `arrivals` list), now fixed.
 
 ---
 

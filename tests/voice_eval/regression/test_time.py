@@ -43,17 +43,18 @@ async def test_what_time_is_it(harness, trial: int) -> None:
     named) and the response should be within 1 minute of
     `datetime.now()`.
 
-    **KNOWN FAILING (2026-05-21)**: no time tool exists yet. The
-    trajectory assertion ("model called get_current_time") will
-    fail. The failure documents the bug; when the
-    `get_current_time` tool lands and is registered in
-    `_build_test_registry`, this turns green.
+    Without a time tool the model reads its stale system-prompt
+    timestamp (baked at connection-open, potentially many hours old)
+    and confidently speaks the wrong time; this test asserts the
+    model instead calls a tool for fresh time on every question.
 
-    The bug today: the model reads its stale system-prompt
-    timestamp (baked at connection-open, potentially many hours
-    old) and confidently speaks the wrong time. The fix is a tool
-    the model calls to get fresh time on every question; this test
-    asserts that path is exercised."""
+    Status (2026-06-15): the `get_current_time` tool has landed, is
+    registered in `_build_test_registry`, and returns a
+    minute-resolution `local_time` ISO string — exactly what
+    assertion #2 reads. The earlier "no time tool exists yet"
+    KNOWN-FAILING note is obsolete; this scenario is expected to
+    pass. (Not re-run in the fix that corrected this note — confirm
+    on the next paid eval pass.)"""
     result = await harness.ask("what time is it?")
 
     # 1. Trajectory — the model must call the time tool.

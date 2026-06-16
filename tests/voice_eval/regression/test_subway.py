@@ -75,22 +75,52 @@ async def test_next_train_d_uptown(harness, trial: int) -> None:
     # 2. Outcome — what the tool returned must match independent MTA
     # ground truth within tolerance. Tolerance is ±1 min to absorb
     # the ~50ms gap between the tool's MTA fetch and the oracle's.
+    expected_dir = (
+        "N" if os.environ.get("JASPER_SUBWAY_DEFAULT_DIRECTION", "").lower()
+        in {"uptown", "north", "northbound", "n", "manhattan"} else "S"
+    )
     truth = await oracles.subway_arrivals(
         station=os.environ.get("JASPER_SUBWAY_STATION_ID", ""),
         line="D",
-        direction=("N" if os.environ.get("JASPER_SUBWAY_DEFAULT_DIRECTION", "").lower()
-                   in {"uptown", "north", "northbound", "n", "manhattan"} else "S"),
+        direction=expected_dir,
     )
     if call.error:
         pytest.fail(
             f"[trial {trial}] tool raised: {call.error}. "
             f"See transcript: {result.transcript_path}",
         )
-    tool_mins = (call.result or {}).get("next_arrivals_minutes", [])
-    assert harness.match_minutes(tool_mins, truth, tol=1), (
-        f"[trial {trial}] tool returned {tool_mins} but MTA shows "
-        f"{truth} — divergence beyond ±1 min tolerance. "
+    # get_subway_arrivals returns a structured `arrivals` list
+    # ([{line, direction, direction_label, minutes_from_now}, …]),
+    # NOT a flat `next_arrivals_minutes`. Pull the D-line minutes for
+    # the direction the oracle queried.
+    tool_mins = sorted(
+        a["minutes_from_now"]
+        for a in (call.result or {}).get("arrivals", [])
+        if a.get("line") == "D" and a.get("direction") == expected_dir
+    )
+    assert tool_mins, (
+        f"[trial {trial}] tool returned no D/{expected_dir} arrivals. "
+        f"Result keys: {list((call.result or {}).keys())!r}. "
         f"See transcript: {result.transcript_path}"
+    )
+    if not truth:
+        pytest.skip(
+            f"[trial {trial}] subway oracle returned no arrivals "
+            f"(transient) — nothing to compare against.",
+        )
+    # The tool caps total arrivals across BOTH directions while the
+    # oracle returns the next few for ONE direction, so the list
+    # lengths legitimately differ. Compare the soonest `k` trains both
+    # report (k = the shorter length) — that's the "next train(s)" the
+    # question asks about and is stable across the ~50 ms gap between
+    # the tool's fetch and the oracle's. `minutes_match` requires equal
+    # length, so slice both to k first.
+    truth_sorted = sorted(truth)
+    k = min(len(tool_mins), len(truth_sorted))
+    assert harness.match_minutes(tool_mins[:k], truth_sorted[:k], tol=1), (
+        f"[trial {trial}] tool D/{expected_dir} arrivals {tool_mins} "
+        f"diverge from MTA {truth_sorted} on the soonest {k} — beyond "
+        f"±1 min tolerance. See transcript: {result.transcript_path}"
     )
 
     # 3. Reality (spoken) — the model's spoken minutes match the tool's
