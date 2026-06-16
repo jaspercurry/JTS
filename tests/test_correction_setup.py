@@ -907,3 +907,158 @@ def test_render_page_emits_registry_model_aliases():
     assert 'value="dayton_imm6"' in body
     assert 'data-aliases="iMM-6"' in body
     assert 'data-aliases="umik-2"' in body
+
+
+# --- Audio-safety regression: autolevel volume must be restored even when ----
+# apply()/reset() raises. Autolevel ramps main_volume well above the listening
+# level for measurement SNR; if a failed apply/reset skipped the restore, the
+# next song would play back at the (loud) measurement level. The restore now
+# lives in a finally so the exception can't strand the speaker loud.
+def _locked_autolevel_session(raises_on, *, original=-20.0):
+    """Fake session whose apply/reset raises, with a LOCKED autolevel that
+    ramped main_volume up to a measurement level above `original`."""
+    from jasper.correction.session import AutolevelData, AutolevelStatus, SessionState
+
+    class _FakeSession:
+        session_id = "vol-strand"
+        state = SessionState.READY
+        config_path = None
+
+        def __init__(self):
+            self.autolevel = AutolevelData(
+                status=AutolevelStatus.LOCKED,
+                original_main_volume_db=original,
+                locked_main_volume_db=-8.0,
+            )
+
+        async def apply(self, set_cb, camilla_get_config=None):
+            if raises_on == "apply":
+                raise RuntimeError("CamillaDSP reload failed")
+
+        async def reset(self, set_cb):
+            if raises_on == "reset":
+                raise RuntimeError("reset reload failed")
+
+    return _FakeSession()
+
+
+def _volume_recording_cam(restored):
+    class _FakeCam:
+        async def set_config_file_path(self, path, best_effort=False):
+            return True
+
+        async def get_config_file_path(self, best_effort=True):
+            return None
+
+        async def set_volume_db(self, db, best_effort=False):
+            restored.append(db)
+
+    return _FakeCam()
+
+
+def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
+    restored: list[float] = []
+    sess = _locked_autolevel_session("apply", original=-20.0)
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
+    )
+
+    with pytest.raises(RuntimeError):
+        correction_setup._handle_apply(None)
+
+    # The apply exception propagated, but the finally still restored volume.
+    assert restored == [-20.0]
+
+
+def test_reset_restores_listening_volume_when_reset_raises(monkeypatch):
+    restored: list[float] = []
+    sess = _locked_autolevel_session("reset", original=-18.0)
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
+    )
+
+    with pytest.raises(RuntimeError):
+        correction_setup._handle_reset(None)
+
+    assert restored == [-18.0]
+
+
+def test_maybe_restore_main_volume_swallows_restore_failure():
+    # The restore runs inside apply/reset's finally; a failed restore must not
+    # raise (which would mask the original apply/reset error).
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    class _FailingCam:
+        async def set_volume_db(self, db, best_effort=False):
+            raise RuntimeError("CamillaDSP websocket down")
+
+    sess = types.SimpleNamespace(
+        state=SessionState.APPLIED,  # settled, so we reach the (failing) restore
+        autolevel=AutolevelData(
+            status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
+        ),
+    )
+    # Must not raise.
+    correction_setup._maybe_restore_main_volume(sess, _FailingCam())
+
+
+def test_maybe_restore_skips_while_measurement_still_active():
+    # A reset rejected during a sweep (the server refuses it; see PR #737's
+    # SessionBusyError guard) leaves the session mid-measurement. The restore
+    # must NOT drop the ramped sweep level underneath the active measurement.
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    restored: list[float] = []
+    for active in (
+        SessionState.PREPARING,
+        SessionState.SWEEPING,
+        SessionState.ANALYZING,
+        SessionState.VERIFYING,
+    ):
+        sess = types.SimpleNamespace(
+            state=active,
+            autolevel=AutolevelData(
+                status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
+            ),
+        )
+        correction_setup._maybe_restore_main_volume(
+            sess, _volume_recording_cam(restored)
+        )
+    assert restored == []  # skipped in every active state
+
+
+def test_maybe_restore_runs_once_the_workflow_has_settled():
+    # The normal post-apply / post-reset case still restores the listening
+    # level — the guard only fences the mid-measurement states.
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    for settled in (
+        SessionState.APPLIED,
+        SessionState.IDLE,
+        SessionState.FAILED,
+    ):
+        restored: list[float] = []
+        sess = types.SimpleNamespace(
+            state=settled,
+            autolevel=AutolevelData(
+                status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
+            ),
+        )
+        correction_setup._maybe_restore_main_volume(
+            sess, _volume_recording_cam(restored)
+        )
+        assert restored == [-20.0], settled
