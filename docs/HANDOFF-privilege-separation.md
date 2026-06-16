@@ -113,33 +113,50 @@ multi-leg wake alive under the sandbox, `jasper-doctor` unchanged (1
 non-critical warning), `/system/`, `/healthz`, `/state` all serving. The
 stanza is drift-guarded by [`tests/test_systemd_hardening.py`](../tests/test_systemd_hardening.py).
 
-## Phase 2 — restart broker + mandatory (invisible) token (DESIGNED)
+## Phase 2 — mandatory, invisible control token (LANDED)
 
-`jasper-control` is already the de-facto broker (9 of the privileged restart
-sites live there). Finish it:
+#712 shipped the token as an opt-in, default-off floor. Phase 2 makes it
+**always armed** without giving the household anything to do:
 
-- **Two faces by trust level.** A local **UNIX socket + `SO_PEERCRED`** for
-  in-host clients (`jasper-web`'s 13 restart sites, `jasper-mux`'s librespot
-  recovery, `correction`'s renderer pause) — peer-cred uid check *is* the auth,
-  no token needed. The existing `0.0.0.0:8780` HTTP face keeps the dashboard/dial
-  and gets the mandatory token on destructive verbs.
-- **Closed verb vocabulary** (`restart|start|stop|enable|disable|reset-failed|
-  is-active|reload` + `reboot|poweroff`) scoped to a **unit allowlist**; anything
-  off-list rejected + logged. One polkit rule grants the broker's (Phase-3) user
-  the right to manage exactly that allowlist.
-- **Mandatory token, fully invisible to the household.** Auto-generated on first
-  boot (`0600`), so zero-config plug-and-play is preserved. The dashboard reads
-  it from the Pi itself (the #712 flow); the household never sees or types it.
-  Extend the gated set to include `/system/restart/voice` + `/system/restart/audio`
-  (today #712 gates `poweroff`/`reboot`/`mic-mute`/`grouping-set`). The cross-origin
-  guards do **not** cover a non-browser LAN attacker — the token is the real
-  boundary there.
-- No bootstrap deadlock: the broker's own restart stays systemd's job
-  (`Restart=on-failure` + `WatchdogSec`), not the broker's.
+- **Auto-generated on startup.** `control_token.ensure_token()` (called once in
+  `jasper-control`'s `main()`) writes a `secrets.token_urlsafe(32)` to
+  `/var/lib/jasper/control_token` (0600, atomic) if absent, so the gate is
+  mandatory with no operator action. It is **idempotent and never rotates** an
+  existing token (a household's stored copy stays valid). Failure is non-fatal —
+  the gate fail-safes to off rather than blocking the recovery surface.
+- **Invisible delivery.** `canonical_page()` embeds the token in a
+  `<meta name="jts-control-token">` tag — emitted on every wizard page, which is
+  served only behind the management-host / Fetch-Metadata **read guard**.
+  `http.js` reads the meta tag first (then localStorage), so the dashboard rides
+  the token on every destructive POST automatically. The household never sees or
+  types it; this also closes #712's `/rooms/` token gap for free (every
+  canonical page now carries it).
+- **Extended gated set.** Added `/system/restart/voice` + `/system/restart/audio`
+  to the four #712 routes (poweroff / reboot / mic-mute / grouping-set).
+- **Honest posture (the chosen tradeoff).** Because the token is auto-delivered
+  over the LAN, a determined LAN device that fetches the page can read it too —
+  so this is **defense-in-depth against drive-by / CSRF / casual curl on the
+  annoyance-class routes, not a hard boundary** against a compromised LAN device.
+  The real containment of the serious threats (secret theft, persistence, pivot)
+  is the daemon hardening (Phase 1) + the user drop (Phase 3). This posture was
+  chosen deliberately to keep plug-and-play frictionless.
 
-## Phase 3 — Tier-A user drop (DESIGNED; gated on recovery validation)
+Pinned by `tests/test_control_token.py` (ensure/current/idempotence/0600/meta),
+`tests/test_http_js_control_token.py` (meta-first delivery), and the
+server-frozenset-derived gating tests in `tests/test_control_server.py`.
 
-Drop the 5 Tier-A daemons to dedicated users, add `CapabilityBoundingSet=` +
+## Phase 3 — restart broker + Tier-A user drop (DESIGNED; gated on recovery validation)
+
+The broker and the user drop are one phase: the broker is only load-bearing once
+the clients are non-root (a root client could `systemctl` directly). `jasper-control`
+is already the de-facto broker (9 privileged restart sites live there). Finish it
+as a local **UNIX socket + `SO_PEERCRED`** for in-host clients (`jasper-web`'s 13
+restart sites, `jasper-mux`'s librespot recovery, `correction`'s renderer pause —
+peer-cred uid check *is* the auth), with a **closed verb vocabulary** scoped to a
+unit allowlist and **one polkit rule** granting the broker's user that allowlist;
+the broker's own restart stays systemd's job (no bootstrap deadlock).
+
+Then drop the 5 Tier-A daemons to dedicated users, add `CapabilityBoundingSet=` +
 `SystemCallFilter=@system-service`:
 
 | Unit | User | Groups | Special grants |

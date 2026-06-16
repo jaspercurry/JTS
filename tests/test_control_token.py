@@ -144,3 +144,64 @@ def test_cli_disable_when_already_off_is_noop(monkeypatch, tmp_path, capsys):
     _point_cli_at(monkeypatch, tmp_path / "nope")
     assert cli.main(["--disable"]) == 0
     assert "already disabled" in capsys.readouterr().out.lower()
+
+
+# -------------------------------------------------------------------------
+# WS1 Phase 2: ensure_token() makes the gate mandatory + invisible.
+# -------------------------------------------------------------------------
+
+
+def test_ensure_token_generates_when_absent(monkeypatch, tmp_path):
+    path = tmp_path / "control_token"
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    assert control_token.token_enforced() is False
+    token = control_token.ensure_token()
+    assert token and len(token) >= 16
+    # Now the gate is armed: the file exists with the generated token.
+    assert path.read_text().strip() == token
+    assert control_token.token_enforced() is True
+    assert control_token.verify(token) is True
+    assert control_token.verify("nope") is False
+
+
+def test_ensure_token_is_0600(monkeypatch, tmp_path):
+    path = tmp_path / "control_token"
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    control_token.ensure_token()
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600, f"token file is {oct(mode)}, expected 0o600"
+
+
+def test_ensure_token_is_idempotent_and_never_rotates(monkeypatch, tmp_path):
+    path = tmp_path / "control_token"
+    path.write_text("household-set-token\n")
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    # An existing token (operator-set or previously generated) is returned
+    # unchanged — never rotated out from under a stored browser copy.
+    assert control_token.ensure_token() == "household-set-token"
+    assert control_token.ensure_token() == "household-set-token"
+    assert path.read_text().strip() == "household-set-token"
+
+
+def test_current_token_matches_verify_path(monkeypatch, tmp_path):
+    path = tmp_path / "control_token"
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    assert control_token.current_token() == ""  # absent -> empty, no raise
+    token = control_token.ensure_token()
+    assert control_token.current_token() == token
+
+
+def test_canonical_page_embeds_token_meta_only_when_present(monkeypatch, tmp_path):
+    """canonical_page auto-delivers the token as a meta tag once it exists, and
+    emits nothing while the gate is off (pages stay byte-identical)."""
+    from jasper.web import _common
+
+    path = tmp_path / "control_token"
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+
+    off = _common.canonical_page("T", "<main>x</main>").decode()
+    assert "jts-control-token" not in off
+
+    token = control_token.ensure_token()
+    on = _common.canonical_page("T", "<main>x</main>").decode()
+    assert f'<meta name="jts-control-token" content="{token}">' in on

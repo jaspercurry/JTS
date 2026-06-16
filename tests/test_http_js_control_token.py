@@ -1,12 +1,14 @@
 """Node-driven assertions for the control-token behaviour in the shared
 deploy/assets/shared/js/http.js module.
 
-http.js is the cross-page CSRF/JSON fetch layer; the opt-in control-token
-gate lives here too. These assertions pin: csrfHeaders/jsonHeaders attach
-X-JTS-Token from localStorage (and add nothing when storage is empty —
-the default-off path), and isControlTokenRequired classifies control's
-403 verdict. The full prompt-and-retry flow needs a real <dialog> +
-fetch, exercised on-device; this is the static-logic guard.
+http.js is the cross-page CSRF/JSON fetch layer; the control-token gate
+lives here too. These assertions pin the WS1 Phase-2 invisible delivery:
+csrfHeaders/jsonHeaders attach X-JTS-Token from the page's
+<meta name=jts-control-token> tag first (auto, no household action), fall
+back to localStorage, and add nothing when neither is present (the gate-off
+path). isControlTokenRequired classifies control's 403 verdict. The full
+prompt-and-retry fallback needs a real <dialog> + fetch, exercised
+on-device; this is the static-logic guard.
 
 Mirrors tests/test_local_web_host_js.py — strip `export`, eval the module
 under a minimal browser-global stub, assert the outputs.
@@ -27,16 +29,26 @@ _MODULE_PATH = _REPO / "deploy" / "assets" / "shared" / "js" / "http.js"
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node not on PATH")
 
 
-def _run(stored_token: str | None) -> dict:
-    # localStorage stub returns `stored_token` for the control-token key.
+def _run(stored_token: str | None, meta_token: str | None = None) -> dict:
+    # localStorage stub returns `stored_token` for the control-token key;
+    # the page may also embed the token in <meta name=jts-control-token>
+    # (WS1 Phase 2 invisible delivery) — `meta_token` simulates that.
     storage = (
         "null" if stored_token is None else json.dumps(stored_token)
     )
+    meta = "null" if meta_token is None else json.dumps(meta_token)
     script = f"""
 import {{ readFileSync }} from "node:fs";
-// Minimal browser globals the module touches at call time.
+// Minimal browser globals the module touches at call time. querySelector is
+// selector-aware: the control-token meta is distinct from the CSRF meta.
 globalThis.document = {{
-  querySelector: () => ({{ content: "csrf-xyz" }}),
+  querySelector: (sel) => {{
+    if (String(sel).includes("jts-control-token")) {{
+      const t = {meta};
+      return t === null ? null : {{ content: t }};
+    }}
+    return {{ content: "csrf-xyz" }};  // meta[name=jts-csrf]
+  }},
 }};
 globalThis.localStorage = {{
   getItem: (k) => (k === "jts-control-token" ? {storage} : null),
@@ -70,18 +82,34 @@ console.log(JSON.stringify(out));
     return json.loads(proc.stdout)
 
 
-def test_attaches_token_when_stored():
-    out = _run("household-secret")
+def test_attaches_token_from_meta_invisible_delivery():
+    """WS1 Phase 2: the token embedded in the page meta tag rides along with no
+    stored value — the invisible path (the household never pasted anything)."""
+    out = _run(None, meta_token="embedded-secret")
+    assert out["csrf"]["X-CSRF-Token"] == "csrf-xyz"
+    assert out["csrf"]["X-JTS-Token"] == "embedded-secret"
+    assert out["json"]["X-JTS-Token"] == "embedded-secret"
+
+
+def test_meta_token_wins_over_storage():
+    """The server-embedded meta token is authoritative over a stale stored one."""
+    out = _run("stale-stored", meta_token="fresh-embedded")
+    assert out["csrf"]["X-JTS-Token"] == "fresh-embedded"
+
+
+def test_attaches_token_from_storage_when_no_meta():
+    """Fallback: no meta tag (older page / cross-page) -> the stored value."""
+    out = _run("household-secret", meta_token=None)
     assert out["csrf"]["X-CSRF-Token"] == "csrf-xyz"
     assert out["csrf"]["X-JTS-Token"] == "household-secret"
     assert out["json"]["Content-Type"] == "application/json"
     assert out["json"]["X-JTS-Token"] == "household-secret"
 
 
-def test_no_token_header_when_storage_empty():
-    """Default-off path: empty localStorage -> no X-JTS-Token added, so a
-    speaker without the gate enabled sees zero behaviour change."""
-    out = _run(None)
+def test_no_token_header_when_neither_present():
+    """Gate-off path: no meta, empty storage -> no X-JTS-Token added, so a
+    speaker without a token file sees zero behaviour change."""
+    out = _run(None, None)
     assert out["csrf"]["X-CSRF-Token"] == "csrf-xyz"
     assert "X-JTS-Token" not in out["csrf"]
     assert "X-JTS-Token" not in out["json"]
