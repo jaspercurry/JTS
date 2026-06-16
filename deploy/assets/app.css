@@ -15,10 +15,11 @@
        sound page's EQ graph and band editor. Don't add
        single-page rules here.
 
-   Tokens + fonts + base reset are copied verbatim from
-   deploy/index.html (the landing page). Until the landing page is
-   migrated to link this file, keep the two in sync — a test guards
-   the token block against drift.
+   This file is the single source of truth for the design tokens,
+   @font-face rules, and base reset. The landing page
+   (deploy/index.html) links it rather than carrying its own copy;
+   tests/test_web_design_system.py enforces that index.html never
+   re-declares the tokens or @font-face rules.
    ============================================================ */
 
 @font-face {

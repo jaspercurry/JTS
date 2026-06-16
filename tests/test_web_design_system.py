@@ -2,9 +2,10 @@
 
 The redesigned management UI shares one stylesheet — deploy/assets/app.css —
 served static by nginx and linked via jasper.web._common.canonical_page().
-Until the landing page (deploy/index.html) is migrated to link app.css, both
-files carry the design TOKENS; these tests guard against the two drifting
-apart and against the stylesheet losing the primitives pages rely on.
+The landing page (deploy/index.html) links app.css rather than carrying its
+own design TOKENS; these tests enforce that single source of truth (no
+duplicated token block to drift) and that the stylesheet keeps the
+primitives pages rely on.
 """
 from __future__ import annotations
 
