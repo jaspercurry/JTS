@@ -49,8 +49,15 @@ def stub_gbfs(monkeypatch):
     )
 
 
-def _render(state: dict[str, str], flash: str = "") -> str:
-    return transit_setup._index_html(state, TOKEN, status_msg=flash).decode()
+def _render(
+    state: dict[str, str],
+    flash: str = "",
+    *,
+    back_href: str = "/",
+) -> str:
+    return transit_setup._index_html(
+        state, TOKEN, status_msg=flash, back_href=back_href,
+    ).decode()
 
 
 # ---- Canonical document shell --------------------------------------------
@@ -75,6 +82,11 @@ def test_transit_page_has_shared_app_header():
     assert 'class="app-header"' in out
     assert '<h1 class="app-header__title">Transit</h1>' in out
     assert '<use href="#icon-back">' in out
+
+
+def test_transit_page_honors_safe_back_href():
+    out = _render({}, back_href="/tools/pack/nyc-transit/")
+    assert 'href="/tools/pack/nyc-transit/"' in out
 
 
 def test_transit_page_loads_es_module_not_inline_script():
@@ -280,6 +292,25 @@ def test_get_root_renders_canonical_page(tmp_path):
     out = h.wfile.getvalue().decode()
     assert "/assets/app.css?v=" in out
     assert 'class="app-header"' in out
+
+
+def test_get_root_with_tools_return_uses_tool_pack_back_link(tmp_path):
+    handler = _handler_cls(tmp_path)
+    h = _FakeHandler("/?return_to=%2Ftools%2Fpack%2Fnyc-transit%2F")
+    handler.do_GET(h)
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'href="/tools/pack/nyc-transit/"' in out
+
+
+def test_get_root_rejects_off_origin_return_link(tmp_path):
+    handler = _handler_cls(tmp_path)
+    h = _FakeHandler("/?return_to=%2F%2Fevil.test%2F")
+    handler.do_GET(h)
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'href="/"' in out
+    assert "evil.test" not in out
 
 
 def test_post_unknown_route_404s(tmp_path):

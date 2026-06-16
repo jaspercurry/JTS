@@ -206,6 +206,7 @@ WEATHER_PACK = CatalogPack(
     "weather",
     "Weather",
     "Current conditions and forecast answers for the configured location.",
+    setup_url="/weather/",
 )
 TIME_PACK = CatalogPack(
     "time",

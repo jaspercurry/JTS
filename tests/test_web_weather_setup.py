@@ -46,12 +46,13 @@ def _clear_location_env(monkeypatch):
 # --- render (no server needed) ---------------------------------------------
 
 def _render(weather_state=None, transit_state=None, csrf_token="x" * 43,
-            status_msg="") -> str:
+            status_msg="", back_href="/") -> str:
     return weather_setup._index_html(
         weather_state or {},
         transit_state or {},
         csrf_token,
         status_msg=status_msg,
+        back_href=back_href,
     ).decode()
 
 
@@ -72,6 +73,11 @@ def test_render_has_shared_app_header():
     assert 'class="app-header"' in out
     assert '<h1 class="app-header__title">Weather</h1>' in out
     assert '<use href="#icon-back">' in out
+
+
+def test_render_honors_safe_back_href():
+    out = _render(back_href="/tools/pack/weather/")
+    assert 'href="/tools/pack/weather/"' in out
 
 
 def test_render_embeds_csrf_meta_and_keeps_form_fields():
@@ -210,6 +216,23 @@ def test_get_root_serves_canonical_page(live_server):
     body = urllib.request.urlopen(live_server["url"] + "/").read().decode()
     assert "/assets/app.css?v=" in body
     assert 'class="app-header"' in body
+
+
+def test_get_root_with_tools_return_uses_tool_pack_back_link(live_server):
+    import urllib.parse
+    import urllib.request
+    path = "/?return_to=" + urllib.parse.quote("/tools/pack/weather/", safe="")
+    body = urllib.request.urlopen(live_server["url"] + path).read().decode()
+    assert 'href="/tools/pack/weather/"' in body
+
+
+def test_get_root_rejects_off_origin_return_link(live_server):
+    import urllib.request
+    body = urllib.request.urlopen(
+        live_server["url"] + "/?return_to=%2F%2Fevil.test%2F",
+    ).read().decode()
+    assert 'href="/"' in body
+    assert "evil.test" not in body
 
 
 def test_post_save_manual_coords_writes_and_redirects(live_server):

@@ -50,6 +50,27 @@ function safeSetupUrl(u) {
   return u;
 }
 
+function currentReturnPath() {
+  try {
+    const base = (typeof location !== "undefined" && location.href) ||
+      "http://jts.local/tools/";
+    const url = new URL(base);
+    return url.pathname + url.search;
+  } catch {
+    return "/tools/";
+  }
+}
+
+function setupUrlWithReturn(u) {
+  const href = safeSetupUrl(u);
+  if (!href) return null;
+  const base = (typeof location !== "undefined" && location.href) ||
+    "http://jts.local/tools/";
+  const url = new URL(href, base);
+  url.searchParams.set("return_to", currentReturnPath());
+  return url.pathname + url.search;
+}
+
 function safePackUrl(id) {
   return typeof id === "string" && id
     ? "/tools/pack/" + encodeURIComponent(id) + "/"
@@ -252,18 +273,15 @@ function toolRow(tool) {
     : "";
   return (
     '<section class="tool-row" data-tool-row="' + escapeHtml(tool.name) + '">' +
-    '<div class="tool-row__head">' +
-    "<div>" +
-    '<div class="tool-row__id">' +
+    '<div class="tool-row__frame">' +
+    '<details class="tool-row__details">' +
+    '<summary class="tool-row__summary">' +
+    '<span class="tool-row__summary-title">' +
     '<span class="tool-name">' + escapeHtml(tool.name) + "</span>" +
     badge(tool.status) + customized +
-    "</div>" +
-    '<p class="tool-desc">' + escapeHtml(tool.summary || "") + "</p>" +
-    "</div>" +
-    '<div class="tool-row__actions">' + toolControl(tool) + "</div>" +
-    "</div>" +
-    '<details class="tool-row__details">' +
-    "<summary>Prompt and schema</summary>" +
+    "</span>" +
+    '<span class="tool-desc">' + escapeHtml(tool.summary || "") + "</span>" +
+    "</summary>" +
     labelChips(tool.labels) +
     '<div class="prompt-editor" data-tool="' + escapeHtml(tool.name) + '">' +
     '<div class="prompt-editor__bar">' +
@@ -284,6 +302,8 @@ function toolRow(tool) {
     '<h4 class="tool-section-title">Input schema</h4>' +
     '<pre class="tool-schema">' + schemaBlock(tool) + "</pre>" +
     "</details>" +
+    '<div class="tool-row__actions">' + toolControl(tool) + "</div>" +
+    "</div>" +
     "</section>"
   );
 }
@@ -300,7 +320,7 @@ export function packDetail(pack, tools = []) {
       "</div>"
     );
   }
-  const setupHref = safeSetupUrl(pack.setup_url);
+  const setupHref = setupUrlWithReturn(pack.setup_url);
   const setupLabel = pack.status === "needs_setup" ? "Set up" : "Configure";
   const setup = setupHref
     ? '<a class="btn btn--ghost" href="' + escapeHtml(setupHref) + '">' +

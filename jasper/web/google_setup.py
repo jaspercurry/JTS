@@ -66,6 +66,7 @@ from ._common import (
     read_form,
     reject_csrf,
     restart_voice_daemon,
+    safe_back_href,
     send_html_response,
     send_see_other,
     guard_read_request,
@@ -151,11 +152,18 @@ def _restart_voice_daemon() -> None:
 # ----------------------------------------------------------------------
 
 
-def _render_page(title: str, body: str, *, csrf_token: str, status_msg: str = "") -> bytes:
+def _render_page(
+    title: str,
+    body: str,
+    *,
+    csrf_token: str,
+    status_msg: str = "",
+    back_href: str = "/",
+) -> bytes:
     """Wrap a state's body in the canonical document shell.
 
     Mirrors the reference migration (`speaker_setup._index_html`): a
-    `canonical_header` with the back-to-home button, the flash
+    `canonical_header` with the back button, the flash
     `canonical_banner`, the body inside `<main class="page">`, then the
     page's ES module loaded by `src`. The CSRF token rides in the
     `<meta name="jts-csrf">` tag (emitted by `canonical_page` when
@@ -163,7 +171,7 @@ def _render_page(title: str, body: str, *, csrf_token: str, status_msg: str = ""
     server-rendered forms still carry their own hidden `csrf_token`
     field via `csrf_field_html`."""
     page_body = f"""
-{canonical_header(title)}
+{canonical_header(title, back_href=back_href)}
 <main class="page">
   {canonical_banner(status_msg)}
 {body}
@@ -175,14 +183,21 @@ def _render_page(title: str, body: str, *, csrf_token: str, status_msg: str = ""
     )
 
 
-def _setup_wizard_html(redirect_uri: str, csrf_token: str = "", *, status_msg: str = "") -> bytes:
+def _setup_wizard_html(
+    redirect_uri: str,
+    csrf_token: str = "",
+    *,
+    status_msg: str = "",
+    back_href: str = "/",
+) -> bytes:
     """State 1: no CLIENT_ID/SECRET configured. Wraps `_setup_wizard_body`
     with the page chrome. The body itself is also rendered, in
     read-only mode, inside the state-3 management page as a
     "View setup guide" disclosure — see `_setup_wizard_body`."""
     body = _setup_wizard_body(redirect_uri, csrf_token, read_only=False)
     return _render_page(
-        "Set up Google", body, csrf_token=csrf_token, status_msg=status_msg,
+        "Set up Google", body,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -510,7 +525,7 @@ def _add_account_form_html(csrf_token: str = "") -> str:
 
 def _redirect_uri_page_html(
     redirect_uri: str, client_id: str, csrf_token: str = "",
-    *, status_msg: str = "",
+    *, status_msg: str = "", back_href: str = "/",
 ) -> bytes:
     """State 2: credentials saved, no accounts linked yet. The user
     already added the redirect URI during the wizard's step 4, so the
@@ -548,7 +563,8 @@ def _redirect_uri_page_html(
 </details>
 """
     return _render_page(
-        "Link a Google account", body, csrf_token=csrf_token, status_msg=status_msg,
+        "Link a Google account", body,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -595,7 +611,7 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
 
 def _management_html(
     registry: GoogleRegistry, redirect_uri: str, client_id: str,
-    csrf_token: str = "", *, status_msg: str = "",
+    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/",
 ) -> bytes:
     items = [
         _account_li_html(
@@ -648,7 +664,8 @@ def _management_html(
 </details>
 """
     return _render_page(
-        "Google accounts", body, csrf_token=csrf_token, status_msg=status_msg,
+        "Google accounts", body,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -750,6 +767,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ctx = begin_request(self)
                 self._render_index(
                     ctx["csrf_token"], status_msg=ctx["flash"],
+                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
                 )
                 return
 
@@ -823,23 +841,30 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         # --- route bodies ---
 
-        def _render_index(self, csrf_token: str = "", *, status_msg: str = "") -> None:
+        def _render_index(
+            self,
+            csrf_token: str = "",
+            *,
+            status_msg: str = "",
+            back_href: str = "/",
+        ) -> None:
             has_creds = bool(cfg["client_id"] and cfg["client_secret"])
             if not has_creds:
                 self._send_html(_setup_wizard_html(
-                    cfg["redirect_uri"], csrf_token, status_msg=status_msg,
+                    cfg["redirect_uri"], csrf_token,
+                    status_msg=status_msg, back_href=back_href,
                 ))
                 return
             registry = GoogleRegistry.load(cfg["registry_path"])
             if not registry.accounts:
                 self._send_html(_redirect_uri_page_html(
                     cfg["redirect_uri"], cfg["client_id"], csrf_token,
-                    status_msg=status_msg,
+                    status_msg=status_msg, back_href=back_href,
                 ))
                 return
             self._send_html(_management_html(
                 registry, cfg["redirect_uri"], cfg["client_id"], csrf_token,
-                status_msg=status_msg,
+                status_msg=status_msg, back_href=back_href,
             ))
 
         def _handle_setup_credentials(self, form: dict[str, str]) -> None:

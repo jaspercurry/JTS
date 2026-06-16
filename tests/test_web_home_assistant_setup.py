@@ -264,6 +264,25 @@ def test_get_root_renders_canonical_page(monkeypatch):
     assert 'class="app-header"' in out
 
 
+def test_get_root_with_tools_return_uses_tool_pack_back_link(monkeypatch):
+    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
+    h = _make_request("/?return_to=%2Ftools%2Fpack%2Fhome-assistant%2F")
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'href="/tools/pack/home-assistant/"' in out
+
+
+def test_get_root_rejects_off_origin_return_link(monkeypatch):
+    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
+    h = _make_request("/?return_to=%2F%2Fevil.test%2F")
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'href="/"' in out
+    assert "evil.test" not in out
+
+
 def test_post_discover_returns_instances_json_no_csrf(monkeypatch):
     # /discover is a read-only network probe — no CSRF required.
     monkeypatch.setattr(

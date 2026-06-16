@@ -40,6 +40,7 @@ from ._common import (
     read_form,
     reject_csrf,
     restart_voice_daemon,
+    safe_back_href,
     send_html_response,
     send_see_other,
     guard_read_request,
@@ -283,12 +284,13 @@ def _index_html(
     csrf_token: str,
     *,
     status_msg: str = "",
+    back_href: str = "/",
 ) -> bytes:
     csrf = csrf_field_html(csrf_token)
     current_html = _current_location_html(weather_state, transit_state)
     units_options = _units_options_html(_units(weather_state))
     body = f"""
-{canonical_header("Weather")}
+{canonical_header("Weather", back_href=back_href)}
 <main class="page">
   {canonical_banner(status_msg)}
   <p class="form-hint">Default location used when the user asks for the
@@ -373,6 +375,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 if not guard_read_request(self):
                     return
@@ -384,6 +387,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
                     transit_state,
                     ctx["csrf_token"],
                     status_msg=ctx["flash"],
+                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
                 )
                 send_html_response(self, body)
                 return

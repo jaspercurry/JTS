@@ -80,6 +80,7 @@ from ._common import (
     guard_mutating_request,
     read_form,
     restart_voice_daemon,
+    safe_back_href,
     write_env_file,
 )
 
@@ -431,7 +432,13 @@ def _apply_cities(
 TRANSIT_CSS_HREF = "/assets/transit/transit.css"
 
 
-def _wrap_transit_page(title: str, body_main: str, *, status_msg: str = "") -> bytes:
+def _wrap_transit_page(
+    title: str,
+    body_main: str,
+    *,
+    status_msg: str = "",
+    back_href: str = "/",
+) -> bytes:
     """Assemble the canonical document shell around the page's <main> content.
 
     ``body_main`` is the inner HTML of ``<main class="page">`` (everything
@@ -440,7 +447,7 @@ def _wrap_transit_page(title: str, body_main: str, *, status_msg: str = "") -> b
     page's ES module, and hands the lot to ``canonical_page`` so the shared
     stylesheet, CSRF meta tag, and icon sprite are emitted once."""
     body = (
-        canonical_header(title)
+        canonical_header(title, back_href=back_href)
         + '\n<main class="page">\n'
         + canonical_banner(status_msg)
         + body_main
@@ -1131,7 +1138,13 @@ def _cities_section_html(
 </form>"""
 
 
-def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
+def _index_html(
+    state: dict[str, str],
+    csrf_token: str = "",
+    *,
+    status_msg: str = "",
+    back_href: str = "/",
+) -> bytes:
     coords = _coords(state)
 
     if coords is None:
@@ -1140,7 +1153,9 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 <p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
 {_address_section_html(state, csrf_token)}
 {_advanced_section_html(state, csrf_token)}"""
-        return _wrap_transit_page("Transit", body, status_msg=status_msg)
+        return _wrap_transit_page(
+            "Transit", body, status_msg=status_msg, back_href=back_href,
+        )
 
     providers_covering = transit.covering(*coords)
     if not providers_covering:
@@ -1153,7 +1168,9 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 {_cities_section_html(state, csrf_token, coords)}
 {_no_coverage_html()}
 {_advanced_section_html(state, csrf_token)}"""
-        return _wrap_transit_page("Transit", body, status_msg=status_msg)
+        return _wrap_transit_page(
+            "Transit", body, status_msg=status_msg, back_href=back_href,
+        )
 
     # Per-provider card dispatch. Discovery (bbox + find_stops_near
     # + validate_credentials) is data-driven from the REGISTRY, but
@@ -1225,7 +1242,9 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <button type="submit" class="btn btn--danger">Clear all transit settings</button>
 </form>"""
-    return _wrap_transit_page("Transit", body, status_msg=status_msg)
+    return _wrap_transit_page(
+        "Transit", body, status_msg=status_msg, back_href=back_href,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -1244,6 +1263,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 if not guard_read_request(self):
                     return
@@ -1256,7 +1276,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # is to tell the user what to do next.
                 try:
                     body = _index_html(
-                        state, ctx["csrf_token"], status_msg=ctx["flash"],
+                        state,
+                        ctx["csrf_token"],
+                        status_msg=ctx["flash"],
+                        back_href=safe_back_href(
+                            (qs.get("return_to") or [""])[0],
+                        ),
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.exception("transit wizard render failed")

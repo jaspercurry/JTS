@@ -25,6 +25,7 @@ const renderSrc = stripExports(stripImports(readFileSync(process.argv[3], "utf8"
 const { toolCard, toolDetail, toolList } = new Function(
   escapeSrc + "\n" + renderSrc + "\nreturn { toolCard, toolDetail, toolList };",
 )();
+globalThis.location = new URL("http://jts.local/tools/pack/spotify/");
 
 // Every field a malicious/compromised tool could control, with a distinct
 // payload per HTML context (element content + the attribute / data-tool path).
@@ -152,10 +153,12 @@ console.log(JSON.stringify({
   noJavascriptScheme: !/javascript:/i.test(html),
   // No rendered href may point off-origin (scheme, "//host", or "/\\host").
   noOffOriginHref: !offOrigin,
-  // A real same-origin path still renders as a clickable detail-page Set up link.
-  safeHrefRendered: html.includes('href="/transit/"'),
+  // A real same-origin path still renders as a clickable detail-page Set up link,
+  // carrying the current detail page as return context for the setup wizard.
+  safeHrefRendered: html.includes('href="/transit/?return_to=%2Ftools%2Fpack%2Fspotify%2F"'),
   configuredSetupLinkRendered:
-    html.includes('href="/spotify/"') && html.includes(">Configure</a>"),
+    html.includes('href="/spotify/?return_to=%2Ftools%2Fpack%2Fspotify%2F"') &&
+    html.includes(">Configure</a>"),
   // needs_setup with no setup_url -> honest "Unavailable", never a checkbox.
   unavailableRendered: html.includes("tool-unavailable"),
   noDeadToggle: !/<input[^>]+data-tool="no_setup_tool"/.test(html),
@@ -171,7 +174,10 @@ console.log(JSON.stringify({
   noCustomPromptCount: !html.includes("Custom prompts") && !html.includes(" customized"),
   noTimeoutMetadata: !/>Timeout<\/dt>/.test(html),
   noRiskFlagMetadata: !/>Risk flags<\/dt>/.test(html),
-  promptSummaryRenamed: html.includes("<summary>Prompt and schema</summary>") &&
+  toolTitleDisclosure: html.includes('<summary class="tool-row__summary">') &&
+    defaultPromptCard.includes('<span class="tool-name">default_prompt</span>') &&
+    defaultPromptCard.includes('<span class="tool-desc">Default prompt example</span>') &&
+    !html.includes("<summary>Prompt and schema</summary>") &&
     !html.includes("Prompt, schema, and metadata"),
   resetOnlyForCustomPrompt: customPromptCard.includes(">Reset to default</button>") &&
     !defaultPromptCard.includes('data-action="reset-prompt"') &&

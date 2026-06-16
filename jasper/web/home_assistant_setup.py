@@ -81,6 +81,7 @@ from ._common import (
     read_form,
     reject_csrf,
     restart_voice_daemon,
+    safe_back_href,
     send_html_response,
     send_see_other,
     guard_read_request,
@@ -447,7 +448,13 @@ def _state_machine(state: dict[str, str]) -> str:
     return "none"
 
 
-def _render_index(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
+def _render_index(
+    state: dict[str, str],
+    csrf_token: str = "",
+    *,
+    status_msg: str = "",
+    back_href: str = "/",
+) -> bytes:
     machine = _state_machine(state)
     if machine == "connected":
         body = _state_connected_html(state, csrf_token)
@@ -455,11 +462,19 @@ def _render_index(state: dict[str, str], csrf_token: str = "", *, status_msg: st
         body = _state_partial_html(state, csrf_token)
     else:
         body = _state_none_html(state, csrf_token)
-    return _wrap("Home Assistant", body, csrf_token=csrf_token, status_msg=status_msg)
+    return _wrap(
+        "Home Assistant", body,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
+    )
 
 
 def _wrap(
-    title: str, body: str, *, csrf_token: str = "", status_msg: str = "",
+    title: str,
+    body: str,
+    *,
+    csrf_token: str = "",
+    status_msg: str = "",
+    back_href: str = "/",
 ) -> bytes:
     """Wrap a state's body fragment in the canonical document shell.
 
@@ -470,7 +485,7 @@ def _wrap(
     from canonical_page(). Page-specific CSS lives in the static
     /assets/home-assistant/home-assistant.css (page_css_href), never inline."""
     full = (
-        canonical_header(title)
+        canonical_header(title, back_href=back_href)
         + '<main class="page">'
         + canonical_banner(status_msg)
         + body
@@ -1007,6 +1022,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 if not guard_read_request(self):
                     return
@@ -1014,6 +1030,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ctx = begin_request(self)
                 self._send_html(_render_index(
                     state, ctx["csrf_token"], status_msg=ctx["flash"],
+                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
                 ))
                 return
             if path == "/reset":

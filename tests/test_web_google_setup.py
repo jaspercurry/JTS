@@ -237,6 +237,27 @@ def test_get_root_renders_state1_when_no_creds(patched_common):
     assert b"wizard-steps" in page  # state 1
 
 
+def test_get_root_with_tools_return_uses_tool_pack_back_link(patched_common):
+    cfg = _cfg()
+    fake = _make_bound_handler(
+        cfg, "/?return_to=%2Ftools%2Fpack%2Fgoogle%2F",
+    )
+    fake.do_GET()
+    assert patched_common.send_html_response.called
+    page = patched_common.send_html_response.call_args.args[1].decode()
+    assert 'href="/tools/pack/google/"' in page
+
+
+def test_get_root_rejects_off_origin_return_link(patched_common):
+    cfg = _cfg()
+    fake = _make_bound_handler(cfg, "/?return_to=%2F%2Fevil.test%2F")
+    fake.do_GET()
+    assert patched_common.send_html_response.called
+    page = patched_common.send_html_response.call_args.args[1].decode()
+    assert 'href="/"' in page
+    assert "evil.test" not in page
+
+
 def test_get_root_renders_state2_when_creds_no_accounts(patched_common):
     cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
     fake = _make_bound_handler(cfg, "/")
