@@ -26,7 +26,9 @@ from .camilla_yaml import (
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
-    emit_active_speaker_startup_config,
+    audible_outputs_for_role,
+    emit_active_speaker_commissioning_config,
+    output_commission_mute_name,
 )
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
 from .environment import classify_camilla_config_text
@@ -517,6 +519,30 @@ def _pipeline_contains_chain(
     return False
 
 
+def _all_commission_mutes_engaged(yaml: str) -> bool:
+    """Every per-output commission mute is muted — the crash-recovery boot state.
+
+    The single-audio-path commissioning config isolates drivers with a
+    per-physical-output mute mask. The *staged* candidate is the muted boot
+    config (``audible_outputs=frozenset()``): a crash or power loss partway
+    through commissioning must reboot into everything-muted, never a driver left
+    unmuted at level with no protection. Per-driver unmute is a transient runtime
+    load, never the frozen boot config (HANDOFF-active-speaker-dsp.md "Resolved
+    decisions").
+    """
+    filters = _parse_generated_filters(yaml)
+    names = [name for name in filters if name.endswith("_commission_mute")]
+    return bool(names) and all(
+        _filter_param_matches(
+            filters,
+            name,
+            filter_type="Gain",
+            params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+        )
+        for name in names
+    )
+
+
 def _software_guard_evidence(
     yaml: str,
     *,
@@ -525,18 +551,43 @@ def _software_guard_evidence(
     protective_hp_hz = _protective_hp_hz(preset)
     filters = _parse_generated_filters(yaml)
     pipeline_filters = _parse_generated_pipeline_filters(yaml)
-    tweeter_channels = {
-        output.index
-        for output in preset.channel_map.outputs
-        if output.driver_role == "tweeter"
-    }
-    checks = {
-        "startup_muted": _filter_param_matches(
+    tweeter_channels = audible_outputs_for_role(preset, "tweeter")
+    # Commissioning isolates per *physical output*, so the tweeter is muted iff
+    # every physical output carrying it has its as_out{idx}_commission_mute layer
+    # engaged. There is no per-role startup mute to check anymore.
+    tweeter_outputs_muted = bool(tweeter_channels) and all(
+        _filter_param_matches(
             filters,
-            "as_tweeter_startup_mute",
+            output_commission_mute_name(index),
             filter_type="Gain",
             params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
-        ),
+        )
+        for index in tweeter_channels
+    )
+    # The protective high-pass + startup limiter still wrap the tweeter channel
+    # in the running pipeline, and every tweeter output keeps its commission-mute
+    # layer — so an unmuted tweeter cannot reach the amp without its protection.
+    tweeter_pipeline_guarded = (
+        bool(tweeter_channels)
+        and _pipeline_contains_chain(
+            pipeline_filters,
+            channels=set(tweeter_channels),
+            required_names=(
+                "as_tweeter_protective_hp",
+                "as_tweeter_startup_limiter",
+            ),
+        )
+        and all(
+            _pipeline_contains_chain(
+                pipeline_filters,
+                channels={index},
+                required_names=(output_commission_mute_name(index),),
+            )
+            for index in tweeter_channels
+        )
+    )
+    checks = {
+        "startup_muted": tweeter_outputs_muted,
         "protective_highpass": (
             protective_hp_hz is not None
             and _filter_param_matches(
@@ -562,15 +613,7 @@ def _software_guard_evidence(
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
         ),
-        "tweeter_pipeline_guarded": _pipeline_contains_chain(
-            pipeline_filters,
-            channels=tweeter_channels,
-            required_names=(
-                "as_tweeter_protective_hp",
-                "as_tweeter_startup_mute",
-                "as_tweeter_startup_limiter",
-            ),
-        ),
+        "tweeter_pipeline_guarded": tweeter_pipeline_guarded,
     }
     return {
         "mode": "software_guard_requested",
@@ -1233,9 +1276,15 @@ def stage_protected_startup_config(
     if blocker_count == 0 and bound_preset and resolved_playback_device:
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml = emit_active_speaker_startup_config(
+            # Stage the production graph with an all-muted per-output mask
+            # (audible_outputs=frozenset()). Validation now happens through the
+            # real path: this same config is what later freezes as the durable
+            # profile. Per-driver unmute is a transient runtime load, never the
+            # frozen boot config — so the staged candidate is fully muted.
+            yaml = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
+                audible_outputs=frozenset(),
                 out_path=out_path,
                 baseline_id=f"staged-{_safe_stem(topology.topology_id)}",
             )
@@ -1263,6 +1312,27 @@ def stage_protected_startup_config(
                         "code": str(issue.get("code", "config_issue")),
                         "message": str(issue.get("message", "generated config issue")),
                     })
+            # Crash-recovery invariant: the staged boot config must start with
+            # every active output muted. A reboot partway through commissioning
+            # has to come up everything-muted, never a tweeter unmuted at level.
+            fully_muted = _all_commission_mutes_engaged(yaml)
+            gates.append(_gate(
+                "staged_candidate_fully_muted",
+                label="Staged boot config starts with every output muted",
+                passed=fully_muted,
+                message=(
+                    "Every active output is muted at startup (crash-recovery safe)"
+                    if fully_muted
+                    else "Staged active-speaker config is not fully muted at startup"
+                ),
+            ))
+            if not fully_muted:
+                issues.append(_issue(
+                    "blocker",
+                    "staged_config_not_fully_muted",
+                    "staged active-speaker boot config must start with every "
+                    "output muted",
+                ))
             if software_guard_requested:
                 software_guard = _software_guard_evidence(yaml, preset=bound_preset)
                 gates.append(_gate(

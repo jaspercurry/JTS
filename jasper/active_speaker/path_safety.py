@@ -472,7 +472,16 @@ def _startup_muted_by_candidate(staged_config: dict[str, Any]) -> bool:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False
-    return "startup_mute" in text and "mute: true" in text
+    # Recognize both mute spellings: the per-role `as_*_startup_mute` of the
+    # legacy startup emitter and the per-output `as_out{idx}_commission_mute` of
+    # the single-audio-path commissioning emitter (which drops the per-role
+    # mute). The primary path above reads software_guard.checks.startup_muted;
+    # this text fallback covers physically-protected candidates that carry no
+    # software-guard block.
+    return (
+        ("startup_mute" in text or "commission_mute" in text)
+        and "mute: true" in text
+    )
 
 
 def _no_raw_fullrange_by_candidate(staged_config: dict[str, Any]) -> bool:

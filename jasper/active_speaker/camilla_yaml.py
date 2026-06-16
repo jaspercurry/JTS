@@ -558,7 +558,14 @@ pipeline:
     return yaml
 
 
-def _output_commission_mute_name(index: int) -> str:
+def output_commission_mute_name(index: int) -> str:
+    """The per-physical-output commission-mute filter name for ``index``.
+
+    Public because the protected-staging software guard
+    (``jasper.active_speaker.staging``) references these by index to prove a
+    driver's output is muted — the name is a cross-module contract, so the
+    emitter owns it and the guard reads it rather than re-deriving the spelling.
+    """
     return f"as_out{index}_commission_mute"
 
 
@@ -633,7 +640,7 @@ def _emit_commissioning_filter_definitions(
     # graph. Default (empty set) is fully muted — the safe initial load.
     for index in range(_output_count(preset)):
         lines.extend(emit_gain_filter(
-            _output_commission_mute_name(index),
+            output_commission_mute_name(index),
             STARTUP_MUTE_GAIN_DB,
             mute=index not in audible_outputs,
         ))
@@ -660,7 +667,7 @@ def _emit_commissioning_pipeline(preset: ActiveSpeakerPreset) -> str:
         lines.extend([
             "  - type: Filter",
             f"    channels: [{index}]",
-            f"    names: [{_output_commission_mute_name(index)}]",
+            f"    names: [{output_commission_mute_name(index)}]",
         ])
     return "\n".join(lines)
 

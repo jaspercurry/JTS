@@ -2,19 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml as yaml_lib
+
 import jasper.active_speaker.staging as staging_mod
 from jasper.active_speaker import (
     STAGED_STARTUP_CONFIG_KIND,
+    ActiveSpeakerPreset,
     build_crossover_preview,
+    emit_active_speaker_commissioning_config,
     load_active_speaker_preset,
     load_staged_startup_config,
     stage_protected_startup_config,
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+
+# Canonical preset fixtures (stereo 2-way: tweeters on physical outputs 1 and 3).
+from tests.test_active_speaker_profile import _two_way_preset
 
 
 def _topology(*, protection_status: str = "present") -> OutputTopology:
@@ -548,7 +556,11 @@ def test_stage_protected_startup_config_allows_software_guard_request_no_load_ca
     assert guard_gate["passed"] is True
     assert codes == {"software_tweeter_guard_requested": "warning"}
     assert "as_tweeter_protective_hp" in text
-    assert "as_tweeter_startup_mute" in text
+    # Single-audio-path commissioning isolates per *physical output*: the tweeter
+    # (mono 2-way output index 1) is muted by its per-output commission mute, and
+    # the per-role startup mute is gone. Protective HP + limiter still wrap it.
+    assert "as_out1_commission_mute" in text
+    assert "as_tweeter_startup_mute" not in text
     assert "as_tweeter_startup_limiter" in text
     assert loaded["status"] == "staged"
     assert loaded["software_guard"]["passed"] is True
@@ -558,18 +570,20 @@ def test_stage_protected_startup_config_blocks_incomplete_software_guard_evidenc
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    original_emit = staging_mod.emit_active_speaker_startup_config
+    original_emit = staging_mod.emit_active_speaker_commissioning_config
 
     def corrupt_tweeter_mute(*args, **kwargs):
+        # Simulate an audible tweeter: unmute its per-output commission mute. The
+        # tweeter is mono 2-way output index 1, so flip as_out1_commission_mute.
         text = original_emit(*args, **kwargs)
         text = text.replace(
             (
-                "  as_tweeter_startup_mute:\n"
+                "  as_out1_commission_mute:\n"
                 "    type: Gain\n"
                 "    parameters: { gain: -120.0000, inverted: false, mute: true }"
             ),
             (
-                "  as_tweeter_startup_mute:\n"
+                "  as_out1_commission_mute:\n"
                 "    type: Gain\n"
                 "    parameters: { gain: -120.0000, inverted: false, mute: false }"
             ),
@@ -581,7 +595,7 @@ def test_stage_protected_startup_config_blocks_incomplete_software_guard_evidenc
 
     monkeypatch.setattr(
         staging_mod,
-        "emit_active_speaker_startup_config",
+        "emit_active_speaker_commissioning_config",
         corrupt_tweeter_mute,
     )
     payload = stage_protected_startup_config(
@@ -647,3 +661,147 @@ def test_stage_protected_startup_config_blocks_swapped_role_outputs(
     }
     assert role_order_gate["passed"] is False
     assert "woofer on DAC output 1" in role_order_gate["message"]
+
+
+def test_stage_protected_startup_config_boot_candidate_is_fully_muted(
+    tmp_path: Path,
+) -> None:
+    # Crash-recovery invariant: the staged boot config has EVERY active output
+    # muted. A reboot partway through commissioning must land everything-muted,
+    # never a driver unmuted at level. Per-driver unmute is a transient runtime
+    # load, never the frozen boot config.
+    out = tmp_path / "active_staged.yml"
+    payload = stage_protected_startup_config(
+        _topology(),
+        config_path=out,
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    muted_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "staged_candidate_fully_muted"
+    )
+
+    assert payload["status"] == "staged"
+    assert muted_gate["passed"] is True
+    parsed = yaml_lib.safe_load(out.read_text(encoding="utf-8"))
+    commission_mutes = {
+        name: spec
+        for name, spec in parsed["filters"].items()
+        if name.endswith("_commission_mute")
+    }
+    assert commission_mutes  # the production graph carries a per-output mute mask
+    assert all(
+        spec["parameters"]["mute"] is True for spec in commission_mutes.values()
+    )
+
+
+def test_stage_protected_startup_config_blocks_unmuted_boot_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # Crash-recovery guard, blocking direction: if the staged boot config is NOT
+    # fully muted, staging must fail closed. Use a physically-protected topology
+    # so the software guard is not computed and only the fully-muted gate fires —
+    # isolating this guard from the software-guard path.
+    original_emit = staging_mod.emit_active_speaker_commissioning_config
+
+    def unmute_one_output(*args, **kwargs):
+        text = original_emit(*args, **kwargs).replace(
+            (
+                "  as_out0_commission_mute:\n"
+                "    type: Gain\n"
+                "    parameters: { gain: -120.0000, inverted: false, mute: true }"
+            ),
+            (
+                "  as_out0_commission_mute:\n"
+                "    type: Gain\n"
+                "    parameters: { gain: -120.0000, inverted: false, mute: false }"
+            ),
+        )
+        out_path = kwargs.get("out_path")
+        if out_path is not None:
+            Path(out_path).write_text(text, encoding="utf-8")
+        return text
+
+    monkeypatch.setattr(
+        staging_mod,
+        "emit_active_speaker_commissioning_config",
+        unmute_one_output,
+    )
+    payload = stage_protected_startup_config(
+        _topology(protection_status="present"),
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    muted_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "staged_candidate_fully_muted"
+    )
+    codes = {issue["code"] for issue in payload["issues"]}
+
+    assert payload["status"] == "blocked"
+    assert muted_gate["passed"] is False
+    assert "staged_config_not_fully_muted" in codes
+    # Physical protection: the software guard never ran, so this is the gate that
+    # caught the unmuted output.
+    assert "software_tweeter_guard_incomplete" not in codes
+
+
+def test_software_guard_evidence_passes_for_muted_tweeter_outputs() -> None:
+    # Software guard now proves the tweeter is muted via its per-output commission
+    # mute, not a per-role startup mute. A fully-muted commissioning config passes.
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo"))
+    yaml = emit_active_speaker_commissioning_config(
+        preset,
+        playback_device="hw:CARD=DAC8x,DEV=0",
+        audible_outputs=frozenset(),
+    )
+    evidence = staging_mod._software_guard_evidence(yaml, preset=preset)
+
+    assert evidence["passed"] is True
+    assert evidence["checks"]["startup_muted"] is True
+    assert evidence["checks"]["tweeter_pipeline_guarded"] is True
+    # Stereo 2-way tweeters live on physical outputs 1 and 3.
+    assert evidence["tweeter_channels"] == [1, 3]
+
+
+def test_software_guard_evidence_blocks_audible_tweeter_output() -> None:
+    # Unmute one tweeter output (index 1): a single audible tweeter must fail the
+    # software guard's startup_muted check, even though output 3 stays muted.
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo"))
+    yaml = emit_active_speaker_commissioning_config(
+        preset,
+        playback_device="hw:CARD=DAC8x,DEV=0",
+        audible_outputs={1},
+    )
+    evidence = staging_mod._software_guard_evidence(yaml, preset=preset)
+
+    assert evidence["checks"]["startup_muted"] is False
+    assert evidence["passed"] is False
+
+
+def test_physical_protection_staged_config_reads_as_muted_via_fallback(
+    tmp_path: Path,
+) -> None:
+    # A physically-protected candidate carries no software_guard block, so
+    # path_safety._startup_muted_by_candidate falls back to scanning the staged
+    # YAML. The single-audio-path commissioning config mutes via per-output
+    # `as_out{idx}_commission_mute`; the fallback must read that as "startup
+    # muted" or a physically-protected speaker's startup-load preflight would
+    # wrongly report the boot config as unmuted.
+    out = tmp_path / "active_staged.yml"
+    payload = stage_protected_startup_config(
+        _topology(protection_status="present"),
+        config_path=out,
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+
+    assert payload["status"] == "staged"
+    assert payload["software_guard"] == {}  # physical protection: no software guard
+    assert _startup_muted_by_candidate(payload) is True

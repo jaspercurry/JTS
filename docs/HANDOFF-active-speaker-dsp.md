@@ -495,13 +495,16 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
    "DAC-agnostic active-output transport (design-of-record)".
 
-2. **Commissioning orchestration** (substrate built; wiring pending). Per driver:
-   compile the preset from the saved crossover preview
+2. **Commissioning orchestration** (emitter wired; measurement loop pending). Per
+   driver: compile the preset from the saved crossover preview
    (`staging.compile_preset_from_crossover_preview`), emit the production graph
    with a per-output mute mask
-   (`camilla_yaml.emit_active_speaker_commissioning_config`, **built + tested
-   8×, but currently UNWIRED** — `staging.py` still calls the unmasked startup
-   emitter; **wire it, don't delete it**), load it muted through the guarded
+   (`camilla_yaml.emit_active_speaker_commissioning_config`, **built + wired**:
+   as of Stage 2b `staging.stage_protected_startup_config` stages the production
+   graph with `audible_outputs=frozenset()` — the all-muted boot config — instead
+   of the unmasked startup emitter; the unmasked
+   `emit_active_speaker_startup_config` is kept for the `startup-template` CLI),
+   load it muted through the guarded
    path, open `correction.coordinator.measurement_window()`, play an ESS sweep
    into the production fan-in lane (`correction.playback.play_sweep`), capture
    the phone mic in the browser (reuse
@@ -590,9 +593,16 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   on jts3):** outputd opening the DAC at W < its physical channel count must
   succeed and idle undriven outputs safely; a DAC that requires native-width
   opens would declare that per-profile rather than forcing universal padding.
-  **2b remaining:** wiring the masked commissioning emitter (critical-path step 2
-  below) — `stage_protected_startup_config` still calls the unmasked startup
-  emitter.
+  **2b landed (masked commissioning emitter wired):**
+  `stage_protected_startup_config` now stages the production graph via
+  `emit_active_speaker_commissioning_config(..., audible_outputs=frozenset())` —
+  the all-muted boot config — instead of the unmasked startup emitter. The
+  software guard (`_software_guard_evidence`) proves the tweeter is muted by its
+  per-output `as_out{idx}_commission_mute` (the per-role `as_tweeter_startup_mute`
+  is gone) while still asserting the protective high-pass + limiter wrap the
+  tweeter channel, and a `staged_candidate_fully_muted` gate enforces the
+  crash-recovery-MUTED invariant on every staged boot config. The unmasked
+  `emit_active_speaker_startup_config` is retained for the `startup-template` CLI.
 - **Stage 3 — jts3, DAC8x as 2ch single, NO drivers at risk.** Prove music + TTS
   (via fan-in) + AEC reference + honest ledger + real clip counter through
   `SingleAlsa` width-2. **Load-test Pi-5 multichannel headroom here.** *Red:*
