@@ -751,3 +751,26 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_web_common.py tests/test_web_design_system.py tests/test_web_wizard_conventions.py",
 ]
+
+[[subsystem]]
+id = "privilege-separation"
+title = "Daemon hardening + privilege separation (WS1)"
+safety = "boot-risk"
+# Code scope is deliberately the hardening drift-guard, NOT the unit files: the
+# repo pins each jasper unit to exactly one subsystem (its runtime doc), so the
+# units are not re-routed here. The privilege-separation doc is the cross-cutting
+# threat-model/ADR — discoverable from the README atlas and each unit's inline
+# `# WS1 ...` comment; changing the stanza means changing the guard, which
+# routes here.
+code = [
+  "tests/test_systemd_hardening.py",
+]
+docs = [
+  "docs/HANDOFF-privilege-separation.md",
+]
+requires_docs_when = [
+  "A Tier-A unit's hardening stanza (ProtectSystem, capability/syscall/namespace restriction, User/Group), the restart-broker boundary, the auto-generated control token, or the user-drop / recovery-validation plan changes.",
+]
+verification = [
+  "pytest tests/test_systemd_hardening.py",
+]

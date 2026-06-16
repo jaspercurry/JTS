@@ -44,5 +44,25 @@ StateDirectoryMode=0750
 # documentation of intent.
 OOMScoreAdjust=-300
 
+# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
+# mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
+# the phase-1 directives. Writes are covered by StateDirectory=jasper +
+# RuntimeDirectory=jasper-mux above, so ProtectSystem=strict needs no extra
+# ReadWritePaths. Capability/syscall filters + the user drop (mux becomes a
+# broker client for its librespot-stall restart) land in Phases 2-3.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
 [Install]
 WantedBy=multi-user.target

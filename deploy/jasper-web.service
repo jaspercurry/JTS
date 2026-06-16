@@ -79,11 +79,25 @@ RestartSec=2
 # update BlueZ's local name, accept connections on systemd-passed
 # loopback fds, and call `systemctl restart` after a wizard updates
 # state.
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth
+# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md):
+# jasper-web is the most network-exposed surface (untrusted SSID / form / OAuth
+# input), so it gets the full phase-1 stanza. ProtectKernelLogs is OMITTED — the
+# wizards shell to nmcli/bluetoothctl and must not be starved of kernel-log
+# access a future check might need. Capability/syscall filters + the user drop
+# (it becomes a broker client for restarts) land in Phases 2-3.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
 
 [Install]
 # WantedBy left out intentionally — enabling the .socket pulls in

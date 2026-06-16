@@ -62,7 +62,7 @@ RestartSec=2
 # CamillaDSP, binds an HTTP port, persists a handful of small state
 # files under /var/lib/jasper, and renders the peering Avahi service
 # file when wake-response peering is enabled (see ReadWritePaths below).
-ProtectSystem=full
+ProtectSystem=strict
 # `read-only` (not `true`) keeps home directories visible to diagnostic
 # subprocesses while still blocking writes. ALSA routing now lives in
 # /etc/asound.conf, but jasper-control still shells out to operator-facing
@@ -82,6 +82,19 @@ NoNewPrivileges=true
 # contracts explicitly so future hardening and current peering advert
 # rendering cannot silently regress.
 ReadWritePaths=/var/lib/jasper /etc/avahi/services
+# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
+# ProtectKernelLogs is intentionally OMITTED: jasper-control spawns
+# jasper-doctor, whose watchdog-reset fingerprint check reads dmesg (/dev/kmsg).
+# ProtectHome stays read-only (above) for the same diagnostic-subprocess reason.
+# Capability/syscall filters land with the Phase-3 user drop + the broker.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Control is the recovery surface — if
