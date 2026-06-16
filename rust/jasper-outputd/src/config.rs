@@ -45,17 +45,32 @@ pub enum ContentBridgeMode {
     RateMatch,
 }
 
+/// Final-output transport SHAPE — clock-domain shape, not DAC id. The
+/// transport dispatches on this; channel width + map ride as data, so a new
+/// DAC of an established shape adds no variant here.
+///
+/// `Composite` was named `DualApple` before the DAC-agnostic generalization;
+/// the `dual_apple` wire string is still accepted on input (parse alias) for
+/// one release while reconciler env catches up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkMode {
+    /// One coherent ALSA device at any width (single Apple 2ch, DAC8x 8ch, …).
     SingleAlsa,
-    DualApple,
+    /// Two clock-independent child DACs driven as one composite (dual Apple).
+    Composite,
 }
 
 impl SinkMode {
+    /// The `/state` wire value. The composite shape KEEPS the stable
+    /// `dual_apple` wire string through this type rename — the documented
+    /// lower-risk option (HANDOFF-speaker-output-reference.md Observability:
+    /// "keep the wire value stable while the type is renamed"), so the doctor,
+    /// `/state` consumers, and snapshot contracts are untouched here. The wire
+    /// migration to a width-agnostic `composite` block is a separate change.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SingleAlsa => "single_alsa",
-            Self::DualApple => "dual_apple",
+            Self::Composite => "dual_apple",
         }
     }
 }
@@ -163,10 +178,13 @@ impl Config {
             .as_str()
         {
             "single" | "single_alsa" | "alsa" => SinkMode::SingleAlsa,
-            "dual_apple" | "dual_apple_usb_c_dac_4ch" => SinkMode::DualApple,
+            // `dual_apple` / `dual_apple_usb_c_dac_4ch` are accepted parse
+            // aliases for one release while reconciler env migrates to the
+            // shape-named `composite`.
+            "composite" | "dual_apple" | "dual_apple_usb_c_dac_4ch" => SinkMode::Composite,
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_SINK must be one of single_alsa, dual_apple; got {:?}",
+                    "JASPER_OUTPUTD_SINK must be one of single_alsa, composite (alias dual_apple); got {:?}",
                     other
                 )
             }
@@ -257,28 +275,28 @@ impl Config {
 
         let default_content_pcm = match sink_mode {
             SinkMode::SingleAlsa => "outputd_content_capture",
-            SinkMode::DualApple => "outputd_active_content_capture",
+            SinkMode::Composite => "outputd_active_content_capture",
         };
         let default_dac_pcm = match sink_mode {
             SinkMode::SingleAlsa => "outputd_dac",
-            SinkMode::DualApple => "dual_apple_usb_c_dac_4ch",
+            SinkMode::Composite => "dual_apple_usb_c_dac_4ch",
         };
         let content_channels = match sink_mode {
             SinkMode::SingleAlsa => 2,
-            SinkMode::DualApple => 4,
+            SinkMode::Composite => 4,
         };
         let dual_dac_a_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_A_PCM");
         let dual_dac_b_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_B_PCM");
-        if sink_mode == SinkMode::DualApple
+        if sink_mode == SinkMode::Composite
             && (dual_dac_a_pcm.is_none() || dual_dac_b_pcm.is_none())
         {
             anyhow::bail!(
-                "JASPER_OUTPUTD_SINK=dual_apple requires JASPER_OUTPUTD_DUAL_DAC_A_PCM and JASPER_OUTPUTD_DUAL_DAC_B_PCM"
+                "JASPER_OUTPUTD_SINK=composite requires JASPER_OUTPUTD_DUAL_DAC_A_PCM and JASPER_OUTPUTD_DUAL_DAC_B_PCM"
             );
         }
-        if sink_mode == SinkMode::DualApple && dual_dac_a_pcm == dual_dac_b_pcm {
+        if sink_mode == SinkMode::Composite && dual_dac_a_pcm == dual_dac_b_pcm {
             anyhow::bail!(
-                "JASPER_OUTPUTD_SINK=dual_apple requires distinct JASPER_OUTPUTD_DUAL_DAC_A_PCM and JASPER_OUTPUTD_DUAL_DAC_B_PCM"
+                "JASPER_OUTPUTD_SINK=composite requires distinct JASPER_OUTPUTD_DUAL_DAC_A_PCM and JASPER_OUTPUTD_DUAL_DAC_B_PCM"
             );
         }
         let dual_max_delay_delta_frames = env_i64(
@@ -753,7 +771,7 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.sink_mode, SinkMode::DualApple);
+                assert_eq!(cfg.sink_mode, SinkMode::Composite);
                 assert_eq!(cfg.content_pcm, "outputd_active_content_capture");
                 assert_eq!(cfg.content_channels, 4);
                 assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
@@ -763,6 +781,27 @@ mod tests {
                     cfg.dual_max_delay_delta_frames,
                     DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn composite_sink_string_parses_to_same_shape_as_dual_apple_alias() {
+        // The shape-named `composite` and the legacy `dual_apple` alias must
+        // resolve to one identical sink shape (the wire migration cannot drift).
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.sink_mode, SinkMode::Composite);
+                // Wire value stays the stable `dual_apple` string through the
+                // type rename (the documented lower-risk migration option).
+                assert_eq!(cfg.sink_mode.as_str(), "dual_apple");
+                assert_eq!(cfg.content_channels, 4);
             },
         );
     }

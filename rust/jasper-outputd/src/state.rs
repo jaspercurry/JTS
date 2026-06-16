@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::alsa_backend::{DualAppleStatus, IoCounters, NegotiatedPcm};
+use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_content::DacContentMetrics;
@@ -233,7 +233,7 @@ impl OutputdState {
         self.watchdog_pings_sent.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn mark_dual_apple_status(&self, status: &DualAppleStatus) {
+    pub fn mark_dual_apple_status(&self, status: &CompositeStatus) {
         self.dual_linked.store(status.linked, Ordering::Relaxed);
         self.dual_delay_delta_frames.store(
             pack_optional_i64(status.delay_delta_frames),
@@ -1051,7 +1051,7 @@ mod tests {
 
     fn dual_test_config() -> Config {
         Config {
-            sink_mode: SinkMode::DualApple,
+            sink_mode: SinkMode::Composite,
             content_pcm: "outputd_active_content_capture".to_string(),
             content_channels: 4,
             dac_pcm: "dual_apple_usb_c_dac_4ch".to_string(),
@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn snapshot_json_contains_dual_apple_runtime_health() {
         let state = OutputdState::new(&dual_test_config());
-        state.mark_dual_apple_status(&DualAppleStatus {
+        state.mark_dual_apple_status(&CompositeStatus {
             dac_a_pcm: "hw:CARD=A,DEV=0".to_string(),
             dac_b_pcm: "hw:CARD=B,DEV=0".to_string(),
             linked: true,
