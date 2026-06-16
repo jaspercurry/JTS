@@ -446,12 +446,26 @@ def handle_stop() -> tuple[dict, int]:
     return {"ok": True}, HTTPStatus.OK
 
 
-def handle_apply() -> tuple[dict, int]:
+def handle_apply(handler) -> tuple[dict, int]:
     """POST /balance/apply — one absolute-trim write per member via the
     same /grouping/set wire the bond flow uses. Peer first: if the
-    cross-LAN hop fails nothing has changed locally."""
-    from .rooms_setup import _post_grouping_to_member, _self_addresses
+    cross-LAN hop fails nothing has changed locally.
 
+    ``handler`` carries the browser-supplied ``X-JTS-Token`` so we forward
+    it to each member's /grouping/set, exactly as the /rooms bond fan-out
+    does. /grouping/set is one of jasper-control's MANDATORY token-gated
+    mutations (WS1 Phase 2 auto-arms the gate), so a tokenless write — in
+    particular the loopback write to THIS speaker — is rejected 403. The
+    page already carries the token (``meta[name=jts-control-token]`` via
+    ``canonical_page``); relaying it keeps Apply working on a gate-armed
+    speaker."""
+    from .rooms_setup import (
+        _post_grouping_to_member,
+        _request_control_token,
+        _self_addresses,
+    )
+
+    token = _request_control_token(handler)
     with _lock:
         if _state["phase"] != "analyzed":
             return ({"ok": False,
@@ -476,7 +490,8 @@ def handle_apply() -> tuple[dict, int]:
             "leader_addr": str(g.get("leader_addr") or ""),
             "trim_db": rec[f"{ch}_trim_db"],
         }
-        ok, detail = _post_grouping_to_member(m["addr"], body, known)
+        ok, detail = _post_grouping_to_member(
+            m["addr"], body, known, token=token)
         writes[ch] = {"label": m["label"], "ok": ok,
                       "trim_db": rec[f"{ch}_trim_db"], "detail": detail}
         all_ok = all_ok and ok

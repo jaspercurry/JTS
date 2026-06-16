@@ -7,6 +7,10 @@ import {
   delayMs,
   float32ToWavBlob,
 } from '/assets/shared/js/measurement-audio.js';
+// jsonHeaders attaches X-CSRF-Token AND the X-JTS-Token control token
+// (meta[name=jts-control-token]); the latter is required for /sync/apply,
+// which writes the leader's token-gated /grouping/set.
+import { jsonHeaders } from '/assets/shared/js/http.js';
 
 const csrf =
   (document.querySelector('meta[name="jts-csrf"]') || {}).content || '';
@@ -23,10 +27,6 @@ function setStatus(text) {
 
 function render(data) {
   resultEl.textContent = JSON.stringify(data, null, 2);
-}
-
-function jsonHeaders() {
-  return { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf };
 }
 
 async function postJson(path, body) {

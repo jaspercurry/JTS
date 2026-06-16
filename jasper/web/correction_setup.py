@@ -1591,7 +1591,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 elif path == "/balance/stop":
                     payload, status = balance_flow.handle_stop()
                 elif path == "/balance/apply":
-                    payload, status = balance_flow.handle_apply()
+                    payload, status = balance_flow.handle_apply(self)
                 else:  # /balance/reset
                     payload, status = balance_flow.handle_stop()
                 self._send_json(payload, status=int(status))
@@ -1640,7 +1640,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         return
                     payload, status = sync_flow.handle_analyze(body)
                 elif path == "/sync/apply":
-                    payload, status = sync_flow.handle_apply()
+                    payload, status = sync_flow.handle_apply(self)
                 else:
                     payload, status = sync_flow.handle_stop()
                 self._send_json(payload, status=int(status))
