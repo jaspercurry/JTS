@@ -34,7 +34,7 @@ pub struct IoCounters {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DualAppleStatus {
+pub struct CompositeStatus {
     pub dac_a_pcm: String,
     pub dac_b_pcm: String,
     pub linked: bool,
@@ -61,7 +61,11 @@ pub struct AlsaBackend {
     counters: IoCounters,
 }
 
-pub struct DualAppleBackend {
+/// Paired-composite transport: two clock-independent child DACs driven as one
+/// 4-channel sink (the dual-Apple shape). Renamed from `DualAppleBackend` — the
+/// transport dispatches on the composite SHAPE, not the DAC's identity. Stays
+/// exactly two children (a pairwise drift guard cannot be half-vectorized).
+pub struct PairedCompositeSink {
     content: PCM,
     dac_a: PCM,
     dac_b: PCM,
@@ -281,7 +285,7 @@ impl AlsaBackend {
     }
 }
 
-impl DualAppleBackend {
+impl PairedCompositeSink {
     pub fn new(config: &Config) -> Result<Self> {
         let dac_a_pcm = config
             .dual_dac_a_pcm
@@ -411,8 +415,8 @@ impl DualAppleBackend {
         self.counters
     }
 
-    pub fn dual_status(&self) -> DualAppleStatus {
-        DualAppleStatus {
+    pub fn dual_status(&self) -> CompositeStatus {
+        CompositeStatus {
             dac_a_pcm: self.dac_a_pcm.clone(),
             dac_b_pcm: self.dac_b_pcm.clone(),
             linked: self.linked,

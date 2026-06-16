@@ -270,12 +270,16 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
-    assert "SinkMode::DualApple" in config_rs
+    # The composite sink shape was renamed `DualApple` -> `Composite` (the
+    # transport dispatches on shape, not the DAC's name), with `dual_apple`
+    # kept as a parse alias and the stable `/state` wire value.
+    assert "SinkMode::Composite" in config_rs
+    assert '"composite" | "dual_apple"' in config_rs
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
     assert "outputd_active_content_capture" in config_rs
     assert "dual_apple_requires_pre_dsp_tts" not in main_rs
     assert "run_alsa_dual_apple" in main_rs
-    assert "DualAppleBackend::new(config)" in main_rs
+    assert "PairedCompositeSink::new(config)" in main_rs
     assert "deinterleave_4ch_to_dual_stereo" in alsa_rs
     assert "aborted on xrun/suspend" in alsa_rs
     assert "delay divergence" in alsa_rs
@@ -413,7 +417,7 @@ def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
         "fn downmix_dual_active_reference(",
         1,
     )[0]
-    backend_open = run_dual.index("let mut backend = DualAppleBackend::new(config)?;")
+    backend_open = run_dual.index("let mut backend = PairedCompositeSink::new(config)?;")
     prime_count = run_dual.index("let prime_periods = prime_periods(")
     prime_loop = run_dual.index("for _ in 0..prime_periods")
     primed = run_dual.index(".context(\"priming dual Apple DACs with silence\")?;")

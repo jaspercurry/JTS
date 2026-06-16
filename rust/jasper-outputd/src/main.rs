@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{
-    open_playback_pcm, AlsaBackend, ContentRead, DualAppleBackend, IoCounters,
+    open_playback_pcm, AlsaBackend, ContentRead, IoCounters, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
             let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
             run_fake(&config, &mut core, &state, once, &shutdown)
         }
-        BackendMode::Alsa if config.sink_mode == SinkMode::DualApple => {
+        BackendMode::Alsa if config.sink_mode == SinkMode::Composite => {
             run_alsa_dual_apple(&config, &state, once, &shutdown)
         }
         BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
@@ -353,7 +353,7 @@ fn run_alsa_dual_apple(
     once: bool,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut backend = DualAppleBackend::new(config)?;
+    let mut backend = PairedCompositeSink::new(config)?;
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
     state.mark_dual_apple_status(&backend.dual_status());
