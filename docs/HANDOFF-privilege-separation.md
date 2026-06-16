@@ -216,6 +216,21 @@ Class-2 (unchanged — still root — regression smoke only): `jasper-wifi-guard
 `jasper-dac-init` (set Headphone 50%, reboot), `jasper-dongle-recover`
 (re-enumerate dongle).
 
+**Accepted trade — the broker becomes a restart *dependency*.** Once the
+clients are non-root, `manage_units`' root fallback is structurally gone
+(`geteuid() != 0`), so the broker is the only path. A wedged or mid-restart
+`jasper-control` therefore means an in-flight wizard config-save restart
+*fails* (fail-soft: logged `event=restart_broker.unavailable`, the wizard's
+own warning fires, the config still persisted) rather than falling back to a
+direct `systemctl`. This is the deliberate cost of one auditable privileged
+boundary, and it is bounded: `jasper-control` is the most heavily supervised
+daemon (Tier-1 watchdog + `StartLimitAction=reboot`), its own restart stays
+systemd's job, and the failure is observable, not silent. When 3b lands, note
+this in the `HANDOFF-resilience.md` Tier-3 row and `HANDOFF-observability.md`
+debug-restart note — both of `jasper-control`'s *own* supervisor/debug
+restarts become polkit-authorized (they call `systemctl` directly, not the
+broker), which is a doc change those subsystems' canonical files will need.
+
 ## Phase 4 — secret credentialization (DESIGNED)
 
 `LoadCredential=` + `systemd-creds encrypt` for the provider keys. JTS-specific
