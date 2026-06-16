@@ -213,3 +213,24 @@ async def test_window_flag_released_when_precondition_fails(monkeypatch):
         async with measurement_window(skip_renderer_pause=True):
             pass
     assert coordinator._window_active is False
+
+
+@pytest.mark.asyncio
+async def test_window_flag_released_even_if_renderer_restart_raises(monkeypatch):
+    """A restore step raising in the finally (e.g. systemctl missing) must
+    still release the mutex — otherwise one failed restart wedges every
+    future measurement with 'already in progress' until process restart."""
+    monkeypatch.setattr(coordinator, "_window_active", False)
+
+    async def fake_systemctl(action, svc):
+        if action == "start":
+            raise FileNotFoundError("systemctl missing")
+
+    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
+
+    with pytest.raises(FileNotFoundError):
+        async with measurement_window(
+            skip_voice_pause=True, renderers_to_pause=("librespot.service",),
+        ):
+            pass
+    assert coordinator._window_active is False

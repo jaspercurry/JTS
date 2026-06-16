@@ -237,6 +237,12 @@ async def measurement_window(
         )
         yield
     finally:
+        # Release the mutex FIRST, before the restore I/O. The window is
+        # logically closed the moment we reach the finally; the restore steps
+        # below are best-effort and one of them raising (e.g. systemctl
+        # missing → create_subprocess_exec raises) must not strand the flag
+        # True and block every future measurement with "already in progress".
+        _window_active = False
         # Restore voice FIRST so wake events can resume the moment the
         # user is ready to interact, even before the renderers have
         # fully come back. Then restart the renderers — they spin up
@@ -258,5 +264,4 @@ async def measurement_window(
             await asyncio.gather(*[
                 _systemctl("start", svc) for svc in paused_services
             ])
-        _window_active = False
         logger.info("measurement window CLOSED")
