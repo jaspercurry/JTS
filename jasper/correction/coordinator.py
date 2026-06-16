@@ -237,31 +237,37 @@ async def measurement_window(
         )
         yield
     finally:
-        # Release the mutex FIRST, before the restore I/O. The window is
-        # logically closed the moment we reach the finally; the restore steps
-        # below are best-effort and one of them raising (e.g. systemctl
-        # missing → create_subprocess_exec raises) must not strand the flag
-        # True and block every future measurement with "already in progress".
-        _window_active = False
-        # Restore voice FIRST so wake events can resume the moment the
-        # user is ready to interact, even before the renderers have
-        # fully come back. Then restart the renderers — they spin up
-        # in parallel.
-        if voice_paused:
-            try:
-                await _voice_uds_command(
-                    voice_socket_path, "MEASURE_RESUME", timeout=3.0,
-                )
-            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-                logger.error(
-                    "voice_daemon MEASURE_RESUME failed: %s — daemon's "
-                    "auto-clear safety timer will recover in ~2 min",
-                    e,
-                )
-        # Restart renderers in parallel — `systemctl start` is fast,
-        # the actual service startup is async on the systemd side.
-        if paused_services:
-            await asyncio.gather(*[
-                _systemctl("start", svc) for svc in paused_services
-            ])
-        logger.info("measurement window CLOSED")
+        # Release the mutex in an INNER finally — after the restore I/O, but
+        # guaranteed even if it raises. Timing matters on the single
+        # background loop: clearing the flag BEFORE these awaits would let a
+        # queued second window run during the restore, `systemctl stop` the
+        # renderers this one is mid-`systemctl start` of (the corruption the
+        # mutex exists to prevent). Clearing it AFTER but only on the success
+        # path would re-strand the flag True forever if a restore step raised
+        # (e.g. systemctl missing). The inner finally gives both: serialized
+        # against the restore, and never leaked.
+        try:
+            # Restore voice FIRST so wake events can resume the moment the
+            # user is ready to interact, even before the renderers have
+            # fully come back. Then restart the renderers — they spin up
+            # in parallel.
+            if voice_paused:
+                try:
+                    await _voice_uds_command(
+                        voice_socket_path, "MEASURE_RESUME", timeout=3.0,
+                    )
+                except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+                    logger.error(
+                        "voice_daemon MEASURE_RESUME failed: %s — daemon's "
+                        "auto-clear safety timer will recover in ~2 min",
+                        e,
+                    )
+            # Restart renderers in parallel — `systemctl start` is fast,
+            # the actual service startup is async on the systemd side.
+            if paused_services:
+                await asyncio.gather(*[
+                    _systemctl("start", svc) for svc in paused_services
+                ])
+            logger.info("measurement window CLOSED")
+        finally:
+            _window_active = False

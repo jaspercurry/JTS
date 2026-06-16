@@ -16,6 +16,8 @@ contract being verified:
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from jasper.correction import coordinator
@@ -233,4 +235,42 @@ async def test_window_flag_released_even_if_renderer_restart_raises(monkeypatch)
             skip_voice_pause=True, renderers_to_pause=("librespot.service",),
         ):
             pass
+    assert coordinator._window_active is False
+
+
+@pytest.mark.asyncio
+async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
+    """The mutex must stay held across window A's restore I/O, released only
+    once the renderer restart completes. Clearing it earlier would let a
+    queued window B `systemctl stop` the renderers A is mid-`systemctl start`
+    of — the corruption the mutex exists to prevent."""
+    monkeypatch.setattr(coordinator, "_window_active", False)
+    entered_restore = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_systemctl(action, svc):
+        if action == "start":
+            entered_restore.set()
+            await release.wait()  # hold window A inside its restore
+
+    monkeypatch.setattr(coordinator, "_systemctl", slow_systemctl)
+
+    async def window_a():
+        async with measurement_window(
+            skip_voice_pause=True, renderers_to_pause=("librespot.service",),
+        ):
+            pass
+
+    task_a = asyncio.create_task(window_a())
+    await entered_restore.wait()  # A is now mid-restore (systemctl start pending)
+
+    # B must be refused while A's restore is still in flight.
+    with pytest.raises(MeasurementWindowError, match="already in progress"):
+        async with measurement_window(
+            skip_voice_pause=True, skip_renderer_pause=True,
+        ):
+            pass
+
+    release.set()
+    await task_a
     assert coordinator._window_active is False
