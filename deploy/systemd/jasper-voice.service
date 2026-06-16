@@ -91,6 +91,13 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 # so a missing file just leaves smart-home control disabled.
 # See docs/HANDOFF-homeassistant.md.
 EnvironmentFile=-/var/lib/jasper/home_assistant.env
+# Tools the household DISABLED via the /tools/ wizard
+# (JASPER_DISABLED_TOOLS). Wizard-owned SSOT at
+# /var/lib/jasper/tool_state.env. The daemon reads this set fail-safe
+# (jasper.tool_state) to filter the registry — a missing file means
+# nothing disabled (every tool on). Sourced here so jasper-doctor and
+# env_load see it; optional via the leading `-`.
+EnvironmentFile=-/var/lib/jasper/tool_state.env
 # Multi-device wake arbitration (JASPER_PEERING) written by the Speakers page at
 # http://jts.local/rooms/. jasper-voice is a CLIENT of jasper-control's
 # peering UDS: Config.peering_enabled reads JASPER_PEERING here to decide

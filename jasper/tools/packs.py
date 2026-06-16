@@ -24,6 +24,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..log_event import log_event
 from .audio import make_audio_tools
 from .calendar import make_calendar_tools
 from .diagnostic import make_diagnostic_tools
@@ -138,13 +139,27 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
 )
 
 
-def register_packs(registry: "ToolRegistry", deps: ToolDeps) -> None:
+def register_packs(
+    registry: "ToolRegistry",
+    deps: ToolDeps,
+    *,
+    disabled: "frozenset[str] | None" = None,
+) -> None:
     """Walk TOOL_PACKS in order; gate, build, and register each pack's
     tools onto `registry`. Each pack's build runs behind try/except for
     fault isolation — a broken pack (ImportError in a tool module, a
     factory that raises) contributes no tools and is logged, never
     crashing the daemon. Mirrors transit.active_transit's per-provider
-    guard."""
+    guard.
+
+    `disabled` is the wizard-owned set of tool NAMES the household turned
+    off (jasper.tool_state). A disabled tool is not registered, so the
+    model never sees it — the user's explicit choice, NOT a failure (no
+    cue). None (default) reads the SSOT file fail-safe; pass an explicit
+    set in tests."""
+    if disabled is None:
+        from ..tool_state import read_disabled_tools
+        disabled = read_disabled_tools()
     for pack in TOOL_PACKS:
         if not pack.gate(deps):
             continue
@@ -158,4 +173,10 @@ def register_packs(registry: "ToolRegistry", deps: ToolDeps) -> None:
             )
             continue
         for fn in fns:
-            registry.register(fn)
+            t = registry.register(fn)
+            if t.name in disabled:
+                # Registered, then removed by user choice — keeps the
+                # filter at the single registration point and works
+                # regardless of declared @tool name vs fn.__name__.
+                del registry.tools[t.name]
+                log_event(logger, "tool.disabled", name=t.name, pack=pack.name)

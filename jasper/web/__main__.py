@@ -22,6 +22,7 @@ voice/wake/assistant-only pages. nginx routes:
   /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
   /sound/    →  127.0.0.1:8784  (jasper.web.sound_setup)
   /rooms/    →  127.0.0.1:8785  (jasper.web.rooms_setup)
+  /tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -335,6 +336,25 @@ def _make_rooms_server(target: object) -> object:
     return rooms_setup.make_server(target)
 
 
+def _make_tools_server(target: object) -> object:
+    from . import tools_setup
+
+    # Browse + enable/disable first-party voice tools. Reads the catalog
+    # jasper-voice writes to /run/jasper/tools.json; writes the disabled-set
+    # to /var/lib/jasper/tool_state.env. See jasper/web/tools_setup.py.
+    return tools_setup.make_server(
+        target,
+        catalog_path=os.environ.get(
+            "JASPER_TOOLS_CATALOG_FILE",
+            tools_setup.CATALOG_FILE,
+        ),
+        state_path=os.environ.get(
+            "JASPER_TOOL_STATE_FILE",
+            tools_setup.TOOL_STATE_FILE,
+        ),
+    )
+
+
 def _transit_state_path() -> str:
     from . import transit_setup
 
@@ -454,6 +474,7 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
         "/rooms", "JASPER_ROOMS_WEB_PORT", 8785, _make_rooms_server,
         roles=_LOCAL_AUDIO_ROLES,
     ),
+    WizardSpec("/tools", "JASPER_TOOLS_WEB_PORT", 8786, _make_tools_server),
 )
 
 
