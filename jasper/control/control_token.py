@@ -51,7 +51,8 @@ from __future__ import annotations
 import hmac
 import os
 import secrets
-import tempfile
+
+from jasper.atomic_io import atomic_write_text
 
 # The token file. Seeded from the env var at import; callers read the
 # module attribute (not the env var) so tests can monkeypatch this single
@@ -115,31 +116,11 @@ def ensure_token() -> str:
     if existing:
         return existing
     token = secrets.token_urlsafe(32)
-    _write_atomic(token)
+    # Canonical atomic writer (chmod-before-rename, same-FS replace) at 0600 so
+    # the secret is never even briefly world-readable. Raises OSError on failure;
+    # the single caller (ensure_token at startup) treats that as fail-open.
+    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o600)
     return token
-
-
-def _write_atomic(token: str) -> None:
-    """Write ``token`` to :data:`TOKEN_FILE` atomically at mode 0600.
-
-    Mirrors the ``jasper-control-token`` CLI writer: a tempfile in the same
-    directory, ``fchmod 0600`` *before* the rename so the secret is never even
-    briefly world-readable, then ``os.replace`` for an atomic swap. The secret
-    value is never logged.
-    """
-    directory = os.path.dirname(TOKEN_FILE) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".control_token.")
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(token + "\n")
-        os.replace(tmp, TOKEN_FILE)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def verify(provided: str | None) -> bool:
