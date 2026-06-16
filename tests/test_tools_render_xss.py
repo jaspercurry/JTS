@@ -1,4 +1,4 @@
-"""XSS regression guard for the /tools/ catalog renderer.
+r"""XSS regression guard for the /tools/ catalog renderer.
 
 render.js builds card/detail markup from catalog fields (name, summary,
 description, details, labels, category, pack, setup_url) and assigns it via
@@ -9,10 +9,15 @@ defenses, both exercised here:
   * Element/attribute content (name, description, labels, data-tool) is run
     through escapeHtml, so a `<script>`/`<img>`/`<svg>` payload can't break out.
   * The setup_url `<a href>` is NOT covered by escaping alone — escapeHtml
-    escapes characters but does not validate schemes, so a `javascript:` href
-    would survive escaping. render.js's safeSetupUrl must reject any non
-    "/..."-path scheme; we assert the `javascript:` URL is dropped (not just
-    escaped) while a real "/transit/" link still renders.
+    escapes characters but does not validate origin/scheme, so a `javascript:`
+    href or an off-origin path would survive escaping. render.js's safeSetupUrl
+    must RESOLVE the value against the page origin and drop anything that leaves
+    it — the scheme class (`javascript:`) and the off-origin class, which
+    includes protocol-relative `//host`, the backslash form `/\host`, and the
+    whitespace-obfuscated `/<TAB>/host` / `/<LF>/host` (the URL parser folds
+    "\" -> "/" and strips tab/newline before parsing, so a second-character
+    regex misses these). We assert all are dropped while a real "/transit/"
+    link still renders.
 
 The conventions test only asserts the escaper is imported and not re-declared;
 this one renders deliberately malicious tools through the real module (via a
@@ -52,8 +57,11 @@ def test_render_escapes_every_untrusted_tool_field():
     # And the payloads were genuinely escaped (entities present), not dropped.
     assert out["escapedEntitiesPresent"] is True
     # The setup_url href is its own boundary: safeSetupUrl must drop the
-    # scheme class (javascript:) AND the off-origin class (//host, /\host),
-    # while a real same-origin path still renders.
+    # scheme class (javascript:) AND the off-origin class — //host, /\host, and
+    # the whitespace-obfuscated /<TAB>/host, /<LF>/host that resolve off-origin
+    # — while a real same-origin path still renders. noOffOriginHref resolves
+    # every rendered href against a fixed base, so it catches the tab/newline
+    # forms a raw-string regex would miss.
     assert out["noJavascriptScheme"] is True, "a javascript: setup_url survived"
     assert out["noOffOriginHref"] is True, "an off-origin setup_url href survived"
     assert out["safeHrefRendered"] is True, "a safe /transit/ setup link was dropped"
