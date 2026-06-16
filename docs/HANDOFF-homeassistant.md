@@ -164,11 +164,80 @@ Tool returns {"spoken_response": "Done.", "success": true, ...}
 JTS doesn't know what entities exist. JTS doesn't know what "bedroom
 medium" means. HA does, and HA owns the routing. JTS is a relay.
 
+## Consequential-action confirmation (prompt-injection defense)
+
+HA is the only tool on this speaker that performs a real-world action,
+which makes it the confused-deputy target: untrusted content the model
+has read (an email body, a device name) could steer it into
+`home_assistant("unlock the front door")` with no human intent. The
+durable control for that — per OWASP LLM01 "human oversight for
+high-risk operations" and the agent-security design-patterns literature
+(sources in [HANDOFF-prompting.md](HANDOFF-prompting.md) "Untrusted
+tool-result fencing") — is **least-privilege + confirmation on
+consequential actions**, not fencing HA's reply text.
+
+How it works, in [`jasper/tools/home_assistant.py`](../jasper/tools/home_assistant.py):
+
+- `classify_consequential(query)` flags high-impact, hard-to-reverse,
+  security-relevant actions (unlock, disarm, turn off the alarm/security,
+  open a garage/gate/door). Conservative, English-keyword, base-verb
+  forms so state queries ("is the door unlocked?") don't over-fire. It
+  errs toward confirming.
+- **Conditional on recent untrusted content (the cost lands only in the
+  risk window).** The gate fires only when an `UntrustedContentMonitor`
+  (shared with the gmail/calendar tools — they stamp it when they return
+  third-party text) reports untrusted content was read within ~10 minutes.
+  A clean voice-only session runs "unlock the door" **directly, no
+  prompt** — confirming every consequential command regardless of context
+  would tax the common case for a ~1%-of-the-time risk. It's a
+  deliberately dumb wall-clock window, NOT tied to the model's context
+  window or per-provider session persistence (`UNTRUSTED_CONTENT_WINDOW_SEC`
+  in [`jasper/tools/__init__.py`](../jasper/tools/__init__.py)).
+  `monitor=None` is the fail-safe (always confirm), so a wiring miss errs
+  toward caution. Voice/acoustic injection is out of scope by design.
+- **Structural gate:** when a consequential query arrives in that window,
+  `home_assistant` does NOT relay it to HA. It stashes the request in a
+  single-slot, TTL-bounded, single-use store and returns
+  `{needs_confirmation: true, action, spoken_response}` — a yes/no
+  question. The action is never executed in the call that requests it.
+- `home_assistant_confirm()` (no args) runs the stashed action — and
+  only that action — after the user audibly confirms. The
+  `needs_confirmation` cross-tool rule in `SYSTEM_INSTRUCTION` tells the
+  model to speak the question, wait, and call confirm only on a clear
+  "yes" in a later turn (never same-turn).
+
+So after the household reads an email, a silent injected unlock becomes an
+audible "Do you want me to unlock the door?" they answer — while an ordinary
+spoken "unlock the door" in a clean session just works. It also catches
+mishears in the tainted window.
+
+**Limits (documented, not hidden).** The classifier is a best-effort
+safety net: an obfuscated household sentence-trigger (e.g. "good night"
+wired in HA to unlock a door) carries no consequential keyword and
+bypasses it — JTS can't know what a household phrase *does* because HA
+owns NLU. And because JTS's realtime loop has a single model mediating
+everything (the trace/turn machinery isn't wired into production
+dispatch — see `jasper/voice/trace.py`), a fully-hijacked model could in
+principle call `home_assistant` then `home_assistant_confirm` in one
+breath; the gate raises the bar and defeats the *silent* attack, but the
+complete fix is privilege separation / dual-LLM, tracked as future work
+in [HANDOFF-prompting.md](HANDOFF-prompting.md). A pending confirmation is
+also bounded in time, not just by context: the tool can't see intervening
+turns, so a stale "yes" much later could in theory fire an abandoned
+action — `_ConfirmationStore` mitigates this two ways (a ~90 s TTL, and
+`clear()` whenever a *different* home_assistant command supersedes the
+pending), but a long-delayed bare "yes" inside the window is the residual.
+Observability: `event=ha.confirm_gate` / `event=ha.confirm_execute`
+(action label only, never the utterance); a consequential action that ran
+*without* asking (clean session) logs `event=ha.consequential_direct` at
+DEBUG.
+
 ## File map
 
 ```
 jasper/home_assistant.py            HAClient + HAResponse + probe_status + build_ha_client
-jasper/tools/home_assistant.py      make_home_assistant_tools(ha) → [home_assistant tool]
+jasper/tools/home_assistant.py      make_home_assistant_tools(ha, monitor) → [home_assistant, home_assistant_confirm] + classify_consequential
+jasper/tools/__init__.py            UntrustedContentMonitor (taint window) + fence_untrusted
 jasper/web/home_assistant_setup.py  Wizard at /ha/ (port 8778)
 jasper/config.py                    ha_url / ha_token / ha_agent_id / ha_enabled
 jasper/voice_daemon.py              Registry wiring + SYSTEM_INSTRUCTION addition

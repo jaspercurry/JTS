@@ -6,7 +6,7 @@ silently blow that ceiling — this fails first, cheaply, in CI.
 Token estimate is chars/4 (a cheap, dependency-free heuristic; no
 tiktoken). It overestimates slightly for natural-language text, which is
 the safe direction for a ceiling guard. We measure descriptions only
-(the dominant term; the 28 descriptions total ~8.2k tokens today) — JSON
+(the dominant term; the 29 descriptions total ~8.2k tokens today) — JSON
 schema overhead is small and bounded.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ MODEL_FACING_DESCRIPTION_TOKEN_BUDGET = 13_000
 
 
 def _full_registry() -> ToolRegistry:
-    """Build the complete 28-tool registry hardware-free — every pack
+    """Build the complete 29-tool registry hardware-free — every pack
     gate satisfied with lazy sentinel deps (factories capture deps in
     closures; none are invoked at build time)."""
     transit = []
@@ -53,7 +53,7 @@ def _full_registry() -> ToolRegistry:
 
 def test_model_facing_descriptions_stay_under_budget():
     reg = _full_registry()
-    assert len(reg.tools) == 28, "full registry should hold all 28 shipped tools"
+    assert len(reg.tools) == 29, "full registry should hold all 29 shipped tools"
 
     total_chars = sum(len(t.model_facing_description()) for t in reg.tools.values())
     est_tokens = total_chars // 4

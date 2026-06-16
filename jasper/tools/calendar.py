@@ -19,7 +19,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
-from . import tool
+from . import fence_untrusted, tool
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
@@ -73,8 +73,12 @@ def _serialise_event(item: dict) -> dict:
     timezones."""
     start_dt, start_all_day = _parse_event_dt(item.get("start") or {})
     end_dt, _end_all_day = _parse_event_dt(item.get("end") or {})
+    # summary + location are attacker-controllable third-party text (the
+    # organiser of an invite someone else sent you), so fence them — same
+    # baseline as gmail. Times / flags are computed by us and stay raw.
     out: dict[str, Any] = {
-        "summary": (item.get("summary") or "(no title)").strip(),
+        "summary": fence_untrusted((item.get("summary") or "").strip(), source="calendar")
+        or "(no title)",
         "all_day": start_all_day,
     }
     if start_dt is not None:
@@ -86,7 +90,7 @@ def _serialise_event(item: dict) -> dict:
             out["end"] = _format_clock_time(end_dt)
     location = (item.get("location") or "").strip()
     if location:
-        out["location"] = location
+        out["location"] = fence_untrusted(location, source="calendar")
     # Google sends conferenceData when the event is a Hangouts/Meet
     # call. Surface a hint so the model can mention "video call" when
     # relevant without having to introspect the full block.
@@ -160,15 +164,22 @@ def _list_events_sync(service, *, time_min: datetime, time_max: datetime) -> lis
     return list(resp.get("items") or [])
 
 
-def make_calendar_tools(clients: "GoogleClients | None"):
+def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
     """Build the calendar voice tools. Returns an empty list if the
     daemon doesn't have Google clients configured (no CLIENT_ID/SECRET
     or no accounts) — caller `_build_registry` checks this so the
-    tools never appear to the model when they couldn't function."""
+    tools never appear to the model when they couldn't function.
+
+    Invite titles/locations are attacker-controllable third-party text
+    (someone else's calendar invite), so each event's summary + location is
+    fenced via `fence_untrusted` (baseline, same as gmail), and `monitor`
+    (an `UntrustedContentMonitor`, optional) is stamped whenever a call
+    returns events — arming the consequential-action confirmation window in
+    the home_assistant tool (the load-bearing control)."""
     if clients is None:
         return []
 
-    @tool(log_payload=False)
+    @tool(log_payload=False, untrusted_output=True)
     async def calendar_today_summary(account: str = "") -> dict:
         """Return today's calendar events for a household member's
         Google account.
@@ -215,6 +226,8 @@ def make_calendar_tools(clients: "GoogleClients | None"):
         except Exception as e:  # noqa: BLE001
             return _api_error(canonical, e)
         events = [_serialise_event(it) for it in items]
+        if events and monitor is not None:
+            monitor.mark()
         return {
             "ok": True,
             "account": canonical,
@@ -223,7 +236,7 @@ def make_calendar_tools(clients: "GoogleClients | None"):
             "events": events,
         }
 
-    @tool(log_payload=False)
+    @tool(log_payload=False, untrusted_output=True)
     async def calendar_upcoming(hours: int = 24, account: str = "") -> dict:
         """Return calendar events starting within the next `hours`
         hours.
@@ -270,6 +283,8 @@ def make_calendar_tools(clients: "GoogleClients | None"):
         except Exception as e:  # noqa: BLE001
             return _api_error(canonical, e)
         events = [_serialise_event(it) for it in items]
+        if events and monitor is not None:
+            monitor.mark()
         return {
             "ok": True,
             "account": canonical,

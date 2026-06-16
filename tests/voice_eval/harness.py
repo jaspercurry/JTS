@@ -81,7 +81,7 @@ from jasper.config import Config
 from jasper.google_creds import build_google_clients
 from jasper.renderer import RendererClient
 from jasper.timers import TimerScheduler
-from jasper.tools import ToolRegistry
+from jasper.tools import ToolRegistry, UntrustedContentMonitor
 from jasper.tools.audio import make_audio_tools
 from jasper.tools.calendar import make_calendar_tools
 from jasper.tools.diagnostic import make_diagnostic_tools
@@ -223,6 +223,13 @@ def _build_test_registry(
     As new tools land, extend this builder alongside the matching
     scenario file. The model only sees what's registered."""
     registry = ToolRegistry()
+    # Shared untrusted-content monitor, exactly as the daemon wires it. The
+    # gmail/calendar tools stamp it; the home_assistant consequential-action
+    # gate reads it. Exposed via test_state so a scenario can `mark()` it to
+    # simulate "just read an email" without a Google dependency.
+    untrusted_monitor = UntrustedContentMonitor()
+    if test_state is not None:
+        test_state["untrusted_monitor"] = untrusted_monitor
 
     # Volume — source-aware coordinator backed by CamillaDSP. The
     # coordinator construction is identical to the daemon's; it does
@@ -331,9 +338,9 @@ def _build_test_registry(
     if test_state is not None:
         test_state["google_clients"] = google_clients
     if google_clients is not None and google_clients.list_account_names():
-        for fn in make_calendar_tools(google_clients):
+        for fn in make_calendar_tools(google_clients, monitor=untrusted_monitor):
             registry.register(fn)
-        for fn in make_gmail_tools(google_clients):
+        for fn in make_gmail_tools(google_clients, monitor=untrusted_monitor):
             registry.register(fn)
 
     # Home Assistant — single tool surface that relays the utterance to
@@ -346,7 +353,7 @@ def _build_test_registry(
     from jasper.home_assistant import build_ha_client
     ha = build_ha_client(cfg)
     if ha is not None:
-        for fn in make_home_assistant_tools(ha):
+        for fn in make_home_assistant_tools(ha, monitor=untrusted_monitor):
             registry.register(fn)
     if test_state is not None:
         test_state["ha_client"] = ha
