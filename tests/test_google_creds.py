@@ -146,6 +146,24 @@ def test_save_token_writes_mode_0640(tmp_path):
     assert payload["scopes"] == ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
+_PYTHON_RUNTIME_SH = (
+    Path(__file__).resolve().parents[1] / "deploy/lib/install/python-runtime.sh"
+)
+
+
+def test_install_creates_google_dir_setgid():
+    """The Google tree's group-`jasper` access (so the non-root voice can read
+    its OAuth tokens after the drop) is set authoritatively by install.sh as
+    root, and setgid so tokens the root /google/ wizard writes inherit group
+    `jasper` directly. Guard the setgid + group so the bit can't be silently
+    dropped back to 0750 — which would re-break a freshly linked account."""
+    sh = _PYTHON_RUNTIME_SH.read_text()
+    assert "install -d -m 2750 -g jasper" in sh and "google" in sh, (
+        "python-runtime.sh must create /var/lib/jasper/google setgid + group "
+        "jasper (install -d -m 2750 -g jasper ...)"
+    )
+
+
 def test_save_token_atomic_replace_on_existing_file(tmp_path):
     path = str(tmp_path / "tok.json")
     save_token(path, refresh_token="first")

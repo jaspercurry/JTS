@@ -19,13 +19,17 @@ install_jasper() {
     # `ls` the per-household-member token filenames (the names are
     # PII-adjacent — they identify which household members linked
     # accounts). install -d resets perms on existing dirs.
-    # WS1 Phase 3b: 0750 + group `jasper` (was 0700 root-only) so the now-non-root
-    # jasper-voice can traverse to read its Google OAuth tokens. systemd's
-    # StateDirectory recursive-chown may re-own these to another jasper daemon,
-    # so group read — not owner — is what makes voice's Calendar/Gmail tools work
-    # after the drop. Per-daemon secret isolation is Phase 4 (LoadCredential).
+    # WS1 Phase 3b: 2750 (setgid) + group `jasper` (was 0700 root-only) so the
+    # now-non-root jasper-voice can traverse to read its Google OAuth tokens.
+    # The setgid bit is load-bearing: the /google/ wizard writes tokens as root
+    # (egid root), so without setgid a freshly-linked account's token would be
+    # group `root` and unreadable by voice until systemd's StateDirectory
+    # recursive-chown re-grouped it on the next restart; setgid makes new files
+    # inherit group `jasper` from the dir immediately. Group read — not owner —
+    # is what makes voice's Calendar/Gmail tools work after the drop. Per-daemon
+    # secret isolation is Phase 4 (LoadCredential).
     if getent group jasper >/dev/null 2>&1; then
-        install -d -m 0750 -g jasper "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
+        install -d -m 2750 -g jasper "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
         # Widen pre-existing token files (0600) to group-jasper read.
         chmod 0640 "${STATE_DIR}/google/accounts.json" 2>/dev/null || true
         find "${STATE_DIR}/google/tokens" -type f -name '*.json' \
