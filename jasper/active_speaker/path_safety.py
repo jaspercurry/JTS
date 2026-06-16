@@ -459,7 +459,27 @@ def _calibration_level_controlled(calibration_level: dict[str, Any] | None) -> b
     )
 
 
+def _required_gate_passed(staged_config: dict[str, Any], gate_id: str) -> bool | None:
+    """Return a staged-metadata required gate's ``passed`` bool, or None if absent."""
+    gates = staged_config.get("required_gates")
+    if not isinstance(gates, list):
+        return None
+    for gate in gates:
+        if isinstance(gate, dict) and gate.get("id") == gate_id:
+            passed = gate.get("passed")
+            return bool(passed) if isinstance(passed, bool) else None
+    return None
+
+
 def _startup_muted_by_candidate(staged_config: dict[str, Any]) -> bool:
+    # Most complete + precise signal: the staging `staged_candidate_fully_muted`
+    # gate verified every per-output mute is a -120 dB hard mute AND wired into
+    # the pipeline before this config could reach status "staged". Prefer it
+    # whenever the metadata carries it (covers physically-protected candidates,
+    # which have no software-guard block).
+    gate = _required_gate_passed(staged_config, "staged_candidate_fully_muted")
+    if gate is not None:
+        return gate
     guard = staged_config.get("software_guard")
     if isinstance(guard, dict):
         checks = guard.get("checks")
@@ -472,12 +492,11 @@ def _startup_muted_by_candidate(staged_config: dict[str, Any]) -> bool:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False
-    # Recognize both mute spellings: the per-role `as_*_startup_mute` of the
-    # legacy startup emitter and the per-output `as_out{idx}_commission_mute` of
-    # the single-audio-path commissioning emitter (which drops the per-role
-    # mute). The primary path above reads software_guard.checks.startup_muted;
-    # this text fallback covers physically-protected candidates that carry no
-    # software-guard block.
+    # Last-resort text scan for metadata that carries neither the gate nor a
+    # software-guard block (hand-authored / legacy staged files). Recognizes both
+    # mute spellings: the per-role `as_*_startup_mute` of the legacy startup
+    # emitter and the per-output `as_out{idx}_commission_mute` of the commissioning
+    # emitter. Deliberately coarse — the precise gate/guard above is authoritative.
     return (
         ("startup_mute" in text or "commission_mute" in text)
         and "mute: true" in text

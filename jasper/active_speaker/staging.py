@@ -519,8 +519,12 @@ def _pipeline_contains_chain(
     return False
 
 
-def _all_commission_mutes_engaged(yaml: str) -> bool:
-    """Every per-output commission mute is muted — the crash-recovery boot state.
+def _all_commission_mutes_engaged(
+    yaml: str,
+    *,
+    preset: ActiveSpeakerPreset,
+) -> bool:
+    """Every per-output commission mute is muted AND wired — the crash-recovery boot state.
 
     The single-audio-path commissioning config isolates drivers with a
     per-physical-output mute mask. The *staged* candidate is the muted boot
@@ -529,18 +533,37 @@ def _all_commission_mutes_engaged(yaml: str) -> bool:
     unmuted at level with no protection. Per-driver unmute is a transient runtime
     load, never the frozen boot config (HANDOFF-active-speaker-dsp.md "Resolved
     decisions").
+
+    This is the *only* mute assertion that runs on every staged config (the
+    software guard runs solely in software-protection mode), so it verifies each
+    physical output from the preset rather than trusting the emitter to keep its
+    filter-definition and pipeline loops in lockstep: for every output index the
+    ``as_out{idx}_commission_mute`` filter must be a -120 dB hard mute **and** be
+    applied to channel ``{idx}`` in the pipeline. A muted-but-unwired (or
+    wired-but-unmuted) output fails closed. Mirrors the per-index rigor of
+    :func:`_software_guard_evidence`.
     """
     filters = _parse_generated_filters(yaml)
-    names = [name for name in filters if name.endswith("_commission_mute")]
-    return bool(names) and all(
-        _filter_param_matches(
+    pipeline_filters = _parse_generated_pipeline_filters(yaml)
+    output_count = max((o.index for o in preset.channel_map.outputs), default=-1) + 1
+    if output_count <= 0:
+        return False
+    for index in range(output_count):
+        name = output_commission_mute_name(index)
+        muted = _filter_param_matches(
             filters,
             name,
             filter_type="Gain",
             params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
         )
-        for name in names
-    )
+        wired = _pipeline_contains_chain(
+            pipeline_filters,
+            channels={index},
+            required_names=(name,),
+        )
+        if not (muted and wired):
+            return False
+    return True
 
 
 def _software_guard_evidence(
@@ -1315,7 +1338,7 @@ def stage_protected_startup_config(
             # Crash-recovery invariant: the staged boot config must start with
             # every active output muted. A reboot partway through commissioning
             # has to come up everything-muted, never a tweeter unmuted at level.
-            fully_muted = _all_commission_mutes_engaged(yaml)
+            fully_muted = _all_commission_mutes_engaged(yaml, preset=bound_preset)
             gates.append(_gate(
                 "staged_candidate_fully_muted",
                 label="Staged boot config starts with every output muted",
