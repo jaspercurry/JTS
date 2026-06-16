@@ -311,3 +311,56 @@ def test_manage_units_prefers_broker_over_fallback(broker, monkeypatch):
     assert resp["ok"] is True
     # Exactly one call, made by the broker (not a fallback duplicate).
     assert calls == [["systemctl", "restart", "--no-block", "jasper-mux.service"]]
+
+
+# --------------------------------------------------------------------------
+# exec-timeout bound: the client's timeout becomes the broker's systemctl
+# exec bound (clamped), and the client waits a margin past it — so a blocking
+# restart can't outlive the client's wait, and no client can pin a broker
+# thread past the hard ceiling.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, restart_broker._DEFAULT_EXEC_TIMEOUT_SEC),    # missing -> default
+    ("not-a-number", restart_broker._DEFAULT_EXEC_TIMEOUT_SEC),  # junk -> default
+    (0.1, 1.0),                                           # clamped up to the floor
+    (12.0, 12.0),                                         # in-range passthrough
+    (9999, restart_broker._EXEC_TIMEOUT_CEILING_SEC),    # clamped to hard ceiling
+])
+def test_clamp_exec_timeout(raw, expected):
+    assert restart_broker._clamp_exec_timeout(raw) == expected
+
+
+@requires_peercred
+def test_broker_bounds_systemctl_to_client_exec_timeout(tmp_path, monkeypatch):
+    """request_restart(timeout=T) makes the broker run systemctl with that
+    bound (clamped to the ceiling), so its verdict always lands before the
+    client's socket — which waits T + margin — gives up."""
+    seen: dict[str, float | None] = {}
+
+    def fake_run(argv, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(restart_broker, "_allowed_uids", lambda: {os.getuid(), 0})
+    sock_path = str(tmp_path / "restart.sock")
+    server = restart_broker.start_broker(sock_path)
+    try:
+        resp = restart_broker.request_restart(
+            "jasper-voice.service", verb="restart", no_block=False,
+            timeout=7.0, socket_path=sock_path,
+        )
+        assert resp["ok"] is True
+        assert seen["timeout"] == 7.0  # client's timeout became the exec bound
+
+        # An over-ceiling request is clamped, not honoured verbatim.
+        restart_broker.request_restart(
+            "jasper-voice.service", verb="restart", no_block=False,
+            timeout=9999, socket_path=sock_path,
+        )
+        assert seen["timeout"] == restart_broker._EXEC_TIMEOUT_CEILING_SEC
+    finally:
+        server.shutdown()
+        server.server_close()

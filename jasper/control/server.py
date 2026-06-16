@@ -2342,7 +2342,7 @@ def main(argv: list[str] | None = None) -> int:
     # so those daemons need no privilege of their own once dropped to non-root
     # service users. Bind failure is non-fatal (logged): the wizards fall back
     # to their existing fail-soft "restart didn't happen, logged" behaviour.
-    restart_broker.start_broker()
+    restart_broker_server = restart_broker.start_broker()
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     # Multi-device peering daemon. No-op (no thread, no asyncio loop,
     # no zeroconf import) when /var/lib/jasper/peering.env has
@@ -2400,6 +2400,13 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         restore_sigterm()
         stop_peering_daemon()
+        # Stop the restart broker's accept loop + close its socket, like the
+        # HTTP server / peering / heartbeat above — so SIGTERM tears down every
+        # background server explicitly rather than leaving the broker's daemon
+        # thread to die with the process. No-op if the broker failed to bind.
+        if restart_broker_server is not None:
+            restart_broker_server.shutdown()
+            restart_broker_server.server_close()
         heartbeat.stop()
         server.server_close()
     return 0
