@@ -24,6 +24,7 @@ from ...install_profile import is_streambox_install_profile, read_install_profil
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
+    _installed_units,
     _meminfo_kb,
     _pid_of_unit,
     _systemctl_show_property,
@@ -324,7 +325,21 @@ def check_oom_score_adj() -> CheckResult:
     the unit file itself doesn't have the directive → next restart
     *won't* fix it, so we surface both shapes separately."""
     expected = _expected_oom_score_adj()
+    # Only verify units this install profile actually installs. The
+    # EXPECTED map is the full-speaker set; a streambox does not install
+    # the voice/AEC stack, so those absent units are not OOM drift.
+    installed = _installed_units(list(expected.keys()))
+    if installed is None:
+        return CheckResult(
+            "OOM score adj", "ok",
+            "systemctl unavailable — skipped (not Linux?)",
+        )
+    expected = {u: v for u, v in expected.items() if u in installed}
     units = list(expected.keys())
+    if not units:
+        return CheckResult(
+            "OOM score adj", "ok", "no managed daemons installed",
+        )
     # Batch both systemctl-show calls — one subprocess per property
     # instead of one per (property × unit).
     pids_raw = _systemctl_show_property("MainPID", units)

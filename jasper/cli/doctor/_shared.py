@@ -287,6 +287,29 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
         return None
     return parts
 
+
+def _installed_units(units: list[str]) -> set[str] | None:
+    """Subset of ``units`` whose unit file is actually installed
+    (``LoadState`` is neither ``not-found`` nor ``masked``).
+
+    Returns ``None`` if systemctl is unavailable (dev host), so callers
+    can fall through to their existing "skipped" path.
+
+    Why: drift checks (OOM score, StartLimitAction) verify a PROPERTY of
+    a unit. A unit a profile never installs — e.g. the voice/AEC stack on
+    a streambox — has no property to drift, and ``systemctl show`` reports
+    its directives as defaults, which would read as false drift. Callers
+    filter their expected set to this set so the check stays correct on
+    every install profile without hard-coding which units each tier runs.
+    """
+    load_states = _systemctl_show_property("LoadState", units)
+    if load_states is None:
+        return None
+    return {
+        u for u, state in zip(units, load_states)
+        if state.strip() not in ("not-found", "masked")
+    }
+
 def _parked_as_bonded_follower() -> bool:
     """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
 
