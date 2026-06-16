@@ -250,6 +250,26 @@ doesn't choke as the catalog grows.** That's the whole first version.
    (`@tool(labels=...)`), the catalog's future sort/filter/search
    primitive, with the transit tools tagged. Resolves the transit
    "city as a label, not a `CityPack` toggle" question — see §6.
+6. **Built-in catalog UI** (shipped as a Phase-1.5 follow-on) — the
+   `/tools/` wizard ([`jasper/web/tools_setup.py`](../jasper/web/tools_setup.py)).
+   It is a read-only browse + per-tool on/off surface over the
+   *first-party* tools — explicitly **not** the install-from-store
+   marketplace (no install path; that stays Phase-2/3). Architecture
+   mirrors the other wizards: the socket-activated page only **reads**
+   the catalog `jasper-voice` writes to `/run/jasper/tools.json`
+   ([`jasper/tools/catalog.py`](../jasper/tools/catalog.py)) and never
+   imports `jasper.tools` (the transit lazy-import lesson — keep the
+   wizard light). Toggling a tool writes the disabled-set to the
+   wizard-owned SSOT `/var/lib/jasper/tool_state.env`
+   (`JASPER_DISABLED_TOOLS`, [`jasper/tool_state.py`](../jasper/tool_state.py),
+   mode 0644) and restarts `jasper-voice`, which re-filters the registry
+   (`register_packs(..., disabled=...)`) and re-writes the catalog JSON.
+   Fail-safe toward *more* functionality, mirroring `mic_mute_persistence`:
+   a missing/unreadable/malformed/non-UTF-8 `tool_state.env` resolves to
+   "nothing disabled" (every tool ON), so an FS-corruption incident
+   cannot deafen the assistant. A disabled tool simply does not register
+   — the model never sees it — so there is no audible cue (it's the
+   user's explicit choice, not a failure).
 
 Everything is built with **Opus**. Every new tool still ships its
 regression scenario under `tests/voice_eval/regression/` (existing hard
@@ -257,10 +277,12 @@ rule). Nothing here adds a daemon, a dependency, or RAM.
 
 **Explicitly NOT in the first version:** sandbox, safe-boot-for-tools,
 capability enforcement, secret broker, encryption, the curated index,
-CI trust-gating, `/tool-store/` wizard, grants, anti-rug-pull,
-kill-lists, MCP, the embedding pre-filter, and even static `_visible_to`
-scoping (the description split buys enough headroom that scoping waits
-until install counts actually grow).
+CI trust-gating, the install-from-store `/tool-store/` marketplace
+(distinct from the read-only built-in `/tools/` on/off catalog, which
+*did* ship — item 6 above), grants, anti-rug-pull, kill-lists, MCP, the
+embedding pre-filter, and even static `_visible_to` scoping (the
+description split buys enough headroom that scoping waits until install
+counts actually grow).
 
 ---
 

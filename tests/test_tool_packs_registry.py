@@ -248,6 +248,55 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
     assert _serialize(walk_reg) == _serialize(ref_reg)
 
 
+def test_disabled_set_drops_named_tools_only():
+    """`disabled=` filters by registered Tool.name at the single
+    registration chokepoint: named tools vanish, all others survive in
+    order, and the count drops by exactly the number disabled."""
+    deps = _full_deps()
+    reg = ToolRegistry()
+    register_packs(reg, deps, disabled=frozenset({"get_weather", "spotify_play"}))
+
+    names = list(reg.tools.keys())
+    assert "get_weather" not in names
+    assert "spotify_play" not in names
+    assert len(names) == len(EXPECTED_TOOL_NAMES) - 2
+    # Survivors keep their relative order from the full shipped sequence.
+    assert names == [n for n in EXPECTED_TOOL_NAMES if n not in {"get_weather", "spotify_play"}]
+
+
+def test_explicit_disabled_set_never_reads_the_ssot_file(monkeypatch):
+    """Passing an explicit `disabled` set must NOT touch the SSOT file —
+    tests stay filesystem-independent. Monkeypatch the reader to blow up;
+    the walk with an explicit set still registers the full 28."""
+    import jasper.tool_state as tool_state
+
+    def _boom(*_a, **_k):
+        raise AssertionError("read_disabled_tools must not be called with explicit disabled=")
+
+    monkeypatch.setattr(tool_state, "read_disabled_tools", _boom)
+    reg = ToolRegistry()
+    register_packs(reg, _full_deps(), disabled=frozenset())
+    assert len(reg.tools) == len(EXPECTED_TOOL_NAMES)
+
+
+def test_default_disabled_is_fail_safe(monkeypatch):
+    """With no `disabled=` passed, the walk reads the SSOT fail-safe. A
+    reader that returns the empty set (the missing-file case) registers
+    all 28 — the no-disabled path stays identical to today."""
+    import jasper.tools.packs as packs_mod
+
+    monkeypatch.setattr(packs_mod, "read_disabled_tools", lambda: frozenset(), raising=False)
+    # read_disabled_tools is imported lazily inside register_packs from
+    # jasper.tool_state; patch there to be safe.
+    import jasper.tool_state as tool_state
+
+    monkeypatch.setattr(tool_state, "read_disabled_tools", lambda *_a, **_k: frozenset())
+    reg = ToolRegistry()
+    register_packs(reg, _full_deps())
+    assert len(reg.tools) == len(EXPECTED_TOOL_NAMES)
+    assert list(reg.tools.keys()) == EXPECTED_TOOL_NAMES
+
+
 def test_broken_pack_is_isolated_other_packs_still_register():
     """Fault isolation: a pack whose `build` raises is skipped and
     logged; every other pack still registers. One broken tool module

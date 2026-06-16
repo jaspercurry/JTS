@@ -673,6 +673,13 @@ async def run() -> None:
         wake_event_store=wake_event_store,
     )
 
+    # Write the /run catalog the /tools/ wizard reads. Includes EVERY
+    # tool (needs_setup ones via sentinel deps), with status from the
+    # live registry + the user's disabled-set. Fail-soft.
+    from ..tool_state import read_disabled_tools
+    from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
+    write_catalog(registry, read_disabled_tools(), path=DEFAULT_CATALOG_PATH)
+
     # Wire the timer pre-render hook so set_timer (and start-time
     # restore for persisted timers) synthesises + caches the
     # fire-time announcement WAV ahead of time. Saves the user from
