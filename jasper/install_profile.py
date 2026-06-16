@@ -149,3 +149,46 @@ def install_profile_allows_content_dsp(profile: str | None) -> bool:
 def install_profile_allows_voice_brain(profile: str | None) -> bool:
     """Whether voice, wake, mic/AEC, and assistant integrations run locally."""
     return install_role_for_profile(profile) == FULL_INSTALL_PROFILE
+
+
+def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
+    """The management-UI capability map for an install profile.
+
+    Single source of truth, shared by two consumers: jasper-control's
+    /system snapshot (runtime) AND install.sh, which bakes the result into
+    the static landing page so its capability-gated sections are correct at
+    first paint with no network round-trip. Kept here (stdlib-only) so the
+    installer can compute it without importing the full control stack.
+
+    Values are derived purely from the profile, so the baked page and the
+    live snapshot always agree for the same marker.
+    """
+    role = install_role_for_profile(profile)
+    full = role == FULL_INSTALL_PROFILE
+    local_dsp = install_profile_allows_content_dsp(profile)
+    local_sources = install_profile_allows_local_sources(profile)
+    voice_brain = install_profile_allows_voice_brain(profile)
+    return {
+        # `install_profile` echoes the token this is CALLED with; the boolean
+        # caps below — what the page gates on — derive from the normalized
+        # role. In production both callers (the /system snapshot and the
+        # install.sh bake) pass read_install_profile(), which already
+        # normalizes endpoint/satellite -> streambox, so this field reads
+        # full|streambox and baked vs live always agree. A raw legacy token
+        # only appears if the function is called directly with one.
+        "install_profile": profile,
+        "role": role,
+        "local_sources": local_sources,
+        "content_dsp": local_dsp,
+        "voice_brain": voice_brain,
+        "network_settings": True,
+        "speaker_settings": True,
+        "pair_management": True,
+        "developer_tools": full,
+        "audio_quality": local_dsp,
+        "restart_voice": voice_brain,
+        "restart_audio": local_dsp,
+        "reboot": True,
+        "poweroff": True,
+        "diagnostics": True,
+    }

@@ -1324,6 +1324,36 @@ install_management_static_assets() {
     app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
     sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
+    # Bake the install profile's capability map into the landing page so its
+    # capability-gated sections render correctly at FIRST PAINT — no
+    # /system/data.json round-trip to lay out the page, and it stays correct
+    # even if a backend daemon is down. Same map jasper-control serves at
+    # runtime (system_capabilities_for_profile), so baked and live agree by
+    # construction. The profile marker was persisted earlier in this run.
+    # Python (not sed) so JSON quotes don't fight the shell; fail loud rather
+    # than ship a page with an unreplaced placeholder.
+    if ! PYTHONPATH="${REPO_DIR}" python3 - /usr/share/jasper-web/index.html <<'PYBAKE'
+import json
+import sys
+
+from jasper.install_profile import (
+    read_install_profile,
+    system_capabilities_for_profile,
+)
+
+path = sys.argv[1]
+caps = json.dumps(system_capabilities_for_profile(read_install_profile()))
+html = open(path, encoding="utf-8").read()
+if "__JTS_CAPS_JSON__" not in html:
+    sys.exit("landing page is missing the __JTS_CAPS_JSON__ placeholder")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(html.replace("__JTS_CAPS_JSON__", caps))
+PYBAKE
+    then
+        echo "  ERROR: failed to bake landing-page capabilities; refusing to ship a broken page" >&2
+        return 1
+    fi
+    echo "  landing page: baked install-profile capabilities for first-paint layout"
     # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
     # the .install-manifest the doctor verifies — see
     # deploy/lib/install/web-assets.sh for the copy shape and the

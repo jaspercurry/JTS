@@ -795,6 +795,16 @@
       });
     }
 
+    // The capability ceiling is baked at install time — install.sh stamps the
+    // active profile's capability map (jasper.install_profile.
+    // system_capabilities_for_profile) into the placeholder below. Applying it
+    // synchronously here (this script runs after the gated sections are parsed)
+    // makes the page correct at FIRST PAINT with no network round-trip, and it
+    // stays correct even if every backend daemon is down. The
+    // /system/data.json poll refreshes live values only; it never drives layout.
+    var BAKED_CAPS = __JTS_CAPS_JSON__;
+    applyCapabilities(BAKED_CAPS);
+
     // CamillaGUI runs on its own port (5005) rather than under an
     // nginx path prefix. Derive the hostname at click time so custom
     // speaker hostnames work without hard-coded jts.local links.
@@ -811,7 +821,8 @@
 
       function renderSnapshot(snap) {
         if (!snap) return;
-        applyCapabilities(snap.system_capabilities || null);
+        // Layout (capability gating) is baked at install time and applied
+        // synchronously above — the snapshot only refreshes live values.
 
         var speakerName = snap.speaker_name && snap.speaker_name.name;
         if (speakerName) {
