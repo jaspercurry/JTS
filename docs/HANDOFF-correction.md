@@ -667,7 +667,13 @@ the user-facing flow.
 - Max boost +3 dB (toggle in advanced drawer)
 - Max cut -10 dB
 - Q range 1.0-8.0
-- Overall max boost 0 dB (preserve digital headroom)
+- Overall max boost 0 dB (preserve digital headroom) — the cuts-only
+  default guarantees this; when boosts are enabled it is *enforced* at
+  emit time by a `room_headroom` preamp the shared emitter derives from
+  the worst-case additive room boost (`total_positive_boost_db`), so a
+  corrected boost can never exceed unity. See
+  [HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md) "Gain
+  staging — boosts boost".
 
 These mirror Jasper's known-good REW workflow (per the engineering
 brief).

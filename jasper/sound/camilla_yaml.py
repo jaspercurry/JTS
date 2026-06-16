@@ -28,6 +28,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
+    total_positive_boost_db,
 )
 from jasper.camilla_emit import (
     emit_delay_filter,
@@ -126,6 +127,37 @@ def _emit_filter_definitions(
             )
             room_names_right.append(name)
 
+    tail_names: list[str] = []
+
+    # Audio-safety: room-correction BOOSTS (the assertive strategy runs
+    # cuts_only=False, up to +3 dB total) raise specific bands with no
+    # compensating attenuation, so a hot note in a boosted band can clip
+    # above full scale. The master `volume_limit` caps the output FADER, not
+    # a per-band filter boost upstream of it. Pull the whole signal down by
+    # the worst-case additive room boost so the corrected response cannot
+    # exceed unity. Cuts-only correction (the default safe/balanced path) has
+    # zero boost, so this emits nothing and the solo config stays
+    # byte-identical. The trim is SHARED across both room chains; for an
+    # asymmetric leader-bake (different per-seat boosts per channel) we trim
+    # by the louder channel so neither can clip.
+    room_headroom_db = max(
+        total_positive_boost_db(room_list),
+        total_positive_boost_db(list(room_peqs_right or [])),
+    )
+    if room_headroom_db > 0.0:
+        lines.extend(emit_gain_filter("room_headroom", -room_headroom_db))
+        tail_names.append("room_headroom")
+        # debug, not info: this emitter is re-run on every /sound/live-draft
+        # slider interaction with the active room correction preserved, so an
+        # info line here would spam the journal during EQ editing whenever an
+        # assertive (boosted) correction is applied. The headroom is also
+        # visible in the emitted YAML and the "wrote sound config" summary.
+        logger.debug(
+            "room-correction boost headroom: -%.2f dB preamp "
+            "(worst-case additive room boost)",
+            room_headroom_db,
+        )
+
     # Preference boosts apply at unity: a +N dB band raises only that band
     # and leaves the rest of the spectrum untouched, like a consumer EQ. The
     # one optional global attenuation is the caller-supplied output trim
@@ -136,7 +168,6 @@ def _emit_filter_definitions(
     # from EQ, so it plays at unity even if a headroom trim is configured.
     sound_filters = build_sound_filters(profile)
     trim_db = max(0.0, float(output_trim_db)) if sound_filters else 0.0
-    tail_names: list[str] = []
     if trim_db > 0.0:
         lines.extend(emit_gain_filter("sound_preamp", -trim_db))
         tail_names.append("sound_preamp")

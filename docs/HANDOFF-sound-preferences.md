@@ -18,7 +18,11 @@ It is deliberately separate from `/correction/`:
   `flat` terminator last. As of 2026-06-13, the room-chain segment may
   also include gainless per-channel `Delay` filters for leader-owned
   stereo-pair time-of-arrival calibration; that is correction/sync
-  calibration state, not a preference-EQ control.
+  calibration state, not a preference-EQ control. When a room measurement
+  applies *boosts* (the assertive strategy only — the cuts-only default has
+  none), a single `room_headroom` attenuator rides between the room filters
+  and the preference tail so the boosted bands cannot clip (see "Gain
+  staging — boosts boost" below).
 
 While a speaker is an active bonded follower, `/sound/` is a delegated
 surface: the page shows a leader-owned notice and does not load the
@@ -135,12 +139,26 @@ is confirmed.
 
 A preference boost applies at unity: a +N dB band raises only that band
 and leaves the rest of the spectrum untouched, the way a consumer EQ
-behaves. The generated config inserts **no** automatic preamp. The only
-global attenuation is an opt-in **output trim**, which is 0 by default,
-so the default is "boosts boost". The `devices.volume_limit: 0.0` master
-ceiling remains the hard clip guard, so removing the old preamp cannot
-raise the output ceiling — at high volume a large boost clips at 0 dBFS
-rather than ducking the whole mix.
+behaves. The generated config inserts **no** automatic preamp for
+preference boosts. The only global attenuation for the preference layer
+is an opt-in **output trim**, which is 0 by default, so the default is
+"boosts boost". The `devices.volume_limit: 0.0` master ceiling remains
+the hard clip guard, so removing the old preamp cannot raise the output
+ceiling — at high volume a large boost clips at 0 dBFS rather than
+ducking the whole mix.
+
+**Room-correction boosts are the exception — they are headroom-compensated
+automatically.** The assertive correction strategy (`cuts_only=False`) can
+emit room PEQs with up to +3 dB total boost. Unlike preference boosts,
+those bands cannot be left to clip: `_emit_filter_definitions` derives a
+`room_headroom` preamp from the worst-case additive room boost (the sum of
+positive room-PEQ gains, an upper bound on the combined peak) and
+attenuates the whole signal by it, so a corrected room boost can never
+exceed unity. Cuts-only correction (the safe/balanced default) has zero
+boost and emits no `room_headroom`, keeping the config byte-identical.
+This is deliberately separate from `output_trim_db`: that trim compensates
+only the preference layer and is skipped on a flat sound profile, so it
+would not protect room boosts on a household that has set no preference EQ.
 
 Two opt-in, default-off global settings (distinct from per-profile EQ)
 feed that trim. They are owned by `/sound/` at
