@@ -246,10 +246,10 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
         is unavailable (dev host).
 
     Why this matters: before the batch, check_oom_score_adj called
-    `systemctl show` 2× per daemon × 7 daemons = 14 subprocess
-    invocations per doctor run. With the batch, it's 2 invocations
-    total — one for MainPID, one for OOMScoreAdjust. ~7× faster
-    per check.
+    `systemctl show` once per (property × daemon) — a dozen-plus
+    subprocess invocations per doctor run. Batched, it's one invocation
+    per property (LoadState, MainPID, OOMScoreAdjust), a large
+    constant-factor win on the Pi.
 
     Wire format note: `systemctl show -p X --value <u1> <u2> ... <uN>`
     emits `value1\\n\\nvalue2\\n\\n...valueN\\n`. The separator is
@@ -289,8 +289,13 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
 
 
 def _installed_units(units: list[str]) -> set[str] | None:
-    """Subset of ``units`` whose unit file is actually installed
-    (``LoadState`` is neither ``not-found`` nor ``masked``).
+    """Subset of ``units`` whose unit file is actually installed.
+
+    "Installed" means ``LoadState`` is neither ``not-found`` (no unit
+    file) nor ``masked`` (symlinked to /dev/null) — i.e. an effective
+    unit file exists to carry a directive. A unit that exists but is
+    broken (``error`` / ``bad-setting``) is intentionally KEPT so its
+    drift still surfaces rather than being silently hidden.
 
     Returns ``None`` if systemctl is unavailable (dev host), so callers
     can fall through to their existing "skipped" path.

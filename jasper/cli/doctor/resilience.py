@@ -12,7 +12,6 @@ wifi-scan-repair) get doctor lines."""
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from pathlib import Path
 
@@ -23,8 +22,8 @@ from ._shared import (
     CheckResult,
     _RUNTIME_STATE_UNITS,
     _installed_units,
-    _run,
     _service_runtime_states,
+    _systemctl_show_property,
 )
 
 # Expected StartLimitAction= per critical daemon. T5.1 of the
@@ -43,53 +42,40 @@ _EXPECTED_START_LIMIT_ACTION = {
     "jasper-control": "reboot",
 }
 
-def _start_limit_action_of_unit(unit: str) -> str | None:
-    """Best-effort: read `StartLimitAction=` from systemd's view of
-    the unit. Returns the lowercased action string, or `None` if
-    systemctl isn't available (dev host) or the lookup fails."""
-    try:
-        out = _run(
-            ["systemctl", "show", "-p", "StartLimitAction", "--value",
-             f"{unit}.service"],
-        ).stdout.strip().lower()
-        return out or "none"
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-
 @doctor_check(order=39, group="resilience")
 def check_start_limit_action() -> CheckResult:
-    """Verify the T5.1 `StartLimitAction=reboot` directive is in
-    effect on every critical daemon. Drift here means a Debian /
+    """Verify the T5.1 `StartLimitAction=reboot` directive is in effect on
+    every critical daemon this profile installs. Drift here means a Debian /
     RPi-OS update edited the unit, or someone manually disabled the
-    escalation. Doctor surfaces this — without StartLimitAction=reboot
-    we're back to Tier 5's "PID 1 alive but userspace dead" gap.
-    See docs/HANDOFF-tier5-watchdog-liveness.md."""
-    # Only verify daemons this install profile actually installs. The
-    # expected set is the full-speaker one; a streambox does not install
-    # the voice/AEC stack, so those absent units are not escalation drift.
-    installed = _installed_units(list(_EXPECTED_START_LIMIT_ACTION.keys()))
+    escalation. Doctor surfaces this — without StartLimitAction=reboot we're
+    back to Tier 5's "PID 1 alive but userspace dead" gap. See
+    docs/HANDOFF-tier5-watchdog-liveness.md."""
+    expected = _EXPECTED_START_LIMIT_ACTION
+    # Verify only the daemons this profile installs (a streambox omits the
+    # voice/AEC stack), then read the directive for those in one batched
+    # systemctl call — same shape as check_oom_score_adj.
+    installed = _installed_units(list(expected))
     if installed is None:
         return CheckResult(
             "StartLimitAction", "ok",
             "systemctl unavailable — skipped (not Linux?)",
         )
-    if not installed:
+    units = [u for u in expected if u in installed]
+    if not units:
         return CheckResult(
             "StartLimitAction", "ok", "no managed critical daemons installed",
         )
+    actions = _systemctl_show_property("StartLimitAction", units)
+    if actions is None:
+        return CheckResult(
+            "StartLimitAction", "ok",
+            "systemctl unavailable — skipped (not Linux?)",
+        )
     drift = []
-    for unit, want in _EXPECTED_START_LIMIT_ACTION.items():
-        if unit not in installed:
-            continue
-        got = _start_limit_action_of_unit(unit)
-        if got is None:
-            # systemctl unavailable (dev host) — skip cleanly
-            return CheckResult(
-                "StartLimitAction", "ok",
-                "systemctl unavailable — skipped (not Linux?)",
-            )
-        if got != want:
-            drift.append(f"{unit}={got} (want {want})")
+    for unit, raw in zip(units, actions):
+        got = (raw or "").strip().lower() or "none"
+        if got != expected[unit]:
+            drift.append(f"{unit}={got} (want {expected[unit]})")
     if drift:
         return CheckResult(
             "StartLimitAction", "warn",
@@ -98,7 +84,7 @@ def check_start_limit_action() -> CheckResult:
         )
     return CheckResult(
         "StartLimitAction", "ok",
-        f"T5.1 reboot escalation active on all {len(installed)} "
+        f"T5.1 reboot escalation active on all {len(units)} "
         "installed critical daemons",
     )
 

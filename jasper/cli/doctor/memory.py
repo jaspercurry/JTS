@@ -340,8 +340,8 @@ def check_oom_score_adj() -> CheckResult:
         return CheckResult(
             "OOM score adj", "ok", "no managed daemons installed",
         )
-    # Batch both systemctl-show calls — one subprocess per property
-    # instead of one per (property × unit).
+    # Batch the value reads — one subprocess per property instead of one
+    # per (property × unit). (The LoadState filter above is a third.)
     pids_raw = _systemctl_show_property("MainPID", units)
     configs_raw = _systemctl_show_property("OOMScoreAdjust", units)
     if pids_raw is None or configs_raw is None:
