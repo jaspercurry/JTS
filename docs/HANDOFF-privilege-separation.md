@@ -141,6 +141,15 @@ stanza is drift-guarded by [`tests/test_systemd_hardening.py`](../tests/test_sys
   is the daemon hardening (Phase 1) + the user drop (Phase 3). This posture was
   chosen deliberately to keep plug-and-play frictionless.
 
+> **Device-to-device caveat (2026-06-16).** The "closes #712's `/rooms/` token
+> gap for free" line above holds only for *browser → its own speaker*. The
+> mandatory token does **not** authenticate the cross-device grouping fan-out
+> (each speaker mints a distinct token, so the leader can't satisfy a
+> follower's gate) — that path now 403s. The reconciled design (a separate
+> household credential for the machine-to-machine path) lives in
+> [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md), which owns the
+> device-to-device control-plane auth question.
+
 Pinned by `tests/test_control_token.py` (ensure/current/idempotence/0600/meta),
 `tests/test_http_js_control_token.py` (meta-first delivery), and the
 server-frozenset-derived gating tests in `tests/test_control_server.py`.

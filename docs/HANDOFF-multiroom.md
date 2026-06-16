@@ -1329,6 +1329,16 @@ ceiling; all volume is done in software upstream):
 
 ### Grouping control plane — threat model (UNAUTHENTICATED by design)
 
+> **Superseded in practice (2026-06-16).** This subsection's "unauthenticated
+> by design" stance no longer matches runtime: WS1 Phase 2
+> ([HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)) made the
+> control token **mandatory** on `/grouping/set`, so the cross-device fan-out
+> now `403`s (each speaker mints a distinct per-device token). The reconciled
+> design — a household credential for the device-to-device path — lives in
+> [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md); this section
+> gets rewritten when that plan's Phase A lands. Until then, treat the text
+> below as the *original intent*, not current behaviour.
+
 The grouping control plane — `POST /grouping/set`, `GET /grouping`, and
 the bond/unbond fan-out that POSTs to those on *other* speakers — is
 **unauthenticated, by design**. It is the *same* home-LAN trust model as
