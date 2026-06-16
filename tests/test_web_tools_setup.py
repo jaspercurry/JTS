@@ -20,14 +20,26 @@ from __future__ import annotations
 
 import http
 import json
+import threading
 from email.message import Message
 from io import BytesIO
 from typing import Any
+
+import pytest
 
 from jasper.web import tools_setup
 
 
 CSRF = "x" * 43  # passes _common._is_valid_token (32..128 url-safe chars)
+
+
+@pytest.fixture(autouse=True)
+def _reset_apply_floor():
+    """The Apply rate-limit's in-memory fail-closed floor is a module global;
+    reset it so per-test apply timing is independent of test order."""
+    tools_setup._LAST_APPLY[0] = 0.0
+    yield
+    tools_setup._LAST_APPLY[0] = 0.0
 
 
 def _handler_cls(catalog_path: str, state_path: str):
@@ -380,6 +392,86 @@ def test_post_apply_is_rate_limited(tmp_path, monkeypatch):
     assert payload["reason"] == "throttled"
     assert payload["retry_after"] >= 1
     assert restarted["n"] == 1  # only the first one restarted
+
+
+def test_post_apply_throttle_survives_ts_write_failure(tmp_path, monkeypatch):
+    """If the apply timestamp can't be persisted (RO rootfs / disk full), the
+    in-memory fail-closed floor must still throttle — a write failure must not
+    open the reboot-ladder DoS."""
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [_tool("spotify_play")])
+    restarted = {"n": 0}
+    monkeypatch.setattr(
+        tools_setup, "restart_voice_daemon",
+        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+    )
+    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    # An unwritable ts path: the parent dir doesn't exist, so every write
+    # fails (and every read returns 0.0). Only the in-memory floor can throttle.
+    bad_ts = str(tmp_path / "nonexistent-dir" / "apply.ts")
+    hc = tools_setup._make_handler({
+        "catalog_path": str(cat), "state_path": str(tmp_path / "s.env"),
+        "apply_ts_path": bad_ts,
+    })
+
+    h1 = _post_apply(hc)
+    h1.do_POST()
+    assert json.loads(h1.wfile.getvalue().decode())["restarted"] is True
+
+    h2 = _post_apply(hc)
+    h2.do_POST()
+    assert json.loads(h2.wfile.getvalue().decode())["restarted"] is False
+    assert restarted["n"] == 1  # floor held despite the unwritable ts file
+
+
+def test_post_apply_ignores_non_finite_ts(tmp_path, monkeypatch):
+    """A nan/inf timestamp must be treated as 0.0 (Apply proceeds) — not
+    silently fail open (nan) or block Apply forever (inf)."""
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "s.env"
+    ts = tmp_path / "apply.ts"
+    _write_catalog(cat, [_tool("spotify_play")])
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    for bogus in ("inf", "nan", "-inf"):
+        ts.write_text(bogus)
+        tools_setup._LAST_APPLY[0] = 0.0  # isolate from the floor
+        h = _post_apply(tools_setup._make_handler({
+            "catalog_path": str(cat), "state_path": str(state),
+            "apply_ts_path": str(ts),
+        }))
+        h.do_POST()
+        payload = json.loads(h.wfile.getvalue().decode())
+        assert payload["restarted"] is True, f"{bogus} ts blocked Apply"
+
+
+def test_concurrent_toggles_do_not_lose_updates(tmp_path, monkeypatch):
+    """The _STATE_LOCK must serialize the read-modify-write of tool_state.env
+    so N concurrent toggles of distinct tools all land (no last-writer-wins
+    lost updates). Pins the docstring safety claim."""
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "s.env"
+    names = [f"tool_{i}" for i in range(12)]
+    _write_catalog(cat, [_tool(n) for n in names])
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    hc = _handler_cls(str(cat), str(state))
+
+    barrier = threading.Barrier(len(names))
+
+    def disable(name):
+        barrier.wait()  # maximize overlap on the RMW
+        h = _post_toggle(hc, {"name": name, "enabled": False})
+        h.do_POST()
+
+    threads = [threading.Thread(target=disable, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert tools_setup.read_disabled_tools(str(state)) == frozenset(names)
 
 
 def test_post_apply_missing_csrf_is_403(tmp_path, monkeypatch):

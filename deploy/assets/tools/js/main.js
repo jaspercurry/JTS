@@ -134,11 +134,14 @@ async function onApply() {
   }
   statusEl.textContent =
     "Restarting the assistant to apply your changes — about 10–15 seconds…";
-  // Poll for convergence: pending=false means the live registry now matches.
+  // Poll for convergence: a healthy catalog has NO `unavailable` key (only the
+  // failure path adds it), so test `!view.unavailable` — `=== false` would
+  // never match a healthy read and every Apply would falsely time out.
+  // pending=false means the live registry now matches the staged set.
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 1500));
     const view = await load({ keepStale: true });
-    if (view && view.unavailable === false && view.pending === false) {
+    if (view && !view.unavailable && view.pending === false) {
       statusEl.textContent = "Changes applied.";
       applyBtn.disabled = false;
       return;

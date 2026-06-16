@@ -51,7 +51,10 @@ def read_catalog_json(path: str = DEFAULT_CATALOG_PATH) -> dict[str, Any]:
             data = json.load(fh)
     except FileNotFoundError:
         return _unavailable()
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        # UnicodeDecodeError (a ValueError, not an OSError) covers a non-UTF-8
+        # / corrupt file — the FS-corruption class the fail-safe exists for;
+        # without it /state, the doctor, and /catalog.json would crash.
         logger.warning("tool catalog read %s failed: %s", path, e)
         return _unavailable()
     if not isinstance(data, dict) or not isinstance(data.get("tools"), list):
@@ -64,7 +67,14 @@ def overlay(catalog: dict[str, Any], disabled: frozenset[str]) -> dict[str, Any]
     """Return a copy of `catalog` with each CONFIGURED tool's status
     re-derived from `disabled`, plus a top-level `pending` flag — True iff
     applying `disabled` would change the live registry (some configured
-    tool's desired on/off differs from what voice baked)."""
+    tool's desired on/off differs from what voice baked).
+
+    `pending` is computed only over tools present in the catalog. A tool
+    hidden from the catalog (jasper.tools.catalog._CATALOG_HIDDEN, today just
+    home_assistant_confirm) that somehow appears in `disabled` won't be
+    counted — but that's unreachable through the wizard (POST /toggle rejects
+    names absent from the catalog) and benign even if hand-edited (a stranded
+    confirm tool is harmless), so it's intentionally not special-cased here."""
     tools_out: list[Any] = []
     pending = False
     for t in catalog.get("tools", []):

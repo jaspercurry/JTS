@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -85,6 +86,16 @@ _APPLY_MIN_INTERVAL_SEC = 20.0
 # can't lose an update (last-writer-wins on the unserialized RMW).
 _STATE_LOCK = threading.Lock()
 
+# In-memory fail-CLOSED floor for the Apply rate-limit. The persisted
+# timestamp is the cross-restart source of truth, but if it can't be written
+# (read-only rootfs after an unclean shutdown, disk full, bad perms) the file
+# read would return 0.0 and the throttle would collapse — letting an Apply
+# retry loop feed jasper-voice's StartLimitAction=reboot ladder. This module
+# global holds the last apply time within the (long-lived, socket-activated)
+# wizard process, so the throttle still bounds the rate across a burst even
+# when the file write fails. A list so the nested handler can mutate it.
+_LAST_APPLY = [0.0]
+
 
 def _toggle_index(catalog_path: str, state_path: str) -> dict[str, dict[str, Any]]:
     """name -> overlaid catalog entry, for toggle validation. Uses the same
@@ -98,14 +109,17 @@ def _toggle_index(catalog_path: str, state_path: str) -> dict[str, dict[str, Any
 
 
 def _read_apply_ts(path: str) -> float:
-    """Last /apply restart time (epoch seconds). Missing/unreadable -> 0.0
-    (never throttle on a bad read — the throttle is a safety cap, and a
-    missing file means 'no recent restart')."""
+    """Last /apply restart time (epoch seconds). Missing/unreadable/non-finite
+    -> 0.0 (a missing file means 'no recent restart'; the in-memory floor in
+    _handle_apply guards the fail-open direction). Reject nan/inf explicitly:
+    float('nan') parses fine but breaks the `remaining > 0` comparison (nan
+    fails open, inf never fires)."""
     try:
         with open(path, encoding="utf-8") as fh:
-            return float(fh.read().strip() or "0")
+            v = float(fh.read().strip() or "0")
     except (OSError, ValueError):
         return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
 def _write_apply_ts(path: str, ts: float) -> None:
@@ -305,8 +319,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             now = time.time()
             with _STATE_LOCK:
-                remaining = _APPLY_MIN_INTERVAL_SEC - (now - _read_apply_ts(
-                    cfg["apply_ts_path"]))
+                # max(persisted, in-memory) so a failed ts write can't open
+                # the throttle within this process (fail-closed floor).
+                last = max(_read_apply_ts(cfg["apply_ts_path"]), _LAST_APPLY[0])
+                remaining = _APPLY_MIN_INTERVAL_SEC - (now - last)
                 if remaining > 0:
                     send_proxy_json(self, json.dumps({
                         "restarted": False, "reason": "throttled",
@@ -316,6 +332,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                                    "shortly.",
                     }).encode(), status=200)
                     return
+                _LAST_APPLY[0] = now
                 _write_apply_ts(cfg["apply_ts_path"], now)
             log_event(logger, "tools.apply", client=self.address_string())
             # jasper-voice re-filters the registry against tool_state.env on

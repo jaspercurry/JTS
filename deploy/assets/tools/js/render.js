@@ -15,16 +15,17 @@
 import { escapeHtml } from "/assets/shared/js/escape.js";
 
 // A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
-// "/google/"). Accept ONLY an absolute path: it must start with "/" and not
-// "//" (protocol-relative "//host" navigates off-origin). This neutralizes
-// `javascript:` / `data:` schemes BEFORE the value reaches an <a href> —
-// escapeHtml escapes characters but does not validate schemes, so it can't
-// stop a `javascript:` href on its own. The catalog is the marketplace's
-// future home for third-party setup links, so the href is a real boundary.
+// "/google/"). Accept ONLY an absolute path whose first char is "/" and whose
+// SECOND char is neither "/" nor "\\". Both "//host" and "/\\host" are
+// scheme-relative (browsers normalize "\\" to "/" in special schemes), so they
+// navigate OFF-ORIGIN — the backslash form slips past a naive `!"//"` check.
+// This also neutralizes `javascript:`/`data:` schemes (they don't start with
+// "/") BEFORE the value reaches an <a href> — escapeHtml escapes characters
+// but does not validate schemes/authorities, so it can't stop these on its
+// own. The catalog is the marketplace's future home for third-party setup
+// links, so the href is a real boundary.
 function safeSetupUrl(u) {
-  return typeof u === "string" && u.startsWith("/") && !u.startsWith("//")
-    ? u
-    : null;
+  return typeof u === "string" && /^\/(?![/\\])/.test(u) ? u : null;
 }
 
 // status -> { label, --tone } for the .badge pill. needs_setup uses the idle

@@ -30,6 +30,20 @@ def test_read_malformed_json_is_unavailable(tmp_path):
     assert view.read_catalog_json(str(p))["unavailable"] is True
 
 
+def test_read_non_utf8_is_unavailable(tmp_path):
+    # A non-UTF-8 / corrupt file raises UnicodeDecodeError (a ValueError, not
+    # OSError/JSONDecodeError) — it must resolve to unavailable, never crash
+    # /state, the doctor, or the wizard's /catalog.json.
+    p = tmp_path / "tools.json"
+    p.write_bytes(b"\xff\xfe\x00bad bytes")
+    out = view.read_catalog_json(str(p))
+    assert out["unavailable"] is True
+    assert out["tools"] == []
+    # summary() (used by /state + doctor) must stay total over the same input.
+    s = view.summary(str(p), str(tmp_path / "state.env"))
+    assert s["catalog_present"] is False
+
+
 def test_read_wrong_shape_is_unavailable(tmp_path):
     for bad in ({}, {"tools": None}, {"tools": "nope"}, [1, 2, 3]):
         p = tmp_path / "tools.json"

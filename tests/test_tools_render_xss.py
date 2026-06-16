@@ -50,7 +50,13 @@ def test_render_escapes_every_untrusted_tool_field():
     assert out["noSvgTag"] is True, "an <svg> payload survived escaping"
     # And the payloads were genuinely escaped (entities present), not dropped.
     assert out["escapedEntitiesPresent"] is True
-    # The setup_url href is its own boundary: a javascript: scheme must be
-    # dropped by safeSetupUrl, while a real same-origin path still renders.
+    # The setup_url href is its own boundary: safeSetupUrl must drop the
+    # scheme class (javascript:) AND the off-origin class (//host, /\host),
+    # while a real same-origin path still renders.
     assert out["noJavascriptScheme"] is True, "a javascript: setup_url survived"
+    assert out["noOffOriginHref"] is True, "an off-origin setup_url href survived"
     assert out["safeHrefRendered"] is True, "a safe /transit/ setup link was dropped"
+    # needs_setup with no setup_url renders an honest Unavailable badge, never
+    # a dead disabled checkbox (the flag_recent_issue degraded case).
+    assert out["unavailableRendered"] is True, "no Unavailable badge for a urlless needs_setup tool"
+    assert out["noDeadToggle"] is True, "a urlless needs_setup tool rendered a toggle"
