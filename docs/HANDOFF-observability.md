@@ -83,6 +83,37 @@ mapping. A conventions guard
 fails CI on any new hand-written `logger.<level>("event=…")` call;
 its allowlist holds only active-zone files deferred to in-flight work.
 
+**Remaining migration — 14 deferred active-zone files.** The migration is
+complete across the codebase *except* a small set of files an in-flight
+work-stream owns; those were left hand-written to avoid churning a parallel
+session's edits. **The authoritative, machine-checked list of what's left is
+`DEFERRED_ACTIVE_ZONE` in
+[`tests/test_log_event_conventions.py`](../tests/test_log_event_conventions.py)**
+— a staleness test fails CI if any listed file no longer has a hand-written
+`event=` line, so the list cannot silently rot. As of 2026-06-16 it is two
+clusters:
+
+- **Active-crossover / sound UI work-stream** —
+  `jasper/active_speaker/{camilla_yaml,playback,staging,startup_load}.py`,
+  `jasper/web/sound_setup.py` (the largest single file, ~69 lines),
+  `jasper/output_topology.py`, and `jasper/sound/camilla_yaml.py`. Deferred
+  because the active-crossover sound UI is being edited in another session;
+  migrating these now would collide with that work.
+- **LLM tool surfaces** —
+  `jasper/tools/{__init__,audio,bus,citibike,diagnostic,home_assistant,packs}.py`.
+  Deferred with the rest of `jasper/tools/` (the voice-tool surface) to keep
+  the migration clear of prompt-adjacent files; the `event=` *log* lines there
+  are ordinary operational logs (not LLM-facing docstrings) and migrate
+  cleanly when picked up.
+
+**To finish a deferred file:** migrate its `logger.<level>("event=…")` calls
+to `log_event(…)` using the fidelity rules above (byte-identical for clean
+values; `%r`→`repr()`; precision specs→pre-rendered f-strings; trailing
+prose→a `note=` field; a field named `level`→the `fields=` mapping), then
+**delete that file's entry from `DEFERRED_ACTIVE_ZONE`** so the guard starts
+enforcing it. The owning work-stream lands first; this is a clean follow-up,
+not a blocker.
+
 **Persistent journald is deliberate, not an oversight.**
 `deploy/journald/50-jts-persistent-storage.conf` sets
 `Storage=persistent` capped at 200 MB so a watchdog reset's
