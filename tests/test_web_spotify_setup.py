@@ -77,6 +77,22 @@ def test_setup_wizard_shows_disambiguation_note_as_info_card():
     assert 'href="/sources/"' in out
 
 
+def test_management_page_links_to_spotify_tool_pack():
+    registry = spotify_setup.Registry(
+        accounts=[spotify_setup.Account(name="jasper")],
+        default_name="jasper",
+    )
+    out = spotify_setup._management_html(
+        registry,
+        "https://example.test/cb?host=jts.local",
+        "0123456789abcdef0123456789abcdef",
+        "bounce",
+        CSRF,
+    ).decode()
+    assert 'href="/tools/pack/spotify/"' in out
+    assert "Manage Spotify tool prompts" in out
+
+
 def test_redirect_uri_page_renders_copy_row_without_inline_js():
     out = spotify_setup._redirect_uri_page_html(
         "https://example.test/cb?host=jts.local",

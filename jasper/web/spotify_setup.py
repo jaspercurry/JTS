@@ -759,6 +759,11 @@ def _management_html(
    AirPlay-pushed track title with each account's currently-playing
    Spotify track &mdash; no per-device setup needed.</p>
 
+<div class="info-card">
+  <p class="form-hint"><strong>Voice tools.</strong> Manage Spotify tool prompts
+     and enablement in <a href="/tools/pack/spotify/">Tools</a>.</p>
+</div>
+
 <h2>Accounts</h2>
 <p class="form-hint">Click an account to manage it. Custom playlists
    let you reach Spotify-owned algorithmic playlists (Discover Weekly,
