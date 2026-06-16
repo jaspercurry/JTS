@@ -22,7 +22,12 @@ from .calibration_level import (
     clamp_test_level_dbfs,
 )
 from .driver_protection import driver_protection_payload, driver_protection_profile
-from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, OutputChannel
+from .profile import (
+    ActiveSpeakerConfigError,
+    ActiveSpeakerPreset,
+    OutputChannel,
+    crossover_edges_for_role,
+)
 
 SCHEMA_VERSION = 1
 TONE_PLAN_KIND = "jts_active_speaker_tone_plan"
@@ -105,23 +110,12 @@ def _target_output(
     return None
 
 
-def _crossovers_for_role(preset: ActiveSpeakerPreset, role: str) -> tuple[float | None, float | None]:
-    lower_edge: float | None = None
-    upper_edge: float | None = None
-    for region in preset.crossover_regions:
-        if region.upper_driver == role:
-            lower_edge = region.fc_hz
-        if region.lower_driver == role:
-            upper_edge = region.fc_hz
-    return lower_edge, upper_edge
-
-
 def _tone_frequency_hz(
     preset: ActiveSpeakerPreset,
     role: str,
 ) -> tuple[float, dict[str, Any]]:
     profile = driver_protection_profile(role)
-    lower_edge, upper_edge = _crossovers_for_role(preset, role)
+    lower_edge, upper_edge = crossover_edges_for_role(preset, role)
     if profile.role_class == "high_frequency":
         highpass = max(
             lower_edge or 0.0,

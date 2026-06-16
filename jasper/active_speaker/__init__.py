@@ -172,6 +172,14 @@ from .driver_acoustics import (
     analyze_summed_crossover,
     write_driver_sweep_wav,
 )
+from .commissioning_capture import (
+    DRIVER_VERDICT_TO_OUTCOME,
+    SUMMED_VERDICT_TO_OUTCOME,
+    driver_passband_hz,
+    primary_crossover_fc_hz,
+    record_driver_acoustic_capture,
+    record_summed_acoustic_capture,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
@@ -189,6 +197,12 @@ __all__ = [
     "analyze_driver_capture",
     "analyze_summed_crossover",
     "write_driver_sweep_wav",
+    "DRIVER_VERDICT_TO_OUTCOME",
+    "SUMMED_VERDICT_TO_OUTCOME",
+    "driver_passband_hz",
+    "primary_crossover_fc_hz",
+    "record_driver_acoustic_capture",
+    "record_summed_acoustic_capture",
     "CALIBRATION_LEVEL_KIND",
     "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_PATH_SAFETY_EVIDENCE_PATH",
