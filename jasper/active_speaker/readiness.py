@@ -18,6 +18,7 @@ from jasper.output_topology import (
     clock_domain_report,
 )
 
+from ._common import gate as _gate, issue as _issue
 from .audible_policy import (
     audible_policy_payload,
     audible_role_allowed,
@@ -37,25 +38,6 @@ HIGH_FREQUENCY_FLOOR_TEST_PREVIEW_KIND = (
     "jts_active_speaker_high_frequency_floor_test_preview"
 )
 HIGH_FREQUENCY_FLOOR_TEST_RAMP_MS = 20
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
-
-
-def _gate(
-    gate_id: str,
-    *,
-    label: str,
-    passed: bool,
-    message: str,
-) -> dict[str, Any]:
-    return {
-        "id": gate_id,
-        "label": label,
-        "passed": bool(passed),
-        "message": message,
-    }
 
 
 def _target(

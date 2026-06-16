@@ -25,6 +25,7 @@ from jasper.dsp_apply import (
 )
 from jasper.output_topology import OutputTopology
 
+from ._common import issue as _issue
 from .camilla_yaml import emit_active_speaker_baseline_config
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
@@ -44,10 +45,6 @@ CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def baseline_profile_state_path(path: str | Path | None = None) -> Path:

@@ -13,6 +13,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from ._common import issue as _issue
 from .calibration_level import (
     DEFAULT_TEST_LEVEL_DBFS,
     MAX_TEST_LEVEL_DBFS,
@@ -33,10 +34,6 @@ DEFAULT_TONE_DURATION_MS = 300
 MIN_TONE_DURATION_MS = 100
 MAX_TONE_DURATION_MS = 500
 DEFAULT_TONE_RAMP_MS = 20
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:

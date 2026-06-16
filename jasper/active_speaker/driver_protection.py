@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from ._common import issue as _issue
 from .calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     MAX_TEST_LEVEL_DBFS,
@@ -134,10 +135,6 @@ def driver_protection_profile(
         max_auto_level_dbfs=MIN_TEST_LEVEL_DBFS,
         requires_floor_confirmation_above_floor=True,
     )
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _finite_float(value: Any) -> float | None:

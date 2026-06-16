@@ -15,6 +15,7 @@ from typing import Any
 from jasper.audio_hardware import dac
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.output_topology import OutputTopology, SpeakerGroup
+from ._common import issue as _issue
 
 ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
@@ -22,10 +23,6 @@ OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
 EXPLICIT_SOURCE = "explicit"
 DIRECT_DAC_SOURCE = "topology_direct_dac"
 MISSING_SOURCE = "missing"
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _active_main_groups(topology: OutputTopology) -> list[SpeakerGroup]:

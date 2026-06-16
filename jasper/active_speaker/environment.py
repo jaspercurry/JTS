@@ -22,6 +22,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 
+from ._common import issue as _issue
 from .camilla_yaml import FORBIDDEN_ACTIVE_PLAYBACK_TOKENS
 from .path_safety import evaluate_path_safety_evidence
 from .profile import ActiveSpeakerConfigError
@@ -65,10 +66,6 @@ def _default_runner(
         text=True,
         timeout=timeout,
     )
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def parse_aplay_playback_devices(text: str) -> list[dict[str, Any]]:

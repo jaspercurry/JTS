@@ -21,6 +21,7 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology
 
+from ._common import issue as _issue
 from .calibration_level import classify_mic_meter
 from .safe_playback import playback_target_signature
 
@@ -48,10 +49,6 @@ MAX_SUMMED_TEST_RECORDS = 24
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def measurement_state_path(path: str | Path | None = None) -> Path:

@@ -16,6 +16,7 @@ from calendar import timegm
 from pathlib import Path
 from typing import Any, Callable
 
+from ._common import issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1
@@ -91,10 +92,6 @@ def _environment_summary(report: dict[str, Any]) -> dict[str, Any]:
         "safe_playback_status": safe.get("status"),
         "safe_playback_allowed": bool(safe.get("playback_allowed")),
     }
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _nonnegative_int(value: Any) -> int | None:
