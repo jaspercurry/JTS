@@ -26,11 +26,13 @@ from jasper.dsp_apply import (
 from jasper.output_topology import OutputTopology
 
 from .camilla_yaml import emit_active_speaker_baseline_config
-from .profile import ActiveSpeakerPreset, required_driver_roles
-from .staging import (
-    compile_preset_from_crossover_preview,
-    resolve_active_playback_device,
+from .playback_route import (
+    OUTPUTD_ACTIVE_LANE_SOURCE,
+    durable_profile_route_capability,
+    resolve_durable_profile_playback_device,
 )
+from .profile import ActiveSpeakerPreset, required_driver_roles
+from .staging import compile_preset_from_crossover_preview
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
@@ -208,7 +210,7 @@ def _blocked_payload(
 
 
 def _apply_handoff_issue(playback_device_source: str) -> dict[str, str] | None:
-    if playback_device_source == "dual_apple_outputd_active_lane":
+    if playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE:
         return None
     return _issue(
         "blocker",
@@ -256,7 +258,13 @@ def build_baseline_profile_candidate(
     config_target = baseline_config_path(config_path)
     now = created_at or _utc_now()
     source = _source_payload(topology, design_draft, crossover_preview, measurements)
-    resolved_playback_device, playback_device_source = resolve_active_playback_device(
+    resolved_playback_device, playback_device_source = (
+        resolve_durable_profile_playback_device(
+            topology,
+            playback_device=playback_device,
+        )
+    )
+    route_capability = durable_profile_route_capability(
         topology,
         playback_device=playback_device,
     )
@@ -314,7 +322,7 @@ def build_baseline_profile_candidate(
         issues.append(_issue(
             "blocker",
             "baseline_driver_measurements_missing",
-            "measure each driver before saving the active profile",
+            "confirm each driver with a quiet test before saving the active profile",
         ))
     if not summary.get("summed_validation_complete"):
         issues.append(_issue(
@@ -328,6 +336,9 @@ def build_baseline_profile_candidate(
             "baseline_playback_device_missing",
             "active profile compiler needs an explicit active playback device",
         ))
+    for issue in route_capability.issues:
+        if issue.get("code") == "active_playback_route_too_narrow":
+            issues.append(issue)
     subwoofer_groups = [
         group.label for group in topology.speaker_groups
         if group.kind == "subwoofer" or group.mode == "subwoofer"

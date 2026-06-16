@@ -71,6 +71,7 @@ class DacProfile:
     child_profile_ids: tuple[str, ...] = ()
     requires_same_usb_bus: bool = False
     supports_active_outputd_lane: bool = False
+    active_outputd_lane_channels: int | None = None
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
     validation_profile: str | None = None
@@ -129,6 +130,26 @@ class DacProfile:
                 f"{self.id}: coherent_clock_domain only describes single-device "
                 "clock domains"
             )
+        if self.supports_active_outputd_lane:
+            if self.active_outputd_lane_channels is None:
+                raise ValueError(
+                    f"{self.id}: active_outputd_lane_channels is required when "
+                    "supports_active_outputd_lane is true"
+                )
+            if self.active_outputd_lane_channels <= 0:
+                raise ValueError(
+                    f"{self.id}: active_outputd_lane_channels must be > 0"
+                )
+            if self.active_outputd_lane_channels > self.physical_output_count:
+                raise ValueError(
+                    f"{self.id}: active_outputd_lane_channels cannot exceed "
+                    "physical_output_count"
+                )
+        elif self.active_outputd_lane_channels is not None:
+            raise ValueError(
+                f"{self.id}: active_outputd_lane_channels requires "
+                "supports_active_outputd_lane"
+            )
 
 
 APPLE_HEADPHONE_CONTROL = MixerControl(
@@ -148,7 +169,6 @@ APPLE_USB_C_DONGLE = DacProfile(
     outputd_sink="alsa",
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
-    supports_active_outputd_lane=True,
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
     headphone_pinned_100=True,
     udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
@@ -168,7 +188,6 @@ HIFIBERRY_DAC8X = DacProfile(
         "hifiberry.*dac8x(?!.*studio)",
         r"\bdac8x\b(?!.*studio)",
     ),
-    supports_active_outputd_lane=True,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     dtoverlay="hifiberry-dac8x",
 )
@@ -186,7 +205,6 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
         "dac8x.*studio",
         "hifiberry.*dac8x.*studio",
     ),
-    supports_active_outputd_lane=True,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     dtoverlay="hifiberry-dac8x",
 )
@@ -205,6 +223,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
     requires_same_usb_bus=True,
     supports_active_outputd_lane=True,
+    active_outputd_lane_channels=4,
     headphone_pinned_100=True,
 )
 
@@ -319,6 +338,21 @@ def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
     return profile is not None and profile.physical_output_count == output_count
 
 
+def active_outputd_lane_channels_for(profile_id: str) -> int | None:
+    """Return the profile-declared active outputd transport width.
+
+    This is the protected transport capacity between CamillaDSP and outputd for
+    the current implementation. It is deliberately separate from physical DAC
+    outputs: a DAC can expose more analog lanes than outputd can safely consume
+    through the active-speaker handoff today.
+    """
+
+    profile = by_id(profile_id)
+    if profile is None or not profile.supports_active_outputd_lane:
+        return None
+    return profile.active_outputd_lane_channels
+
+
 def mixer_control_groups_for(
     profile_id: str,
 ) -> tuple[tuple[MixerControl, ...], ...] | None:
@@ -360,6 +394,7 @@ __all__ = [
     "MixerControl",
     "REGISTRY",
     "all_profiles",
+    "active_outputd_lane_channels_for",
     "by_id",
     "clock_domain_contract_for",
     "clock_domain_label_for",

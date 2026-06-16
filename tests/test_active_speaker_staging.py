@@ -128,6 +128,56 @@ def _topology_with_subwoofer() -> OutputTopology:
     return OutputTopology.from_mapping(raw)
 
 
+def _stereo_three_way_topology() -> OutputTopology:
+    raw = _topology().to_dict()
+    raw["topology_id"] = "bench_stereo_3way"
+    raw["speaker_groups"] = [
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "active_3_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
+                {"role": "mid", "physical_output_index": 1, "identity_verified": True},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 2,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        },
+        {
+            "id": "right",
+            "label": "Right speaker",
+            "kind": "right",
+            "mode": "active_3_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 3, "identity_verified": True},
+                {"role": "mid", "physical_output_index": 4, "identity_verified": True},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 5,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        },
+    ]
+    raw["routing"] = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right",
+        "mono_group_id": None,
+        "subwoofer_group_ids": [],
+    }
+    return OutputTopology.from_mapping(raw)
+
+
 def _driver_research(
     *,
     frequency_hz: float = 2500,
@@ -248,7 +298,8 @@ def test_stage_protected_startup_config_writes_muted_candidate(
     assert payload["kind"] == STAGED_STARTUP_CONFIG_KIND
     assert payload["status"] == "staged"
     assert payload["preset"]["preset_id"] == "epique-e150he44-eminence-f110m8-safe-v1"
-    assert payload["config"]["playback_device"] == "hw:DAC8,0"
+    assert payload["config"]["playback_device"] == "hw:CARD=DAC8,DEV=0"
+    assert payload["config"]["playback_device_source"] == "topology_direct_dac"
     assert payload["config"]["playback_channels"] == 2
     assert payload["config"]["validation"]["status"] == "valid"
     assert payload["config"]["tweeter_protective_highpass_hz"] == 5000
@@ -364,6 +415,31 @@ def test_stage_protected_startup_config_supports_active_three_way_preview(
     assert "freq: 5600.0000" in text
 
 
+def test_stage_protected_startup_config_supports_stereo_three_way_on_dac8x(
+    tmp_path: Path,
+) -> None:
+    topology = _stereo_three_way_topology()
+    preview = _crossover_preview(topology, frequency_hz=2800, way_count=3)
+
+    payload = stage_protected_startup_config(
+        topology,
+        crossover_preview=preview,
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "staged"
+    assert payload["config"]["playback_device"] == "hw:CARD=DAC8,DEV=0"
+    assert payload["config"]["playback_device_source"] == "topology_direct_dac"
+    assert payload["config"]["playback_channels"] == 6
+    capacity_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "active_playback_route_capacity"
+    )
+    assert capacity_gate["passed"] is True
+
+
 def test_stage_protected_startup_config_preview_honors_saved_role_mapping(
     tmp_path: Path,
 ) -> None:
@@ -409,7 +485,7 @@ def test_stage_protected_startup_config_uses_outputd_active_lane_for_dual_apple(
 
     assert payload["status"] == "staged"
     assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-    assert payload["config"]["playback_device_source"] == "dual_apple_outputd_active_lane"
+    assert payload["config"]["playback_device_source"] == "outputd_active_lane"
     assert f'device: "{ACTIVE_OUTPUTD_PLAYBACK_DEVICE}"' in out.read_text(
         encoding="utf-8"
     )

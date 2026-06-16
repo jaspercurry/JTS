@@ -76,6 +76,56 @@ def _dual_apple_topology() -> OutputTopology:
     )
 
 
+def _stereo_three_way_topology() -> OutputTopology:
+    raw = _topology().to_dict()
+    raw["topology_id"] = "bench_stereo_3way"
+    raw["speaker_groups"] = [
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "active_3_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
+                {"role": "mid", "physical_output_index": 1, "identity_verified": True},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 2,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "software_guard_requested",
+                },
+            ],
+        },
+        {
+            "id": "right",
+            "label": "Right speaker",
+            "kind": "right",
+            "mode": "active_3_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 3, "identity_verified": True},
+                {"role": "mid", "physical_output_index": 4, "identity_verified": True},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 5,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "software_guard_requested",
+                },
+            ],
+        },
+    ]
+    raw["routing"] = {
+        "main_left_group_id": "left",
+        "main_right_group_id": "right",
+        "mono_group_id": None,
+        "subwoofer_group_ids": [],
+    }
+    return OutputTopology.from_mapping(raw)
+
+
 def _safe_session(
     *,
     role: str,
@@ -214,7 +264,7 @@ def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
 def test_baseline_profile_compiles_durable_camilla_yaml(
     tmp_path: Path,
 ) -> None:
-    topology = _topology()
+    topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(
         draft,
@@ -236,9 +286,9 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
     )
     yaml = config_path.read_text(encoding="utf-8")
 
-    assert payload["status"] == "compiled_apply_blocked"
-    assert payload["permissions"]["may_apply"] is False
-    assert "baseline_output_handoff_not_supported" in {
+    assert payload["status"] == "ready_to_apply"
+    assert payload["permissions"]["may_apply"] is True
+    assert "baseline_output_handoff_not_supported" not in {
         issue["code"] for issue in payload["issues"]
     }
     assert payload["safety"]["positive_gain_allowed"] is False
@@ -246,7 +296,9 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
     assert payload["verification"]["summed_validation_complete"] is True
     assert payload["corrections"]["tweeter"]["gain_db"] == -18.5
     assert "Source: jasper.active_speaker.camilla_yaml" in yaml
-    assert "hw:DAC8,0" in yaml
+    assert payload["config"]["playback_device"] == "outputd_active_content_playback"
+    assert payload["config"]["playback_device_source"] == "outputd_active_lane"
+    assert 'device: "outputd_active_content_playback"' in yaml
     assert "active_baseline_headroom" in yaml
     assert "as_tweeter_baseline_limiter" in yaml
 
@@ -254,7 +306,7 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
 def test_baseline_profile_blocks_until_summed_validation_exists(
     tmp_path: Path,
 ) -> None:
-    topology = _topology()
+    topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
 
@@ -278,7 +330,7 @@ def test_baseline_profile_blocks_until_summed_validation_exists(
 def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
     tmp_path: Path,
 ) -> None:
-    topology = _topology()
+    topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(
         draft,
@@ -299,7 +351,11 @@ def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
         created_at="2026-06-14T12:20:00Z",
     )
 
-    changed_topology = _topology(tweeter_output=2, tweeter_verified=False)
+    changed_topology = _dual_apple_topology()
+    changed_raw = changed_topology.to_dict()
+    changed_raw["speaker_groups"][0]["channels"][1]["physical_output_index"] = 2
+    changed_raw["speaker_groups"][0]["channels"][1]["identity_verified"] = False
+    changed_topology = OutputTopology.from_mapping(changed_raw)
     changed_measurements = load_measurement_state(
         changed_topology,
         state_path=tmp_path / "measurements.json",
@@ -315,7 +371,7 @@ def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
         validate=_valid_config,
     )
 
-    assert ready["status"] == "compiled_apply_blocked"
+    assert ready["status"] == "ready_to_apply"
     assert stale["status"] == "blocked"
     assert stale["permissions"]["may_apply"] is False
     assert "baseline_driver_measurements_missing" in {
@@ -326,7 +382,7 @@ def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
 def test_baseline_profile_never_emits_positive_driver_gain(
     tmp_path: Path,
 ) -> None:
-    topology = _topology()
+    topology = _dual_apple_topology()
     draft = _draft(topology, tweeter_gain_db=4.0)
     preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
@@ -342,11 +398,95 @@ def test_baseline_profile_never_emits_positive_driver_gain(
         validate=_valid_config,
     )
 
-    assert payload["status"] == "compiled_apply_blocked"
+    assert payload["status"] == "ready_to_apply"
     assert payload["corrections"]["tweeter"]["gain_db"] == 0.0
     assert "positive_driver_gain_ignored" in {
         issue["code"] for issue in payload["issues"]
     }
+
+
+def test_baseline_profile_apply_requires_registered_active_output_lane(
+    tmp_path: Path,
+) -> None:
+    topology = _topology(
+        device_id="unregistered_lab_dac",
+        device_label="Unregistered lab DAC",
+        physical_output_count=2,
+        card_id="LabDAC",
+    )
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        playback_device="hw:LabDAC,0",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "compiled_apply_blocked"
+    assert payload["permissions"]["may_apply"] is False
+    assert payload["config"]["playback_device_source"] == "explicit"
+    assert "baseline_output_handoff_not_supported" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_baseline_profile_does_not_apply_direct_dac_diagnostic_route(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_apply"] is False
+    assert payload["config"]["playback_device_source"] == "missing"
+    assert "baseline_playback_device_missing" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_baseline_profile_missing_evidence_does_not_invent_route_width_block(
+    tmp_path: Path,
+) -> None:
+    topology = _stereo_three_way_topology()
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft={},
+        crossover_preview={},
+        measurements={},
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    issue_codes = {issue["code"] for issue in payload["issues"]}
+    assert "baseline_crossover_preview_not_ready" in issue_codes
+    assert "baseline_driver_measurements_missing" in issue_codes
+    assert "baseline_summed_validation_missing" in issue_codes
+    assert "active_playback_route_too_narrow" not in issue_codes
 
 
 async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(

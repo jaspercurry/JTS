@@ -12,6 +12,7 @@ from typing import Any
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
+from .playback_route import active_playback_route_capability
 from .audible_policy import audible_policy_payload
 from .calibration_level import calibration_level_payload, clamp_test_level_dbfs
 from .driver_protection import driver_protection_payload, driver_protection_profile
@@ -103,6 +104,13 @@ def _target_label(
     return " ".join(item for item in (group.label, channel.role, output_label) if item)
 
 
+def _tone_output_count(topology: OutputTopology) -> int:
+    capability = active_playback_route_capability(topology)
+    if capability.transport_channel_count > 0:
+        return capability.transport_channel_count
+    return max(0, int(topology.hardware.physical_output_count or 0))
+
+
 def build_topology_tone_plan(
     topology: OutputTopology,
     *,
@@ -115,6 +123,7 @@ def build_topology_tone_plan(
     startup_load_state: dict[str, Any] | None = None,
     playback_allowed: bool = False,
     tone_playback_implemented: bool = False,
+    requires_protected_startup: bool = True,
 ) -> dict[str, Any]:
     """Build a bounded plan for one saved topology channel."""
 
@@ -177,7 +186,10 @@ def build_topology_tone_plan(
                 "playback readiness preconditions have not passed",
             )
         )
-    if not readiness and session.get("status") != "armed":
+    requested_playback_allowed = (
+        bool(readiness.get("playback_allowed")) if readiness else bool(playback_allowed)
+    )
+    if not readiness and requested_playback_allowed and session.get("status") != "armed":
         issues.append(
             _issue(
                 "blocker",
@@ -209,7 +221,12 @@ def build_topology_tone_plan(
         and startup_load.get("rollback_available")
         and current_matches_loaded is not False
     )
-    if not readiness and not protected_startup_loaded:
+    if (
+        not readiness
+        and requested_playback_allowed
+        and requires_protected_startup
+        and not protected_startup_loaded
+    ):
         issues.append(
             _issue(
                 "blocker",
@@ -218,10 +235,29 @@ def build_topology_tone_plan(
             )
         )
     playback_allowed = (
-        bool(readiness.get("playback_allowed")) if readiness else bool(playback_allowed)
-    ) and protected_startup_loaded and session.get("status") == "armed" and not issues
+        requested_playback_allowed
+        and (protected_startup_loaded or not requires_protected_startup)
+        and session.get("status") == "armed"
+        and not issues
+    )
     label = _target_label(readiness, group, channel)
-    output_count = max(0, int(topology.hardware.physical_output_count or 0))
+    route_capability = active_playback_route_capability(topology)
+    output_count = _tone_output_count(topology)
+    if (
+        channel
+        and channel.physical_output_index is not None
+        and output_count > 0
+        and channel.physical_output_index >= output_count
+    ):
+        issues.append(_issue(
+            "blocker",
+            "target_output_outside_active_playback_lane",
+            (
+                f"DAC output {channel.physical_output_index + 1} is outside "
+                "the active-speaker test playback lane"
+            ),
+        ))
+        playback_allowed = False
 
     return {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -241,6 +277,7 @@ def build_topology_tone_plan(
             "layout": "output_topology",
             "output_count": output_count,
         },
+        "active_playback_route": route_capability.to_dict(),
         "target": {
             "speaker_group_id": group_id,
             "speaker_label": group.label if group else None,
@@ -276,6 +313,7 @@ def build_topology_tone_plan(
                 if readiness else "preconditions_passed" if not issues else "blocked"
             ),
             "protected_startup_loaded": protected_startup_loaded,
+            "requires_protected_startup": requires_protected_startup,
             "startup_load_status": startup_load.get("status"),
             "requires_emergency_stop": True,
             "artifact_verification_available": True,
@@ -383,7 +421,23 @@ def build_summed_topology_tone_plan(
         lo=MIN_TONE_DURATION_MS,
         hi=MAX_TONE_DURATION_MS,
     )
-    output_count = max(0, int(topology.hardware.physical_output_count or 0))
+    route_capability = active_playback_route_capability(topology)
+    output_count = _tone_output_count(topology)
+    for target in targets:
+        output_index = target.get("output_index")
+        if (
+            isinstance(output_index, int)
+            and output_count > 0
+            and output_index >= output_count
+        ):
+            issues.append(_issue(
+                "blocker",
+                "summed_target_output_outside_active_playback_lane",
+                (
+                    f"DAC output {output_index + 1} is outside the "
+                    "active-speaker test playback lane"
+                ),
+            ))
     allowed = bool(playback_allowed) and not issues
 
     return {
@@ -402,6 +456,7 @@ def build_summed_topology_tone_plan(
             "layout": "output_topology_summed",
             "output_count": output_count,
         },
+        "active_playback_route": route_capability.to_dict(),
         "target": {
             "speaker_group_id": group_id,
             "speaker_label": group.label if group else None,

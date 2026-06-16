@@ -40,6 +40,11 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
     assert dac.is_known_profile_id("unknown_usb_dac") is False
     assert dac.physical_output_count_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.physical_output_count_for("unknown_usb_dac") is None
+    assert dac.active_outputd_lane_channels_for(APPLE_USB_C_DONGLE_ID) is None
+    assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_ID) is None
+    assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
+    assert dac.active_outputd_lane_channels_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
+    assert dac.active_outputd_lane_channels_for("unknown_usb_dac") is None
     assert dac.clock_domain_contract_for(APPLE_USB_C_DONGLE_ID) == "single_device"
     assert (
         dac.clock_domain_contract_for(DUAL_APPLE_USB_C_DAC_4CH_ID)
@@ -60,7 +65,8 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     )
     assert APPLE_USB_C_DONGLE.clock_domain_contract == "single_device"
     assert APPLE_USB_C_DONGLE.outputd_sink == "alsa"
-    assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
+    assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is False
+    assert APPLE_USB_C_DONGLE.active_outputd_lane_channels is None
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
     assert APPLE_USB_C_DONGLE.supported_card_matches == ("usb-c to 3.5mm",)
     assert APPLE_USB_C_DONGLE.headphone_pinned_100 is True
@@ -84,7 +90,8 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     )
     assert HIFIBERRY_DAC8X.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
-    assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
+    assert HIFIBERRY_DAC8X.supports_active_outputd_lane is False
+    assert HIFIBERRY_DAC8X.active_outputd_lane_channels is None
     assert (
         "snd_rpi_hifiberry_dac8x(?!.*studio)"
         in HIFIBERRY_DAC8X.supported_card_matches
@@ -97,6 +104,7 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
     assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "alsa"
+    assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels is None
     assert HIFIBERRY_DAC8X_STUDIO.validation_profile == (
         "hifiberry_dac8x_outputd_stability"
     )
@@ -147,6 +155,7 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
     assert DUAL_APPLE_USB_C_DAC_4CH.usb_ids == ("05ac:110a",)
     assert DUAL_APPLE_USB_C_DAC_4CH.requires_same_usb_bus is True
     assert DUAL_APPLE_USB_C_DAC_4CH.supports_active_outputd_lane is True
+    assert DUAL_APPLE_USB_C_DAC_4CH.active_outputd_lane_channels == 4
     assert DUAL_APPLE_USB_C_DAC_4CH.mixer_controls == ()
     assert dac.mixer_control_groups_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == (
         APPLE_USB_C_DONGLE.mixer_controls,
@@ -199,6 +208,49 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
             mixer_controls=APPLE_USB_C_DONGLE.mixer_controls,
+        )
+
+    with pytest.raises(ValueError, match="active_outputd_lane_channels is required"):
+        DacProfile(
+            id="bad_active_missing_width",
+            label="Bad active",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="Bad clock",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("bad",),
+            supports_active_outputd_lane=True,
+        )
+
+    with pytest.raises(ValueError, match="cannot exceed physical_output_count"):
+        DacProfile(
+            id="bad_active_too_wide",
+            label="Bad active",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="Bad clock",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("bad",),
+            supports_active_outputd_lane=True,
+            active_outputd_lane_channels=4,
+        )
+
+    with pytest.raises(ValueError, match="requires supports_active_outputd_lane"):
+        DacProfile(
+            id="bad_inactive_width",
+            label="Bad active",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="Bad clock",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("bad",),
+            active_outputd_lane_channels=2,
         )
 
 

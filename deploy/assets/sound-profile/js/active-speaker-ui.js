@@ -62,7 +62,7 @@ export function outputStepTitle(step) {
     layout: 'Choose speaker layout',
     research: 'Add driver and crossover info',
     map: 'Confirm outputs',
-    safety: 'Measure drivers',
+    safety: 'Test each driver',
     profile: 'Validate and apply'
   }[step] || 'this card';
 }
@@ -80,7 +80,10 @@ export function playbackResultMessage(playback, fallback, normalizeMessage) {
       code === 'test_pcm_required' ||
       code === 'test_pcm_forbidden_main_lane'
     ) {
-      return 'Audible driver tests are not enabled on this install yet.';
+      return 'Driver tests are not available on this install yet.';
+    }
+    if (code === 'tone_plan_not_ready') {
+      return 'JTS could not prepare that driver test. Choose the driver again so it can rebuild the safe test setup.';
     }
     if (message) {
       return typeof normalizeMessage === 'function' ?

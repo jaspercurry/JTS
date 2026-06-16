@@ -137,7 +137,7 @@ def test_measurement_state_lists_active_driver_and_summed_targets(
     assert payload["permissions"]["may_not_load_camilla"] is True
 
 
-def test_driver_measurement_needs_correct_driver_and_usable_mic(
+def test_driver_measurement_counts_correct_driver_without_requiring_mic(
     tmp_path: Path,
 ) -> None:
     topology = _topology()
@@ -162,11 +162,12 @@ def test_driver_measurement_needs_correct_driver_and_usable_mic(
     )
     latest = missing_mic["summary"]["latest_driver_measurements"]["mono:woofer"]
 
-    assert latest["captured"] is False
+    assert latest["captured"] is True
     assert "driver_measurement_mic_missing" in {
         issue["code"] for issue in latest["issues"]
     }
     assert missing_mic["summary"]["driver_measurements_complete"] is False
+    assert missing_mic["summary"]["captured_driver_count"] == 1
 
     captured = record_driver_measurement(
         topology,

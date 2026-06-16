@@ -473,12 +473,18 @@ speaker groups, passive/active modes, subwoofers, and safety evidence
 without rewriting ALSA, loading CamillaDSP, or emitting audio.
 `/sound/active-speaker/channel-identity` records operator-confirmed
 physical channel identity on that saved topology, but still grants no
-playback authority. `/sound/active-speaker/playback-readiness` combines
-that target evidence with safe-session, active-config/path-safety,
-clock-domain, calibration-level, Stop-control, and tone-backend checks.
-The topology itself still grants no playback authority; the separate
-active-speaker lab tone backend can emit only after explicit env enablement,
-passed readiness, and the driver-protection policy for the selected target.
+playback authority. `/sound/active-speaker/prepare-driver-test` is the product
+setup boundary for one confirmed driver: it refreshes preview evidence and
+selects the target without asking the user to run staging/path/safe-session
+steps by hand. Coherent single-DAC layouts can use the bounded direct-DAC
+diagnostic backend for one selected driver: outputd is paused, one generated
+multi-channel test WAV is played directly to the hardware PCM, and outputd is
+restarted. Outputd-owned active-lane layouts continue through protected startup
+staging/load/arm before playback. `/sound/active-speaker/playback-readiness`
+combines that target evidence with the relevant route, calibration-level,
+Stop-control, and tone-backend checks. The topology itself still grants no
+playback authority; the active-speaker tone backend can emit only after route
+readiness and the driver-protection policy pass for the selected target.
 `/sound/active-speaker/driver-measurement`,
 `/sound/active-speaker/summed-test`, and
 `/sound/active-speaker/summed-validation` persist commissioning evidence only;
@@ -488,10 +494,20 @@ speaker layout or DAC output assignment invalidates old evidence for readiness.
 Summed validation must reference the latest current combined-driver test for
 that speaker group, and only an audible combined test can satisfy the baseline
 compiler. `/sound/active-speaker/baseline-profile/apply` is the active-speaker
-handoff into normal playback, but it is currently enabled only for an
-outputd-owned active playback lane. Single-device direct-DAC baselines compile
-to inspectable YAML but cannot be applied from the UI until outputd owns that
-handoff. When apply is enabled, it still goes through the shared DSP apply
+handoff into normal playback, but it is enabled only for an outputd-owned active
+playback lane. Today that product handoff is declared by the measured
+dual-Apple USB-C 4-channel profile. HiFiBerry DAC8x and single Apple USB-C
+topologies can run bounded direct diagnostics, but their baselines remain
+inspectable YAML until outputd owns a matching active handoff. Protected startup
+staging follows the durable-outputd boundary: supported DACs resolve to the
+active outputd lane instead of opening `hw:<card>,0` directly, so normal
+`jasper-outputd` ownership is not bypassed.
+Do not infer active-speaker runtime width from physical DAC output count. The
+diagnostic route can use the saved single-DAC physical width, but product apply
+width is declared by the active DAC profile; an eight-output DAC can still lack
+a durable eight-lane handoff until the outputd ALSA lane, CamillaDSP generation,
+staging, baseline compilation, and guards are widened as one contract.
+When apply is enabled, it still goes through the shared DSP apply
 transaction before CamillaDSP runs the generated baseline profile. Software
 never touches downstream amp gain. The amp gain is a physical knob set at
 install time.
@@ -551,4 +567,7 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-14 (active-speaker topology/readiness/measurement/baseline handoff paragraph rechecked against `sound_setup.py`, `measurement.py`, and `baseline_profile.py`; prior 2026-06-11 pass covered assistant loudness matching flow on JTS3 hardware)
+Last verified: 2026-06-16 (active-speaker direct-DAC diagnostic route,
+dynamic route width, and outputd-only durable apply boundary rechecked against
+`playback_route.py`, `sound_setup.py`, `playback.py`, `staging.py`, and
+`baseline_profile.py`)

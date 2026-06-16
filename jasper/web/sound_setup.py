@@ -217,11 +217,13 @@ def _output_hardware_dict() -> dict[str, Any] | None:
 
 def _output_topology_payload() -> dict[str, Any]:
     topology = load_output_topology()
+
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
         "output_hardware": _output_hardware_dict(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
+        "active_playback_route": _active_speaker_playback_route_payload(topology),
     }
 
 
@@ -246,7 +248,20 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
         "output_hardware": _output_hardware_dict(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
+        "active_playback_route": _active_speaker_playback_route_payload(topology),
     }
+
+
+def _active_speaker_playback_route_payload(
+    topology: OutputTopology | None = None,
+) -> dict[str, Any]:
+    """Return the active-speaker runtime route capability for the saved topology."""
+
+    from jasper.active_speaker.playback_route import active_playback_route_capability
+
+    return active_playback_route_capability(
+        topology or load_output_topology()
+    ).to_dict()
 
 
 def _active_speaker_channel_identity_payload() -> dict[str, Any]:
@@ -959,6 +974,153 @@ def _active_speaker_stage_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _active_speaker_tone_backend_defaults(
+    topology: Any | None = None,
+) -> dict[str, Any]:
+    """Return topology-derived audible-test defaults for active speakers."""
+
+    resolved_topology = topology or load_output_topology()
+    hardware = resolved_topology.hardware
+    card_id = str(hardware.card_id or "").strip()
+    channel_count = int(hardware.physical_output_count or 0)
+    if card_id and channel_count > 0:
+        return {
+            "backend": "direct_dac",
+            "default_pcm": f"hw:CARD={card_id},DEV=0",
+            "default_audio_enabled": True,
+            "default_pcm_source": "topology_direct_dac",
+            "playback_device": f"hw:CARD={card_id},DEV=0",
+            "channel_count": channel_count,
+            "requires_protected_startup": False,
+        }
+    return {
+        "backend": "wav_artifact",
+        "default_pcm": None,
+        "default_audio_enabled": False,
+        "default_pcm_source": "missing_dac_card",
+        "playback_device": None,
+        "channel_count": channel_count,
+        "requires_protected_startup": False,
+    }
+
+
+def _active_speaker_tone_backend_status(
+    topology: Any | None = None,
+) -> dict[str, Any]:
+    """Return tone backend status with safe topology-derived defaults."""
+
+    from jasper.active_speaker.playback import tone_backend_status
+
+    defaults = _active_speaker_tone_backend_defaults(topology)
+    explicit_backend = str(
+        os.environ.get("JASPER_ACTIVE_SPEAKER_TONE_BACKEND") or ""
+    ).strip().lower()
+    if (
+        defaults.get("backend") == "direct_dac"
+        and explicit_backend in {"", "wav_artifact", "direct_dac"}
+    ):
+        return {
+            "artifact_schema_version": 1,
+            "kind": "jts_active_speaker_tone_backend_status",
+            "status": "audio_enabled",
+            "backend": "direct_dac",
+            "artifact_backend": "wav_artifact",
+            "audio_backend": "direct_dac",
+            "tone_playback_implemented": True,
+            "audio_enabled": True,
+            "test_pcm": defaults["default_pcm"],
+            "issues": [],
+            "next_step": "Ready for a bounded direct DAC driver test.",
+            "default_pcm_source": defaults["default_pcm_source"],
+            "playback_device": defaults["playback_device"],
+            "channel_count": defaults["channel_count"],
+            "requires_protected_startup": False,
+        }
+    status = tone_backend_status(
+        default_pcm=defaults["default_pcm"],
+        default_audio_enabled=defaults["default_audio_enabled"],
+    )
+    return {
+        **status,
+        "default_pcm_source": defaults["default_pcm_source"],
+        "playback_device": defaults["playback_device"],
+        "channel_count": defaults["channel_count"],
+        "requires_protected_startup": False
+        if status.get("backend") == "direct_dac"
+        else True,
+    }
+
+
+def _active_speaker_direct_diagnostic_environment() -> dict[str, Any]:
+    """Return the minimal environment shape required to arm direct tests."""
+
+    return {
+        "status": "pass",
+        "load_gate": "ready",
+        "ok_to_load_active_config": True,
+        "safe_playback": {
+            "status": "not_implemented",
+            "playback_allowed": False,
+        },
+        "issues": [],
+    }
+
+
+def _active_speaker_tone_backend_for_topology(
+    topology: OutputTopology,
+) -> Any | None:
+    """Build the web-owned audible backend for the current topology."""
+
+    from jasper.active_speaker.playback import (
+        DirectDacTonePlaybackBackend,
+        enabled_audio_backend,
+    )
+
+    defaults = _active_speaker_tone_backend_defaults(topology)
+    explicit_backend = str(
+        os.environ.get("JASPER_ACTIVE_SPEAKER_TONE_BACKEND") or ""
+    ).strip().lower()
+    if (
+        defaults.get("backend") == "direct_dac"
+        and explicit_backend in {"", "wav_artifact", "direct_dac"}
+    ):
+        return DirectDacTonePlaybackBackend(
+            pcm=str(defaults["default_pcm"]),
+            channel_count=int(defaults["channel_count"]),
+        )
+    return enabled_audio_backend(
+        default_pcm=defaults["default_pcm"],
+        default_audio_enabled=defaults["default_audio_enabled"],
+    )
+
+
+def _active_speaker_request_missing_software_guards(
+    topology: OutputTopology,
+) -> tuple[OutputTopology, bool]:
+    """Persist the no-hardware path for protected active-speaker channels."""
+
+    updated = topology
+    changed = False
+    for group in topology.speaker_groups:
+        if not str(group.mode or "").startswith("active_"):
+            continue
+        for channel in group.channels:
+            if not channel.protection_required:
+                continue
+            if channel.protection_status in {"present", "software_guard_requested"}:
+                continue
+            updated = set_channel_protection_status(
+                updated,
+                speaker_group_id=group.id,
+                role=channel.role,
+                protection_status="software_guard_requested",
+            )
+            changed = True
+    if changed:
+        save_output_topology(updated)
+    return updated, changed
+
+
 def _prepare_driver_test_message(
     *payloads: dict[str, Any] | None,
     fallback: str,
@@ -995,6 +1157,7 @@ def _prepare_driver_test_status(
     message: str,
     **extra: Any,
 ) -> dict[str, Any]:
+    extra.setdefault("active_playback_route", _active_speaker_playback_route_payload())
     return {
         "artifact_schema_version": 1,
         "kind": "jts_active_speaker_driver_test_prepare",
@@ -1018,7 +1181,8 @@ async def _active_speaker_prepare_driver_test_payload(
     implementation details instead of exposing them as separate browser steps.
     """
 
-    from jasper.active_speaker.playback import tone_backend_status
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+    from jasper.active_speaker.startup_load import load_startup_load_state
 
     if not isinstance(raw, dict):
         raise ValueError("driver test prepare request must be an object")
@@ -1039,20 +1203,90 @@ async def _active_speaker_prepare_driver_test_payload(
             message="Confirm which DAC output goes to this driver before testing.",
         )
 
-    if (
-        channel.protection_required
-        and channel.protection_status not in {"present", "software_guard_requested"}
-    ):
-        updated = set_channel_protection_status(
-            load_output_topology(),
-            speaker_group_id=speaker_group_id,
-            role=role,
-            protection_status="software_guard_requested",
-        )
-        save_output_topology(updated)
+    _, guards_changed = _active_speaker_request_missing_software_guards(
+        load_output_topology()
+    )
+    if guards_changed:
         _, channel, target = _active_speaker_saved_target(raw)
 
     preview = _active_speaker_crossover_preview_save_payload()
+    topology = load_output_topology()
+    tone_backend = _active_speaker_tone_backend_status(topology)
+    if not tone_backend.get("audio_enabled"):
+        payload = _prepare_driver_test_status(
+            "ready",
+            target=target,
+            message=(
+                "A diagnostic WAV can be generated, but audible driver tests "
+                "are not wired for this install yet."
+            ),
+            preview=preview,
+            session=load_safe_playback_state(),
+            startup_load={"load": load_startup_load_state()},
+            calibration_level=_active_speaker_calibration_level_payload(),
+            tone_backend=tone_backend,
+            output_topology=topology.to_dict(include_evaluation=True),
+            channel_identity=channel_identity_report(topology),
+            clock_domain=clock_domain_report(topology),
+        )
+        logger.info(
+            "event=sound.active_speaker_prepare_driver_test status=ready "
+            "mode=artifact_only group_id=%s role=%s output=%s",
+            speaker_group_id,
+            role,
+            target.get("physical_output_index"),
+        )
+        return payload
+
+    if tone_backend.get("requires_protected_startup") is False:
+        from jasper.active_speaker.safe_playback import arm_safe_playback_session
+
+        session = load_safe_playback_state()
+        if session.get("status") != "armed":
+            session = arm_safe_playback_session(
+                _active_speaker_direct_diagnostic_environment()
+            )
+        if session.get("status") != "armed":
+            return _prepare_driver_test_status(
+                "needs_action",
+                target=target,
+                message=_prepare_driver_test_message(
+                    session,
+                    fallback="JTS could not open the test controls. No sound was played.",
+                ),
+                preview=preview,
+                session=session,
+                calibration_level=_active_speaker_calibration_level_payload(),
+                tone_backend=tone_backend,
+                output_topology=topology.to_dict(include_evaluation=True),
+                channel_identity=channel_identity_report(topology),
+                clock_domain=clock_domain_report(topology),
+            )
+        calibration_level = _active_speaker_level_for_driver_test(session, target)
+        payload = _prepare_driver_test_status(
+            "ready",
+            target=target,
+            message="Ready to start at the quietest test level.",
+            preview=preview,
+            session=session,
+            startup_load={"load": load_startup_load_state()},
+            calibration_level=calibration_level,
+            tone_backend=tone_backend,
+            output_topology=topology.to_dict(include_evaluation=True),
+            channel_identity=channel_identity_report(topology),
+            clock_domain=clock_domain_report(topology),
+        )
+        logger.info(
+            "event=sound.active_speaker_prepare_driver_test status=ready "
+            "mode=direct_dac group_id=%s role=%s output=%s pcm=%s channels=%s",
+            speaker_group_id,
+            role,
+            target.get("physical_output_index"),
+            tone_backend.get("test_pcm"),
+            tone_backend.get("channel_count"),
+        )
+        return payload
+
     stage = _active_speaker_stage_config_payload({})
     if stage.get("status") != "staged":
         return _prepare_driver_test_status(
@@ -1135,6 +1369,7 @@ async def _active_speaker_prepare_driver_test_payload(
         )
 
     topology = load_output_topology()
+    calibration_level = _active_speaker_level_for_driver_test(session, target)
     payload = _prepare_driver_test_status(
         "ready",
         target=target,
@@ -1144,8 +1379,8 @@ async def _active_speaker_prepare_driver_test_payload(
         path_safety=path_payload,
         startup_load=load_payload,
         session=session,
-        calibration_level=_active_speaker_calibration_level_payload(),
-        tone_backend=tone_backend_status(),
+        calibration_level=calibration_level,
+        tone_backend=_active_speaker_tone_backend_status(),
         output_topology=topology.to_dict(include_evaluation=True),
         channel_identity=channel_identity_report(topology),
         clock_domain=clock_domain_report(topology),
@@ -1216,6 +1451,55 @@ def _active_speaker_saved_target(raw: dict[str, Any]) -> tuple[Any, Any, dict[st
     raise ValueError("target channel not found in saved output topology")
 
 
+def _active_speaker_level_for_driver_test(
+    safe_session: dict[str, Any],
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a test level that matches the current driver-test session.
+
+    Persisted slider state can outlive the short safe-playback session. When
+    that happens, a returning user should start a fresh driver test from the
+    quiet floor instead of being stranded at a raised level that the current
+    session no longer authorizes.
+    """
+
+    from jasper.active_speaker.calibration_level import (
+        load_calibration_level_state,
+        update_calibration_level_state,
+    )
+    from jasper.active_speaker.safe_playback import (
+        floor_audio_confirmed_for_target,
+        floor_audio_retry_allowed_for_target,
+    )
+
+    level = load_calibration_level_state()
+    signal = level.get("test_signal") if isinstance(level.get("test_signal"), dict) else {}
+    try:
+        current = float(signal.get("requested_level_dbfs"))
+        floor = float(signal.get("min_level_dbfs"))
+    except (TypeError, ValueError):
+        return update_calibration_level_state(action="stop")
+    if current <= floor + 1e-6:
+        return level
+    if (
+        floor_audio_confirmed_for_target(safe_session, target)
+        or floor_audio_retry_allowed_for_target(safe_session, target)
+    ):
+        return level
+    reset = update_calibration_level_state(action="stop")
+    logger.info(
+        "event=sound.active_speaker_calibration_level action=stale_session_floor_reset "
+        "prior_level_dbfs=%s target_group=%s target_role=%s output_index=%s",
+        current,
+        target.get("speaker_group_id"),
+        target.get("role") or target.get("driver_role"),
+        target.get("output_index")
+        if target.get("output_index") is not None
+        else target.get("physical_output_index"),
+    )
+    return reset
+
+
 def _active_speaker_mic_inputs(
     raw: dict[str, Any],
     current_level: dict[str, Any],
@@ -1247,6 +1531,7 @@ def _active_speaker_auto_level_step(raw: dict[str, Any]) -> dict[str, Any]:
     )
     from jasper.active_speaker.safe_playback import (
         floor_audio_confirmed_for_target,
+        floor_audio_retry_allowed_for_target,
         load_safe_playback_state,
     )
     from jasper.active_speaker.calibration_level import (
@@ -1275,7 +1560,10 @@ def _active_speaker_auto_level_step(raw: dict[str, Any]) -> dict[str, Any]:
         band_limit=band_limit,
         observed_mic_dbfs=observed,
         mic_clipping=clipping,
-        floor_audio_confirmed=floor_audio_confirmed_for_target(safe_session, target),
+        floor_audio_confirmed=(
+            floor_audio_confirmed_for_target(safe_session, target)
+            or floor_audio_retry_allowed_for_target(safe_session, target)
+        ),
         stop_control_available=True,
     )
     decision_action = str(decision.get("action") or "hold")
@@ -1441,7 +1729,6 @@ def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
     """Return guided-vs-manual active-speaker bring-up readiness."""
 
     from jasper.active_speaker.bringup import build_bringup_preflight
-    from jasper.active_speaker.playback import tone_backend_status
 
     topology = load_output_topology()
     environment_report = _active_speaker_environment_payload()
@@ -1454,7 +1741,7 @@ def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
         safe_session=safe_session,
         staged_config=staged_config,
         calibration_level=calibration_level,
-        tone_backend=tone_backend_status(),
+        tone_backend=_active_speaker_tone_backend_status(topology),
         stop_control_available=True,
     )
     logger.info(
@@ -1592,9 +1879,16 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
     """Persist a no-audio crossover preview from the saved design draft."""
 
     from jasper.active_speaker.crossover_preview import save_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
 
     draft = load_design_draft()
+    if draft.get("status") not in {"not_saved", "unreadable"}:
+        draft = save_design_draft(
+            load_output_topology(),
+            driver_research=draft.get("driver_research"),
+            manual_settings=draft.get("manual_settings"),
+            operator_inputs=draft.get("operator_inputs"),
+        )
     payload = save_crossover_preview(draft)
     logger.info(
         "event=sound.active_speaker_crossover_preview_save status=%s "
@@ -1768,7 +2062,6 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
 
     if not isinstance(raw, dict):
         raise ValueError("playback readiness request must be an object")
-    from jasper.active_speaker.playback import tone_backend_status
     from jasper.active_speaker.readiness import build_playback_readiness
     from jasper.active_speaker.safe_playback import load_safe_playback_state
     from jasper.active_speaker.startup_load import load_startup_load_state
@@ -1792,7 +2085,7 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
         safe_session=safe_session,
         calibration_level=calibration_level,
         startup_load_state=startup_load_state,
-        tone_backend=tone_backend_status(),
+        tone_backend=_active_speaker_tone_backend_status(topology),
         stop_control_available=True,
     )
     logger.info(
@@ -1810,11 +2103,9 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
 def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Run a bounded tone test for a preset or saved-topology target."""
 
-    from jasper.active_speaker.playback import (
-        enabled_audio_backend,
-        start_tone_playback,
-    )
+    from jasper.active_speaker.playback import start_tone_playback
     from jasper.active_speaker.safe_playback import (
+        arm_safe_playback_session,
         load_safe_playback_state,
         record_safe_playback_result,
     )
@@ -1828,11 +2119,22 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         or target.get("speaker_group_id")
         or target.get("role")
     )
+    wants_audio = bool(raw.get("audio"))
     safe_session = load_safe_playback_state()
     if topology_target:
         topology = load_output_topology()
         level = _active_speaker_calibration_level_payload()
         startup_load = load_startup_load_state()
+        tone_backend_status_payload = _active_speaker_tone_backend_status(topology)
+        if (
+            wants_audio
+            and tone_backend_status_payload.get("audio_enabled")
+            and tone_backend_status_payload.get("requires_protected_startup") is False
+            and safe_session.get("status") != "armed"
+        ):
+            safe_session = arm_safe_playback_session(
+                _active_speaker_direct_diagnostic_environment()
+            )
         plan = build_topology_tone_plan(
             topology,
             speaker_group_id=raw.get("speaker_group_id")
@@ -1850,12 +2152,19 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
             safe_session=safe_session,
             startup_load_state=startup_load,
             playback_allowed=bool(raw.get("audio")),
-            tone_playback_implemented=True,
+            tone_playback_implemented=bool(
+                tone_backend_status_payload.get("tone_playback_implemented")
+            ),
+            requires_protected_startup=bool(
+                tone_backend_status_payload.get("requires_protected_startup", True)
+            ),
         )
     else:
         plan = _active_speaker_tone_plan_payload(raw)
-    wants_audio = bool(raw.get("audio"))
-    backend = enabled_audio_backend() if wants_audio else None
+    backend = (
+        _active_speaker_tone_backend_for_topology(topology)
+        if wants_audio and topology_target else None
+    )
     if wants_audio and backend is None:
         plan = {
             **plan,
@@ -1965,7 +2274,7 @@ def _active_speaker_measurements_payload() -> dict[str, Any]:
 
 
 def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    """Record one operator/mic-backed driver measurement result."""
+    """Record one operator-confirmed driver test result."""
 
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.measurement import record_driver_measurement
@@ -2095,11 +2404,18 @@ def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
                 {
                     "severity": "blocker",
                     "code": "summed_test_driver_measurements_missing",
-                    "message": "measure each driver before running the combined test",
+                    "message": "test each driver before running the combined test",
                 },
             ],
         }
-    backend = enabled_audio_backend() if wants_audio else None
+    backend_defaults = _active_speaker_tone_backend_defaults(topology)
+    backend = (
+        enabled_audio_backend(
+            default_pcm=backend_defaults["default_pcm"],
+            default_audio_enabled=backend_defaults["default_audio_enabled"],
+        )
+        if wants_audio else None
+    )
     if wants_audio and backend is None:
         plan = {
             **plan,

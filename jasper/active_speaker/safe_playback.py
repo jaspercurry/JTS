@@ -121,6 +121,8 @@ def playback_target_signature(target: Any) -> dict[str, Any] | None:
     group_id = str(target.get("speaker_group_id") or "").strip() or None
     role = str(target.get("driver_role") or target.get("role") or "").strip().lower()
     output_index = _nonnegative_int(target.get("output_index"))
+    if output_index is None:
+        output_index = _nonnegative_int(target.get("physical_output_index"))
     if not (group_id or role or output_index is not None):
         return None
     return {
@@ -185,6 +187,25 @@ def floor_audio_confirmed_for_target(
         and quiet.get("status") == "floor_confirmed"
         and quiet.get("floor_audio_confirmed") is True
         and quiet.get("current_target") == target_sig
+    )
+
+
+def floor_audio_retry_allowed_for_target(
+    safe_session: dict[str, Any],
+    target: Any,
+) -> bool:
+    """Return whether a same-target silent floor test may be retried louder."""
+
+    quiet = _normalise_quiet_start(safe_session.get("quiet_start"))
+    target_sig = playback_target_signature(target)
+    last_result = quiet.get("last_operator_result")
+    return (
+        safe_session.get("status") == "armed"
+        and bool(target_sig)
+        and isinstance(last_result, dict)
+        and last_result.get("outcome") == "silent"
+        and quiet.get("current_target") == target_sig
+        and playback_target_signature(last_result.get("target")) == target_sig
     )
 
 
@@ -408,6 +429,18 @@ def _quiet_start_after_result(
             quiet["floor_audio_confirmed"] = False
             quiet["pending_playback_id"] = result.get("playback_id")
             quiet["last_operator_result"] = None
+        elif floor_audio_retry_allowed_for_target(
+            {"status": "armed", "quiet_start": quiet},
+            {
+                "speaker_group_id": target_sig.get("speaker_group_id"),
+                "driver_role": target_sig.get("role"),
+                "output_index": target_sig.get("output_index"),
+            },
+        ):
+            quiet["status"] = "floor_pending_operator"
+            quiet["floor_audio_confirmed"] = False
+            quiet["pending_playback_id"] = result.get("playback_id")
+            quiet["last_operator_result"] = None
         elif not quiet.get("floor_audio_confirmed"):
             quiet["status"] = "floor_required"
     return quiet
@@ -436,7 +469,6 @@ def record_floor_audio_operator_result(
     state = _normalise_state(prior, now_epoch=now_epoch)
     quiet = _normalise_quiet_start(state.get("quiet_start"))
     pending_target = playback_target_signature(quiet.get("current_target"))
-    pending_level = _finite_float(quiet.get("last_level_dbfs"))
     pending_playback_id = str(quiet.get("pending_playback_id") or "") or None
     requested_playback_id = str(playback_id or "").strip() or None
     issues: list[dict[str, str]] = []
@@ -458,12 +490,6 @@ def record_floor_audio_operator_result(
             "blocker",
             "playback_id_mismatch",
             "operator result does not match the latest floor playback",
-        ))
-    if not _level_at_floor(pending_level):
-        issues.append(_issue(
-            "blocker",
-            "floor_playback_level_not_floor",
-            "latest audible playback was not at the calibration floor",
         ))
     if not pending_target:
         issues.append(_issue(

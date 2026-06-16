@@ -5,6 +5,7 @@ from pathlib import Path
 from jasper.active_speaker.safe_playback import (
     SAFE_PLAYBACK_SESSION_KIND,
     arm_safe_playback_session,
+    floor_audio_retry_allowed_for_target,
     load_safe_playback_state,
     record_floor_audio_operator_result,
     record_safe_playback_result,
@@ -201,6 +202,94 @@ def test_record_safe_playback_marks_floor_audio_pending_operator_confirmation(
     assert confirmed["quiet_start"]["last_operator_result"]["outcome"] == (
         "heard_correct_driver"
     )
+
+
+def test_silent_floor_result_allows_same_driver_raised_retry(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    target = {
+        "speaker_group_id": "mono",
+        "driver_role": "woofer",
+        "output_index": 0,
+    }
+    arm_safe_playback_session(
+        _env_report(ok=True),
+        state_path=path,
+        now=lambda: 1000,
+    )
+    record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "aplay",
+            "playback_id": "floor-1",
+            "audio_emitted": True,
+            "target": target,
+            "tone": {"level_dbfs": -80.0},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1001,
+    )
+    silent = record_floor_audio_operator_result(
+        outcome="silent",
+        playback_id="floor-1",
+        state_path=path,
+        now=lambda: 1002,
+    )
+
+    assert floor_audio_retry_allowed_for_target(silent, target) is True
+    assert floor_audio_retry_allowed_for_target(
+        silent,
+        {
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["driver_role"],
+            "physical_output_index": target["output_index"],
+        },
+    ) is True
+
+    resumed = {
+        **silent,
+        "quiet_start": {
+            **silent["quiet_start"],
+            "last_operator_result": {
+                **silent["quiet_start"]["last_operator_result"],
+                "target": {
+                    "speaker_group_id": target["speaker_group_id"],
+                    "driver_role": target["driver_role"],
+                    "physical_output_index": target["output_index"],
+                },
+            },
+        },
+    }
+    assert floor_audio_retry_allowed_for_target(resumed, target) is True
+
+    pending = record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "aplay",
+            "playback_id": "raised-1",
+            "audio_emitted": True,
+            "target": target,
+            "tone": {"level_dbfs": -68.0},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1003,
+    )
+
+    assert pending["quiet_start"]["status"] == "floor_pending_operator"
+    assert pending["quiet_start"]["pending_playback_id"] == "raised-1"
+
+    confirmed = record_floor_audio_operator_result(
+        outcome="heard_correct_driver",
+        playback_id="raised-1",
+        state_path=path,
+        now=lambda: 1004,
+    )
+
+    assert confirmed["quiet_start"]["status"] == "floor_confirmed"
+    assert confirmed["quiet_start"]["floor_audio_confirmed"] is True
 
 
 def test_record_safe_playback_does_not_confirm_artifact_only_result(

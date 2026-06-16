@@ -1,4 +1,4 @@
-"""Durable active-speaker measurement evidence.
+"""Durable active-speaker driver-check and measurement evidence.
 
 This module records the evidence produced by the guided active-crossover flow:
 one measured result per driver and one summed crossover validation per active
@@ -482,11 +482,16 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         "captured_driver_count": len(captured_targets),
         "missing_driver_targets": missing_targets,
         "driver_measurements_complete": measurements_complete,
+        "required_driver_check_count": len(driver_targets),
+        "captured_driver_check_count": len(captured_targets),
+        "missing_driver_check_targets": missing_targets,
+        "driver_checks_complete": measurements_complete,
         "required_summed_group_count": len(summed_targets),
         "validated_summed_group_count": len(validated_groups),
         "missing_summed_targets": missing_summed,
         "summed_validation_complete": summed_complete,
         "latest_driver_measurements": latest_by_target,
+        "latest_driver_checks": latest_by_target,
         "latest_summed_tests": latest_summed_tests_by_group,
         "latest_summed_validations": latest_summed_by_group,
         "stale_driver_record_count": stale_driver_count,
@@ -510,7 +515,7 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
             "driver_measurement_missing",
             (
                 f"measure {target['speaker_group_label']} "
-                f"{target['role']} before saving an active baseline"
+                f"{target['role']} with a quiet test before saving an active baseline"
             ),
         ))
     for target in summary["missing_summed_targets"]:
@@ -609,7 +614,13 @@ def record_driver_measurement(
     state_path: str | Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Persist one per-driver measurement observation."""
+    """Persist one per-driver quiet-test observation.
+
+    A correct-driver operator result proves physical routing identity even
+    when the browser has no usable microphone reading. Mic-backed response
+    measurements are still captured when available and remain required for
+    later acoustic tuning/validation steps.
+    """
 
     path = measurement_state_path(state_path)
     state = load_measurement_state(topology, state_path=path)
@@ -644,7 +655,7 @@ def record_driver_measurement(
         issues.append(_issue(
             "warning",
             "driver_measurement_mic_missing",
-            "record a microphone reading before this counts as measured",
+            "no microphone reading was captured for acoustic tuning",
         ))
     if meter.get("status") in {"clipping", "too_loud"}:
         issues.append(_issue(
@@ -655,7 +666,6 @@ def record_driver_measurement(
     captured = (
         not any(issue["severity"] == "blocker" for issue in issues)
         and outcome == "heard_correct_driver"
-        and observed is not None
         and meter.get("status") not in {"clipping", "too_loud"}
     )
     record = {
