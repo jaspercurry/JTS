@@ -199,6 +199,21 @@ def test_disabled_tools_are_removed_from_pack_index_too():
     assert "spotify_play" not in reg.tool_packs
 
 
+def test_disabled_catalog_pack_removes_all_child_tools():
+    reg = ToolRegistry()
+    register_packs(
+        reg,
+        _full_deps(),
+        disabled=frozenset(),
+        disabled_packs=frozenset({"google"}),
+    )
+
+    assert "calendar_today_summary" not in reg.tools
+    assert "calendar_upcoming" not in reg.tools
+    assert "gmail_unread_summary" not in reg.tools
+    assert "gmail_read_thread" not in reg.tools
+
+
 def test_real_build_registry_wrapper_produces_full_set():
     """Pin the PRODUCTION entry point, not just the pack walk.
 

@@ -339,9 +339,10 @@ def _make_rooms_server(target: object) -> object:
 def _make_tools_server(target: object) -> object:
     from . import tools_setup
 
-    # Browse + enable/disable first-party voice tools. Reads the catalog
-    # jasper-voice writes to /run/jasper/tools.json; writes the disabled-set
-    # to /var/lib/jasper/tool_state.env. See jasper/web/tools_setup.py.
+    # Browse + enable/disable first-party voice tool packs and edit advanced
+    # prompt overrides. Reads the catalog jasper-voice writes to
+    # /run/jasper/tools.json; writes staged state under /var/lib/jasper/.
+    # See jasper/web/tools_setup.py.
     return tools_setup.make_server(
         target,
         catalog_path=os.environ.get(
@@ -351,6 +352,10 @@ def _make_tools_server(target: object) -> object:
         state_path=os.environ.get(
             "JASPER_TOOL_STATE_FILE",
             tools_setup.TOOL_STATE_FILE,
+        ),
+        prompt_overrides_path=os.environ.get(
+            "JASPER_TOOL_PROMPT_OVERRIDES_FILE",
+            tools_setup.PROMPT_OVERRIDES_FILE,
         ),
     )
 

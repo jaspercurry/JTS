@@ -202,6 +202,21 @@ GOOGLE_PACK = CatalogPack(
     "Read calendar and Gmail data from linked Google accounts.",
     setup_url="/google/",
 )
+WEATHER_PACK = CatalogPack(
+    "weather",
+    "Weather",
+    "Current conditions and forecast answers for the configured location.",
+)
+TIME_PACK = CatalogPack(
+    "time",
+    "Time",
+    "Local time and date answers for the speaker's configured location.",
+)
+DIAGNOSTIC_PACK = CatalogPack(
+    "diagnostic",
+    "Diagnostics",
+    "Recent wake-event troubleshooting helpers.",
+)
 
 
 # Order is load-bearing — see module docstring. Mirrors the legacy
@@ -230,6 +245,7 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
         "weather",
         lambda d: make_weather_tools(d.weather),
         category="Utilities",
+        catalog_pack=WEATHER_PACK,
     ),
     # Transit is pre-built by transit.active_transit in run() (it owns an
     # aclose lifecycle the daemon needs); here we only register the flat
@@ -252,6 +268,7 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
         "time",
         lambda _d: make_time_tools(),
         category="Utilities",
+        catalog_pack=TIME_PACK,
     ),
     # timer's factory does NOT self-gate on None, so the gate is load-bearing.
     ToolPack(
@@ -281,6 +298,7 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
         "diagnostic",
         lambda d: make_diagnostic_tools(d.wake_event_store),
         category="System",
+        catalog_pack=DIAGNOSTIC_PACK,
     ),
 )
 
@@ -290,6 +308,7 @@ def register_packs(
     deps: ToolDeps,
     *,
     disabled: "frozenset[str] | None" = None,
+    disabled_packs: "frozenset[str] | None" = None,
 ) -> list[PackOutcome]:
     """Walk TOOL_PACKS in order; gate, build, and register each pack's
     tools onto `registry`. Each pack's build runs behind try/except for
@@ -299,10 +318,11 @@ def register_packs(
     guard.
 
     `disabled` is the wizard-owned set of tool NAMES the household turned
-    off (jasper.tool_state). A disabled tool is not registered, so the
-    model never sees it — the user's explicit choice, NOT a failure (no
-    cue). None (default) reads the SSOT file fail-safe; pass an explicit
-    set in tests.
+    off (jasper.tool_state). `disabled_packs` is the set of user-facing
+    CatalogPack ids the household turned off. A disabled tool is not
+    registered, so the model never sees it — the user's explicit choice,
+    NOT a failure (no cue). None (default) reads the SSOT file fail-safe;
+    pass explicit sets in tests.
 
     Returns one PackOutcome per pack (in TOOL_PACKS order) so the
     registration result is observable beyond the journal — the daemon
@@ -311,9 +331,13 @@ def register_packs(
     is the number of tools the pack actually CONTRIBUTED to the registry
     (after user-disabled removals), so sum(tool_count) == len(registry.tools).
     The return is additive: existing callers that ignore it are unaffected."""
-    if disabled is None:
-        from ..tool_state import read_disabled_tools
-        disabled = read_disabled_tools()
+    if disabled is None or disabled_packs is None:
+        from ..tool_state import read_tool_state
+        state = read_tool_state()
+        if disabled is None:
+            disabled = state.disabled_tools
+        if disabled_packs is None:
+            disabled_packs = state.disabled_packs
     outcomes: list[PackOutcome] = []
     for pack in TOOL_PACKS:
         if not pack.gate(deps):
@@ -329,17 +353,24 @@ def register_packs(
             )
             outcomes.append(PackOutcome(pack.name, "failed", error=repr(e)))
             continue
+        pack_disabled = (
+            pack.catalog_pack is not None
+            and pack.catalog_pack.id in disabled_packs
+        )
         registered = 0
         for fn in fns:
             t = registry.register(fn)
             registry.tool_packs[t.name] = pack.name
-            if t.name in disabled:
+            if pack_disabled or t.name in disabled:
                 # Registered, then removed by user choice — keeps the
                 # filter at the single registration point and works
                 # regardless of declared @tool name vs fn.__name__.
                 del registry.tools[t.name]
                 registry.tool_packs.pop(t.name, None)
-                log_event(logger, "tool.disabled", name=t.name, pack=pack.name)
+                log_event(
+                    logger, "tool.disabled", name=t.name, pack=pack.name,
+                    disabled_by_pack=pack_disabled,
+                )
                 continue
             registered += 1
         outcomes.append(

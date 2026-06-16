@@ -678,12 +678,23 @@ async def run() -> None:
         wake_event_store=wake_event_store,
     )
 
-    # Write the /run catalog the /tools/ wizard reads. Includes EVERY
-    # tool (needs_setup ones via sentinel deps), with status from the
-    # live registry + the user's disabled-set. Fail-soft.
-    from ..tool_state import read_disabled_tools
+    # Apply user-edited prompt overrides before any provider serializes the
+    # registry, then write the /run catalog the /tools/ wizard reads. Includes
+    # EVERY tool (needs_setup ones via sentinel deps), with status from the
+    # live registry + the user's disabled pack/tool sets. Fail-soft.
+    from ..tool_prompt_overrides import read_prompt_overrides
+    from ..tool_state import read_tool_state
     from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
-    write_catalog(registry, read_disabled_tools(), path=DEFAULT_CATALOG_PATH)
+    tool_state = read_tool_state()
+    prompt_overrides = read_prompt_overrides()
+    registry.apply_prompt_overrides(prompt_overrides)
+    write_catalog(
+        registry,
+        tool_state.disabled_tools,
+        disabled_packs=tool_state.disabled_packs,
+        prompt_overrides=prompt_overrides,
+        path=DEFAULT_CATALOG_PATH,
+    )
 
     # Wire the timer pre-render hook so set_timer (and start-time
     # restore for persisted timers) synthesises + caches the

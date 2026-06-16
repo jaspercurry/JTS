@@ -400,3 +400,34 @@ def test_llm_description_overrides_model_facing_only():
     assert reg.openai_tools()[0]["description"] == "Set volume."
     # But the source Tool's description is unchanged.
     assert reg.get("set_volume").description.startswith("Set the speaker volume in dB.")
+
+
+def test_user_prompt_override_updates_provider_serializers_only():
+    """User-edited prompts are what providers see, but code defaults remain
+    available for reset/metadata."""
+    @tool(llm_description="Set volume.")
+    async def set_volume(level_db: float) -> dict:
+        """Set the speaker volume in dB. Long engineer-facing docstring
+        with when-to-call rules, response shape, and voice-answer style."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(set_volume)
+    reg.apply_prompt_overrides({
+        "set_volume": "Use the user's custom volume prompt.",
+        "missing_tool": "Ignored stale override.",
+    })
+
+    t = reg.get("set_volume")
+    assert t is not None
+    assert t.description.startswith("Set the speaker volume in dB.")
+    assert t.default_model_facing_description() == "Set volume."
+    assert t.model_facing_description() == "Use the user's custom volume prompt."
+    assert t.prompt_customized() is True
+
+    assert reg.function_declarations()[0]["description"] == (
+        "Use the user's custom volume prompt."
+    )
+    assert reg.openai_tools()[0]["description"] == (
+        "Use the user's custom volume prompt."
+    )

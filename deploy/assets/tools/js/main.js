@@ -1,8 +1,8 @@
 // main.js — /tools/ catalog wizard behaviour.
 //
 // Fetches /tools/catalog.json (voice's catalog metadata with the fresh
-// disabled-set overlaid + a `pending` flag), renders the grouped tool library
-// view, and wires search + a delegated toggle handler + an explicit Apply.
+// disabled-set overlaid + a `pending` flag), renders the pack-first tool
+// library view, and wires search + delegated toggle handlers + explicit Apply.
 //
 // Two-step on purpose (see tools_setup.py): a toggle only STAGES (writes the
 // disabled-set, no restart), so ticking boxes is instant and never nukes an
@@ -29,7 +29,7 @@ const applyBtn = document.getElementById("tools-apply-btn");
 
 // Last GOOD catalog (tools + pending). Kept so a transient "unavailable"
 // read during an Apply restart doesn't blank the list out from under the user.
-let catalog = { tools: [], pending: false, unavailable: true };
+let catalog = { tools: [], packs: [], pending: false, unavailable: true };
 
 function toolsOf(c) {
   // Defend against a valid-JSON-but-wrong-shape payload ({}, {tools:null},
@@ -37,22 +37,38 @@ function toolsOf(c) {
   return Array.isArray(c.tools) ? c.tools : [];
 }
 
-// Lowercased "name description labels" haystack for the substring filter.
-function haystack(tool) {
-  return [
-    tool.name || "",
-    tool.description || "",
-    (tool.labels || []).join(" "),
-  ].join(" ").toLowerCase();
+function packsOf(c) {
+  return Array.isArray(c.packs) ? c.packs : [];
 }
 
 function render() {
   const q = (searchEl.value || "").trim().toLowerCase();
-  const all = toolsOf(catalog);
-  const tools = q ? all.filter((t) => haystack(t).includes(q)) : all;
-  listEl.innerHTML = toolList(tools, { unavailable: catalog.unavailable });
+  listEl.innerHTML = toolList(catalog, {
+    query: q,
+    unavailable: catalog.unavailable,
+  });
   listEl.removeAttribute("aria-busy");
   applyBar.hidden = !catalog.pending;
+}
+
+function interactiveTarget(target) {
+  return !!target.closest(
+    "a, button, input, label, select, textarea, summary, details",
+  );
+}
+
+function onCardClick(e) {
+  const card = e.target.closest("[data-pack-href]");
+  if (!card || interactiveTarget(e.target)) return;
+  window.location.href = card.dataset.packHref;
+}
+
+function onCardKeydown(e) {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const card = e.target.closest("[data-pack-href]");
+  if (!card || e.target !== card) return;
+  e.preventDefault();
+  window.location.href = card.dataset.packHref;
 }
 
 // Fetch the catalog. On a usable payload, replace `catalog`. On an
@@ -68,6 +84,7 @@ async function load({ keepStale = false } = {}) {
     } else {
       catalog = {
         tools: toolsOf(next),
+        packs: packsOf(next),
         pending: !!(next && next.pending),
         unavailable: !!(next && next.unavailable),
       };
@@ -76,7 +93,7 @@ async function load({ keepStale = false } = {}) {
     return next;
   } catch (e) {
     if (!keepStale) {
-      catalog = { tools: [], pending: false, unavailable: true };
+      catalog = { tools: [], packs: [], pending: false, unavailable: true };
       statusEl.textContent = "Couldn't load the catalog (" + e.message + ").";
     }
     render();
@@ -90,17 +107,23 @@ async function load({ keepStale = false } = {}) {
 // raced — it's the daemon-independent overlay.
 async function onToggle(e) {
   const input = e.target;
-  if (!input.matches("input[type=checkbox][data-tool]")) return;
-  const name = input.dataset.tool;
+  if (!input.matches("input[type=checkbox][data-tool], input[type=checkbox][data-pack]")) {
+    return;
+  }
+  const isPack = !!input.dataset.pack;
+  const key = isPack ? input.dataset.pack : input.dataset.tool;
   const enabled = input.checked;
   input.disabled = true;
-  statusEl.textContent = (enabled ? "Enabling " : "Disabling ") + name + "…";
+  statusEl.textContent = (enabled ? "Enabling " : "Disabling ") + key + "…";
   try {
-    await postJSON("toggle", { name, enabled });
-    statusEl.textContent =
-      (enabled ? "Enabled " : "Disabled ") + name +
-      " — Apply to restart the assistant.";
-    await load();
+    await postJSON(isPack ? "toggle-pack" : "toggle", isPack
+      ? { id: key, enabled }
+      : { name: key, enabled });
+    const view = await load();
+    statusEl.textContent = view && view.pending
+      ? (enabled ? "Enabled " : "Disabled ") + key +
+        " — Apply to restart the assistant."
+      : "Saved.";
   } catch (err) {
     input.disabled = false;
     input.checked = !enabled; // revert the optimistic flip
@@ -155,5 +178,7 @@ async function onApply() {
 
 searchEl.addEventListener("input", render);
 listEl.addEventListener("change", onToggle);
+listEl.addEventListener("click", onCardClick);
+listEl.addEventListener("keydown", onCardKeydown);
 applyBtn.addEventListener("click", onApply);
 load();

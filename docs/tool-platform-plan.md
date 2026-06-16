@@ -252,11 +252,16 @@ doesn't choke as the catalog grows.** That's the whole first version.
    "city as a label, not a `CityPack` toggle" question — see §6.
 6. **Built-in catalog UI** (shipped as a Phase-1.5 follow-on) — the
    `/tools/` wizard ([`jasper/web/tools_setup.py`](../jasper/web/tools_setup.py)).
-   It is a read-only browse + per-tool on/off surface over the
-   *first-party* tools — explicitly **not** the install-from-store
-   marketplace (no install path; that stays Phase-2/3). Architecture
-   mirrors the other wizards: the socket-activated page only **reads**
-   the catalog `jasper-voice` writes to `/run/jasper/tools.json`
+   The shipped surface is a browse + on/off manager over the *first-party*
+   tools — explicitly **not** the install-from-store marketplace (no install
+   path; that stays Phase-2/3). It is now **pack-first**: `/tools/` renders
+   one top-level card per user-facing capability pack, grouped by category,
+   with singleton packs for standalone tools. A household enables "Spotify"
+   or "Weather" first, then optionally opens the generated pack detail page
+   for child-tool controls, full prompt copy, schema/metadata, and advanced
+   prompt override/reset. Architecture mirrors the other wizards: the
+   socket-activated page only **reads** the catalog `jasper-voice` writes to
+   `/run/jasper/tools.json`
    ([`jasper/tools/catalog.py`](../jasper/tools/catalog.py)) and never
    imports `jasper.tools` (the transit lazy-import lesson — keep the
    wizard light). The catalog payload now carries scan-friendly `summary`
@@ -264,38 +269,43 @@ doesn't choke as the catalog grows.** That's the whole first version.
    ([`CatalogPack`](../jasper/tools/packs.py)). Display packs are a UI
    affordance, not a runtime container: multiple internal registration
    packs can share one display pack (`calendar` + `gmail` → Google), and
-   standalone tools simply have `pack: null`. The `/tools/` page groups by
-   category and pack, and each visible tool gets a generated
-   `/tools/tool/<name>/` detail page from the same catalog JSON. **Toggle
-   stages, Apply commits — two steps on purpose.**
-   A toggle only writes the disabled-set to the wizard-owned SSOT
+   standalone tools receive generated singleton packs in the catalog view.
+   The `/tools/` page groups by category and pack, and each visible pack gets
+   a generated `/tools/pack/<id>/` detail page from the same catalog JSON
+   (`/tools/tool/<name>/` remains a compatibility route for older links).
+   **Toggle stages, Apply commits — two steps on purpose.**
+   A toggle only writes staged state to the wizard-owned SSOTs:
    `/var/lib/jasper/tool_state.env`
-   (`JASPER_DISABLED_TOOLS`, [`jasper/tool_state.py`](../jasper/tool_state.py),
-   mode 0644); it does **not** restart `jasper-voice`. Restarting the
-   assistant drops any in-progress conversation and briefly deafens the
-   speaker, so doing it silently on every checkbox tick is user-hostile —
-   and an unthrottled per-toggle restart could feed `jasper-voice`'s
+   (`JASPER_DISABLED_TOOLS`, `JASPER_DISABLED_TOOL_PACKS`,
+   [`jasper/tool_state.py`](../jasper/tool_state.py), mode 0644) and
+   `/var/lib/jasper/tool_prompt_overrides.json`
+   ([`jasper/tool_prompt_overrides.py`](../jasper/tool_prompt_overrides.py));
+   it does **not** restart `jasper-voice`. Restarting the assistant drops
+   any in-progress conversation and briefly deafens the speaker, so doing it
+   silently on every checkbox or prompt edit is user-hostile — and an
+   unthrottled per-change restart could feed `jasper-voice`'s
    `StartLimitAction=reboot` crash-loop ladder. The page re-derives each
-   tool's on/off through an overlay
+   pack/tool's on/off state and prompt customization through an overlay
    ([`jasper/tool_catalog_view.py`](../jasper/tool_catalog_view.py) — also
-   light: `json` + `tool_state` only) so the UI **converges instantly**
+   light: `json` + state readers only) so the UI **converges instantly**
    without waiting on, or being raced by, a restart. An explicit **Apply**
    (`POST /apply`) restarts `jasper-voice` **once** so staged changes go
    live; it reports honestly when no restart will happen (no provider /
    bonded follower) and is rate-limited (≥20 s between restarts) so a burst
    of Apply calls can't trip the reboot ladder. `jasper-voice` then
-   re-filters the registry (`register_packs(..., disabled=...)`) and
-   re-writes the catalog JSON. Observability: the catalog summary
-   (present / count / disabled / pending) is on `/state.tools` and
+   re-filters the registry (`register_packs(..., disabled=...,
+   disabled_packs=...)`), applies prompt overrides, and re-writes the catalog
+   JSON. Observability: the catalog summary (present / count / disabled /
+   disabled packs / prompt overrides / pending) is on `/state.tools` and
    `jasper-doctor`'s `check_tool_catalog`. The confirmation companion
    `home_assistant_confirm` is hidden from the catalog UI (an internal half
    of the HA consequential-action flow, not an independently toggleable
    capability). Fail-safe toward *more* functionality, mirroring
-   `mic_mute_persistence`: a missing/unreadable/malformed/non-UTF-8
-   `tool_state.env` resolves to "nothing disabled" (every tool ON), so an
-   FS-corruption incident cannot deafen the assistant. A disabled tool
-   simply does not register — the model never sees it — so there is no
-   audible cue (it's the user's explicit choice, not a failure).
+   `mic_mute_persistence`: missing/unreadable/malformed state resolves to
+   "nothing disabled and no prompt overrides," so an FS-corruption incident
+   cannot deafen the assistant. A disabled tool simply does not register —
+   the model never sees it — so there is no audible cue (it's the user's
+   explicit choice, not a failure).
 
 Everything is built with **Opus**. Every new tool still ships its
 regression scenario under `tests/voice_eval/regression/` (existing hard
@@ -365,18 +375,120 @@ single source of truth for "is this tool on."
 
 The built-in catalog now has two human-facing organization levels:
 `category` (Music, Transit, Smart Home, Productivity, Utilities, System)
-and optional `CatalogPack` display groups (Spotify, NYC Transit, Google,
-Timers, Playback, Home Assistant). This is intentionally the smallest
-useful shape for the current problem: make the built-in catalog browsable,
-shorten card copy, and give each tool a detail/configuration page.
+and `CatalogPack` display groups (Spotify, NYC Transit, Google, Timers,
+Playback, Home Assistant, plus generated singleton packs for standalone
+tools). This is intentionally the smallest useful shape for the current
+problem: make the built-in catalog browsable, shorten card copy, and give
+each capability a detail/configuration page.
 
 This does **not** make "Spotify" a new runtime source abstraction, and it
 does **not** make "OpenAI/Gemini/Grok" a generalized provider package.
 Those may become larger opt-in modules later (sources, voice providers,
 hardware profiles), but they should be pulled by concrete needs and use the
-repo's existing Pattern-2 registry / reconciler decision tree. For now,
-display packs are allowed to be absent, and standalone tools should remain
-natural rather than being stuffed into fake packs.
+repo's existing Pattern-2 registry / reconciler decision tree. Runtime tool
+definitions can still omit a display pack; the catalog view creates
+singleton packs only for the UI so standalone tools remain natural in code.
+
+### Pack-first catalog UI — shipped product shape
+
+The `/tools/` catalog now treats the **pack/capability** as the top-level
+object:
+
+- `/tools/` renders one card per user-facing capability pack, not one card
+  per tool. Spotify, Music Playback, NYC Transit, Home Assistant, Google,
+  Timers, Weather, and Time are the right mental model. A capability with
+  exactly one tool still gets one top-level card; its detail page simply
+  contains one child tool.
+- Categories remain a browsing/filtering layer over those cards. They do
+  not make some packs full-width and some half-width as an accident of child
+  tool count; the layout is stable and scan-friendly.
+- Setup/configuration belongs to the pack when a pack exists. Child tools
+  can inherit `needs_setup` state, but the user sees one clear setup action.
+- Top-level toggles operate at the pack level. Individual tool toggles are
+  advanced controls on the detail page. This matches the real choice:
+  enable/disable "Spotify" first, then optionally disable a specific leaf
+  like queueing if a household has a reason.
+- Pack and tool state remain separate, so pack toggles do not erase per-tool
+  preferences. The SSOT is a wizard-owned disabled pack set next to the
+  disabled tool set: `JASPER_DISABLED_TOOL_PACKS` plus
+  `JASPER_DISABLED_TOOLS`. Effective disabled state is "pack disabled OR
+  tool disabled." A pack whose children are mixed renders as partially
+  enabled.
+- Applying stays two-step. Staging pack/tool/prompt changes avoids
+  restarting `jasper-voice`; Apply restarts once, with the existing
+  rate-limit and honest "could not restart" behavior.
+
+Pack detail pages are the real management surface. A detail page shows:
+
+- Pack title, description, status, setup/configuration action, and a link to
+  the tool-authoring guide.
+- The child tools as compact rows/sections, not nested cards inside cards.
+  Each row shows status, optional advanced toggle, and an expand affordance.
+- Expanded tool content with the exact model-facing prompt, the default
+  prompt, JSON schema/parameters, labels, provider compatibility, timeout,
+  and risk flags such as `untrusted_output` and `consequential`.
+- A reset-to-default affordance wherever user-editable text exists.
+
+Prompt editing is intentionally allowed, but framed as advanced and
+at-risk. JTS is open source, so a user can edit the tool docstrings in the
+repo anyway; the UI should make that power available without pretending it
+is harmless. Do **not** add an intermediate "custom addendum" layer. The
+plan is full prompt override:
+
+- The immutable default comes from code
+  (`Tool.default_model_facing_description()`), and the UI displays it
+  read-only when no override exists.
+- An **Edit** action opens the full model-facing prompt in a textarea/editor.
+  Saving writes a user override; Reset deletes that override and returns to
+  the code default.
+- The editor warns that prompt overrides can change model behavior,
+  break tool selection, weaken safety instructions, and invalidate eval
+  expectations. The wording can be plain: "Advanced: edit at your own risk."
+- Overrides are stored outside the codebase in wizard-owned state under
+  `/var/lib/jasper/`, atomically written, and treated as non-secret prompt
+  text. Missing or malformed override state fails safe to code defaults; a
+  future hardening pass can add a dedicated doctor warning if prompt editing
+  becomes common enough to merit operator-facing remediation.
+- Runtime injection happens at the same seam as
+  `model_facing_description()`, so provider serializers, the catalog, and
+  manifest-like surfaces agree on what the model will actually see.
+- Default and override stay separate in the catalog payload so the UI can
+  show a diff, mark "customized," and reset without importing tool modules.
+- Prompt edits follow the same staged/apply lifecycle as toggles:
+  save the override, show pending, and restart `jasper-voice` once on Apply.
+- Prompt length is visible. This is both UX and correctness: tool
+  descriptions already press against realtime model token ceilings, so an
+  override should show character/token-ish budget feedback before it ships
+  to the model.
+
+Tool creation should also start under a parent pack, not as a global
+"random tool" button. In the near term this should be a contributor/developer
+workflow: the detail page can link to a guide and eventually scaffold a
+manifest or PR checklist, while executable tool code still lands through
+reviewed repository changes. Full in-browser creation of executable tools is
+a Phase-3/untrusted-code problem unless it only creates declarative prompts
+for an already-existing safe runtime.
+
+### Tool-authoring guide for jts.local
+
+The `/tools/guide/` page is a lightweight user/developer-facing guide linked
+from `/tools/` and every pack detail page, opened in a new tab
+(`target="_blank" rel="noopener"`). This is not the marketplace. It is the
+house style for first-party and trusted-PR tools:
+
+- What belongs in a tool vs a pack.
+- When to create a new tool, extend an existing pack, or add a label.
+- How to write model-facing prompt copy: short purpose first, concrete call
+  boundaries, "do not call when..." cases, response style, and failure
+  contract.
+- Prompt length guidance and why long descriptions matter for realtime
+  providers.
+- Required tests: static manifest/catalog coverage and a regression scenario
+  under `tests/voice_eval/regression/`.
+- Safety metadata: `untrusted_output`, `consequential`, logging redaction,
+  setup ownership, and no-silent-failure expectations.
+- Future polish: examples of good and bad tool prompt copy, including
+  Spotify/music, Home Assistant, and transit examples.
 
 ### Phase 3 — "champagne problem" (build only if it ever arrives)
 The trigger is one of: you want to run tools you *haven't* personally
