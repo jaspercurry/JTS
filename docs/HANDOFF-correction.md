@@ -151,11 +151,12 @@
   metadata: sample rate, mono channel count, processing flags, granted
   input-device identity, and calibrated-mic presence. The report is
   shown inline in `/correction/`, returned from start/status/upload
-  endpoints, persisted in `info.json` / `result.json`, and folded into
-  the confidence model so browser processing or sample-rate failures
-  block correction before a user wastes time measuring. This is still
-  metadata confidence, not an acoustic loopback proof; real phone/Pi
-  capture smoke testing remains outstanding.
+  endpoints, server-enforced at `/start`, persisted in `info.json` /
+  `result.json`, and folded into the confidence model so browser
+  processing or sample-rate failures block correction before a user
+  wastes time measuring. This is still metadata confidence, not an
+  acoustic loopback proof; real phone/Pi capture smoke testing remains
+  outstanding.
 - ✅ **Phase 2.10 — correction visualization + confidence UX.**
   Implemented 2026-05-28. `/correction/` results now expose the
   measurement facts that already drive the deterministic engine:
@@ -791,9 +792,10 @@ jasper/
 │   ├── runtime_integrity.py             Pi/runtime health evidence around sweeps
 │   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
+│   ├── artifacts.py                     per-session bundle writer / manifest owner
 │   ├── fir_runtime.py                   FIR coefficient inspect/stage substrate
 │   ├── evidence.py                      deterministic human/agent evidence packet
-│   └── session.py                       bundle writer + measurement state machine
+│   └── session.py                       measurement state machine + DSP orchestration
 │
 ├── cli/
 │   └── doctor.py                        correction socket / bundle / config checks
@@ -1620,3 +1622,5 @@ HANDOFF-multiroom.md, not here. Earlier 2026-06-01: MEASURE_PAUSE now
 pauses outputd content loudness metering instead of the retired TTS
 RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
 still apply.)
+
+Last verified: 2026-06-16

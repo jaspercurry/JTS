@@ -260,6 +260,21 @@ def test_render_page_reads_back_settings_for_verify():
     assert "actual.autoGainControl" in body
 
 
+def test_verify_capture_starts_before_server_sweep_request():
+    """Verification must arm browser capture before POST /verify triggers
+    the server-side sweep. Otherwise the verification recording can miss
+    the first part of playback on real hardware."""
+    body = _module_js()
+    start = body.index("async function startVerify()")
+    end = body.index("// Centralised button-state policy", start)
+    fn = body[start:end]
+    assert fn.index("postMessage('startCapture')") < fn.index(
+        "await postJson('verify', {})"
+    )
+    assert "captureMode = 'discard'" in fn
+    assert "postMessage('stopCapture')" in fn
+
+
 def test_render_page_does_not_loop_mic_back_to_speaker():
     """A naive 'src.connect(node); node.connect(ctx.destination)' would
     play the mic back through the phone speaker. Acceptable on a

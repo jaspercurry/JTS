@@ -530,10 +530,10 @@ def _stub_replace_to_tmp(correction_setup, tmp_path: Path, captured: dict):
 
 
 class _DummyJsonHandler:
-    headers = {"Content-Length": "2"}
-
-    def __init__(self) -> None:
-        self.rfile = io.BytesIO(b"{}")
+    def __init__(self, payload: dict | None = None) -> None:
+        body = json.dumps(payload or {}).encode()
+        self.headers = {"Content-Length": str(len(body))}
+        self.rfile = io.BytesIO(body)
 
 
 def test_start_handler_resets_to_base_before_sweep(
@@ -675,6 +675,52 @@ def test_start_handler_rejects_active_measurement(monkeypatch):
 
     with pytest.raises(RuntimeError, match="measurement already in progress"):
         correction_setup._handle_start(_DummyJsonHandler())
+
+
+def test_start_handler_rejects_failed_browser_audio_before_sweep(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A handcrafted /start cannot bypass the browser's disabled Run
+    button when getUserMedia reports a capture path that is unsafe for
+    measurement."""
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(correction_setup, "_session", None)
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(
+        correction_setup,
+        "_camilla",
+        lambda: pytest.fail("CamillaDSP should not be touched"),
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        correction_setup,
+        "_replace_session",
+        _stub_replace_to_tmp(correction_setup, tmp_path, captured),
+    )
+
+    with pytest.raises(ValueError, match="not safe for measurement"):
+        correction_setup._handle_start(_DummyJsonHandler({
+            "input_device": {
+                "label": "iPhone microphone",
+                "sample_rate": 44100,
+                "channel_count": 1,
+                "echo_cancellation": True,
+                "noise_suppression": False,
+                "auto_gain_control": False,
+            },
+        }))
+
+    sess = captured["sess"]
+    assert sess.browser_audio_report["failed"] is True
+    codes = {
+        issue["code"]
+        for issue in sess.browser_audio_report["issues"]
+        if issue["severity"] == "fail"
+    }
+    assert {"sample_rate_mismatch", "browser_echo_cancellation"} <= codes
+    assert correction_setup._start_in_progress is False
 
 
 def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatch):
