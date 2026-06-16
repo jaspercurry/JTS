@@ -158,7 +158,12 @@ def _emit_filter_definitions(
     if room_headroom_db > 0.0:
         lines.extend(emit_gain_filter("room_headroom", -room_headroom_db))
         tail_names.append("room_headroom")
-        logger.info(
+        # debug, not info: this emitter is re-run on every /sound/live-draft
+        # slider interaction with the active room correction preserved, so an
+        # info line here would spam the journal during EQ editing whenever an
+        # assertive (boosted) correction is applied. The headroom is also
+        # visible in the emitted YAML and the "wrote sound config" summary.
+        logger.debug(
             "room-correction boost headroom: -%.2f dB preamp "
             "(worst-case additive room boost)",
             room_headroom_db,
