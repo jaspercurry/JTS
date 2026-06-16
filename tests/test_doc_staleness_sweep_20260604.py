@@ -22,6 +22,7 @@ def test_config_wake_threshold_default_is_0_30(monkeypatch):
     from jasper.config import Config
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     cfg = Config.from_env()
     assert cfg.wake_threshold == 0.3
@@ -91,6 +92,7 @@ def test_wake_telemetry_doc_uses_1gb_not_500mb(monkeypatch):
     from jasper.config import Config
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
     monkeypatch.delenv("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES", raising=False)
     cfg = Config.from_env()
     assert cfg.wake_events_max_audio_bytes == 1024 * 1024 * 1024
