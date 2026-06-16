@@ -3074,6 +3074,32 @@ import jasper.control.server as _srv_mod  # noqa: E402
 _GATED_ROUTES = tuple(sorted(_srv_mod._TOKEN_GATED_ROUTES))
 
 
+def test_grouping_set_stays_in_token_gated_routes():
+    """Pin the membership invariant the rest of this section derives from.
+
+    The gate-behavior tests below iterate `_TOKEN_GATED_ROUTES` itself, so
+    they'd stay green if `/grouping/set` were dropped — they'd just exercise
+    one fewer route. This test fails on that removal: `/grouping/set` MUST
+    remain token-gated. Dropping it would silently re-open the
+    multiroom-vs-privilege-separation contradiction (WS1 Phase 2 made the gate
+    mandatory; someone "fixing" the cross-device grouping fan-out by removing
+    the gate is exactly the regression this pins). The household-credential
+    work (HANDOFF-control-plane-auth.md) accepts that credential *in addition*
+    to the control token on this route — it never un-gates it.
+    """
+    assert "/grouping/set" in _srv_mod._TOKEN_GATED_ROUTES
+    # The full expected gated set, so adding/removing any route is a
+    # deliberate, reviewed change rather than a silent drift.
+    assert _srv_mod._TOKEN_GATED_ROUTES == frozenset({
+        "/system/poweroff",
+        "/system/reboot",
+        "/system/restart/voice",
+        "/system/restart/audio",
+        "/mic/mute",
+        "/grouping/set",
+    })
+
+
 def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):
     """Point control_token at a tmp file containing `token` (gate ENABLED)."""
     import jasper.control.control_token as ct

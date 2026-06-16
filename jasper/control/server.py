@@ -611,9 +611,10 @@ def _write_grouping(
     Read-modify-write (via _atomic_rewrite_env) so operator-tuned
     JASPER_GROUPING_BUFFER_MS / _CODEC survive a role change. This is the
     single control-plane WRITER of grouping.env; jasper-grouping-reconcile is
-    the single READER->action. The endpoint that calls this is the same
-    no-auth LAN surface as the dial's /volume — so one speaker can configure
-    another by POSTing to its :PORT/grouping/set (the bond-forming flow).
+    the single READER->action. The endpoint that calls this (/grouping/set) is
+    token-gated (WS1 Phase 2); the cross-device bond-forming flow — one speaker
+    POSTing to another's :PORT/grouping/set — authenticates with the household
+    credential (docs/HANDOFF-control-plane-auth.md).
     """
     updates = {
         "JASPER_GROUPING": "on" if enabled else "off",
@@ -1421,11 +1422,12 @@ def _make_handler(
             self._send_json(self._volume_payload(new_pct))
 
         def _post_grouping_set(self) -> None:
-            # Set this speaker's grouping role. Same no-auth LAN surface
-            # as /volume (the dial) — so the bond-forming UI on speaker A
-            # configures speaker B by POSTing here on B's port. The
-            # reconciler (kicked below) is the single applier of the
-            # snapcast units + the outputd tap.
+            # Set this speaker's grouping role. /grouping/set is token-gated
+            # (WS1 Phase 2, _TOKEN_GATED_ROUTES); the cross-device bond-forming
+            # UI on speaker A configures speaker B by POSTing here on B's port,
+            # authenticated by the household credential (Phase C,
+            # docs/HANDOFF-control-plane-auth.md). The reconciler (kicked below)
+            # is the single applier of the snapcast units + the outputd tap.
             body = self._read_json()
             enabled = bool(body.get("enabled"))
             role = str(body.get("role", "")).strip()
