@@ -684,6 +684,7 @@ code = [
   "jasper/debug_mode.py",
   "jasper/flight_recorder.py",
   "jasper/control/debug_control.py",
+  "jasper/control/state_aggregate.py",
   "jasper/control/system_*.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
