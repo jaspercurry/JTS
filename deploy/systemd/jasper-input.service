@@ -16,10 +16,24 @@ RestartSec=2
 # makes localhost HTTP requests to jasper-control. No writes outside
 # stdout/stderr (journald). Runs as root because /dev/input/event*
 # is root:input on Trixie and we don't run a service account.
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
+# AF_NETLINK is required for the pyudev hot-plug monitor; AF_INET for the
+# localhost POST to jasper-control. Writes nothing, so ProtectSystem=strict
+# needs no ReadWritePaths. Capability filters + the `input`-group user drop
+# land in Phase 3.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
 
 # Idle: one udev netlink socket + a small number of evdev fds (one
 # per attached known accessory). Reads at human keystroke speed.

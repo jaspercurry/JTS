@@ -162,13 +162,26 @@ RuntimeDirectoryMode=0750
 # responses, Spotify/Google API responses). Runs as root because it
 # needs realtime audio + multiple /dev/snd/*, but these flags limit
 # damage if anything ever triggers an exploitable bug. Mirrors
-# jasper-web.service. ProtectHome=read-only is retained for compatibility
-# with tools that may inspect operator home directories during diagnostics.
-ProtectSystem=full
-ProtectHome=read-only
+# jasper-web.service. WS1 phase-1 hardening (hardened root — see
+# docs/HANDOFF-privilege-separation.md): strict read-only FS (writes pinned by
+# ReadWritePaths + StateDirectory/RuntimeDirectory), ProtectHome=tmpfs hides
+# /root so a compromised voice can't read root's SSH key to pivot, no kernel
+# tunables/modules/logs, no extra namespaces. Capability + syscall filters land
+# with the Phase-3 user drop, where they carry full value.
+ProtectSystem=strict
+ProtectHome=tmpfs
 PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=/var/lib/jasper
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Voice daemon has the LARGEST blast
