@@ -538,10 +538,16 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
 
 - **Stage 0 — HW-free Python.** `_common.py` diagnostics vocabulary (`_issue` in
   16 files, `_finite_float` 9, …); `DacProfile.dac_channel_map` +
-  `is_coherent_single()` + import-time guards; `OutputLayout`/`OutputTransportPlan`;
-  resolvers → `OutputTopology`; collapse the resolver self-shadow;
-  `ActivePlaybackRouteCapability` reads `OutputLayout`. *Red:* any
-  `test_dac_*`/`test_output_topology`/`test_active_speaker_*` or `ruff` failure.
+  `is_coherent_single()` + import-time guards (**0.1/0.2 landed**);
+  `OutputLayout`/`OutputTransportPlan`; resolvers → `OutputTopology`; collapse the
+  resolver self-shadow; `ActivePlaybackRouteCapability` reads `OutputLayout`
+  (**0.3 landed** — the data model lives in
+  [`jasper/output_topology.py`](../jasper/output_topology.py); every physical-DAC
+  PCM is forced through `stable_card_pcm` → `hw:CARD=<name>` and the
+  `OutputTransportPlan` boundary rejects any numeric-index/`plug`/`plughw` form, so
+  the card-index drift class is fail-closed before Stage 1/2 ride the plan). *Red:*
+  any `test_dac_*`/`test_output_topology`/`test_active_speaker_*`/`test_output_layout`
+  or `ruff` failure.
 - **Stage 1 — Rust transport, fake backend.** `SinkMode` rename + parse alias;
   runtime `dac_channels` at the DAC-write sites; `DacSink` trait; unify the loop
   (ledger + clip unconditional, `OutputCore`/TTS conditional on `tts_socket_path`);
