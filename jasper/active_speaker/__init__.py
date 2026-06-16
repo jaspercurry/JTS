@@ -108,6 +108,7 @@ from .staging import (
     STAGED_METADATA_PATH_ENV,
     STAGED_STARTUP_CONFIG_KIND,
     compile_preset_from_crossover_preview,
+    driver_commission_audible_evidence,
     load_staged_startup_config,
     stage_protected_startup_config,
 )
@@ -288,6 +289,7 @@ __all__ = [
     "build_summed_topology_tone_plan",
     "build_topology_tone_plan",
     "compile_preset_from_crossover_preview",
+    "driver_commission_audible_evidence",
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
     "load_active_speaker_preset",

@@ -651,6 +651,126 @@ def _software_guard_evidence(
     }
 
 
+def driver_commission_audible_evidence(
+    yaml: str,
+    *,
+    preset: ActiveSpeakerPreset,
+    audible_outputs: frozenset[int] | set[int],
+) -> dict[str, Any]:
+    """Per-driver commissioning safety: ONLY the target is audible, and an
+    audible tweeter still carries its protective high-pass + limiter.
+
+    The single-audio-path commissioning loads, one driver at a time, a config
+    where exactly the target driver's physical outputs are unmuted and every
+    other output is hard-muted. This is the *config-level* form of the Stage-5
+    safety rule "assert the high-pass is present before the tweeter is unmuted"
+    (HANDOFF-active-speaker-dsp.md). It verifies, against the emitted YAML:
+
+    1. **Audible mask is exactly ``audible_outputs``** — each listed output's
+       ``as_out{idx}_commission_mute`` is un-muted AND wired to its channel;
+       every OTHER output is a -120 dB hard mute wired to its channel. A muted
+       output that is silently un-wired (or vice versa) fails closed. Mirrors
+       :func:`_all_commission_mutes_engaged`'s per-index rigor.
+    2. **Protection-while-audible** — every AUDIBLE tweeter output keeps the
+       ``as_tweeter_protective_hp`` Linkwitz-Riley high-pass (at the correct
+       ``_protective_hp_hz``) and the ``as_tweeter_startup_limiter`` wrapping its
+       channel in the running pipeline. A woofer-only target has no audible
+       tweeter, so this check is vacuously satisfied while the tweeter stays
+       muted.
+
+    Pure analysis of the emitted YAML — opens nothing, loads nothing. The
+    assertion against the LIVE CamillaDSP graph (not just the file) before any
+    tweeter is unmuted on hardware remains the on-device Stage-5 gate; this is
+    the off-device half that gates whether the config is even allowed to load.
+    """
+    audible = {int(i) for i in audible_outputs}
+    filters = _parse_generated_filters(yaml)
+    pipeline_filters = _parse_generated_pipeline_filters(yaml)
+    output_count = max((o.index for o in preset.channel_map.outputs), default=-1) + 1
+
+    # (1) Audible mask: listed outputs un-muted, all others -120 dB hard-muted,
+    # every commission-mute filter wired to its own channel. Fail closed.
+    mask_correct = output_count > 0 and bool(audible) and audible <= set(
+        range(output_count)
+    )
+    muted_outputs: list[int] = []
+    for index in range(output_count):
+        name = output_commission_mute_name(index)
+        if index in audible:
+            mute_ok = _filter_param_matches(
+                filters, name, filter_type="Gain", params={"mute": False}
+            )
+        else:
+            muted_outputs.append(index)
+            mute_ok = _filter_param_matches(
+                filters,
+                name,
+                filter_type="Gain",
+                params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+            )
+        wired = _pipeline_contains_chain(
+            pipeline_filters, channels={index}, required_names=(name,)
+        )
+        if not (mute_ok and wired):
+            mask_correct = False
+
+    # (2) Protection-while-audible for an audible tweeter.
+    tweeter_outputs = audible_outputs_for_role(preset, "tweeter")
+    audible_tweeter = audible & set(tweeter_outputs)
+    protective_hp_hz = _protective_hp_hz(preset)
+    if not audible_tweeter:
+        tweeter_protected = True  # vacuous: the tweeter stays muted
+    else:
+        hp_defined = protective_hp_hz is not None and _filter_param_matches(
+            filters,
+            "as_tweeter_protective_hp",
+            filter_type="BiquadCombo",
+            params={
+                "type": "LinkwitzRileyHighpass",
+                "freq": protective_hp_hz,
+                "order": 4,
+            },
+        )
+        limiter_defined = _filter_param_matches(
+            filters,
+            "as_tweeter_startup_limiter",
+            filter_type="Limiter",
+            params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
+        )
+        hp_limiter_wired = _pipeline_contains_chain(
+            pipeline_filters,
+            channels=audible_tweeter,
+            required_names=(
+                "as_tweeter_protective_hp",
+                "as_tweeter_startup_limiter",
+            ),
+        )
+        tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
+
+    headroom = _filter_param_matches(
+        filters,
+        "active_startup_headroom",
+        filter_type="Gain",
+        params={"gain": -STARTUP_HEADROOM_DB},
+    )
+    checks = {
+        "audible_mask_correct": mask_correct,
+        "tweeter_protected_while_audible": tweeter_protected,
+        "startup_headroom": headroom,
+    }
+    return {
+        "audible_outputs": sorted(audible),
+        "muted_outputs": muted_outputs,
+        "tweeter_outputs": sorted(int(i) for i in tweeter_outputs),
+        "audible_tweeter_outputs": sorted(audible_tweeter),
+        "protective_highpass_hz": protective_hp_hz,
+        "startup_headroom_db": STARTUP_HEADROOM_DB,
+        "limiter_clip_limit_db": STARTUP_LIMITER_CLIP_LIMIT_DB,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
 def _preset_from_crossover_preview(
     topology: OutputTopology,
     preview: dict[str, Any],
