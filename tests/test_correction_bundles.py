@@ -229,6 +229,40 @@ def test_validate_bundle_reports_manifest_checksum_mismatch(tmp_path: Path):
     }
 
 
+def test_validate_bundle_caps_sha_for_large_artifacts(tmp_path: Path):
+    """The frequent doctor path skips the full SHA re-hash for large
+    raw-audio artifacts — byte_size stays the integrity gate — so it
+    doesn't re-hash every WAV on every run. The forensic path
+    (max_sha_verify_bytes=None) still catches a same-size content
+    tamper."""
+    d = _write_bundle(tmp_path, "big", started_at=1000)
+    (d / "captures").mkdir()
+    wav = d / "captures" / "p0.wav"
+    payload = b"\x00" * (bundles.DEFAULT_MAX_SHA_VERIFY_BYTES + 1024)
+    wav.write_bytes(payload)
+    bundles.record_artifact(
+        d,
+        "captures/p0.wav",
+        kind="raw_capture",
+        sensitivity="private_raw_audio",
+        recomputable=False,
+        generated_by="tests.test_correction_bundles",
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
+    # Tamper content but keep byte_size identical: only a SHA check sees it.
+    wav.write_bytes(b"\xff" + payload[1:])
+    assert wav.stat().st_size == len(payload)
+
+    capped = bundles.validate_bundle(d)
+    assert not any(i.code == "artifact_sha256_mismatch" for i in capped)
+    assert not any(i.code == "artifact_size_mismatch" for i in capped)
+
+    full = bundles.validate_bundle(d, max_sha_verify_bytes=None)
+    assert ("artifact_sha256_mismatch", "fail") in {
+        (issue.code, issue.severity) for issue in full
+    }
+
+
 def test_validate_bundle_warns_when_current_bundle_missing_manifest(
     tmp_path: Path,
 ):

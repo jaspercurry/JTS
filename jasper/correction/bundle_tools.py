@@ -154,7 +154,9 @@ def inspect_bundle(
     """Summarize one correction bundle without exposing raw audio."""
     bundle_dir = bundle_dir.resolve()
     summary = bundles.summarize_bundle(bundle_dir)
-    issues = bundles.validate_bundle(bundle_dir)
+    # Forensic path: full SHA verification of every artifact, including
+    # large raw-audio WAVs the capped doctor path skips.
+    issues = bundles.validate_bundle(bundle_dir, max_sha_verify_bytes=None)
     manifest = _read_json(bundle_dir / bundles.ARTIFACT_MANIFEST_NAME)
     result = _read_json(bundle_dir / "result.json")
     runtime = _read_json(bundle_dir / "runtime_integrity.json")

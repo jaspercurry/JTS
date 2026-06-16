@@ -11,13 +11,14 @@ math; this test pins the wiring.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import bundles, quality, runtime_integrity, sweep
+from jasper.correction import bundles, deconv, quality, runtime_integrity, sweep
 from jasper.correction.calibration import store_calibration
 from jasper.correction.session import (
     AutolevelData,
@@ -190,6 +191,100 @@ async def test_session_applies_mic_calibration_during_capture(
     assert "analysis/p0_response.json" in artifact_by_path["result.json"][
         "dependencies"
     ]
+
+
+@pytest.mark.asyncio
+async def test_analysis_offloaded_to_worker_thread(
+    tmp_path: Path, monkeypatch,
+):
+    """The multi-second deconv/smoothing and PEQ design run via
+    asyncio.to_thread, not inline on the single-threaded wizard event
+    loop — otherwise a long analysis freezes /status polls and every
+    other wizard sharing the server."""
+    sess = _make_session(tmp_path)
+    main_ident = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    real_smooth = sess._smooth_capture
+    real_design = sess._run_design_from_positions
+
+    def spy_smooth(*args, **kwargs):
+        seen["smooth"] = threading.get_ident()
+        return real_smooth(*args, **kwargs)
+
+    def spy_design(*args, **kwargs):
+        seen["design"] = threading.get_ident()
+        return real_design(*args, **kwargs)
+
+    monkeypatch.setattr(sess, "_smooth_capture", spy_smooth)
+    monkeypatch.setattr(sess, "_run_design_from_positions", spy_design)
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    cap_path = sess.capture_path_for_position(0)
+    cap_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(cap_path, sweep_signal.astype(np.float32), sr)
+
+    await sess.on_capture_uploaded(cap_path)
+
+    assert sess.state == SessionState.READY
+    # Both heavy steps executed on a worker thread, not the event loop.
+    assert seen["smooth"] != main_ident
+    assert seen["design"] != main_ident
+
+
+def test_snapshot_returns_point_in_time_copies(tmp_path: Path):
+    """snapshot() copies the mutable containers it exposes — capture_quality,
+    noise_reports, design_report — so a concurrent .append / key-set from the
+    loop or worker thread can't mutate (or tear) a snapshot mid-serialization."""
+    sess = _make_session(tmp_path)
+    sess.capture_quality.append({"k": 1})
+    sess.noise_reports.append({"n": 1})
+    sess.design_report = {"d": 1}
+
+    snap = sess.snapshot()
+
+    # Mutate the live session AFTER snapshotting.
+    sess.capture_quality.append({"k": 2})
+    sess.noise_reports.append({"n": 2})
+    sess.design_report["d"] = 99
+
+    assert snap["capture_quality"] == [{"k": 1}]
+    assert snap["noise_reports"] == [{"n": 1}]
+    assert snap["design_report"] == {"d": 1}
+
+
+@pytest.mark.asyncio
+async def test_overlong_capture_truncated_before_quality_assessment(
+    tmp_path: Path, monkeypatch,
+):
+    """An over-long capture is bounded once at the session boundary, so the
+    recorded capture quality and the deconvolved IR describe the SAME signal —
+    not full-length quality stats against a truncated analysis."""
+    monkeypatch.setattr(deconv, "DEFAULT_MAX_CAPTURE_SECONDS", 2.0)
+    sess = _make_session(tmp_path)
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    # Real sweep response (passes quality) padded well past the 2 s cap.
+    room = _synthesize_room_capture(sweep_signal, sr)
+    overlong = np.concatenate([room, np.zeros(5 * sr, dtype=room.dtype)])
+    assert len(overlong) > 2 * sr
+    cap_path = sess.capture_path_for_position(0)
+    cap_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(cap_path, overlong.astype(np.float32), sr)
+
+    await sess.on_capture_uploaded(cap_path)
+
+    assert sess.state == SessionState.READY
+    # Duration reflects the 2 s cap, not the ~6 s captured length.
+    assert sess.capture_quality[-1]["duration_s"] == pytest.approx(2.0, abs=0.05)
 
 
 @pytest.mark.asyncio
