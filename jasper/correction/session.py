@@ -338,8 +338,10 @@ class AutolevelData:
     user starts a new one.
 
     `original_main_volume_db` is the CamillaDSP `main_volume` value
-    saved at the start of the run, so we can restore it after the
-    measurement workflow completes (apply / reset). `current` is
+    saved at the start of the run, so we can restore it when the
+    measurement ends — apply / reset (the web handlers) or fail /
+    verify (the session's `_restore_listening_volume_if_ramped`).
+    `current` is
     where the ramp is right now; `locked` is where it ended up
     when the user signalled lock (or where it was when the ramp
     completed without lock). `cap_db` is the dynamic end-of-ramp
@@ -352,6 +354,9 @@ class AutolevelData:
     locked_main_volume_db: float | None = None
     cap_db: float | None = None
     error: str | None = None
+    # Set once the listening level has been restored after a measurement
+    # ending, so the session's terminal-state restore stays idempotent.
+    restored: bool = False
 
     def snapshot(self) -> dict[str, Any]:
         def r(x: float | None) -> float | None:
@@ -527,6 +532,13 @@ class MeasurementSession:
         self.autolevel: AutolevelData = AutolevelData()
         self._autolevel_lock_event: asyncio.Event | None = None
         self._autolevel_cancel_event: asyncio.Event | None = None
+        # The main_volume setter the most recent autolevel run ramped with,
+        # retained so the session can restore the listening level when a
+        # measurement ENDS on a path the web apply/reset handlers never see
+        # (watchdog FAILED, verify VERIFIED). None until autolevel runs.
+        self._main_volume_setter: (
+            Callable[[float], Awaitable[Any]] | None
+        ) = None
 
         # Single-slot watchdog that abandons a session stranded waiting for a
         # capture upload (see AWAITING_CAPTURE_TIMEOUT_SEC). Armed/cancelled
@@ -906,6 +918,49 @@ class MeasurementSession:
         except Exception:  # noqa: BLE001
             logger.exception(
                 "bundle info.json write failed (state=%s)", self.state.value,
+            )
+        # A failed measurement must not strand the speaker at the loud
+        # autolevel level — the web apply/reset handlers, which normally
+        # restore it, never run on this path (watchdog timeout, analysis
+        # error, etc.).
+        await self._restore_listening_volume_if_ramped()
+
+    async def _restore_listening_volume_if_ramped(self) -> None:
+        """Restore main_volume to the pre-autolevel listening level when a
+        measurement ends on a path the web apply/reset handlers don't cover
+        (watchdog FAILED, verify VERIFIED).
+
+        Autolevel ramps main_volume up to a measurement level and leaves it
+        LOCKED for the whole measurement (run_autolevel never resets
+        session.state), so without this hook a failed or verify-ended
+        measurement would leave the speaker loud until the next /reset.
+        Best-effort and idempotent — the apply/reset HTTP handlers own the
+        success paths; this fires only for the endings they never see. It
+        holds no lock and swallows errors, so it is safe to call from _fail
+        (which runs under the session lock)."""
+        al = self.autolevel
+        if al.restored:
+            return
+        if al.status not in (AutolevelStatus.LOCKED, AutolevelStatus.MAXED_OUT):
+            return
+        if al.original_main_volume_db is None or self._main_volume_setter is None:
+            return
+        al.restored = True
+        try:
+            await self._main_volume_setter(al.original_main_volume_db)
+            log_event(
+                logger,
+                "correction_autolevel_volume_restored",
+                session=self.session_id,
+                to_db=f"{al.original_main_volume_db:.1f}",
+                trigger="measurement_ended",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "autolevel volume restore on measurement end failed "
+                "(session=%s) — speaker may remain at the measurement level "
+                "until /reset",
+                self.session_id,
             )
 
     def _ensure_sweep_cache(self) -> tuple[Path, sweep.SweepMeta]:
@@ -2074,6 +2129,10 @@ class MeasurementSession:
                 rms_db=metrics["rms_db"],
                 max_db=metrics["max_db"],
             )
+        # Verify ends the measurement without an apply/reset, so restore the
+        # listening level here too if autolevel ramped it (e.g. autolevel was
+        # re-run from the APPLIED state before this verify).
+        await self._restore_listening_volume_if_ramped()
 
     # ------------------------------------------------------------------
     # Auto-level.
@@ -2161,6 +2220,10 @@ class MeasurementSession:
         dBFS that blasted the user.
         """
         al = self.autolevel = AutolevelData()
+        # Retain the setter so a measurement that ends via FAIL/VERIFY (which
+        # the web apply/reset handlers never observe) can still restore the
+        # listening level instead of stranding the speaker at the ramped level.
+        self._main_volume_setter = set_main_volume_db
         self._autolevel_lock_event = asyncio.Event()
         self._autolevel_cancel_event = asyncio.Event()
         loop = asyncio.get_event_loop()

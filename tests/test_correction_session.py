@@ -20,6 +20,8 @@ from scipy.signal import fftconvolve
 from jasper.correction import bundles, quality, runtime_integrity, sweep
 from jasper.correction.calibration import store_calibration
 from jasper.correction.session import (
+    AutolevelData,
+    AutolevelStatus,
     MeasurementSession,
     SessionBusyError,
     SessionConfig,
@@ -542,6 +544,56 @@ async def test_reset_still_recovers_from_a_wedged_state(tmp_path: Path):
     await sess.reset(fake_reset)
     assert sess.state == SessionState.IDLE
     assert reset_calls == [str(sess.cfg.base_config_path)]
+
+
+# --- Audio-safety: a measurement that ends via FAIL/VERIFY (not apply/reset)
+# must still return main_volume to the listening level. Autolevel ramps it up
+# and leaves it LOCKED for the whole measurement; the web apply/reset handlers
+# own the success-path restore, so the session has to cover the endings they
+# never see — else a failed measurement strands the speaker loud until /reset.
+@pytest.mark.asyncio
+async def test_failed_measurement_restores_autolevel_volume(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    restored: list[float] = []
+
+    async def fake_set_vol(db):
+        restored.append(db)
+
+    sess._main_volume_setter = fake_set_vol
+    sess.autolevel = AutolevelData(
+        status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
+    )
+    await sess.begin_noise_capture()  # arms the watchdog
+    await asyncio.sleep(0.25)  # let it fire → _fail → restore
+    assert sess.state == SessionState.FAILED
+    assert restored == [-20.0]
+    assert sess.autolevel.restored is True
+
+
+@pytest.mark.asyncio
+async def test_autolevel_restore_idempotent_and_skips_when_not_ramped(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    restored: list[float] = []
+
+    async def fake_set_vol(db):
+        restored.append(db)
+
+    sess._main_volume_setter = fake_set_vol
+
+    # No autolevel ramp (default IDLE status) → nothing to restore.
+    await sess._restore_listening_volume_if_ramped()
+    assert restored == []
+
+    # Ramped + LOCKED → restore exactly once, even if called again.
+    sess.autolevel = AutolevelData(
+        status=AutolevelStatus.LOCKED, original_main_volume_db=-18.0
+    )
+    await sess._restore_listening_volume_if_ramped()
+    await sess._restore_listening_volume_if_ramped()
+    assert restored == [-18.0]
 
 
 # --- Bug 2 regression: autolevel cap math --------------------------------
