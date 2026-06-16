@@ -635,6 +635,17 @@ the same triggers it already self-heals on. Bake stable-identifier resolution
 into the Stage-0 resolver relocation onto `OutputTopology` — that is the cheapest
 place to get it right and the most expensive to get wrong later.
 
+> **Stage 0.3 landed (Python data model + stable identity).** `OutputLayout` /
+> `OutputTransportPlan` + `resolve_output_layout` live in
+> [`jasper/output_topology.py`](../jasper/output_topology.py); the active-speaker
+> resolvers and `ActivePlaybackRouteCapability` are thin readers of them. Every
+> physical-DAC PCM is built by the single `stable_card_pcm` chokepoint
+> (`hw:CARD=<name>`), and `is_stable_card_pcm` rejects numeric-index / `plug` /
+> `plughw` forms at the `OutputTransportPlan` boundary, so the card-index drift
+> class fails closed before the Rust transport (Stage 1) and the reconciler env
+> emission (Stage 2) ride the plan. The plan is recomputed fresh from the topology
+> per call (no cached index); wiring the *udev/boot env emission* of it is Stage 2.
+
 **4. One wide snd-aloop content substream — width on the substream, not more
 substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
 cannot raise that without patching the module); but one substream carries up to

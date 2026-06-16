@@ -4,25 +4,52 @@ The output topology can describe every physical DAC lane, but active-speaker
 test/apply audio reaches hardware through a narrower runtime route. This module
 keeps that distinction explicit so UI and DSP builders do not infer capability
 from physical output count alone.
+
+Route resolution itself (the stable ``hw:CARD=`` identity, the DAC-agnostic
+transport plan) lives on :mod:`jasper.output_topology` — the runtime owner that
+already reads env and the topology's card identity. This module is a thin
+active-speaker reader over :func:`~jasper.output_topology.resolve_output_layout`:
+it adds the speaker-group demand accounting and the route-fit issues.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.audio_hardware import dac
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-from jasper.output_topology import OutputTopology, SpeakerGroup
+from jasper.output_topology import (
+    ACTIVE_PLAYBACK_DEVICE_ENV,
+    DIRECT_DAC_SOURCE,
+    EXPLICIT_SOURCE,
+    MISSING_SOURCE,
+    OUTPUTD_ACTIVE_LANE_SOURCE,
+    OutputLayout,
+    OutputTopology,
+    SpeakerGroup,
+    resolve_output_layout,
+)
+
 from ._common import issue as _issue
 
-ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
+# Re-exported for backwards compatibility — these constants moved to
+# jasper.output_topology (the resolution owner) but several active-speaker
+# callers import them from here.
+__all__ = [
+    "ACTIVE_PLAYBACK_DEVICE_ENV",
+    "ACTIVE_PLAYBACK_ROUTE_KIND",
+    "DIRECT_DAC_SOURCE",
+    "EXPLICIT_SOURCE",
+    "MISSING_SOURCE",
+    "OUTPUTD_ACTIVE_LANE_SOURCE",
+    "ActivePlaybackRouteCapability",
+    "active_playback_route_capability",
+    "durable_profile_route_capability",
+    "resolve_active_playback_device",
+    "resolve_diagnostic_playback_device",
+    "resolve_durable_profile_playback_device",
+]
+
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
-OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
-EXPLICIT_SOURCE = "explicit"
-DIRECT_DAC_SOURCE = "topology_direct_dac"
-MISSING_SOURCE = "missing"
 
 
 def _active_main_groups(topology: OutputTopology) -> list[SpeakerGroup]:
@@ -57,24 +84,6 @@ def _highest_assigned_output(groups: list[SpeakerGroup]) -> int | None:
     return max(indexes) if indexes else None
 
 
-def _direct_dac_pcm(card_id: str | None) -> str | None:
-    card = (card_id or "").strip()
-    if not card:
-        return None
-    return f"hw:CARD={card},DEV=0"
-
-
-def _profile_outputd_lane_device(topology: OutputTopology) -> tuple[str | None, str]:
-    profile = dac.by_id(topology.hardware.device_id)
-    if (
-        profile is not None
-        and profile.supports_active_outputd_lane
-        and profile.active_outputd_lane_channels
-    ):
-        return ACTIVE_OUTPUTD_PLAYBACK_DEVICE, OUTPUTD_ACTIVE_LANE_SOURCE
-    return None, MISSING_SOURCE
-
-
 def resolve_durable_profile_playback_device(
     topology: OutputTopology,
     *,
@@ -84,13 +93,16 @@ def resolve_durable_profile_playback_device(
 
     Durable profile apply must hand audio to an outputd-owned active lane. A
     temporary direct-DAC route can be safe enough for one short diagnostic tone,
-    but it must not become the speaker's normal output path.
+    but it must not become the speaker's normal output path, so this never falls
+    back to a direct-DAC route.
     """
 
-    explicit = playback_device or os.environ.get(ACTIVE_PLAYBACK_DEVICE_ENV)
-    if explicit and explicit.strip():
-        return explicit.strip(), EXPLICIT_SOURCE
-    return _profile_outputd_lane_device(topology)
+    layout = resolve_output_layout(
+        topology,
+        playback_device=playback_device,
+        allow_direct_dac=False,
+    )
+    return layout.playback_device, layout.playback_device_source
 
 
 def resolve_diagnostic_playback_device(
@@ -106,23 +118,12 @@ def resolve_diagnostic_playback_device(
     instead.
     """
 
-    explicit = playback_device or os.environ.get(ACTIVE_PLAYBACK_DEVICE_ENV)
-    if explicit and explicit.strip():
-        return explicit.strip(), EXPLICIT_SOURCE
-    outputd_device, outputd_source = _profile_outputd_lane_device(topology)
-    if outputd_device:
-        return outputd_device, outputd_source
-    profile = dac.by_id(topology.hardware.device_id)
-    if (
-        profile is not None
-        and profile.kind == "single"
-        and profile.coherent_clock_domain
-        and topology.hardware.card_id
-    ):
-        return _direct_dac_pcm(topology.hardware.card_id), DIRECT_DAC_SOURCE
-    if topology.hardware.card_id:
-        return _direct_dac_pcm(topology.hardware.card_id), DIRECT_DAC_SOURCE
-    return None, MISSING_SOURCE
+    layout = resolve_output_layout(
+        topology,
+        playback_device=playback_device,
+        allow_direct_dac=True,
+    )
+    return layout.playback_device, layout.playback_device_source
 
 
 def resolve_active_playback_device(
@@ -192,35 +193,26 @@ def _route_capability(
 ) -> ActivePlaybackRouteCapability:
     """Return the active-speaker runtime route capacity.
 
-    Physical DAC output count is not enough: the active-speaker outputd
-    transport width is profile-declared because it can differ from the DAC's
-    analog output count.
+    Thin reader: the route half (resolved device, source, transport width,
+    subwoofer support) comes from the resolved ``OutputLayout``; this function
+    adds the speaker-group demand accounting and the route-fit issues. Physical
+    DAC output count is not enough — the active-speaker transport width is
+    profile-declared because it can differ from the DAC's analog output count.
     """
 
-    resolver = (
-        resolve_diagnostic_playback_device
-        if diagnostic else resolve_durable_profile_playback_device
+    layout: OutputLayout = resolve_output_layout(
+        topology,
+        playback_device=playback_device,
+        allow_direct_dac=diagnostic,
     )
-    resolved_device, source = resolver(topology, playback_device=playback_device)
     active_groups = _active_main_groups(topology)
     subwoofer_groups = _subwoofer_groups(topology)
     required_groups = active_groups + subwoofer_groups
     highest = _highest_assigned_output(required_groups)
     required_outputs = (highest + 1) if highest is not None else 0
-    if source == OUTPUTD_ACTIVE_LANE_SOURCE:
-        transport_channels = (
-            dac.active_outputd_lane_channels_for(topology.hardware.device_id) or 0
-        )
-        subwoofer_supported = True
-    elif source == EXPLICIT_SOURCE or (diagnostic and source == DIRECT_DAC_SOURCE):
-        # Explicit lab routes and coherent single-DAC direct routes use the
-        # saved hardware width as the upper bound. The user-facing topology
-        # decides which of those physical outputs are actually assigned.
-        transport_channels = max(0, int(topology.hardware.physical_output_count or 0))
-        subwoofer_supported = True
-    else:
-        transport_channels = 0
-        subwoofer_supported = False
+
+    resolved_device = layout.playback_device
+    transport_channels = layout.transport_channel_count
 
     issues: list[dict[str, str]] = []
     if active_groups and not resolved_device:
@@ -247,12 +239,12 @@ def _route_capability(
 
     return ActivePlaybackRouteCapability(
         playback_device=resolved_device,
-        playback_device_source=source,
+        playback_device_source=layout.playback_device_source,
         transport_channel_count=transport_channels,
         required_active_output_count=required_outputs,
         active_group_count=len(active_groups),
         subwoofer_group_count=len(subwoofer_groups),
-        subwoofer_supported=subwoofer_supported,
+        subwoofer_supported=layout.subwoofer_supported,
         issues=tuple(issues),
     )
 

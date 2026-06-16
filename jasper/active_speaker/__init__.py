@@ -101,6 +101,7 @@ from .playback import (
     tone_backend_status,
 )
 from .topology_tone import build_summed_topology_tone_plan, build_topology_tone_plan
+from .playback_route import resolve_active_playback_device
 from .staging import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     STAGED_CONFIG_PATH_ENV,
@@ -108,7 +109,6 @@ from .staging import (
     STAGED_STARTUP_CONFIG_KIND,
     compile_preset_from_crossover_preview,
     load_staged_startup_config,
-    resolve_active_playback_device,
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight

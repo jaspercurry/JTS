@@ -43,7 +43,7 @@ from .profile import (
 from .playback_route import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     active_playback_route_capability,
-    resolve_active_playback_device as _resolve_active_playback_device,
+    resolve_diagnostic_playback_device,
 )
 from .tone_plan import load_active_speaker_preset
 
@@ -349,24 +349,6 @@ def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
             or group.id in routed_subwoofers
         )
     ]
-
-
-def _resolve_playback_device(
-    topology: OutputTopology,
-    *,
-    playback_device: str | None,
-) -> tuple[str | None, str]:
-    return _resolve_active_playback_device(topology, playback_device=playback_device)
-
-
-def resolve_active_playback_device(
-    topology: OutputTopology,
-    *,
-    playback_device: str | None = None,
-) -> tuple[str | None, str]:
-    """Return the explicit active-speaker playback device for DSP emitters."""
-
-    return _resolve_playback_device(topology, playback_device=playback_device)
 
 
 def _protective_hp_hz(preset: ActiveSpeakerPreset) -> float | None:
@@ -1197,7 +1179,7 @@ def stage_protected_startup_config(
             ),
         ))
 
-    resolved_playback_device, playback_device_source = _resolve_playback_device(
+    resolved_playback_device, playback_device_source = resolve_diagnostic_playback_device(
         topology,
         playback_device=playback_device,
     )
