@@ -130,13 +130,20 @@ plain-HTTP setup traffic.
 
 Legitimate clients supply the token two ways:
 
-- **Browser.** The `/system/` and `/rooms/` dashboards prompt once for
-  the token on the first gated action, store it in that browser's
-  `localStorage`, and attach it as `X-JTS-Token` on subsequent actions.
-  Because those pages proxy to control server-side, the wizard forwards
-  the browser-supplied header through to control (and, for grouping,
-  to each member speaker) — it never injects a token from disk, so the
-  secret stays in the operator's browser.
+- **Browser.** The `/system/` dashboard prompts once for the token on
+  the first gated action (reboot / power-off / mic-mute), stores it in
+  that browser's `localStorage`, and attaches it as `X-JTS-Token` on
+  subsequent actions. The `/rooms/` grouping actions reuse that same
+  stored token, so once any `/system/` action has captured it they work
+  too; a `/rooms/` action attempted *before* the token is stored fails
+  closed with a hint to set it on `/system/` first. (A `/rooms/`-native
+  first-use prompt is a known follow-up: a bond fans out to several
+  speakers that each carry their own token, so the single-token prompt
+  the `/system/` page uses doesn't map cleanly onto it.) Because those
+  pages proxy to control server-side, the wizard forwards the
+  browser-supplied header through to control (and, for grouping, to each
+  member speaker) — it never injects a token from disk, so the secret
+  stays in the operator's browser.
 - **curl / scripts / Home Assistant.** Send `-H "X-JTS-Token: <token>"`
   on the gated requests.
 
