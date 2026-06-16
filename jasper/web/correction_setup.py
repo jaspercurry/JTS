@@ -1477,11 +1477,19 @@ def _maybe_restore_main_volume(sess, cam) -> None:
     async def _restore() -> None:
         await cam.set_volume_db(al.original_main_volume_db, best_effort=True)
 
-    _run_async(_restore(), timeout=5.0)
-    logger.info(
-        "restored main_volume to %.1f dB after autolevel workflow",
-        al.original_main_volume_db,
-    )
+    try:
+        _run_async(_restore(), timeout=5.0)
+        logger.info(
+            "restored main_volume to %.1f dB after autolevel workflow",
+            al.original_main_volume_db,
+        )
+    except Exception:  # noqa: BLE001
+        # This runs inside the apply/reset finally — a restore failure must
+        # never mask the original error. Best-effort: log loudly and move on.
+        logger.exception(
+            "main_volume restore after autolevel workflow failed "
+            "(volume may be left at the measurement level)",
+        )
 
 
 def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1496,8 +1504,13 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     async def _get() -> str | None:
         return await cam.get_config_file_path(best_effort=True)
 
-    _run_async(sess.apply(_set, camilla_get_config=_get), timeout=15.0)
-    _maybe_restore_main_volume(sess, cam)
+    try:
+        _run_async(sess.apply(_set, camilla_get_config=_get), timeout=15.0)
+    finally:
+        # Audio-safety: autolevel may have ramped main_volume well above the
+        # listening level for measurement SNR. Restore it even if apply()
+        # raised, so a failed apply never strands the speaker loud.
+        _maybe_restore_main_volume(sess, cam)
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
@@ -1516,8 +1529,12 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     async def _set(path: str) -> bool:
         return await cam.set_config_file_path(path, best_effort=False)
 
-    _run_async(sess.reset(_set), timeout=15.0)
-    _maybe_restore_main_volume(sess, cam)
+    try:
+        _run_async(sess.reset(_set), timeout=15.0)
+    finally:
+        # Audio-safety: restore the pre-autolevel listening level even if
+        # reset() raised (see _handle_apply).
+        _maybe_restore_main_volume(sess, cam)
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
