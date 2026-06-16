@@ -588,6 +588,23 @@ uses L vs R separately.** Therefore:
   so the lower level costs nothing. The `PairwiseAverage` path for the existing
   composite stays byte-identical to the deleted `downmix_dual_active_reference`
   (regression test asserts equality); the N-lane path is the new clip-proof sum.
+  *Precondition note:* `1/N` is clip-proof **absolutely** (not relying on
+  band-splitting). Band-splitting is why the reference rarely approaches the `N×`
+  worst case — at any instant one lane is hot and the sum stays well below
+  full-scale — so `1/N`'s conservatism costs no real SNR. Do **not** "optimize"
+  back to `1/√N`: it is power-preserving only for uncorrelated lanes and would
+  reintroduce the clip hazard the moment a future mode routes full-range content
+  to multiple lanes.
+- **Match the fold to what the mic can hear (don't normalize on inaudible
+  energy).** A reference dominated by sub energy the mic can't pick up inflates
+  the NLMS denominator without contributing correlation, slowing convergence in
+  the voice band. The software AEC3 path **already** high-passes the reference at
+  125 Hz (`aec_bridge.py`), so sub content is already out of *its* denominator;
+  the open item is the **chip** path — verify the XVF3800 USB-IN reference band
+  and the mic-array low-frequency roll-off, and high-pass the fold to match mic
+  sensitivity if needed. The XVF exposes only **2** reference channels (not 3),
+  so a separate sub reference is impossible — this is a "what goes into the sum"
+  question, which is why the mono fold is the right shape.
 
 **3. Reconciler computes one `OutputTransportPlan`; it dispatches on `kind`, not
 DAC id.** `apply_audio_runtime_env()` reads the resolved `DacProfile`:
@@ -603,6 +620,21 @@ The `OutputTransportPlan` (`sink`, `transport_channels`, `channel_map`,
 `dac_pcms`, `clock_domain_contract`) is the **single env+`/state` truth**,
 computed once and *read* on `/state` — never re-derived per `/state` hit.
 
+**Stable identity + invalidation (a Stage-0 decision, not a later fix).**
+`dac_pcms` and `clock_domain_contract` are exactly the fields that shift when a
+USB DAC re-enumerates or the Apple dongles return with different card indices
+across a reboot — a class of drift that has bitten JTS before
+([HANDOFF-identity.md](HANDOFF-identity.md)). So the plan MUST key on a **stable
+card identifier** — `hw:CARD=<name>` (the `DacProfile` already matches on card
+*name* regex, not index), or a serial where available — **never a numeric card
+index.** With `type plug` banned, a stale plan pointing at the wrong device now
+fails *closed* (silent until reconcile re-runs) rather than playing remixed
+content at the wrong drivers — but the cure is to not go stale: the reconciler
+(the single writer) recomputes the plan on **boot and on udev add/remove/change**,
+the same triggers it already self-heals on. Bake stable-identifier resolution
+into the Stage-0 resolver relocation onto `OutputTopology` — that is the cheapest
+place to get it right and the most expensive to get wrong later.
+
 **4. One wide snd-aloop content substream — width on the substream, not more
 substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
 cannot raise that without patching the module); but one substream carries up to
@@ -610,11 +642,14 @@ cannot raise that without patching the module); but one substream carries up to
 make the active content lane **one substream at width N**, not to add substreams:
 - Render the active-content lane width from `JASPER_OUTPUTD_ACTIVE_CHANNELS`
   (`__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` token in `asoundrc.jasper`).
-- **Ban `type plug` (and `plughw:`) on the active path** — use width-exact
-  `hw:`/`dmix` so a width mismatch fails at `snd_pcm_hw_params` (open error)
-  instead of silently remixing 8→4 onto live drivers (the single most dangerous
-  fail-open in the feature; `plug` is the automatic channel-conversion plugin).
-  A contract test rejects `plug`/`plughw` anywhere on the active path.
+- **All format adaptation is explicit and owned by CamillaDSP; the active ALSA
+  path fails closed on channel, rate, AND format mismatch.** Ban `type plug`
+  (and `plughw:`, which is `plug`+`hw`) on the active path — use width-exact
+  `hw:`/`dmix` so any mismatch fails at `snd_pcm_hw_params` (open error) instead
+  of silently remixing 8→4 (or resampling, or reformatting) onto live drivers
+  (the single most dangerous fail-open in the feature; `plug` is the automatic
+  channel/rate/format-conversion plugin). A contract test rejects `plug`/`plughw`
+  anywhere on the active path.
 - **Second, independent fail-closed layer:** CamillaDSP refuses to start if its
   mixer output channel count ≠ the playback device `channels`. Rely on both.
 - **Open-ordering constraint:** snd-aloop locks rate/format/channels to the first
@@ -661,10 +696,16 @@ transport channels); rename `active_four_channel_shape_missing` →
 - **Real clip accounting at every width** — replace the hardwired
   `clipped_samples=0` so a clipping active period reports nonzero on `/state`
   (the commissioning "no clip" gate is otherwise vacuously green).
-- **Width-agnostic `/state` block** — rename the `dual_apple` block to a
-  width-agnostic `composite` shape with a per-child array; migrate the doctor's
-  `=="dual_apple"` branches + snapshot test in the same PR (keep `dual_apple` as
-  a read alias one release).
+- **Width-agnostic `/state` block — decouple the wire string from the Rust type
+  name.** The serialized `/state` value is a cross-language contract (Rust
+  `state.rs` writes it; the Python doctor reads it). Renaming the internal type
+  (`DualAppleBackend`→`PairedCompositeSink`, `SinkMode::DualApple`→`Composite`)
+  must **not** be coupled to a serialization-format break. Either keep the wire
+  value stable while the type is renamed, or migrate every occurrence in one
+  atomic commit guarded by a **round-trip (serialize→parse) test**; either way
+  rename the block to a width-agnostic `composite` shape with a per-child array
+  and keep `dual_apple` as a **read alias** one release, migrating the doctor's
+  `=="dual_apple"` branches + the snapshot test in the same PR.
 - **"Why didn't my lane arm" via stable `issues[].code`** on `OutputHardwareState`
   (not bare stderr). `check_outputd_service` becomes table-driven keyed by
   `sink_mode` (today's 2-mode allowlist would FAIL every new DAC); the width check

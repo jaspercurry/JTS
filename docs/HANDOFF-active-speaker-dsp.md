@@ -567,12 +567,19 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   protection, a low start level + ramp, and a sweep confined to the driver's safe
   band. *Red:* HP not confirmed live, or any sibling audible → abort, re-mute.
 - **Stage 6 — sweep + AEC-reference validation (gate that can fail the feature).**
-  Per-driver `driver_acoustics`; validate the clip-proof mono reference: **capture
-  per-band ERLE + wake-during-music rate**, not a pass/fail. *Red ladder:* if
-  low-band convergence / wake-during-music regresses → (a) high-pass the sub's
-  contribution to the reference, else (b) drop the sub from the reference fold,
-  else (c) per-lane/per-band reference weighting (deferred end-state). *Red:*
-  `/state.output.clipped_samples` not real/≈0, or wake regression unresolved by (a)/(b).
+  Per-driver `driver_acoustics`. **Pre-gate (check before Stage 6, not during):**
+  confirm there is **no sub latency outside CamillaDSP's alignment** — a plate-amp
+  with its own DSP, a sealed-sub correction stage, anything downstream of the
+  reference tap that adds group delay the fold can't see. That is the specific
+  thing that breaks the single-filter AEC model `mic ≈ ref·h` (see "Resolved
+  decisions"). Then validate the clip-proof mono reference with the **right
+  metric: low-band ERLE + delay-estimator stability, NOT aggregate ERLE**
+  (aggregate can look fine while the sub band quietly leaks). *Red ladder:* if
+  low-band convergence / delay stability regresses → (a) high-pass the sub's
+  contribution to the reference (band-match to mic sensitivity), else (b) drop
+  the sub from the reference fold, else (c) per-lane/per-band reference weighting
+  (deferred end-state). *Red:* `/state.output.clipped_samples` not real/≈0, or
+  low-band wake regression unresolved by (a)/(b).
 - **Stage 7 — freeze + delete the fork + dual-Apple regression.** Freeze baseline;
   delete `run_alsa_dual_apple` + `downmix_dual_active_reference`; reboot →
   deterministic boot into the active config with TTS; re-run dual-Apple
@@ -582,19 +589,46 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
 
 ### Resolved decisions + scope
 
-- **TTS stays at fan-in** (confirmed correct — voice must be band-split across
-  drivers like music; a post-crossover voice path would risk a tweeter and bypass
-  per-driver gain/delay/correction).
-- **Subwoofer folds into the AEC reference: yes, default.** It is part of the
-  echo path, and AEC3's ~8 kHz band split confines any risk to band 0; instrument
-  per-band ERLE at Stage 6 with the fallback ladder above.
+- **TTS stays at fan-in** — *positively* correct, two independent reasons, not
+  merely unchanged: (1) it keeps voice band-routed across drivers like music (a
+  post-crossover path would send full-range voice into a tweeter lane and bypass
+  per-driver gain/delay/correction); (2) because the reference is folded
+  post-mix, TTS automatically lands in the AEC reference — which is what lets the
+  speaker hear a **barge-in during its own spoken response** (real assistant
+  value, not incidental). *Latency budget to watch:* TTS now eats the crossover's
+  group delay on every response — negligible with IIR (LR biquads), but if
+  crossovers ever go linear-phase FIR (tens of ms) that adds directly to
+  perceived response latency. Not a reason to change — there is no safe way to
+  bypass the crossover for voice — just a budget to track.
+- **Subwoofer folds into the AEC reference: yes, default — and the determinant
+  is delay alignment, not bass.** AEC3 fits a single filter `mic ≈ ref·h`; a
+  wideband sub+mains reference sum admits one `h` only if the sub and mains reach
+  the mic through ~the same bulk delay. An active crossover *already* delay-aligns
+  every lane in CamillaDSP for acoustic summation, so if all lane delay lives
+  inside CamillaDSP the summed reference is phase-coherent and AEC3 converges. The
+  failure mode is the Stage-6 **pre-gate** above: a sub path with latency
+  CamillaDSP doesn't see breaks `h_main ≈ h_sub` and no single filter fits.
+  Confine the risk-check to **low-band ERLE + delay-estimator stability** (AEC3's
+  ~8 kHz band split keeps any exposure in band 0); the software path already
+  high-passes its reference at 125 Hz, so verify only the chip path's reference
+  band + mic roll-off.
 - **M>2 / 3+-device composite is out of scope** — it would generalize
   `classify_output_cards`' `len(apple)==2`, `dual_apple_runtime_mapping`, and
   `apply_observed_composite_policy`, which the new data fields do not reach. Named
   as a limitation, not implied free.
 - **Do NOT collapse `safe_playback`'s floor tri-state to a bool** —
   `floor_pending_operator` ("tone played, awaiting ACK") is load-bearing for
-  Stage 5. Consolidate ownership, preserve the state space.
+  Stage 5: a process that deliberately unmutes drivers one at a time needs
+  "not-yet-operator-confirmed" to be **distinct from both "muted" and "confirmed
+  safe."** Consolidate ownership, preserve the state space.
+- **Crash recovery from any commissioning step lands MUTED** (the same safety
+  property as the tri-state + the muted-by-default startup config). A power loss
+  or crash partway through commissioning must reboot into everything-muted — never
+  into a tweeter unmuted at level with no crossover loaded. Therefore the
+  per-driver unmute states are **transient and never frozen as the boot config**;
+  only the final, all-validated freeze step persists a loadable active config.
+  When wiring the maskable emitter (the Stage-2 keystone), guard against any path
+  where a partially-commissioned unmute state could persist as "safe."
 
 Every on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
 per-driver limiters, and the protective tweeter high-pass are preserved by the
