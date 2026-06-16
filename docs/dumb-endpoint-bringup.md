@@ -1,5 +1,16 @@
 # Dumb endpoint bring-up: Raspberry Pi Zero 2 W
 
+> **Note: the "endpoint" install tier was removed.** There are now
+> exactly two install profiles — `full` and `streambox`. The legacy
+> `endpoint` / `satellite` tokens are still accepted and map to
+> `streambox`, so a field box auto-migrates on its next deploy. "Endpoint
+> behaviour" (a box that just plays a bonded channel) is now the runtime
+> multiroom **follower** role on any full/streambox box, not a separate
+> install tier. Sections below that describe an `endpoint` install
+> profile/tier are superseded by the streambox profile + follower role;
+> current operational truth lives in
+> [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md).
+
 This is the operator runbook for bringing up a cheap JTS endpoint such
 as `jts4`: a Raspberry Pi Zero 2 W that can be a synchronized satellite
 for a stereo pair / wireless subwoofer / multi-room group, or a
@@ -42,28 +53,30 @@ Today, a transport endpoint has three supported shapes:
 
 Do **not** run a bare full install on the Zero 2 W. The full profile
 builds AEC3 and installs the voice/assistant stack, which does not fit
-the product role or memory envelope. Use the endpoint bring-up wrapper;
-it lets the installer auto-resolve the correct Zero role, which is
-`streambox` unless the Pi is already configured as a bonded follower:
+the product role or memory envelope. Deploy the `streambox` profile —
+the default Zero role — by adopting the box and running the normal
+deploy with the profile set explicitly so the deploy log shows intent:
 
 ```sh
-bash scripts/bringup-endpoint.sh jts4.local --adopt
+bash scripts/onboard.sh jts4.local --adopt
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=streambox bash scripts/deploy-to-pi.sh
 ```
 
 If `.local` resolution is flaky but the router shows an IP, keep the
-endpoint identity explicit:
+speaker identity explicit:
 
 ```sh
-bash scripts/bringup-endpoint.sh 192.168.1.162 --adopt --speaker-hostname jts4.local
+bash scripts/onboard.sh 192.168.1.162 --adopt --speaker-hostname jts4.local
+PI_HOST=192.168.1.162 JASPER_HOSTNAME=jts4.local JASPER_INSTALL_PROFILE=streambox \
+  bash scripts/deploy-to-pi.sh
 ```
 
-The wrapper reuses `scripts/onboard.sh --no-install` for SSH/laptop
-state, runs `scripts/deploy-to-pi.sh`, reboots once if the cgroup/zram
-boot contract needs it, and prints the final `snapclient`, ALSA DAC,
-Wi-Fi guardian, healthz, service, and doctor summary. It does **not**
-play an audible tone automatically. Pass `--satellite-only` only when
-you intentionally want the smallest follower image instead of the
-default streambox capability set.
+`onboard.sh --adopt` sets up SSH/laptop state; `deploy-to-pi.sh` runs
+the install, reboots once if the cgroup/zram boot contract needs it,
+and verifies the management surface. A box that is already an active
+bonded follower parks its brain at runtime via the multiroom
+reconciler — there is no separate satellite-only install profile to
+choose.
 
 For manual deploys, the normal deploy path is still valid. On a fresh
 Raspberry Pi Zero 2 W with no persisted profile marker, the installer
@@ -624,10 +637,11 @@ Build:
   and verifies the installed nginx surface (`/`, `/system/data.json`,
   `/sources/state`, plus `/sound/` and `/spotify/` for streambox) and
   `jasper-control` directly at `:8780/healthz`.
-- `scripts/bringup-endpoint.sh` is the preferred fresh-Zero command. It
-  wraps onboard/deploy, handles the mDNS/IP split, reboots once for
-  staged cgroup/zram boot changes, and emits the endpoint-specific final
-  report.
+- `scripts/onboard.sh <host> --adopt` followed by
+  `JASPER_INSTALL_PROFILE=streambox bash scripts/deploy-to-pi.sh` is the
+  preferred fresh-Zero command pair. Onboard handles the mDNS/IP split
+  and laptop state; deploy installs, reboots once for staged cgroup/zram
+  boot changes, and verifies the management surface.
 - The endpoint install path seeds the Wi-Fi guardian stash from the
   active NetworkManager profile when possible, matching the full
   speaker recovery contract without requiring the `/wifi/` wizard.
@@ -756,15 +770,16 @@ ssh pi@192.168.1.162
 ## Install endpoint packages
 
 This section is the **manual lab fallback**. The preferred path for a
-JTS-managed endpoint is:
+JTS-managed box is the streambox deploy:
 
 ```sh
-bash scripts/bringup-endpoint.sh jts4.local --adopt
+bash scripts/onboard.sh jts4.local --adopt
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=streambox bash scripts/deploy-to-pi.sh
 ```
 
-The endpoint product profile also installs `nginx-light` for the
-endpoint-scoped management surface. The raw manual lab fallback only
-needs the Snapcast client and basic audio tools:
+The streambox profile also installs `nginx-light` for the local
+management surface. The raw manual lab fallback only needs the Snapcast
+client and basic audio tools:
 
 ```sh
 sudo apt update

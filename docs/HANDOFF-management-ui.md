@@ -1399,7 +1399,7 @@ vocabulary/step policy into `active-speaker-ui.js` while leaving render/IO in
 satellite-only `endpoint` now use the shared landing page filtered by
 `system_capabilities`; streambox installs a profile-scoped `jasper-web`
 service/socket template and endpoint keeps a smaller nginx route set; verified
-by `tests/test_endpoint_install_profile.py`, `tests/test_control_server.py`,
+by `tests/test_install_profile_tiers.py`, `tests/test_control_server.py`,
 `tests/test_web_main_imports.py`, and `tests/test_web_sources_setup.py`. Prior
 pass 2026-06-04: `/voice/` owns
 spend-cap status/settings and the

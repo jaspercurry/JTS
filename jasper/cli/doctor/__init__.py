@@ -49,7 +49,6 @@ from ...install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_profile_allows_voice_brain,
     install_role_for_profile,
-    is_satellite_install_profile,
     read_install_profile,
 )
 from ...speaker_name import runtime_name as _speaker_runtime_name
@@ -131,8 +130,6 @@ from .audio import (
     _OUTPUTD_EXPECTED_DAC_PCM,
     _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
     _OUTPUTD_STATUS_SOCKET,
-    check_endpoint_snapclient_binary,
-    check_endpoint_alsa_playback,
     check_fanin_asound_wiring,
     check_fanin_service,
     check_fanin_tts_drops,
@@ -297,23 +294,6 @@ from .satellites import (
     check_dial_heartbeat,
 )
 
-_ENDPOINT_OMITTED_DOCTOR_GROUPS = frozenset({
-    "audio",
-    "voice",
-    "wake",
-    "renderers",
-    "integrations",
-    "correction",
-    "aec",
-    "usbsink",
-    "resilience",
-    "satellites",
-})
-
-_FULL_OMITTED_DOCTOR_GROUPS = frozenset({
-    "endpoint_audio",
-})
-
 _STREAMBOX_OMITTED_DOCTOR_GROUPS = frozenset({
     "voice",
     "wake",
@@ -336,11 +316,6 @@ def _profile_skip_result(entry, *, reason: str) -> CheckResult:
 
 def _doctor_skip_reason(entry, install_profile: str) -> str:
     role = install_role_for_profile(install_profile)
-    if (
-        is_satellite_install_profile(install_profile)
-        and entry.group in _ENDPOINT_OMITTED_DOCTOR_GROUPS
-    ):
-        return "not installed (satellite-only profile)"
     if role == STREAMBOX_INSTALL_PROFILE and (
         entry.group in _STREAMBOX_OMITTED_DOCTOR_GROUPS
         or entry.func.__name__ in _STREAMBOX_OMITTED_DOCTOR_CHECKS
@@ -423,8 +398,6 @@ __all__ = [
     "check_tts_open",
     "check_output_hardware_state",
     "check_apple_dongle_audio",
-    "check_endpoint_snapclient_binary",
-    "check_endpoint_alsa_playback",
     "check_dongle_headphone_at_max",
     "check_fanin_binary_installed",
     "_asound_non_comment_text",
@@ -888,7 +861,7 @@ def _env_int_for_doctor(name: str, default: int) -> int:
 def _local_audio_config_from_env() -> SimpleNamespace:
     """Cfg surface for profiles that run local audio without a voice brain.
 
-    Streambox and satellite-only installs intentionally do not require a
+    Streambox installs intentionally do not require a
     voice provider. Keep this namespace to the attributes retained doctor
     checks actually read, so jasper-doctor can still validate local audio,
     renderer, correction, memory, network, and web health without pulling
@@ -1043,12 +1016,9 @@ async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     in their literal order, then the CamillaDSP websocket check.
     """
     install_profile = read_install_profile()
-    satellite_only = is_satellite_install_profile(install_profile)
     sync_checks: list[DoctorCheck] = []
     async_tail: list = []
     for entry in registered_checks():
-        if not satellite_only and entry.group in _FULL_OMITTED_DOCTOR_GROUPS:
-            continue
         skip_reason = _doctor_skip_reason(entry, install_profile)
         if skip_reason:
             skipped = _profile_skip_result(entry, reason=skip_reason)

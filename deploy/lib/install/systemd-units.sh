@@ -12,173 +12,6 @@ WIZARD_UNITS=(
     jasper-system-web
 )
 
-render_endpoint_unit() {
-    local src="$1"
-    local dest="$2"
-    # Endpoint units must not order themselves behind full-speaker audio
-    # daemons that are intentionally absent from the Zero 2 W profile.
-    sed \
-        -e 's/ jasper-camilla.service//g' \
-        -e 's/jasper-camilla.service//g' \
-        -e 's/ jasper-fanin.service//g' \
-        -e 's/jasper-fanin.service//g' \
-        -e 's/^After=[[:space:]]*/After=/' \
-        -e 's/^Wants=[[:space:]]*/Wants=/' \
-        -e 's/^Requires=[[:space:]]*/Requires=/' \
-        -e '/^After=[[:space:]]*$/d' \
-        -e '/^Wants=[[:space:]]*$/d' \
-        -e '/^Requires=[[:space:]]*$/d' \
-        "$src" > "$dest"
-    chmod 0644 "$dest"
-}
-
-validate_endpoint_unit_file() {
-    local unit="$1"
-    if grep -Eq '^(After|Wants|Requires)=[[:space:]]*$' "${unit}"; then
-        echo "  ERROR: endpoint unit has an empty dependency directive: ${unit}" >&2
-        return 1
-    fi
-    if grep -Eq 'jasper-(camilla|fanin)\.service' "${unit}"; then
-        echo "  ERROR: endpoint unit still references full-speaker audio daemons: ${unit}" >&2
-        return 1
-    fi
-}
-
-validate_endpoint_systemd_units() {
-    local -a units=(
-        "${SYSTEMD_DIR}/jasper-control.service"
-        "${SYSTEMD_DIR}/jasper-snapserver.service"
-        "${SYSTEMD_DIR}/jasper-snapclient.service"
-        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
-        "${SYSTEMD_DIR}/jasper-system-web.service"
-        "${SYSTEMD_DIR}/jasper-system-web.socket"
-        "${SYSTEMD_DIR}/jasper-sources-web.service"
-        "${SYSTEMD_DIR}/jasper-sources-web.socket"
-        "${SYSTEMD_DIR}/jts-audio.slice"
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
-    )
-    local unit
-    for unit in "${units[@]}"; do
-        validate_endpoint_unit_file "${unit}" || return 1
-    done
-    if command -v systemd-analyze >/dev/null 2>&1; then
-        local -a verify_units=(
-            "${SYSTEMD_DIR}/jasper-control.service"
-            "${SYSTEMD_DIR}/jasper-snapclient.service"
-            "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-system-web.service"
-            "${SYSTEMD_DIR}/jasper-system-web.socket"
-            "${SYSTEMD_DIR}/jasper-sources-web.service"
-            "${SYSTEMD_DIR}/jasper-sources-web.socket"
-            "${SYSTEMD_DIR}/jts-audio.slice"
-            "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
-        )
-        if [[ -x /usr/bin/snapserver ]]; then
-            verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
-        fi
-        systemd-analyze verify "${verify_units[@]}" || {
-            echo "  ERROR: rendered endpoint systemd units failed systemd-analyze verify" >&2
-            return 1
-        }
-    fi
-}
-
-install_endpoint_systemd_units() {
-    install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin "${SYSTEMD_DIR}"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
-        /usr/local/lib/jasper/jasper-env-file.sh
-    install -d -m 0755 /usr/local/lib/jasper/install
-    install -m 0644 \
-        "${REPO_DIR}"/deploy/lib/install/*.sh \
-        /usr/local/lib/jasper/install/
-
-    render_endpoint_unit \
-        "${REPO_DIR}/deploy/systemd/jasper-control.service" \
-        "${SYSTEMD_DIR}/jasper-control.service"
-    render_endpoint_unit \
-        "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
-        "${SYSTEMD_DIR}/jasper-snapserver.service"
-    render_endpoint_unit \
-        "${REPO_DIR}/deploy/systemd/jasper-snapclient.service" \
-        "${SYSTEMD_DIR}/jasper-snapclient.service"
-    render_endpoint_unit \
-        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-system-web.service" \
-        "${SYSTEMD_DIR}/jasper-system-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-system-web.socket" \
-        "${SYSTEMD_DIR}/jasper-system-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-sources-web.service" \
-        "${SYSTEMD_DIR}/jasper-sources-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-sources-web.socket" \
-        "${SYSTEMD_DIR}/jasper-sources-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
-        "${SYSTEMD_DIR}/jts-audio.slice"
-
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.timer" \
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
-        /usr/local/sbin/jasper-identity-reconcile
-    install -d -m 0755 "${SYSTEMD_DIR}/ssh.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
-        "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
-
-    validate_endpoint_systemd_units
-
-    for distro_unit in snapserver.service snapclient.service; do
-        if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
-                | grep -q "^${distro_unit}"; then
-            systemctl disable --now "${distro_unit}" >/dev/null 2>&1 || true
-        fi
-    done
-
-    # A deliberate conversion from full speaker -> endpoint must leave no
-    # brain services running. Units may be absent on a fresh endpoint image;
-    # every disable is best-effort by design.
-    for brain_unit in \
-        jasper-voice.service jasper-camilla.service jasper-fanin.service \
-        jasper-outputd.service jasper-aec-bridge.service jasper-aec-init.service \
-        jasper-aec-reconcile.service jasper-audio-hardware-reconcile.service \
-        jasper-input.service shairport-sync.service nqptp.service \
-        librespot.service bt-agent.service jasper-mux.service \
-        jasper-web.socket jasper-dial-web.socket jasper-correction-web.socket \
-        jasper-bluetooth-web.socket \
-        jasper-web.service jasper-dial-web.service jasper-correction-web.service \
-        jasper-bluetooth-web.service \
-        camillagui.socket camillagui.service camillagui-proxy.service \
-        bluealsa-aplay.service bluealsa.service; do
-        systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
-    done
-
-    systemctl daemon-reload
-    systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
-    systemctl enable jasper-system-web.socket jasper-sources-web.socket
-    systemctl restart jasper-system-web.socket jasper-sources-web.socket \
-        2>/dev/null || true
-    systemctl enable jasper-control.service jasper-grouping-reconcile.service
-    systemctl enable --now avahi-daemon.service 2>/dev/null || true
-    systemctl enable --now jasper-identity-reconcile.timer
-    systemctl start jasper-identity-reconcile.service || \
-        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl restart jasper-control.service
-    reconcile_grouping_state
-    echo "Endpoint units enabled. jasper-control, /system/, and /sources/ are live; snapclient is managed by grouping reconcile."
-}
-
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
@@ -929,10 +762,11 @@ install_systemd_units() {
 
     systemctl daemon-reload
 
-    # Endpoint installs serve /sources/ from a tiny standalone socket on
-    # 8773. Full speakers serve /sources/ from the combined jasper-web
-    # bundle, so disable the endpoint-only socket during tier conversion
-    # before enabling jasper-web.socket on the same port.
+    # Legacy migration cleanup: an old endpoint-tier box (the removed third
+    # install tier) served /sources/ from a tiny standalone socket on 8773.
+    # Full speakers serve /sources/ from the combined jasper-web bundle, so
+    # disable that lingering legacy socket before enabling jasper-web.socket
+    # on the same port. No-op on a box that never had it (idempotent).
     systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
         >/dev/null 2>&1 || true
 

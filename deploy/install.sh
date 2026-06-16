@@ -81,10 +81,10 @@ Options:
 
 Environment:
   JASPER_INSTALL_DRY_RUN=1   Same as --dry-run.
-  JASPER_INSTALL_PROFILE=full|streambox|endpoint|satellite
+  JASPER_INSTALL_PROFILE=full|streambox
                              Install tier. Unset/default is full speaker.
                              streambox is the Zero-class local renderer tier.
-                             endpoint/satellite is the satellite-only role.
+                             Legacy endpoint/satellite tokens map to streambox.
   JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1
                              Allow a persisted install-profile change.
   JASPER_HOSTNAME=<name>.local
@@ -95,18 +95,18 @@ EOF
 }
 
 normalize_install_profile() {
+    # Legacy endpoint/satellite tokens map to streambox so a field box with
+    # a persisted endpoint marker auto-migrates on its next deploy. Mirror
+    # of jasper.install_profile.normalize_install_profile.
     case "${1:-}" in
         ""|full)
             printf 'full\n'
             ;;
-        streambox)
+        streambox|endpoint|satellite)
             printf 'streambox\n'
             ;;
-        endpoint|satellite)
-            printf 'endpoint\n'
-            ;;
         *)
-            echo "invalid JASPER_INSTALL_PROFILE=${1:-<empty>}; use full, streambox, endpoint, or satellite" >&2
+            echo "invalid JASPER_INSTALL_PROFILE=${1:-<empty>}; use full or streambox" >&2
             return 2
             ;;
     esac
@@ -139,28 +139,30 @@ detect_default_install_profile() {
     esac
 }
 
-install_profile_env_value() {
-    local file="$1"
-    local key="$2"
-    [[ -r "${file}" ]] || return 0
-    awk -F= -v key="${key}" '
-        $1 == key {
-            sub(/^[^=]*=/, "")
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-            print
-            exit
-        }
-    ' "${file}" 2>/dev/null || true
+# The RAW first line of the marker, before normalization. Used only to
+# detect a legacy endpoint/satellite marker so the migration to streambox
+# can be logged once. Mirrors jasper.install_profile._normalize_with_migration_log.
+read_raw_persisted_install_profile() {
+    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
+    [[ -f "${marker}" ]] || return 0
+    head -n1 "${marker}" | tr -d '[:space:]'
 }
 
-install_profile_bonded_follower_active() {
-    local grouping_file="${JASPER_GROUPING_ENV_FILE:-${STATE_DIR}/grouping.env}"
-    local enabled role leader enabled_lc
-    enabled="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING")"
-    role="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING_ROLE")"
-    leader="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING_LEADER_ADDR")"
-    enabled_lc="$(printf '%s' "${enabled}" | tr '[:upper:]' '[:lower:]')"
-    [[ "${enabled_lc}" == "on" && "${role}" == "follower" && -n "${leader}" ]]
+# True when the persisted marker carries a legacy endpoint/satellite token —
+# i.e. this deploy auto-migrates the box to streambox. Lets main() emit a
+# single greppable log line WITHOUT polluting resolve_install_profile's
+# captured stdout (which is the resolved profile value).
+# Tests pass an alternate marker path; main() calls it with no args (the
+# canonical marker). shellcheck only sees the no-arg production call.
+# shellcheck disable=SC2120
+install_profile_legacy_marker_migrating() {
+    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
+    local raw
+    raw="$(read_raw_persisted_install_profile "${marker}")" || return 1
+    case "${raw}" in
+        endpoint|satellite) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Test helpers pass an alternate marker path directly; production calls use the
@@ -169,26 +171,18 @@ install_profile_bonded_follower_active() {
 resolve_install_profile() {
     local marker="${1:-${INSTALL_PROFILE_MARKER}}"
     local requested="${JASPER_INSTALL_PROFILE:-}"
-    local persisted requested_profile detected_profile auto_streambox_upgrade=0
+    local persisted requested_profile
 
     persisted="$(read_persisted_install_profile "${marker}")" || return $?
     if [[ -n "${requested}" ]]; then
         requested_profile="$(normalize_install_profile "${requested}")" || return $?
     elif [[ -n "${persisted}" ]]; then
-        detected_profile="$(detect_default_install_profile)" || return $?
-        if [[ "${persisted}" == "endpoint" && "${detected_profile}" == "streambox" ]] \
-                && ! install_profile_bonded_follower_active; then
-            requested_profile="streambox"
-            auto_streambox_upgrade=1
-        else
-            requested_profile="${persisted}"
-        fi
+        requested_profile="${persisted}"
     else
         requested_profile="$(detect_default_install_profile)" || return $?
     fi
 
     if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
-            && [[ "${auto_streambox_upgrade}" != "1" ]] \
             && ! _is_truthy "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-0}"; then
         cat >&2 <<EOF
 ERROR: install profile mismatch.
@@ -198,28 +192,12 @@ Requested profile: ${requested_profile}
 
 Refusing to switch install tiers implicitly. Set
 JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 only when intentionally converting
-this Pi between full speaker, streambox, and endpoint tiers.
+this Pi between the full speaker and streambox tiers.
 EOF
         return 2
     fi
 
     printf '%s\n' "${requested_profile}"
-}
-
-install_profile_auto_streambox_upgrade_active() {
-    local resolved_profile="$1"
-    local marker="${2:-${INSTALL_PROFILE_MARKER}}"
-    local persisted requested detected_profile
-    requested="${JASPER_INSTALL_PROFILE:-}"
-    [[ -z "${requested}" ]] || return 1
-    [[ "${resolved_profile}" == "streambox" ]] || return 1
-
-    persisted="$(read_persisted_install_profile "${marker}")" || return 1
-    [[ "${persisted}" == "endpoint" ]] || return 1
-
-    detected_profile="$(detect_default_install_profile)" || return 1
-    [[ "${detected_profile}" == "streambox" ]] || return 1
-    ! install_profile_bonded_follower_active
 }
 
 persist_install_profile() {
@@ -262,11 +240,10 @@ Run for real from a Pi-local checkout:
 1. Profile guard
    - Resolve JASPER_INSTALL_PROFILE=streambox.
    - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-   - Refuse later full/streambox/endpoint tier changes unless
+   - Refuse later full/streambox tier changes unless
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
-   - Legacy unpaired Zero endpoints with a persisted endpoint marker
-     auto-upgrade to streambox; active bonded followers and explicit
-     endpoint requests stay satellite-only.
+   - A legacy persisted endpoint/satellite marker normalizes to
+     streambox, so the box auto-migrates to the streambox install path.
 
 2. System packages
    - apt-get update.
@@ -340,79 +317,10 @@ and simultaneous renderer/DSP behavior.
 EOF
 }
 
-print_endpoint_install_plan() {
-    cat <<EOF
-==> JTS endpoint install plan (dry run)
-
-No host changes are made in this mode. This is the Raspberry Pi Zero 2 W
-install tier: the same JTS repo and control plane, but a small runtime
-profile for a timed Snapcast renderer.
-
-Run for real from a Pi-local checkout:
-  sudo JASPER_INSTALL_PROFILE=endpoint JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
-
-1. Profile guard
-   - Resolve JASPER_INSTALL_PROFILE=endpoint.
-   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-   - Refuse later full/streambox/endpoint tier changes unless
-     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
-
-2. System packages
-   - apt-get update.
-   - Minimal runtime packages:
-     python3 python3-venv libasound2 libasound2-plugins alsa-utils
-     curl ca-certificates rsync nginx-light avahi-daemon avahi-utils
-     snapclient sox.
-
-3. Runtime files and state
-   - Create/update /opt/jasper, /etc/jasper, and /var/lib/jasper.
-   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
-   - Copy the jasper Python package, pyproject.toml, docs, Avahi service
-     templates, shared landing page/assets, endpoint nginx route set,
-     multi-room systemd units, jasper-control, jasper-doctor, identity
-     helpers, and install helpers needed by the endpoint tier.
-
-4. Python runtime
-   - Create /opt/jasper/.venv.
-   - Install the base JTS Python package without the voice/wake/DSP
-     extras used by full speakers.
-
-5. Services and live actions
-   - Reload udev and systemd.
-   - Enable/start jasper-control, endpoint-scoped nginx, Avahi, and
-     identity reconciliation.
-   - Serve the shared JTS landing page with satellite capabilities and
-     enable socket-activated endpoint web for /system/ and /sources/
-     only; leave the combined full-speaker jasper-web bundle disabled.
-   - Install the managed JTS snapserver/snapclient units disabled.
-   - Enable/start the multi-room grouping reconciler; role=follower starts
-     snapclient from the shared reconciler argv builder.
-   - Disable the distro snapclient.service if the apt package enabled it.
-   - Seed the WiFi guardian recovery stash from the active NetworkManager
-     profile when possible, matching the full install's recovery contract.
-   - Apply memory and cgroup tuning for jts-audio.slice; reboot may be
-     required for kernel boot-arg and zram changes.
-   - Run jasper-doctor in endpoint-aware mode as a final non-blocking
-     health summary.
-
-6. Explicitly out of scope for the endpoint tier
-   - Voice, wake, microphone/AEC, renderer, full setup-wizard,
-     CamillaDSP, fan-in, outputd, Bluetooth-source, AirPlay, Spotify,
-     USB-sink, correction, and accessory firmware build/install surfaces.
-
-This dry run is a planning aid for contributors; it is not a substitute
-for a real Zero 2 W install/deploy validation before release.
-EOF
-}
-
 print_install_plan() {
     local profile="${1:-full}"
     if [[ "${profile}" == "streambox" ]]; then
         print_streambox_install_plan
-        return 0
-    fi
-    if [[ "${profile}" == "endpoint" ]]; then
-        print_endpoint_install_plan
         return 0
     fi
     cat <<EOF
@@ -432,7 +340,7 @@ Profile guard:
     unless a persisted profile marker says otherwise. Fresh Raspberry Pi
     Zero 2 W installs resolve to streambox instead of full.
   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-  - Refuse later full/streambox/endpoint tier changes unless
+  - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
 
 1. System packages
@@ -677,17 +585,6 @@ install_deps() {
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
         xxd \
         bluez-alsa-utils avahi-daemon avahi-utils
-}
-
-install_endpoint_deps() {
-    apt-get update
-    apt-get install -y --no-install-recommends \
-        python3 python3-venv \
-        libasound2 libasound2-plugins alsa-utils \
-        curl ca-certificates rsync \
-        nginx-light \
-        avahi-daemon avahi-utils \
-        snapclient sox
 }
 
 install_streambox_deps() {
@@ -1147,70 +1044,14 @@ EOF
     echo "  Build manifest: ${git_sha} on ${git_branch}"
 }
 
-set_endpoint_env_value() {
+# Generic "delete-and-append" rewrite of one KEY=value line in
+# /etc/jasper/jasper.env. Shared by the streambox env-refresh path.
+set_jasper_env_value() {
     local key="$1"
     local value="$2"
     sed -i.bak "/^${key}=/d" "${ENV_DIR}/jasper.env"
     rm -f "${ENV_DIR}/jasper.env.bak"
     printf '%s=%s\n' "${key}" "${value}" >> "${ENV_DIR}/jasper.env"
-}
-
-install_endpoint_jasper() {
-    install -d -m 0755 "${INSTALL_DIR}"
-    install -d -m 0750 "${STATE_DIR}"
-    install -d -m 0750 "${ENV_DIR}"
-    install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
-
-    write_build_manifest
-
-    rsync -a --delete \
-        --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
-        --exclude='tests' --exclude='build' --exclude='*.egg-info' \
-        "${REPO_DIR}/jasper" \
-        "${REPO_DIR}/pyproject.toml" \
-        "${REPO_DIR}/README.md" \
-        "${REPO_DIR}/docs" \
-        "${INSTALL_DIR}/"
-
-    if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
-        python3 -m venv "${INSTALL_DIR}/.venv"
-    fi
-    "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip==26.1.2 wheel==0.47.0
-
-    local -a pip_constraints=()
-    local constraints_file
-    constraints_file="$(jasper_pip_constraints_file)"
-    if [[ -n "${constraints_file}" ]]; then
-        echo "  applying Pi-generated pip constraints: ${constraints_file}"
-        pip_constraints=(-c "${constraints_file}")
-    fi
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}"
-
-    local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
-    if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
-        cat > "${ENV_DIR}/jasper.env" <<EOF
-JASPER_HOSTNAME=${hostname_value}
-JASPER_CONTROL_HOST=0.0.0.0
-JASPER_SHAIRPORT_SUPERVISOR=disabled
-JASPER_GROUPING_SUPERVISOR=disabled
-JASPER_INSTALL_PROFILE=endpoint
-EOF
-        chmod 0640 "${ENV_DIR}/jasper.env"
-        echo "  endpoint env: created ${ENV_DIR}/jasper.env"
-    else
-        set_endpoint_env_value JASPER_CONTROL_HOST "0.0.0.0"
-        set_endpoint_env_value JASPER_SHAIRPORT_SUPERVISOR "disabled"
-        set_endpoint_env_value JASPER_GROUPING_SUPERVISOR "disabled"
-        set_endpoint_env_value JASPER_INSTALL_PROFILE "endpoint"
-        chmod 0640 "${ENV_DIR}/jasper.env"
-        echo "  endpoint env: refreshed endpoint-only defaults"
-    fi
-
-    if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
-        printf 'JASPER_SPEAKER_NAME="JTS Endpoint"\n' > "${STATE_DIR}/speaker_name.env"
-        chmod 0644 "${STATE_DIR}/speaker_name.env"
-        echo "  speaker name: JTS Endpoint"
-    fi
 }
 
 
@@ -1570,28 +1411,6 @@ install_streambox_nginx_site() {
     fi
 }
 
-install_endpoint_nginx_site() {
-    # Satellite endpoints use the normal JTS landing page with
-    # capability-gated cards, plus a deliberately small nginx route set.
-    # Unsupported links are hidden by /system/data.json capabilities
-    # instead of a bespoke endpoint-only HTML shell.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper-endpoint.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
-    install_management_static_assets "${REPO_DIR}/deploy/index.html" 0
-    rm -f /etc/nginx/sites-enabled/default
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  endpoint nginx reloaded — http://<host>/{,sources,system} are live"
-    else
-        echo "  ERROR: endpoint nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
-}
-
 install_avahi_jasper_control() {
     # Advertise jasper-control over mDNS so the rotary dial can find
     # us via service discovery instead of a hardcoded hostname. See
@@ -1881,8 +1700,8 @@ main() {
     fi
 
     echo "==> install.sh starting (profile: ${install_profile})"
-    if install_profile_auto_streambox_upgrade_active "${install_profile}"; then
-        echo "event=install_profile.auto_streambox_upgrade previous=endpoint profile=streambox reason=unpaired_zero"
+    if install_profile_legacy_marker_migrating; then
+        echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=streambox source=marker"
     fi
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
@@ -1908,22 +1727,6 @@ main() {
         remove_legacy_https_artifacts
         provision_correction_tls
         install_streambox_nginx_site
-        run_doctor_summary
-        return 0
-    fi
-    if [[ "${install_profile}" == "endpoint" ]]; then
-        require_root
-        persist_install_profile "${install_profile}"
-        install_endpoint_deps
-        install_endpoint_jasper
-        install_endpoint_systemd_units
-        install_endpoint_nginx_site
-        migrate_wifi_guardian
-        migrate_memory_resilience
-        migrate_cgroup_memory_enabled
-        install_journald_persistent_storage
-        install_avahi_jasper_control
-        install_peering_template
         run_doctor_summary
         return 0
     fi

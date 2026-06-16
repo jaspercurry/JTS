@@ -32,18 +32,17 @@
 
 ## 0. Implementation status (2026-06-12)
 
-**Endpoint install tier software is BUILT (2026-06-12), hardware validation
-pending.** A Raspberry Pi Zero 2 W endpoint is now the same JTS package on
-`JASPER_INSTALL_PROFILE=endpoint`: base Python deps only, `jasper-control`,
-Avahi identity/discovery, grouping reconcile, and managed Snapcast units.
-The same reconciler/argv builder serves both tiers. Full speakers keep the
-`snapclient -> FIFO -> outputd` member lane; endpoint installs derive a
-direct Snapclient ALSA player (`alsa:device=default` unless
-`JASPER_ENDPOINT_SNAPCLIENT_PLAYER` overrides it) and skip outputd/voice/
-Camilla side effects. Endpoint-tier `role=leader` is a visible fail-closed
-misconfiguration: the reconciler clears snapcast args, stops both snap units,
-and `jasper-doctor` warns to reassign the member as a follower. The detailed
-operator/runbook truth lives in
+**"Endpoint behaviour" is the runtime FOLLOWER role, not a separate install
+tier.** There are exactly two install profiles — `full` and `streambox`. The
+former third tier (`endpoint` / `satellite`) was removed; those tokens are
+still accepted and map to `streambox` so a field box auto-migrates on its
+next deploy. A box that just plays a bonded channel — the old "endpoint" — is
+now any full/streambox box acting as a multiroom **follower**: the grouping
+reconciler parks its local source renderers (and, on a full speaker, the
+voice/AEC brain via the derived park flag), and the landing page suppresses
+Source/Sound + relabels Volume for followers. Every member, either role, uses
+the single `snapclient -> FIFO -> outputd` member lane; there is no longer a
+direct-ALSA endpoint variant. The Zero 2 W lab runbook lives in
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md).
 
 **Increment 5 PR-1 (the bonded MUSIC dataplane) is BUILT (2026-06-11).**
@@ -1452,10 +1451,11 @@ story; "parked-by-role" is surfaced state, NEVER a silent failure):
 ## 8. Phased delivery
 
 **P0 — feasibility spike with MEASURED gates (throwaway, not
-product).** For the practical Zero 2 W endpoint setup and the decided
-endpoint install-tier plan, see
+product).** For the practical Zero 2 W streambox setup, see
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md); this section owns
-the measurement contract. Stand up `snapserver` reading a hand-fed FIFO on one
+the measurement contract. ("Endpoint" here means the runtime follower
+role on a streambox box, not a separate install tier — that tier was
+removed.) Stand up `snapserver` reading a hand-fed FIFO on one
 brainy Pi + `snapclient` on a second + a **Pi Zero playing a sub
 channel** (conveniently exercises the cheap-endpoint path and the
 loose-sub-sync claim at once) + the leader's own localhost snapclient

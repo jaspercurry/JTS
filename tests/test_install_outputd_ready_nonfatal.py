@@ -97,8 +97,8 @@ def test_require_outputd_ready_call_is_non_fatal_and_loud():
 
 
 def test_require_outputd_ready_is_owned_by_profile_runtime_starters():
-    """Full and streambox profiles both own outputd runtime startup; endpoint
-    installs must not grow an outputd readiness dependency."""
+    """Both install profiles (full + streambox) own outputd runtime startup
+    via their runtime-starter helpers."""
     text = _install_text()
     streambox_runtime = re.search(
         r"^start_streambox_runtime_units\(\)\s*\{\n(.*?)\n\}",
@@ -110,19 +110,12 @@ def test_require_outputd_ready_is_owned_by_profile_runtime_starters():
         text,
         re.S | re.M,
     )
-    endpoint_runtime = re.search(
-        r"^install_endpoint_systemd_units\(\)\s*\{\n(.*?)\n\}",
-        text,
-        re.S | re.M,
-    )
 
     assert streambox_runtime, "could not locate start_streambox_runtime_units()"
     assert full_runtime, "could not locate install_systemd_units()"
-    assert endpoint_runtime, "could not locate install_endpoint_systemd_units()"
 
     assert streambox_runtime.group(1).count("require_outputd_ready") == 1
     assert full_runtime.group(1).count("require_outputd_ready") == 1
-    assert "require_outputd_ready" not in endpoint_runtime.group(1)
 
 
 def test_recovery_surface_is_wired_after_systemd_units_in_main():
@@ -135,10 +128,12 @@ def test_recovery_surface_is_wired_after_systemd_units_in_main():
     assert m, "could not locate main() body in install.sh"
     body = m.group(1)
 
-    full_branch_start = body.find('if [[ "${install_profile}" == "endpoint" ]]')
-    assert full_branch_start != -1, "could not locate endpoint branch in main()"
-    body = body[full_branch_start:]
-    full_branch_start = body.find("require_build_user")
+    # Skip past the streambox branch so the calls below resolve in the full
+    # install branch (which owns install_systemd_units / install_nginx_site).
+    streambox_branch = body.find('if [[ "${install_profile}" == "streambox" ]]')
+    assert streambox_branch != -1, "could not locate streambox branch in main()"
+    body = body[streambox_branch:]
+    full_branch_start = body.find("install_systemd_units")
     assert full_branch_start != -1, "could not locate full install branch in main()"
     body = body[full_branch_start:]
 

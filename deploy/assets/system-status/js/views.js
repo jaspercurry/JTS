@@ -161,9 +161,11 @@ function applySystemCapabilities(refs, caps) {
   setActionAvailable(refs.actionButtons.restartVoice, canRestartVoice);
   setActionAvailable(refs.actionButtons.restartAudio, canRestartAudio);
 
-  const reason = caps && caps.unavailable_reason;
-  refs.capabilityNote.hidden = !(reason && (!canSetAudioQuality || !canRestartVoice || !canRestartAudio));
-  refs.capabilityNote.textContent = reason || "";
+  // The capability map no longer carries a per-profile explanation string
+  // (the removed endpoint tier was its only producer), so keep the note
+  // hidden rather than reading a field that is always absent.
+  refs.capabilityNote.hidden = true;
+  refs.capabilityNote.textContent = "";
 }
 
 // Render one section, isolated + memoised. `key` names it for memo/log; `data`

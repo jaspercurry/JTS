@@ -284,42 +284,34 @@ def test_cross_site_get_healthz_is_allowed(server_with_coordinator):
     assert body == {"ok": True}
 
 
-def test_endpoint_profile_control_route_policy():
+def test_full_profile_allows_every_control_route():
+    # Full speakers allow every route.
+    for path in ("/state", "/mic", "/cue/play", "/session/start"):
+        assert _control_route_allowed_for_install_profile(
+            "full", method="GET", path=path,
+        )
+        assert _control_route_allowed_for_install_profile(
+            "full", method="POST", path=path,
+        )
+
+
+def test_legacy_endpoint_token_uses_streambox_route_policy():
+    # The removed endpoint tier maps to streambox, so the legacy token gets
+    # the streambox route policy (e.g. /state + /source/state allowed).
     assert _control_route_allowed_for_install_profile(
-        "full", method="GET", path="/state",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="GET", path="/healthz",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="GET", path="/system/snapshot",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="GET", path="/grouping",
-    )
-    assert not _control_route_allowed_for_install_profile(
         "endpoint", method="GET", path="/state",
     )
-    assert not _control_route_allowed_for_install_profile(
+    assert _control_route_allowed_for_install_profile(
         "endpoint", method="GET", path="/source/state",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "endpoint", method="POST", path="/source/select",
     )
     assert not _control_route_allowed_for_install_profile(
         "endpoint", method="GET", path="/mic",
     )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/volume/set",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/system/reboot",
-    )
     assert not _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/source/select",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/cue/play",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/system/restart/audio",
+        "endpoint", method="POST", path="/system/restart/voice",
     )
 
 
@@ -377,10 +369,13 @@ def test_streambox_profile_control_route_policy():
     )
 
 
-def test_endpoint_profile_blocks_brain_only_control_routes(
+def test_legacy_endpoint_token_uses_streambox_routes_at_http_layer(
     monkeypatch,
     server_with_coordinator,
 ):
+    # A persisted legacy "endpoint" marker normalizes to streambox, so the
+    # HTTP route gate applies the streambox policy: source routes are allowed,
+    # voice-brain routes are 404.
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
@@ -390,14 +385,13 @@ def test_endpoint_profile_blocks_brain_only_control_routes(
     assert status == 200
     assert body == {"ok": True}
 
+    # voice-brain route blocked
     status, _body = _get(f"{base}/mic")
     assert status == 404
 
-    status, _body = _get(f"{base}/source/state")
-    assert status == 404
-
-    status, _body = _post(f"{base}/source/select", {"source": "airplay"})
-    assert status == 404
+    # a streambox-allowed route is not 404 from the route gate
+    status, _body = _get(f"{base}/grouping")
+    assert status != 404
 
 
 def test_streambox_profile_blocks_voice_brain_control_routes(
@@ -886,10 +880,12 @@ def test_system_snapshot_audio_quality_fails_soft(
     assert "unsupported ALSA rate converter" in body["error"]
 
 
-def test_system_snapshot_reports_endpoint_capabilities(
+def test_system_snapshot_legacy_endpoint_token_reports_streambox_caps(
     monkeypatch,
     server_with_coordinator,
 ):
+    # A persisted legacy "endpoint" marker normalizes to streambox; the
+    # capabilities payload reflects streambox, not a removed third role.
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
@@ -899,18 +895,33 @@ def test_system_snapshot_reports_endpoint_capabilities(
 
     assert status == 200
     caps = body["system_capabilities"]
-    assert caps["install_profile"] == "endpoint"
-    assert caps["role"] == "satellite"
-    assert caps["audio_quality"] is False
-    assert caps["restart_voice"] is False
-    assert caps["restart_audio"] is False
-    assert caps["network_settings"] is False
-    assert caps["speaker_settings"] is False
-    assert caps["pair_management"] is False
+    assert caps["install_profile"] == "endpoint"  # raw token preserved
+    assert caps["role"] == "streambox"            # normalized role
+    assert caps["voice_brain"] is False
     assert caps["developer_tools"] is False
+    assert caps["network_settings"] is True
     assert caps["reboot"] is True
     assert caps["poweroff"] is True
-    assert "leader" in caps["unavailable_reason"]
+    assert "unavailable_reason" not in caps
+
+
+def test_system_snapshot_reports_full_capabilities(
+    monkeypatch,
+    server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "full")
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/snapshot")
+
+    assert status == 200
+    caps = body["system_capabilities"]
+    assert caps["install_profile"] == "full"
+    assert caps["role"] == "full"
+    assert caps["voice_brain"] is True
+    assert caps["developer_tools"] is True
 
 
 def test_system_snapshot_reports_streambox_capabilities(
@@ -940,7 +951,7 @@ def test_system_snapshot_reports_streambox_capabilities(
     assert caps["developer_tools"] is False
     assert caps["reboot"] is True
     assert caps["poweroff"] is True
-    assert caps["unavailable_reason"] == ""
+    assert "unavailable_reason" not in caps
 
 
 def test_post_allows_same_origin_browser_request(server_with_coordinator):
