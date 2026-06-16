@@ -35,12 +35,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import subprocess
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..control.restart_broker import manage_units
 from ._common import (
     begin_request,
     canonical_banner,
@@ -87,15 +87,19 @@ def _apply_save(form: dict[str, str]) -> tuple[str | None, str | None]:
 def _restart_shairport() -> None:
     """Restart shairport-sync so its ExecStartPre re-renders
     /etc/shairport-sync.conf from the template + current env file.
-    Best-effort — log but don't raise."""
-    try:
-        subprocess.run(
-            ["systemctl", "restart", "shairport-sync"],
-            check=False, timeout=15,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    Best-effort — log but don't raise. WS1 Phase 3: routed through
+    jasper-control's restart broker (blocking so the re-render lands
+    before we return) instead of a direct systemctl, so the wizard
+    needs no privilege once dropped to a non-root service user."""
+    resp = manage_units(
+        "shairport-sync.service", verb="restart",
+        reason="airplay mode change", no_block=False, timeout=16.0,
+    )
+    if not resp.get("ok"):
+        logger.warning(
+            "shairport-sync restart failed: %s",
+            resp.get("error") or f"rc={resp.get('rc')}",
         )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("shairport-sync restart failed: %s", e)
 
 
 def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:

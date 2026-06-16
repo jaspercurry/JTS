@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,18 +27,23 @@ def mux(tmp_path):
     return Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
 
 
-def _mock_systemctl_router(returncode: int = 0, stderr: bytes = b""):
-    """asyncio.create_subprocess_exec replacement that recognises a
-    `systemctl restart librespot.service` invocation and returns
-    a configurable result. Other invocations get a default succeed."""
+def _mock_broker(*, ok: bool = True, rc: int = 0, error: str | None = None):
+    """Replacement for jasper-control's restart broker client
+    (restart_broker.manage_units, which jasper-mux now calls via
+    asyncio.to_thread instead of shelling out to systemctl). Records every
+    call and returns a configurable result dict. manage_units never raises —
+    a failed restart surfaces as {"ok": False}, exactly like production."""
     captured: dict[str, list] = {"calls": []}
 
-    async def fake(*args, **kwargs):
-        captured["calls"].append(args)
-        proc = MagicMock()
-        proc.communicate = AsyncMock(return_value=(b"", stderr))
-        proc.returncode = returncode
-        return proc
+    def fake(*units, **kwargs):
+        captured["calls"].append((units, kwargs))
+        resp: dict = {"ok": ok, "action": kwargs.get("verb"), "units": list(units)}
+        if not ok:
+            if error is not None:
+                resp["error"] = error
+            else:
+                resp["rc"] = rc
+        return resp
 
     return fake, captured
 
@@ -55,13 +60,13 @@ def _stub_web_api_result(mux: Mux, ok: bool):
 
 @pytest.mark.asyncio
 async def test_pause_spotify_web_api_succeeds_no_restart(mux):
-    """The happy path. systemctl must not be invoked."""
+    """The happy path. The restart broker must not be invoked."""
     _stub_web_api_result(mux, ok=True)
-    fake_exec, captured = _mock_systemctl_router()
-    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+    fake, captured = _mock_broker()
+    with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
         await mux._pause(Source.SPOTIFY)
     assert captured["calls"] == [], (
-        f"systemctl should not run on Web API success; saw: {captured['calls']}"
+        f"broker should not run on Web API success; saw: {captured['calls']}"
     )
 
 
@@ -71,17 +76,16 @@ async def test_pause_spotify_web_api_succeeds_no_restart(mux):
 
 @pytest.mark.asyncio
 async def test_pause_spotify_web_api_fails_escalates_to_restart(mux):
-    """Tier 1 returns False → Tier 2 must invoke
-    `systemctl restart librespot.service`."""
+    """Tier 1 returns False → Tier 2 must ask the broker to restart
+    librespot.service."""
     _stub_web_api_result(mux, ok=False)
-    fake_exec, captured = _mock_systemctl_router(returncode=0)
-    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+    fake, captured = _mock_broker(ok=True)
+    with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
         await mux._pause(Source.SPOTIFY)
     assert len(captured["calls"]) == 1
-    call_args = captured["calls"][0]
-    assert "systemctl" in call_args[0]
-    assert "restart" in call_args
-    assert "librespot.service" in call_args
+    units, kwargs = captured["calls"][0]
+    assert units == ("librespot.service",)
+    assert kwargs["verb"] == "restart"
 
 
 # ----------------------------------------------------------------------
@@ -91,42 +95,38 @@ async def test_pause_spotify_web_api_fails_escalates_to_restart(mux):
 @pytest.mark.asyncio
 async def test_pause_spotify_off_switch_disables_escalation(mux, monkeypatch):
     """JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts to Tier-1-only.
-    With Web API failed and escalation off, systemctl must not fire."""
+    With Web API failed and escalation off, the broker must not be asked."""
     monkeypatch.setenv("JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "disabled")
     _stub_web_api_result(mux, ok=False)
-    fake_exec, captured = _mock_systemctl_router()
-    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+    fake, captured = _mock_broker()
+    with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
         await mux._pause(Source.SPOTIFY)
     assert captured["calls"] == []
 
 
 # ----------------------------------------------------------------------
-# systemctl itself failing doesn't raise — log and continue
+# A failed restart doesn't raise — log and continue
 # ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_pause_spotify_restart_systemctl_nonzero_does_not_raise(mux):
-    """systemctl exit != 0 is logged but not raised; the mux tick must
-    continue. (If systemctl is somehow unavailable, retrying every tick
-    would just create log noise.)"""
+async def test_pause_spotify_restart_nonzero_does_not_raise(mux):
+    """A non-zero restart result is logged but not raised; the mux tick must
+    continue. (Retrying every tick would just create log noise.)"""
     _stub_web_api_result(mux, ok=False)
-    fake_exec, _ = _mock_systemctl_router(
-        returncode=1, stderr=b"Unit librespot.service not loaded.",
-    )
-    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+    fake, _ = _mock_broker(ok=False, rc=1)
+    with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
         # Should complete without raising.
         await mux._pause(Source.SPOTIFY)
 
 
 @pytest.mark.asyncio
-async def test_pause_spotify_restart_systemctl_missing_does_not_raise(mux):
-    """systemctl missing on PATH (unlikely on Trixie but possible in a
-    container) must fail soft, not crash the mux loop."""
+async def test_pause_spotify_restart_broker_unavailable_does_not_raise(mux):
+    """If the broker is unreachable (and mux is non-root so there's no
+    fallback), manage_units returns {"ok": False}; the mux loop must fail
+    soft rather than crash."""
     _stub_web_api_result(mux, ok=False)
-    with patch(
-        "asyncio.create_subprocess_exec",
-        side_effect=FileNotFoundError("systemctl"),
-    ):
+    fake, _ = _mock_broker(ok=False, error="restart broker unavailable: [Errno 2]")
+    with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
         await mux._pause(Source.SPOTIFY)
 
 

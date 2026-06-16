@@ -145,19 +145,52 @@ Pinned by `tests/test_control_token.py` (ensure/current/idempotence/0600/meta),
 `tests/test_http_js_control_token.py` (meta-first delivery), and the
 server-frozenset-derived gating tests in `tests/test_control_server.py`.
 
-## Phase 3 — restart broker + Tier-A user drop (DESIGNED; gated on recovery validation)
+## Phase 3 — restart broker + Tier-A user drop
 
-The broker and the user drop are one phase: the broker is only load-bearing once
-the clients are non-root (a root client could `systemctl` directly). `jasper-control`
-is already the de-facto broker (9 privileged restart sites live there). Finish it
-as a local **UNIX socket + `SO_PEERCRED`** for in-host clients (`jasper-web`'s 13
-restart sites, `jasper-mux`'s librespot recovery, `correction`'s renderer pause —
-peer-cred uid check *is* the auth), with a **closed verb vocabulary** scoped to a
-unit allowlist and **one polkit rule** granting the broker's user that allowlist;
-the broker's own restart stays systemd's job (no bootstrap deadlock).
+This phase ships as **two PRs**, by design. The broker and the user drop *are*
+coupled (the broker is only load-bearing once the clients are non-root — a root
+client could `systemctl` directly), but they have opposite risk profiles: the
+broker is a self-contained, fully-testable refactor with zero file-ownership or
+brick exposure, while the drop is ownership-heavy and brick-sensitive and is
+**gated on the recovery-path validation matrix below**. Bundling a safe refactor
+with a gated drop into one un-reviewable PR is the wrong shape; splitting also
+honours the WS1 directive to "ship hardened-root and make the drop a validated
+fast-follow" if recovery validation isn't clean.
 
-Then drop the 5 Tier-A daemons to dedicated users, add `CapabilityBoundingSet=` +
-`SystemCallFilter=@system-service`:
+### Phase 3a — restart broker (LANDED)
+
+`jasper-control` was already the de-facto broker (its own ~9 privileged restart
+sites). [`jasper/control/restart_broker.py`](../jasper/control/restart_broker.py)
+finishes it as a local **UNIX socket + `SO_PEERCRED`** at
+`/run/jasper-control/restart.sock` (`RuntimeDirectory=jasper-control`; the
+in-repo's first peer-cred reader — peer uid check *is* the auth), with a
+**closed verb vocabulary** (`restart` / `try-restart` / `start` / `stop` /
+`enable` / `enable-now` / `disable-now` / `reset-failed`) scoped to the single
+source of truth `MANAGED_UNITS` allowlist. Every request and denial emits a
+stable `event=restart_broker.*` line with the peer uid/pid, verb, units, reason.
+
+The clients now route through it via `restart_broker.manage_units(...)`:
+`jasper-web`'s restart sites (`_common.restart_systemd_units` /
+`_enable_systemd_unit`, `sources` enable/disable, `airplay` shairport restart,
+`speaker` rename, `wake-corpus` bridge-output + voice start/stop),
+`jasper-mux`'s librespot recovery, and `correction`'s renderer pause. While the
+clients are still root, `manage_units` falls back to a **direct `systemctl` if
+the broker is unreachable** — logged loudly (`event=restart_broker.
+fallback_direct`) so a silently-broken broker path is caught *before* the user
+drop removes the safety net. Once a client is a non-root service user
+(`geteuid() != 0`) the fallback is structurally impossible: the broker is the
+only path, as intended. `MANAGED_UNITS` is the same list the 3b polkit rule will
+grant `jasper-control`, so broker authz and the polkit grant can't drift. Pinned
+by [`tests/test_restart_broker.py`](../tests/test_restart_broker.py) (verb
+vocabulary, unit allowlist, peer-cred auth, wire contract, root fallback).
+
+### Phase 3b — Tier-A user drop (DESIGNED; gated on recovery validation)
+
+Drop the 5 Tier-A daemons to dedicated users, add `CapabilityBoundingSet=` +
+`SystemCallFilter=@system-service`, the `jasper` group for cross-daemon file
+ownership, and **one polkit rule** granting the `jasper-control` user the
+`MANAGED_UNITS` allowlist + reboot/poweroff; the broker's own restart stays
+systemd's job (no bootstrap deadlock):
 
 | Unit | User | Groups | Special grants |
 |---|---|---|---|

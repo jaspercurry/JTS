@@ -291,14 +291,17 @@ def test_apply_refuses_bluetooth_when_local_sources_disallowed(monkeypatch):
 
 
 def test_set_unit_enable_disable_pairing(monkeypatch):
+    # WS1 Phase 3: _set_unit routes enable/disable through jasper-control's
+    # restart broker (manage_units) rather than calling systemctl directly.
     calls = []
     monkeypatch.setattr(
-        mod, "_systemctl", lambda *a, **k: calls.append(a) or (0, "")
+        mod, "manage_units",
+        lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
     )
     mod._set_unit("foo.service", True)
     mod._set_unit("foo.service", False)
-    assert ("enable", "foo.service", "--now") in calls
-    assert ("disable", "foo.service", "--now") in calls
+    assert (("foo.service",), "enable-now") in calls
+    assert (("foo.service",), "disable-now") in calls
 
 
 # ---- dtoverlay probe --------------------------------------------------------

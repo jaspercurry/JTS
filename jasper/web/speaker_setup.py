@@ -33,6 +33,7 @@ from ..speaker_name import (
     write_state,
 )
 from ..speaker_name_discovery import NameConflict, find_name_conflicts
+from ..control.restart_broker import manage_units
 from ..log_event import log_event
 from ._common import (
     begin_request,
@@ -88,13 +89,18 @@ def _unit_active(unit: str) -> bool:
 
 
 def _restart_units(units: list[str]) -> None:
-    rc, out = _systemctl("restart", "--no-block", *units)
-    if rc != 0:
+    # WS1 Phase 3: route through jasper-control's restart broker (the
+    # read-only `_systemctl` probes elsewhere in this file stay direct).
+    resp = manage_units(
+        *units, verb="restart", reason="speaker rename",
+        no_block=True, timeout=5.0,
+    )
+    if not resp.get("ok"):
         log_event(
             logger,
             "speaker_name.restart_failed",
             units=",".join(units),
-            detail=out,
+            detail=str(resp.get("error") or f"rc={resp.get('rc')}"),
             level=logging.WARNING,
         )
 

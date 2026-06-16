@@ -52,6 +52,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..control.restart_broker import manage_units
 from ..install_profile import install_profile_allows_local_sources, read_install_profile
 from ..log_event import log_event
 from ._common import (
@@ -181,11 +182,18 @@ def _set_unit(unit: str, enabled: bool) -> None:
     "enabled but stopped") is rare and self-heals on the next toggle.
 
     enable/disable is paired with start/stop so the on/off state
-    survives a reboot."""
-    if enabled:
-        _systemctl("enable", unit, "--now")
-    else:
-        _systemctl("disable", unit, "--now")
+    survives a reboot. WS1 Phase 3: the state-changing enable/disable goes
+    through jasper-control's restart broker (the read-only `_systemctl`
+    probes above stay direct — systemd lets any user read unit state)."""
+    verb = "enable-now" if enabled else "disable-now"
+    resp = manage_units(
+        unit, verb=verb, reason="source toggle", no_block=False, timeout=10.0,
+    )
+    if not resp.get("ok"):
+        logger.warning(
+            "source %s %s failed: %s", unit, verb,
+            resp.get("error") or f"rc={resp.get('rc')}",
+        )
 
 
 def _source_state(

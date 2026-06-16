@@ -52,6 +52,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from ..control import restart_broker
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,22 +75,25 @@ class MeasurementWindowError(RuntimeError):
 
 
 async def _systemctl(action: str, service: str) -> None:
-    """Run `systemctl <action> <service>`. Logs but doesn't raise on
-    non-zero — we'd rather proceed with an imperfectly-paused chain
-    than abort the measurement entirely. Failed pauses surface as
-    audible artifacts in the captured sweep, which is the signal the
-    user needs to investigate."""
-    proc = await asyncio.create_subprocess_exec(
-        "systemctl", action, service,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    """Stop/start a renderer for the measurement window via jasper-control's
+    restart broker. Logs but doesn't raise on failure — we'd rather proceed
+    with an imperfectly-paused chain than abort the measurement entirely.
+    Failed pauses surface as audible artifacts in the captured sweep, which
+    is the signal the user needs to investigate.
+
+    WS1 Phase 3: routed through the broker (off-thread, the client is
+    blocking) so the correction wizard needs no privilege of its own. While
+    it is still root the broker client falls back to a direct systemctl if
+    the broker is unreachable."""
+    resp = await asyncio.to_thread(
+        restart_broker.manage_units,
+        service, verb=action, reason="room correction pause",
+        no_block=False, timeout=10.0,
     )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
+    if not resp.get("ok"):
         logger.warning(
-            "systemctl %s %s: rc=%d stderr=%s",
-            action, service, proc.returncode,
-            stderr.decode(errors="replace").strip(),
+            "systemctl %s %s failed: %s",
+            action, service, resp.get("error") or f"rc={resp.get('rc')}",
         )
     else:
         logger.debug("systemctl %s %s ok", action, service)

@@ -27,6 +27,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper import audio_validation, wake_legs
+from jasper.control import restart_broker
 from jasper.log_event import log_event
 from jasper.audio_profile_state import (
     AecIntent,
@@ -1004,6 +1005,31 @@ def build_capture_health(
     }
 
 
+def _broker_restart_or_raise(unit: str, *, timeout_sec: float) -> None:
+    """Blocking restart of one unit via jasper-control's restart broker.
+
+    WS1 Phase 3: the wake-corpus bridge-output flow runs inside the
+    jasper-web process, which the user-drop PR moves to a non-root service
+    user — so it asks the broker rather than shelling out to systemctl. The
+    broker returns a result dict (it never raises); we re-raise on failure as
+    ``subprocess.CalledProcessError`` to preserve this module's existing
+    raise-on-failure contract (callers catch CalledProcessError / OSError and
+    surface a 500). While jasper-web is still root the broker client falls
+    back to a direct systemctl if the broker is unreachable.
+    """
+    resp = restart_broker.manage_units(
+        unit, verb="restart", reason="wake-corpus bridge outputs",
+        no_block=False, timeout=timeout_sec,
+    )
+    if not resp.get("ok"):
+        rc = resp.get("rc")
+        raise subprocess.CalledProcessError(
+            int(rc) if isinstance(rc, int) else 1,
+            ["systemctl", "restart", unit],
+            stderr=str(resp.get("stderr") or resp.get("error") or ""),
+        )
+
+
 def restart_aec_bridge() -> None:
     """Restart the bridge and wait for systemd to report the outcome.
 
@@ -1013,36 +1039,22 @@ def restart_aec_bridge() -> None:
     a missing USB mic or failed DTLN load should stop the session
     before it records silently-missing legs.
     """
-    try:
-        subprocess.run(
-            ["systemctl", "reset-failed", BRIDGE_UNIT],
-            check=False,
-            timeout=5.0,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("could not reset %s start-limit state: %s", BRIDGE_UNIT, e)
-    subprocess.run(
-        ["systemctl", "restart", BRIDGE_UNIT],
-        check=True,
-        timeout=BRIDGE_RESTART_TIMEOUT_SEC,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    # reset-failed is best-effort (clears any start-limit lockout before the
+    # restart); a non-zero result here must not abort the restart that follows.
+    reset = restart_broker.manage_units(
+        BRIDGE_UNIT, verb="reset-failed",
+        reason="wake-corpus bridge outputs", no_block=False, timeout=5.0,
     )
+    if not reset.get("ok"):
+        logger.warning(
+            "could not reset %s start-limit state: %s",
+            BRIDGE_UNIT, reset.get("error") or f"rc={reset.get('rc')}",
+        )
+    _broker_restart_or_raise(BRIDGE_UNIT, timeout_sec=BRIDGE_RESTART_TIMEOUT_SEC)
 
 
 def restart_unit(unit: str, timeout_sec: float = BRIDGE_RESTART_TIMEOUT_SEC) -> None:
-    subprocess.run(
-        ["systemctl", "restart", unit],
-        check=True,
-        timeout=timeout_sec,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    _broker_restart_or_raise(unit, timeout_sec=timeout_sec)
 
 
 def enable_bridge_outputs_for_session(
@@ -1987,10 +1999,23 @@ def aec_bridge_active() -> bool:
 
 
 def set_voice_daemon_state(action: str) -> None:
-    """Start or stop jasper-voice through systemd."""
+    """Start or stop jasper-voice through jasper-control's restart broker
+    (WS1 Phase 3). Blocking + raise-on-failure (CalledProcessError) to
+    preserve the prior `systemctl ... check=True` contract — callers surface
+    the failure to the operator."""
     if action not in ("start", "stop"):
         raise ValueError("action must be start or stop")
-    subprocess.run(["systemctl", action, VOICE_UNIT], check=True)
+    resp = restart_broker.manage_units(
+        VOICE_UNIT, verb=action, reason="wake-corpus voice control",
+        no_block=False, timeout=BRIDGE_RESTART_TIMEOUT_SEC,
+    )
+    if not resp.get("ok"):
+        rc = resp.get("rc")
+        raise subprocess.CalledProcessError(
+            int(rc) if isinstance(rc, int) else 1,
+            ["systemctl", action, VOICE_UNIT],
+            stderr=str(resp.get("stderr") or resp.get("error") or ""),
+        )
 
 
 def enter_corpus_test_mode(

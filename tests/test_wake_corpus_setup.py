@@ -2069,24 +2069,26 @@ def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
 def test_restart_aec_bridge_resets_start_limit_before_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[list[str], dict[str, object]]] = []
+    # WS1 Phase 3: restart_aec_bridge asks jasper-control's restart broker
+    # (reset-failed to clear any start-limit lockout, then restart) instead of
+    # shelling out to systemctl, so the wake-corpus flow needs no privilege of
+    # its own once jasper-web drops to a non-root service user.
+    from jasper.control import restart_broker
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-        calls.append((cmd, kwargs))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    calls: list[tuple[tuple[str, ...], str | None]] = []
 
-    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+    def fake_manage(*units: str, **kwargs: object):
+        calls.append((units, kwargs.get("verb")))
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage)
 
     wake_corpus_setup.restart_aec_bridge()
 
-    assert calls[0][0] == [
-        "systemctl", "reset-failed", wake_corpus_setup.BRIDGE_UNIT,
+    assert calls == [
+        ((wake_corpus_setup.BRIDGE_UNIT,), "reset-failed"),
+        ((wake_corpus_setup.BRIDGE_UNIT,), "restart"),
     ]
-    assert calls[0][1]["check"] is False
-    assert calls[1][0] == [
-        "systemctl", "restart", wake_corpus_setup.BRIDGE_UNIT,
-    ]
-    assert calls[1][1]["check"] is True
 
 
 def test_enable_bridge_outputs_preserves_system_usb_device(
@@ -3932,13 +3934,20 @@ def test_voice_start_can_disable_bridge_outputs_first(
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
-    systemctl_calls: list[list[str]] = []
+    # WS1 Phase 3: the handler starts jasper-voice via the restart broker
+    # (manage_units), not a direct systemctl. The is-active readback
+    # (voice_daemon_active) stays a direct read-only systemctl probe.
+    voice_calls: list[tuple[tuple[str, ...], str | None]] = []
 
-    def fake_run(cmd, **kwargs):
-        systemctl_calls.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, stdout="active\n")
+    def fake_manage(*units, **kwargs):
+        voice_calls.append((units, kwargs.get("verb")))
+        return {"ok": True}
 
-    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+    monkeypatch.setattr(wake_corpus_setup, "manage_units", fake_manage)
+    monkeypatch.setattr(
+        wake_corpus_setup.subprocess, "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="active\n"),
+    )
     server, th, port = _serve_in_thread(backend)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
@@ -3953,10 +3962,7 @@ def test_voice_start_can_disable_bridge_outputs_first(
             assert resp.status == 200
             assert body["bridge_outputs"]["active"] is False
             assert restarts == ["restart"]
-            assert systemctl_calls == [
-                ["systemctl", "start", wake_corpus_setup.VOICE_UNIT],
-                ["systemctl", "is-active", wake_corpus_setup.VOICE_UNIT],
-            ]
+            assert voice_calls == [((wake_corpus_setup.VOICE_UNIT,), "start")]
         finally:
             conn.close()
     finally:
