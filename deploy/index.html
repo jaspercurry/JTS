@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- WS1 control token, baked at install time (install.sh ->
+       control_token.ensure_token). The mic-mute button rides it on
+       POST /mic/mute, mirroring the wizards' invisible delivery
+       (deploy/assets/shared/js/http.js). nginx serves `location = /`
+       no-store so the token-bearing HTML is never cached. -->
+  <meta name="jts-control-token" content="__JTS_CONTROL_TOKEN__">
   <title>JTS</title>
   <link rel="stylesheet" href="/assets/app.css?v=__APP_CSS_VERSION__">
   <style>
@@ -1295,6 +1301,34 @@
         if (stateEl) stateEl.textContent = text;
       }
 
+      // POST /mic/mute is a WS1 token-gated route. Mirror the wizards'
+      // invisible delivery (deploy/assets/shared/js/http.js): prefer the
+      // install-baked <meta name="jts-control-token">, fall back to a
+      // per-browser localStorage value, and send nothing when neither is
+      // present (the gate-off path still works).
+      function controlToken() {
+        try {
+          var meta = document.querySelector('meta[name="jts-control-token"]');
+          if (meta && meta.content) return meta.content;
+        } catch (_) { /* no DOM — fall through to storage */ }
+        try {
+          return localStorage.getItem('jts-control-token') || '';
+        } catch (_) {
+          return '';
+        }
+      }
+
+      // A mute POST that did not take effect must NEVER leave the UI showing
+      // "Muted": revert to the real (unchanged) state AND surface why, so a
+      // failed privacy toggle is never silent (the original bug — a tokenless
+      // 403 snapped the button back with no message).
+      function failMute(prevMuted, message) {
+        dirty = false;
+        renderMic(prevMuted, available);
+        setMicState(message);
+        if (sub) sub.textContent = message;
+      }
+
       function renderMic(wantMuted, isAvailable) {
         muted = !!wantMuted;
         available = isAvailable !== false;
@@ -1335,22 +1369,25 @@
         renderMic(want_muted, available);
         setMicState(want_muted ? 'Muting' : 'Listening');
         try {
+          var headers = {'Content-Type': 'application/json'};
+          var ctl = controlToken();
+          if (ctl) headers['X-JTS-Token'] = ctl;
           var resp = await fetch('/mic/mute', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: headers,
             body: JSON.stringify({muted: want_muted}),
           });
           if (resp.ok) {
             var data = await resp.json();
             dirty = false;
             applyMuted(!!data.muted, true);
+          } else if (resp.status === 403) {
+            failMute(!want_muted, 'Mute blocked — reload to refresh access');
           } else {
-            dirty = false;
-            renderMic(!want_muted, available);
+            failMute(!want_muted, 'Mute failed (HTTP ' + resp.status + ')');
           }
         } catch (_) {
-          dirty = false;
-          renderMic(!want_muted, available);
+          failMute(!want_muted, 'Mute failed — network error');
         }
       }
 

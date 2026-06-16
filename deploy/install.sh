@@ -1345,11 +1345,18 @@ install_management_static_assets() {
     # runtime (system_capabilities_for_profile), so baked and live agree by
     # construction. The profile marker was persisted earlier in this run.
     # Python (not sed) so JSON quotes don't fight the shell; fail loud rather
-    # than ship a page with an unreplaced placeholder.
+    # than ship a page with an unreplaced placeholder. Also bakes the WS1
+    # control token into <meta name="jts-control-token"> so the landing page's
+    # mic-mute button can ride it on POST /mic/mute (the token-gated route);
+    # ensure_token() generates-if-absent at 0600, the same value the wizards
+    # deliver. The token stays inside Python (never a shell arg / process
+    # table); the base64url alphabet is HTML-safe, but escape defensively.
     if ! PYTHONPATH="${REPO_DIR}" python3 - /usr/share/jasper-web/index.html <<'PYBAKE'
 import json
 import sys
+from html import escape as html_escape
 
+from jasper.control import control_token
 from jasper.install_profile import (
     read_install_profile,
     system_capabilities_for_profile,
@@ -1357,17 +1364,22 @@ from jasper.install_profile import (
 
 path = sys.argv[1]
 caps = json.dumps(system_capabilities_for_profile(read_install_profile()))
+token = html_escape(control_token.ensure_token())
 html = open(path, encoding="utf-8").read()
 if "__JTS_CAPS_JSON__" not in html:
     sys.exit("landing page is missing the __JTS_CAPS_JSON__ placeholder")
+if "__JTS_CONTROL_TOKEN__" not in html:
+    sys.exit("landing page is missing the __JTS_CONTROL_TOKEN__ placeholder")
+html = html.replace("__JTS_CAPS_JSON__", caps)
+html = html.replace("__JTS_CONTROL_TOKEN__", token)
 with open(path, "w", encoding="utf-8") as f:
-    f.write(html.replace("__JTS_CAPS_JSON__", caps))
+    f.write(html)
 PYBAKE
     then
-        echo "  ERROR: failed to bake landing-page capabilities; refusing to ship a broken page" >&2
+        echo "  ERROR: failed to bake landing-page capabilities/token; refusing to ship a broken page" >&2
         return 1
     fi
-    echo "  landing page: baked install-profile capabilities for first-paint layout"
+    echo "  landing page: baked install-profile capabilities + control token for first-paint layout"
     # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
     # the .install-manifest the doctor verifies — see
     # deploy/lib/install/web-assets.sh for the copy shape and the
