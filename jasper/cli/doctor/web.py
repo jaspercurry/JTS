@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+
+from ...control import control_token
 from ._registry import doctor_check
 from ._shared import CheckResult
 
@@ -140,3 +142,28 @@ def check_management_surface() -> CheckResult:
     else:
         hint = ""
     return CheckResult(label, "fail", f"HTTP {status} ({detail}){hint}")
+
+
+@doctor_check(order=24.6, group="web")
+def check_control_token() -> CheckResult:
+    """Report the opt-in control-token gate posture (never the secret).
+
+    The control token (SECURITY.md) gates jasper-control's high-impact
+    mutations (/system/poweroff, /system/reboot, /mic/mute,
+    /grouping/set) behind an X-JTS-Token header. It is OFF by default —
+    the trusted-LAN posture the dial / Home Assistant / Shortcuts rely
+    on. This is a *posture* line, not a health failure: ok either way.
+    Disabled is a deliberate, documented choice, not a problem; enabled
+    means the operator opted in. Strictly secret-free — it reports only
+    whether a non-empty token file exists, never reads or echoes the
+    value."""
+    if control_token.token_enforced():
+        return CheckResult(
+            "control token gate", "ok",
+            "ENABLED (mutations require X-JTS-Token)",
+        )
+    return CheckResult(
+        "control token gate", "ok",
+        "disabled (LAN-trust; enable with jasper-control-token --enable; "
+        "see SECURITY.md)",
+    )

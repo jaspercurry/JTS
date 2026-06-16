@@ -1039,14 +1039,18 @@ def proxy_get(
     *,
     control_base: str = DEFAULT_CONTROL_BASE,
     timeout: float = 30.0,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
     """Proxy a GET to jasper-control. Returns `(status, body)`. On
     transport failure, returns `(502, {"error": "..."} JSON)` so the
     caller can write it straight through to its own JSON client without
     branching on transport errors vs HTTP errors. A non-2xx upstream
-    status is forwarded verbatim as `(status, body)`."""
+    status is forwarded verbatim as `(status, body)`. `headers` forwards
+    extra request headers (e.g. a browser-supplied X-JTS-Token)."""
     try:
-        r = control.get(path, base_url=control_base, timeout=timeout)
+        r = control.get(
+            path, base_url=control_base, timeout=timeout, headers=headers,
+        )
         return r.status, r.body
     except control.ControlError as e:
         return 502, json.dumps(
@@ -1060,19 +1064,43 @@ def proxy_post(
     control_base: str = DEFAULT_CONTROL_BASE,
     timeout: float = 5.0,
     body: bytes | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
     """Proxy a POST to jasper-control. `body` defaults to empty (for
     parameterless action endpoints); pass JSON bytes for endpoints that
-    take parameters. Same `(status, body)` contract as `proxy_get`."""
+    take parameters. Same `(status, body)` contract as `proxy_get`.
+    `headers` forwards extra request headers — the system wizard passes a
+    browser-supplied X-JTS-Token through so the opt-in control-token gate
+    sees it (the wizard proxies server-side, so the header can't ride the
+    original browser fetch)."""
     try:
         r = control.post(
             path, data=(body or b""), base_url=control_base, timeout=timeout,
+            headers=headers,
         )
         return r.status, r.body
     except control.ControlError as e:
         return 502, json.dumps(
             {"error": f"jasper-control unreachable: {e}"},
         ).encode()
+
+
+def forward_control_token_headers(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, str] | None:
+    """Extract a browser-supplied ``X-JTS-Token`` to forward to control.
+
+    A wizard proxies the high-impact control mutations server-side, so the
+    browser's ``X-JTS-Token`` (the opt-in control-token gate) would be lost
+    unless the wizard explicitly forwards it. Returns ``{"X-JTS-Token": …}``
+    when the header is present, else ``None`` (so a default-off install adds
+    no header). The wizard never injects the token from disk — it only
+    relays what the operator's browser sent — so the gate stays real (the
+    secret lives in the browser, not auto-supplied on the Pi)."""
+    token = handler.headers.get("X-JTS-Token")
+    if token:
+        return {"X-JTS-Token": token}
+    return None
 
 
 def send_proxy_json(

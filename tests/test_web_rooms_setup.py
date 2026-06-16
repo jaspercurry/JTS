@@ -902,7 +902,7 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     (handler, calls) where calls is the list of (addr, body) fanned out."""
     calls: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, member_body, known=None):
+    def fake_member_post(addr, member_body, known=None, *, token=None):
         calls.append((addr, member_body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -928,6 +928,60 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     h.rfile = BytesIO(raw)
     handler_cls.do_POST(h)
     return h, calls
+
+
+def test_bond_forwards_browser_control_token_to_members(monkeypatch):
+    """The /rooms/ grouping fan-out runs SERVER-side, so the leader must
+    forward the browser-supplied X-JTS-Token to each member's /grouping/set
+    (the opt-in control-token gate). Captures the token each member call
+    received."""
+    seen_tokens: list[str | None] = []
+
+    def capture(addr, member_body, known=None, *, token=None):
+        seen_tokens.append(token)
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", capture)
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+
+    handler_cls = rooms_setup._make_handler()
+    raw = json.dumps({"members": _stereo_pair_members()}).encode()
+    h = _FakeHandler("/bond")
+    h.headers["Content-Length"] = str(len(raw))
+    h.headers["X-JTS-Token"] = "household-secret"
+    h.rfile = BytesIO(raw)
+    handler_cls.do_POST(h)
+
+    assert h.status == 200
+    # Both members got the forwarded token.
+    assert seen_tokens == ["household-secret", "household-secret"]
+
+
+def test_bond_forwards_no_token_when_browser_sent_none(monkeypatch):
+    """Default-off: no X-JTS-Token on the request -> the leader forwards
+    None, so the existing 3-arg call shape is preserved."""
+    seen_tokens: list[str | None] = []
+
+    def capture(addr, member_body, known=None, *, token=None):
+        seen_tokens.append(token)
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", capture)
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+
+    handler_cls = rooms_setup._make_handler()
+    raw = json.dumps({"members": _stereo_pair_members()}).encode()
+    h = _FakeHandler("/bond")
+    h.headers["Content-Length"] = str(len(raw))
+    h.rfile = BytesIO(raw)
+    handler_cls.do_POST(h)
+
+    assert h.status == 200
+    assert seen_tokens == [None, None]
 
 
 def _stereo_pair_members():
@@ -1072,7 +1126,7 @@ def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monk
 
     started = threading.Event()
 
-    def fake_member_post(addr, body, known=None):
+    def fake_member_post(addr, body, known=None, *, token=None):
         if addr == "192.168.1.5":
             # First target: block until the second has had a chance to finish,
             # then fail. If results were ordered by completion this would land
@@ -1112,7 +1166,7 @@ def test_fan_out_grouping_computes_self_addresses_once_not_per_member(monkeypatc
     monkeypatch.setattr(rooms_setup, "_self_addresses", counting_self_addresses)
     monkeypatch.setattr(
         rooms_setup, "_post_grouping_to_member",
-        lambda addr, body, known=None: (True, "HTTP 200"),
+        lambda addr, body, known=None, *, token=None: (True, "HTTP 200"),
     )
     out = rooms_setup._fan_out_grouping([(f"192.168.1.{i}", {}) for i in (10, 11, 12)])
     assert len(out) == 3
@@ -1275,7 +1329,7 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     member_results — {address: (ok, detail)} overriding the disable POST."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body, known=None):
+    def fake_member_post(addr, body, known=None, *, token=None):
         posts.append((addr, body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -1496,7 +1550,7 @@ def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
     stub set as _post_unbond — swap shares its discovery + fan-out path."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body, known=None):
+    def fake_member_post(addr, body, known=None, *, token=None):
         posts.append((addr, body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -1643,7 +1697,7 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
     (never a silent stuck pair) — the journal carries the per-member lines."""
     calls = {"n": 0}
 
-    def flaky_self(addr, body, known=None):
+    def flaky_self(addr, body, known=None, *, token=None):
         # self swap write succeeds; the later self ROLLBACK fails.
         calls["n"] += 1
         if addr == "" and calls["n"] >= 3:
@@ -1723,7 +1777,7 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
     monkeypatch.setattr(rooms_setup, "_get_member_grouping",
                         lambda a, known=None: (peer_grouping or {}).get(a))
     monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
-                        lambda a, b, known=None: posts.append((a, b)) or (True, "HTTP 200"))
+                        lambda a, b, known=None, *, token=None: posts.append((a, b)) or (True, "HTTP 200"))
     handler_cls = rooms_setup._make_handler()
     h = _FakeHandler("/trim")
     raw = json.dumps(body).encode()
@@ -1896,7 +1950,7 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     roster from a previous leadership must not survive a role flip)."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body, known=None):
+    def fake_member_post(addr, body, known=None, *, token=None):
         posts.append((addr, body))
         return (True, "HTTP 200")
 

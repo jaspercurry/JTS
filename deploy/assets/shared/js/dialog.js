@@ -108,3 +108,87 @@ export function jtsAlert(message, opts = {}) {
     buttons: [{ label: okLabel, value: "ok", btnClass: "btn--primary", autofocus: true }],
   }).then(() => undefined);
 }
+
+// Accessible, styled replacement for window.prompt() — collects one line of
+// text. Resolves the entered string on Submit, or null on Cancel/ESC (so a
+// caller can tell "" — explicitly emptied — from "dismissed"). Reuses the
+// app.css `.field` input vocabulary so it needs no new CSS. The value is read
+// off the input node directly (never interpolated into markup), and the
+// message/title go through textContent like jtsConfirm — no innerHTML, no
+// untrusted-string injection. `secret: true` masks the input (type=password)
+// for tokens/keys.
+export function jtsPrompt(message, opts = {}) {
+  const {
+    title = "",
+    label = "",
+    okLabel = "Save",
+    cancelLabel = "Cancel",
+    placeholder = "",
+    secret = false,
+  } = opts;
+
+  const dlg = document.createElement("dialog");
+  dlg.className = "jts-dialog";
+
+  const form = document.createElement("form");
+  form.method = "dialog";
+  form.className = "jts-dialog__form";
+
+  if (title) {
+    const heading = document.createElement("h2");
+    heading.className = "jts-dialog__title";
+    heading.textContent = title;
+    form.appendChild(heading);
+  }
+
+  const body = document.createElement("p");
+  body.className = "jts-dialog__body";
+  body.textContent = message;
+  form.appendChild(body);
+
+  // `.field` (app.css) gives the label + themed input styling for free.
+  const field = document.createElement("div");
+  field.className = "field";
+  const input = document.createElement("input");
+  input.type = secret ? "password" : "text";
+  input.placeholder = placeholder;
+  input.autofocus = true;
+  if (label) {
+    const lbl = document.createElement("label");
+    lbl.textContent = label;
+    const id = "jts-prompt-" + Math.random().toString(36).slice(2);
+    lbl.htmlFor = id;
+    input.id = id;
+    field.appendChild(lbl);
+  }
+  field.appendChild(input);
+  form.appendChild(field);
+
+  const actions = document.createElement("div");
+  actions.className = "jts-dialog__actions";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "submit";
+  cancelBtn.value = "cancel";
+  cancelBtn.textContent = cancelLabel;
+  cancelBtn.className = "btn btn--ghost";
+  const okBtn = document.createElement("button");
+  okBtn.type = "submit";
+  okBtn.value = "submit";
+  okBtn.textContent = okLabel;
+  okBtn.className = "btn btn--primary";
+  actions.appendChild(cancelBtn);
+  actions.appendChild(okBtn);
+  form.appendChild(actions);
+  dlg.appendChild(form);
+  document.body.appendChild(dlg);
+
+  return new Promise((resolve) => {
+    dlg.addEventListener("close", () => {
+      const submitted = dlg.returnValue === "submit";
+      const value = submitted ? input.value : null;
+      dlg.remove();
+      resolve(value);
+    }, { once: true });
+    dlg.showModal();
+  });
+}

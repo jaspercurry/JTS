@@ -3019,3 +3019,124 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_PEER_ADDR"] == ""
     assert writes[-1]["JASPER_GROUPING_PEER_NAME"] == ""
+
+
+# --------------------------------------------------------------------------
+# Opt-in control-token gate (jasper/control/control_token.py).
+#
+# The gate is DEFAULT-OFF: with no token file the four high-impact routes
+# (/system/poweroff, /system/reboot, /mic/mute, /grouping/set) behave exactly
+# as today. With a token file, each requires a matching X-JTS-Token header.
+# Ungated routes (/volume*, /healthz, …) are never affected.
+# --------------------------------------------------------------------------
+
+_GATED_ROUTES = (
+    "/system/poweroff",
+    "/system/reboot",
+    "/mic/mute",
+    "/grouping/set",
+)
+
+
+def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):
+    """Point control_token at a tmp file containing `token` (gate ENABLED)."""
+    import jasper.control.control_token as ct
+
+    path = tmp_path / "control_token"
+    path.write_text(token + "\n")
+    monkeypatch.setattr(ct, "TOKEN_FILE", str(path))
+    return token
+
+
+def _disable_control_token(monkeypatch, tmp_path):
+    """Point control_token at an absent file (gate DEFAULT-OFF)."""
+    import jasper.control.control_token as ct
+
+    monkeypatch.setattr(ct, "TOKEN_FILE", str(tmp_path / "absent"))
+
+
+def test_default_off_gated_routes_reach_handlers(
+    monkeypatch, tmp_path, server_with_coordinator, server_with_voice_socket,
+):
+    """DEFAULT-OFF invariant: with NO token file, none of the four gated
+    routes return control_token_required — each reaches its real handler
+    exactly as before the gate existed. We assert the *gate* is a no-op by
+    confirming no 403 control_token_required comes back; the handler's own
+    success/failure is covered by the per-route tests elsewhere."""
+    base, _ = server_with_coordinator
+    _disable_control_token(monkeypatch, tmp_path)
+    # _grouping_test_setup also patches subprocess.Popen module-wide with a
+    # FakePopen, so the /system/poweroff|reboot calls below hit the fake — no
+    # test machine reboots. /grouping/set has a clean 200 path under the
+    # fixture; use it to prove the request flows straight through the (off)
+    # gate to the handler.
+    env, _ = _grouping_test_setup(monkeypatch, tmp_path)
+    status, body = _post(f"{base}/grouping/set", {"enabled": False})
+    assert status == 200
+    assert body.get("error") != "control_token_required"
+    # The other gated routes: never the token error when the gate is off.
+    for route in ("/system/poweroff", "/system/reboot", "/mic/mute"):
+        status, body = _post(f"{base}{route}", {"muted": True})
+        assert body.get("error") != "control_token_required", route
+
+
+def test_enabled_gated_routes_403_without_token(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """With the gate enabled, every gated route 403s control_token_required
+    when no X-JTS-Token is sent — including before any side effect runs."""
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    for route in _GATED_ROUTES:
+        status, body = _post(f"{base}{route}", {"muted": True})
+        assert status == 403, route
+        assert body["error"] == "control_token_required", route
+
+
+def test_enabled_gated_routes_403_with_wrong_token(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path, token="correct-horse")
+    for route in _GATED_ROUTES:
+        status, body = _post(
+            f"{base}{route}", {"muted": True},
+            headers={"X-JTS-Token": "wrong-token"},
+        )
+        assert status == 403, route
+        assert body["error"] == "control_token_required", route
+
+
+def test_enabled_gated_route_succeeds_with_matching_token(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """The matching token lets the request through to the handler. Uses
+    /grouping/set (a clean 200 under the fixture) so success is unambiguous."""
+    base, _ = server_with_coordinator
+    token = _enable_control_token(monkeypatch, tmp_path)
+    env, _ = _grouping_test_setup(monkeypatch, tmp_path)
+    status, body = _post(
+        f"{base}/grouping/set",
+        {"enabled": True, "role": "leader", "channel": "left", "bond_id": "x"},
+        headers={"X-JTS-Token": token},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert "JASPER_GROUPING=on" in env.read_text()
+
+
+def test_enabled_gate_does_not_affect_ungated_routes(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """With the gate enabled, an UNgated route (/volume/set, and the
+    /healthz read) works with no token — the dial's low-impact controls stay
+    open by design."""
+    base, fake = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    # Ungated POST: no token, still succeeds.
+    status, body = _post(f"{base}/volume/set", {"percent": 42})
+    assert status == 200
+    assert body["percent"] == 42
+    # Ungated GET liveness: unaffected.
+    status, body = _get(f"{base}/healthz")
+    assert status == 200 and body == {"ok": True}

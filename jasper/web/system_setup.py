@@ -41,6 +41,7 @@ from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
     canonical_page,
+    forward_control_token_headers,
     proxy_get,
     proxy_post,
     reject_csrf,
@@ -144,8 +145,13 @@ def _make_handler(
                     self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
                     return
                 body = self.rfile.read(length) if length else b"{}"
+            # Forward a browser-supplied X-JTS-Token so the opt-in
+            # control-token gate sees it on /system/reboot|poweroff (the
+            # wizard proxies server-side; the header can't ride the browser
+            # fetch otherwise).
             status, body = proxy_post(
                 "/system" + path, control_base=control_base, body=body,
+                headers=forward_control_token_headers(self),
             )
             send_proxy_json(self, body, status=status)
 

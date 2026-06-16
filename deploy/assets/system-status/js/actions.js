@@ -3,7 +3,8 @@
 // honestly (button label or status text, plus console.error) — no silent paths.
 
 import { h } from "./dom.js";
-import { csrfHeaders, jsonHeaders } from "./api.js";
+import { jsonHeaders } from "./api.js";
+import { postControlAction } from "/assets/shared/js/http.js";
 import { updateAudioQuality } from "./sections.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
@@ -36,14 +37,17 @@ export async function postAction(path, btn, confirmLines, opts = {}) {
   btn.textContent = "Working…";
   if (statusEl) statusEl.textContent = "";
   try {
-    const r = await fetch(path, { method: "POST", headers: csrfHeaders() });
-    const body = await r.json().catch(() => ({}));
-    if (r.ok) {
+    // postControlAction attaches the opt-in X-JTS-Token and, on a 403
+    // control_token_required, prompts once + retries — so reboot/power-off
+    // work whether or not the gate is enabled. (Shared helper; no per-page
+    // token plumbing.)
+    const { ok, status, body } = await postControlAction(path);
+    if (ok) {
       btn.textContent = "Sent";
       if (statusEl && sentMessage) statusEl.textContent = sentMessage;
     } else {
       console.error("system: action '" + path + "' failed", body);
-      btn.textContent = "Failed: " + (body.error || r.status);
+      btn.textContent = "Failed: " + (body.error || status);
     }
   } catch (e) {
     console.error("system: action '" + path + "' failed", e);
