@@ -32,7 +32,7 @@ def make_citibike_tools(client: CitiBikeClient | None):
     if client is None or not client.enabled:
         return []
 
-    @tool()
+    @tool(labels=("transit", "nyc", "bikeshare"))
     async def get_citibike_status(station_label: str = "") -> dict:
         """Return live Citi Bike availability for the speaker's
         saved stations.

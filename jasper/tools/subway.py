@@ -9,7 +9,7 @@ def make_subway_tools(subway):
     if subway is None:
         return []
 
-    @tool()
+    @tool(labels=("transit", "nyc", "subway"))
     async def get_subway_arrivals(line: str = "", direction: str = "") -> dict:
         """Return the next subway arrivals at the speaker's home
         station.

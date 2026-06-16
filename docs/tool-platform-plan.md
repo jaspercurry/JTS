@@ -245,6 +245,11 @@ doesn't choke as the catalog grows.** That's the whole first version.
    flow bolt onto.
 4. **Free accuracy wins** — add tool-use examples to the most confusable
    tools; tighten any overlapping descriptions.
+5. **Tool labels** (shipped as a Phase-1.5 follow-on) — a
+   declaration-only `labels` facet on the tool/manifest contract
+   (`@tool(labels=...)`), the catalog's future sort/filter/search
+   primitive, with the transit tools tagged. Resolves the transit
+   "city as a label, not a `CityPack` toggle" question — see §6.
 
 Everything is built with **Opus**. Every new tool still ships its
 regression scenario under `tests/voice_eval/regression/` (existing hard
@@ -279,6 +284,33 @@ they stay trusted — no sandbox, no enforcement.
   present. This is "review a manifest + CI, not every line," but with a
   human (you) still reading and running the code.
 - Tools still register in-process, in-repo, via the Phase-1 registry.
+
+### Tool labels — the catalog's facet, and retiring the transit city toggle
+
+A `labels` facet now rides the tool/manifest contract (`@tool(labels=...)`
+→ `Tool.labels` → the derived manifest), declaration-only and **not sent
+to the model** (it never enters the provider serializers — zero token
+cost). It is the catalog's sort/filter/search primitive — how a household
+will find tools in the future `/tool-store/`, and how third-party tools
+categorize themselves. The transit tools are tagged today
+(`("transit","nyc","subway")`, etc.).
+
+This resolves a transit design question. Today a city is a first-class
+`CityPack` + a `JASPER_TRANSIT_CITIES` toggle — but a city carries no
+shared behavior (the NYC providers share no key or runtime, only the name
+"NYC"), so it is a *taxonomy*, which wants a **label**, not a container
+class. The forward model: city becomes a label; the tools UI filters by
+it; per-tool enablement (default *configured ⇒ on*, preserving provider
+self-gating) replaces the city toggle.
+
+**Sequenced, not rushed.** The `labels` field ships now (cheap, through
+the Phase-1 seam, useful immediately for the catalog). Retiring
+`CityPack` / `JASPER_TRANSIT_CITIES` waits for **two forcing functions**:
+the Phase-2 `/tool-store/` UI (to host the filter + per-tool enable) and a
+**second city** (so the multi-city label scheme is designed against two
+real examples, not one). Until then `CityPack` is the right-sized solution
+and stays. Labels are organization; enablement is separate state — keep a
+single source of truth for "is this tool on."
 
 ### Phase 3 — "champagne problem" (build only if it ever arrives)
 The trigger is one of: you want to run tools you *haven't* personally

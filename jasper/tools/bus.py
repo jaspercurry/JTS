@@ -16,7 +16,7 @@ def make_bus_tools(bus):
     if bus is None or not bus.enabled:
         return []
 
-    @tool()
+    @tool(labels=("transit", "nyc", "bus"))
     async def get_bus_arrivals(route: str = "") -> dict:
         """Return the next bus arrivals across the speaker's
         configured bus stops, sorted by ETA, capped at 4 total.

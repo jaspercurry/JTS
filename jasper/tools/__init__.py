@@ -106,6 +106,13 @@ class Tool:
     # Mass-migrating the 28 tools to short llm_descriptions is a later,
     # eval-gated follow-up, NOT this change.
     llm_description: str | None = None
+    # Catalog facet for the future tools UI / marketplace: free-form tags
+    # like ("transit", "nyc", "subway") used to sort/filter/search tools.
+    # NOT sent to the model (never in function_declarations/openai_tools —
+    # zero token cost); emitted only in to_manifest_entry so the catalog
+    # can group by it. The transit city is a label here, not a first-class
+    # CityPack — see docs/tool-platform-plan.md.
+    labels: tuple[str, ...] = ()
 
     def model_facing_description(self) -> str:
         """What the LLM sees: the `llm_description` override when set,
@@ -118,7 +125,8 @@ class Tool:
         description of the tool built straight from existing Tool fields
         (reuses build_tool's output; no new concepts). `description` is
         the MODEL-FACING text (llm_description override or docstring).
-        `providers` is None for "all providers"."""
+        `providers` is None for "all providers". `labels` are the
+        catalog's sort/filter tags (declared order preserved)."""
         return {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "name": self.name,
@@ -127,6 +135,7 @@ class Tool:
             "compatibility": {
                 "providers": sorted(self.providers) if self.providers else None,
             },
+            "labels": list(self.labels),
             "timeout": self.timeout,
         }
 
@@ -211,6 +220,7 @@ def tool(
     providers: Iterable[str] | None = None,
     timeout: float | None = None,
     llm_description: str | None = None,
+    labels: Iterable[str] | None = None,
     log_payload: bool = True,
     log_args: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -232,6 +242,11 @@ def tool(
     when the engineer-facing docstring is longer than the model needs;
     the docstring stays the source of truth for humans and the manifest.
 
+    `labels` are free-form catalog tags (e.g. ("transit", "nyc",
+    "subway")) for the future tools UI to sort/filter/search on. They are
+    NOT sent to the model — organizational metadata surfaced only in the
+    derived manifest.
+
     `log_payload=False` keeps the INFO dispatch line redacted for
     content-bearing tool results; `log_args=False` does the same for
     content-bearing tool arguments.
@@ -246,6 +261,8 @@ def tool(
             fn.__jasper_tool_timeout__ = timeout  # type: ignore[attr-defined]
         if llm_description is not None:
             fn.__jasper_tool_llm_description__ = llm_description  # type: ignore[attr-defined]
+        if labels:
+            fn.__jasper_tool_labels__ = tuple(labels)  # type: ignore[attr-defined]
         fn.__jasper_tool_log_payload__ = log_payload  # type: ignore[attr-defined]
         fn.__jasper_tool_log_args__ = log_args  # type: ignore[attr-defined]
         return fn
@@ -275,6 +292,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
     decl_llm_desc = getattr(fn, "__jasper_tool_llm_description__", None)
+    decl_labels = getattr(fn, "__jasper_tool_labels__", ())
     decl_log_payload = getattr(fn, "__jasper_tool_log_payload__", True)
     decl_log_args = getattr(fn, "__jasper_tool_log_args__", True)
     if not asyncio.iscoroutinefunction(fn):
@@ -302,6 +320,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         log_payload=decl_log_payload,
         log_args=decl_log_args,
         llm_description=decl_llm_desc,
+        labels=decl_labels,
     )
 
 
