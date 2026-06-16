@@ -31,7 +31,7 @@ from typing import Any
 
 from ..log_event import log_event
 from . import ToolRegistry
-from .packs import ToolDeps, register_packs
+from .packs import TOOL_PACKS, CatalogPack, ToolDeps, ToolPack, register_packs
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,35 @@ _SETUP_URLS: dict[str, str] = {
 }
 
 
+def _catalog_pack_payload(pack: CatalogPack | None) -> dict[str, Any] | None:
+    if pack is None:
+        return None
+    return {
+        "id": pack.id,
+        "title": pack.title,
+        "summary": pack.summary,
+        "setup_url": pack.setup_url,
+    }
+
+
+def _summary_from_description(text: str, *, max_chars: int = 180) -> str:
+    """Short card copy derived from the model-facing description.
+
+    The full tool docstring can be long because it teaches the model call
+    boundaries and response style. Cards need a scan-friendly summary, but a
+    separate hand-written copy layer would be busywork today. Use the first
+    sentence when it fits; otherwise truncate at a word boundary.
+    """
+    compact = " ".join((text or "").strip().split())
+    if len(compact) <= max_chars:
+        return compact
+    first_sentence, sep, _rest = compact.partition(". ")
+    if sep and 24 <= len(first_sentence) <= max_chars:
+        return first_sentence + "."
+    clipped = compact[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return (clipped or compact[:max_chars]).rstrip() + "..."
+
+
 def _full_catalog_registry() -> ToolRegistry:
     """EVERY tool's schema, built with gate-satisfying sentinels.
     Mirrors tests/test_tool_manifest.py::_full_registry. Imports the
@@ -98,6 +127,15 @@ def _full_catalog_registry() -> ToolRegistry:
     return reg
 
 
+def _tool_pack_index(registry: ToolRegistry) -> dict[str, ToolPack]:
+    packs_by_id = {p.name: p for p in TOOL_PACKS}
+    return {
+        name: packs_by_id[pack_id]
+        for name, pack_id in registry.tool_packs.items()
+        if pack_id in packs_by_id
+    }
+
+
 def build_catalog(
     live_registry: ToolRegistry,
     disabled: frozenset[str],
@@ -105,6 +143,7 @@ def build_catalog(
     """Compute the catalog payload. `live_registry` is the daemon's REAL
     registry (configured + enabled). `disabled` is the user's set."""
     full = _full_catalog_registry()
+    pack_by_tool = _tool_pack_index(full)
     live_names = set(live_registry.tools.keys())
     tools = []
     for name, t in full.tools.items():
@@ -117,11 +156,17 @@ def build_catalog(
             status = "off"
         else:
             status = "active"
+        pack = pack_by_tool.get(name)
+        description = t.model_facing_description()
         tools.append({
             "name": t.name,
-            "description": t.model_facing_description(),
+            "summary": _summary_from_description(description),
+            "description": description,
+            "details": t.description,
             "labels": list(t.labels),
             "providers": sorted(t.providers) if t.providers else None,
+            "category": pack.category if pack else "Utilities",
+            "pack": _catalog_pack_payload(pack.catalog_pack if pack else None),
             "status": status,
             "setup_url": _SETUP_URLS.get(name),
         })

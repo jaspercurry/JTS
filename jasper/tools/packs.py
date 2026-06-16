@@ -86,6 +86,22 @@ class ToolDeps:
 
 
 @dataclass(frozen=True)
+class CatalogPack:
+    """Optional user-facing grouping for the /tools/ catalog.
+
+    This is deliberately separate from ToolPack itself: ToolPack is the
+    internal registration/fault-isolation unit, while a CatalogPack is a
+    display affordance. Multiple internal packs may share one catalog pack
+    (calendar + gmail -> Google), and some internal packs may expose their
+    tools as standalone rows by leaving this unset.
+    """
+    id: str
+    title: str
+    summary: str
+    setup_url: str | None = None
+
+
+@dataclass(frozen=True)
 class ToolPack:
     """One subsystem's tools. `build(deps)` returns the decorated
     callables to register (in order); `gate(deps)` lifts the inline
@@ -95,6 +111,8 @@ class ToolPack:
     name: str
     build: Callable[[ToolDeps], Iterable[Callable[..., Any]]]
     gate: Callable[[ToolDeps], bool] = lambda _d: True
+    category: str = "Utilities"
+    catalog_pack: CatalogPack | None = None
 
 
 @dataclass(frozen=True)
@@ -150,37 +168,120 @@ def _google_ready(d: ToolDeps) -> bool:
     return d.google_clients is not None and bool(d.google_clients.list_account_names())
 
 
+PLAYBACK_PACK = CatalogPack(
+    "playback",
+    "Playback",
+    "General volume and transport controls for the active source.",
+)
+SPOTIFY_PACK = CatalogPack(
+    "spotify",
+    "Spotify",
+    "Search, play, and queue music through configured Spotify accounts.",
+    setup_url="/spotify/",
+)
+NYC_TRANSIT_PACK = CatalogPack(
+    "nyc-transit",
+    "NYC Transit",
+    "Subway, bus, and Citi Bike arrivals from the configured NYC stops.",
+    setup_url="/transit/",
+)
+HOME_ASSISTANT_PACK = CatalogPack(
+    "home-assistant",
+    "Home Assistant",
+    "Relay household device, scene, script, and state requests.",
+    setup_url="/ha/",
+)
+TIMERS_PACK = CatalogPack(
+    "timers",
+    "Timers",
+    "Set, list, update, and cancel household timers.",
+)
+GOOGLE_PACK = CatalogPack(
+    "google",
+    "Google",
+    "Read calendar and Gmail data from linked Google accounts.",
+    setup_url="/google/",
+)
+
+
 # Order is load-bearing — see module docstring. Mirrors the legacy
 # _build_registry sequence exactly.
 TOOL_PACKS: tuple[ToolPack, ...] = (
-    ToolPack("audio", lambda d: make_audio_tools(d.volume_coordinator)),
-    ToolPack("transport", lambda d: make_transport_tools(d.renderer, d.router)),
-    ToolPack("spotify", lambda d: make_spotify_tools(
-        d.router, d.renderer, d.spotify_device_name, d.spotify_setup_url)),
-    ToolPack("weather", lambda d: make_weather_tools(d.weather)),
+    ToolPack(
+        "audio", lambda d: make_audio_tools(d.volume_coordinator),
+        category="Music", catalog_pack=PLAYBACK_PACK,
+    ),
+    ToolPack(
+        "transport", lambda d: make_transport_tools(d.renderer, d.router),
+        category="Music", catalog_pack=PLAYBACK_PACK,
+    ),
+    ToolPack(
+        "spotify",
+        lambda d: make_spotify_tools(
+            d.router,
+            d.renderer,
+            d.spotify_device_name,
+            d.spotify_setup_url,
+        ),
+        category="Music",
+        catalog_pack=SPOTIFY_PACK,
+    ),
+    ToolPack(
+        "weather",
+        lambda d: make_weather_tools(d.weather),
+        category="Utilities",
+    ),
     # Transit is pre-built by transit.active_transit in run() (it owns an
     # aclose lifecycle the daemon needs); here we only register the flat
     # list. Each provider already self-gated, so an empty list is correct.
-    ToolPack("transit", lambda d: d.transit_tools),
+    ToolPack(
+        "transit", lambda d: d.transit_tools,
+        category="Transit", catalog_pack=NYC_TRANSIT_PACK,
+    ),
     # home_assistant + diagnostic self-gate inside the factory (return []
     # on a None dep), so no pack gate is needed — default always-on
     # reproduces today's behavior exactly. home_assistant reads the shared
     # taint monitor to gate consequential actions.
-    ToolPack("home_assistant",
-             lambda d: make_home_assistant_tools(d.ha, monitor=d.untrusted_monitor)),
-    ToolPack("time", lambda _d: make_time_tools()),
+    ToolPack(
+        "home_assistant",
+        lambda d: make_home_assistant_tools(d.ha, monitor=d.untrusted_monitor),
+        category="Smart Home",
+        catalog_pack=HOME_ASSISTANT_PACK,
+    ),
+    ToolPack(
+        "time",
+        lambda _d: make_time_tools(),
+        category="Utilities",
+    ),
     # timer's factory does NOT self-gate on None, so the gate is load-bearing.
-    ToolPack("timer", lambda d: make_timer_tools(d.timer_scheduler),
-             gate=lambda d: d.timer_scheduler is not None),
+    ToolPack(
+        "timer",
+        lambda d: make_timer_tools(d.timer_scheduler),
+        gate=lambda d: d.timer_scheduler is not None,
+        category="Productivity",
+        catalog_pack=TIMERS_PACK,
+    ),
     # calendar + gmail stamp the shared taint monitor when they return
     # third-party text (arming home_assistant's confirmation window).
-    ToolPack("calendar",
-             lambda d: make_calendar_tools(d.google_clients, monitor=d.untrusted_monitor),
-             gate=_google_ready),
-    ToolPack("gmail",
-             lambda d: make_gmail_tools(d.google_clients, monitor=d.untrusted_monitor),
-             gate=_google_ready),
-    ToolPack("diagnostic", lambda d: make_diagnostic_tools(d.wake_event_store)),
+    ToolPack(
+        "calendar",
+        lambda d: make_calendar_tools(d.google_clients, monitor=d.untrusted_monitor),
+        gate=_google_ready,
+        category="Productivity",
+        catalog_pack=GOOGLE_PACK,
+    ),
+    ToolPack(
+        "gmail",
+        lambda d: make_gmail_tools(d.google_clients, monitor=d.untrusted_monitor),
+        gate=_google_ready,
+        category="Productivity",
+        catalog_pack=GOOGLE_PACK,
+    ),
+    ToolPack(
+        "diagnostic",
+        lambda d: make_diagnostic_tools(d.wake_event_store),
+        category="System",
+    ),
 )
 
 
@@ -231,11 +332,13 @@ def register_packs(
         registered = 0
         for fn in fns:
             t = registry.register(fn)
+            registry.tool_packs[t.name] = pack.name
             if t.name in disabled:
                 # Registered, then removed by user choice — keeps the
                 # filter at the single registration point and works
                 # regardless of declared @tool name vs fn.__name__.
                 del registry.tools[t.name]
+                registry.tool_packs.pop(t.name, None)
                 log_event(logger, "tool.disabled", name=t.name, pack=pack.name)
                 continue
             registered += 1

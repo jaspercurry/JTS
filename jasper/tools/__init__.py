@@ -291,6 +291,11 @@ class Tool:
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
+    # Tool name -> internal ToolPack.name for registries populated by
+    # jasper.tools.packs.register_packs. Manual/test registries that call
+    # register() directly leave this empty. The mapping is catalog metadata
+    # only; provider serializers and dispatch never read it.
+    tool_packs: dict[str, str] = field(default_factory=dict)
     # How each tool pack's registration went — set by register_packs (the
     # producer also mutates `tools`), read back by the daemon to surface
     # silently-missing tool families via /state.voice.tool_packs and
@@ -313,6 +318,7 @@ class ToolRegistry:
         if providers is not None:
             tool = replace(tool, providers=frozenset(providers))
         self.tools[tool.name] = tool
+        self.tool_packs.pop(tool.name, None)
         return tool
 
     def get(self, name: str) -> Tool | None:

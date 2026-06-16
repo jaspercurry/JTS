@@ -502,7 +502,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             dict(getattr(ac.account, "playlists", {}) or {}),
         )
 
-    @tool()
+    @tool(labels=("music", "spotify"))
     async def spotify_play(
         query: str,
         kind: Literal["auto", "artist", "track", "album", "playlist"] = "auto",
@@ -641,7 +641,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             "confirm": confirm,
         }
 
-    @tool()
+    @tool(labels=("music", "spotify"))
     async def spotify_play_latest_by_artist(artist: str) -> dict:
         """Find a named artist's most recent release (single or album)
         and start playback.
@@ -782,7 +782,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             "confirm": confirm,
         }
 
-    @tool()
+    @tool(labels=("music", "spotify", "queue"))
     async def spotify_queue(query: str) -> dict:
         """Search Spotify for a track and add it to the playback
         queue.

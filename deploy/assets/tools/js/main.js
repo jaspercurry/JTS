@@ -1,9 +1,8 @@
 // main.js — /tools/ catalog wizard behaviour.
 //
 // Fetches /tools/catalog.json (voice's catalog metadata with the fresh
-// disabled-set overlaid + a `pending` flag), renders the flat list of
-// first-party tools, and wires search + a delegated toggle handler + an
-// explicit Apply.
+// disabled-set overlaid + a `pending` flag), renders the grouped tool library
+// view, and wires search + a delegated toggle handler + an explicit Apply.
 //
 // Two-step on purpose (see tools_setup.py): a toggle only STAGES (writes the
 // disabled-set, no restart), so ticking boxes is instant and never nukes an
@@ -62,7 +61,7 @@ function render() {
 // we never had anything. Returns the freshly-read view (or null on failure).
 async function load({ keepStale = false } = {}) {
   try {
-    const next = await getJSON("catalog.json");
+    const next = await getJSON("/tools/catalog.json");
     if (next && next.unavailable && keepStale && toolsOf(catalog).length) {
       // Mid-restart: hold the existing list, just reflect that it's settling.
       catalog = { ...catalog, pending: !!next.pending };

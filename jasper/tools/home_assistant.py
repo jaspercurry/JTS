@@ -183,7 +183,13 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
 
     store = _ConfirmationStore(clock=clock)
 
-    @tool(timeout=_HA_TOOL_TIMEOUT_SEC, log_payload=False, log_args=False, consequential=True)
+    @tool(
+        timeout=_HA_TOOL_TIMEOUT_SEC,
+        log_payload=False,
+        log_args=False,
+        labels=("smart-home", "home-assistant"),
+        consequential=True,
+    )
     async def home_assistant(query: str) -> dict:
         """Send a natural-language smart-home request to Home Assistant.
 
@@ -288,7 +294,13 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
         result = await ha.process(query)
         return result.as_tool_result()
 
-    @tool(timeout=_HA_TOOL_TIMEOUT_SEC, log_payload=False, log_args=False, consequential=True)
+    @tool(
+        timeout=_HA_TOOL_TIMEOUT_SEC,
+        log_payload=False,
+        log_args=False,
+        labels=("smart-home", "home-assistant", "confirmation"),
+        consequential=True,
+    )
     async def home_assistant_confirm() -> dict:
         """Carry out the consequential smart-home action that
         home_assistant just asked the user to confirm.
