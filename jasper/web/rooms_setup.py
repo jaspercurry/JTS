@@ -613,9 +613,12 @@ def _request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     """The browser-supplied X-JTS-Token to forward to each member, or None.
 
     The /rooms/ grouping mutations fan out SERVER-side to each member's
-    /grouping/set, so the browser's control token (the opt-in gate) would be
-    lost unless this leader forwards it. We relay only what the operator's
-    browser sent — never inject a token from disk — so the gate stays real."""
+    /grouping/set, so the browser's control token (the mandatory gate since
+    WS1 Phase 2) would be lost unless this leader forwards it. We relay only
+    what the operator's browser sent — never inject a token from disk — so the
+    gate stays real. A forwarded browser token authenticates only
+    browser→own-speaker; the cross-device fan-out's own auth is the household
+    credential (Phase C, docs/HANDOFF-control-plane-auth.md)."""
     token = handler.headers.get("X-JTS-Token")
     return token or None
 
@@ -628,16 +631,21 @@ def _post_grouping_to_member(
 
     This is the cross-speaker call that makes bond-forming one-flow: the
     browser hands us the member list, and we fan the config out SERVER-side
-    (no CORS) to each member's control API — the same no-auth LAN surface
-    the dial uses. ``addr`` empty or one of this host's own addresses routes
+    (no CORS) to each member's control API on the LAN. ``addr`` empty or one of
+    this host's own addresses routes
     to loopback (configure self). SSRF guard (via :func:`_lan_target`): a
     remote target must be a PRIVATE / loopback IPv4 — the control API is a
     home-LAN surface, never a public host. ``known`` is forwarded to the guard
     so a fan-out computes the self-address set once. ``token`` is the
-    browser-supplied control token forwarded to each member so a household
-    that has enabled the opt-in gate can still form/dissolve bonds (each
-    member checks its own /grouping/set gate; default-off installs pass
-    None and nothing changes). Returns (ok, detail); never raises.
+    browser-supplied control token relayed to each member. The /grouping/set
+    gate is now MANDATORY (WS1 Phase 2 — no longer opt-in), and a member mints
+    its OWN distinct control_token, so this relayed token only authenticates the
+    browser→its-own-speaker call; a cross-device POST to another member's
+    /grouping/set 403s without a credential this leader does not hold.
+    Cross-device fan-out auth is the forthcoming household credential
+    (Phase C of docs/HANDOFF-control-plane-auth.md), not yet built — so today
+    the server-side fan-out only succeeds against an unbonded / transitional
+    member whose gate isn't yet armed. Returns (ok, detail); never raises.
     """
     target = _lan_target(addr, known)
     if target is None:
@@ -712,7 +720,8 @@ def _fan_out_grouping(
     lookups across N pool threads. Callers that already hold the set (e.g.
     :func:`_unbond`, which also used it for discovery) pass it in. ``token``
     is the browser-supplied control token forwarded to every member's
-    /grouping/set (opt-in gate; None on default-off installs)."""
+    /grouping/set (mandatory gate since WS1 Phase 2; None when the request
+    carried no X-JTS-Token)."""
     if known is None:
         known = _self_addresses()
     return _map_peers(
@@ -723,8 +732,9 @@ def _fan_out_grouping(
 
 def _get_member_grouping(addr: str, known: set[str] | None = None) -> dict | None:
     """Read ONE member's grouping state by GETting its jasper-control
-    ``/grouping`` (the same no-auth LAN surface :func:`_post_grouping_to_member`
-    POSTs to). Used by :func:`_unbond` to find which siblings share this
+    ``/grouping`` (the CSRF-free read on `jasper-control`; unlike the gated
+    ``POST /grouping/set``, the ``GET`` read is genuinely unauthenticated).
+    Used by :func:`_unbond` to find which siblings share this
     speaker's bond before dissolving it.
 
     Same SSRF guard as the POST path (via :func:`_lan_target`): a refused /
