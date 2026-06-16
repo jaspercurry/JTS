@@ -109,27 +109,30 @@ def test_tmpfs_home_where_no_home_needed(unit):
 
 
 # --------------------------------------------------------------------------
-# WS1 Phase 3b (3b-1) — the non-root user drop for the three daemons that drop
-# cleanly. jasper-control + jasper-web stay root in 3b-1 (their drops are the
-# gated 3b-2 / 3b-3 fast-follows); jasper-control still joins the `jasper` group
-# so the broker socket is reachable by the now-non-root mux.
+# WS1 Phase 3b — the non-root user drop. 3b-1 dropped voice/mux/input; 3b-2
+# dropped jasper-control (it gained a polkit rule for its broker/supervisor
+# systemctl+reboot and group-readable secret env for the jasper-doctor it
+# spawns). jasper-web stays root until 3b-3 (NetworkManager/BlueZ/wifi-lockout).
 # --------------------------------------------------------------------------
 
 # unit -> (expected User=, expected SupplementaryGroups set)
-DROPPED_3B1 = {
+DROPPED = {
     "jasper-voice": ("jasper-voice", {"audio"}),
     "jasper-mux": ("jasper-mux", set()),
     "jasper-input": ("jasper-input", {"input"}),
+    # 3b-2: control needs NO supplementary group — its privileged restarts/
+    # reboots are granted by polkit (deploy/polkit/49-jasper-control.rules), and
+    # it opens no ALSA/input device (TCP + localhost WebSocket only).
+    "jasper-control": ("jasper-control", set()),
 }
 
-# Still root in 3b-1 (drops deferred). Moving one here to DROPPED_3B1 is exactly
-# what the 3b-2 (control: polkit + secret-read file model) and 3b-3 (web:
-# NetworkManager/BlueZ/wifi) fast-follows do.
-DEFERRED_ROOT_3B1 = {"jasper-control", "jasper-web"}
+# Still root (drop deferred). Moving jasper-web here to DROPPED is exactly what
+# the 3b-3 fast-follow (NetworkManager polkit / BlueZ / wifi-lockout) does.
+DEFERRED_ROOT = {"jasper-web"}
 
 
-@pytest.mark.parametrize("unit,expected", sorted(DROPPED_3B1.items()))
-def test_3b1_user_drop(unit, expected):
+@pytest.mark.parametrize("unit,expected", sorted(DROPPED.items()))
+def test_user_drop(unit, expected):
     expected_user, expected_supp = expected
     directives = _directives(TIER_A[unit])
     pairs = set(directives)
@@ -159,25 +162,36 @@ def test_3b1_user_drop(unit, expected):
     )
 
 
-def test_3b1_control_joins_jasper_group_but_stays_root():
-    """jasper-control stays root in 3b-1 (User= deferred to 3b-2) but MUST join
-    the `jasper` group so the now-non-root jasper-mux can reach the broker
-    socket (/run/jasper-control/restart.sock, 0660 group jasper)."""
+def test_control_keeps_runtimedir_and_avahi_rwpaths_after_drop():
+    """jasper-control's 3b-2 drop must KEEP the directives the non-root user
+    relies on: Group=jasper (broker socket reachable by mux/web), the
+    RuntimeDirectory for the broker socket bind, and ReadWritePaths covering
+    /etc/avahi/services (the peering advert it renders). ProtectHome must stay
+    read-only (NOT tmpfs) for the diagnostic subprocesses it spawns."""
     pairs = set(_directives(TIER_A["jasper-control"]))
-    assert ("Group", "jasper") in pairs, (
-        "jasper-control must set Group=jasper so mux can reach the broker socket."
+    assert ("Group", "jasper") in pairs
+    assert ("RuntimeDirectory", "jasper-control") in pairs, (
+        "the broker binds /run/jasper-control/restart.sock via RuntimeDirectory."
     )
-    assert not any(k == "User" for k, _ in pairs), (
-        "jasper-control is deferred to 3b-2 (polkit + secret-read file model); "
-        "it must NOT carry User= yet. When 3b-2 lands, move it to DROPPED_3B1."
+    assert ("ProtectHome", "read-only") in pairs, (
+        "control spawns jasper-doctor (home/ALSA/dmesg introspection); ProtectHome "
+        "must stay read-only, NOT tmpfs."
+    )
+    rwpaths = " ".join(v for k, v in pairs if k == "ReadWritePaths")
+    assert "/etc/avahi/services" in rwpaths, (
+        "control renders the peering advert into /etc/avahi/services."
+    )
+    # ProtectKernelLogs stays OMITTED (the spawned doctor reads dmesg).
+    assert ("ProtectKernelLogs", "true") not in pairs, (
+        "ProtectKernelLogs must stay omitted for the doctor's dmesg fingerprint read."
     )
 
 
-@pytest.mark.parametrize("unit", sorted(DEFERRED_ROOT_3B1))
-def test_3b1_deferred_daemons_not_user_dropped(unit):
-    """Guard against a half-drop: control (3b-2) and web (3b-3) must not gain a
-    User= until their dedicated, validation-gated work lands (polkit; the
-    secret-readable file model; NetworkManager/BlueZ access)."""
+@pytest.mark.parametrize("unit", sorted(DEFERRED_ROOT))
+def test_deferred_daemons_not_user_dropped(unit):
+    """Guard against a half-drop: jasper-web must not gain a User= until its
+    dedicated, validation-gated 3b-3 work lands (NetworkManager polkit; BlueZ
+    access; the wifi-lockout recovery validation)."""
     assert not any(k == "User" for k, _ in _directives(TIER_A[unit])), (
         f"{unit} is deferred; dropping it needs its own gated PR "
         "(see docs/HANDOFF-privilege-separation.md Phase 3b)."
@@ -188,13 +202,13 @@ SERVICE_USERS_SH = ROOT / "deploy/lib/install/service-users.sh"
 
 
 def test_install_creates_every_dropped_user():
-    """The install↔unit contract: every User= a 3b-1 unit declares must be
+    """The install↔unit contract: every User= a dropped unit declares must be
     created by service-users.sh, with matching supplementary groups — a unit
     referencing a user the installer didn't create fails to start (brick)."""
     sh = SERVICE_USERS_SH.read_text()
     assert "groupadd -r jasper" in sh, "must create the shared `jasper` group"
     lines = sh.splitlines()
-    for unit, (user, supp) in DROPPED_3B1.items():
+    for unit, (user, supp) in DROPPED.items():
         useradd = [ln for ln in lines if "useradd" in ln and f" {user}" in ln]
         assert useradd, f"service-users.sh must `useradd ... {user}` (for {unit})"
         line = useradd[0]

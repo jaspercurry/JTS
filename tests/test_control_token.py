@@ -4,7 +4,7 @@ The token gates jasper-control's four high-impact mutations behind an
 X-JTS-Token header — but only when a non-empty token file exists
 (default-off). These tests pin: enforced detection (absent / empty /
 present), constant-time verify semantics, and the enable/show/disable
-CLI (including the 0600 mode and the refuse-to-clobber guard). The
+CLI (including the 0640 group-jasper mode and the refuse-to-clobber guard). The
 route-level HTTP behaviour is covered separately in
 test_control_server.py against the real ThreadingHTTPServer.
 """
@@ -81,14 +81,17 @@ def _point_cli_at(monkeypatch, path):
     monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
 
 
-def test_cli_enable_writes_0600_token(monkeypatch, tmp_path, capsys):
+def test_cli_enable_writes_0640_token(monkeypatch, tmp_path, capsys):
     path = tmp_path / "control_token"
     _point_cli_at(monkeypatch, path)
     rc = cli.main(["--enable"])
     assert rc == 0
     assert path.exists()
+    # WS1 Phase 3b-2: 0640 group jasper (was 0600) so the non-root
+    # jasper-control/jasper-web can read the gate token — an unreadable token
+    # fails safe to gate-OFF, silently disabling the mandatory gate.
     mode = stat.S_IMODE(os.stat(path).st_mode)
-    assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+    assert mode == 0o640, f"expected 0640, got {oct(mode)}"
     token = path.read_text().strip()
     assert len(token) >= 32  # token_urlsafe(32) -> ~43 chars
     out = capsys.readouterr().out.strip()
@@ -164,12 +167,16 @@ def test_ensure_token_generates_when_absent(monkeypatch, tmp_path):
     assert control_token.verify("nope") is False
 
 
-def test_ensure_token_is_0600(monkeypatch, tmp_path):
+def test_ensure_token_is_0640(monkeypatch, tmp_path):
     path = tmp_path / "control_token"
     monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
     control_token.ensure_token()
+    # WS1 Phase 3b-2: 0640 group jasper (was 0600). The non-root jasper-control
+    # may not OWN this file (StateDirectory recursive-chown can make the owner
+    # jasper-voice), and jasper-web reads it via canonical_page() — group read is
+    # what keeps the mandatory gate from silently fail-OFF'ing post-drop.
     mode = stat.S_IMODE(os.stat(path).st_mode)
-    assert mode == 0o600, f"token file is {oct(mode)}, expected 0o600"
+    assert mode == 0o640, f"token file is {oct(mode)}, expected 0o640"
 
 
 def test_ensure_token_is_idempotent_and_never_rotates(monkeypatch, tmp_path):

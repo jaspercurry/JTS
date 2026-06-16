@@ -1,0 +1,106 @@
+// WS1 Phase 3b-2 — polkit grant for the non-root `jasper-control` service user.
+//
+// docs/HANDOFF-privilege-separation.md. Installed to
+// /etc/polkit-1/rules.d/49-jasper-control.rules (root:root 0644) by
+// install.sh's install_jasper_control_polkit. polkitd monitors rules.d and
+// auto-reloads on change — no daemon-reload or polkit restart is needed.
+//
+// Once jasper-control drops from root to the `jasper-control` system user
+// (deploy/systemd/jasper-control.service), every privileged systemctl /
+// reboot / poweroff it runs is mediated by polkit instead of being a uid-0
+// bypass. jasper-control performs these from the in-process restart broker
+// (jasper/control/restart_broker.py) AND directly from its supervisors /
+// endpoints (system_supervisor reboot, shairport_supervisor restart,
+// grouping/aec reconciler kicks, the /system restart/reboot/poweroff buttons).
+// Without this rule the implicit default for all of these is auth_admin /
+// auth_admin_keep, which DENIES a headless daemon (no agent to authenticate),
+// silently breaking the Tier-3/Tier-5 recovery paths. Verified on hardware
+// (Pi 5, polkit 126, Trixie).
+//
+// IMPORTANT — match on subject.user ONLY. A sessionless system daemon has
+// subject.active == false AND subject.local == false (no seat/session), so the
+// ubiquitous desktop idiom (gate on subject.active) would NEVER fire here.
+//
+// The MANAGED_UNITS allowlist below MUST stay in lockstep with
+// jasper.control.restart_broker.MANAGED_UNITS — the broker authz and this
+// polkit grant are the same source of truth so a unit the broker accepts can
+// never be polkit-denied (or vice-versa). Drift is pinned by
+// tests/test_polkit_jasper_control.py (set-equality against MANAGED_UNITS).
+//
+// IMPORTANT — manage-unit-files (enable/disable) is DELIBERATELY NOT granted.
+// Hardware testing (Pi 5, systemd 257) showed two things: (1) systemd invokes
+// org.freedesktop.systemd1.manage-unit-files with NULL details, so
+// action.lookup("unit") is undefined there — it CANNOT be scoped to an
+// allowlist; and (2) `systemctl restart` consults manage-unit-files on the
+// SysV-compat / unit-file path, so an unconditional manage-unit-files YES
+// silently re-grants restart-of-ANY-unit (cron, nginx, sshd, …), defeating the
+// per-unit manage-units allowlist that is the entire point of this rule. The
+// only enable/disable jasper-control ever needed was a redundant defensive
+// `enable jasper-voice`; jasper-voice's authoritative enable/disable is owned
+// by the root jasper-aec-reconcile (Tier B). So we grant manage-units (scoped)
+// + reboot/power-off only. See docs/HANDOFF-privilege-separation.md.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "jasper-control") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // Keep this array byte-for-byte in sync with restart_broker.MANAGED_UNITS.
+    // (Pinned by tests/test_polkit_jasper_control.py.)
+    var MANAGED_UNITS = [
+        "jasper-voice.service",
+        "jasper-control.service",
+        "jasper-web.service",
+        "jasper-mux.service",
+        "jasper-input.service",
+        "jasper-aec-bridge.service",
+        "jasper-aec-init.service",
+        "jasper-aec-reconcile.service",
+        "jasper-grouping-reconcile.service",
+        "jasper-camilla.service",
+        "jasper-outputd.service",
+        "shairport-sync.service",
+        "nqptp.service",
+        "librespot.service",
+        "jasper-usbsink.service",
+        "jasper-usbsink-init.service",
+        "bluetooth.service",
+        "bluealsa.service",
+        "bluealsa-aplay.service",
+        "bt-agent.service"
+    ];
+
+    // start / stop / restart / try-restart / reset-failed all flow through
+    // manage-units, which carries action.lookup("unit") — so this is the one
+    // grant we can scope per-unit to the JTS allowlist (least privilege).
+    if (action.id == "org.freedesktop.systemd1.manage-units") {
+        var unit = action.lookup("unit");
+        if (unit !== null && MANAGED_UNITS.indexOf(unit) >= 0) {
+            return polkit.Result.YES;
+        }
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // (org.freedesktop.systemd1.manage-unit-files — enable/disable — is
+    // intentionally NOT handled; see the header comment. It can't be unit-scoped
+    // (NULL details) and `systemctl restart` consults it, so granting it would
+    // re-open restart-of-any-unit and defeat the manage-units allowlist above.)
+
+    // `systemctl reboot` / `poweroff` (the /system buttons + the T5.2
+    // system_supervisor clean recovery reboot) go through logind. logind picks
+    // the base action when idle, the -multiple-sessions variant when another
+    // session exists (an SSH login counts), and the -ignore-inhibit variant
+    // when a block inhibitor is held — so grant all three pairs to keep the
+    // recovery reboot bulletproof. These are not unit-scoped (not unit actions);
+    // jasper-control can already reboot via the /system routes, so this is a
+    // DoS primitive, not a new disclosure surface (accepted in the threat model).
+    if (action.id == "org.freedesktop.login1.reboot" ||
+        action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+        action.id == "org.freedesktop.login1.reboot-ignore-inhibit" ||
+        action.id == "org.freedesktop.login1.power-off" ||
+        action.id == "org.freedesktop.login1.power-off-multiple-sessions" ||
+        action.id == "org.freedesktop.login1.power-off-ignore-inhibit") {
+        return polkit.Result.YES;
+    }
+
+    return polkit.Result.NOT_HANDLED;
+});

@@ -17,7 +17,9 @@ Walks the household through three states:
      conversation agent (optional override), "Test connection"
      affordance, and a "Disconnect" danger button.
 
-Persistence: /var/lib/jasper/home_assistant.env (mode 0600), sourced
+Persistence: /var/lib/jasper/home_assistant.env (mode 0640 group jasper —
+WS1 Phase 3b-2, so the non-root jasper-control's /state HA probe + the
+jasper-doctor it spawns can read JASPER_HA_TOKEN off disk), sourced
 into jasper-voice via the EnvironmentFile= chain in
 deploy/systemd/jasper-voice.service. Keys:
 
@@ -87,6 +89,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
     write_env_file,
+    SECRET_ENV_MODE,
 )
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
@@ -1045,7 +1048,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     values[ENV_RECENT_URLS] = json.dumps(recent)
                 if values:
                     try:
-                        write_env_file(cfg["state_path"], values, mode=0o600)
+                        write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
                     except OSError as e:
                         send_see_other(self, "./", flash=f"Could not reset: {e}")
                         return
@@ -1186,7 +1189,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if recent:
                     values[ENV_RECENT_URLS] = json.dumps(recent)
                 try:
-                    write_env_file(cfg["state_path"], values, mode=0o600)
+                    write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
                 except OSError as e:
                     send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
@@ -1202,7 +1205,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if recent:
                     values[ENV_RECENT_URLS] = json.dumps(recent)
                 try:
-                    write_env_file(cfg["state_path"], values, mode=0o600)
+                    write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
                 except OSError as e:
                     send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
@@ -1226,7 +1229,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if recent:
                     values[ENV_RECENT_URLS] = json.dumps(recent)
                 try:
-                    write_env_file(cfg["state_path"], values, mode=0o600)
+                    write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
                 except OSError as e:
                     send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
@@ -1250,7 +1253,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if not verify_ssl:
                 values[ENV_VERIFY_SSL] = "0"
             try:
-                write_env_file(cfg["state_path"], values, mode=0o600)
+                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE)
             except OSError as e:
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
@@ -1285,7 +1288,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     write_env_file(
                         cfg["state_path"],
                         {ENV_RECENT_URLS: json.dumps(recent)},
-                        mode=0o600,
+                        mode=SECRET_ENV_MODE,
                     )
                 except OSError as e:
                     send_see_other(self, "./", flash=f"Could not disconnect: {e}")

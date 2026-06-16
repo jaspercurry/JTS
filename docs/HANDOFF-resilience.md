@@ -173,7 +173,11 @@ a TCP connection to `127.0.0.1:7000`, sends a minimal RFC 2326
 3 consecutive failures, gated on MPRIS `PlaybackStatus != "Playing"`,
 it issues `systemctl reset-failed + --no-block restart` on
 `shairport-sync.service` and `nqptp.service` — the same units the
-manual fix already touches.
+manual fix already touches. (WS1 Phase 3b-2: `jasper-control` is now a
+non-root user, so this `reset-failed`+restart is **polkit-authorized**
+against the `MANAGED_UNITS` allowlist — `deploy/polkit/49-jasper-control.rules`;
+both `shairport-sync.service` and `nqptp.service` are in it. Validated on
+hardware. See [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
 
 Design constraints the supervisor satisfies:
 
@@ -396,7 +400,13 @@ thinks the system is healthy.
     3. **`/proc/loadavg` read** within 1 s (kernel I/O stall)
   After 3 consecutive failures (any probe), rate-limited at 1
   reboot per 24 hours, calls `systemctl --no-block reboot` for
-  a clean shutdown. The rate-limit window is enforced against a
+  a clean shutdown. (WS1 Phase 3b-2: `jasper-control` now runs as a
+  non-root user, so this reboot is **polkit-authorized**, not a
+  uid-0 bypass — `deploy/polkit/49-jasper-control.rules` grants the
+  `jasper-control` user `org.freedesktop.login1.reboot`; validated on
+  hardware by a real induced reboot. See
+  [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
+  The rate-limit window is enforced against a
   WALL-CLOCK last-reboot timestamp persisted to
   `/var/lib/jasper/system_supervisor_reboot.json` (loaded on
   construction, fail-open on a missing/corrupt file), so the window

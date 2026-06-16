@@ -94,6 +94,7 @@ from ..spotify_router import (
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ._common import (
+    SECRET_ENV_MODE,
     begin_request,
     canonical_banner,
     canonical_header,
@@ -211,10 +212,12 @@ def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
 
 
 def _write_creds_file(client_id: str, mode: str, path: str = CREDS_FILE) -> None:
+    # WS1 Phase 3b-2: 0640 group jasper (the doctor jasper-control spawns
+    # fresh-reads this via env_load.ENV_FILES). `mode` here is the OAuth mode.
     write_env_file(path, {
         "SPOTIFY_CLIENT_ID": client_id,
         "SPOTIFY_OAUTH_MODE": mode,
-    })
+    }, mode=SECRET_ENV_MODE)
 
 
 def _delete_creds_file(path: str = CREDS_FILE) -> None:

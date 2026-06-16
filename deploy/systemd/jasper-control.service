@@ -58,20 +58,42 @@ ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2
 
-# WS1 Phase 3b (3b-1): jasper-control stays root for now (its own user drop —
-# polkit for the broker's systemctl/reboot + group-readable secret env for the
-# jasper-doctor it spawns — is the gated 3b-2 fast-follow), but it joins the
-# shared `jasper` group so: (1) /run/jasper-control is root:jasper 0750, letting
-# the now-non-root jasper-mux traverse it to reach the broker socket
-# (restart.sock chmod 0660, group jasper); and (2) the shared state it writes
-# (speaker_volume.json) lands in group `jasper` so jasper-voice/-mux can read it.
+# WS1 Phase 3b — user drop (3b-2). jasper-control runs as a dedicated non-root
+# service user in the shared `jasper` group. The group is the cross-daemon
+# access boundary: (1) /run/jasper-control is jasper-control:jasper 0750 and the
+# broker socket is 0660 group jasper, so the non-root jasper-mux/-web reach the
+# restart broker; and (2) the shared state it writes (speaker_volume.json) lands
+# in group `jasper` so jasper-voice/-mux can read it.
+#
+# This drop is GATED on two things that ship in the SAME PR (both validated on
+# hardware via the recovery matrix in docs/HANDOFF-privilege-separation.md):
+#   (a) a polkit rule (deploy/polkit/49-jasper-control.rules) — the supervisor
+#       recovery paths (system_supervisor reboot, shairport_supervisor restart)
+#       and the in-process restart broker call systemctl/reboot DIRECTLY as this
+#       uid, which polkit now mediates instead of a uid-0 bypass; and
+#   (b) group-readable secret env (the jasper-doctor it spawns at
+#       /system/diagnostics fresh-reads every env_load.ENV_FILES file, and
+#       /state fresh-reads home_assistant.env) — a deliberate, documented
+#       group-`jasper` secret-exposure widening (Phase 4 / LoadCredential closes
+#       it). jasper.env + the wizard secret files become 0640 group jasper.
+#
+# CapabilityBoundingSet= drops ALL caps (control needs none — the privileged
+# restarts go through polkit, not a capability). SystemCallFilter=@system-service
+# blocks the dangerous syscall classes; it permits fork/execve, so the
+# jasper-doctor / systemctl / busctl / dmesg children it spawns exec cleanly
+# (each with its own syscall policy). ProtectKernelLogs stays OMITTED and
+# ProtectHome stays read-only (below) for those same diagnostic subprocesses.
+User=jasper-control
 Group=jasper
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
 
 # WS1 Phase 3 — the privileged restart broker binds a UNIX socket at
 # /run/jasper-control/restart.sock. RuntimeDirectory= makes systemd create
-# (and tear down) /run/jasper-control owned by root:jasper, so the broker can
-# bind without a manual mkdir/chown. Mode 0750 lets the `jasper` group traverse
-# so the non-root mux/web clients can reach restart.sock (0660, group jasper).
+# (and tear down) /run/jasper-control owned by jasper-control:jasper (the unit's
+# User:Group), so the broker can bind without a manual mkdir/chown. Mode 0750
+# lets the `jasper` group traverse so the non-root mux/web clients can reach
+# restart.sock (0660, group jasper).
 RuntimeDirectory=jasper-control
 RuntimeDirectoryMode=0750
 
@@ -103,7 +125,7 @@ ReadWritePaths=/var/lib/jasper /etc/avahi/services
 # ProtectKernelLogs is intentionally OMITTED: jasper-control spawns
 # jasper-doctor, whose watchdog-reset fingerprint check reads dmesg (/dev/kmsg).
 # ProtectHome stays read-only (above) for the same diagnostic-subprocess reason.
-# Capability/syscall filters land with the Phase-3 user drop + the broker.
+# CapabilityBoundingSet= + SystemCallFilter= landed with the 3b-2 user drop (above).
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

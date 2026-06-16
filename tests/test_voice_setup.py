@@ -741,8 +741,9 @@ def test_e2e_save_writes_file_and_redirects(
     tmp_path: Path, monkeypatch
 ):
     """Round-trip test: POST /save with a real OpenAI key, expect a
-    303 to ?msg=Saved..., and verify the env file landed at mode 0600
-    with the right keys."""
+    303 to ?msg=Saved..., and verify the env file landed at mode 0640
+    (group jasper — WS1 Phase 3b-2, so the non-root jasper-control's spawned
+    jasper-doctor can read it) with the right keys."""
     # Prevent the test from actually shelling out to systemctl.
     called = []
     monkeypatch.setattr(
@@ -763,7 +764,7 @@ def test_e2e_save_writes_file_and_redirects(
         # File landed.
         state_path = tmp_path / "voice_provider.env"
         assert state_path.exists()
-        assert (os.stat(state_path).st_mode & 0o777) == 0o600
+        assert (os.stat(state_path).st_mode & 0o777) == 0o640
         loaded = voice_setup._load_state(str(state_path))
         assert loaded["OPENAI_API_KEY"] == "sk-fresh"
         assert loaded["JASPER_VOICE_PROVIDER"] == "openai"

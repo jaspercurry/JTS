@@ -428,8 +428,18 @@ Profile guard:
 
 5. Services and live actions
    - Create the \`jasper\` group and the non-root service users
-     (jasper-voice / jasper-mux / jasper-input) the Tier-A daemons drop to,
-     and group-share /var/lib/jasper for them (WS1 Phase 3b-1).
+     (jasper-voice / jasper-mux / jasper-input / jasper-control) the Tier-A
+     daemons drop to, and group-share /var/lib/jasper for them
+     (WS1 Phase 3b-1 + 3b-2).
+   - Install /etc/polkit-1/rules.d/49-jasper-control.rules granting the
+     non-root jasper-control its scoped systemctl (MANAGED_UNITS allowlist)
+     + reboot/power-off — its restart broker + supervisors run as that uid
+     (WS1 Phase 3b-2). Make /etc/avahi/services group-jasper writable so it
+     can render the peering advert.
+   - Widen the config/secret env files jasper-control reads off disk
+     (jasper.env + voice_provider/spotify/google/home_assistant/control_token)
+     to 0640 group jasper so the jasper-doctor it spawns + /state can read
+     them (WS1 Phase 3b-2; per-daemon isolation is Phase 4).
    - Reload udev and systemd.
    - Enable socket-activated setup wizards and always-on audio/control
      services.
@@ -1466,7 +1476,20 @@ install_avahi_jasper_control() {
         "${REPO_DIR}/deploy/avahi/jasper-control.service.template" \
         /etc/jasper/avahi-templates/jasper-control.service
 
-    install -d -m 0755 /etc/avahi/services
+    # WS1 Phase 3b-2: a non-root jasper-control renders the peering advert
+    # (jasper-peer.service) into this dir when /rooms/ peering is enabled
+    # (off by default). os.replace needs WRITE on the parent dir, which
+    # ReadWritePaths= does NOT grant (it only lifts ProtectSystem=strict;
+    # POSIX dir perms still apply). So when the `jasper` group exists, make the
+    # dir group-jasper writable + setgid (new files inherit group jasper). The
+    # static control advert below is still written by install.sh as root; a
+    # future avahi apt-upgrade could reset this dir to root:root 0755, but every
+    # deploy re-applies it. When the group is absent (pre-3b), stay 0755 root.
+    if getent group jasper >/dev/null 2>&1; then
+        install -d -m 2775 -g jasper /etc/avahi/services
+    else
+        install -d -m 0755 /etc/avahi/services
+    fi
     # Render the live service from the template via the Python module
     # (it does the XML-escape, atomic write, and Avahi reload). The
     # package is already pip-installed by install_jasper above, so the
@@ -1510,6 +1533,22 @@ PY
             || true
         echo "  Advertised _jasper-control._tcp via avahi (port 8780)"
     fi
+}
+
+install_jasper_control_polkit() {
+    # WS1 Phase 3b-2 — the polkit grant for the non-root jasper-control user.
+    # Without it, every systemctl/reboot/poweroff jasper-control runs (the
+    # in-process restart broker + the system/shairport/grouping supervisors +
+    # the /system buttons) is DENIED with "Interactive authentication required"
+    # — silently breaking the Tier-3/Tier-5 recovery paths. polkitd monitors
+    # /etc/polkit-1/rules.d and auto-reloads on change, so no reload/restart is
+    # needed (a daemon-reload is for systemd units, not polkit). See
+    # deploy/polkit/49-jasper-control.rules + docs/HANDOFF-privilege-separation.md.
+    install -d -m 0755 /etc/polkit-1/rules.d
+    install -m 0644 \
+        "${REPO_DIR}/deploy/polkit/49-jasper-control.rules" \
+        /etc/polkit-1/rules.d/49-jasper-control.rules
+    echo "  Installed polkit rule for jasper-control (manage-units allowlist + reboot/power-off)"
 }
 
 install_peering_template() {
@@ -1758,10 +1797,12 @@ main() {
         migrate_cgroup_memory_enabled
         install_journald_persistent_storage
         install_avahi_jasper_control
+        install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
         install_peering_template
         remove_legacy_https_artifacts
         provision_correction_tls
         install_streambox_nginx_site
+        widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
         run_doctor_summary
         return 0
     fi
@@ -1784,12 +1825,14 @@ main() {
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
     install_avahi_jasper_control
+    install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
     install_peering_template
     remove_legacy_https_artifacts
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui
     regenerate_audio_cues
+    widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
     run_doctor_summary
 }
 

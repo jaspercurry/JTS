@@ -201,7 +201,12 @@ DEBUG. As built:
   such as USB input restart **only if already active** (otherwise the
   flag is deferred until the source's next legitimate start), and
   control applies **in-process** (a self-restart would drop the request
-  + the timer).
+  + the timer). (WS1 Phase 3b-2: `jasper-control` runs as a non-root
+  user, so the `systemctl restart <unit>` this issues is now
+  **polkit-authorized** against the `MANAGED_UNITS` allowlist —
+  `jasper-voice`/`jasper-aec-bridge`/`jasper-usbsink` are all in it —
+  rather than a uid-0 bypass. See
+  [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
 - **Endpoints:** `GET`/`POST /debug` on jasper-control (:8780),
   reachable from the card via a dedicated `location /debug` nginx
   block (mirroring `/mic`, `/volume`); the card fetches the absolute

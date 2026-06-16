@@ -31,7 +31,16 @@ create_jasper_service_users() {
     if ! getent passwd jasper-input >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G input jasper-input
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input (group: jasper)"
+    # WS1 Phase 3b-2 — jasper-control drops to non-root too. No supplementary
+    # group: it binds TCP (0.0.0.0:8780), opens a localhost WebSocket to
+    # CamillaDSP, and writes /var/lib/jasper + /etc/avahi/services — no /dev/snd
+    # or /dev/input. Its privileged restarts/reboots are granted by polkit
+    # (deploy/polkit/49-jasper-control.rules), not a group. The unit's
+    # User=jasper-control matches this exact name (the polkit rule keys on it).
+    if ! getent passwd jasper-control >/dev/null 2>&1; then
+        useradd -r -M -s /usr/sbin/nologin -g jasper jasper-control
+    fi
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control (group: jasper)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

@@ -727,7 +727,8 @@ def read_ha_env_file(path: str = HA_ENV_FILE) -> dict[str, str]:
     """Parse the wizard-written env file into a dict. Returns {} if the
     file is missing or unreadable.
 
-    The wizard writes this file (mode 0600) on every save/disconnect.
+    The wizard writes this file (mode 0640 group jasper — WS1 Phase 3b-2)
+    on every save/disconnect.
     Systemd-managed daemons that source it via `EnvironmentFile=` only
     see updates across process restarts — so any consumer that needs
     to reflect wizard changes immediately (jasper-control's /state

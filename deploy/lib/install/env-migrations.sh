@@ -588,7 +588,10 @@ migrate_voice_provider() {
     # operator's pre-cleanup choice so voice keeps working.
     if [[ -n "${stale_value}" ]]; then
         touch "${wizard_env}"
-        chmod 0600 "${wizard_env}"
+        # WS1 Phase 3b-2: 0640 (was 0600) so the now-non-root jasper-control +
+        # the jasper-doctor it spawns (group jasper) can read voice_provider.env.
+        # widen_control_secret_env_modes re-asserts group jasper on this file.
+        chmod 0640 "${wizard_env}"
         echo "JASPER_VOICE_PROVIDER=${stale_value}" >> "${wizard_env}"
         echo "  migrate_voice_provider: moved JASPER_VOICE_PROVIDER=${stale_value}"
         echo "    from ${jasper_env} to ${wizard_env}"
@@ -735,4 +738,64 @@ migrate_control_host_bind_seed() {
     rm -f "${jasper_env}.bak"
     echo "  migrate_control_host_bind_seed: removed seeded JASPER_CONTROL_HOST=0.0.0.0"
     echo "    (server bind default is already 0.0.0.0; on-Pi clients connect via loopback)"
+}
+
+# WS1 Phase 3b-2 — widen the config/secret env files jasper-control reads OFF
+# DISK so a non-root jasper-control (and the jasper-doctor it spawns) can read
+# them. This is the deliberate, documented group-`jasper` secret-exposure that
+# the jasper-control drop requires; per-daemon isolation is Phase 4
+# (LoadCredential). Mirrors the Google-token-tree widening (3b-1, python-runtime.sh).
+#
+# Two distinct surfaces fresh-read these as the jasper-control uid:
+#   - /system/diagnostics spawns `jasper-doctor --json`, which loads EVERY
+#     env_load.ENV_FILES path and (full profile) Config.from_env → reads the
+#     provider API keys + Google secret + HA token.
+#   - /state + /system/snapshot fresh-read home_assistant.env (the HA bearer
+#     token) and voice_provider.env directly (jasper-control is not restarted on
+#     a wizard save, so it can't rely on systemd EnvironmentFile injection).
+#
+# The wizards themselves now WRITE these at 0640 group jasper (the forward fix);
+# this migration is the UPGRADE PATH — it widens files an older build wrote at
+# 0600 so the drop doesn't silently break /state + the doctor on existing Pis
+# that never re-save a wizard. Idempotent, [[ -f ]]-guarded, no-op before the
+# `jasper` group exists. Owner is left as-is (StateDirectory recursive-chown
+# may have set it to jasper-voice); cross-daemon reads rely on GROUP, not owner.
+widen_control_secret_env_modes() {
+    getent group jasper >/dev/null 2>&1 || return 0
+
+    # /etc/jasper/jasper.env: the load-bearing config file the doctor reads. It
+    # is created 0640 but owned root:root (group root grants the jasper group
+    # nothing) and lives OUTSIDE the StateDirectory recursive-chown, so it needs
+    # an EXPLICIT chgrp jasper. The /etc/jasper dir must also be group-traversable
+    # — it can be created 0750 root:root (python-runtime.sh), which would block a
+    # jasper-group traverse. Set it 0755 (the dir listing is not sensitive — only
+    # jasper.env + the cert backups, which keep their own 0640/0600 modes; and
+    # nothing non-jasper reads here — the correction CA lives in /var/lib/jasper/ca,
+    # nginx certs in /etc/nginx/ssl). 0755 also keeps nginx/www-data traversal,
+    # avoiding any TLS-read surprise.
+    local jasper_env="${ENV_DIR}/jasper.env"
+    if [[ -d "${ENV_DIR}" ]]; then
+        chmod 0755 "${ENV_DIR}" 2>/dev/null || true
+    fi
+    if [[ -f "${jasper_env}" ]]; then
+        chgrp jasper "${jasper_env}" 2>/dev/null || true
+        chmod 0640 "${jasper_env}" 2>/dev/null || true
+    fi
+
+    # The wizard-written secret files (under /var/lib/jasper, already group
+    # jasper via StateDirectory) only need the group-read MODE bit. control_token
+    # is the Phase-2 mandatory gate: jasper-control reads it to verify, and
+    # jasper-web embeds it via canonical_page() — _stored_token() FAILS SAFE to
+    # gate-OFF on EACCES, so an unreadable token would SILENTLY DISABLE the gate.
+    # It is owned jasper-voice (StateDirectory chown), so 0640 group read is the
+    # only way the non-root jasper-control can read its own token.
+    local f
+    for f in voice_provider.env spotify_credentials.env google_credentials.env \
+             home_assistant.env control_token; do
+        if [[ -f "${STATE_DIR}/${f}" ]]; then
+            chgrp jasper "${STATE_DIR}/${f}" 2>/dev/null || true
+            chmod 0640 "${STATE_DIR}/${f}" 2>/dev/null || true
+        fi
+    done
+    echo "  widen_control_secret_env_modes: secret env files group-jasper readable (0640)"
 }

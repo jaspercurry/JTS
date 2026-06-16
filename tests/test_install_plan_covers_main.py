@@ -58,6 +58,8 @@ _STEP_TO_PLAN_MARKER = {
     "migrate_cgroup_memory_enabled": "memory cgroup/PSI kernel args",
     "install_journald_persistent_storage": "journald persistence",
     "install_avahi_jasper_control": "Avahi service templates",
+    "install_jasper_control_polkit": "49-jasper-control.rules",
+    "widen_control_secret_env_modes": "Widen the config/secret env files",
     "install_peering_template": "peer_id",
     "remove_legacy_https_artifacts": "legacy self-signed HTTPS artifacts",
     "provision_correction_tls": "correction TLS CA/cert files",

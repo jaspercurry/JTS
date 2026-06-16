@@ -77,7 +77,9 @@ def test_migrates_legacy_provider_to_wizard_file(tmp_path: Path):
         "JASPER_HOSTNAME": "jts.local",
     }
     assert _read_keys(wizard_env)["JASPER_VOICE_PROVIDER"] == "openai"
-    assert stat.S_IMODE(wizard_env.stat().st_mode) == 0o600
+    # WS1 Phase 3b-2: 0640 group jasper (was 0600) so the non-root jasper-control
+    # + the jasper-doctor it spawns can read voice_provider.env.
+    assert stat.S_IMODE(wizard_env.stat().st_mode) == 0o640
 
 
 def test_existing_wizard_provider_wins_over_legacy_provider(tmp_path: Path):

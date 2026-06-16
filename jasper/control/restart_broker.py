@@ -19,7 +19,14 @@ Why this is safe to centralise:
 - **Closed verb vocabulary.** The broker NEVER runs an arbitrary ``systemctl``
   verb or argument — :data:`ALLOWED_VERBS` maps each verb to a fixed argv
   prefix. A compromised client cannot smuggle ``systemctl ... ; rm -rf`` or a
-  ``--property=ExecStart=`` injection.
+  ``--property=ExecStart=`` injection. (Note: the ``enable`` / ``enable-now`` /
+  ``disable-now`` verbs map to ``org.freedesktop.systemd1.manage-unit-files``,
+  which the WS1 Phase 3b-2 polkit rule deliberately does NOT grant the non-root
+  ``jasper-control`` — it can't be unit-scoped and ``restart`` consults it, so a
+  grant would re-open restart-of-any-unit. Those verbs therefore fail-soft for a
+  non-root broker; nothing routes through them today — voice's boot-enable is
+  owned by the root ``jasper-aec-reconcile``. The verbs stay in the vocabulary
+  for a future root client / Phase-4 grant.)
 - **Unit allowlist.** Every requested unit must be in :data:`MANAGED_UNITS` —
   the single source of truth for "units the privileged surface may touch."
   The Phase-3 *user-drop* PR derives the polkit rule (which grants the

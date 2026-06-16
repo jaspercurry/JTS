@@ -361,10 +361,11 @@ def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
     assert calls == []
 
 
-def test_restart_voice_daemon_enables_then_restarts_when_provider_set(monkeypatch):
+def test_restart_voice_daemon_restarts_when_provider_set(monkeypatch):
     calls = []
 
     monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
+    monkeypatch.setattr(_common, "bonded_follower_active", lambda: False)
     monkeypatch.setattr(
         _common, "manage_units",
         lambda *units, **kwargs: calls.append((units, kwargs.get("verb")))
@@ -373,9 +374,12 @@ def test_restart_voice_daemon_enables_then_restarts_when_provider_set(monkeypatc
 
     _common.restart_voice_daemon()
 
-    # enable (persist for boot) then restart (--no-block), both via the broker.
+    # WS1 Phase 3b-2: ONLY the runtime restart via the broker — no `systemctl
+    # enable`. jasper-voice is enabled at install and the root
+    # jasper-aec-reconcile owns its boot-enable; the non-root jasper-control is
+    # deliberately not granted polkit manage-unit-files (which can't be
+    # unit-scoped and would re-open restart-of-any-unit).
     assert calls == [
-        (("jasper-voice.service",), "enable"),
         (("jasper-voice",), "restart"),
     ]
 
@@ -642,7 +646,6 @@ def test_restart_voice_daemon_skips_while_parked(monkeypatch):
     monkeypatch.setattr(common, "read_active_provider", lambda: "gemini")
     monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
     calls = []
-    monkeypatch.setattr(common, "_enable_systemd_unit", lambda u: calls.append(("enable", u)))
     monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
     common.restart_voice_daemon()
     assert calls == []
@@ -654,10 +657,12 @@ def test_restart_voice_daemon_runs_when_solo(monkeypatch):
     monkeypatch.setattr(common, "read_active_provider", lambda: "gemini")
     monkeypatch.setattr(common, "bonded_follower_active", lambda: False)
     calls = []
-    monkeypatch.setattr(common, "_enable_systemd_unit", lambda u: calls.append(("enable", u)))
     monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
     common.restart_voice_daemon()
-    assert ("enable", "jasper-voice") in calls
+    # WS1 Phase 3b-2: only the runtime restart — no `systemctl enable` (the root
+    # jasper-aec-reconcile owns voice's boot-enable; the non-root jasper-control
+    # is not granted polkit manage-unit-files).
+    assert ("restart", ("jasper-voice",)) in calls
 
 
 def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
