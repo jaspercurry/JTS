@@ -13,6 +13,7 @@ import types
 from jasper.tools import ToolRegistry
 from jasper.tools.bus import make_bus_tools
 from jasper.tools.catalog import (
+    _CATALOG_HIDDEN,
     CATALOG_SCHEMA_VERSION,
     _SETUP_URLS,
     _full_catalog_registry,
@@ -41,6 +42,10 @@ GATED = {
     "gmail_unread_summary", "gmail_read_thread",
     "flag_recent_issue",
 }
+
+# Every registered tool, minus the ones hidden from the catalog UI
+# (home_assistant_confirm is an internal companion — see _CATALOG_HIDDEN).
+VISIBLE = (ALWAYS_ON | GATED) - _CATALOG_HIDDEN
 
 
 def _full_live_registry() -> ToolRegistry:
@@ -79,15 +84,19 @@ def _minimal_live_registry() -> ToolRegistry:
 def test_full_registry_empty_disabled_all_active():
     cat = build_catalog(_full_live_registry(), frozenset())
     assert cat["schema_version"] == CATALOG_SCHEMA_VERSION
-    assert len(cat["tools"]) == len(ALWAYS_ON) + len(GATED)
+    assert len(cat["tools"]) == len(VISIBLE)
     assert all(t["status"] == "active" for t in cat["tools"])
+    # Hidden companion tools never get a catalog card.
+    names = {t["name"] for t in cat["tools"]}
+    assert names == VISIBLE
+    assert _CATALOG_HIDDEN and not (_CATALOG_HIDDEN & names)
 
 
 def test_minimal_registry_gated_tools_need_setup():
     cat = build_catalog(_minimal_live_registry(), frozenset())
     by_name = {t["name"]: t for t in cat["tools"]}
-    assert len(by_name) == len(ALWAYS_ON) + len(GATED)
-    for name in GATED:
+    assert len(by_name) == len(VISIBLE)
+    for name in GATED - _CATALOG_HIDDEN:
         assert by_name[name]["status"] == "needs_setup", name
     for name in ALWAYS_ON:
         assert by_name[name]["status"] == "active", name
@@ -124,9 +133,22 @@ def test_unconfigured_and_disabled_renders_off_edge_case():
     assert by_name["home_assistant"]["status"] == "off"
 
 
-def test_full_catalog_registry_enumerates_all_28():
+def test_full_catalog_registry_enumerates_all_tools():
+    # The registry holds EVERY tool (incl. hidden companions); the catalog
+    # UI is what hides some. So the registry count = ALWAYS_ON + GATED, even
+    # though build_catalog emits fewer cards.
     reg = _full_catalog_registry()
     assert len(reg.tools) == len(ALWAYS_ON) + len(GATED)
+    for hidden in _CATALOG_HIDDEN:
+        assert hidden in reg.tools, hidden
+
+
+def test_hidden_tools_are_in_registry_but_not_the_catalog():
+    reg = _full_catalog_registry()
+    cat_names = {t["name"] for t in build_catalog(_full_live_registry(), frozenset())["tools"]}
+    for hidden in _CATALOG_HIDDEN:
+        assert hidden in reg.tools, f"{hidden} must stay a real registry tool"
+        assert hidden not in cat_names, f"{hidden} must be hidden from the catalog"
 
 
 def test_providers_none_for_universal_and_sorted_for_restricted():

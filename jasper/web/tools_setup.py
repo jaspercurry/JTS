@@ -5,42 +5,61 @@ Browse + search the first-party voice tools and turn each on/off.
 later marketplace). A tool whose backend isn't configured shows a
 "needs setup" state linking to its setup wizard.
 
-This page only READS /run/jasper/tools.json (written by jasper-voice at
-startup) and writes the disabled-set to /var/lib/jasper/tool_state.env.
-It does NOT import jasper.tools / build the registry — the socket-
-activated wizard stays light (the transit lazy-import lesson). Saving a
-toggle restarts jasper-voice, which re-filters the registry and re-writes
-the catalog JSON.
+This page READS the catalog jasper-voice wrote at /run/jasper/tools.json
+and writes the disabled-set to /var/lib/jasper/tool_state.env. It does NOT
+import jasper.tools / build the registry — the socket-activated wizard
+stays light (the transit lazy-import lesson); it uses jasper.tool_catalog_view
+(json + tool_state only) to read + overlay.
+
+Toggle stages, Apply commits — two-step on purpose:
+  * POST /toggle just writes the disabled-set. It does NOT restart voice:
+    restarting the assistant drops any in-progress conversation and makes
+    the speaker briefly deaf, so doing it per-toggle (silently, N times as
+    you tick boxes) is user-hostile — and an unthrottled per-toggle restart
+    can feed jasper-voice's StartLimitAction=reboot ladder. The page reads
+    each tool's on/off back through the overlay (catalog_view) so the UI
+    converges instantly without waiting on — or being raced by — a restart.
+  * POST /apply restarts jasper-voice ONCE so the staged changes go live. It
+    is rate-limited (and reports honestly when a restart won't happen — no
+    provider / bonded follower) so a burst of Apply calls can't trip reboot.
 
 Persistence: tool_state.env at mode 0644 (a list of names, not a secret).
 Fail-safe: a missing/malformed file = nothing disabled (every tool ON).
 
 URL surface (after nginx strips /tools/):
   GET  /             page render
-  GET  /catalog.json read-through of /run/jasper/tools.json
+  GET  /catalog.json catalog metadata + the fresh disabled-set overlaid
+                     ({..., tools:[...], pending: bool})
   POST /toggle       body {name: str, enabled: bool} — write tool_state.env
-                     + restart voice
+                     (stage only, no restart)
+  POST /apply        restart jasper-voice once to apply staged changes
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import math
 import os
+import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ..log_event import log_event
+from ..tool_catalog_view import catalog_view
 from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import read_disabled_tools, write_disabled_tools
 from ._common import (
     begin_request,
+    bonded_follower_active,
     canonical_header,
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    read_active_provider,
     reject_csrf,
     restart_voice_daemon,
     send_html_response,
@@ -53,27 +72,62 @@ CATALOG_FILE = "/run/jasper/tools.json"
 TOOLS_PAGE_CSS_HREF = "/assets/tools/tools.css"
 _TOGGLE_BODY_LIMIT = 4096
 
+# Minimum seconds between /tools/-driven voice restarts. jasper-voice has
+# StartLimitBurst=20 / StartLimitIntervalSec=300 / StartLimitAction=reboot
+# (crash-loop guard); 20s caps Apply-driven restarts at ~15 per 300s, safely
+# under that ladder, so neither a key-mashing household member nor a scripted
+# LAN client can reboot the speaker by spamming Apply. The staged change is
+# already persisted, so a throttled Apply loses nothing — the in-flight (or a
+# later) restart picks it up.
+_APPLY_MIN_INTERVAL_SEC = 20.0
 
-def _read_catalog(path: str) -> dict[str, Any]:
-    """Read the /run catalog jasper-voice wrote. A missing / unreadable /
-    malformed file resolves to an explicit `unavailable` empty catalog so
-    the page can render an honest "not ready" state rather than erroring."""
+# Serializes the read-modify-write of tool_state.env and the apply timestamp
+# across the ThreadingHTTPServer's request threads, so two concurrent toggles
+# can't lose an update (last-writer-wins on the unserialized RMW).
+_STATE_LOCK = threading.Lock()
+
+# In-memory fail-CLOSED floor for the Apply rate-limit. The persisted
+# timestamp is the cross-restart source of truth, but if it can't be written
+# (read-only rootfs after an unclean shutdown, disk full, bad perms) the file
+# read would return 0.0 and the throttle would collapse — letting an Apply
+# retry loop feed jasper-voice's StartLimitAction=reboot ladder. This module
+# global holds the last apply time within the (long-lived, socket-activated)
+# wizard process, so the throttle still bounds the rate across a burst even
+# when the file write fails. A list so the nested handler can mutate it.
+_LAST_APPLY = [0.0]
+
+
+def _toggle_index(catalog_path: str, state_path: str) -> dict[str, dict[str, Any]]:
+    """name -> overlaid catalog entry, for toggle validation. Uses the same
+    overlay the page sees so 'is this toggleable?' matches the rendered UI."""
+    view = catalog_view(catalog_path, state_path)
+    return {
+        t["name"]: t
+        for t in view.get("tools", [])
+        if isinstance(t.get("name"), str)
+    }
+
+
+def _read_apply_ts(path: str) -> float:
+    """Last /apply restart time (epoch seconds). Missing/unreadable/non-finite
+    -> 0.0 (a missing file means 'no recent restart'; the in-memory floor in
+    _handle_apply guards the fail-open direction). Reject nan/inf explicitly:
+    float('nan') parses fine but breaks the `remaining > 0` comparison (nan
+    fails open, inf never fires)."""
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return {"schema_version": 1, "tools": [], "unavailable": True}
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("tools catalog read %s failed: %s", path, e)
-        return {"schema_version": 1, "tools": [], "unavailable": True}
+            v = float(fh.read().strip() or "0")
+    except (OSError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
-def _catalog_tool_names(path: str) -> set[str]:
-    return {
-        t.get("name")
-        for t in _read_catalog(path).get("tools", [])
-        if t.get("name")
-    }
+def _write_apply_ts(path: str, ts: float) -> None:
+    from ..atomic_io import atomic_write_text
+    try:
+        atomic_write_text(path, f"{ts:.3f}\n", mode=0o644)
+    except OSError as e:  # best-effort — the cap degrades open, never blocks
+        logger.warning("could not write apply timestamp %s: %s", path, e)
 
 
 def _index_html(csrf_token: str = "") -> bytes:
@@ -92,6 +146,11 @@ def _index_html(csrf_token: str = "") -> bytes:
   <div id="tools-list" aria-busy="true">
     <div class="info-card tool-empty"><p>Loading the tool catalog&hellip;</p></div>
   </div>
+  <div class="tools-apply" id="tools-apply" hidden>
+    <span class="tools-apply__note">Changes are staged. Applying restarts the
+      voice assistant briefly to pick them up.</span>
+    <button type="button" class="btn" id="tools-apply-btn">Apply changes</button>
+  </div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
 </main>
 <script type="module" src="/assets/tools/js/main.js"></script>
@@ -102,8 +161,18 @@ def _index_html(csrf_token: str = "") -> bytes:
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    cfg.setdefault(
+        "apply_ts_path",
+        os.path.join(os.path.dirname(cfg["state_path"]), "tools_apply.ts"),
+    )
 
     class Handler(BaseHTTPRequestHandler):
+        # Abort a connection whose client stalls mid-request (e.g. a lying
+        # Content-Length that never sends the body) instead of pinning a
+        # request thread indefinitely. Defense in depth — the wizard's idle
+        # watchdog already reaps stuck threads, but this fails the read fast.
+        timeout = 30
+
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
@@ -121,35 +190,41 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/catalog.json":
                 if not guard_read_request(self):
                     return
-                body = json.dumps(_read_catalog(cfg["catalog_path"])).encode()
-                send_proxy_json(self, body, status=200)
+                view = catalog_view(cfg["catalog_path"], cfg["state_path"])
+                send_proxy_json(self, json.dumps(view).encode(), status=200)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path != "/toggle":  # route-check BEFORE the guard (404 not 403)
+            if path not in ("/toggle", "/apply"):  # route BEFORE guard (404)
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            self._handle_toggle()
+            if path == "/toggle":
+                self._handle_toggle()
+            else:
+                self._handle_apply()
 
-        def _handle_toggle(self) -> None:
+        def _read_json_body(self) -> tuple[dict[str, Any] | None, bool]:
+            """Parse the request body as a JSON object. Returns (obj, ok);
+            on any framing/JSON error it has already sent the 400 and
+            returns (None, False)."""
             try:
                 length = int(self.headers.get("Content-Length") or "0")
             except ValueError:
                 send_proxy_json(
                     self, b'{"error":"invalid body length"}', status=400,
                 )
-                return
+                return None, False
             if length < 0 or length > _TOGGLE_BODY_LIMIT:
                 send_proxy_json(
                     self, b'{"error":"invalid body length"}', status=400,
                 )
-                return
+                return None, False
             raw = self.rfile.read(length) if length else b""
             try:
                 body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -157,9 +232,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_proxy_json(
                     self, b'{"error":"invalid JSON body"}', status=400,
                 )
+                return None, False
+            return (body if isinstance(body, dict) else {}), True
+
+        def _handle_toggle(self) -> None:
+            body, ok = self._read_json_body()
+            if not ok:
                 return
-            name = body.get("name") if isinstance(body, dict) else None
-            enabled = body.get("enabled") if isinstance(body, dict) else None
+            name = body.get("name")
+            enabled = body.get("enabled")
             if not isinstance(name, str) or not isinstance(enabled, bool):
                 send_proxy_json(
                     self,
@@ -167,38 +248,100 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     status=400,
                 )
                 return
-            # Reject unknown names so a crafted POST can't poison the
-            # disabled-set with garbage that would silently survive restarts.
-            if name not in _catalog_tool_names(cfg["catalog_path"]):
+            # Only configured tools (active/off in the overlaid catalog) are
+            # toggleable: reject unknown names (a crafted POST can't poison
+            # the disabled-set with garbage) AND needs_setup tools (no UI
+            # control — toggling one just writes a meaningless entry).
+            index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
+            entry = index.get(name)
+            if entry is None:
                 send_proxy_json(self, b'{"error":"unknown tool"}', status=400)
                 return
-            disabled = set(read_disabled_tools(cfg["state_path"]))
-            if enabled:
-                disabled.discard(name)
-            else:
-                disabled.add(name)
-            try:
-                write_disabled_tools(cfg["state_path"], disabled)
-            except OSError as e:
-                logger.exception("could not write tool_state.env")
+            if entry.get("status") not in ("active", "off"):
                 send_proxy_json(
-                    self,
-                    json.dumps({"error": f"save failed: {e}"}).encode(),
-                    status=500,
+                    self, b'{"error":"tool not configured"}', status=400,
                 )
                 return
-            log_event(
-                logger, "tools.toggle",
-                name=name, enabled=enabled, client=self.address_string(),
+            with _STATE_LOCK:
+                disabled = set(read_disabled_tools(cfg["state_path"]))
+                updated = set(disabled)
+                if enabled:
+                    updated.discard(name)
+                else:
+                    updated.add(name)
+                if updated != disabled:
+                    try:
+                        write_disabled_tools(cfg["state_path"], updated)
+                    except OSError as e:
+                        logger.exception("could not write tool_state.env")
+                        send_proxy_json(
+                            self,
+                            json.dumps({"error": f"save failed: {e}"}).encode(),
+                            status=500,
+                        )
+                        return
+                    log_event(
+                        logger, "tools.toggle",
+                        name=name, enabled=enabled,
+                        client=self.address_string(),
+                    )
+            # Staged only — no restart. The page re-reads the overlay so the
+            # UI converges immediately; `pending` tells it to offer Apply.
+            pending = bool(
+                catalog_view(cfg["catalog_path"], cfg["state_path"]).get("pending")
             )
-            # The disabled-set takes effect when jasper-voice re-filters the
-            # registry on restart (which also re-writes the catalog JSON).
-            restart_voice_daemon()
             send_proxy_json(
                 self,
-                json.dumps({"ok": True, "name": name, "enabled": enabled}).encode(),
+                json.dumps(
+                    {"ok": True, "name": name, "enabled": enabled,
+                     "pending": pending},
+                ).encode(),
                 status=200,
             )
+
+        def _handle_apply(self) -> None:
+            # Mirror restart_voice_daemon's skip conditions so the response is
+            # HONEST about whether a restart will actually happen — never an
+            # ok-banner promising an effect the server knowingly won't deliver.
+            if not read_active_provider():
+                send_proxy_json(self, json.dumps({
+                    "restarted": False, "reason": "no_provider",
+                    "message": "Saved. Choose a voice provider at "
+                               "/voice/ to start the assistant.",
+                }).encode(), status=200)
+                return
+            if bonded_follower_active():
+                send_proxy_json(self, json.dumps({
+                    "restarted": False, "reason": "bonded",
+                    "message": "Saved. Changes apply when this speaker "
+                               "leaves the stereo pair.",
+                }).encode(), status=200)
+                return
+            now = time.time()
+            with _STATE_LOCK:
+                # max(persisted, in-memory) so a failed ts write can't open
+                # the throttle within this process (fail-closed floor).
+                last = max(_read_apply_ts(cfg["apply_ts_path"]), _LAST_APPLY[0])
+                remaining = _APPLY_MIN_INTERVAL_SEC - (now - last)
+                if remaining > 0:
+                    send_proxy_json(self, json.dumps({
+                        "restarted": False, "reason": "throttled",
+                        "retry_after": int(remaining) + 1,
+                        "message": "The assistant is already restarting — "
+                                   "your changes are saved and will apply "
+                                   "shortly.",
+                    }).encode(), status=200)
+                    return
+                _LAST_APPLY[0] = now
+                _write_apply_ts(cfg["apply_ts_path"], now)
+            log_event(logger, "tools.apply", client=self.address_string())
+            # jasper-voice re-filters the registry against tool_state.env on
+            # restart (and re-writes the catalog JSON).
+            restart_voice_daemon()
+            send_proxy_json(self, json.dumps({
+                "restarted": True,
+                "message": "Restarting the assistant to apply your changes…",
+            }).encode(), status=200)
 
     return Handler
 
@@ -208,13 +351,20 @@ def make_server(
     *,
     catalog_path: str = CATALOG_FILE,
     state_path: str = TOOL_STATE_FILE,
+    apply_ts_path: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build the tools wizard server. `target` is a socket / (host, port)
     tuple / int port per _systemd.make_http_server's contract."""
     from . import _systemd
+    if apply_ts_path is None:
+        apply_ts_path = os.path.join(os.path.dirname(state_path), "tools_apply.ts")
     return _systemd.make_http_server(
         target,
-        _make_handler({"catalog_path": catalog_path, "state_path": state_path}),
+        _make_handler({
+            "catalog_path": catalog_path,
+            "state_path": state_path,
+            "apply_ts_path": apply_ts_path,
+        }),
     )
 
 

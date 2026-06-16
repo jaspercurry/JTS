@@ -27,15 +27,45 @@ const { toolCard, toolList } = new Function(
 )();
 
 // Every field a malicious/compromised tool could control, with a distinct
-// payload per HTML context (element content, attribute, the setup_url href).
+// payload per HTML context (element content + the attribute / data-tool path).
 const evil = {
   name: '<script>alert("name")</script>',
   description: '<img src=x onerror=alert("desc")>',
   labels: ['<svg onload=alert("label")>'],
-  status: "needs_setup", // exercises the setup_url <a href> path
-  setup_url: '"><script>alert("url")</script>',
+  status: "active", // exercises the data-tool attribute path
 };
-const html = toolCard(evil) + toolList([evil]);
+// needs_setup tools whose setup_url is dangerous in an <a href>. escapeHtml
+// escapes characters but does NOT validate schemes/authorities, so the href is
+// its own boundary — render.js's safeSetupUrl must reject anything that isn't a
+// same-origin "/..." path, dropping these entirely. Covers the scheme class
+// AND the off-origin class (protocol-relative "//host" and the backslash form
+// "/\host", which browsers normalize to "//host").
+const evilScheme = {
+  name: "evil_scheme", status: "needs_setup", setup_url: 'javascript:alert("url")',
+};
+const evilProtoRel = {
+  name: "evil_proto_rel", status: "needs_setup", setup_url: "//evil.com/x",
+};
+const evilBackslash = {
+  name: "evil_backslash", status: "needs_setup", setup_url: "/\\evil.com/x",
+};
+// A legitimately safe setup link, to prove the href path still renders.
+const safeUrl = {
+  name: "good_url", status: "needs_setup", setup_url: "/transit/",
+};
+// needs_setup with NO setup_url (the flag_recent_issue case) must render an
+// honest "Unavailable" badge, never a dead disabled checkbox.
+const noUrl = { name: "no_setup_tool", status: "needs_setup" };
+const html =
+  toolCard(evil) +
+  toolList([evil, evilScheme, evilProtoRel, evilBackslash, safeUrl, noUrl]) +
+  toolCard(noUrl);
+
+// Pull every href the card markup produced, to assert none point off-origin.
+const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+const offOrigin = hrefs.some(
+  (h) => /^(?:[a-z]+:|\/\/|\/\\)/i.test(h.trim()),
+);
 
 // Check that no RAW payload tag survived — every untrusted `<` must have become
 // `&lt;`. The card's own markup uses div/span/a/p/label/input, never
@@ -48,4 +78,13 @@ console.log(JSON.stringify({
   noSvgTag: !/<svg/i.test(html),
   // Proof the fields actually went through escapeHtml (not just absent payloads).
   escapedEntitiesPresent: html.includes("&lt;") && html.includes("&gt;"),
+  // The javascript: scheme must be dropped, NOT merely escaped into an href.
+  noJavascriptScheme: !/javascript:/i.test(html),
+  // No rendered href may point off-origin (scheme, "//host", or "/\\host").
+  noOffOriginHref: !offOrigin,
+  // A real same-origin path still renders as a clickable Set up link.
+  safeHrefRendered: html.includes('href="/transit/"'),
+  // needs_setup with no setup_url -> honest "Unavailable", never a checkbox.
+  unavailableRendered: html.includes("tool-unavailable"),
+  noDeadToggle: !/data-tool="no_setup_tool"/.test(html),
 }));

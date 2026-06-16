@@ -167,3 +167,39 @@ def check_control_token() -> CheckResult:
         "disabled (LAN-trust; enable with jasper-control-token --enable; "
         "see SECURITY.md)",
     )
+
+
+@doctor_check(order=24.7, group="web")
+def check_tool_catalog() -> CheckResult:
+    """Report the /tools/ catalog the wizard serves: present, tool count,
+    how many the household disabled, and whether a voice restart is pending.
+
+    Skip-if-not-configured: with no voice provider jasper-voice doesn't run
+    (so it never writes the catalog) — ok/skipped, not a failure. With a
+    provider set but no catalog on disk, warn: the wizard renders a "not
+    ready" state and toggles won't take effect until the daemon writes it.
+    Reads the same light view (jasper.tool_catalog_view) the wizard + /state
+    use — never imports the heavy registry."""
+    from ...tool_catalog_view import summary
+    from ...voice.provider_state import read_active_provider
+
+    label = "tool catalog"
+    if not read_active_provider():
+        return CheckResult(
+            label, "ok",
+            "not configured (skipped — jasper-voice writes the catalog only "
+            "once a voice provider is set at http://jts.local/voice/)",
+        )
+    s = summary()
+    if not s["catalog_present"]:
+        return CheckResult(
+            label, "warn",
+            "not written at /run/jasper/tools.json — jasper-voice may not be "
+            "running; the /tools/ page shows 'not ready'. Check the System "
+            "page / `journalctl -u jasper-voice`.",
+        )
+    pending = " — restart pending" if s["pending"] else ""
+    return CheckResult(
+        label, "ok",
+        f"{s['count']} tools, {s['disabled_count']} disabled{pending}",
+    )

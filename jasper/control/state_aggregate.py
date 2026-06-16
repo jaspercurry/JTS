@@ -589,6 +589,17 @@ async def _get_state(
         logger.exception("output hardware state read failed")
         output_hardware_state = None
 
+    # Tool catalog summary. Fresh read of /run/jasper/tools.json (written by
+    # jasper-voice) + the wizard-owned disabled-set — never os.environ, since
+    # jasper-control isn't restarted on a /tools/ toggle. Light view module
+    # (json + tool_state only). Guarded so a read change can't take /state down.
+    try:
+        from ..tool_catalog_view import summary as _tool_summary
+        tools_state: dict | None = _tool_summary()
+    except Exception:  # noqa: BLE001
+        logger.exception("tool catalog state read failed")
+        tools_state = None
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -717,4 +728,10 @@ async def _get_state(
         # Runtime debug-logging toggle (the /system Debug card): which
         # subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),
+        # Tool catalog summary ({catalog_present, count, disabled,
+        # disabled_count, pending}). null only if the fresh read itself
+        # errored. Read fresh from /run/jasper/tools.json + the wizard-owned
+        # tool_state.env by jasper.tool_catalog_view (never os.environ).
+        # jasper-doctor's check_tool_catalog owns the actionable warn.
+        "tools": tools_state,
     }
