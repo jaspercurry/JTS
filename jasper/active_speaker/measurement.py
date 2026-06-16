@@ -681,6 +681,14 @@ def record_driver_measurement(
         "observed_mic_dbfs": observed,
         "mic_clipping": clipping,
         "mic_meter": meter,
+        # Optional mic-backed acoustic verdict block (driver_acoustics) when the
+        # sweep+analyze commissioning path recorded this; None for the
+        # operator-only quiet-test path.
+        "acoustic": (
+            dict(raw["acoustic"])
+            if isinstance(raw.get("acoustic"), Mapping)
+            else None
+        ),
         "test_level_dbfs": _finite_float(raw.get("test_level_dbfs")),
         "playback_id": _text(raw.get("playback_id"), max_chars=120),
         "floor_confirmation": dict(_safe_floor_result(safe_session) or {}),
@@ -888,6 +896,13 @@ def record_summed_validation(
         "observed_mic_dbfs": observed,
         "mic_clipping": clipping,
         "mic_meter": meter,
+        # Optional mic-backed summed-crossover verdict block (driver_acoustics)
+        # when the sweep+analyze path recorded this; None for the operator path.
+        "acoustic": (
+            dict(raw["acoustic"])
+            if isinstance(raw.get("acoustic"), Mapping)
+            else None
+        ),
         "polarity": _text(raw.get("polarity"), max_chars=40) or "normal",
         "delay_ms": _finite_float(raw.get("delay_ms")),
         "delay_target_role": (

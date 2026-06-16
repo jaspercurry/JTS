@@ -564,6 +564,30 @@ class ActiveSpeakerPreset:
         return out
 
 
+def crossover_edges_for_role(
+    preset: "ActiveSpeakerPreset", role: str
+) -> tuple[float | None, float | None]:
+    """Return ``(lower_edge_hz, upper_edge_hz)`` for ``role``'s acoustic band.
+
+    A role being the *upper* driver of a crossover means that crossover's ``fc``
+    is the role's lower (high-pass) edge; being the *lower* driver means it is
+    the role's upper (low-pass) edge. A woofer (no lower crossover) returns
+    ``lower_edge=None``; a tweeter (no upper crossover) returns
+    ``upper_edge=None``. This is the single source of a role's crossover edges:
+    ``tone_plan`` derives its test-tone band from it and
+    ``commissioning_capture`` derives the expected passband for the mic-backed
+    driver verdict from it.
+    """
+    lower_edge: float | None = None
+    upper_edge: float | None = None
+    for region in preset.crossover_regions:
+        if region.upper_driver == role:
+            lower_edge = region.fc_hz
+        if region.lower_driver == role:
+            upper_edge = region.fc_hz
+    return lower_edge, upper_edge
+
+
 @dataclass(frozen=True)
 class BaselineVerification:
     """Acceptance evidence for a speaker baseline profile."""
