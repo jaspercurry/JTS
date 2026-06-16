@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 CATALOG_SCHEMA_VERSION = 1
 DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
 
+# Tools that are REAL registry/manifest entries but are NOT independently
+# user-toggleable, so they get no /tools/ card. home_assistant_confirm is the
+# confirmation half of the Home Assistant consequential-action safety flow —
+# an internal companion of home_assistant, not a browsable capability.
+# Listing it let a user disable confirm alone and strand the confirm flow
+# (and toggling it independently makes no sense); it follows home_assistant.
+# It stays in the registry + manifest (the model uses it); it's only hidden
+# from the catalog UI.
+_CATALOG_HIDDEN: frozenset[str] = frozenset({"home_assistant_confirm"})
+
 # Tool -> setup wizard, for tools that can be "needs_setup". Only tools
 # whose backend SELF-GATES (so they're absent from the live registry until
 # configured) ever surface a setup link — transit, Home Assistant, and
@@ -50,9 +60,10 @@ _SETUP_URLS: dict[str, str] = {
     "get_subway_arrivals": "/transit/",
     "get_bus_arrivals": "/transit/",
     "get_citibike_status": "/transit/",
-    # home assistant (factory returns [] when unconfigured)
+    # home assistant (factory returns [] when unconfigured). Only the
+    # user-facing home_assistant tool gets a card; home_assistant_confirm is
+    # hidden (_CATALOG_HIDDEN), so it needs no setup link.
     "home_assistant": "/ha/",
-    "home_assistant_confirm": "/ha/",
     # google (gated on ≥1 linked account)
     "calendar_today_summary": "/google/",
     "calendar_upcoming": "/google/",
@@ -97,6 +108,8 @@ def build_catalog(
     live_names = set(live_registry.tools.keys())
     tools = []
     for name, t in full.tools.items():
+        if name in _CATALOG_HIDDEN:
+            continue  # internal companion tool — no browse/toggle card
         configured = name in live_names or name in disabled
         if not configured:
             status = "needs_setup"
@@ -128,11 +141,14 @@ def write_catalog(
 
     from ..atomic_io import atomic_write_text
     try:
-        payload = json.dumps(build_catalog(live_registry, disabled), indent=2)
-        atomic_write_text(path, payload + "\n", mode=0o644)
+        catalog = build_catalog(live_registry, disabled)
+        atomic_write_text(path, json.dumps(catalog, indent=2) + "\n", mode=0o644)
+        # Count the tools actually WRITTEN to the catalog (the full
+        # enumeration), not just the live registry — needs_setup tools are in
+        # the file too, so len(live_registry.tools) under-reported the catalog.
         log_event(
             logger, "tool_catalog.written",
-            path=path, tools=len(live_registry.tools),
+            path=path, tools=len(catalog["tools"]),
         )
     except Exception as e:  # noqa: BLE001
         log_event(

@@ -274,7 +274,7 @@ def test_disabled_set_drops_named_tools_only():
 def test_explicit_disabled_set_never_reads_the_ssot_file(monkeypatch):
     """Passing an explicit `disabled` set must NOT touch the SSOT file —
     tests stay filesystem-independent. Monkeypatch the reader to blow up;
-    the walk with an explicit set still registers the full 28."""
+    the walk with an explicit set still registers the full set."""
     import jasper.tool_state as tool_state
 
     def _boom(*_a, **_k):
@@ -289,7 +289,7 @@ def test_explicit_disabled_set_never_reads_the_ssot_file(monkeypatch):
 def test_default_disabled_is_fail_safe(monkeypatch):
     """With no `disabled=` passed, the walk reads the SSOT fail-safe. A
     reader that returns the empty set (the missing-file case) registers
-    all 28 — the no-disabled path stays identical to today."""
+    the full set — the no-disabled path stays identical to today."""
     import jasper.tools.packs as packs_mod
 
     monkeypatch.setattr(packs_mod, "read_disabled_tools", lambda: frozenset(), raising=False)

@@ -14,6 +14,19 @@
 
 import { escapeHtml } from "/assets/shared/js/escape.js";
 
+// A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
+// "/google/"). Accept ONLY an absolute path: it must start with "/" and not
+// "//" (protocol-relative "//host" navigates off-origin). This neutralizes
+// `javascript:` / `data:` schemes BEFORE the value reaches an <a href> —
+// escapeHtml escapes characters but does not validate schemes, so it can't
+// stop a `javascript:` href on its own. The catalog is the marketplace's
+// future home for third-party setup links, so the href is a real boundary.
+function safeSetupUrl(u) {
+  return typeof u === "string" && u.startsWith("/") && !u.startsWith("//")
+    ? u
+    : null;
+}
+
 // status -> { label, --tone } for the .badge pill. needs_setup uses the idle
 // tone (it's not an error, just unconfigured); off is muted; active is green.
 const STATUS_BADGE = {
@@ -39,28 +52,30 @@ function labelChips(labels) {
 }
 
 // The right-hand control. A needs_setup tool can't be enabled usefully (its
-// backend isn't configured), so it shows a "Set up" link to its wizard instead
-// of a live toggle. Configured tools (active/off) show the canonical toggle,
-// checked when active.
+// backend isn't configured), so it shows a "Set up" link to its wizard. With
+// no (safe) wizard URL — e.g. a core tool that degraded to needs_setup, like
+// flag_recent_issue when the wake-events DB won't open — there's nothing to
+// toggle and nowhere to go, so it shows an honest "Unavailable" badge rather
+// than a dead disabled checkbox. Configured tools (active/off) show the
+// canonical toggle, checked when active.
 function control(tool) {
   if (tool.status === "needs_setup") {
-    if (tool.setup_url) {
+    const href = safeSetupUrl(tool.setup_url);
+    if (href) {
       return (
         '<a class="btn btn--ghost tool-setup" href="' +
-        escapeHtml(tool.setup_url) + '">Set up</a>'
+        escapeHtml(href) + '">Set up</a>'
       );
     }
-    // No wizard for a core tool that somehow reports needs_setup — show a
-    // disabled toggle so the row still reads as a control, not a dead end.
-    return (
-      '<label class="toggle"><input type="checkbox" disabled>' +
-      '<span class="track"></span></label>'
-    );
+    return '<span class="tool-unavailable">Unavailable</span>';
   }
   const checked = tool.status === "active" ? " checked" : "";
+  // aria-label gives the checkbox an accessible name (otherwise a screen
+  // reader announces a bare "checkbox"); the tool name is the right label.
   return (
     '<label class="toggle"><input type="checkbox" data-tool="' +
-    escapeHtml(tool.name) + '"' + checked + ">" +
+    escapeHtml(tool.name) + '" aria-label="Enable ' + escapeHtml(tool.name) +
+    '"' + checked + ">" +
     '<span class="track"></span></label>'
   );
 }

@@ -259,17 +259,35 @@ doesn't choke as the catalog grows.** That's the whole first version.
    the catalog `jasper-voice` writes to `/run/jasper/tools.json`
    ([`jasper/tools/catalog.py`](../jasper/tools/catalog.py)) and never
    imports `jasper.tools` (the transit lazy-import lesson — keep the
-   wizard light). Toggling a tool writes the disabled-set to the
-   wizard-owned SSOT `/var/lib/jasper/tool_state.env`
+   wizard light). **Toggle stages, Apply commits — two steps on purpose.**
+   A toggle only writes the disabled-set to the wizard-owned SSOT
+   `/var/lib/jasper/tool_state.env`
    (`JASPER_DISABLED_TOOLS`, [`jasper/tool_state.py`](../jasper/tool_state.py),
-   mode 0644) and restarts `jasper-voice`, which re-filters the registry
-   (`register_packs(..., disabled=...)`) and re-writes the catalog JSON.
-   Fail-safe toward *more* functionality, mirroring `mic_mute_persistence`:
-   a missing/unreadable/malformed/non-UTF-8 `tool_state.env` resolves to
-   "nothing disabled" (every tool ON), so an FS-corruption incident
-   cannot deafen the assistant. A disabled tool simply does not register
-   — the model never sees it — so there is no audible cue (it's the
-   user's explicit choice, not a failure).
+   mode 0644); it does **not** restart `jasper-voice`. Restarting the
+   assistant drops any in-progress conversation and briefly deafens the
+   speaker, so doing it silently on every checkbox tick is user-hostile —
+   and an unthrottled per-toggle restart could feed `jasper-voice`'s
+   `StartLimitAction=reboot` crash-loop ladder. The page re-derives each
+   tool's on/off through an overlay
+   ([`jasper/tool_catalog_view.py`](../jasper/tool_catalog_view.py) — also
+   light: `json` + `tool_state` only) so the UI **converges instantly**
+   without waiting on, or being raced by, a restart. An explicit **Apply**
+   (`POST /apply`) restarts `jasper-voice` **once** so staged changes go
+   live; it reports honestly when no restart will happen (no provider /
+   bonded follower) and is rate-limited (≥20 s between restarts) so a burst
+   of Apply calls can't trip the reboot ladder. `jasper-voice` then
+   re-filters the registry (`register_packs(..., disabled=...)`) and
+   re-writes the catalog JSON. Observability: the catalog summary
+   (present / count / disabled / pending) is on `/state.tools` and
+   `jasper-doctor`'s `check_tool_catalog`. The confirmation companion
+   `home_assistant_confirm` is hidden from the catalog UI (an internal half
+   of the HA consequential-action flow, not an independently toggleable
+   capability). Fail-safe toward *more* functionality, mirroring
+   `mic_mute_persistence`: a missing/unreadable/malformed/non-UTF-8
+   `tool_state.env` resolves to "nothing disabled" (every tool ON), so an
+   FS-corruption incident cannot deafen the assistant. A disabled tool
+   simply does not register — the model never sees it — so there is no
+   audible cue (it's the user's explicit choice, not a failure).
 
 Everything is built with **Opus**. Every new tool still ships its
 regression scenario under `tests/voice_eval/regression/` (existing hard

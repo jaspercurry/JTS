@@ -27,15 +27,30 @@ const { toolCard, toolList } = new Function(
 )();
 
 // Every field a malicious/compromised tool could control, with a distinct
-// payload per HTML context (element content, attribute, the setup_url href).
+// payload per HTML context (element content + the attribute / data-tool path).
 const evil = {
   name: '<script>alert("name")</script>',
   description: '<img src=x onerror=alert("desc")>',
   labels: ['<svg onload=alert("label")>'],
-  status: "needs_setup", // exercises the setup_url <a href> path
-  setup_url: '"><script>alert("url")</script>',
+  status: "active", // exercises the data-tool attribute path
 };
-const html = toolCard(evil) + toolList([evil]);
+// A needs_setup tool whose setup_url carries a `javascript:` scheme. escapeHtml
+// escapes characters but does NOT validate schemes, so the href is its own
+// boundary — render.js's safeSetupUrl must reject anything that isn't a
+// same-origin "/..." path, dropping this entirely.
+const evilUrl = {
+  name: "evil_url",
+  status: "needs_setup",
+  setup_url: 'javascript:alert("url")',
+};
+// A legitimately safe setup link, to prove the href path still renders.
+const safeUrl = {
+  name: "good_url",
+  status: "needs_setup",
+  setup_url: "/transit/",
+};
+const html =
+  toolCard(evil) + toolList([evil, evilUrl, safeUrl]);
 
 // Check that no RAW payload tag survived — every untrusted `<` must have become
 // `&lt;`. The card's own markup uses div/span/a/p/label/input, never
@@ -48,4 +63,8 @@ console.log(JSON.stringify({
   noSvgTag: !/<svg/i.test(html),
   // Proof the fields actually went through escapeHtml (not just absent payloads).
   escapedEntitiesPresent: html.includes("&lt;") && html.includes("&gt;"),
+  // The javascript: scheme must be dropped, NOT merely escaped into an href.
+  noJavascriptScheme: !/javascript:/i.test(html),
+  // A real same-origin path still renders as a clickable Set up link.
+  safeHrefRendered: html.includes('href="/transit/"'),
 }));
