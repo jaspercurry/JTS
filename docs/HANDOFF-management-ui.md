@@ -38,11 +38,11 @@ and [`jasper-web-streambox.socket`](../deploy/jasper-web-streambox.socket)
 under the same runtime unit names. That keeps the browser experience DRY
 while ensuring streamboxes never bind voice/Google/wake/transit/weather
 wizard ports or source assistant-only env files.
-The satellite-only tier keeps an intentionally small nginx route set
-(`/system/`, `/sources/`, control volume/grouping/debug) because its
-renderer/source services are absent, but its root page is the shared JTS
-landing page filtered by those capabilities. The current operator truth
-for those profiles lives in
+A box bonded as a multiroom follower behaves like the old "endpoint" at
+runtime — the grouping reconciler parks its renderer/source/voice stack — but
+that is a runtime role, not a separate install tier or frontend; it still
+serves the shared landing page gated by its (full or streambox) capabilities.
+The Zero-2-W streambox bring-up runbook is
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md); this doc owns the
 shared frontend rule: profile differences are capability gates, not a second
 visual system.
@@ -151,19 +151,25 @@ the 443 block.
 
 ### Install-profile capability gating
 
-The shared landing page is one artifact for full speakers, streamboxes, and
-satellite-only endpoints. The data source is `jasper-control`'s
-`/system/snapshot.system_capabilities`, proxied through the landing page's
-`/system/data.json` fetch, not frontend-local hardware guessing. Capability
-gates fail closed: every gated card/row ships with `hidden` and is shown only
-when the snapshot reports that capability as `true`. Full speakers expose
-voice, source, DSP, pair-management, network, speaker-name, and developer
-cards; streamboxes expose local source/DSP/pair-management/system/network/
-speaker surfaces but hide voice/wake/integration/developer cards;
-satellite-only endpoints serve the same landing page through the endpoint
-nginx route set and hide cards whose services are absent. This keeps the
-frontend slimmed by capability while preserving one design system and one card
-vocabulary.
+The shared landing page is one artifact for the two install profiles (full
+speakers and streamboxes). The capability map is the single source of truth:
+`jasper.install_profile.system_capabilities_for_profile`, derived purely from
+the profile — not frontend-local hardware guessing. One function feeds two
+consumers: `jasper-control`'s `/system/snapshot.system_capabilities` (runtime)
+and `install.sh`, which **bakes** the map into the landing page at install time
+(the `__JTS_CAPS_JSON__` placeholder becomes `var BAKED_CAPS = {…}`). The page
+applies `BAKED_CAPS` **synchronously at first paint**, so capability layout is
+correct with no network round-trip and survives any backend daemon being down;
+the `/system/data.json` poll refreshes live values only — it never drives
+layout. Capability gates fail closed: every gated card/row ships with `hidden`
+and is shown only when its capability is `true`. Full speakers expose voice,
+source, DSP, pair-management, network, speaker-name, and developer cards;
+streamboxes expose local source/DSP/pair-management/system/network/speaker
+surfaces but hide voice/wake/integration/developer cards. ("Endpoint" is no
+longer an install tier — a box bonded as a multiroom follower gets that
+behaviour at runtime via the grouping reconciler, not a separate frontend.)
+This keeps the frontend slimmed by capability while preserving one design
+system and one card vocabulary.
 
 ### The plain-HTTP correction preflight is canonical too
 
@@ -1392,7 +1398,12 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-14 (`/sound/` now splits pure active-speaker setup
+Last verified: 2026-06-16 (landing-page capability gating is now BAKED at
+install time — `install.sh` stamps `system_capabilities_for_profile` into the
+page and `applyCapabilities(BAKED_CAPS)` runs at first paint; the
+`/system/data.json` poll no longer drives layout. Verified by
+`tests/test_landing_page_html.py` + `tests/test_install_profile_tiers.py`.
+Prior pass 2026-06-14: `/sound/` now splits pure active-speaker setup
 vocabulary/step policy into `active-speaker-ui.js` while leaving render/IO in
 `main.js`; verified by `tests/test_sound_setup.py` and
 `tests/js/sound_profile_harness.mjs`. Prior pass 2026-06-14: `streambox` and

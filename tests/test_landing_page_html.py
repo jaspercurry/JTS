@@ -311,6 +311,24 @@ def test_install_bakes_landing_capabilities() -> None:
     assert "refusing to ship a broken page" in install
 
 
+def test_landing_page_data_requires_match_capability_map() -> None:
+    # Every data-requires="X" gate must have a key X in the capability map
+    # (system_capabilities_for_profile) — otherwise applyCapabilities reads
+    # caps["X"] === undefined, fails closed, and the section is hidden forever
+    # with no error. Pin the seam so a typo'd or new gate fails the suite, not
+    # silently in the field. (Cap keys are profile-independent — only the
+    # boolean values differ — so checking one profile's keys is enough.)
+    from jasper.install_profile import system_capabilities_for_profile
+
+    used = set(re.findall(r'data-requires="([^"]+)"', _index_html()))
+    assert used, "expected data-requires capability gates in the landing page"
+    cap_keys = set(system_capabilities_for_profile("full"))
+    missing = used - cap_keys
+    assert not missing, (
+        f"data-requires values with no capability-map key: {sorted(missing)}"
+    )
+
+
 def test_landing_page_tracks_static_reference_visual_tokens() -> None:
     # Tokens and the .page container now live in the shared stylesheet
     # (the landing page links it); only landing-specific bits stay inline.
