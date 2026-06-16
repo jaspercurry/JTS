@@ -425,6 +425,21 @@ function describeBondFailure(e) {
     ? failed.map((r) => (r.addr || "this speaker") + ": " +
         (r.detail || "failed")).join("; ")
     : (body.error || e.message || "unknown error");
+  // A member with the control-token gate enabled rejects the grouping
+  // fan-out until the browser supplies its X-JTS-Token. /rooms/ can't
+  // prompt for it yet (a bond fans out to several speakers that each
+  // carry their own token), so point the operator at the path that does
+  // capture it: any /system/ action stores the token in this browser,
+  // which /rooms/ then reuses. (detail is a server string rendered via
+  // textContent at the call sites — no escaping concern.)
+  const tokenGated = failed.some(
+    (r) => typeof r.detail === "string" &&
+      /control_token_required|X-JTS-Token/.test(r.detail));
+  if (tokenGated) {
+    msg = "a speaker needs its control token — set it once via the " +
+      "System page (open /system/ and run any action), then retry " +
+      "(see SECURITY.md). Details — " + msg;
+  }
   if (body.rolled_back === true) {
     msg += " — the change was rolled back; both speakers kept their channels.";
   } else if (body.rolled_back === false) {

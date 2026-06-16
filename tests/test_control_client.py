@@ -204,3 +204,82 @@ def test_guarded_server_accepts_client_built_from_bind_address():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ----------------------------------------------------------------------
+# X-JTS-Token header forwarding (control-token gate).
+#
+# The web wizards proxy server-side, so a browser-supplied X-JTS-Token
+# can only reach control if the client forwards it. _request must add
+# caller `headers` (additive) without clobbering Content-Type.
+# ----------------------------------------------------------------------
+
+
+class _HeaderEcho(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # silence test server
+        pass
+
+    def _reply(self):
+        payload = {
+            "x_jts_token": self.headers.get("X-JTS-Token"),
+            "content_type": self.headers.get("Content-Type"),
+        }
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):  # noqa: N802
+        self._reply()
+
+    def do_POST(self):  # noqa: N802
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        self._reply()
+
+
+@pytest.fixture()
+def header_server():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _HeaderEcho)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    yield base
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_post_forwards_x_jts_token_header(header_server):
+    resp = client.post(
+        "/grouping/set", data=b"{}", base_url=header_server,
+        headers={"X-JTS-Token": "the-token"},
+    )
+    echoed = resp.json()
+    assert echoed["x_jts_token"] == "the-token"
+    # A JSON body still carries Content-Type — the extra header is additive.
+    assert echoed["content_type"] == "application/json"
+
+
+def test_caller_header_cannot_clobber_content_type(header_server):
+    resp = client.post(
+        "/grouping/set", data=b"{}", base_url=header_server,
+        headers={"Content-Type": "text/evil", "X-JTS-Token": "tok"},
+    )
+    echoed = resp.json()
+    assert echoed["content_type"] == "application/json"  # not overridden
+    assert echoed["x_jts_token"] == "tok"
+
+
+def test_get_forwards_x_jts_token_header(header_server):
+    resp = client.get(
+        "/grouping", base_url=header_server,
+        headers={"X-JTS-Token": "tok-g"},
+    )
+    assert resp.json()["x_jts_token"] == "tok-g"
+
+
+def test_no_headers_sends_no_x_jts_token(header_server):
+    resp = client.post("/grouping/set", data=b"{}", base_url=header_server)
+    assert resp.json()["x_jts_token"] is None

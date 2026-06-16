@@ -98,6 +98,7 @@ def _request(
     body: dict | None = None,
     data: bytes | None = None,
     timeout: float = DEFAULT_TIMEOUT,
+    headers: dict[str, str] | None = None,
 ) -> ControlResponse:
     """One blocking stdlib round-trip. Raises :class:`ControlError` on a
     transport failure; otherwise returns a :class:`ControlResponse` (including
@@ -106,7 +107,11 @@ def _request(
 
     ``body`` is a dict serialized to JSON; ``data`` is a pre-encoded JSON
     body sent verbatim (the byte-forwarding path the web wizards' proxy
-    uses). Pass at most one.
+    uses). Pass at most one. ``headers`` adds extra request headers — the
+    web wizards forward a browser-supplied ``X-JTS-Token`` through this path
+    so the opt-in control-token gate sees the operator's token (the wizards
+    proxy server-side, so the header can't ride the original fetch). It never
+    overrides ``Content-Type``.
     """
     parts = urlsplit(base_url)
     conn = http.client.HTTPConnection(
@@ -121,8 +126,16 @@ def _request(
             payload = json.dumps(body).encode()
         else:
             payload = None
-        headers = {"Content-Type": "application/json"} if payload is not None else {}
-        conn.request(method, path, body=payload, headers=headers)
+        req_headers = (
+            {"Content-Type": "application/json"} if payload is not None else {}
+        )
+        if headers:
+            for k, v in headers.items():
+                # Don't let a caller header clobber Content-Type for a
+                # JSON body; everything else (X-JTS-Token) is additive.
+                if k.lower() != "content-type":
+                    req_headers[k] = v
+        conn.request(method, path, body=payload, headers=req_headers)
         resp = conn.getresponse()
         return ControlResponse(resp.status, resp.read())
     except (OSError, TimeoutError, http.client.HTTPException) as e:
@@ -140,16 +153,22 @@ def request(
     data: bytes | None = None,
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = DEFAULT_TIMEOUT,
+    headers: dict[str, str] | None = None,
 ) -> ControlResponse:
     return _request(
-        method, path, base_url=base_url, body=body, data=data, timeout=timeout
+        method, path, base_url=base_url, body=body, data=data,
+        timeout=timeout, headers=headers,
     )
 
 
 def get(
-    path: str, *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
+    path: str,
+    *,
+    base_url: str = DEFAULT_BASE_URL,
+    timeout: float = DEFAULT_TIMEOUT,
+    headers: dict[str, str] | None = None,
 ) -> ControlResponse:
-    return _request("GET", path, base_url=base_url, timeout=timeout)
+    return _request("GET", path, base_url=base_url, timeout=timeout, headers=headers)
 
 
 def post(
@@ -159,9 +178,11 @@ def post(
     data: bytes | None = None,
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = DEFAULT_TIMEOUT,
+    headers: dict[str, str] | None = None,
 ) -> ControlResponse:
     return _request(
-        "POST", path, base_url=base_url, body=body, data=data, timeout=timeout
+        "POST", path, base_url=base_url, body=body, data=data,
+        timeout=timeout, headers=headers,
     )
 
 

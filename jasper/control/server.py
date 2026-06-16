@@ -70,6 +70,7 @@ from ..install_profile import (
     read_install_profile,
 )
 from . import aec_endpoints as _aec_endpoints
+from . import control_token
 from . import dial as _dial
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
@@ -118,6 +119,20 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/transport/next",
     "/transport/previous",
     "/transport/toggle",
+})
+
+# The high-impact mutations the opt-in control token gates (SECURITY.md).
+# Default-off: with no /var/lib/jasper/control_token file these behave
+# exactly as today; with one, each requires a matching X-JTS-Token header.
+# Deliberately NOT including /volume*, /transport*, /source* — the dial's
+# bread-and-butter low-impact controls stay open (the dial never calls
+# these four). poweroff/reboot = power loop; mic/mute = defeats the
+# privacy-mic promise; grouping/set = hijacks output routing.
+_TOKEN_GATED_ROUTES = frozenset({
+    "/system/poweroff",
+    "/system/reboot",
+    "/mic/mute",
+    "/grouping/set",
 })
 
 
@@ -1237,11 +1252,44 @@ def _make_handler(
                 return
             if not self._guard_install_profile_route():
                 return
+            if not self._guard_control_token():
+                return
             handler_name = self._POST_ROUTES.get(self.path)
             if handler_name is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             getattr(self, handler_name)()
+
+        def _guard_control_token(self) -> bool:
+            """Opt-in token gate for the high-impact mutations.
+
+            Runs AFTER the browser-origin/install-profile guards so an
+            unknown path still 404s as before. Default-off: when no token
+            file exists, control_token.verify() returns True and this is a
+            pass-through. When the operator has enabled the gate
+            (jasper-control-token --enable), a request to one of
+            _TOKEN_GATED_ROUTES without a matching X-JTS-Token header is
+            rejected 403 with an actionable JSON body and an audit log
+            line. The token value is never logged.
+            """
+            if self.path not in _TOKEN_GATED_ROUTES:
+                return True
+            if control_token.verify(self.headers.get("X-JTS-Token")):
+                return True
+            logger.warning(
+                "event=control_token.denied path=%s client=%s",
+                self.path, self.address_string(),
+            )
+            self._send_json(
+                {
+                    "error": "control_token_required",
+                    "detail": "this control action requires X-JTS-Token; "
+                    "enable/inspect with jasper-control-token; see "
+                    "SECURITY.md",
+                },
+                status=403,
+            )
+            return False
 
         def _post_volume_adjust(self) -> None:
             if self._maybe_forward_volume_to_leader():

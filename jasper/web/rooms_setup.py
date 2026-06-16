@@ -606,8 +606,20 @@ def _lan_target(addr: str, known: set[str] | None = None) -> str | None:
     return addr
 
 
+def _request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
+    """The browser-supplied X-JTS-Token to forward to each member, or None.
+
+    The /rooms/ grouping mutations fan out SERVER-side to each member's
+    /grouping/set, so the browser's control token (the opt-in gate) would be
+    lost unless this leader forwards it. We relay only what the operator's
+    browser sent — never inject a token from disk — so the gate stays real."""
+    token = handler.headers.get("X-JTS-Token")
+    return token or None
+
+
 def _post_grouping_to_member(
     addr: str, body: dict, known: set[str] | None = None,
+    *, token: str | None = None,
 ) -> tuple[bool, str]:
     """Configure ONE member by POSTing to its jasper-control /grouping/set.
 
@@ -618,8 +630,11 @@ def _post_grouping_to_member(
     to loopback (configure self). SSRF guard (via :func:`_lan_target`): a
     remote target must be a PRIVATE / loopback IPv4 — the control API is a
     home-LAN surface, never a public host. ``known`` is forwarded to the guard
-    so a fan-out computes the self-address set once. Returns (ok, detail);
-    never raises.
+    so a fan-out computes the self-address set once. ``token`` is the
+    browser-supplied control token forwarded to each member so a household
+    that has enabled the opt-in gate can still form/dissolve bonds (each
+    member checks its own /grouping/set gate; default-off installs pass
+    None and nothing changes). Returns (ok, detail); never raises.
     """
     target = _lan_target(addr, known)
     if target is None:
@@ -629,10 +644,13 @@ def _post_grouping_to_member(
             return False, f"not an IP address: {addr!r}"
         return False, f"refusing non-LAN target {addr}"
     url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping/set"
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-JTS-Token"] = token
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -679,6 +697,7 @@ def _map_peers(fn, items):
 
 def _fan_out_grouping(
     targets: list[tuple[str, dict]], *, known: set[str] | None = None,
+    token: str | None = None,
 ) -> list[tuple[bool, str]]:
     """POST a grouping config to several members concurrently, ``(ok, detail)``
     results in INPUT order (the caller pairs them back positionally).
@@ -688,10 +707,15 @@ def _fan_out_grouping(
     than recomputed per call inside the pool — ``_self_addresses`` does a
     socket probe + ``getaddrinfo``, so per-peer recompute was N redundant
     lookups across N pool threads. Callers that already hold the set (e.g.
-    :func:`_unbond`, which also used it for discovery) pass it in."""
+    :func:`_unbond`, which also used it for discovery) pass it in. ``token``
+    is the browser-supplied control token forwarded to every member's
+    /grouping/set (opt-in gate; None on default-off installs)."""
     if known is None:
         known = _self_addresses()
-    return _map_peers(lambda t: _post_grouping_to_member(t[0], t[1], known), targets)
+    return _map_peers(
+        lambda t: _post_grouping_to_member(t[0], t[1], known, token=token),
+        targets,
+    )
 
 
 def _get_member_grouping(addr: str, known: set[str] | None = None) -> dict | None:
@@ -803,8 +827,9 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         targets.append((addr, body))
         target_idx.append(i)
 
+    token = _request_control_token(handler)
     for slot, (addr, body), (ok, detail) in zip(
-        target_idx, targets, _fan_out_grouping(targets)
+        target_idx, targets, _fan_out_grouping(targets, token=token)
     ):
         results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
 
@@ -897,7 +922,9 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     targets += [(addr, {"enabled": False}) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
 
-    fan_results = _fan_out_grouping(targets, known=known)
+    fan_results = _fan_out_grouping(
+        targets, known=known, token=_request_control_token(handler),
+    )
     results = [
         {"addr": addr, "ok": ok, "detail": detail}
         for addr, (ok, detail) in zip(addrs, fan_results)
@@ -1093,7 +1120,8 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         ("", _body(grouping, swapped_self)),
         (peer_addr, _body(peer_grouping, swapped_peer)),
     ]
-    fan_results = _fan_out_grouping(targets, known=known)
+    token = _request_control_token(handler)
+    fan_results = _fan_out_grouping(targets, known=known, token=token)
     results = [
         {"addr": addr, "channel": body["channel"], "ok": ok, "detail": detail}
         for (addr, body), (ok, detail) in zip(targets, fan_results)
@@ -1118,7 +1146,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         rb_grouping = grouping if ok_idx == 0 else peer_grouping
         rb_channel = self_channel if ok_idx == 0 else peer_channel
         rb_ok, rb_detail = _post_grouping_to_member(
-            rb_addr, _body(rb_grouping, rb_channel), known,
+            rb_addr, _body(rb_grouping, rb_channel), known, token=token,
         )
         rolled_back = bool(rb_ok)
         logger.warning(
@@ -1216,7 +1244,9 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
         "leader_addr": str(current.get("leader_addr") or ""),
         "trim_db": new_trim,
     }
-    ok, detail = _post_grouping_to_member(addr, body, known)
+    ok, detail = _post_grouping_to_member(
+        addr, body, known, token=_request_control_token(handler),
+    )
     logger.info(
         "event=rooms.trim addr=%s delta=%.1f new=%.1f ok=%s",
         addr or "(self)", delta, new_trim, ok,

@@ -15,12 +15,49 @@ function csrfToken() {
   return meta ? meta.content : "";
 }
 
+// --- control token (opt-in, default-off) ----------------------------------
+// SECURITY.md's opt-in shared token gates jasper-control's high-impact
+// mutations (poweroff / reboot / mic-mute / grouping) behind an X-JTS-Token
+// header. When the operator has enabled it, control answers those routes 403
+// {error:"control_token_required"} until the right token rides along. The
+// token is a household secret the operator pastes once; we keep it in
+// localStorage (per-browser, survives reloads) — never baked into the cached
+// JS, never logged. When the gate is OFF (the default) localStorage is empty
+// and these helpers add no header, so there is zero behaviour change.
+const CONTROL_TOKEN_KEY = "jts-control-token";
+
+function controlToken() {
+  try {
+    return localStorage.getItem(CONTROL_TOKEN_KEY) || "";
+  } catch (_) {
+    // Private-mode / disabled storage: degrade to "no stored token".
+    return "";
+  }
+}
+
+function storeControlToken(token) {
+  try {
+    localStorage.setItem(CONTROL_TOKEN_KEY, token);
+  } catch (_) { /* storage unavailable — the retry still uses the in-call value */ }
+}
+
+// True when a failed response is control's "you need the token" verdict, so
+// callers know to prompt rather than surface a generic error.
+export function isControlTokenRequired(err) {
+  return !!(err && err.status === 403 && err.body &&
+            err.body.error === "control_token_required");
+}
+
 // Add the X-CSRF-Token header (when a token is present) to an existing
 // headers object, returning it. Pass nothing to start from a bare object.
+// Also attaches X-JTS-Token from localStorage when the operator has stored
+// one (the opt-in control-token gate); absent storage adds nothing.
 export function csrfHeaders(headers) {
   const out = headers || {};
   const token = csrfToken();
   if (token) out["X-CSRF-Token"] = token;
+  const ctl = controlToken();
+  if (ctl) out["X-JTS-Token"] = ctl;
   return out;
 }
 
@@ -37,19 +74,10 @@ export async function getJSON(path) {
   return r.json();
 }
 
-// POST a JSON body with the CSRF header; parse + return the JSON response.
-// Throws on a non-2xx status or transport failure, mirroring getJSON — but
-// the thrown Error carries the server's parsed JSON verdict on `.body`
-// (and `.status`), because this codebase's APIs put their actionable
-// failure detail IN the body (per-member results, precondition reasons,
-// rolled_back flags). Without this, every carefully built failure payload
-// dies unread at the browser.
-export async function postJSON(path, body) {
-  const r = await fetch(path, {
-    method: "POST",
-    headers: jsonHeaders(),
-    body: JSON.stringify(body === undefined ? {} : body),
-  });
+// Parse a Response into a thrown Error carrying the server's JSON verdict on
+// `.body` / `.status`, or return the parsed JSON on success. Shared by the
+// one-shot poster below so success/failure shape is identical everywhere.
+async function parseResponse(r) {
   if (!r.ok) {
     let parsed = null;
     try { parsed = await r.json(); } catch (_) { /* non-JSON error page */ }
@@ -60,4 +88,67 @@ export async function postJSON(path, body) {
     throw err;
   }
   return r.json();
+}
+
+// Lazy import keeps dialog.js out of the module graph for pages that never hit
+// a token-gated route (the import only runs the first time we must prompt).
+async function promptForControlToken() {
+  const { jtsPrompt } = await import("/assets/shared/js/dialog.js");
+  const token = await jtsPrompt(
+    "This speaker requires a control token for power, mic-mute, and " +
+    "grouping actions. Paste the token from `jasper-control-token --show`.",
+    { title: "Control token required", label: "Control token", secret: true,
+      okLabel: "Save & retry" },
+  );
+  if (token === null || token === "") return "";
+  storeControlToken(token);
+  return token;
+}
+
+// POST a JSON body with the CSRF header; parse + return the JSON response.
+// Throws on a non-2xx status or transport failure, mirroring getJSON — but
+// the thrown Error carries the server's parsed JSON verdict on `.body`
+// (and `.status`), because this codebase's APIs put their actionable
+// failure detail IN the body (per-member results, precondition reasons,
+// rolled_back flags). Without this, every carefully built failure payload
+// dies unread at the browser.
+//
+// Control-token gate (opt-in, default-off): if the first attempt comes back
+// 403 control_token_required, prompt ONCE for the token, store it, and retry
+// exactly once. A second 403 (wrong token) throws normally so the caller
+// surfaces it — we never loop.
+export async function postJSON(path, body) {
+  const payload = JSON.stringify(body === undefined ? {} : body);
+  const send = () => fetch(path, {
+    method: "POST", headers: jsonHeaders(), body: payload,
+  });
+  try {
+    return await parseResponse(await send());
+  } catch (err) {
+    if (!isControlTokenRequired(err)) throw err;
+    const token = await promptForControlToken();
+    if (!token) throw err;        // user dismissed the prompt — original error
+    return parseResponse(await send());   // retry once with the stored token
+  }
+}
+
+// POST a parameterless control action (no JSON body), returning a flat
+// {ok, status, body} so callers that reflect raw status into a button label
+// (the /system/ restart / reboot / power-off buttons) don't each re-implement
+// the fetch + JSON-parse + control-token plumbing. Same opt-in token gate as
+// postJSON: a first 403 control_token_required prompts ONCE, stores, and
+// retries exactly once; a second 403 (wrong token) is returned for the caller
+// to surface. `body` is the parsed JSON response (or {} when non-JSON).
+export async function postControlAction(path) {
+  const send = () => fetch(path, { method: "POST", headers: csrfHeaders() });
+  let r = await send();
+  let body = await r.json().catch(() => ({}));
+  if (r.status === 403 && body && body.error === "control_token_required") {
+    const token = await promptForControlToken();
+    if (token) {
+      r = await send();
+      body = await r.json().catch(() => ({}));
+    }
+  }
+  return { ok: r.ok, status: r.status, body };
 }

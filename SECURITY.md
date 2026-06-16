@@ -60,6 +60,9 @@ rebooting or powering off the speaker (`POST /system/reboot`,
 Shortcuts-style automations, and other household integrations use the
 same trusted-LAN posture. Browser-origin attacks are a different class
 and are blocked with Host / Origin / Fetch Metadata checks plus CSRF.
+A security-conscious operator can opt into requiring a shared token on
+the four highest-impact of those routes — see "Opt-in control token"
+below.
 
 Setup wizards submit API keys, Home Assistant tokens, and Wi-Fi PSKs
 over plain HTTP on the LAN. nginx serves the management UI over HTTP;
@@ -83,9 +86,69 @@ multicast today. A device on the same LAN can spoof those control
 messages. The planned follow-up is to add an HMAC over peering messages
 using a shared household secret.
 
-Future work under consideration: an opt-in shared token for the highest
-impact raw control mutations, especially power and mic-mute operations
-on port 8780. That is not implemented today.
+### Opt-in control token
+
+By default the raw `jasper-control` mutations above are open on the
+trusted LAN — that is the posture the dial, Home Assistant, and
+Shortcuts rely on, and it is the right default for most households. A
+security-conscious operator who shares the LAN with less-trusted devices
+(a guest VLAN, roommates, IoT gear) can opt into requiring a shared
+token on the four highest-impact routes:
+
+- `POST /system/poweroff` — powers the speaker off (it stays off until
+  someone physically re-plugs it).
+- `POST /system/reboot` — reboots the speaker.
+- `POST /mic/mute` — toggles the privacy mic mute, the one promise a
+  household relies on to know the mic is off.
+- `POST /grouping/set` — rewires multiroom output routing.
+
+Enable it on the speaker:
+
+```sh
+sudo jasper-control-token --enable      # prints a generated token
+sudo jasper-control-token --show        # reprint it later
+sudo jasper-control-token --disable     # back to default-off
+```
+
+`--enable` writes `/var/lib/jasper/control_token` (mode `0600`, root)
+with a `secrets.token_urlsafe(32)` value. While that file exists with
+non-empty content, the four routes above require a matching `X-JTS-Token`
+request header; a missing or wrong token gets a `403
+{"error":"control_token_required"}` (compared in constant time via
+`hmac.compare_digest`, and the token value is never logged). With no
+file — the default — the gate is a complete no-op and behaviour is
+exactly as before.
+
+The gate is deliberately narrow. **Volume, transport, source, and the
+AEC knobs stay ungated** — they are the dial's bread-and-butter
+low-impact controls, the dial never calls the gated four, and gating
+them would break the trusted-LAN accessories for little security gain.
+The token is one shared household secret, not per-user auth; it is a
+speed-bump against a casual LAN device, not a substitute for network
+isolation, and it does not add HTTPS or stop on-path observation of
+plain-HTTP setup traffic.
+
+Legitimate clients supply the token two ways:
+
+- **Browser.** The `/system/` dashboard prompts once for the token on
+  the first gated action (reboot / power-off / mic-mute), stores it in
+  that browser's `localStorage`, and attaches it as `X-JTS-Token` on
+  subsequent actions. The `/rooms/` grouping actions reuse that same
+  stored token, so once any `/system/` action has captured it they work
+  too; a `/rooms/` action attempted *before* the token is stored fails
+  closed with a hint to set it on `/system/` first. (A `/rooms/`-native
+  first-use prompt is a known follow-up: a bond fans out to several
+  speakers that each carry their own token, so the single-token prompt
+  the `/system/` page uses doesn't map cleanly onto it.) Because those
+  pages proxy to control server-side, the wizard forwards the
+  browser-supplied header through to control (and, for grouping, to each
+  member speaker) — it never injects a token from disk, so the secret
+  stays in the operator's browser.
+- **curl / scripts / Home Assistant.** Send `-H "X-JTS-Token: <token>"`
+  on the gated requests.
+
+`jasper-doctor` reports the gate posture (enabled vs disabled), never
+the secret.
 
 Diagnostic scripts redact environment-style secret assignments in their
 log/config snapshots before writing logs or bundles to disk. Wake-event

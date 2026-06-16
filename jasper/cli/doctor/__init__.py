@@ -272,6 +272,7 @@ from .correction import (
 )
 from . import web as web
 from .web import (
+    check_control_token,
     check_web_design_assets,
 )
 from . import peering as peering
@@ -522,6 +523,7 @@ __all__ = [
     "_correction_evidence_status",
     "check_correction_latest_bundle",
     "check_web_design_assets",
+    "check_control_token",
     "check_peering_mode",
     "check_peering_discovery",
     "_local_peer_id",

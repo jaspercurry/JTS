@@ -174,6 +174,11 @@ def upstream_control():
 
         def do_POST(self) -> None:  # noqa: N802
             received.append(("POST", self.path))
+            # Record any forwarded control token so a test can assert the
+            # wizard relays the browser's X-JTS-Token (the opt-in gate).
+            token = self.headers.get("X-JTS-Token")
+            if token is not None:
+                received.append(("X-JTS-Token", token))
             if self.path in responses:
                 payload = dict(responses[self.path])
                 length = int(self.headers.get("Content-Length") or "0")
@@ -312,6 +317,52 @@ def test_post_poweroff_proxies(dashboard_server) -> None:
     payload = json.loads(body)
     assert payload["action"] == "poweroff"
     assert ("POST", "/system/poweroff") in received
+
+
+def _http_post_with_token(url: str, token: str) -> tuple[int, bytes]:
+    """_http_post + an X-JTS-Token header (the browser-supplied control
+    token the wizard must forward to jasper-control)."""
+    import http.cookiejar
+    import re
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+    page = opener.open(base + "/", timeout=5).read().decode()
+    m = re.search(r'<meta\s+name="jts-csrf"\s+content="([^"]+)"', page)
+    csrf = m.group(1) if m else ""
+    req = urllib.request.Request(
+        url, data=b"", method="POST",
+        headers={"X-CSRF-Token": csrf, "X-JTS-Token": token},
+    )
+    try:
+        with opener.open(req, timeout=5) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_reboot_forwards_control_token_to_upstream(dashboard_server) -> None:
+    """The /system/ wizard proxies server-side, so a browser-supplied
+    X-JTS-Token (the opt-in control-token gate) must be forwarded to
+    jasper-control or the enabled gate would 403 the dashboard."""
+    base, received, _ = dashboard_server
+    status, _ = _http_post_with_token(f"{base}/reboot", "household-secret")
+    assert status == 200
+    assert ("POST", "/system/reboot") in received
+    assert ("X-JTS-Token", "household-secret") in received
+
+
+def test_reboot_without_token_forwards_no_token(dashboard_server) -> None:
+    """Default-off: no X-JTS-Token on the browser request -> the wizard
+    forwards none (no header injected from disk)."""
+    base, received, _ = dashboard_server
+    status, _ = _http_post(f"{base}/reboot")
+    assert status == 200
+    assert ("POST", "/system/reboot") in received
+    assert not any(k == "X-JTS-Token" for k, _ in received)
 
 
 def test_poweroff_requires_csrf(dashboard_server) -> None:
