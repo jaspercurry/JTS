@@ -23,7 +23,7 @@ from ..renderer import RendererClient
 from ..spotify_router import BuildResult, Router, build_clients
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
-from ..tools.packs import ToolDeps, register_packs
+from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..usage import (
     ConnectionUptimeMeter,
     SpendCap,
@@ -335,7 +335,12 @@ def _build_registry(
         wake_event_store=wake_event_store,
         untrusted_monitor=untrusted_monitor,
     )
-    register_packs(registry, deps)
+    # Stash the per-pack registration outcomes on the registry (the object
+    # that crosses back to run()) so a silently-missing tool family is
+    # observable via STATUS -> /state.voice.tool_packs + jasper-doctor,
+    # not just the journal. register_packs already mutates `registry.tools`;
+    # the outcome record rides alongside it.
+    registry.pack_outcomes = register_packs(registry, deps)
     return registry
 
 
@@ -871,6 +876,7 @@ async def run() -> None:
                 camilla=camilla,
                 heartbeat=heartbeat,
                 wake_event_store=wake_event_store,
+                tool_packs=outcomes_to_state(registry.pack_outcomes),
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after

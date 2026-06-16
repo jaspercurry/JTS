@@ -670,9 +670,17 @@ class WakeLoop:
         camilla: CamillaController | None = None,
         heartbeat: "Heartbeat | None" = None,
         wake_event_store: WakeEventStore | None = None,
+        tool_packs: list[dict] | None = None,
     ) -> None:
         self._cfg = cfg
         self._tts = tts
+        # Per-pack tool-registration outcomes (already serialized to the
+        # /state.voice.tool_packs wire shape by outcomes_to_state). Opaque
+        # to the wake loop — held only so session_status can surface which
+        # tool families registered / were gated off / failed to build,
+        # making a silently-missing family visible without grepping the
+        # journal. Empty when constructed without the pack walk (tests).
+        self._tool_packs: list[dict] = tool_packs or []
         # Wake-detection legs, keyed by jasper.wake_legs token. Assembled
         # by run() (the "leg factory": opens each leg's mic under the
         # AsyncExitStack, then builds its detector, capture ring, and —
@@ -1126,6 +1134,7 @@ class WakeLoop:
         self._pre_roll = deque(maxlen=PRE_ROLL_FRAMES)
         self._wake_event_store = None
         self._current_event_id = None
+        self._tool_packs = []
         self._acquiring = False
         self._acquire_buffer = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
         self._peering_current_epoch = ""
@@ -2607,6 +2616,11 @@ class WakeLoop:
             # startup leg-skip (event=wake.leg_skipped) is visible in
             # /state.voice, not only in the journal.
             "wake_legs": list(self._legs),
+            # Per-pack tool-registration outcomes (registered / skipped /
+            # failed), same motivation as wake_legs: a tool family that
+            # silently failed to build (event=tool_pack.build_failed) is
+            # visible in /state.voice + jasper-doctor, not only the journal.
+            "tool_packs": self._tool_packs,
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:

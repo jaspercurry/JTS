@@ -1595,6 +1595,9 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     # through in _get_state. wake_legs (jasper-doctor's runtime cross-check
     # source) is exactly such a field — guard that its key is present.
     assert "wake_legs" in body["voice"]
+    # tool_packs is the same shape of curated pull-through (jasper-doctor's
+    # check_tool_packs cross-checks it against the static registry).
+    assert "tool_packs" in body["voice"]
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None
@@ -1682,6 +1685,38 @@ def test_state_voice_wake_legs_flows_from_session_status(
     assert status == 200
     assert body["voice"]["reachable"] is True
     assert body["voice"]["wake_legs"] == ["on", "off", "dtln"]
+
+
+def test_state_voice_tool_packs_flows_from_session_status(
+    server_with_coordinator, monkeypatch,
+):
+    """Same curated-vs-passthrough regression as wake_legs, for tool_packs:
+    jasper-voice's session_status reports per-pack registration outcomes,
+    and /state.voice must pull the field through for jasper-doctor's
+    check_tool_packs to see runtime truth (a pack that failed to build)."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    packs = [
+        {"name": "audio", "status": "registered", "tool_count": 5,
+         "error": None},
+        {"name": "spotify", "status": "failed", "tool_count": 0,
+         "error": "ImportError('spotipy')"},
+    ]
+
+    async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
+        return {
+            "state": "WAKE", "input_ended": False, "spend_allowed": True,
+            "connection_paused": False, "mic_muted": False,
+            "duck_active": False, "music_dbfs": -32.0,
+            "wake_legs": ["on"], "tool_packs": packs,
+        }
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["voice"]["reachable"] is True
+    assert body["voice"]["tool_packs"] == packs
 
 
 def test_state_audio_metrics_sanitize_non_finite_values(

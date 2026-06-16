@@ -26,7 +26,14 @@ from jasper.tools.citibike import make_citibike_tools
 from jasper.tools.diagnostic import make_diagnostic_tools
 from jasper.tools.gmail import make_gmail_tools
 from jasper.tools.home_assistant import make_home_assistant_tools
-from jasper.tools.packs import TOOL_PACKS, ToolDeps, ToolPack, register_packs
+from jasper.tools.packs import (
+    TOOL_PACKS,
+    PackOutcome,
+    ToolDeps,
+    ToolPack,
+    outcomes_to_state,
+    register_packs,
+)
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.subway import make_subway_tools
 from jasper.tools.time import make_time_tools
@@ -326,3 +333,127 @@ def test_broken_pack_is_isolated_other_packs_still_register():
     names = set(reg.tools.keys())
     assert "get_current_time" in names  # good_a registered
     assert "get_weather" in names       # good_b registered after the break
+
+
+# --------------------------------------------------------------- outcomes
+# These pin the observability record register_packs returns — the data
+# that surfaces a silently-missing tool family via /state.voice.tool_packs
+# and jasper-doctor's check_tool_packs, instead of journal-only.
+
+
+def test_register_packs_returns_outcome_per_pack_in_order():
+    """One PackOutcome per pack, in TOOL_PACKS order. With gate-satisfying
+    deps every pack registers (none skipped/failed) and the tool_count sum
+    equals the full shipped set."""
+    deps = _full_deps()
+    reg = ToolRegistry()
+    # Explicit empty disabled set keeps the test hermetic (no SSOT file read).
+    outcomes = register_packs(reg, deps, disabled=frozenset())
+
+    assert [o.name for o in outcomes] == [p.name for p in TOOL_PACKS]
+    assert all(o.status == "registered" for o in outcomes)
+    assert all(o.error is None for o in outcomes)
+    # tool_count is per-pack (post-disable); the total is the full registry.
+    # Pin to the canonical EXPECTED_TOOL_NAMES so a tool added/removed on
+    # main updates one place, not a literal here.
+    assert (
+        sum(o.tool_count for o in outcomes)
+        == len(reg.tools)
+        == len(EXPECTED_TOOL_NAMES)
+    )
+
+
+def test_register_packs_marks_gated_off_packs_skipped():
+    """A pack whose gate predicate returns False is recorded "skipped"
+    (expected, not a fault) with zero tools — distinct from a build
+    failure."""
+    minimal = ToolDeps(
+        volume_coordinator=None, renderer=None, router=None, weather=None,
+        spotify_device_name="JTS", spotify_setup_url="",
+        transit_tools=[], ha=None,
+        timer_scheduler=None,  # gate False -> skipped
+        google_clients=types.SimpleNamespace(list_account_names=lambda: []),
+        wake_event_store=None,
+    )
+    outcomes = {
+        o.name: o
+        for o in register_packs(ToolRegistry(), minimal, disabled=frozenset())
+    }
+    for name in ("timer", "calendar", "gmail"):
+        assert outcomes[name].status == "skipped"
+        assert outcomes[name].tool_count == 0
+    # A self-gating factory that returns [] still "registered" (it built
+    # without raising) — only the explicit gate produces "skipped".
+    assert outcomes["home_assistant"].status == "registered"
+    assert outcomes["home_assistant"].tool_count == 0
+
+
+def test_register_packs_marks_failed_pack_with_error():
+    """A pack whose build raises is recorded "failed" with the exception
+    repr — the alarm condition check_tool_packs fails on. Sibling packs
+    still register (fault isolation)."""
+    def _boom(_d):
+        raise RuntimeError("simulated import/factory failure")
+
+    packs = (
+        ToolPack("good_a", lambda _d: make_time_tools()),
+        ToolPack("broken", _boom),
+        ToolPack("good_b", lambda _d: make_weather_tools(None)),
+    )
+    import jasper.tools.packs as packs_mod
+    original = packs_mod.TOOL_PACKS
+    try:
+        packs_mod.TOOL_PACKS = packs
+        outcomes = {
+            o.name: o
+            for o in register_packs(
+                ToolRegistry(), _full_deps(), disabled=frozenset(),
+            )
+        }
+    finally:
+        packs_mod.TOOL_PACKS = original
+
+    assert outcomes["good_a"].status == "registered"
+    assert outcomes["good_b"].status == "registered"
+    assert outcomes["broken"].status == "failed"
+    assert "simulated import/factory failure" in (outcomes["broken"].error or "")
+
+
+def test_outcome_tool_count_reflects_user_disabled_removals():
+    """A user-disabled tool is removed from the registry, so its pack's
+    tool_count drops accordingly and the pack still reports "registered"
+    (a user choice is not a build failure). Pins the docstring invariant
+    sum(tool_count) == len(registry.tools) under the disable feature."""
+    deps = _full_deps()
+    reg = ToolRegistry()
+    # get_weather is the sole tool in the "weather" pack.
+    outcomes = {
+        o.name: o
+        for o in register_packs(
+            reg, deps, disabled=frozenset({"get_weather"}),
+        )
+    }
+    assert outcomes["weather"].status == "registered"
+    assert outcomes["weather"].tool_count == 0  # its only tool was disabled
+    assert "get_weather" not in reg.tools
+    assert (
+        sum(o.tool_count for o in outcomes.values())
+        == len(reg.tools)
+        == len(EXPECTED_TOOL_NAMES) - 1
+    )
+
+
+def test_outcomes_to_state_is_json_shaped():
+    """The serializer is the single home for the wire shape consumed by
+    /state.voice.tool_packs and the doctor."""
+    state = outcomes_to_state([
+        PackOutcome("audio", "registered", tool_count=5),
+        PackOutcome("timer", "skipped"),
+        PackOutcome("broken", "failed", error="RuntimeError('x')"),
+    ])
+    assert state == [
+        {"name": "audio", "status": "registered", "tool_count": 5, "error": None},
+        {"name": "timer", "status": "skipped", "tool_count": 0, "error": None},
+        {"name": "broken", "status": "failed", "tool_count": 0,
+         "error": "RuntimeError('x')"},
+    ]

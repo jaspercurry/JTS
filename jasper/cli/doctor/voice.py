@@ -89,6 +89,105 @@ def check_voice_provider_ids_manifest() -> CheckResult:
         f"got {', '.join(actual) or '<empty>'}",
     )
 
+def _voice_tool_packs_runtime() -> "list[dict] | None":
+    """Per-pack tool-registration outcomes jasper-voice actually produced,
+    from jasper-control's /state.voice.tool_packs.
+
+    None when jasper-control is unreachable or the field is absent (older
+    daemon / voice down) — callers treat None as "can't tell" and fall
+    back to reporting the static registry alone, rather than alarming.
+    Mirrors _voice_wake_legs_runtime (wake.py)."""
+    from ...control import client as control
+    try:
+        state = control.get_state(timeout=2)
+    except (control.ControlError, ValueError):
+        return None
+    voice = state.get("voice")
+    if not isinstance(voice, dict):
+        return None
+    packs = voice.get("tool_packs")
+    if not isinstance(packs, list):
+        return None
+    return packs
+
+
+def _assess_tool_packs(
+    expected: list[str], runtime: "list[dict] | None",
+) -> CheckResult:
+    """Compare the static tool-pack registry against what jasper-voice
+    actually registered at startup. Pure (the runtime list is passed in)
+    so it's unit-testable without the HTTP round-trip — mirrors
+    _assess_wake_legs.
+
+    - runtime None (control unreachable / older daemon): report the
+      registry alone, ok. We can't see runtime, so we don't alarm.
+    - any pack status=="failed": fail — that tool family silently
+      vanished from voice.
+    - a registry pack absent from the runtime report: warn (the daemon
+      likely predates it; redeploy).
+    - otherwise: ok with the active/gated/failed breakdown."""
+    label = "Tool packs"
+    if runtime is None:
+        return CheckResult(
+            label, "ok",
+            f"{len(expected)} packs defined ({', '.join(expected)}); "
+            "runtime status unavailable (jasper-control unreachable or "
+            "daemon predates tool-pack telemetry).",
+        )
+    failed = [p for p in runtime if p.get("status") == "failed"]
+    if failed:
+        detail = "; ".join(
+            f"{p.get('name')}: {p.get('error') or 'build failed'}"
+            for p in failed
+        )
+        return CheckResult(
+            label, "fail",
+            f"{len(failed)} of {len(runtime)} tool pack(s) failed to build — "
+            f"those tool families are silently missing from voice: {detail}. "
+            "See `journalctl -u jasper-voice | grep event=tool_pack.build_failed`.",
+        )
+    runtime_names = {p.get("name") for p in runtime}
+    missing = [n for n in expected if n not in runtime_names]
+    if missing:
+        return CheckResult(
+            label, "warn",
+            f"runtime reported {len(runtime)} packs but the registry defines "
+            f"{len(expected)}; not reported: {', '.join(missing)} "
+            "(daemon may predate these packs — redeploy).",
+        )
+    registered = [p for p in runtime if p.get("status") == "registered"]
+    skipped = [p for p in runtime if p.get("status") == "skipped"]
+    extra = (
+        f"; {len(skipped)} gated off "
+        f"({', '.join(str(p.get('name')) for p in skipped)})"
+        if skipped else ""
+    )
+    return CheckResult(
+        label, "ok",
+        f"{len(registered)}/{len(runtime)} packs active, 0 failed{extra}.",
+    )
+
+
+@doctor_check(order=44.5, group="voice")
+def check_tool_packs() -> CheckResult:
+    """Reports tool-pack registration health — registered vs. expected,
+    flagging any pack that failed to build.
+
+    Tool registration is fault-isolated per pack (jasper.tools.packs
+    register_packs): a pack whose build raises contributes no tools but
+    the daemon starts fine. Without this check that's observable only in
+    the journal (event=tool_pack.build_failed); here a silently-missing
+    tool family surfaces in jasper-doctor and the /system dashboard.
+
+    Reads the static registry (jasper.tools.packs.TOOL_PACKS) for the
+    expected set and cross-checks it against what jasper-voice actually
+    registered (/state.voice.tool_packs). Fail-soft: if jasper-control is
+    unreachable, reports the registry alone."""
+    from ...tools.packs import TOOL_PACKS
+    expected = [p.name for p in TOOL_PACKS]
+    return _assess_tool_packs(expected, _voice_tool_packs_runtime())
+
+
 @doctor_check(order=43, group="voice", label="daily spend cap", needs_cfg=True)
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:

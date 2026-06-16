@@ -40,7 +40,10 @@ import re
 import time as _time
 import typing
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
+
+if TYPE_CHECKING:
+    from .packs import PackOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +291,12 @@ class Tool:
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
+    # How each tool pack's registration went — set by register_packs (the
+    # producer also mutates `tools`), read back by the daemon to surface
+    # silently-missing tool families via /state.voice.tool_packs and
+    # jasper-doctor. Empty for registries built tool-by-tool (tests, the
+    # voice-eval harness) that never run the pack walk.
+    pack_outcomes: list["PackOutcome"] = field(default_factory=list)
 
     def register(
         self,
