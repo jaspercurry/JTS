@@ -19,7 +19,12 @@ from scipy.signal import fftconvolve
 
 from jasper.correction import bundles, quality, runtime_integrity, sweep
 from jasper.correction.calibration import store_calibration
-from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
+from jasper.correction.session import (
+    MeasurementSession,
+    SessionBusyError,
+    SessionConfig,
+    SessionState,
+)
 
 
 def _make_session(tmp_path: Path) -> MeasurementSession:
@@ -482,6 +487,21 @@ async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
     assert "capture" in (sess.error or "").lower()
 
 
+@pytest.mark.asyncio
+async def test_needs_noise_capture_times_out_on_later_positions_too(tmp_path: Path):
+    # The watchdog arms via _set_state on BOTH entries to needs_noise_capture:
+    # the first from IDLE (above) and later positions from needs_next_position.
+    # Pin the second path so the guard can't silently regress for positions 2+.
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    sess.state = SessionState.NEEDS_NEXT_POSITION
+    sess.current_position = 1
+    await sess.begin_noise_capture()
+    assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+
+
 # --- reset() must not race an in-flight sweep/analysis task -----------------
 @pytest.mark.asyncio
 async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: Path):
@@ -501,7 +521,9 @@ async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: P
         SessionState.VERIFYING,
     ):
         sess.state = busy
-        with pytest.raises(RuntimeError, match="in progress"):
+        # SessionBusyError (a RuntimeError subclass) so the web layer can
+        # map it to 409, not 500.
+        with pytest.raises(SessionBusyError, match="in progress"):
             await sess.reset(fake_reset)
 
 

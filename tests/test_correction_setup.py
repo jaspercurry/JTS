@@ -1071,3 +1071,35 @@ def test_needs_noise_capture_offers_cancel_in_ui():
     js = _module_js()
     block = js.split("var cancellableStates = [", 1)[1].split("]", 1)[0]
     assert "'needs_noise_capture'" in block
+
+
+def test_e2e_reset_while_busy_returns_409(monkeypatch):
+    # A reset rejected because a sweep/analysis is in flight is a state
+    # conflict, not a server error — the dispatch maps SessionBusyError to 409
+    # (a stale/buggy client hitting /reset mid-sweep; the UI never does).
+    from jasper.correction.session import SessionBusyError, SessionState
+
+    class FakeSession:
+        session_id = "busy-reset"
+        state = SessionState.SWEEPING
+
+        async def reset(self, set_cb):
+            raise SessionBusyError(
+                "cannot reset while sweeping — analysis is in progress"
+            )
+
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: FakeSession(),
+    )
+
+    server, base = _start_server()
+    try:
+        e = request_with_csrf(
+            base, "/reset", b"{}",
+            content_type="application/json", expect_status=409,
+        )
+        body = json.loads(e.read().decode())
+        assert "in progress" in body["error"]
+    finally:
+        server.shutdown()
+        server.server_close()

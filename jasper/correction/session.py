@@ -284,6 +284,15 @@ class SessionState(Enum):
     FAILED = "failed"
 
 
+class SessionBusyError(RuntimeError):
+    """An operation was refused because a transient sweep/analysis task is
+    running and would race it. Distinct from a generic error so the web
+    layer can map it to HTTP 409 (Conflict) rather than 500, and so the
+    autolevel volume-restore can tell "rejected, measurement still live"
+    apart from "reset completed". Subclasses RuntimeError for back-compat
+    with callers that catch the broader type."""
+
+
 @dataclass
 class CurveJSON:
     freqs_hz: list[float]
@@ -1874,7 +1883,7 @@ class MeasurementSession:
     ) -> None:
         async with self._lock:
             if self.state in _RESET_BUSY_STATES:
-                raise RuntimeError(
+                raise SessionBusyError(
                     f"cannot reset while {self.state.value} — a sweep or "
                     "analysis is in progress; wait for it to finish"
                 )
