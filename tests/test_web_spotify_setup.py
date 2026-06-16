@@ -310,6 +310,29 @@ def test_get_root_unconfigured_renders_setup_wizard():
     assert "Create a Spotify Developer App" in out
 
 
+def test_get_root_with_tools_return_uses_tool_pack_back_link():
+    h = _Request(
+        _handler_cls(client_id=""),
+        "/?return_to=%2Ftools%2Fpack%2Fspotify%2F",
+    )
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'href="/tools/pack/spotify/"' in out
+
+
+def test_get_root_rejects_off_origin_return_link():
+    h = _Request(
+        _handler_cls(client_id=""),
+        "/?return_to=%2F%2Fevil.test%2F",
+    )
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'href="/"' in out
+    assert "evil.test" not in out
+
+
 def test_get_root_configured_no_accounts_renders_redirect_page(monkeypatch):
     # No accounts -> redirect-URI page. Registry.load is mocked to empty.
     monkeypatch.setattr(

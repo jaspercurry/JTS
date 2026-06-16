@@ -104,6 +104,7 @@ from ._common import (
     read_form,
     reject_csrf,
     restart_systemd_units,
+    safe_back_href,
     send_html_response,
     send_see_other,
     guard_read_request,
@@ -255,6 +256,7 @@ _DISAMBIGUATION_BANNER = """
 
 def _spotify_page(
     title: str, body: str, *, csrf_token: str = "", status_msg: str = "",
+    back_href: str = "/",
 ) -> bytes:
     """Wrap a page body in the canonical document shell.
 
@@ -266,7 +268,7 @@ def _spotify_page(
     links come from canonical_page(). Page-specific CSS lives in the
     static /assets/spotify/spotify.css (page_css_href), never inline."""
     full = (
-        canonical_header(title)
+        canonical_header(title, back_href=back_href)
         + '<main class="page">'
         + canonical_banner(status_msg)
         + _DISAMBIGUATION_BANNER
@@ -312,7 +314,9 @@ def _mode_picker_html(*, selected: str = "bounce") -> str:
 """
 
 
-def _setup_wizard_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
+def _setup_wizard_html(
+    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/",
+) -> bytes:
     """State 1: no CLIENT_ID configured. Walk the user through creating
     a Spotify Developer App and pasting the credentials."""
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
@@ -355,7 +359,7 @@ def _setup_wizard_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
 """
     return _spotify_page(
         "Set up Spotify on this speaker", body,
-        csrf_token=csrf_token, status_msg=status_msg,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -423,7 +427,7 @@ def _add_account_form_html(csrf_token: str = "") -> str:
 
 def _redirect_uri_page_html(
     redirect_uri: str, client_id: str, mode: str,
-    csrf_token: str = "", *, status_msg: str = "",
+    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/",
 ) -> bytes:
     """State 2: creds saved, no accounts yet. Show the redirect-URI
     setup steps prominently, then the add-account form."""
@@ -450,7 +454,7 @@ def _redirect_uri_page_html(
 """
     return _spotify_page(
         "Almost there — connect Spotify", body,
-        csrf_token=csrf_token, status_msg=status_msg,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -481,7 +485,7 @@ def _manual_paste_form_html(csrf_token: str = "", *, hint: str | None = None) ->
 
 def _manual_prewarn_page_html(
     authorize_url: str, account_name: str,
-    csrf_token: str = "", *, status_msg: str = "",
+    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/",
 ) -> bytes:
     """Manual-mode: after /start, render this page instead of redirecting
     to Spotify. Pre-frames the "cannot connect" page so it doesn't look
@@ -516,7 +520,7 @@ def _manual_prewarn_page_html(
 """
     return _spotify_page(
         f"Connecting {account_name} on Spotify — manual mode",
-        body, csrf_token=csrf_token, status_msg=status_msg,
+        body, csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -736,7 +740,7 @@ def _claim_speaker_section_html() -> str:
 def _management_html(
     registry: Registry, redirect_uri: str, client_id: str, mode: str,
     csrf_token: str = "", *, status_msg: str = "",
-    health_result: BuildResult | None = None,
+    health_result: BuildResult | None = None, back_href: str = "/",
 ) -> bytes:
     """State 3: at least one account is OAuthed."""
     cards = []
@@ -803,7 +807,7 @@ def _management_html(
 """
     return _spotify_page(
         "Spotify accounts on this speaker", body,
-        csrf_token=csrf_token, status_msg=status_msg,
+        csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 
 
@@ -1020,6 +1024,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ctx = begin_request(self)
                 self._render_index(
                     ctx["csrf_token"], status_msg=ctx["flash"],
+                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
                 )
                 return
 
@@ -1091,10 +1096,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         # --- route bodies ---
 
-        def _render_index(self, csrf_token: str = "", *, status_msg: str = "") -> None:
+        def _render_index(
+            self,
+            csrf_token: str = "",
+            *,
+            status_msg: str = "",
+            back_href: str = "/",
+        ) -> None:
             if not cfg["client_id"]:
                 self._send_html(_setup_wizard_html(
-                    csrf_token, status_msg=status_msg,
+                    csrf_token, status_msg=status_msg, back_href=back_href,
                 ))
                 return
             registry = Registry.load(cfg["registry_path"])
@@ -1102,14 +1113,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if not registry.accounts:
                 self._send_html(_redirect_uri_page_html(
                     redirect_uri, cfg["client_id"], cfg["mode"], csrf_token,
-                    status_msg=status_msg,
+                    status_msg=status_msg, back_href=back_href,
                 ))
                 return
             health = _probe_all_health(cfg)
             self._send_html(_management_html(
                 registry, redirect_uri, cfg["client_id"], cfg["mode"],
                 csrf_token, status_msg=status_msg,
-                health_result=health,
+                health_result=health, back_href=back_href,
             ))
 
         def _handle_setup_credentials(self, form: dict[str, str]) -> None:

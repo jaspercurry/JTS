@@ -79,7 +79,9 @@ def test_render_escapes_every_untrusted_tool_field():
     assert out["noCustomPromptCount"] is True, "custom prompt counts should not render as metadata"
     assert out["noTimeoutMetadata"] is True, "tool timeout metadata should not render"
     assert out["noRiskFlagMetadata"] is True, "risk flags should not render in the operator UI"
-    assert out["promptSummaryRenamed"] is True, "prompt details should be labeled Prompt and schema"
+    assert out["toolTitleDisclosure"] is True, (
+        "tool details should disclose from the tool title/description row"
+    )
     assert out["resetOnlyForCustomPrompt"] is True, "reset should appear only for custom prompts"
     assert out["saveStartsHiddenDisabled"] is True, "save should start hidden and disabled"
     assert out["cancelStartsHidden"] is True, "cancel should start hidden"

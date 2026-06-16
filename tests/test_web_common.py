@@ -484,6 +484,27 @@ def test_canonical_header_places_right_html_in_right_slot():
     assert "<span></span>" not in out
 
 
+def test_safe_back_href_accepts_local_paths_with_query():
+    assert _common.safe_back_href("/tools/pack/spotify/?q=1") == (
+        "/tools/pack/spotify/?q=1"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "tools/pack/spotify/",
+        "//evil.test/path",
+        "https://evil.test/path",
+        "/\\evil.test/path",
+        "/tools/\npack",
+    ],
+)
+def test_safe_back_href_rejects_non_local_or_obfuscated_values(raw):
+    assert _common.safe_back_href(raw, default="/fallback/") == "/fallback/"
+
+
 # ----------------------------------------------------------------------
 # Canonical banner (the shared .banner flash)
 # ----------------------------------------------------------------------

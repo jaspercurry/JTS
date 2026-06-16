@@ -56,9 +56,12 @@
 }
 .tool-pack-card[data-pack-href] {
   cursor: pointer;
+  transition: background 150ms ease;
 }
-.tool-pack-card[data-pack-href]:hover .tool-pack-card__title {
-  color: var(--accent);
+.tool-pack-card[data-pack-href]:hover {
+  background:
+    linear-gradient(var(--surface-hover), var(--surface-hover)),
+    color-mix(in oklab, var(--secondary) 50%, transparent);
 }
 .tool-pack-card__head {
   display: flex;
@@ -109,12 +112,6 @@
   color: var(--text);
   word-break: break-word;
 }
-.tool-desc {
-  margin: 10px 0 0;
-  font-size: 13px;
-  color: var(--muted);
-}
-
 .tool-labels {
   display: flex;
   flex-wrap: wrap;
@@ -224,30 +221,42 @@
   padding: 12px 0;
   border-top: 1px solid var(--border);
 }
-.tool-row__head {
+.tool-row__frame {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
-.tool-row__id {
+.tool-row__details {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.tool-row__summary {
+  cursor: pointer;
+  color: var(--text);
+}
+.tool-row__summary::marker {
+  color: var(--muted);
+}
+.tool-row__summary-title {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
-.tool-row__actions {
-  flex: none;
-}
-.tool-row__details {
-  margin-top: 8px;
+.tool-desc {
+  display: block;
+  margin: 4px 0 0;
   font-size: 13px;
   color: var(--muted);
 }
-.tool-row__details summary {
-  cursor: pointer;
-  color: var(--text);
-  font-weight: 600;
+.tool-row__actions {
+  flex: none;
+}
+.tool-row__details[open] .tool-desc {
+  margin-bottom: 10px;
 }
 .prompt-editor {
   margin-top: 10px;
@@ -325,7 +334,7 @@
 @media (max-width: 640px) {
   .tool-pack-card__head,
   .tool-detail__head,
-  .tool-row__head,
+  .tool-row__frame,
   .tools-apply {
     flex-direction: column;
     align-items: stretch;

@@ -322,6 +322,31 @@ def canonical_header(
     )
 
 
+def safe_back_href(raw: str | None, *, default: str = "/") -> str:
+    """Return a local absolute path suitable for a header back link.
+
+    `return_to` query params are user-controlled, so keep only same-site
+    absolute paths like `/tools/pack/spotify/`. Reject protocol-relative
+    URLs, schemes, backslashes, and control-character tricks before the value
+    reaches `canonical_header()`.
+    """
+    if not raw:
+        return default
+    value = raw.strip()
+    if (
+        not value.startswith("/")
+        or value.startswith("//")
+        or "\\" in value
+        or any(ord(ch) < 32 for ch in value)
+    ):
+        return default
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return default
+    path = parsed.path or "/"
+    return urllib.parse.urlunsplit(("", "", path, parsed.query, ""))
+
+
 def canonical_banner(message: str) -> str:
     """A canonical flash banner (`.banner`) for a migrated wizard.
 
