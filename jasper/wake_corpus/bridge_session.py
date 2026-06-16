@@ -27,6 +27,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper import audio_validation, wake_legs
+from jasper.log_event import log_event
 from jasper.audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -731,7 +732,12 @@ def build_session_audio_context(
             ),
         )
     except Exception as e:  # noqa: BLE001 - metadata must not block recording
-        logger.warning("event=wake_corpus.audio_context_snapshot_failed error=%s", e)
+        log_event(
+            logger,
+            "wake_corpus.audio_context_snapshot_failed",
+            error=e,
+            level=logging.WARNING,
+        )
         return {**fallback, "error": str(e)}
 
     merged_env = {**system_env, **bridge_env}
@@ -1644,9 +1650,11 @@ def _capture_plan_runtime_context() -> tuple[dict[str, Any] | None, dict[str, An
             ),
         )
     except Exception as e:  # noqa: BLE001 - advisory metadata only
-        logger.debug(
-            "event=wake_corpus.capture_plan_runtime_snapshot_failed error=%s",
-            e,
+        log_event(
+            logger,
+            "wake_corpus.capture_plan_runtime_snapshot_failed",
+            error=e,
+            level=logging.DEBUG,
         )
         return None, None
     return profile_status["audio_profile"], asdict(runtime)

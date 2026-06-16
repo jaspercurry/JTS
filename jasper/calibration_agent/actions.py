@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from . import response
+from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +81,13 @@ def run_validated_action_plan(
             issues.append(result["issue"])
 
     status = _overall_status(action_results, issues)
-    logger.info(
-        "event=calibration_agent.action_run status=%s actions=%d executed=%d pending=%d",
-        status,
-        len(action_results),
-        sum(1 for item in action_results if item.get("executed")),
-        sum(1 for item in action_results if item.get("pending")),
+    log_event(
+        logger,
+        "calibration_agent.action_run",
+        status=status,
+        actions=len(action_results),
+        executed=sum(1 for item in action_results if item.get("executed")),
+        pending=sum(1 for item in action_results if item.get("pending")),
     )
     return _run_result(
         accepted=not any(item["severity"] == "fail" for item in issues),
@@ -253,12 +255,14 @@ def _call_executor(
     try:
         payload = dict(executor(action) or {})
     except Exception as e:
-        logger.warning(
-            "event=calibration_agent.action_executor result=failed "
-            "action_type=%s index=%d err=%r",
-            action_type,
-            index,
-            e,
+        log_event(
+            logger,
+            "calibration_agent.action_executor",
+            result="failed",
+            action_type=action_type,
+            index=index,
+            err=repr(e),
+            level=logging.WARNING,
         )
         return False, {}, _issue(
             "fail",

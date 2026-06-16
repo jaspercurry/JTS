@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROFILE_PATH = "/var/lib/jasper/assistant_loudness_profiles.json"
@@ -202,11 +204,16 @@ def update_profile_from_measurement(
             phrase_hash=_phrase_hash(phrase) if phrase else "",
         )
         _save_profile_unlocked(profile, path=path)
-    logger.info(
-        "event=assistant_loudness.profile_saved provider=%s model=%s "
-        "voice=%s method=%s source_lufs=%.1f peak_dbfs=%.1f confidence=%.2f",
-        provider, model, voice, method,
-        profile.source_lufs, profile.source_peak_dbfs, profile.confidence,
+    log_event(
+        logger,
+        "assistant_loudness.profile_saved",
+        provider=provider,
+        model=model,
+        voice=voice,
+        method=method,
+        source_lufs=f"{profile.source_lufs:.1f}",
+        peak_dbfs=f"{profile.source_peak_dbfs:.1f}",
+        confidence=f"{profile.confidence:.2f}",
     )
     return profile
 
@@ -292,9 +299,12 @@ def ensure_seed_profile(
     )
     if backend is None:
         return None
-    logger.info(
-        "event=assistant_loudness.seed_start provider=%s model=%s voice=%s",
-        provider, model, voice,
+    log_event(
+        logger,
+        "assistant_loudness.seed_start",
+        provider=provider,
+        model=model,
+        voice=voice,
     )
     result = backend.synthesise(CALIBRATION_TEXT)
     measurement = measure_pcm_24k_mono(result.pcm_24k)

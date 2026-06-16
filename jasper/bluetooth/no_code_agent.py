@@ -10,6 +10,8 @@ import signal
 from dbus_next import BusType  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 
+from jasper.log_event import log_event
+
 from .adapter import set_discoverable, state as adapter_state
 from .agent import NoCodeAgent, register_agent, unregister_agent
 
@@ -26,13 +28,19 @@ async def _close_pairing_window_floor(
     try:
         await close_pairing_window(False)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "event=bluetooth_agent.close_pairing_window_failed reason=%s err=%r",
-            reason,
-            exc,
+        log_event(
+            logger,
+            "bluetooth_agent.close_pairing_window_failed",
+            reason=reason,
+            err=repr(exc),
+            level=logging.WARNING,
         )
         return False
-    logger.info("event=bluetooth_agent.pairing_window_closed reason=%s", reason)
+    log_event(
+        logger,
+        "bluetooth_agent.pairing_window_closed",
+        reason=reason,
+    )
     return True
 
 
@@ -44,9 +52,11 @@ async def _enforce_pairable_floor_once(
     try:
         snapshot = await read_state()
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "event=bluetooth_agent.pairable_floor_probe_failed err=%r",
-            exc,
+        log_event(
+            logger,
+            "bluetooth_agent.pairable_floor_probe_failed",
+            err=repr(exc),
+            level=logging.WARNING,
         )
         return False
 
@@ -93,14 +103,18 @@ async def _run() -> None:
     try:
         await _close_pairing_window_floor("startup")
         floor_task = asyncio.create_task(_pairable_floor_watch(stop))
-        logger.info("event=bluetooth_agent.ready capability=NoInputNoOutput")
+        log_event(
+            logger,
+            "bluetooth_agent.ready",
+            capability="NoInputNoOutput",
+        )
         await stop.wait()
     finally:
         if floor_task is not None:
             floor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await floor_task
-        logger.info("event=bluetooth_agent.stopping")
+        log_event(logger, "bluetooth_agent.stopping")
         await _close_pairing_window_floor("stopping")
         await unregister_agent(bus)
         bus.disconnect()

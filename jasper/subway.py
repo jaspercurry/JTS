@@ -61,6 +61,7 @@ from datetime import datetime
 
 import httpx
 
+from .log_event import log_event
 from .transit._mta_stations import Station as StationInfo, stations_by_id
 
 logger = logging.getLogger(__name__)
@@ -231,15 +232,22 @@ class SubwayClient:
             arrivals = self._arrivals_via_nyct_gtfs(directions, line_filter)
             source = "nyct-gtfs"
         if arrivals is None:
-            logger.warning(
-                "event=transit.subway.arrivals.error station=%s reason=all-sources-down",
-                self._station_id,
+            log_event(
+                logger,
+                "transit.subway.arrivals.error",
+                station=self._station_id,
+                reason="all-sources-down",
+                level=logging.WARNING,
             )
             return {"error": "couldn't reach MTA data sources"}
 
-        logger.info(
-            "event=transit.subway.arrivals.ok station=%s source=%s n=%d directions=%s",
-            self._station_id, source, len(arrivals), "+".join(directions),
+        log_event(
+            logger,
+            "transit.subway.arrivals.ok",
+            station=self._station_id,
+            source=source,
+            n=len(arrivals),
+            directions="+".join(directions),
         )
         return self._wrap(arrivals, directions, source)
 
@@ -314,23 +322,32 @@ class SubwayClient:
         try:
             data = self._fetch_subwaynow_cached(self._station_id)
         except Exception as e:  # noqa: BLE001
-            logger.info(
-                "event=transit.subway.fetch.error station=%s source=subwaynow err=%r",
-                self._station_id, e,
+            log_event(
+                logger,
+                "transit.subway.fetch.error",
+                station=self._station_id,
+                source="subwaynow",
+                err=repr(e),
             )
             return None
         if not isinstance(data, dict):
-            logger.info(
-                "event=transit.subway.fetch.error station=%s source=subwaynow err=non-dict",
-                self._station_id,
+            log_event(
+                logger,
+                "transit.subway.fetch.error",
+                station=self._station_id,
+                source="subwaynow",
+                err="non-dict",
             )
             return None
         try:
             return self._extract_subwaynow(data, directions, line_filter)
         except (KeyError, TypeError, ValueError) as e:
-            logger.info(
-                "event=transit.subway.parse.error station=%s source=subwaynow err=%r",
-                self._station_id, e,
+            log_event(
+                logger,
+                "transit.subway.parse.error",
+                station=self._station_id,
+                source="subwaynow",
+                err=repr(e),
             )
             return None
 
@@ -431,9 +448,13 @@ class SubwayClient:
             try:
                 feed = self._get_feed(representative_line)
             except Exception as e:  # noqa: BLE001
-                logger.info(
-                    "event=transit.subway.fetch.error station=%s source=nyct-gtfs feed=%s err=%r",
-                    self._station_id, group, e,
+                log_event(
+                    logger,
+                    "transit.subway.fetch.error",
+                    station=self._station_id,
+                    source="nyct-gtfs",
+                    feed=group,
+                    err=repr(e),
                 )
                 continue
 
@@ -442,9 +463,12 @@ class SubwayClient:
                 try:
                     age = (now - last_gen).total_seconds()
                     if age > STALE_AFTER_SEC:
-                        logger.info(
-                            "event=transit.subway.feed.stale station=%s feed=%s age_s=%d",
-                            self._station_id, group, int(age),
+                        log_event(
+                            logger,
+                            "transit.subway.feed.stale",
+                            station=self._station_id,
+                            feed=group,
+                            age_s=int(age),
                         )
                         continue
                 except TypeError:
@@ -467,9 +491,12 @@ class SubwayClient:
                             underway=True,
                         )
                     except Exception as e:  # noqa: BLE001
-                        logger.info(
-                            "event=transit.subway.filter.error line=%s platform=%s err=%r",
-                            line, platform_id, e,
+                        log_event(
+                            logger,
+                            "transit.subway.filter.error",
+                            line=line,
+                            platform=platform_id,
+                            err=repr(e),
                         )
                         continue
                     for trip in trips:

@@ -44,6 +44,7 @@ import subprocess
 from typing import Optional
 
 from jasper.control.client import AsyncControlClient, ControlError
+from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +138,11 @@ class VolumeBridge:
         try:
             self._discover()
         except VolumeBridgeUnavailable as e:
-            logger.warning(
-                "event=usbsink.volume_bridge_disabled reason=%s", e,
+            log_event(
+                logger,
+                "usbsink.volume_bridge_disabled",
+                reason=e,
+                level=logging.WARNING,
             )
             # Mixer isn't present. We'll quietly sit here waiting for
             # cancellation rather than spinning on discovery retries —
@@ -149,11 +153,13 @@ class VolumeBridge:
         self._control = AsyncControlClient(
             self._control_url, timeout=self._http_timeout,
         )
-        logger.info(
-            "event=usbsink.volume_bridge_started "
-            "card=%s vol_numid=%d switch_numid=%d range=%d..%d",
-            self._card_name, self._vol_numid, self._switch_numid,
-            self._vol_min, self._vol_max,
+        log_event(
+            logger,
+            "usbsink.volume_bridge_started",
+            card=self._card_name,
+            vol_numid=self._vol_numid,
+            switch_numid=self._switch_numid,
+            range=f"{self._vol_min}..{self._vol_max}",
         )
         try:
             while True:
@@ -166,12 +172,14 @@ class VolumeBridge:
                     # One bad poll shouldn't kill the loop — log
                     # and continue. Persistent failures get caught
                     # by the daemon's diagnostic log.
-                    logger.debug(
-                        "event=usbsink.volume_tick_error error=%s",
-                        e,
+                    log_event(
+                        logger,
+                        "usbsink.volume_tick_error",
+                        error=e,
+                        level=logging.DEBUG,
                     )
         except asyncio.CancelledError:
-            logger.info("event=usbsink.volume_bridge_stopping")
+            log_event(logger, "usbsink.volume_bridge_stopping")
             raise
 
     # ------------------------------------------------------------------
@@ -291,20 +299,28 @@ class VolumeBridge:
         try:
             resp = await self._control.set_volume(pct, source="usbsink")
         except ControlError as e:
-            logger.warning(
-                "event=usbsink.volume_post_failed pct=%d error=%s",
-                pct, e,
+            log_event(
+                logger,
+                "usbsink.volume_post_failed",
+                pct=pct,
+                error=e,
+                level=logging.WARNING,
             )
             return
         if not resp.ok:
-            logger.warning(
-                "event=usbsink.volume_post_bad_status pct=%d status=%d",
-                pct, resp.status,
+            log_event(
+                logger,
+                "usbsink.volume_post_bad_status",
+                pct=pct,
+                status=resp.status,
+                level=logging.WARNING,
             )
             return
-        logger.info(
-            "event=usbsink.volume_observed pct=%d source=host_slider",
-            pct,
+        log_event(
+            logger,
+            "usbsink.volume_observed",
+            pct=pct,
+            source="host_slider",
         )
 
 

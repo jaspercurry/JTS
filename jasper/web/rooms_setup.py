@@ -87,6 +87,7 @@ from .. import identity
 from ..mdns import browse_once
 from ..multiroom.state import parse_grouping_response, read_grouping_state
 from ..peering import config as peering_config
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_header,
@@ -518,7 +519,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     out of the handler. Structured event= logs on every outcome."""
     parsed, err = _read_json_body(handler)
     if err is not None:
-        logger.warning("event=rooms.peering.save.reject reason=%s", err)
+        log_event(logger, "rooms.peering.save.reject", reason=err, level=logging.WARNING)
         _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
         return
 
@@ -544,16 +545,18 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
         # mode=0o644 — no secrets, just config.
         write_env_file(env_path, values, mode=0o644)
     except OSError as e:
-        logger.exception("event=rooms.peering.save.error")
+        log_event(logger, "rooms.peering.save.error", level=logging.ERROR, exc_info=True)
         _send_json(
             handler, {"ok": False, "error": f"write failed: {e}"},
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
         return
 
-    logger.info(
-        "event=rooms.peering.save mode=%s primary=%d",
-        values["JASPER_PEERING"], int(primary),
+    log_event(
+        logger,
+        "rooms.peering.save",
+        mode=values["JASPER_PEERING"],
+        primary=int(primary),
     )
 
     # Restart both daemons — jasper-voice reads JASPER_PEERING to know whether
@@ -771,7 +774,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     """
     parsed, err = _read_json_body(handler)
     if err is not None:
-        logger.warning("event=rooms.bond.save.reject reason=%s", err)
+        log_event(logger, "rooms.bond.save.reject", reason=err, level=logging.WARNING)
         _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
         return
 
@@ -840,13 +843,21 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     # (a healthy pair logs nothing here — no journal spam).
     for r in results:
         if not r["ok"]:
-            logger.warning(
-                "event=rooms.bond.member_failed bond=%s addr=%s role=%s detail=%s",
-                bond_id, r.get("addr") or "?", r.get("role") or "?", r["detail"],
+            log_event(
+                logger,
+                "rooms.bond.member_failed",
+                bond=bond_id,
+                addr=r.get("addr") or "?",
+                role=r.get("role") or "?",
+                detail=r["detail"],
+                level=logging.WARNING,
             )
-    logger.info(
-        "event=rooms.bond.save bond=%s members=%d ok=%s",
-        bond_id, len(members), all_ok,
+    log_event(
+        logger,
+        "rooms.bond.save",
+        bond=bond_id,
+        members=len(members),
+        ok=all_ok,
     )
     _send_json(
         handler,
@@ -938,9 +949,13 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # only; the empty-addr target is self.
     for r in results:
         if not r["ok"]:
-            logger.warning(
-                "event=rooms.unbond.member_failed bond=%s addr=%s detail=%s",
-                bond_id, r["addr"] or "(self)", r["detail"],
+            log_event(
+                logger,
+                "rooms.unbond.member_failed",
+                bond=bond_id,
+                addr=r["addr"] or "(self)",
+                detail=r["detail"],
+                level=logging.WARNING,
             )
     # `unreachable` = candidates whose discovery GET failed. A same-bond
     # follower offline at dissolve time lands here (we can't read its bond_id,
@@ -948,11 +963,15 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # the count explains a "I dissolved but a speaker stayed grouped" report
     # without a per-candidate line.
     unreachable = sum(1 for pg in candidate_groupings if pg is None)
-    logger.info(
-        "event=rooms.unbond bond=%s roster=%s unreachable=%d peers=%d "
-        "self_ok=%s dissolved=%d",
-        bond_id, "yes" if roster_addr else "no", unreachable,
-        len(peer_addrs), self_ok, len(dissolved),
+    log_event(
+        logger,
+        "rooms.unbond",
+        bond=bond_id,
+        roster="yes" if roster_addr else "no",
+        unreachable=unreachable,
+        peers=len(peer_addrs),
+        self_ok=self_ok,
+        dissolved=len(dissolved),
     )
     _send_json(
         handler,
@@ -1004,9 +1023,12 @@ def _resolve_bond_peer(
                 if (pg2 is not None
                         and str(pg2.get("bond_id") or "").strip()
                         == bond_id):
-                    logger.info(
-                        "event=rooms.peer_addr_drift name=%s old=%s new=%s",
-                        roster_name, roster_addr, addr,
+                    log_event(
+                        logger,
+                        "rooms.peer_addr_drift",
+                        name=roster_name,
+                        old=roster_addr,
+                        new=addr,
                     )
                     return addr, pg2, ""
         label = roster_name or roster_addr
@@ -1129,9 +1151,13 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     all_ok = all(r["ok"] for r in results)
     for r in results:
         if not r["ok"]:
-            logger.warning(
-                "event=rooms.swap.member_failed bond=%s addr=%s detail=%s",
-                bond_id, r["addr"] or "(self)", r["detail"],
+            log_event(
+                logger,
+                "rooms.swap.member_failed",
+                bond=bond_id,
+                addr=r["addr"] or "(self)",
+                detail=r["detail"],
+                level=logging.WARNING,
             )
     # The two writes fan out CONCURRENTLY, so exactly-one-failed leaves the
     # pair on a SAME-channel state ({left,left} / {right,right}) — audibly
@@ -1149,14 +1175,24 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
             rb_addr, _body(rb_grouping, rb_channel), known, token=token,
         )
         rolled_back = bool(rb_ok)
-        logger.warning(
-            "event=rooms.swap.rollback bond=%s addr=%s channel=%s ok=%s detail=%s",
-            bond_id, rb_addr or "(self)", rb_channel, rb_ok, rb_detail,
+        log_event(
+            logger,
+            "rooms.swap.rollback",
+            bond=bond_id,
+            addr=rb_addr or "(self)",
+            channel=rb_channel,
+            ok=rb_ok,
+            detail=rb_detail,
+            level=logging.WARNING,
         )
-    logger.info(
-        "event=rooms.swap bond=%s self=%s->%s peer=%s->%s repaired=%s ok=%s",
-        bond_id, self_channel, swapped_self, peer_channel, swapped_peer,
-        repairing, all_ok,
+    log_event(
+        logger,
+        "rooms.swap",
+        bond=bond_id,
+        self=f"{self_channel}->{swapped_self}",
+        peer=f"{peer_channel}->{swapped_peer}",
+        repaired=repairing,
+        ok=all_ok,
     )
     payload = {"ok": all_ok, "bond_id": bond_id, "results": results}
     if repairing:
@@ -1247,9 +1283,13 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
     ok, detail = _post_grouping_to_member(
         addr, body, known, token=_request_control_token(handler),
     )
-    logger.info(
-        "event=rooms.trim addr=%s delta=%.1f new=%.1f ok=%s",
-        addr or "(self)", delta, new_trim, ok,
+    log_event(
+        logger,
+        "rooms.trim",
+        addr=addr or "(self)",
+        delta=f"{delta:.1f}",
+        new=f"{new_trim:.1f}",
+        ok=ok,
     )
     _send_json(
         handler,

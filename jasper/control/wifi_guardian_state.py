@@ -28,6 +28,8 @@ import os
 import subprocess
 from typing import Any
 
+from jasper.log_event import log_event
+
 from ..wifi_guardian_persistence import (
     DEFAULT_PATH as _DEFAULT_STASH,
     read_stash,
@@ -185,7 +187,12 @@ def snapshot() -> dict[str, Any]:
     try:
         stash = read_stash(_stash_path())
     except Exception as e:  # noqa: BLE001
-        logger.warning("event=wifi_guardian_state.stash_read_failed err=%r", e)
+        log_event(
+            logger,
+            "wifi_guardian_state.stash_read_failed",
+            err=repr(e),
+            level=logging.WARNING,
+        )
         stash = None
 
     if stash is not None:

@@ -40,6 +40,7 @@ import os
 from pathlib import Path
 
 from .. import atomic_io
+from ..log_event import log_event
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
 
@@ -216,9 +217,12 @@ async def apply_bonded_leader_config(
         and not _is_pipe_config(current)
     ):
         _write_stash(current)
-    logger.info(
-        "event=multiroom.camilla_apply result=bonded path=%s prior=%s",
-        BONDED_CONFIG_PATH, current or "(none)",
+    log_event(
+        logger,
+        "multiroom.camilla_apply",
+        result="bonded",
+        path=BONDED_CONFIG_PATH,
+        prior=current or "(none)",
     )
     return BONDED_CONFIG_PATH
 
@@ -287,9 +291,12 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
         ),
     )
     _clear_stash()
-    logger.info(
-        "event=multiroom.camilla_apply result=solo_restored path=%s via=%s",
-        candidate, action,
+    log_event(
+        logger,
+        "multiroom.camilla_apply",
+        result="solo_restored",
+        path=candidate,
+        via=action,
     )
     return candidate
 

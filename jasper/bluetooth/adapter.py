@@ -13,6 +13,8 @@ from dbus_next import BusType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
+from ..log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 BLUEZ_BUS = "org.bluez"
@@ -43,10 +45,12 @@ async def _close_pairing_window(props, *, best_effort: bool = False) -> None:
         except Exception as exc:  # noqa: BLE001
             if not best_effort:
                 raise
-            logger.warning(
-                "event=bluetooth_pairing_window.rollback_failed property=%s err=%s",
-                key,
-                exc,
+            log_event(
+                logger,
+                "bluetooth_pairing_window.rollback_failed",
+                property=key,
+                err=exc,
+                level=logging.WARNING,
             )
 
 
@@ -149,10 +153,11 @@ async def set_discoverable(
                     "org.bluez.Adapter1", "Discoverable", Variant("b", True),
                 )
             except Exception:
-                logger.warning(
-                    "event=bluetooth_pairing_window.open_failed_rollback "
-                    "adapter=%s",
-                    adapter,
+                log_event(
+                    logger,
+                    "bluetooth_pairing_window.open_failed_rollback",
+                    adapter=adapter,
+                    level=logging.WARNING,
                     exc_info=True,
                 )
                 await _close_pairing_window(props, best_effort=True)

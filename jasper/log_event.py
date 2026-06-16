@@ -110,22 +110,46 @@ def log_event(
     /,
     *,
     level: int = logging.INFO,
-    **fields: Any,
+    exc_info: Any = False,
+    fields: dict[str, Any] | None = None,
+    **kwfields: Any,
 ) -> None:
     """Emit one canonical structured event line through ``logger``.
 
     ``name`` is the ``domain.action`` event name (e.g.
-    ``"knob.action"``); ``fields`` become ``k=v`` pairs in the order
-    given. Renders logfmt by default, or a JSON object when
+    ``"knob.action"``); keyword fields become ``k=v`` pairs in the
+    order given. Renders logfmt by default, or a JSON object when
     ``JASPER_LOG_JSON`` is truthy. The line is fully rendered before
     it reaches ``logger`` (no lazy ``%`` args), so values containing
     ``%`` are safe.
 
+    ``exc_info`` is passed straight to ``logger.log`` — pass ``True``
+    from an ``except`` block to attach the current traceback, exactly
+    as ``logger.exception("event=...")`` did before migration. It
+    defaults to ``False`` so the common (non-exception) path is
+    byte-identical to a plain ``logger.info``/``warning`` call.
+
+    ``fields`` is an explicit ordered mapping merged *before* the
+    keyword fields. Use it for a field whose name can't be a keyword
+    argument: one that collides with a reserved parameter — chiefly
+    ``level`` (the volume level is a field literally named ``level``)
+    or ``exc_info`` — or one that isn't a valid Python identifier.
+    Order is preserved (``fields`` first, then ``**kwfields``), so a
+    collision-free event can keep using plain keywords and only the
+    rare colliding one reaches for ``fields=``.
+
     ``logger`` and ``name`` are positional-only so an event can carry
     fields literally named ``logger`` or ``name`` without colliding.
     """
+    merged: dict[str, Any] = {**(fields or {}), **kwfields}
     if json_mode_enabled():
-        message = render_json(name, fields)
+        message = render_json(name, merged)
     else:
-        message = render_logfmt(name, fields)
-    logger.log(level, message)
+        message = render_logfmt(name, merged)
+    # Only thread exc_info when asked, so the common (non-exception)
+    # path is exactly `logger.log(level, message)` — same LogRecord
+    # (exc_info=None) as the plain call this replaces.
+    if exc_info:
+        logger.log(level, message, exc_info=exc_info)
+    else:
+        logger.log(level, message)

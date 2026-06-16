@@ -15,6 +15,8 @@ import threading
 from http import HTTPStatus
 from typing import Any, Callable
 
+from jasper.log_event import log_event
+
 from .pair_flow import members_by_channel, resolve_pair
 
 logger = logging.getLogger("jasper.web.sync")
@@ -101,13 +103,13 @@ async def _session_window(entered: threading.Event) -> None:
             try:
                 await asyncio.wait_for(release.wait(), SESSION_MAX_S)
             except asyncio.TimeoutError:
-                logger.warning("event=sync.session_timeout")
+                log_event(logger, "sync.session_timeout", level=logging.WARNING)
                 with _lock:
                     if _state["phase"] == "measuring":
                         _state["release_window"] = None
                         _reset_locked("session timed out")
     except Exception as e:  # noqa: BLE001
-        logger.exception("event=sync.window_failed")
+        log_event(logger, "sync.window_failed", level=logging.ERROR, exc_info=True)
         with _lock:
             _state["release_window"] = None
             _reset_locked(f"measurement window failed: {e}")
@@ -145,7 +147,7 @@ async def _watch_playback(proc) -> None:
     with _lock:
         if _state.get("playback", {}).get("proc") is proc:
             _state["playback"] = None
-            logger.info("event=sync.marker_finished")
+            log_event(logger, "sync.marker_finished")
 
 
 def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
@@ -179,7 +181,7 @@ def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
             return {"ok": False, "error": _state["error"]}, \
                 HTTPStatus.INTERNAL_SERVER_ERROR
         members_out = _public_members(_state["members"])
-    logger.info("event=sync.session_started")
+    log_event(logger, "sync.session_started")
     return {"ok": True, "members": members_out}, HTTPStatus.OK
 
 
@@ -194,13 +196,13 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
     try:
         proc = run_async(_start_playback(_marker_wav_path()), timeout=10.0)
     except Exception as e:  # noqa: BLE001
-        logger.exception("event=sync.play_spawn_failed")
+        log_event(logger, "sync.play_spawn_failed", level=logging.ERROR, exc_info=True)
         return {"ok": False, "error": f"playback failed: {e}"}, \
             HTTPStatus.INTERNAL_SERVER_ERROR
     with _lock:
         _state["playback"] = {"proc": proc}
     schedule(_watch_playback(proc))
-    logger.info("event=sync.marker_started")
+    log_event(logger, "sync.marker_started")
     return {"ok": True}, HTTPStatus.OK
 
 
@@ -217,7 +219,7 @@ def handle_analyze(wav_bytes: bytes) -> tuple[dict, int]:
     try:
         result = analyze_wav_bytes(wav_bytes)
     except Exception as e:  # noqa: BLE001
-        logger.exception("event=sync.analyze_failed")
+        log_event(logger, "sync.analyze_failed", level=logging.ERROR, exc_info=True)
         return {"ok": False, "error": str(e)}, HTTPStatus.BAD_REQUEST
     recommendation = recommend_channel_delays(result.delta_ms)
     payload = {
@@ -236,9 +238,12 @@ def handle_analyze(wav_bytes: bytes) -> tuple[dict, int]:
             release = None
     if release is not None:
         release()
-    logger.info(
-        "event=sync.analyzed ok=%s delta_ms=%.3f confidence=%.3f",
-        result.ok, result.delta_ms, result.confidence,
+    log_event(
+        logger,
+        "sync.analyzed",
+        ok=result.ok,
+        delta_ms=f"{result.delta_ms:.3f}",
+        confidence=f"{result.confidence:.3f}",
     )
     return payload, HTTPStatus.OK
 
@@ -280,9 +285,12 @@ def handle_apply() -> tuple[dict, int]:
     if ok:
         with _lock:
             _state["phase"] = "applied"
-    logger.info(
-        "event=sync.apply ok=%s left_delay_ms=%.3f right_delay_ms=%.3f",
-        ok, rec["left_delay_ms"], rec["right_delay_ms"],
+    log_event(
+        logger,
+        "sync.apply",
+        ok=ok,
+        left_delay_ms=f"{rec['left_delay_ms']:.3f}",
+        right_delay_ms=f"{rec['right_delay_ms']:.3f}",
     )
     status = HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY
     return {"ok": ok, "detail": detail, "applied": rec}, status
@@ -291,7 +299,7 @@ def handle_apply() -> tuple[dict, int]:
 def handle_stop() -> tuple[dict, int]:
     with _lock:
         _reset_locked()
-    logger.info("event=sync.stopped")
+    log_event(logger, "sync.stopped")
     return {"ok": True}, HTTPStatus.OK
 
 

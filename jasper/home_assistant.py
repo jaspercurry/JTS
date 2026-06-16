@@ -53,6 +53,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from jasper.log_event import log_event
+
 if TYPE_CHECKING:
     import httpx
 
@@ -292,25 +294,37 @@ class HAClient:
                 headers=self._headers(),
             )
         except httpx.TimeoutException as e:
-            logger.warning(
-                "event=ha.call outcome=timeout query_len=%d detail=%r",
-                len(query), str(e),
+            log_event(
+                logger,
+                "ha.call",
+                outcome="timeout",
+                query_len=len(query),
+                detail=repr(str(e)),
+                level=logging.WARNING,
             )
             return self._error(OUTCOME_TIMEOUT, "HA did not respond in time", started)
         except httpx.HTTPError as e:
             # ConnectError, NetworkError, ConnectTimeout-as-network, etc.
-            logger.warning(
-                "event=ha.call outcome=network query_len=%d detail=%r",
-                len(query), str(e),
+            log_event(
+                logger,
+                "ha.call",
+                outcome="network",
+                query_len=len(query),
+                detail=repr(str(e)),
+                level=logging.WARNING,
             )
             return self._error(OUTCOME_NETWORK, str(e)[:200], started)
 
         latency_ms = int((self._clock() - started) * 1000)
 
         if resp.status_code == 401:
-            logger.warning(
-                "event=ha.call outcome=auth status=401 latency_ms=%d",
-                latency_ms,
+            log_event(
+                logger,
+                "ha.call",
+                outcome="auth",
+                status=401,
+                latency_ms=latency_ms,
+                level=logging.WARNING,
             )
             return self._error(
                 OUTCOME_AUTH,
@@ -319,9 +333,14 @@ class HAClient:
             )
         if resp.status_code >= 500:
             text = (resp.text or "")[:200]
-            logger.warning(
-                "event=ha.call outcome=agent_error status=%d latency_ms=%d body=%s",
-                resp.status_code, latency_ms, text,
+            log_event(
+                logger,
+                "ha.call",
+                outcome="agent_error",
+                status=resp.status_code,
+                latency_ms=latency_ms,
+                body=text,
+                level=logging.WARNING,
             )
             return self._error(
                 OUTCOME_AGENT_ERROR,
@@ -330,9 +349,14 @@ class HAClient:
             )
         if resp.status_code != 200:
             text = (resp.text or "")[:200]
-            logger.warning(
-                "event=ha.call outcome=parse_error status=%d latency_ms=%d body=%s",
-                resp.status_code, latency_ms, text,
+            log_event(
+                logger,
+                "ha.call",
+                outcome="parse_error",
+                status=resp.status_code,
+                latency_ms=latency_ms,
+                body=text,
+                level=logging.WARNING,
             )
             return self._error(
                 OUTCOME_PARSE_ERROR,
@@ -343,9 +367,13 @@ class HAClient:
         try:
             data = resp.json()
         except ValueError as e:
-            logger.warning(
-                "event=ha.call outcome=parse_error detail=json_decode err=%r",
-                str(e),
+            log_event(
+                logger,
+                "ha.call",
+                outcome="parse_error",
+                detail="json_decode",
+                err=repr(str(e)),
+                level=logging.WARNING,
             )
             return self._error(OUTCOME_PARSE_ERROR, "could not decode HA response", started, latency_ms)
 
@@ -393,14 +421,20 @@ class HAClient:
             outcome = OUTCOME_PARSE_ERROR
         success = bool(speech_text)
 
-        logger.info(
-            "event=ha.call outcome=%s response_type=%s error_code=%s "
-            "speech_len=%d latency_ms=%d conv_id=%s continue=%s "
-            "targets_success=%d targets_failed=%d",
-            outcome, rtype or "-", error_code or "-",
-            len(speech_text), latency_ms,
-            (conv_id or "-")[:12], continue_conv,
-            len(targets_success), len(targets_failed),
+        log_event(
+            logger,
+            "ha.call",
+            **{
+                "outcome": outcome,
+                "response_type": rtype or "-",
+                "error_code": error_code or "-",
+                "speech_len": len(speech_text),
+                "latency_ms": latency_ms,
+                "conv_id": (conv_id or "-")[:12],
+                "continue": continue_conv,
+                "targets_success": len(targets_success),
+                "targets_failed": len(targets_failed),
+            },
         )
 
         return HAResponse(
@@ -650,34 +684,40 @@ async def probe_status(
         # when configured (no point logging "unconfigured, untouched").
         if new_state[0]:
             if new_state[1]:
-                logger.info(
-                    "event=ha.reachable url=%s instance=%s version=%s",
-                    result.get("url") or url,
-                    result.get("instance_name") or "?",
-                    result.get("version") or "?",
+                log_event(
+                    logger,
+                    "ha.reachable",
+                    url=result.get("url") or url,
+                    instance=result.get("instance_name") or "?",
+                    version=result.get("version") or "?",
                 )
             else:
-                logger.warning(
-                    "event=ha.unreachable url=%s error=%s",
-                    result.get("url") or url,
-                    result.get("error") or "unknown",
+                log_event(
+                    logger,
+                    "ha.unreachable",
+                    url=result.get("url") or url,
+                    error=result.get("error") or "unknown",
+                    level=logging.WARNING,
                 )
     elif new_state != _last_state:
         if new_state[0] and new_state[1]:
-            logger.info(
-                "event=ha.reachable url=%s instance=%s version=%s",
-                result.get("url") or url,
-                result.get("instance_name") or "?",
-                result.get("version") or "?",
+            log_event(
+                logger,
+                "ha.reachable",
+                url=result.get("url") or url,
+                instance=result.get("instance_name") or "?",
+                version=result.get("version") or "?",
             )
         elif new_state[0] and not new_state[1]:
-            logger.warning(
-                "event=ha.unreachable url=%s error=%s",
-                result.get("url") or url,
-                result.get("error") or "unknown",
+            log_event(
+                logger,
+                "ha.unreachable",
+                url=result.get("url") or url,
+                error=result.get("error") or "unknown",
+                level=logging.WARNING,
             )
         elif not new_state[0]:
-            logger.info("event=ha.unconfigured")
+            log_event(logger, "ha.unconfigured")
     _last_state = new_state
 
     return result

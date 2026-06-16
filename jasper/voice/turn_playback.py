@@ -5,6 +5,7 @@ import logging
 import time
 
 from ..audio_io import TtsPlayout
+from ..log_event import log_event
 from .session import AudioOutChunk, LiveTurn
 
 logger = logging.getLogger("jasper.voice_daemon")
@@ -69,12 +70,12 @@ async def _play_responses(
                 if callable(flush_handler):
                     await flush_handler(ack)
                 if ack is not None:
-                    logger.info(
-                        "event=tts_flush.playout_ack max_audio_played_ms=%s "
-                        "segments=%s flushed_frames=%s",
-                        ack.get("max_audio_played_ms"),
-                        ack.get("segments"),
-                        ack.get("flushed_frames"),
+                    log_event(
+                        logger,
+                        "tts_flush.playout_ack",
+                        max_audio_played_ms=ack.get("max_audio_played_ms"),
+                        segments=ack.get("segments"),
+                        flushed_frames=ack.get("flushed_frames"),
                     )
                 turn.clear_interrupted()
                 interrupt_task = None
@@ -82,9 +83,12 @@ async def _play_responses(
                 try:
                     await write_task
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "event=tts_write.failed error=%s detail=%s",
-                        type(e).__name__, e,
+                    log_event(
+                        logger,
+                        "tts_write.failed",
+                        error=type(e).__name__,
+                        detail=str(e),
+                        level=logging.WARNING,
                     )
                     raise
                 finally:

@@ -33,6 +33,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,9 +186,11 @@ class PreemptListener:
         prior = _read_persisted_preempt(self._state_path)
         if prior:
             self._bridge.set_preempted(True)
-            logger.info(
-                "event=usbsink.preempt_restored silenced=true "
-                "from=%s", self._state_path,
+            log_event(
+                logger,
+                "usbsink.preempt_restored",
+                silenced="true",
+                **{"from": self._state_path},
             )
 
         bridge = self._bridge
@@ -233,12 +237,17 @@ class PreemptListener:
                 try:
                     _persist_preempt(state_path, want)
                 except OSError as e:
-                    logger.warning(
-                        "event=usbsink.preempt_persist_failed error=%s", e,
+                    log_event(
+                        logger,
+                        "usbsink.preempt_persist_failed",
+                        error=e,
+                        level=logging.WARNING,
                     )
-                logger.info(
-                    "event=usbsink.preempt_received silenced=%s from=%s",
-                    want, self.client_address[0],
+                log_event(
+                    logger,
+                    "usbsink.preempt_received",
+                    silenced=want,
+                    **{"from": self.client_address[0]},
                 )
                 self._send_json({"silenced": want, "applied": True})
 
@@ -266,13 +275,18 @@ class PreemptListener:
             # cleanups list pattern means the already-restored preempt
             # state via `_read_persisted_preempt` is harmless; nothing
             # else is leaked.
-            logger.error(
-                "event=usbsink.preempt_listener_bind_failed "
-                "host=%s port=%d error=%s — "
-                "another process holds the port; check with "
-                "`ss -tlnp sport = :%d` then "
-                "`systemctl reset-failed jasper-usbsink` after freeing it",
-                self._host, self._port, e, self._port,
+            log_event(
+                logger,
+                "usbsink.preempt_listener_bind_failed",
+                host=self._host,
+                port=self._port,
+                error=e,
+                note=(
+                    "another process holds the port; check with "
+                    f"`ss -tlnp sport = :{self._port}` then "
+                    "`systemctl reset-failed jasper-usbsink` after freeing it"
+                ),
+                level=logging.ERROR,
             )
             raise
 
@@ -282,9 +296,11 @@ class PreemptListener:
             daemon=True,
         )
         self._thread.start()
-        logger.info(
-            "event=usbsink.preempt_listener_started host=%s port=%d",
-            self._host, self._port,
+        log_event(
+            logger,
+            "usbsink.preempt_listener_started",
+            host=self._host,
+            port=self._port,
         )
 
     def stop(self) -> None:
@@ -296,4 +312,4 @@ class PreemptListener:
             self._thread.join(timeout=2.0)
         self._server = None
         self._thread = None
-        logger.info("event=usbsink.preempt_listener_stopped")
+        log_event(logger, "usbsink.preempt_listener_stopped")

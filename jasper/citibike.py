@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
+from .log_event import log_event
 from .transit.base import TransitError
 
 logger = logging.getLogger(__name__)
@@ -147,21 +148,29 @@ def fetch_feed(
             stale = _FEED_CACHE.get(url)
         if stale is not None:
             age = time.monotonic() - stale.timestamp
-            logger.warning(
-                "event=transit.citibike.fetch.stale url=%s outcome=%s "
-                "age_seconds=%.0f err=%s",
-                url, outcome, age, exc,
+            log_event(
+                logger,
+                "transit.citibike.fetch.stale",
+                url=url,
+                outcome=outcome,
+                age_seconds=f"{age:.0f}",
+                err=exc,
+                level=logging.WARNING,
             )
             return stale.data
-        logger.warning(
-            "event=transit.citibike.fetch.error url=%s outcome=%s err=%s",
-            url, outcome, exc,
+        log_event(
+            logger,
+            "transit.citibike.fetch.error",
+            url=url,
+            outcome=outcome,
+            err=exc,
+            level=logging.WARNING,
         )
         raise TransitError(f"GBFS request failed: {exc}") from exc
 
     with _FEED_LOCK:
         _FEED_CACHE[url] = _CacheEntry(timestamp=time.monotonic(), data=data)
-    logger.info("event=transit.citibike.fetch.ok url=%s", url)
+    log_event(logger, "transit.citibike.fetch.ok", url=url)
     return data
 
 
@@ -545,16 +554,20 @@ class CitiBikeClient:
                 station_id, label, info_by_id, status_by_id, now_epoch=now,
             )
             if ss.status == "missing":
-                logger.warning(
-                    "event=transit.citibike.station_missing "
-                    "station_id=%s label=%s",
-                    station_id, label,
+                log_event(
+                    logger,
+                    "transit.citibike.station_missing",
+                    station_id=station_id,
+                    label=label,
+                    level=logging.WARNING,
                 )
             out.append(ss)
-        logger.info(
-            "event=transit.citibike.client.query "
-            "filter=%r requested=%d returned=%d",
-            station_filter, len(self._saved), len(out),
+        log_event(
+            logger,
+            "transit.citibike.client.query",
+            filter=repr(station_filter),
+            requested=len(self._saved),
+            returned=len(out),
         )
         return out
 

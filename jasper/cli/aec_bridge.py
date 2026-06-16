@@ -115,6 +115,7 @@ from jasper.aec_sweep import (
 )
 from jasper.watchdog import Heartbeat
 from jasper import wake_legs
+from jasper.log_event import log_event
 from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
@@ -302,21 +303,24 @@ class BridgeConfig:
             sweep_input_source = current_aec3_sweep_source()
         except Aec3SweepConfigError as e:
             if log_sweep:
-                log.warning(
-                    "event=aec3_sweep_source_invalid error=%s fallback=%s",
-                    e, AEC3_SWEEP_SOURCE_XVF,
+                log_event(
+                    log,
+                    "aec3_sweep_source_invalid",
+                    error=str(e),
+                    fallback=AEC3_SWEEP_SOURCE_XVF,
+                    level=logging.WARNING,
                 )
             sweep_input_source = AEC3_SWEEP_SOURCE_XVF
 
         if log_sweep:
-            log.info(
-                "event=aec3_sweep_config_loaded source=%s path=%s hash=%s "
-                "input_source=%s variants=%s",
-                sweep_config.source,
-                sweep_config.path,
-                sweep_config.config_hash,
-                sweep_input_source,
-                ",".join(variant.leg for variant in sweep_config.variants),
+            log_event(
+                log,
+                "aec3_sweep_config_loaded",
+                source=sweep_config.source,
+                path=sweep_config.path,
+                hash=sweep_config.config_hash,
+                input_source=sweep_input_source,
+                variants=",".join(variant.leg for variant in sweep_config.variants),
             )
 
         def _env_leg_port(env_var: str, token: str) -> int:
@@ -634,9 +638,12 @@ def _chip_aec_primary_leg() -> str:
     ).strip()
     if value in {"chip_aec_150", "chip_aec_210"}:
         return value
-    logger.warning(
-        "event=chip_aec_primary_invalid value=%r fallback=chip_aec_150",
-        value,
+    log_event(
+        logger,
+        "chip_aec_primary_invalid",
+        value=repr(value),
+        fallback="chip_aec_150",
+        level=logging.WARNING,
     )
     return "chip_aec_150"
 
@@ -1809,10 +1816,15 @@ def _aec_loop(  # noqa: PLR0915
             _bridge_stats.set_leg_engine(
                 "dtln", enabled=True, loaded=False, error=str(e),
             )
-            logger.warning(
-                "event=aec_bridge.leg_degraded leg=dtln "
-                "JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: %s. "
-                "Continuing with AEC3 only.", e,
+            log_event(
+                logger,
+                "aec_bridge.leg_degraded",
+                leg="dtln",
+                note=(
+                    f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {e}. "
+                    "Continuing with AEC3 only."
+                ),
+                level=logging.WARNING,
             )
 
     output_parts = [f"aec={config.out_host}:{config.out_port}"]
@@ -2075,12 +2087,14 @@ def _aec_loop(  # noqa: PLR0915
                 if not clean:
                     if outcome := chip_primary_missing_log.record(time.monotonic()):
                         drops, window_sec = outcome
-                        logger.warning(
-                            "event=chip_aec_primary_missing leg=%s "
-                            "action=skip_frame frames=%d window_sec=%.1f",
-                            chip_aec_primary_leg,
-                            drops,
-                            window_sec,
+                        log_event(
+                            logger,
+                            "chip_aec_primary_missing",
+                            leg=chip_aec_primary_leg,
+                            action="skip_frame",
+                            frames=drops,
+                            window_sec=f"{window_sec:.1f}",
+                            level=logging.WARNING,
                         )
                     continue
             else:

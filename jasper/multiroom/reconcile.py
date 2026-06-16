@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import atomic_io
+from ..log_event import log_event
 from .config import GroupingConfig, load_config
 
 logger = logging.getLogger(__name__)
@@ -543,10 +544,13 @@ def _apply(plan_: ReconcilePlan) -> int:
         verb = it.desired
         if verb == "restore":
             if not _unit_is_enabled(it.unit):
-                logger.info(
-                    "event=multiroom.reconcile.unit unit=%s desired=restore "
-                    "result=skipped_not_enabled reason=%s",
-                    it.unit, it.reason,
+                log_event(
+                    logger,
+                    "multiroom.reconcile.unit",
+                    unit=it.unit,
+                    desired="restore",
+                    result="skipped_not_enabled",
+                    reason=it.reason,
                 )
                 continue
             verb = "start"
@@ -557,30 +561,42 @@ def _apply(plan_: ReconcilePlan) -> int:
                 capture_output=True,
                 text=True,
             )
-            logger.info(
-                "event=multiroom.reconcile.unit unit=%s desired=%s reason=%s",
-                it.unit, it.desired, it.reason,
+            log_event(
+                logger,
+                "multiroom.reconcile.unit",
+                unit=it.unit,
+                desired=it.desired,
+                reason=it.reason,
             )
         except FileNotFoundError:
-            logger.error(
-                "event=multiroom.reconcile.unit_failed unit=%s desired=%s "
-                "error=systemctl_not_found",
-                it.unit, it.desired,
+            log_event(
+                logger,
+                "multiroom.reconcile.unit_failed",
+                unit=it.unit,
+                desired=it.desired,
+                error="systemctl_not_found",
+                level=logging.ERROR,
             )
             rc = 1
         except subprocess.CalledProcessError as e:
             if _unit_absent_stderr(e.stderr):
-                logger.info(
-                    "event=multiroom.reconcile.unit unit=%s desired=%s "
-                    "result=skipped_unit_absent reason=%s",
-                    it.unit, it.desired, it.reason,
+                log_event(
+                    logger,
+                    "multiroom.reconcile.unit",
+                    unit=it.unit,
+                    desired=it.desired,
+                    result="skipped_unit_absent",
+                    reason=it.reason,
                 )
                 continue
-            logger.error(
-                "event=multiroom.reconcile.unit_failed unit=%s desired=%s "
-                "rc=%d stderr=%s",
-                it.unit, it.desired, e.returncode,
-                (e.stderr or "").strip(),
+            log_event(
+                logger,
+                "multiroom.reconcile.unit_failed",
+                unit=it.unit,
+                desired=it.desired,
+                rc=e.returncode,
+                stderr=(e.stderr or "").strip(),
+                level=logging.ERROR,
             )
             rc = 1
     return rc
@@ -613,9 +629,12 @@ def _write_outputd_env(
     try:
         atomic_io.atomic_write_text(path, body, mode=0o644)
     except OSError as e:
-        logger.warning(
-            "event=multiroom.reconcile.outputd_env_failed path=%s error=%s",
-            path, e,
+        log_event(
+            logger,
+            "multiroom.reconcile.outputd_env_failed",
+            path=path,
+            error=e,
+            level=logging.WARNING,
         )
         return (True, False)
     return (True, True)
@@ -638,17 +657,24 @@ def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
         except FileNotFoundError:
             pass
         if st is not None and not stat.S_ISFIFO(st.st_mode):
-            logger.warning(
-                "event=multiroom.reconcile.fifo_replaced path=%s "
-                "detail=non-FIFO squatter removed", path,
+            log_event(
+                logger,
+                "multiroom.reconcile.fifo_replaced",
+                path=path,
+                detail="non-FIFO squatter removed",
+                level=logging.WARNING,
             )
             os.unlink(path)
             st = None
         if st is None:
             os.mkfifo(path, 0o600)
     except OSError as e:
-        logger.warning(
-            "event=multiroom.reconcile.fifo_failed path=%s error=%s", path, e,
+        log_event(
+            logger,
+            "multiroom.reconcile.fifo_failed",
+            path=path,
+            error=e,
+            level=logging.WARNING,
         )
         return False
     return True
@@ -665,14 +691,20 @@ def _restart_unit(unit: str) -> bool:
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         stderr = getattr(e, "stderr", "") or ""
-        logger.error(
-            "event=multiroom.reconcile.unit_restart_failed unit=%s error=%s "
-            "stderr=%s", unit, e, stderr.strip(),
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_restart_failed",
+            unit=unit,
+            error=e,
+            stderr=stderr.strip(),
+            level=logging.ERROR,
         )
         return False
-    logger.info(
-        "event=multiroom.reconcile.unit_restarted unit=%s reason=grouping_env_changed",
-        unit,
+    log_event(
+        logger,
+        "multiroom.reconcile.unit_restarted",
+        unit=unit,
+        reason="grouping_env_changed",
     )
     return True
 
@@ -699,9 +731,12 @@ def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
     try:
         atomic_io.atomic_write_text(path, body, mode=0o644)
     except OSError as e:
-        logger.warning(
-            "event=multiroom.reconcile.args_failed path=%s error=%s",
-            path, e,
+        log_event(
+            logger,
+            "multiroom.reconcile.args_failed",
+            path=path,
+            error=e,
+            level=logging.WARNING,
         )
         return False
     return True
@@ -773,10 +808,14 @@ def main(argv: list[str] | None = None) -> int:
     decision = plan(cfg)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
-    logger.info(
-        "event=multiroom.reconcile.start reason=%s enabled=%s role=%s error=%s summary=%r",
-        args.reason, cfg.enabled, cfg.role or "(none)",
-        cfg.error or "(none)", decision.summary,
+    log_event(
+        logger,
+        "multiroom.reconcile.start",
+        reason=args.reason,
+        enabled=cfg.enabled,
+        role=cfg.role or "(none)",
+        error=cfg.error or "(none)",
+        summary=repr(decision.summary),
     )
     rc = 0
 
@@ -784,9 +823,12 @@ def main(argv: list[str] | None = None) -> int:
     derived = _assemble_args(cfg)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
-    logger.info(
-        "event=multiroom.reconcile.args path=%s ok=%s set=%s",
-        ARGS_FILE, wrote, ",".join(set_keys) or "(none)",
+    log_event(
+        logger,
+        "multiroom.reconcile.args",
+        path=ARGS_FILE,
+        ok=wrote,
+        set=",".join(set_keys) or "(none)",
     )
 
     # Paths passed explicitly (module globals read at CALL time) so the
@@ -796,12 +838,14 @@ def main(argv: list[str] | None = None) -> int:
     env_changed, env_ok = _write_outputd_env(
         outputd_env, path=OUTPUTD_GROUPING_ENV_FILE,
     )
-    logger.info(
-        "event=multiroom.reconcile.outputd_env path=%s changed=%s ok=%s "
-        "fifo=%s channel=%s",
-        OUTPUTD_GROUPING_ENV_FILE, env_changed, env_ok,
-        outputd_env[OUTPUTD_DAC_CONTENT_FIFO_ENV] or "(cleared)",
-        outputd_env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] or "(cleared)",
+    log_event(
+        logger,
+        "multiroom.reconcile.outputd_env",
+        path=OUTPUTD_GROUPING_ENV_FILE,
+        changed=env_changed,
+        ok=env_ok,
+        fifo=outputd_env[OUTPUTD_DAC_CONTENT_FIFO_ENV] or "(cleared)",
+        channel=outputd_env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] or "(cleared)",
     )
     if not env_ok:
         rc = 1
@@ -815,13 +859,19 @@ def main(argv: list[str] | None = None) -> int:
 
             restored = restore_solo_config_sync()
             if restored:
-                logger.info(
-                    "event=multiroom.reconcile.camilla result=solo_restored path=%s",
-                    restored,
+                log_event(
+                    logger,
+                    "multiroom.reconcile.camilla",
+                    result="solo_restored",
+                    path=restored,
                 )
         except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
-            logger.error(
-                "event=multiroom.reconcile.camilla_failed action=restore error=%s", e,
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla_failed",
+                action="restore",
+                error=e,
+                level=logging.ERROR,
             )
             rc = 1
 
@@ -841,12 +891,14 @@ def main(argv: list[str] | None = None) -> int:
     voice_changed, voice_ok = _write_outputd_env(
         voice_env, path=VOICE_GROUPING_ENV_FILE,
     )
-    logger.info(
-        "event=multiroom.reconcile.voice_env path=%s changed=%s ok=%s "
-        "socket=%s park=%s",
-        VOICE_GROUPING_ENV_FILE, voice_changed, voice_ok,
-        voice_env.get(VOICE_TTS_SOCKET_ENV, "(solo: fanin default)"),
-        voice_env.get(VOICE_PARK_ENV, "0"),
+    log_event(
+        logger,
+        "multiroom.reconcile.voice_env",
+        path=VOICE_GROUPING_ENV_FILE,
+        changed=voice_changed,
+        ok=voice_ok,
+        socket=voice_env.get(VOICE_TTS_SOCKET_ENV, "(solo: fanin default)"),
+        park=voice_env.get(VOICE_PARK_ENV, "0"),
     )
     if not voice_ok:
         rc = 1
@@ -862,12 +914,19 @@ def main(argv: list[str] | None = None) -> int:
             from .leader_config import apply_bonded_leader_config_sync
 
             applied = apply_bonded_leader_config_sync(cfg)
-            logger.info(
-                "event=multiroom.reconcile.camilla result=bonded path=%s", applied,
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla",
+                result="bonded",
+                path=applied,
             )
         except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
-            logger.error(
-                "event=multiroom.reconcile.camilla_failed action=bonded_apply error=%s", e,
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla_failed",
+                action="bonded_apply",
+                error=e,
+                level=logging.ERROR,
             )
             rc = 1
 
@@ -882,16 +941,19 @@ def main(argv: list[str] | None = None) -> int:
         from .snapcast_rpc import ensure_groups_on_stream
 
         report = ensure_groups_on_stream(SNAP_STREAM_ID)
-        logger.info(
-            "event=multiroom.reconcile.stream_binding reachable=%s groups=%d "
-            "fixed=%d failed=%d want=%s",
-            report["reachable"], report["groups"], report["fixed"],
-            report["failed"], SNAP_STREAM_ID,
+        log_event(
+            logger,
+            "multiroom.reconcile.stream_binding",
+            reachable=report["reachable"],
+            groups=report["groups"],
+            fixed=report["fixed"],
+            failed=report["failed"],
+            want=SNAP_STREAM_ID,
         )
         if not report["reachable"] or report["failed"]:
             rc = 1
 
-    logger.info("event=multiroom.reconcile.done rc=%d", rc)
+    log_event(logger, "multiroom.reconcile.done", rc=rc)
     return rc
 
 

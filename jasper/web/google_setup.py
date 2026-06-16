@@ -54,6 +54,7 @@ from ..google_creds import (
     default_token_path_for,
     save_token,
 )
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -781,7 +782,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 _restart_voice_daemon()
                 # No account name / token in the line — personal data + secret.
-                logger.info("event=google.link client=%s", self.address_string())
+                log_event(logger, "google.link", client=self.address_string())
                 self._redirect(
                     f"./?msg=Linked+{urllib.parse.quote(state)}+successfully"
                 )
@@ -867,7 +868,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["client_secret"] = client_secret
             _restart_voice_daemon()
             # Action + requester only — never the client_id/secret.
-            logger.info("event=google.credentials client=%s", self.address_string())
+            log_event(logger, "google.credentials", client=self.address_string())
             self._redirect(
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+"
                 "OAuth+client."
@@ -878,7 +879,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["client_id"] = ""
             cfg["client_secret"] = ""
             _restart_voice_daemon()
-            logger.info("event=google.reset client=%s", self.address_string())
+            log_event(logger, "google.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
@@ -937,7 +938,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     except OSError:
                         pass
                 _restart_voice_daemon()
-                logger.info("event=google.unlink client=%s", self.address_string())
+                log_event(logger, "google.unlink", client=self.address_string())
                 self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")
@@ -951,7 +952,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # Account-identity config — symmetric with spotify.default.
                 # (No restart here: Google's default is read lazily, but the
                 # config change is still worth the audit line.)
-                logger.info("event=google.default client=%s", self.address_string())
+                log_event(logger, "google.default", client=self.address_string())
                 self._redirect(
                     f"./?msg=Default+set+to+{urllib.parse.quote(name)}"
                 )

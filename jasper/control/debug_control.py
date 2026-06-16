@@ -26,6 +26,8 @@ import subprocess
 import threading
 import time
 
+from jasper.log_event import log_event
+
 from .. import debug_mode
 from ..debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
 from ..web._common import read_env_file, write_env_file
@@ -91,10 +93,13 @@ def _restart_unit_if_active(subsystem: str, unit: str, enabled: bool) -> None:
     if _unit_is_active(unit):
         _restart_unit(unit)
         return
-    logger.info(
-        "event=debug.apply_deferred subsystem=%s unit=%s enabled=%s "
-        "reason=unit_inactive",
-        subsystem, unit, enabled,
+    log_event(
+        logger,
+        "debug.apply_deferred",
+        subsystem=subsystem,
+        unit=unit,
+        enabled=enabled,
+        reason="unit_inactive",
     )
 
 
@@ -132,7 +137,7 @@ def _on_expiry() -> None:
     with _lock:
         _atomic_write(_clear_all())
         _cancel_timer_locked()
-    logger.info("event=debug.expired")
+    log_event(logger, "debug.expired")
 
 
 # ------------------------------------------------------------- public API
@@ -167,9 +172,13 @@ def set_debug(
         _restart_unit_if_active(subsystem, sub.unit, enabled)
     else:
         _restart_unit(sub.unit)
-    logger.info(
-        "event=debug.toggle subsystem=%s enabled=%s remaining_sec=%.0f client=control",
-        subsystem, enabled, state.remaining_sec,
+    log_event(
+        logger,
+        "debug.toggle",
+        subsystem=subsystem,
+        enabled=enabled,
+        remaining_sec=f"{state.remaining_sec:.0f}",
+        client="control",
     )
     return state
 

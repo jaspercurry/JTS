@@ -146,7 +146,10 @@ def test_voice_daemon_maps_unconfigured_provider_to_ex_config():
     assert "EX_CONFIG_EXIT = 78" in source
     assert "VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT" in source
     assert "except VoiceProviderNotConfigured as e:" in source
-    assert "event=voice.unconfigured" in source
+    # Emitted via the canonical log_event emitter (renders
+    # `event=voice.unconfigured …` at runtime); the source carries the
+    # bare event name, the `event=` prefix is added by log_event.
+    assert '"voice.unconfigured"' in source
     assert "sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)" in source
 
 
@@ -155,7 +158,9 @@ def test_voice_daemon_maps_vad_setup_failure_to_ex_config():
     assert "EX_CONFIG_EXIT = 78" in source
     assert "VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT" in source
     assert "except SpeechVADSetupError as e:" in source
-    assert "event=voice.vad_setup_failed" in source
+    # Emitted via log_event (renders `event=voice.vad_setup_failed …`
+    # at runtime); the source carries the bare event name.
+    assert '"voice.vad_setup_failed"' in source
     assert "sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)" in source
 
 

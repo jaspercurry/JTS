@@ -38,6 +38,7 @@ from jasper.aec_sweep import (
 )
 from jasper.wake_conditions import CONDITIONS, DISTANCES
 from jasper.cli.wake_enroll import VOICE_UNIT, write_wav
+from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
@@ -496,10 +497,13 @@ class RecordingBackend:
     def _refuse_if_muted(self, op: str) -> None:
         if not self.mic_muted():
             return
-        logger.warning(
-            "event=wake_corpus.mute_refused op=%s path=%s — household "
-            "mic mute is on; refusing to record",
-            op, self._mic_mute_path,
+        log_event(
+            logger,
+            "wake_corpus.mute_refused",
+            op=op,
+            path=self._mic_mute_path,
+            note="household mic mute is on; refusing to record",
+            level=logging.WARNING,
         )
         raise MicMutedError(MIC_MUTED_MESSAGE)
 
@@ -812,10 +816,15 @@ class RecordingBackend:
         age = now - marker.stat().st_mtime
         if age <= TEST_MODE_STALE_SEC:
             return
-        logger.warning(
-            "event=wake_corpus.test_mode_recover age=%.0fs (stale=%.0fs): "
-            "restoring production audio + restarting %s",
-            age, TEST_MODE_STALE_SEC, VOICE_UNIT,
+        log_event(
+            logger,
+            "wake_corpus.test_mode_recover",
+            age=f"{age:.0f}s",
+            note=(
+                f"stale={TEST_MODE_STALE_SEC:.0f}s: "
+                f"restoring production audio + restarting {VOICE_UNIT}"
+            ),
+            level=logging.WARNING,
         )
         try:
             exit_corpus_test_mode()
@@ -826,8 +835,11 @@ class RecordingBackend:
         ) as e:
             # Leave the marker so a later startup retries the recovery;
             # never crash the recorder over a failed restart.
-            logger.warning(
-                "event=wake_corpus.test_mode_recover_failed error=%s", e,
+            log_event(
+                logger,
+                "wake_corpus.test_mode_recover_failed",
+                error=e,
+                level=logging.WARNING,
             )
             return
         self.note_test_mode_exited()
@@ -1147,12 +1159,19 @@ class RecordingBackend:
         try:
             muted = self.mic_muted()
         except Exception as e:  # noqa: BLE001 — never kill the watch
-            logger.warning("event=wake_corpus.mute_poll_failed error=%s", e)
+            log_event(
+                logger,
+                "wake_corpus.mute_poll_failed",
+                error=e,
+                level=logging.WARNING,
+            )
             muted = False
         if muted:
-            logger.warning(
-                "event=wake_corpus.mute_stop — mic muted mid-recording; "
-                "stopping the clip",
+            log_event(
+                logger,
+                "wake_corpus.mute_stop",
+                note="mic muted mid-recording; stopping the clip",
+                level=logging.WARNING,
             )
             # stop_recording is sync + blocks on the loop; hand it to a
             # worker thread (same shape as the auto-stop timer).

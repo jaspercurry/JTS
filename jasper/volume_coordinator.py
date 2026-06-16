@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
 from . import volume_diagnostics
 from .volume_persistence import (
@@ -550,18 +551,21 @@ class VolumeCoordinator:
         ):
             return False
         ok = await self._set_camilla(level)
-        logger.info(
-            "event=volume.observed_carrier_sync source=%s level=%d%% "
-            "current_db=%s expected_db=%.2f drift_db=%s "
-            "current_mute=%s expected_mute=%s result=%s",
-            source.value,
-            level,
-            "unknown" if current_db is None else f"{current_db:.2f}",
-            expected_db,
-            "unknown" if current_db is None else f"{expected_db - current_db:+.2f}",
-            "unknown" if current_mute is None else str(current_mute).lower(),
-            str(expected_mute).lower(),
-            "accepted" if ok else "failed",
+        log_event(
+            logger,
+            "volume.observed_carrier_sync",
+            # `level` is the volume level — a field name that collides with
+            # log_event's reserved level= param, so all fields ride fields=.
+            fields={
+                "source": source.value,
+                "level": f"{level}%",
+                "current_db": "unknown" if current_db is None else f"{current_db:.2f}",
+                "expected_db": f"{expected_db:.2f}",
+                "drift_db": "unknown" if current_db is None else f"{expected_db - current_db:+.2f}",
+                "current_mute": "unknown" if current_mute is None else str(current_mute).lower(),
+                "expected_mute": str(expected_mute).lower(),
+                "result": "accepted" if ok else "failed",
+            },
         )
         return ok
 
@@ -1314,13 +1318,19 @@ class VolumeCoordinator:
             # The loud direction intentionally does not skip.
             return
         # Converge.
-        logger.info(
-            "event=volume.reconciled source=%s level=%d%% "
-            "current_db=%.2f expected_db=%.2f drift_db=%+.2f "
-            "current_mute=%s expected_mute=%s",
-            source.value, self._level, current_db, expected_db, drift,
-            "unknown" if current_mute is None else str(current_mute).lower(),
-            str(expected_mute).lower(),
+        log_event(
+            logger,
+            "volume.reconciled",
+            # `level` collides with log_event's level= param → fields=.
+            fields={
+                "source": source.value,
+                "level": f"{self._level}%",
+                "current_db": f"{current_db:.2f}",
+                "expected_db": f"{expected_db:.2f}",
+                "drift_db": f"{drift:+.2f}",
+                "current_mute": "unknown" if current_mute is None else str(current_mute).lower(),
+                "expected_mute": str(expected_mute).lower(),
+            },
         )
         try:
             ok = await self._write_camilla_db_with_mute(
@@ -1430,25 +1440,33 @@ class VolumeCoordinator:
         setter = getattr(self._camilla, "set_main_mute", None)
         if setter is None:
             if target:
-                logger.warning(
-                    "event=volume.main_mute_unsupported muted=true "
-                    "context=%s",
-                    context,
+                log_event(
+                    logger,
+                    "volume.main_mute_unsupported",
+                    muted=True,
+                    context=context,
+                    level=logging.WARNING,
                 )
                 return False
             return True
         ok = await setter(target, best_effort=True)
         if ok:
-            logger.debug(
-                "event=volume.main_mute muted=%s context=%s result=accepted",
-                str(target).lower(),
-                context,
+            log_event(
+                logger,
+                "volume.main_mute",
+                muted=str(target).lower(),
+                context=context,
+                result="accepted",
+                level=logging.DEBUG,
             )
             return True
-        logger.warning(
-            "event=volume.main_mute muted=%s context=%s result=failed",
-            str(target).lower(),
-            context,
+        log_event(
+            logger,
+            "volume.main_mute",
+            muted=str(target).lower(),
+            context=context,
+            result="failed",
+            level=logging.WARNING,
         )
         return False
 
@@ -1493,13 +1511,15 @@ class VolumeCoordinator:
                 )
                 if persist and mute_ok:
                     self._persistence.save_now(db)
-                logger.info(
-                    "event=volume.deferred reason=session_signaled "
-                    "context=%s target_db=%.1f muted=true "
-                    "result=%s persisted=%s",
-                    context, db,
-                    "main_mute_applied" if mute_ok else "main_mute_failed",
-                    bool(persist and mute_ok),
+                log_event(
+                    logger,
+                    "volume.deferred",
+                    reason="session_signaled",
+                    context=context,
+                    target_db=f"{db:.1f}",
+                    muted=True,
+                    result="main_mute_applied" if mute_ok else "main_mute_failed",
+                    persisted=bool(persist and mute_ok),
                 )
                 return bool(mute_ok)
             current_db, _current_mute = (
@@ -1508,20 +1528,25 @@ class VolumeCoordinator:
             if persist:
                 self._persistence.save_now(db)
             if current_db is not None and current_db <= db + RECONCILE_DRIFT_DB:
-                logger.info(
-                    "event=volume.deferred reason=session_signaled "
-                    "context=%s target_db=%.1f current_db=%.1f "
-                    "result=already_safe",
-                    context, db, current_db,
+                log_event(
+                    logger,
+                    "volume.deferred",
+                    reason="session_signaled",
+                    context=context,
+                    target_db=f"{db:.1f}",
+                    current_db=f"{current_db:.1f}",
+                    result="already_safe",
                 )
                 return True
-            logger.info(
-                "event=volume.deferred reason=session_signaled "
-                "context=%s target_db=%.1f current_db=%s "
-                "result=unsafe_for_handoff persisted=%s",
-                context, db,
-                "unknown" if current_db is None else f"{current_db:.1f}",
-                bool(persist),
+            log_event(
+                logger,
+                "volume.deferred",
+                reason="session_signaled",
+                context=context,
+                target_db=f"{db:.1f}",
+                current_db="unknown" if current_db is None else f"{current_db:.1f}",
+                result="unsafe_for_handoff",
+                persisted=bool(persist),
             )
             return False
         ok = await self._write_camilla_db_with_mute(db, context=context)
@@ -1565,14 +1590,17 @@ class VolumeCoordinator:
                 context=context,
                 ok=True,
             )
-            logger.info(
-                "event=volume.push_guard_cleared source=%s level=%d "
-                "previous_db=%s previous_mute=%s context=%s",
-                source.value,
-                level,
-                "unknown" if previous_db is None else f"{previous_db:.1f}",
-                "unknown" if current_mute is None else str(current_mute).lower(),
-                context,
+            log_event(
+                logger,
+                "volume.push_guard_cleared",
+                # `level` collides with log_event's level= param → fields=.
+                fields={
+                    "source": source.value,
+                    "level": level,
+                    "previous_db": "unknown" if previous_db is None else f"{previous_db:.1f}",
+                    "previous_mute": "unknown" if current_mute is None else str(current_mute).lower(),
+                    "context": context,
+                },
             )
         else:
             volume_diagnostics.record_push_guard_clear(
@@ -1582,14 +1610,18 @@ class VolumeCoordinator:
                 context=context,
                 ok=False,
             )
-            logger.warning(
-                "event=volume.push_guard_clear_failed source=%s level=%d "
-                "previous_db=%s previous_mute=%s context=%s",
-                source.value,
-                level,
-                "unknown" if previous_db is None else f"{previous_db:.1f}",
-                "unknown" if current_mute is None else str(current_mute).lower(),
-                context,
+            log_event(
+                logger,
+                "volume.push_guard_clear_failed",
+                level=logging.WARNING,
+                # `level` field collides with log_event's level= param → fields=.
+                fields={
+                    "source": source.value,
+                    "level": level,
+                    "previous_db": "unknown" if previous_db is None else f"{previous_db:.1f}",
+                    "previous_mute": "unknown" if current_mute is None else str(current_mute).lower(),
+                    "context": context,
+                },
             )
         return bool(cleared)
 
@@ -1898,11 +1930,17 @@ class VolumeCoordinator:
                 target_mute,
                 context="set_camilla_voice_session",
             )
-            logger.info(
-                "event=volume.deferred reason=voice_session_active "
-                "level=%d%% target_db=%.1f muted=%s result=%s",
-                level, db, str(target_mute).lower(),
-                "main_mute_applied" if mute_ok else "main_mute_failed",
+            log_event(
+                logger,
+                "volume.deferred",
+                # `level` collides with log_event's level= param → fields=.
+                fields={
+                    "reason": "voice_session_active",
+                    "level": f"{level}%",
+                    "target_db": f"{db:.1f}",
+                    "muted": str(target_mute).lower(),
+                    "result": "main_mute_applied" if mute_ok else "main_mute_failed",
+                },
             )
             return bool(mute_ok)
         # Defer gate #2: cross-daemon duck-active probe. The flag
@@ -1937,11 +1975,17 @@ class VolumeCoordinator:
                     target_mute,
                     context="set_camilla_session_signaled",
                 )
-                logger.info(
-                    "event=volume.deferred reason=session_signaled "
-                    "level=%d%% target_db=%.1f muted=%s result=%s",
-                    level, db, str(target_mute).lower(),
-                    "main_mute_applied" if mute_ok else "main_mute_failed",
+                log_event(
+                    logger,
+                    "volume.deferred",
+                    # `level` collides with log_event's level= param → fields=.
+                    fields={
+                        "reason": "session_signaled",
+                        "level": f"{level}%",
+                        "target_db": f"{db:.1f}",
+                        "muted": str(target_mute).lower(),
+                        "result": "main_mute_applied" if mute_ok else "main_mute_failed",
+                    },
                 )
                 return bool(mute_ok)
         # best_effort: dial twist arriving during a 2s camilla restart
@@ -1959,11 +2003,16 @@ class VolumeCoordinator:
         # No echo prevention for camilla — there's no observer for
         # main_volume changes (no source generates them externally
         # while idle).
-        logger.info(
-            "event=volume.camilla_set level=%d%% target_db=%.1f "
-            "muted=%s result=%s",
-            level, db, str(target_mute).lower(),
-            "accepted" if ok else "failed",
+        log_event(
+            logger,
+            "volume.camilla_set",
+            # `level` collides with log_event's level= param → fields=.
+            fields={
+                "level": f"{level}%",
+                "target_db": f"{db:.1f}",
+                "muted": str(target_mute).lower(),
+                "result": "accepted" if ok else "failed",
+            },
         )
         return bool(ok)
 

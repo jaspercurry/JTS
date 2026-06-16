@@ -26,6 +26,7 @@ import subprocess
 
 from jasper import avahi_service
 from jasper.avahi_service import RenderResult
+from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +84,13 @@ def render_and_install(
     if result is RenderResult.FAILED:
         return False
     if result is RenderResult.WROTE:
-        logger.info(
-            "event=peering.avahi.installed path=%s peer_id=%s room=%s primary=%d",
-            rendered_path, peer_id, room, int(primary),
+        log_event(
+            logger,
+            "peering.avahi.installed",
+            path=rendered_path,
+            peer_id=peer_id,
+            room=room,
+            primary=int(primary),
         )
     return True
 
@@ -104,7 +109,7 @@ def uninstall(
     """
     try:
         os.unlink(rendered_path)
-        logger.info("event=peering.avahi.uninstalled path=%s", rendered_path)
+        log_event(logger, "peering.avahi.uninstalled", path=rendered_path)
     except FileNotFoundError:
         return  # already gone — nothing to do, no need to reload
     except OSError as e:

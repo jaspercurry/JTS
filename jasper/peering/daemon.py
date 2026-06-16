@@ -25,6 +25,8 @@ import logging
 import time
 from typing import Optional
 
+from jasper.log_event import log_event
+
 from .config import (
     DEFAULT_HEARTBEAT_INTERVAL_SEC,
     DEFAULT_HEARTBEAT_TIMEOUT_SEC,
@@ -115,9 +117,11 @@ class PeeringDaemon:
 
     async def start(self) -> None:
         if not self._cfg.enabled:
-            logger.info(
-                "event=peering.daemon.disabled mode=%s — daemon not started",
-                self._cfg.mode.value,
+            log_event(
+                logger,
+                "peering.daemon.disabled",
+                mode=self._cfg.mode.value,
+                note="daemon not started",
             )
             return
         if self._running:
@@ -183,17 +187,20 @@ class PeeringDaemon:
         )
 
         self._running = True
-        logger.info(
-            "event=peering.daemon.started peer_id=%s room=%s primary=%d arb_window_ms=%d",
-            self._cfg.peer_id, self._cfg.room,
-            int(self._cfg.primary), self._cfg.arb_window_ms,
+        log_event(
+            logger,
+            "peering.daemon.started",
+            peer_id=self._cfg.peer_id,
+            room=self._cfg.room,
+            primary=int(self._cfg.primary),
+            arb_window_ms=self._cfg.arb_window_ms,
         )
 
     async def stop(self) -> None:
         if not self._running:
             return
         self._running = False
-        logger.info("event=peering.daemon.stopping")
+        log_event(logger, "peering.daemon.stopping")
 
         # Cancel all timers.
         for handle in self._timers.values():
@@ -240,7 +247,7 @@ class PeeringDaemon:
         self._pending_decision = None
         self._pending_epoch = None
 
-        logger.info("event=peering.daemon.stopped")
+        log_event(logger, "peering.daemon.stopped")
 
     # ---------- inbound: multicast ----------
 
@@ -292,9 +299,11 @@ class PeeringDaemon:
             if info.get("last_seen", 0) < cutoff
         ]
         for pid in stale:
-            logger.info(
-                "event=peering.peer.evicted peer=%s reason=hello_timeout",
-                pid,
+            log_event(
+                logger,
+                "peering.peer.evicted",
+                peer=pid,
+                reason="hello_timeout",
             )
             del self._known_peers[pid]
 

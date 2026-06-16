@@ -52,6 +52,8 @@ import time
 from http import HTTPStatus
 from typing import Any, Callable
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger("jasper.web.balance")
 
 # INACTIVITY ceiling on a held measurement window. The window-holder
@@ -234,7 +236,7 @@ async def _session_window(entered: threading.Event) -> None:
                             _state["release_window"] = None  # we ARE exiting
                             _reset_locked("balance timed out after "
                                           "inactivity — renderers restored")
-                    logger.warning("event=balance.idle_timeout")
+                    log_event(logger, "balance.idle_timeout", level=logging.WARNING)
                     break
                 try:
                     await asyncio.wait_for(release.wait(), remaining)
@@ -242,7 +244,7 @@ async def _session_window(entered: threading.Event) -> None:
                 except asyncio.TimeoutError:
                     continue  # deadline may have been bumped — re-check
     except Exception as e:  # noqa: BLE001 — window entry/exit failure
-        logger.exception("event=balance.window_failed")
+        log_event(logger, "balance.window_failed", level=logging.ERROR, exc_info=True)
         with _lock:
             _state["release_window"] = None
             _reset_locked(f"measurement window failed: {e}")
@@ -289,7 +291,7 @@ def handle_start(
             return {"ok": False, "error": err}, \
                 HTTPStatus.INTERNAL_SERVER_ERROR
         members_out = _public_members(_state["members"])
-    logger.info("event=balance.session_started")
+    log_event(logger, "balance.session_started")
     return {"ok": True, "members": members_out}, HTTPStatus.OK
 
 
@@ -315,7 +317,7 @@ async def _watch_ramp(proc, channel: str, token: int) -> None:
             _state["ramp"] = None
             _state["locks"][channel] = {"not_heard": True}
             _bump_activity_locked()  # the user now reads + decides to retry
-            logger.info("event=balance.ramp_unheard channel=%s", channel)
+            log_event(logger, "balance.ramp_unheard", channel=channel)
 
 
 def handle_ramp(
@@ -344,7 +346,7 @@ def handle_ramp(
     try:
         proc = run_async(_start_playback(wav_path), timeout=10.0)
     except Exception as e:  # noqa: BLE001
-        logger.exception("event=balance.ramp_spawn_failed")
+        log_event(logger, "balance.ramp_spawn_failed", level=logging.ERROR, exc_info=True)
         return ({"ok": False, "error": f"playback failed: {e}"},
                 HTTPStatus.INTERNAL_SERVER_ERROR)
     t0 = time.monotonic()
@@ -355,7 +357,7 @@ def handle_ramp(
                           "proc": proc, "token": token}
         _bump_activity_locked()  # ramp underway — the next bump is lock/unheard
     schedule(_watch_ramp(proc, channel, token))
-    logger.info("event=balance.ramp_started channel=%s", channel)
+    log_event(logger, "balance.ramp_started", channel=channel)
     return {"ok": True, "channel": channel,
             "duration_s": round(ramp_duration_s(), 1)}, HTTPStatus.OK
 
@@ -426,9 +428,12 @@ def handle_lock(handler) -> tuple[dict, int]:
         }
     if both and release is not None:
         release()  # renderers come back while the user reads the result
-    logger.info(
-        "event=balance.locked channel=%s offset_s=%.2f drive_dbfs=%.1f",
-        channel, offset, drive,
+    log_event(
+        logger,
+        "balance.locked",
+        channel=channel,
+        offset_s=f"{offset:.2f}",
+        drive_dbfs=f"{drive:.1f}",
     )
     return payload, HTTPStatus.OK
 
@@ -437,7 +442,7 @@ def handle_stop() -> tuple[dict, int]:
     """POST /balance/stop — the big red button. Also /balance/reset."""
     with _lock:
         _reset_locked()
-    logger.info("event=balance.stopped")
+    log_event(logger, "balance.stopped")
     return {"ok": True}, HTTPStatus.OK
 
 
@@ -475,8 +480,14 @@ def handle_apply() -> tuple[dict, int]:
         writes[ch] = {"label": m["label"], "ok": ok,
                       "trim_db": rec[f"{ch}_trim_db"], "detail": detail}
         all_ok = all_ok and ok
-        logger.info("event=balance.apply ch=%s addr=%s trim=%.1f ok=%s",
-                    ch, m["addr"] or "(self)", rec[f"{ch}_trim_db"], ok)
+        log_event(
+            logger,
+            "balance.apply",
+            ch=ch,
+            addr=m["addr"] or "(self)",
+            trim=f"{rec[f'{ch}_trim_db']:.1f}",
+            ok=ok,
+        )
         if not ok:
             break  # don't half-balance further; report what happened
 

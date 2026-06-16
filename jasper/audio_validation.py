@@ -33,6 +33,7 @@ from .audio_profile_state import (
 )
 from .control import client as control
 from .env_load import parse_env_file
+from .log_event import log_event
 
 
 CURRENT_SCHEMA_VERSION = 1
@@ -546,7 +547,12 @@ def _query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, 
                 break
             chunks.append(chunk)
     except OSError as e:
-        logger.debug("event=audio_validation.outputd_status_unavailable error=%s", e)
+        log_event(
+            logger,
+            "audio_validation.outputd_status_unavailable",
+            error=str(e),
+            level=logging.DEBUG,
+        )
         return None
     finally:
         if sock is not None:
@@ -557,7 +563,12 @@ def _query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, 
     try:
         data = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
     except json.JSONDecodeError as e:
-        logger.debug("event=audio_validation.outputd_status_invalid error=%s", e)
+        log_event(
+            logger,
+            "audio_validation.outputd_status_invalid",
+            error=str(e),
+            level=logging.DEBUG,
+        )
         return None
     return data if isinstance(data, dict) else None
 
@@ -571,7 +582,13 @@ def _service_state(unit: str) -> str:
             timeout=2.0,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.debug("event=audio_validation.service_probe_failed unit=%s error=%s", unit, e)
+        log_event(
+            logger,
+            "audio_validation.service_probe_failed",
+            unit=unit,
+            error=str(e),
+            level=logging.DEBUG,
+        )
         return "unknown"
     return result.stdout.strip() or "unknown"
 
@@ -581,7 +598,12 @@ def _read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
     try:
         data = json.loads(stats_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        logger.debug("event=audio_validation.bridge_stats_unavailable error=%s", e)
+        log_event(
+            logger,
+            "audio_validation.bridge_stats_unavailable",
+            error=str(e),
+            level=logging.DEBUG,
+        )
         return None
     return data if isinstance(data, dict) else None
 
@@ -590,7 +612,12 @@ def _read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:
     try:
         data = control.get_state(timeout=timeout)
     except (control.ControlError, ValueError) as e:
-        logger.debug("event=audio_validation.voice_state_unavailable error=%s", e)
+        log_event(
+            logger,
+            "audio_validation.voice_state_unavailable",
+            error=str(e),
+            level=logging.DEBUG,
+        )
         return None
     voice = data.get("voice") if isinstance(data, dict) else None
     if not isinstance(voice, dict):
@@ -619,7 +646,12 @@ def _recent_bridge_journal(timeout: float = 2.0) -> str | None:
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.debug("event=audio_validation.bridge_journal_unavailable error=%s", e)
+        log_event(
+            logger,
+            "audio_validation.bridge_journal_unavailable",
+            error=str(e),
+            level=logging.DEBUG,
+        )
         return None
     if result.returncode != 0 and not result.stdout:
         return None
@@ -2122,10 +2154,12 @@ def _read_xvf_parameter(command: str, *, timeout: float = 5.0) -> dict[str, Any]
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.debug(
-            "event=audio_hw_validation.xvf_read_failed command=%s error=%s",
-            command,
-            e,
+        log_event(
+            logger,
+            "audio_hw_validation.xvf_read_failed",
+            command=command,
+            error=str(e),
+            level=logging.DEBUG,
         )
         return {"error": str(e)}
     if result.returncode != 0:
@@ -2203,11 +2237,12 @@ def _complete_hardware_validation_result(
         json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     if report_only:
-        logger.info(
-            "event=audio_hw_validation.report profile=%s status=%s recommendation=%s",
-            artifact.profile,
-            artifact.status,
-            artifact.recommendation,
+        log_event(
+            logger,
+            "audio_hw_validation.report",
+            profile=artifact.profile,
+            status=artifact.status,
+            recommendation=artifact.recommendation,
         )
         return HardwareValidationRun(artifact=artifact)
 
@@ -2216,20 +2251,23 @@ def _complete_hardware_validation_result(
         path = write_artifact(artifact, directory=target_dir)
         latest_path = write_latest_pointer(artifact, directory=target_dir)
     except OSError as e:
-        logger.error(
-            "event=audio_hw_validation.write_failed profile=%s status=%s error=%s",
-            artifact.profile,
-            artifact.status,
-            e,
+        log_event(
+            logger,
+            "audio_hw_validation.write_failed",
+            profile=artifact.profile,
+            status=artifact.status,
+            error=str(e),
+            level=logging.ERROR,
         )
         return HardwareValidationRun(artifact=artifact, refused=True, refusal_reason=str(e))
-    logger.info(
-        "event=audio_hw_validation.write profile=%s status=%s recommendation=%s path=%s latest=%s",
-        artifact.profile,
-        artifact.status,
-        artifact.recommendation,
-        path,
-        latest_path,
+    log_event(
+        logger,
+        "audio_hw_validation.write",
+        profile=artifact.profile,
+        status=artifact.status,
+        recommendation=artifact.recommendation,
+        path=path,
+        latest=latest_path,
     )
     return HardwareValidationRun(artifact=artifact, path=path, latest_path=latest_path)
 
@@ -2256,12 +2294,13 @@ def run_audio_hardware_validation(
     if poll_interval_seconds <= 0:
         raise ValueError("poll interval must be positive")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    logger.info(
-        "event=audio_hw_validation.start profile=%s duration_seconds=%.3f report_only=%s force=%s",
-        profile,
-        duration_seconds,
-        int(report_only),
-        int(force),
+    log_event(
+        logger,
+        "audio_hw_validation.start",
+        profile=profile,
+        duration_seconds=f"{duration_seconds:.3f}",
+        report_only=int(report_only),
+        force=int(force),
     )
 
     system_env = _read_system_env()
@@ -2318,10 +2357,12 @@ def run_audio_hardware_validation(
     )
     refusal_reason = _chip_runtime_refusal_reason(readiness)
     if refusal_reason and not force:
-        logger.warning(
-            "event=audio_hw_validation.refused profile=%s reason=%s",
-            profile,
-            refusal_reason,
+        log_event(
+            logger,
+            "audio_hw_validation.refused",
+            profile=profile,
+            reason=refusal_reason,
+            level=logging.WARNING,
         )
         return HardwareValidationRun(
             artifact=None,
@@ -2377,16 +2418,17 @@ def run_audio_hardware_validation(
     chip_polls: list[Mapping[str, Any]] = []
     skip_reason = ""
     if chip_probe_allowed:
-        logger.info("event=audio_hw_validation.chip_probe_start profile=%s", profile)
+        log_event(logger, "audio_hw_validation.chip_probe_start", profile=profile)
         chip_readback = _read_chip_profile_parameters()
         chip_polls = _poll_chip_convergence(
             duration_seconds=remaining_seconds,
             interval_seconds=poll_interval_seconds,
         )
-        logger.info(
-            "event=audio_hw_validation.chip_probe_complete profile=%s polls=%d",
-            profile,
-            len(chip_polls),
+        log_event(
+            logger,
+            "audio_hw_validation.chip_probe_complete",
+            profile=profile,
+            polls=len(chip_polls),
         )
     else:
         skip_reason = (
@@ -2648,20 +2690,23 @@ def main(argv: list[str] | None = None) -> int:
         path = write_artifact(artifact, directory=directory)
         latest_path = write_latest_pointer(artifact, directory=directory)
     except OSError as e:
-        logger.error(
-            "event=audio_validation.write_failed profile=%s status=%s error=%s",
-            artifact.profile,
-            artifact.status,
-            e,
+        log_event(
+            logger,
+            "audio_validation.write_failed",
+            profile=artifact.profile,
+            status=artifact.status,
+            error=str(e),
+            level=logging.ERROR,
         )
         return 1
-    logger.info(
-        "event=audio_validation.snapshot profile=%s status=%s recommendation=%s path=%s latest=%s",
-        artifact.profile,
-        artifact.status,
-        artifact.recommendation,
-        path,
-        latest_path,
+    log_event(
+        logger,
+        "audio_validation.snapshot",
+        profile=artifact.profile,
+        status=artifact.status,
+        recommendation=artifact.recommendation,
+        path=path,
+        latest=latest_path,
     )
     if args.stdout:
         json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)

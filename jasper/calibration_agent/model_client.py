@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jasper.calibration_agent import response as advisor_contract
+from jasper.log_event import log_event
 from jasper.sound.profile import (
     MAX_PARAMETRIC_BANDS,
     MAX_PROFILE_NAME_CHARS,
@@ -149,21 +150,26 @@ def call_advisor(
         "Content-Type": "application/json",
     }
 
-    logger.info(
-        "event=calibration_agent.model_call provider=%s model=%s status=started",
-        settings.provider,
-        settings.model,
+    log_event(
+        logger,
+        "calibration_agent.model_call",
+        provider=settings.provider,
+        model=settings.model,
+        status="started",
     )
     started_at = time.monotonic()
     status, raw_body = (transport or _post_json)(url, headers, body, settings.timeout_sec)
     elapsed_ms = _elapsed_ms(started_at)
     if status < 200 or status >= 300:
-        logger.warning(
-            "event=calibration_agent.model_call provider=%s model=%s status=http_error http_status=%d elapsed_ms=%d",
-            settings.provider,
-            settings.model,
-            status,
-            elapsed_ms,
+        log_event(
+            logger,
+            "calibration_agent.model_call",
+            provider=settings.provider,
+            model=settings.model,
+            status="http_error",
+            http_status=status,
+            elapsed_ms=elapsed_ms,
+            level=logging.WARNING,
         )
         raise AdvisorModelError(f"advisor provider returned HTTP {status}")
 
@@ -190,12 +196,14 @@ def call_advisor(
         "usage": _usage_summary(provider_response.get("usage")),
         "side_effects": ["provider_api_call"],
     }
-    logger.info(
-        "event=calibration_agent.model_call provider=%s model=%s status=completed response_id=%s elapsed_ms=%d",
-        settings.provider,
-        settings.model,
-        result["response_id"] or "-",
-        elapsed_ms,
+    log_event(
+        logger,
+        "calibration_agent.model_call",
+        provider=settings.provider,
+        model=settings.model,
+        status="completed",
+        response_id=result["response_id"] or "-",
+        elapsed_ms=elapsed_ms,
     )
     return result
 

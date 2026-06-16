@@ -32,6 +32,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSP_APPLY_STATE_PATH = Path("/var/lib/jasper/dsp_apply_state.json")
@@ -175,9 +177,13 @@ def validate_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
     cfg_path = Path(path)
     limit_error = _volume_limit_safety_error(cfg_path)
     if limit_error:
-        logger.error(
-            "event=dsp.validate result=volume_limit_rejected path=%s err=%s",
-            cfg_path, limit_error,
+        log_event(
+            logger,
+            "dsp.validate",
+            result="volume_limit_rejected",
+            path=cfg_path,
+            err=limit_error,
+            level=logging.ERROR,
         )
         return CamillaConfigValidationResult(
             status=ValidationStatus.INVALID_CONFIG,
@@ -276,7 +282,13 @@ def record_dsp_apply_state(
     try:
         _atomic_write_json(path, state.to_dict())
     except (OSError, TypeError) as e:
-        logger.warning("event=dsp.apply_state_write_failed path=%s err=%r", path, e)
+        log_event(
+            logger,
+            "dsp.apply_state_write_failed",
+            path=path,
+            err=repr(e),
+            level=logging.WARNING,
+        )
 
 
 def last_dsp_apply_state(
@@ -389,11 +401,16 @@ async def _rollback(
     except Exception as e:  # noqa: BLE001
         state.rollback_succeeded = False
         state.rollback_error = str(e)
-        logger.exception(
-            "event=dsp.apply op_id=%s source=%s phase=rollback result=error prior=%s",
-            state.op_id,
-            state.source,
-            prior_config_path,
+        log_event(
+            logger,
+            "dsp.apply",
+            op_id=state.op_id,
+            source=state.source,
+            phase="rollback",
+            result="error",
+            prior=prior_config_path,
+            level=logging.ERROR,
+            exc_info=True,
         )
         return
     state.rollback_succeeded = bool(ok)
@@ -469,11 +486,15 @@ async def apply_dsp_config(
                 current = await get_current_config_path()
                 state.prior_config_path = str(current) if current else None
             except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "event=dsp.apply op_id=%s source=%s phase=snapshot result=error err=%r",
-                    state.op_id,
-                    source,
-                    e,
+                log_event(
+                    logger,
+                    "dsp.apply",
+                    op_id=state.op_id,
+                    source=source,
+                    phase="snapshot",
+                    result="error",
+                    err=repr(e),
+                    level=logging.WARNING,
                 )
 
         state.phase = "validate"
@@ -548,11 +569,13 @@ async def apply_dsp_config(
         state.result = "success"
         state.finished_at = _utc_now()
         record_dsp_apply_state(state, state_path=state_path)
-        logger.info(
-            "event=dsp.apply op_id=%s source=%s result=success candidate=%s",
-            state.op_id,
-            source,
-            candidate,
+        log_event(
+            logger,
+            "dsp.apply",
+            op_id=state.op_id,
+            source=source,
+            result="success",
+            candidate=candidate,
         )
         return state
 

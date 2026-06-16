@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from .camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from .log_event import log_event
 
 if TYPE_CHECKING:
     from camilladsp import CamillaClient
@@ -526,9 +527,12 @@ class Ducker:
         if result is None:
             return
         self._ducked = True
-        logger.info(
-            "event=duck on=true new_db=%.1f duck_db=%.1f",
-            result, self._duck_db,
+        log_event(
+            logger,
+            "duck",
+            on="true",
+            new_db=f"{result:.1f}",
+            duck_db=f"{self._duck_db:.1f}",
         )
 
     async def restore(self) -> None:
@@ -537,6 +541,11 @@ class Ducker:
         try:
             target_db = await self._target_db_provider()
             await self._camilla.set_volume_db(target_db, best_effort=True)
-            logger.info("event=duck on=false target_db=%.1f", target_db)
+            log_event(
+                logger,
+                "duck",
+                on="false",
+                target_db=f"{target_db:.1f}",
+            )
         finally:
             self._ducked = False

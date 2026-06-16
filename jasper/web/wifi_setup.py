@@ -60,6 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .. import wifi_guardian_persistence, wifi_scan_repair
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_header,
@@ -755,29 +756,38 @@ def _stash_after_saved(profile_name: str) -> None:
     try:
         secrets = _read_profile_secrets(profile_name)
         if secrets is None:
-            logger.info(
-                "event=wifi_guardian.stash_skip profile=%s reason=secrets_unavailable",
-                profile_name,
+            log_event(
+                logger,
+                "wifi_guardian.stash_skip",
+                profile=profile_name,
+                reason="secrets_unavailable",
             )
             return
         ssid, psk, key_mgmt = secrets
         if key_mgmt == "wpa-eap":
-            logger.info(
-                "event=wifi_guardian.stash_skip ssid=%s reason=enterprise",
-                ssid,
+            log_event(
+                logger,
+                "wifi_guardian.stash_skip",
+                ssid=ssid,
+                reason="enterprise",
             )
             return
         wifi_guardian_persistence.write_stash(
             _STASH_PATH, ssid, psk, key_mgmt,
         )
-        logger.info(
-            "event=wifi_guardian.stash_written ssid=%s key_mgmt=%s",
-            ssid, key_mgmt,
+        log_event(
+            logger,
+            "wifi_guardian.stash_written",
+            ssid=ssid,
+            key_mgmt=key_mgmt,
         )
     except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "event=wifi_guardian.stash_write_failed profile=%s err=%r",
-            profile_name, e,
+        log_event(
+            logger,
+            "wifi_guardian.stash_write_failed",
+            profile=profile_name,
+            err=repr(e),
+            level=logging.WARNING,
         )
 
 
@@ -794,27 +804,34 @@ def _stash_after_connect(ssid: str, password: str | None) -> None:
     try:
         key_mgmt = _resolve_key_mgmt(ssid)
         if key_mgmt == "wpa-eap":
-            logger.info(
-                "event=wifi_guardian.stash_skip ssid=%s reason=enterprise",
-                ssid,
+            log_event(
+                logger,
+                "wifi_guardian.stash_skip",
+                ssid=ssid,
+                reason="enterprise",
             )
             return
         wifi_guardian_persistence.write_stash(
             _STASH_PATH, ssid, password or "", key_mgmt,
         )
         # PSK never appears in the log line — only the SSID and key_mgmt.
-        logger.info(
-            "event=wifi_guardian.stash_written ssid=%s key_mgmt=%s",
-            ssid, key_mgmt,
+        log_event(
+            logger,
+            "wifi_guardian.stash_written",
+            ssid=ssid,
+            key_mgmt=key_mgmt,
         )
     except Exception as e:  # noqa: BLE001
         # Wrap-all because this is a recovery aid path. Anything that
         # raises here (full disk, permission flip, nmcli timeout in
         # _resolve_key_mgmt) should not block the user's successful
         # connect from returning.
-        logger.warning(
-            "event=wifi_guardian.stash_write_failed ssid=%s err=%r",
-            ssid, e,
+        log_event(
+            logger,
+            "wifi_guardian.stash_write_failed",
+            ssid=ssid,
+            err=repr(e),
+            level=logging.WARNING,
         )
 
 
@@ -833,11 +850,14 @@ def _stash_clear_if_matches(ssid: str) -> None:
         if existing.ssid != ssid:
             return
         wifi_guardian_persistence.clear_stash(_STASH_PATH)
-        logger.info("event=wifi_guardian.stash_cleared ssid=%s", ssid)
+        log_event(logger, "wifi_guardian.stash_cleared", ssid=ssid)
     except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "event=wifi_guardian.stash_clear_failed ssid=%s err=%r",
-            ssid, e,
+        log_event(
+            logger,
+            "wifi_guardian.stash_clear_failed",
+            ssid=ssid,
+            err=repr(e),
+            level=logging.WARNING,
         )
 
 

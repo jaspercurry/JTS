@@ -54,6 +54,7 @@ from jasper.install_profile import (
     install_role_for_profile,
     read_install_profile,
 )
+from jasper.log_event import log_event
 
 from . import _systemd
 
@@ -460,10 +461,12 @@ def _active_install_role() -> str:
     try:
         return install_role_for_profile(read_install_profile())
     except ValueError as e:
-        logger.error(
-            "event=jasper_web.install_profile_invalid error=%r "
-            "action=fail_closed",
-            str(e),
+        log_event(
+            logger,
+            "jasper_web.install_profile_invalid",
+            error=repr(str(e)),
+            action="fail_closed",
+            level=logging.ERROR,
         )
         return "invalid"
 
@@ -472,9 +475,12 @@ def _specs_for_role(role: str) -> tuple[WizardSpec, ...]:
     specs = tuple(spec for spec in WIZARD_SPECS if spec.available_for(role))
     if specs:
         return specs
-    logger.error(
-        "event=jasper_web.no_wizards_for_role role=%s action=fail_closed",
-        role,
+    log_event(
+        logger,
+        "jasper_web.no_wizards_for_role",
+        role=role,
+        action="fail_closed",
+        level=logging.ERROR,
     )
     return ()
 
@@ -504,10 +510,11 @@ def main() -> int:
 
     role = _active_install_role()
     specs = _specs_for_role(role)
-    logger.info(
-        "event=jasper_web.profile role=%s wizards=%s",
-        role,
-        ",".join(spec.label for spec in specs),
+    log_event(
+        logger,
+        "jasper_web.profile",
+        role=role,
+        wizards=",".join(spec.label for spec in specs),
     )
 
     servers: list[tuple[WizardSpec, int, object]] = []
@@ -553,10 +560,11 @@ def main() -> int:
         main_spec, main_server = main_servers[0]
     elif servers:
         main_spec, _, main_server = servers[0]
-        logger.info(
-            "event=jasper_web.main_thread_fallback role=%s wizard=%s",
-            role,
-            main_spec.label,
+        log_event(
+            logger,
+            "jasper_web.main_thread_fallback",
+            role=role,
+            wizard=main_spec.label,
         )
     else:
         logger.error("jasper-web no wizards available for role=%s", role)

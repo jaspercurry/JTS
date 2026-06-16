@@ -28,6 +28,8 @@ import threading
 import time
 from typing import Any
 
+from jasper.log_event import log_event
+
 from . import mpris
 
 logger = logging.getLogger(__name__)
@@ -99,17 +101,24 @@ class ShairportSupervisor:
     # ---- main loop ----
 
     async def run(self) -> None:
-        logger.info(
-            "event=shairport.start "
-            "interval=%.0fs threshold=%d rate_limit=%.0fs",
-            self._interval, self._threshold, self._rate_limit,
+        log_event(
+            logger,
+            "shairport.start",
+            interval=f"{self._interval:.0f}s",
+            threshold=self._threshold,
+            rate_limit=f"{self._rate_limit:.0f}s",
         )
         await asyncio.sleep(self._cold_start)
         while True:
             try:
                 await self._tick()
             except Exception:  # noqa: BLE001
-                logger.exception("event=shairport.tick_crash")
+                log_event(
+                    logger,
+                    "shairport.tick_crash",
+                    level=logging.ERROR,
+                    exc_info=True,
+                )
             await asyncio.sleep(self._interval + random.uniform(
                 -self._jitter, self._jitter,
             ))
@@ -130,16 +139,24 @@ class ShairportSupervisor:
         try:
             ok = await self.probe()
         except Exception:  # noqa: BLE001
-            logger.exception("event=shairport.probe_crash")
+            log_event(
+                logger,
+                "shairport.probe_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
         self.last_probe_at = time.time()
         self.last_probe_ok = ok
         if ok:
             self.consecutive_failures = 0
             return
         self.consecutive_failures += 1
-        logger.warning(
-            "event=shairport.probe_fail consecutive=%d threshold=%d",
-            self.consecutive_failures, self._threshold,
+        log_event(
+            logger,
+            "shairport.probe_fail",
+            consecutive=self.consecutive_failures,
+            threshold=self._threshold,
+            level=logging.WARNING,
         )
         if self.consecutive_failures < self._threshold:
             return
@@ -148,11 +165,21 @@ class ShairportSupervisor:
         try:
             active = await self.is_session_active()
         except Exception:  # noqa: BLE001
-            logger.exception("event=shairport.gate_crash")
+            log_event(
+                logger,
+                "shairport.gate_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
             active = True
         if active:
             self.suppressed_count += 1
-            logger.warning("event=shairport.probe_suppressed reason=active")
+            log_event(
+                logger,
+                "shairport.probe_suppressed",
+                reason="active",
+                level=logging.WARNING,
+            )
             return
         # Rate-limit: at most one supervisor-driven restart per window.
         mono = self._now()
@@ -160,24 +187,34 @@ class ShairportSupervisor:
             self._last_restart_monotonic is not None
             and mono - self._last_restart_monotonic < self._rate_limit
         ):
-            logger.warning(
-                "event=shairport.probe_rate_limited "
-                "since_last_restart=%.0fs limit=%.0fs",
-                mono - self._last_restart_monotonic, self._rate_limit,
+            log_event(
+                logger,
+                "shairport.probe_rate_limited",
+                since_last_restart=f"{mono - self._last_restart_monotonic:.0f}s",
+                limit=f"{self._rate_limit:.0f}s",
+                level=logging.WARNING,
             )
             return
         self._last_restart_monotonic = mono
         self.last_restart_at = time.time()
         self.restart_count += 1
         self.consecutive_failures = 0
-        logger.error(
-            "event=shairport.wedge_detected action=restart count=%d",
-            self.restart_count,
+        log_event(
+            logger,
+            "shairport.wedge_detected",
+            action="restart",
+            count=self.restart_count,
+            level=logging.ERROR,
         )
         try:
             await self.restart_shairport()
         except Exception:  # noqa: BLE001
-            logger.exception("event=shairport.restart_failed")
+            log_event(
+                logger,
+                "shairport.restart_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
 
     # ---- overridable IO ----
 
@@ -223,8 +260,11 @@ class ShairportSupervisor:
         if playing is None:
             unit_active = await self.is_shairport_unit_active()
             if unit_active is False:
-                logger.warning(
-                    "event=shairport.gate_bypass reason=unit_inactive",
+                log_event(
+                    logger,
+                    "shairport.gate_bypass",
+                    reason="unit_inactive",
+                    level=logging.WARNING,
                 )
                 return False
             return True
@@ -345,7 +385,7 @@ def start_supervisor() -> threading.Thread | None:
         return _supervisor_thread
     mode = os.environ.get("JASPER_SHAIRPORT_SUPERVISOR", "auto").lower()
     if mode == "disabled":
-        logger.info("event=shairport.disabled")
+        log_event(logger, "shairport.disabled")
         return None
     if mode != "auto":
         logger.warning(
@@ -361,7 +401,12 @@ def start_supervisor() -> threading.Thread | None:
         try:
             loop.run_until_complete(_supervisor.run())
         except Exception:  # noqa: BLE001
-            logger.exception("event=shairport.thread_crash")
+            log_event(
+                logger,
+                "shairport.thread_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
         finally:
             try:
                 loop.close()

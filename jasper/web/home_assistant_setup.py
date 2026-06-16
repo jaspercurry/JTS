@@ -67,6 +67,7 @@ from typing import Any
 # jasper/transit/providers/nyc_bus.py); page renders never touch HA.
 
 from .. import home_assistant as _ha_mod
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -1236,7 +1237,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # URL + token were validated against the live HA above; log the
             # connect. No URL/token in the line — the token is a secret and the
             # URL is mild network topology.
-            logger.info("event=ha.connect client=%s", self.address_string())
+            log_event(logger, "ha.connect", client=self.address_string())
             instance = result.get("instance_name") or "Home Assistant"
             version = result.get("version")
             label = f"{instance}" + (f" ({version})" if version else "")
@@ -1270,7 +1271,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             else:
                 delete_env_file(cfg["state_path"])
             restart_voice_daemon()
-            logger.info("event=ha.disconnect client=%s", self.address_string())
+            log_event(logger, "ha.disconnect", client=self.address_string())
             send_see_other(
                 self, "./",
                 flash="Disconnected. The speaker is restarting.",

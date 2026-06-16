@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..log_event import log_event
+
 # httpx is imported lazily inside `geocode()` and the per-service
 # request helpers — this module is imported at the top of the /transit/
 # and /weather/ wizards, which are socket-activated and must stay light
@@ -145,9 +147,11 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
         try:
             result = _nominatim(query, client)
         except GeocodeError as nominatim_err:
-            logger.info(
-                "event=transit.geocode.fallback source=nominatim "
-                "reason=%r", str(nominatim_err),
+            log_event(
+                logger,
+                "transit.geocode.fallback",
+                source="nominatim",
+                reason=repr(str(nominatim_err)),
             )
             try:
                 result = _photon(query, client)
@@ -156,10 +160,12 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
                 # Chain to photon_err explicitly so the daemon log
                 # surfaces the photon traceback; nominatim_err is
                 # captured in the message text.
-                logger.warning(
-                    "event=transit.geocode.error "
-                    "nominatim=%r photon=%r",
-                    str(nominatim_err), str(photon_err),
+                log_event(
+                    logger,
+                    "transit.geocode.error",
+                    nominatim=repr(str(nominatim_err)),
+                    photon=repr(str(photon_err)),
+                    level=logging.WARNING,
                 )
                 raise GeocodeError(
                     f"couldn't find that address. "
@@ -169,8 +175,10 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
         if owns_client:
             client.close()
 
-    logger.info(
-        "event=transit.geocode.ok source=%s", result.source,
+    log_event(
+        logger,
+        "transit.geocode.ok",
+        source=result.source,
     )
     _cache[key] = result
     return result

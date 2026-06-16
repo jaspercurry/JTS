@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..log_event import log_event
+
 CURRENT_BUNDLE_SCHEMA_VERSION = 3
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
 ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
@@ -159,9 +161,11 @@ def _safe_manifest_dependencies(
         try:
             out.append(_relative_artifact_path(bundle_dir, dep))
         except BundleError:
-            logger.warning(
-                "event=correction_bundle_dependency_ignored path=%s",
-                dep,
+            log_event(
+                logger,
+                "correction_bundle_dependency_ignored",
+                path=dep,
+                level=logging.WARNING,
             )
     return tuple(sorted(set(out)))
 
@@ -215,10 +219,12 @@ def record_artifact(
     try:
         artifacts = _read_manifest_artifacts(bundle_dir)
     except BundleError as e:
-        logger.warning(
-            "event=correction_bundle_manifest_reset bundle=%s error=%s",
-            bundle_dir,
-            e,
+        log_event(
+            logger,
+            "correction_bundle_manifest_reset",
+            bundle=bundle_dir,
+            error=e,
+            level=logging.WARNING,
         )
         artifacts = []
 
@@ -243,9 +249,11 @@ def record_artifact(
         try:
             existing_rel_path = _relative_artifact_path(bundle_dir, raw_path)
         except BundleError:
-            logger.warning(
-                "event=correction_bundle_manifest_entry_dropped path=%s",
-                raw_path,
+            log_event(
+                logger,
+                "correction_bundle_manifest_entry_dropped",
+                path=raw_path,
+                level=logging.WARNING,
             )
             continue
         by_path[existing_rel_path] = {**artifact, "path": existing_rel_path}

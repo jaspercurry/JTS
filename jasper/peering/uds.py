@@ -33,6 +33,8 @@ import logging
 import os
 from typing import Awaitable, Callable
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,7 +138,7 @@ async def serve(
         os.chmod(path, 0o660)
     except OSError as e:
         logger.warning("peering UDS: chmod %s failed: %s", path, e)
-    logger.info("event=peering.uds.listening path=%s", path)
+    log_event(logger, "peering.uds.listening", path=path)
     return server
 
 

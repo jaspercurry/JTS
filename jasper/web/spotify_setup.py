@@ -92,6 +92,7 @@ from ..spotify_router import (
     build_clients,
 )
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -1134,7 +1135,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _invalidate_health_cache()
             _restart_spotify_consumers()
             # Action + requester only — no client_id/account in the line.
-            logger.info("event=spotify.credentials client=%s", self.address_string())
+            log_event(logger, "spotify.credentials", client=self.address_string())
             self._redirect(
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+Spotify+app."
             )
@@ -1145,7 +1146,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["mode"] = "bounce"
             _invalidate_health_cache()
             _restart_spotify_consumers()
-            logger.info("event=spotify.reset client=%s", self.address_string())
+            log_event(logger, "spotify.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
@@ -1264,7 +1265,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _restart_spotify_consumers()
             # No account name in the line — a household-member label is mild PII
             # and the journal gets bundled/shared for debugging.
-            logger.info("event=spotify.link client=%s", self.address_string())
+            log_event(logger, "spotify.link", client=self.address_string())
             self._redirect(
                 f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
             )
@@ -1285,7 +1286,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         pass
                 _invalidate_health_cache()
                 _restart_spotify_consumers()
-                logger.info("event=spotify.unlink client=%s", self.address_string())
+                log_event(logger, "spotify.unlink", client=self.address_string())
                 self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")
@@ -1299,7 +1300,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 _restart_spotify_consumers()
                 # Account-identity config (which account voice cold-starts from)
                 # + a 3-daemon restart — same audit category as link/unlink.
-                logger.info("event=spotify.default client=%s", self.address_string())
+                log_event(logger, "spotify.default", client=self.address_string())
                 self._redirect(f"./?msg=Default+set+to+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")
