@@ -58,6 +58,15 @@ ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2
 
+# WS1 Phase 3 — the privileged restart broker binds a UNIX socket at
+# /run/jasper-control/restart.sock. RuntimeDirectory= makes systemd create
+# (and tear down) /run/jasper-control owned by this unit's user, so the broker
+# can bind without a manual mkdir/chown. Mode 0750 lets the unit's group
+# traverse — the user-drop PR gives the dir the shared `jasper` group so the
+# (then non-root) wizard/mux clients can reach the socket.
+RuntimeDirectory=jasper-control
+RuntimeDirectoryMode=0750
+
 # Hardening — daemon reads jasper.env, opens a localhost WebSocket to
 # CamillaDSP, binds an HTTP port, persists a handful of small state
 # files under /var/lib/jasper, and renders the peering Avahi service

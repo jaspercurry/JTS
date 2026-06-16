@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from jasper.control.restart_broker import manage_units
 from jasper.log_event import log_event
 
 # CONDITIONS / DISTANCES come from the shared single source of truth
@@ -905,12 +906,16 @@ class _Handler(BaseHTTPRequestHandler):
                     f"failed to disable bridge outputs: {e}",
                 )
                 return
-        try:
-            subprocess.run(
-                ["systemctl", action, VOICE_UNIT], check=True,
-            )
-        except subprocess.CalledProcessError as e:
-            self._send_error_json(500, f"systemctl {action} failed: {e}")
+        # WS1 Phase 3: start/stop voice via the restart broker (blocking so
+        # the corpus session sees the daemon settle) — surfaces a 500 on
+        # failure, same as the previous check=True systemctl.
+        resp = manage_units(
+            VOICE_UNIT, verb=action, reason="wake-corpus session",
+            no_block=False, timeout=30.0,
+        )
+        if not resp.get("ok"):
+            detail = resp.get("error") or f"rc={resp.get('rc')}"
+            self._send_error_json(500, f"systemctl {action} failed: {detail}")
             return
         self._send_json({
             "action": action,

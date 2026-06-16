@@ -70,6 +70,7 @@ from ..install_profile import (
 )
 from . import aec_endpoints as _aec_endpoints
 from . import control_token
+from . import restart_broker
 from . import dial as _dial
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
@@ -2334,6 +2335,14 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         log_event(logger, "control_token.ensure_failed", error=str(exc),
                   level=logging.WARNING)
+    # WS1 Phase 3: the privileged restart broker. jasper-control is the single
+    # mediated systemctl boundary — jasper-web's wizard restarts, jasper-mux's
+    # librespot recovery, and the room-correction renderer pause ask it to run
+    # an allowlisted, closed-vocabulary restart over a SO_PEERCRED'd UNIX socket
+    # so those daemons need no privilege of their own once dropped to non-root
+    # service users. Bind failure is non-fatal (logged): the wizards fall back
+    # to their existing fail-soft "restart didn't happen, logged" behaviour.
+    restart_broker.start_broker()
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     # Multi-device peering daemon. No-op (no thread, no asyncio loop,
     # no zeroconf import) when /var/lib/jasper/peering.env has

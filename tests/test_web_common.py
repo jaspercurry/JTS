@@ -325,30 +325,26 @@ def test_send_html_response_works_without_begin_request_context():
 # ----------------------------------------------------------------------
 
 
-def test_restart_systemd_units_restarts_multiple_units_no_block(monkeypatch):
+def test_restart_systemd_units_routes_through_broker_no_block(monkeypatch):
+    # WS1 Phase 3: restart_systemd_units delegates to jasper-control's restart
+    # broker (manage_units) instead of shelling out to systemctl directly.
     calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
+    def fake_manage(*units, **kwargs):
+        calls.append((units, kwargs))
+        return {"ok": True}
 
-    monkeypatch.setattr(_common.subprocess, "run", fake_run)
+    monkeypatch.setattr(_common, "manage_units", fake_manage)
 
     _common.restart_systemd_units(
         "jasper-voice", "jasper-control", "jasper-mux",
     )
 
     assert len(calls) == 1
-    cmd, kwargs = calls[0]
-    assert cmd == [
-        "systemctl",
-        "restart",
-        "--no-block",
-        "jasper-voice",
-        "jasper-control",
-        "jasper-mux",
-    ]
-    assert kwargs["check"] is False
-    assert kwargs["timeout"] == 5
+    units, kwargs = calls[0]
+    assert units == ("jasper-voice", "jasper-control", "jasper-mux")
+    assert kwargs["verb"] == "restart"
+    assert kwargs["no_block"] is True
 
 
 def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
@@ -356,8 +352,8 @@ def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
 
     monkeypatch.setattr(_common, "read_active_provider", lambda: "")
     monkeypatch.setattr(
-        _common.subprocess, "run",
-        lambda cmd, **kwargs: calls.append((cmd, kwargs)),
+        _common, "manage_units",
+        lambda *units, **kwargs: calls.append((units, kwargs)) or {"ok": True},
     )
 
     _common.restart_voice_daemon()
@@ -369,17 +365,18 @@ def test_restart_voice_daemon_enables_then_restarts_when_provider_set(monkeypatc
     calls = []
 
     monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
-
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-
-    monkeypatch.setattr(_common.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        _common, "manage_units",
+        lambda *units, **kwargs: calls.append((units, kwargs.get("verb")))
+        or {"ok": True},
+    )
 
     _common.restart_voice_daemon()
 
-    assert [cmd for cmd, _ in calls] == [
-        ["systemctl", "enable", "jasper-voice.service"],
-        ["systemctl", "restart", "--no-block", "jasper-voice"],
+    # enable (persist for boot) then restart (--no-block), both via the broker.
+    assert calls == [
+        (("jasper-voice.service",), "enable"),
+        (("jasper-voice",), "restart"),
     ]
 
 

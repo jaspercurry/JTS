@@ -69,6 +69,7 @@ import httpx
 from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
+from .control import restart_broker
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
@@ -1106,29 +1107,26 @@ class Mux:
         librespot exit also handles this one — no special-case
         recovery path.
 
-        Returns True on `systemctl restart` exit code 0. Logged but
-        not retried on failure (the only thing that would happen on
-        retry is more log spam — the failure mode is "systemctl
-        unavailable" which doesn't self-heal).
+        Returns True on a successful restart. Logged but not retried on
+        failure (the only thing that would happen on retry is more log
+        spam — the failure mode is "restart unavailable" which doesn't
+        self-heal).
+
+        WS1 Phase 3: routed through jasper-control's restart broker
+        (off-thread, since the broker client is blocking) so jasper-mux
+        needs no privilege of its own once dropped to a non-root service
+        user. While mux is still root the broker client falls back to a
+        direct systemctl if the broker is unreachable.
         """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "systemctl", "restart", "librespot.service",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=5.0,
-            )
-        except (FileNotFoundError, asyncio.TimeoutError) as e:
+        resp = await asyncio.to_thread(
+            restart_broker.manage_units,
+            "librespot.service", verb="restart",
+            reason="spotify Tier-2 recovery", no_block=False, timeout=8.0,
+        )
+        if not resp.get("ok"):
             logger.warning(
-                "spotify force-restart: systemctl invocation failed: %s", e,
-            )
-            return False
-        if proc.returncode != 0:
-            logger.warning(
-                "spotify force-restart: systemctl exit=%d stderr=%r",
-                proc.returncode, stderr[:200],
+                "spotify force-restart: librespot restart failed: %s",
+                resp.get("error") or f"rc={resp.get('rc')}",
             )
             return False
         logger.info(

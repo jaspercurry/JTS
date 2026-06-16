@@ -163,31 +163,33 @@ def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
 # ----------------------------------------------------------------------
 
 
-def test_apply_usbsink_enable_calls_systemctl(monkeypatch):
+def test_apply_usbsink_enable_routes_through_broker(monkeypatch):
+    # WS1 Phase 3: _set_unit routes enable/disable through jasper-control's
+    # restart broker (manage_units), not a direct systemctl.
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
-        sources_setup, "_systemctl",
-        lambda *args, **kw: calls.append(args) or (0, ""),
+        sources_setup, "manage_units",
+        lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
     )
     sources_setup._apply("usbsink", True)
     assert calls
     # enable+start of the main unit; init.service follows via the
     # PartOf/Requires chain.
-    assert calls[0] == ("enable", sources_setup.USBSINK_UNIT, "--now")
+    assert calls[0] == ((sources_setup.USBSINK_UNIT,), "enable-now")
 
 
-def test_apply_usbsink_disable_calls_systemctl(monkeypatch):
+def test_apply_usbsink_disable_routes_through_broker(monkeypatch):
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
-        sources_setup, "_systemctl",
-        lambda *args, **kw: calls.append(args) or (0, ""),
+        sources_setup, "manage_units",
+        lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
     )
     sources_setup._apply("usbsink", False)
     assert calls
-    assert calls[0] == ("disable", sources_setup.USBSINK_UNIT, "--now")
+    assert calls[0] == ((sources_setup.USBSINK_UNIT,), "disable-now")

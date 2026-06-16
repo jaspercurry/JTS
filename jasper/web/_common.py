@@ -67,7 +67,6 @@ import logging
 import os
 import re
 import secrets
-import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -75,6 +74,7 @@ from typing import Any
 from ..atomic_io import atomic_write_text
 from ..control import client as control
 from ..control import control_token
+from ..control.restart_broker import manage_units
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
 from ..voice.provider_state import read_active_provider
@@ -482,17 +482,20 @@ def restart_systemd_units(*units: str) -> None:
     parsing / dbus-roundtrip overhead, NOT the restart itself —
     --no-block means systemctl shouldn't sit there waiting on the
     unit. If we hit 5 s here, something is wedged (dbus dead, etc.)
-    and the bigger problem will surface elsewhere."""
+    and the bigger problem will surface elsewhere.
+
+    WS1 Phase 3: this no longer shells out to systemctl directly — it asks
+    jasper-control's restart broker to do it (manage_units), so jasper-web
+    needs no privilege of its own once dropped to a non-root service user.
+    manage_units is best-effort and never raises (same contract as before);
+    while jasper-web is still root it falls back to a direct systemctl if the
+    broker is unreachable."""
     if not units:
         return
-    try:
-        subprocess.run(
-            ["systemctl", "restart", "--no-block", *units],
-            check=False, timeout=5,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("%s restart failed: %s", ", ".join(units), e)
+    manage_units(
+        *units, verb="restart", reason="wizard config change",
+        no_block=True, timeout=5.0,
+    )
 
 
 def bonded_follower_active() -> bool:
@@ -578,14 +581,13 @@ def restart_voice_daemon() -> None:
 
 
 def _enable_systemd_unit(unit: str) -> None:
-    try:
-        subprocess.run(
-            ["systemctl", "enable", f"{unit}.service"],
-            check=False, timeout=5,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("%s enable failed: %s", unit, e)
+    # WS1 Phase 3: enable (persist across reboots) via the restart broker.
+    # `enable` does not start the unit — restart_voice_daemon calls
+    # restart_systemd_units right after for the actual (re)start.
+    manage_units(
+        f"{unit}.service", verb="enable", reason="enable for boot",
+        no_block=False, timeout=5.0,
+    )
 
 
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
