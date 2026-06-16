@@ -544,11 +544,12 @@ are the reference wizards — mirror their shape when adding a new one.
 The old wrapper/style/nav primitives have been deleted from
 [`jasper/web/_common.py`](jasper/web/_common.py); use `canonical_page()`,
 `canonical_header()`, `canonical_banner()`, and `toggle_html()` for migrated
-pages. The design tokens currently live
-in both `deploy/index.html` and `app.css` until the landing page is
-migrated to link the stylesheet — a test
+pages. The design tokens live in one place — `app.css`; the
+landing page links the stylesheet rather than carrying its own
+copy, so there is no second token block to drift. A test
 ([`tests/test_web_design_system.py`](tests/test_web_design_system.py))
-guards the two token blocks against drift.
+enforces that `deploy/index.html` links `app.css` and does not
+re-declare the tokens or `@font-face` rules.
 
 The shared layer grows by promotion: a component used by more than one
 page (the sticky `.app-header`/`.icon-button`, the `.info-card`/`.deflist`/
