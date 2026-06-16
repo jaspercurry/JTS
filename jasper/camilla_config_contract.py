@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 # Defaults match the outputd topology. Generated correction and
@@ -62,6 +62,22 @@ class PeqFilter:
     freq: float
     q: float
     gain: float
+
+
+def total_positive_boost_db(filters: Iterable[PeqFilter]) -> float:
+    """Worst-case additive boost (dB) across a set of peaking filters.
+
+    The sum of positive gains is an upper bound on the combined response
+    peak (overlapping boosts at one frequency add), so attenuating a signal
+    by this much guarantees the corrected response cannot exceed unity. This
+    is the one canonical definition of "how much can these boosts clip",
+    shared by the room-correction headroom trim
+    (``jasper.sound.camilla_yaml``) and the PEQ boost-cap check
+    (``jasper.correction.peq.total_max_boost_db``). Any object exposing a
+    numeric ``.gain`` is accepted — the correction ``PEQ`` is structurally
+    compatible with ``PeqFilter`` here.
+    """
+    return max(0.0, sum(f.gain for f in filters if f.gain > 0.0))
 
 
 def _clean_yaml_scalar(value: str) -> str:

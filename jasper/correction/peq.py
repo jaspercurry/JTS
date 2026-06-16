@@ -31,6 +31,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from jasper.camilla_config_contract import total_positive_boost_db
+
 
 @dataclass(frozen=True)
 class PEQ:
@@ -235,8 +237,11 @@ def total_max_boost_db(peqs: list[PEQ]) -> float:
     cuts_only=False. Boost stacking is the load-bearing concern: a
     single +3 dB filter is fine, two +3 dB filters at adjacent
     frequencies summing to +6 dB is not.
+
+    Delegates to the canonical contract helper so the design-time boost
+    cap and the emit-time room-headroom trim share one definition.
     """
-    return max(0.0, sum(p.gain for p in peqs if p.gain > 0))
+    return total_positive_boost_db(peqs)
 
 
 def predicted_response(

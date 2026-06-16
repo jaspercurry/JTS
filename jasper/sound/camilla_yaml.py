@@ -28,6 +28,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
+    total_positive_boost_db,
 )
 from jasper.camilla_emit import (
     emit_delay_filter,
@@ -76,18 +77,6 @@ def _emit_filter_spec(spec: FilterSpec) -> list[str]:
         lines.append(f"      q: {fmt(spec.q or 1.0)}")
         lines.append(f"      gain: {fmt(spec.gain)}")
     return lines
-
-
-def _total_positive_boost_db(peqs: list[PeqFilter]) -> float:
-    """Worst-case additive boost (dB) across a room PEQ set.
-
-    Mirrors :func:`jasper.correction.peq.total_max_boost_db`, but on the
-    ``PeqFilter`` shape this emitter receives. The sum of positive gains is
-    an upper bound on the combined response peak (overlapping boosts at one
-    frequency add); attenuating by it guarantees the corrected response
-    cannot exceed unity, regardless of how the boosts overlap.
-    """
-    return max(0.0, sum(p.gain for p in peqs if p.gain > 0.0))
 
 
 def _emit_filter_definitions(
@@ -152,8 +141,8 @@ def _emit_filter_definitions(
     # asymmetric leader-bake (different per-seat boosts per channel) we trim
     # by the louder channel so neither can clip.
     room_headroom_db = max(
-        _total_positive_boost_db(room_list),
-        _total_positive_boost_db(list(room_peqs_right or [])),
+        total_positive_boost_db(room_list),
+        total_positive_boost_db(list(room_peqs_right or [])),
     )
     if room_headroom_db > 0.0:
         lines.extend(emit_gain_filter("room_headroom", -room_headroom_db))
