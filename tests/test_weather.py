@@ -3,7 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
+import jasper.weather as weather_module
 from jasper.weather import (
+    FORECAST_TTL_SECONDS,
+    GEOCODE_CACHE_MAX,
     RAIN_PROBABILITY_THRESHOLD,
     USER_FACING_WEATHER_UNAVAILABLE,
     WMO_DESCRIPTIONS,
@@ -805,3 +808,142 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
     assert "Do not strip the qualifier" in flat
     assert "spoken_error" in flat
     assert "do not add technical details" in flat
+
+
+# --- cache bounding + forecast TTL ------------------------------------
+#
+# Mirrors jasper.citibike's TTL-cache tests: drive the client through a
+# MockTransport whose handler counts hits, and monkeypatch the module's
+# `time` for the clock so TTL boundaries are deterministic.
+
+
+class _FakeClock:
+    """Stand-in for the module's `time` reference. Only `monotonic` is
+    used by the cache; advance it explicitly to cross the TTL boundary."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _distinct_location_handler(geocode_calls: list[str]):
+    """Handler that geocodes each distinct place name to its own coords
+    (so each fills a separate cache key) and serves a trivial forecast."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "geocoding-api" in str(request.url):
+            name = request.url.params["name"]
+            geocode_calls.append(name)
+            # Map the name to deterministic unique-ish coordinates.
+            idx = abs(hash(name)) % 10000
+            return httpx.Response(200, json={
+                "results": [{
+                    "name": name,
+                    "latitude": 10.0 + idx * 0.001,
+                    "longitude": 20.0 + idx * 0.001,
+                }],
+            })
+        return httpx.Response(200, json=_open_meteo_response(
+            cur_temp=15, cur_code=0,
+            today_high=18, today_low=12, today_code=0, today_prob=0,
+        ))
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_geocode_cache_evicts_oldest_at_cap():
+    """The per-instance geocode cache is bounded at GEOCODE_CACHE_MAX with
+    FIFO eviction — a long-lived daemon fielding many distinct place names
+    must not grow it without bound."""
+    geocode_calls: list[str] = []
+    http = httpx.AsyncClient(
+        transport=_mock_transport(_distinct_location_handler(geocode_calls))
+    )
+    weather = WeatherClient(http=http)
+    try:
+        # Fill exactly to the cap, then add three more distinct places.
+        names = [f"Place{i}" for i in range(GEOCODE_CACHE_MAX + 3)]
+        for name in names:
+            assert "error" not in await weather.get_weather(location=name)
+        # Cache never exceeds the cap.
+        assert len(weather._geocode_cache) == GEOCODE_CACHE_MAX
+        # The three oldest-inserted keys were evicted (FIFO)...
+        for name in names[:3]:
+            assert name.strip().lower() not in weather._geocode_cache
+        # ...and the most-recent cap-worth of keys remain.
+        for name in names[3:]:
+            assert name.strip().lower() in weather._geocode_cache
+        # Re-asking an evicted place re-geocodes (cold key), proving the
+        # eviction actually dropped it rather than just hiding it.
+        before = len(geocode_calls)
+        await weather.get_weather(location=names[0])
+        assert len(geocode_calls) == before + 1
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_forecast_cache_serves_second_call_within_ttl(monkeypatch):
+    """A second weather query for the same location within the TTL is
+    served from the forecast cache without re-hitting Open-Meteo."""
+    clock = _FakeClock()
+    monkeypatch.setattr(weather_module, "time", clock)
+    forecast_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal forecast_calls
+        forecast_calls += 1
+        return httpx.Response(200, json=_open_meteo_response(
+            cur_temp=72, cur_code=0,
+            today_high=80, today_low=68, today_code=0, today_prob=0,
+        ))
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(
+        default_lat=40.653, default_lon=-74.007,
+        default_name="Sunset Park, Brooklyn", http=http,
+    )
+    try:
+        first = await weather.get_weather()
+        # Advance the clock, but stay within the TTL window.
+        clock.now += FORECAST_TTL_SECONDS - 1.0
+        second = await weather.get_weather()
+        assert "error" not in first
+        assert second == first
+        assert forecast_calls == 1, "second call should be cache-served"
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_forecast_cache_refetches_after_ttl(monkeypatch):
+    """Once the TTL has elapsed the entry is stale and the next query
+    refetches the forecast."""
+    clock = _FakeClock()
+    monkeypatch.setattr(weather_module, "time", clock)
+    forecast_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal forecast_calls
+        forecast_calls += 1
+        return httpx.Response(200, json=_open_meteo_response(
+            cur_temp=72, cur_code=0,
+            today_high=80, today_low=68, today_code=0, today_prob=0,
+        ))
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(
+        default_lat=40.653, default_lon=-74.007,
+        default_name="Sunset Park, Brooklyn", http=http,
+    )
+    try:
+        await weather.get_weather()
+        # Advance the clock just past the TTL boundary.
+        clock.now += FORECAST_TTL_SECONDS + 1.0
+        await weather.get_weather()
+        assert forecast_calls == 2, "call after TTL should refetch"
+    finally:
+        await http.aclose()
