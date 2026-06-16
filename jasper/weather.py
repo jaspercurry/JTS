@@ -5,14 +5,24 @@ problems for personal use). Two endpoints:
 - Forecast: lat/lon → current conditions + today's high/low + rain
   probability + condition codes
 
-Geocoding results are cached in-memory keyed by lowercased place name,
-so repeat queries for the same location only cost one HTTP call.
+Both lookups are cached in-memory per `WeatherClient`:
+
+- Geocoding results keyed by lowercased place name, so repeat queries
+  for the same location only cost one HTTP call. The cache is bounded
+  (`GEOCODE_CACHE_MAX`) with FIFO eviction so a long-lived daemon
+  fielding many distinct place names can't grow it without bound.
+- Forecast responses keyed by rounded lat/lon with a short TTL
+  (`FORECAST_TTL_SECONDS`), so repeated weather questions about the
+  same place within one session share a single fetch instead of
+  re-hitting Open-Meteo each time. Mirrors the GBFS TTL cache in
+  `jasper.citibike` (`_CacheEntry` + `time.monotonic`).
 """
 from __future__ import annotations
 
 import logging
 import math
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 
@@ -28,6 +38,28 @@ USER_FACING_WEATHER_UNAVAILABLE = (
     "Sorry, I'm having trouble getting the weather right now. "
     "Please try again in a bit."
 )
+
+# Geocode cache cap. One household asks about a handful of places, but
+# a long-lived daemon answering for guests / fielding mis-heard names
+# could otherwise accumulate entries forever. 64 distinct places is far
+# more than any real session needs; oldest-inserted entries (FIFO) are
+# evicted past the cap.
+GEOCODE_CACHE_MAX = 64
+
+# Forecast response TTL. Open-Meteo's data updates on the order of
+# minutes, and within one conversation a user often asks several
+# weather questions ("what's it now", "will it rain later", "tomorrow")
+# about the same place. 5 min is short enough that a follow-up minutes
+# later still reflects current conditions while collapsing a burst of
+# same-location questions into a single fetch. Keyed by rounded lat/lon
+# so geocoded and default-coordinate lookups for the same spot share an
+# entry.
+FORECAST_TTL_SECONDS = 300.0
+
+# Same FIFO cap rationale as GEOCODE_CACHE_MAX — a TTL alone bounds how
+# stale an entry gets, not how many distinct locations accumulate, so
+# cap the forecast cache too.
+FORECAST_CACHE_MAX = 64
 
 # WMO weather interpretation codes. Source:
 # https://open-meteo.com/en/docs (Variables → Weather Code).
@@ -76,6 +108,15 @@ class _Location:
     name: str
     lat: float
     lon: float
+
+
+@dataclass(frozen=True)
+class _CacheEntry:
+    """One TTL-cached forecast response. Mirrors `jasper.citibike`'s
+    `_CacheEntry`: `timestamp` is a `time.monotonic()` reading (immune
+    to wall-clock jumps), `data` is the parsed Open-Meteo JSON."""
+    timestamp: float
+    data: dict
 
 
 class WeatherResponseError(RuntimeError):
@@ -636,6 +677,7 @@ class WeatherClient:
         self._http = http or httpx.AsyncClient(timeout=5.0)
         self._owns_http = http is None
         self._geocode_cache: dict[str, _Location] = {}
+        self._forecast_cache: dict[tuple[float, float], _CacheEntry] = {}
         self._default_location: _Location | None = None
         if default_lat is not None and default_lon is not None:
             self._default_location = _Location(
@@ -725,6 +767,13 @@ class WeatherClient:
             lat=res.lat,
             lon=res.lon,
         )
+        # Bound the cache: evict the oldest-inserted entry (dicts keep
+        # insertion order) once we're at the cap, before adding the new
+        # one. FIFO is enough here — geocoding is idempotent, so a
+        # re-fetch on a cold key is one cheap HTTP call, not a
+        # correctness issue.
+        while len(self._geocode_cache) >= GEOCODE_CACHE_MAX:
+            self._geocode_cache.pop(next(iter(self._geocode_cache)))
         self._geocode_cache[key] = loc
         logger.info(
             "event=weather_geocode query=%r base=%r admin1=%r country=%r "
@@ -740,7 +789,19 @@ class WeatherClient:
         return loc
 
     async def _forecast(self, loc: _Location) -> dict:
-        return await self._get_json(
+        # Short TTL cache keyed by rounded coords. `self._units` is fixed
+        # per client, so it doesn't need to be in the key. Within the TTL
+        # a burst of same-location questions shares one fetch; after it,
+        # the entry is stale and we refetch. Mirrors jasper.citibike's
+        # `fetch_feed` TTL hop. 4 decimals (~11 m) collapses geocoded and
+        # default-coordinate lookups for the same spot onto one key.
+        key = (round(loc.lat, 4), round(loc.lon, 4))
+        entry = self._forecast_cache.get(key)
+        if entry is not None and (
+            time.monotonic() - entry.timestamp
+        ) < FORECAST_TTL_SECONDS:
+            return entry.data
+        data = await self._get_json(
             "forecast",
             FORECAST_URL,
             {
@@ -760,6 +821,12 @@ class WeatherClient:
                 "forecast_days": 14,
             },
         )
+        while len(self._forecast_cache) >= FORECAST_CACHE_MAX:
+            self._forecast_cache.pop(next(iter(self._forecast_cache)))
+        self._forecast_cache[key] = _CacheEntry(
+            timestamp=time.monotonic(), data=data,
+        )
+        return data
 
     async def get_weather(self, location: str = "") -> dict:
         explicit_place = (location or "").strip()
