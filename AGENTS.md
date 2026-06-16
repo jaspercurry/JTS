@@ -1119,7 +1119,9 @@ The rules most often violated without it:
 - **Per-tool conditional rules belong in the tool's docstring,
   not `SYSTEM_INSTRUCTION`.** `build_tool()` at
   [jasper/tools/__init__.py](jasper/tools/__init__.py) sends
-  the full cleaned docstring to the LLM. When-to-call,
+  the full cleaned docstring to the LLM (unless a tool sets a
+  shorter `@tool(llm_description=...)` override — none do today).
+  When-to-call,
   voice-answer style, and response-shape handling live in each
   tool's docstring. `SYSTEM_INSTRUCTION` keeps only cross-tool
   meta-rules (`error` / `confirm` field handling, preamble

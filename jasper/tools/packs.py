@@ -36,6 +36,14 @@ from .transport import make_transport_tools
 from .weather import make_weather_tools
 
 if TYPE_CHECKING:
+    from ..google_creds import GoogleClients
+    from ..home_assistant import HAClient
+    from ..renderer import RendererClient
+    from ..spotify_router import Router
+    from ..timers import TimerScheduler
+    from ..volume_coordinator import VolumeCoordinator
+    from ..wake_events import WakeEventStore
+    from ..weather import WeatherClient
     from . import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -46,23 +54,28 @@ class ToolDeps:
     """Everything a tool pack's build/gate needs — the exact args
     _build_registry already received, as one typed bundle.
 
-    Loosely typed (object/Any) on purpose: the equality test passes
-    None for every field, and each factory captures its dep lazily in a
-    closure (no dep is touched at build time), so None builds the same
-    schema a live dep would. The daemon constructs this with the real
-    collaborators; nothing here reaches into a dep itself except the two
-    gate predicates below."""
-    volume_coordinator: Any
-    renderer: Any
-    router: Any            # Spotify Router (already resolved by the daemon)
-    weather: Any
+    Fields carry the real collaborator types as forward refs (resolved
+    only under `from __future__ import annotations`, so there is no
+    runtime import cost and no import cycle). Typing them means the
+    daemon's construction of this bundle is type-checked, guarding
+    against a field-swap (e.g. weather <-> renderer). Tests pass
+    None/sentinel deps: each factory captures its dep lazily in a
+    closure (no dep is touched at build time), so a None/stub builds the
+    same schema a live dep would. Only the two gate predicates below
+    ever read a dep here."""
+    volume_coordinator: VolumeCoordinator
+    renderer: RendererClient
+    router: Router | None  # Spotify Router, already resolved by the daemon
+    weather: WeatherClient
     spotify_device_name: str
     spotify_setup_url: str
-    transit_tools: Iterable  # pre-built by transit.active_transit in run()
-    ha: Any
-    timer_scheduler: Any
-    google_clients: Any
-    wake_event_store: Any
+    # Pre-built by transit.active_transit in run() (it owns the aclose
+    # lifecycle); here just the flat list of decorated tool callables.
+    transit_tools: Iterable[Callable[..., Any]]
+    ha: HAClient | None
+    timer_scheduler: TimerScheduler | None
+    google_clients: GoogleClients | None
+    wake_event_store: WakeEventStore | None
 
 
 @dataclass(frozen=True)
@@ -124,10 +137,12 @@ def register_packs(registry: "ToolRegistry", deps: ToolDeps) -> None:
         if not pack.gate(deps):
             continue
         try:
-            fns = pack.build(deps)
+            # Materialize inside the guard so a factory returning a lazy
+            # generator that raises mid-iteration is still fault-isolated.
+            fns = list(pack.build(deps))
         except Exception:  # noqa: BLE001
             logger.exception(
-                "tool pack %s build failed; skipping its tools", pack.name,
+                "event=tool_pack.build_failed pack=%s", pack.name,
             )
             continue
         for fn in fns:

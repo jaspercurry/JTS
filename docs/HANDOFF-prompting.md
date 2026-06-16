@@ -435,6 +435,16 @@ def build_tool(fn, *, name=None):
 notes (dev TODOs, implementation details) belong in `#` comments
 or the module docstring, NOT in tool function docstrings.
 
+By default, that is — a tool may override the model-facing text with a
+shorter `@tool(llm_description="...")`, and `build_tool` then sends that
+instead of the docstring (via `Tool.model_facing_description()`). The
+override exists to keep a verbose engineer-facing docstring out of the
+realtime instructions+tools token budget (OpenAI Realtime caps that at
+16,384 tokens; the 28 shipped descriptions already total ~8.2k). No
+shipped tool sets it today, so the docstring remains the LLM-facing
+surface in practice; trimming verbose tools to a short `llm_description`
+is a later, eval-gated step.
+
 ### Writing a new tool
 
 Recommended structure for a tool docstring (all sent to the
