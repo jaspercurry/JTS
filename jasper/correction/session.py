@@ -1178,6 +1178,14 @@ class MeasurementSession:
             )
 
         captured, sr = sweep.read_wav_mono(captured_wav_path)
+        # Bound the capture once, here at the session boundary, so the
+        # recorded capture quality and the deconvolved IR describe the
+        # same signal (deconvolve re-caps, idempotently).
+        captured = deconv.cap_capture_length(
+            captured,
+            sweep_len=self.sweep_meta.n_samples,
+            sample_rate=sr,
+        )
         capture_quality = quality.assess_capture(
             captured,
             sample_rate=sr,
@@ -1582,6 +1590,13 @@ class MeasurementSession:
         )
         noise_report = self._noise_report_for_position(position_index)
 
+        # Deconvolution + smoothing (and, below, PEQ design) are
+        # multi-second NumPy. Run them on a worker thread so they don't
+        # monopolize the single shared correction event loop (other
+        # measurement coroutines schedule onto it) for the whole
+        # analysis. Safe without extra locking: ANALYZING is an active,
+        # reset-busy state with the capture watchdog disarmed, so no
+        # other coroutine mutates this session while the worker runs.
         try:
             (
                 log_freqs,
@@ -1589,7 +1604,8 @@ class MeasurementSession:
                 capture_quality,
                 direct_arrival,
                 replay_artifact_info,
-            ) = self._smooth_capture(
+            ) = await asyncio.to_thread(
+                self._smooth_capture,
                 captured_wav_path,
                 capture_kind="measurement",
                 position_index=position_index,
@@ -1662,7 +1678,7 @@ class MeasurementSession:
 
         # All positions captured. Average + design.
         try:
-            self._run_design_from_positions()
+            await asyncio.to_thread(self._run_design_from_positions)
         except Exception as e:  # noqa: BLE001
             async with self._lock:
                 await self._fail(f"PEQ design failed: {e}")
@@ -1715,7 +1731,8 @@ class MeasurementSession:
                 capture_quality,
                 direct_arrival,
                 replay_artifact_info,
-            ) = self._smooth_capture(
+            ) = await asyncio.to_thread(
+                self._smooth_capture,
                 captured_wav_path,
                 capture_kind="repeat",
                 position_index=0,
@@ -1785,7 +1802,7 @@ class MeasurementSession:
             return
 
         try:
-            self._run_design_from_positions()
+            await asyncio.to_thread(self._run_design_from_positions)
         except Exception as e:  # noqa: BLE001
             async with self._lock:
                 await self._fail(f"PEQ design failed: {e}")
@@ -2058,7 +2075,8 @@ class MeasurementSession:
                 capture_quality,
                 direct_arrival,
                 replay_artifact_info,
-            ) = self._smooth_capture(
+            ) = await asyncio.to_thread(
+                self._smooth_capture,
                 captured_wav_path,
                 capture_kind="verify",
                 position_index=None,
@@ -2419,8 +2437,12 @@ class MeasurementSession:
                 else None
             ),
             "browser_audio_report": self.browser_audio_report,
-            "capture_quality": self.capture_quality,
-            "noise_reports": self.noise_reports,
+            # Point-in-time copies: these are appended to (and design_report
+            # gets a key set) from the loop/worker threads, while /status
+            # serializes the snapshot on its own handler thread. Copying
+            # here means a concurrent mutation can't tear the serialized view.
+            "capture_quality": list(self.capture_quality),
+            "noise_reports": list(self.noise_reports),
             "repeat_quality": self.repeat_quality,
             "repeatability_report": self.repeatability_report,
             "verify_quality": self.verify_quality,
@@ -2436,7 +2458,11 @@ class MeasurementSession:
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),
             "peqs": [p.__dict__ for p in self.peqs],
-            "design_report": self.design_report,
+            "design_report": (
+                dict(self.design_report)
+                if self.design_report is not None
+                else None
+            ),
             "config_path": (
                 str(self.config_path) if self.config_path else None
             ),

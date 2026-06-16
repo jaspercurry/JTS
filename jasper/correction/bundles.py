@@ -22,6 +22,17 @@ ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)
 RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 
+# On the frequent `validate_bundle` path (jasper-doctor runs it across
+# every bundle on every invocation), skip the full SHA-256 re-hash for
+# artifacts larger than this. Raw capture WAVs are ~2 MB each and a
+# bundle holds several; re-hashing them all on every doctor run is
+# unbounded CPU/I/O for little gain — the artifacts are immutable once
+# written and the cheap byte_size equality check (a single stat()) still
+# catches truncation/size-changing corruption. The on-demand forensic
+# CLI (`jasper-correction-bundle inspect`) passes max_sha_verify_bytes=
+# None to force a full hash check of every artifact.
+DEFAULT_MAX_SHA_VERIFY_BYTES = 1 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 
@@ -453,8 +464,18 @@ def summarize_bundle_collection(
     }
 
 
-def validate_bundle(bundle_dir: Path) -> list[BundleIssue]:
-    """Validate the bundle contract enough for doctor/agent intake."""
+def validate_bundle(
+    bundle_dir: Path,
+    *,
+    max_sha_verify_bytes: int | None = DEFAULT_MAX_SHA_VERIFY_BYTES,
+) -> list[BundleIssue]:
+    """Validate the bundle contract enough for doctor/agent intake.
+
+    max_sha_verify_bytes bounds the manifest SHA-256 re-verification:
+    artifacts larger than it are checked by byte_size only (see
+    DEFAULT_MAX_SHA_VERIFY_BYTES). Pass None to force a full hash check
+    of every artifact (the forensic CLI path).
+    """
     issues: list[BundleIssue] = []
     try:
         info = _read_json(bundle_dir / "info.json")
@@ -472,6 +493,7 @@ def validate_bundle(bundle_dir: Path) -> list[BundleIssue]:
         bundle_dir,
         issues,
         require_manifest=(schema == CURRENT_BUNDLE_SCHEMA_VERSION),
+        max_sha_verify_bytes=max_sha_verify_bytes,
     )
     state = info.get("state")
     if not info.get("session_id"):
@@ -612,6 +634,7 @@ def _validate_artifact_manifest(
     issues: list[BundleIssue],
     *,
     require_manifest: bool,
+    max_sha_verify_bytes: int | None = DEFAULT_MAX_SHA_VERIFY_BYTES,
 ) -> None:
     manifest_path = _manifest_path(bundle_dir)
     if not manifest_path.exists():
@@ -704,15 +727,27 @@ def _validate_artifact_manifest(
                 f"manifest lists {rel_path}, but the file is missing",
             ))
             continue
+        actual_size = path.stat().st_size
         expected_size = entry.get("byte_size")
-        if isinstance(expected_size, int) and expected_size != path.stat().st_size:
+        if isinstance(expected_size, int) and expected_size != actual_size:
             issues.append(BundleIssue(
                 "artifact_size_mismatch",
                 "fail",
                 f"{rel_path} byte_size changed since manifest record",
             ))
         expected_sha = entry.get("sha256")
-        if isinstance(expected_sha, str) and expected_sha != _sha256_file(path):
+        # Skip the expensive re-hash for large artifacts on the capped
+        # (doctor) path; the byte_size check above is the retained
+        # integrity gate. None = forensic path → always hash. The
+        # short-circuit means oversized artifacts are never read.
+        verify_sha = (
+            max_sha_verify_bytes is None or actual_size <= max_sha_verify_bytes
+        )
+        if (
+            isinstance(expected_sha, str)
+            and verify_sha
+            and expected_sha != _sha256_file(path)
+        ):
             issues.append(BundleIssue(
                 "artifact_sha256_mismatch",
                 "fail",

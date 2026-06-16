@@ -31,6 +31,59 @@ DEFAULT_PRE_ARRIVAL_MS = 5.0
 DEFAULT_POST_ARRIVAL_MS = 500.0
 DEFAULT_EPSILON_RELATIVE = 1e-3
 
+# Upper bound on captured-signal length fed to the FFT, in seconds. A
+# legitimate capture is the ~10 s sweep plus a short room-decay tail;
+# anything longer is a stuck recording or an oversized upload. The
+# correction HTTP layer caps the WAV body at 32 MB
+# (jasper/web/correction_setup.py:MAX_WAV_BODY_BYTES) — ~350 s of 48 kHz
+# mono — which would drive n_pad to 2**25 and a ~1.3 GB FFT working set:
+# an OOM on the 1 GB Pi. Truncating to this bound keeps n_pad at ~2**21
+# (~100-150 MB peak) and is acoustically lossless, because the IR we
+# extract lives entirely in the first ~10-12 s.
+DEFAULT_MAX_CAPTURE_SECONDS = 30.0
+
+
+def cap_capture_length(
+    captured: np.ndarray,
+    *,
+    sweep_len: int,
+    sample_rate: int,
+    max_capture_seconds: float | None = None,
+) -> np.ndarray:
+    """Truncate an over-long capture to bound the FFT working set.
+
+    A legitimate capture is the sweep plus a short room-decay tail;
+    anything longer is a stuck recording or an oversized upload that
+    would drive the FFT to OOM on the 1 GB Pi (see
+    DEFAULT_MAX_CAPTURE_SECONDS). Never truncates below sweep_len — the
+    inversion needs the full sweep response. Returns the input unchanged
+    when within bounds; logs a WARNING when it truncates.
+
+    max_capture_seconds=None reads the module default at call time; a
+    value ≤ 0 disables the cap.
+
+    Used inside deconvolve() (defense at the FFT, for every caller) and
+    by callers that want quality assessment and deconvolution to see the
+    same signal.
+    """
+    seconds = (
+        DEFAULT_MAX_CAPTURE_SECONDS
+        if max_capture_seconds is None
+        else max_capture_seconds
+    )
+    if seconds <= 0 or sample_rate <= 0:
+        return captured
+    max_samples = max(sweep_len, int(round(seconds * sample_rate)))
+    if len(captured) <= max_samples:
+        return captured
+    logger.warning(
+        "deconv: capture %d samples (%.1f s) exceeds cap %d samples "
+        "(%.1f s); truncating to bound FFT memory",
+        len(captured), len(captured) / sample_rate,
+        max_samples, max_samples / sample_rate,
+    )
+    return captured[:max_samples]
+
 
 def deconvolve(
     captured: np.ndarray,
@@ -40,6 +93,7 @@ def deconvolve(
     pre_arrival_ms: float = DEFAULT_PRE_ARRIVAL_MS,
     post_arrival_ms: float = DEFAULT_POST_ARRIVAL_MS,
     epsilon_relative: float = DEFAULT_EPSILON_RELATIVE,
+    max_capture_seconds: float | None = None,
 ) -> np.ndarray:
     """Recover h(t) from y(t) ≈ (h * x)(t) via regularized FFT.
 
@@ -60,6 +114,9 @@ def deconvolve(
         Smaller = sharper deconvolution but more sensitive to
         capture noise outside the sweep band. 1e-3 is the standard
         Kirkeby value.
+      max_capture_seconds: upper bound on the captured signal before
+        the FFT (see cap_capture_length). None reads the module default
+        (DEFAULT_MAX_CAPTURE_SECONDS) at call time; ≤ 0 disables.
 
     Returns:
       ir (float32): the room impulse response, windowed.
@@ -75,6 +132,17 @@ def deconvolve(
             f"({len(sweep)} samples) — capture too short or "
             f"misaligned"
         )
+
+    # Bound the FFT working set: an over-long capture (stuck recording
+    # or oversized upload) would otherwise drive n_pad — and the complex
+    # FFT buffers it sizes — to OOM on the 1 GB Pi. Idempotent when the
+    # caller (e.g. _smooth_capture) already capped.
+    captured = cap_capture_length(
+        captured,
+        sweep_len=len(sweep),
+        sample_rate=sample_rate,
+        max_capture_seconds=max_capture_seconds,
+    )
 
     # Pad to next power of 2 ≥ len(captured) + len(sweep) for clean
     # linear convolution. (Strictly we only need len(captured), but

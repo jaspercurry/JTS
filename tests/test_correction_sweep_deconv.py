@@ -18,6 +18,7 @@ Key invariants:
 """
 from __future__ import annotations
 
+import logging
 
 import numpy as np
 import pytest
@@ -189,6 +190,102 @@ def test_deconv_recovers_short_decay_ir():
         # amplitude, but the ordering and approximate shape is what
         # matters for room-correction magnitude analysis.
         assert 0.2 < ratio < 0.6
+
+
+def test_cap_capture_length_truncates_floors_and_disables(caplog):
+    """The shared length bound: no-op within bounds (same object back),
+    truncate-with-warning when over, never below the sweep length, and a
+    ≤ 0 cap disables it entirely."""
+    sr = 8000
+    sweep_len = 8000
+
+    within = np.zeros(sweep_len * 2, dtype=np.float64)  # 16000 ≤ 3 s cap
+    assert deconv.cap_capture_length(
+        within, sweep_len=sweep_len, sample_rate=sr, max_capture_seconds=3.0,
+    ) is within
+
+    overlong = np.zeros(int(10 * sr), dtype=np.float64)  # 80000 samples
+    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+        capped = deconv.cap_capture_length(
+            overlong, sweep_len=sweep_len, sample_rate=sr, max_capture_seconds=2.0,
+        )
+    assert len(capped) == 2 * sr
+    assert any("truncating" in r.getMessage() for r in caplog.records)
+
+    # Floor: a tiny cap never drops below one sweep length.
+    floored = deconv.cap_capture_length(
+        overlong, sweep_len=sweep_len, sample_rate=sr, max_capture_seconds=0.1,
+    )
+    assert len(floored) == sweep_len
+
+    # Disabled: ≤ 0 returns the input untouched.
+    assert deconv.cap_capture_length(
+        overlong, sweep_len=sweep_len, sample_rate=sr, max_capture_seconds=0,
+    ) is overlong
+
+
+def test_deconv_caps_overlong_capture(caplog):
+    """A capture far longer than the cap is truncated before the FFT,
+    so an oversized upload can't drive a multi-GB FFT working set. The
+    recovered IR is identical to deconvolving the pre-truncated capture,
+    and the truncation is logged (never silent)."""
+    sr = 8000
+    sig, _ = sweep.synchronized_swept_sine(
+        f1=20.0, f2=3500.0, duration_approx_s=1.0, sample_rate=sr,
+    )
+    delay = 800  # 100 ms direct arrival
+    ir_truth = np.zeros(delay + 50, dtype=np.float32)
+    ir_truth[delay] = 1.0
+    base = _convolve_with_ir(sig, ir_truth).astype(np.float64)
+
+    cap_s = 2.0
+    cap_samples = max(len(sig), int(round(cap_s * sr)))
+    # Append a long silent tail well past the cap — kept, it would
+    # balloon n_pad and the complex FFT buffers it sizes.
+    overlong = np.concatenate([base, np.zeros(20 * sr, dtype=np.float64)])
+    assert len(overlong) > cap_samples
+
+    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+        ir_capped = deconv.deconvolve(
+            overlong, sig.astype(np.float64),
+            sample_rate=sr, max_capture_seconds=cap_s,
+        )
+    ir_pretruncated = deconv.deconvolve(
+        overlong[:cap_samples], sig.astype(np.float64),
+        sample_rate=sr, max_capture_seconds=cap_s,
+    )
+
+    assert np.array_equal(ir_capped, ir_pretruncated)
+    assert any(
+        "truncating to bound FFT memory" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_deconv_default_cap_leaves_normal_capture_untouched(caplog):
+    """A real-length capture (well under the default 30 s cap) is not
+    truncated: no warning, and the result matches the uncapped
+    deconvolution."""
+    sr = 8000
+    sig, _ = sweep.synchronized_swept_sine(
+        f1=20.0, f2=3500.0, duration_approx_s=1.0, sample_rate=sr,
+    )
+    delay = 800
+    ir_truth = np.zeros(delay + 50, dtype=np.float32)
+    ir_truth[delay] = 1.0
+    captured = _convolve_with_ir(sig, ir_truth).astype(np.float64)
+    assert len(captured) < int(deconv.DEFAULT_MAX_CAPTURE_SECONDS * sr)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+        ir_default = deconv.deconvolve(
+            captured, sig.astype(np.float64), sample_rate=sr,
+        )
+    ir_uncapped = deconv.deconvolve(
+        captured, sig.astype(np.float64), sample_rate=sr,
+        max_capture_seconds=0,  # cap disabled
+    )
+    assert np.array_equal(ir_default, ir_uncapped)
+    assert not any("truncating" in r.getMessage() for r in caplog.records)
 
 
 def test_magnitude_response_basic_shape():
