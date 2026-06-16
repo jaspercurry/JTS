@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from jasper import tool_catalog_view as view
+from jasper.tool_state import ToolState
 
 
 def _write(path, payload):
@@ -82,10 +83,50 @@ def test_overlay_flips_off_to_active_when_not_disabled():
 
 
 def test_overlay_never_flips_needs_setup():
-    # needs_setup is config-derived; the disabled-set must not turn it on/off.
+    # needs_setup with no setup path is a degraded/unavailable state, not an
+    # optional integration opt-in, so the disabled-set must not turn it on/off.
     cat = {"tools": [{"name": "a", "status": "needs_setup"}]}
     out = view.overlay(cat, frozenset({"a"}))
     assert out["tools"][0]["status"] == "needs_setup"
+    assert out["pending"] is False
+
+
+def test_overlay_setup_required_pack_defaults_off_until_user_opts_in():
+    cat = {"tools": [{
+        "name": "home_assistant",
+        "status": "needs_setup",
+        "setup_url": "/ha/",
+        "requires_setup": True,
+        "pack": {"id": "home-assistant", "title": "Home Assistant", "summary": ""},
+        "category": "Smart Home",
+    }]}
+    out = view.overlay(cat, ToolState())
+    tool = out["tools"][0]
+    pack = out["packs"][0]
+    assert tool["status"] == "off"
+    assert tool["disabled_by_pack"] is True
+    assert tool["setup_enabled"] is False
+    assert pack["status"] == "off"
+    assert pack["setup_required_count"] == 1
+    assert out["pending"] is False
+
+
+def test_overlay_setup_required_pack_shows_needs_setup_after_opt_in():
+    cat = {"tools": [{
+        "name": "home_assistant",
+        "status": "needs_setup",
+        "setup_url": "/ha/",
+        "requires_setup": True,
+        "pack": {"id": "home-assistant", "title": "Home Assistant", "summary": ""},
+        "category": "Smart Home",
+    }]}
+    out = view.overlay(
+        cat,
+        ToolState(setup_enabled_packs=frozenset({"home-assistant"})),
+    )
+    assert out["tools"][0]["status"] == "needs_setup"
+    assert out["tools"][0]["setup_enabled"] is True
+    assert out["packs"][0]["status"] == "needs_setup"
     assert out["pending"] is False
 
 
@@ -123,6 +164,63 @@ def test_catalog_view_reads_both_files(tmp_path):
     assert out["pending"] is True
 
 
+def test_overlay_pack_disable_updates_child_and_pack_status():
+    cat = {"tools": [{
+        "name": "spotify_play",
+        "status": "active",
+        "pack": {"id": "spotify", "title": "Spotify", "summary": ""},
+        "category": "Music",
+    }]}
+    out = view.overlay(cat, ToolState(disabled_packs=frozenset({"spotify"})))
+    assert out["tools"][0]["status"] == "off"
+    assert out["tools"][0]["disabled_by_pack"] is True
+    assert out["packs"][0]["id"] == "spotify"
+    assert out["packs"][0]["status"] == "off"
+    assert out["pending"] is True
+
+
+def test_overlay_synthesizes_singleton_pack_for_packless_tool():
+    cat = {"tools": [{
+        "name": "standalone_tool",
+        "status": "active",
+        "summary": "Standalone summary",
+        "category": "Utilities",
+        "setup_url": "/standalone/",
+    }]}
+    out = view.overlay(cat, frozenset())
+    assert out["packs"] == [{
+        "id": "tool:standalone_tool",
+        "title": "standalone_tool",
+        "summary": "Standalone summary",
+        "setup_url": "/standalone/",
+        "category": "Utilities",
+        "tool_names": ["standalone_tool"],
+        "singleton_tool_name": "standalone_tool",
+        "status": "active",
+        "tool_count": 1,
+        "active_count": 1,
+        "off_count": 0,
+        "needs_setup_count": 0,
+        "setup_required_count": 0,
+        "customized_count": 0,
+    }]
+
+
+def test_overlay_prompt_override_updates_prompt_and_pending():
+    cat = {"tools": [{
+        "name": "get_weather",
+        "status": "active",
+        "description": "Default prompt",
+        "default_description": "Default prompt",
+        "pack": {"id": "weather", "title": "Weather", "summary": ""},
+    }]}
+    out = view.overlay(cat, frozenset(), {"get_weather": "Custom prompt"})
+    assert out["tools"][0]["description"] == "Custom prompt"
+    assert out["tools"][0]["prompt_customized"] is True
+    assert out["packs"][0]["customized_count"] == 1
+    assert out["pending"] is True
+
+
 def test_summary_shape(tmp_path):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
@@ -132,7 +230,12 @@ def test_summary_shape(tmp_path):
     s = view.summary(str(cat), str(state))
     assert s == {
         "catalog_present": True, "count": 2,
-        "disabled": ["a"], "disabled_count": 1, "pending": True,
+        "pack_count": 2,
+        "disabled": ["a"], "disabled_count": 1,
+        "disabled_packs": [], "disabled_pack_count": 0,
+        "setup_enabled_packs": [], "setup_enabled_pack_count": 0,
+        "prompt_overrides": [], "prompt_override_count": 0,
+        "pending": True,
     }
 
 

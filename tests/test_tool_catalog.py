@@ -16,6 +16,7 @@ from jasper.tools.catalog import (
     _CATALOG_HIDDEN,
     CATALOG_SCHEMA_VERSION,
     _SETUP_URLS,
+    _build_pack_payloads,
     _full_catalog_registry,
     build_catalog,
     write_catalog,
@@ -92,11 +93,13 @@ def test_full_registry_empty_disabled_all_active():
     assert _CATALOG_HIDDEN and not (_CATALOG_HIDDEN & names)
 
 
-def test_catalog_includes_display_metadata_without_forcing_packs():
+def test_catalog_includes_display_metadata_for_pack_first_ui():
+    cat = build_catalog(_full_live_registry(), frozenset())
     by_name = {
         t["name"]: t
-        for t in build_catalog(_full_live_registry(), frozenset())["tools"]
+        for t in cat["tools"]
     }
+    by_pack = {p["id"]: p for p in cat["packs"]}
 
     spotify = by_name["spotify_play"]
     assert spotify["category"] == "Music"
@@ -111,17 +114,78 @@ def test_catalog_includes_display_metadata_without_forcing_packs():
     assert by_name["calendar_today_summary"]["pack"]["id"] == "google"
     assert by_name["gmail_unread_summary"]["pack"]["id"] == "google"
 
-    # Standalone tools deliberately have no pack; the UI groups them directly
-    # under their category rather than inventing a fake display pack.
+    # Single-tool capabilities still get a display pack so /tools/ can render
+    # one stable top-level card per user-facing capability.
     assert by_name["get_weather"]["category"] == "Utilities"
-    assert by_name["get_weather"]["pack"] is None
+    assert by_name["get_weather"]["pack"]["id"] == "weather"
     assert by_name["get_current_time"]["category"] == "Utilities"
-    assert by_name["get_current_time"]["pack"] is None
+    assert by_name["get_current_time"]["pack"]["id"] == "time"
+
+    assert by_pack["spotify"]["tool_count"] == 3
+    assert by_pack["weather"]["tool_names"] == ["get_weather"]
+    assert by_pack["time"]["tool_names"] == ["get_current_time"]
 
     assert by_name["get_weather"]["summary"]
     assert "\n" not in by_name["get_weather"]["summary"]
     assert len(by_name["get_weather"]["summary"]) <= 183  # 180 + "..."
     assert by_name["get_weather"]["details"]
+    assert by_name["get_weather"]["default_description"]
+    assert by_name["get_weather"]["prompt_customized"] is False
+
+
+def test_disabled_pack_disables_all_child_tools():
+    cat = build_catalog(
+        _full_live_registry(),
+        frozenset(),
+        disabled_packs=frozenset({"spotify"}),
+    )
+    by_name = {t["name"]: t for t in cat["tools"]}
+    assert by_name["spotify_play"]["status"] == "off"
+    assert by_name["spotify_queue"]["status"] == "off"
+    assert by_name["spotify_play"]["disabled_by_pack"] is True
+    by_pack = {p["id"]: p for p in cat["packs"]}
+    assert by_pack["spotify"]["status"] == "off"
+
+
+def test_pack_payloads_synthesize_singleton_for_packless_tool():
+    packs = _build_pack_payloads([{
+        "name": "standalone_tool",
+        "summary": "Standalone summary",
+        "category": "Utilities",
+        "status": "active",
+        "setup_url": "/standalone/",
+        "prompt_customized": True,
+    }])
+    assert packs == [{
+        "id": "tool:standalone_tool",
+        "title": "standalone_tool",
+        "summary": "Standalone summary",
+        "setup_url": "/standalone/",
+        "category": "Utilities",
+        "tool_names": ["standalone_tool"],
+        "singleton_tool_name": "standalone_tool",
+        "status": "active",
+        "tool_count": 1,
+        "active_count": 1,
+        "off_count": 0,
+        "needs_setup_count": 0,
+        "setup_required_count": 0,
+        "customized_count": 1,
+    }]
+
+
+def test_prompt_overrides_surface_with_reset_metadata():
+    cat = build_catalog(
+        _full_live_registry(),
+        frozenset(),
+        prompt_overrides={"get_weather": "Use pirate weather."},
+    )
+    by_name = {t["name"]: t for t in cat["tools"]}
+    assert by_name["get_weather"]["description"] == "Use pirate weather."
+    assert by_name["get_weather"]["default_description"] != "Use pirate weather."
+    assert by_name["get_weather"]["prompt_customized"] is True
+    by_pack = {p["id"]: p for p in cat["packs"]}
+    assert by_pack["weather"]["customized_count"] == 1
 
 
 def test_visible_first_party_tools_have_search_labels():
@@ -136,8 +200,11 @@ def test_minimal_registry_gated_tools_need_setup():
     assert len(by_name) == len(VISIBLE)
     for name in GATED - _CATALOG_HIDDEN:
         assert by_name[name]["status"] == "needs_setup", name
+        if by_name[name]["setup_url"]:
+            assert by_name[name]["requires_setup"] is True
     for name in ALWAYS_ON:
         assert by_name[name]["status"] == "active", name
+        assert by_name[name]["requires_setup"] is False
 
 
 def test_needs_setup_setup_urls_map_to_right_wizard():

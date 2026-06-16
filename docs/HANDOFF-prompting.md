@@ -8,6 +8,7 @@
 This is the **canonical reference** for writing or editing any
 LLM-facing prompt surface in JTS — the `SYSTEM_INSTRUCTION` in
 `jasper/voice/prompt.py`, tool descriptions in `jasper/tools/`,
+user prompt overrides from `/var/lib/jasper/tool_prompt_overrides.json`,
 and per-tool conditional rules.
 
 **Last fetched against provider docs: 2026-05-23.** Re-check the
@@ -24,6 +25,15 @@ an unverified heuristic, not a hard ceiling (see
 ["Length and structure"](#2-length-and-structure-are-inversely-valued)).
 The "Recommended edits to current code" section at the bottom
 records what landed.
+
+**User prompt overrides added 2026-06-16.** Code still owns the default:
+`Tool.default_model_facing_description()` is `llm_description` when set,
+else the cleaned docstring. The `/tools/` wizard can store an advanced
+user override in `/var/lib/jasper/tool_prompt_overrides.json`; on
+`jasper-voice` restart, `ToolRegistry.apply_prompt_overrides()` makes that
+override what providers see through `Tool.model_facing_description()`.
+Reset deletes the override and returns to the code default. Missing or
+malformed override state fails safe to code defaults.
 
 ## Scope
 
@@ -62,7 +72,9 @@ tool-round watchdog contract
    the tool description). Path B (applied 2026-05-23):
    `build_tool()` sends the full cleaned docstring; per-tool
    conditional rules (when to call, voice-answer style,
-   response-shape handling) live in the tool's docstring.
+   response-shape handling) live in the tool's docstring. If a
+   user override exists, it replaces the code default at runtime
+   and carries the same responsibility.
 4. **Don't ban preambles. List when to skip.** Absolute "never
    preamble" rules get ~33% compliance on gpt-realtime per a
    public community thread. OpenAI's documented suppression
@@ -531,8 +543,8 @@ nice-to-have):
 ### How `build_tool()` works
 
 [`build_tool`](../jasper/tools/__init__.py) in
-`jasper/tools/__init__.py` sends the full cleaned docstring to the
-LLM as the tool description:
+`jasper/tools/__init__.py` captures the code default for the LLM-facing
+tool description:
 
 ```python
 def build_tool(fn, *, name=None):
@@ -541,19 +553,26 @@ def build_tool(fn, *, name=None):
     ...
 ```
 
-**The full docstring is the LLM-facing surface.** Engineer-only
+**The full docstring is the default LLM-facing surface.** Engineer-only
 notes (dev TODOs, implementation details) belong in `#` comments
 or the module docstring, NOT in tool function docstrings.
 
 By default, that is — a tool may override the model-facing text with a
-shorter `@tool(llm_description="...")`, and `build_tool` then sends that
-instead of the docstring (via `Tool.model_facing_description()`). The
-override exists to keep a verbose engineer-facing docstring out of the
-realtime instructions+tools token budget (OpenAI Realtime caps that at
-16,384 tokens; the 28 shipped descriptions already total ~8.2k). No
-shipped tool sets it today, so the docstring remains the LLM-facing
-surface in practice; trimming verbose tools to a short `llm_description`
-is a later, eval-gated step.
+shorter `@tool(llm_description="...")`, and `build_tool` then uses that
+instead of the docstring for the code default. The override exists to keep a
+verbose engineer-facing docstring out of the realtime instructions+tools
+token budget (OpenAI Realtime caps that at 16,384 tokens; the 28 shipped
+descriptions already total ~8.2k). No shipped tool sets it today; trimming
+verbose tools to a short `llm_description` is a later, eval-gated step.
+
+There is one runtime layer above the code default: user-edited prompt
+overrides saved by `/tools/`. `jasper-voice` reads
+`/var/lib/jasper/tool_prompt_overrides.json` at startup, calls
+`ToolRegistry.apply_prompt_overrides()`, and then every provider serializer
+uses `Tool.model_facing_description()`. That means the provider sees:
+user override → `llm_description` → docstring, in that order. The catalog
+keeps both `description` and `default_description` so the UI can mark
+"Custom prompt" and reset by deleting the override.
 
 ### Writing a new tool
 
@@ -827,4 +846,4 @@ edit (~quarterly, or whenever a model version bumps).
 
 ---
 
-Last verified: 2026-06-15
+Last verified: 2026-06-16

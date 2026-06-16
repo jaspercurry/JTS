@@ -70,7 +70,7 @@ const evilNewline = {
 const evilTabBackslash = {
   name: "evil_tab_bs", status: "needs_setup", setup_url: "/\t\\evil.com",
 };
-// A legitimately safe setup link, to prove the href path still renders.
+// A legitimately safe setup link, to prove the detail-page href path still renders.
 const safeUrl = {
   name: "good_url", status: "needs_setup", setup_url: "/transit/",
 };
@@ -84,6 +84,7 @@ const html =
     evilTab, evilNewline, evilTabBackslash, safeUrl, noUrl,
   ]) +
   toolCard(noUrl) +
+  toolDetail(safeUrl) +
   toolDetail(evil);
 
 // Pull every href the card markup produced and RESOLVE each against a fixed
@@ -120,9 +121,13 @@ console.log(JSON.stringify({
   noJavascriptScheme: !/javascript:/i.test(html),
   // No rendered href may point off-origin (scheme, "//host", or "/\\host").
   noOffOriginHref: !offOrigin,
-  // A real same-origin path still renders as a clickable Set up link.
+  // A real same-origin path still renders as a clickable detail-page Set up link.
   safeHrefRendered: html.includes('href="/transit/"'),
   // needs_setup with no setup_url -> honest "Unavailable", never a checkbox.
   unavailableRendered: html.includes("tool-unavailable"),
-  noDeadToggle: !/data-tool="no_setup_tool"/.test(html),
+  noDeadToggle: !/<input[^>]+data-tool="no_setup_tool"/.test(html),
+  // Active/off state is conveyed by toggles now, not redundant status pills.
+  noOnOffBadges: !/>On<\/span>/.test(html) && !/>Off<\/span>/.test(html),
+  // Top-level pack cards are row-sized navigation targets.
+  packCardsClickable: html.includes("data-pack-href="),
 }));

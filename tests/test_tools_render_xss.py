@@ -69,3 +69,5 @@ def test_render_escapes_every_untrusted_tool_field():
     # a dead disabled checkbox (the flag_recent_issue degraded case).
     assert out["unavailableRendered"] is True, "no Unavailable badge for a urlless needs_setup tool"
     assert out["noDeadToggle"] is True, "a urlless needs_setup tool rendered a toggle"
+    assert out["noOnOffBadges"] is True, "active/off status badges should not render"
+    assert out["packCardsClickable"] is True, "pack cards should expose full-card navigation"

@@ -27,6 +27,14 @@ from typing import Any
 
 import pytest
 
+from jasper.tool_prompt_overrides import read_prompt_overrides
+from jasper.tool_state import (
+    ToolState,
+    read_disabled_tools,
+    read_tool_state,
+    write_disabled_tools,
+    write_tool_state,
+)
 from jasper.web import tools_setup
 
 
@@ -50,6 +58,10 @@ def _handler_cls(catalog_path: str, state_path: str):
 
 def _write_catalog(path, tools):
     path.write_text(json.dumps({"schema_version": 1, "tools": tools}))
+
+
+def _write(path, payload):
+    path.write_text(json.dumps(payload))
 
 
 def _make_request(
@@ -101,6 +113,18 @@ def _post_toggle(handler_cls, payload, **kw):
     return _post(handler_cls, "/toggle", payload, **kw)
 
 
+def _post_toggle_pack(handler_cls, payload, **kw):
+    return _post(handler_cls, "/toggle-pack", payload, **kw)
+
+
+def _post_prompt(handler_cls, payload, **kw):
+    return _post(handler_cls, "/prompt", payload, **kw)
+
+
+def _post_prompt_reset(handler_cls, payload, **kw):
+    return _post(handler_cls, "/prompt-reset", payload, **kw)
+
+
 def _post_apply(handler_cls, payload=None, **kw):
     return _post(handler_cls, "/apply", payload or {}, **kw)
 
@@ -109,6 +133,19 @@ def _post_apply(handler_cls, payload=None, **kw):
 # fixtures need it (a status-less entry is treated as not-configured).
 def _tool(name, status="active", **extra):
     return {"name": name, "status": status, "labels": [], **extra}
+
+
+def _pack(pack_id="spotify", status="active", **extra):
+    return {
+        "id": pack_id,
+        "title": "Spotify",
+        "summary": "Spotify tools",
+        "category": "Music",
+        "tool_names": ["spotify_play"],
+        "status": status,
+        "tool_count": 1,
+        **extra,
+    }
 
 
 # --- GET / -----------------------------------------------------------------
@@ -144,7 +181,7 @@ def test_get_tool_detail_renders_canonical_page(tmp_path):
     assert 'class="app-header"' in out
     assert 'href="/tools/"' in out
     assert 'id="tool-detail-data"' in out
-    assert '"name": "get_weather"' in out
+    assert '"pack_id": "tool:get_weather"' in out
     assert '<script type="module" src="/assets/tools/js/detail.js">' in out
 
 
@@ -158,9 +195,38 @@ def test_get_tool_detail_json_island_escapes_tool_name(tmp_path):
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert '{"name": "\\u003C/script\\u003E"}' in out
-    assert '{"name": "</script>"}' not in out
+    assert '{"pack_id": "tool:\\u003C/script\\u003E"}' in out
+    assert '{"pack_id": "tool:</script>"}' not in out
     assert "\\u003C/script\\u003E" in out
+
+
+def test_get_pack_detail_renders_canonical_page(tmp_path):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [_tool("spotify_play")])
+    h = _make_request(
+        _handler_cls(str(cat), str(tmp_path / "state.env")),
+        "/pack/spotify/",
+    )
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert 'id="tool-detail-data"' in out
+    assert '"pack_id": "spotify"' in out
+    assert '<script type="module" src="/assets/tools/js/detail.js">' in out
+
+
+def test_get_tool_authoring_guide_renders(tmp_path):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [])
+    h = _make_request(
+        _handler_cls(str(cat), str(tmp_path / "state.env")),
+        "/guide",
+    )
+    h.do_GET()
+    assert h.status == 200
+    out = h.wfile.getvalue().decode()
+    assert "Tool authoring guide" in out
+    assert "/assets/tools/tools.css?v=" in out
 
 
 def test_get_root_rejects_dns_rebinding_host(tmp_path):
@@ -311,14 +377,14 @@ def test_post_toggle_disable_stages_without_restart(tmp_path, monkeypatch):
     }
     # A toggle NEVER restarts — that's Apply's job.
     assert restarted["n"] == 0
-    assert tools_setup.read_disabled_tools(str(state)) == frozenset({"spotify_play"})
+    assert read_disabled_tools(str(state)) == frozenset({"spotify_play"})
 
 
 def test_post_toggle_enable_removes_from_disabled_set(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("get_weather"), _tool("spotify_play")])
-    tools_setup.write_disabled_tools(str(state), {"spotify_play", "get_weather"})
+    write_disabled_tools(str(state), {"spotify_play", "get_weather"})
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
     h = _post_toggle(
         _handler_cls(str(cat), str(state)),
@@ -326,7 +392,152 @@ def test_post_toggle_enable_removes_from_disabled_set(tmp_path, monkeypatch):
     )
     h.do_POST()
     assert h.status == 200
-    assert tools_setup.read_disabled_tools(str(state)) == frozenset({"get_weather"})
+    assert read_disabled_tools(str(state)) == frozenset({"get_weather"})
+
+
+def test_post_toggle_pack_stages_pack_without_restart(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "spotify_play",
+            pack={"id": "spotify", "title": "Spotify", "summary": ""},
+        )],
+        "packs": [_pack("spotify")],
+    })
+    restarted = {"n": 0}
+    monkeypatch.setattr(
+        tools_setup, "restart_voice_daemon",
+        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+    )
+    h = _post_toggle_pack(
+        _handler_cls(str(cat), str(state)),
+        {"id": "spotify", "enabled": False},
+    )
+    h.do_POST()
+    assert h.status == 200
+    payload = json.loads(h.wfile.getvalue().decode())
+    assert payload["ok"] is True
+    assert payload["id"] == "spotify"
+    assert payload["pending"] is True
+    assert restarted["n"] == 0
+    assert read_tool_state(str(state)).disabled_packs == {"spotify"}
+
+
+def test_post_toggle_singleton_pack_writes_child_tool_state(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool("standalone_tool", category="Utilities")],
+    })
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    h = _post_toggle_pack(
+        _handler_cls(str(cat), str(state)),
+        {"id": "tool:standalone_tool", "enabled": False},
+    )
+    h.do_POST()
+    assert h.status == 200
+    saved = read_tool_state(str(state))
+    assert saved.disabled_tools == {"standalone_tool"}
+    assert saved.disabled_packs == frozenset()
+
+
+def test_post_toggle_pack_needs_setup_records_setup_intent(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "home_assistant",
+            status="needs_setup",
+            setup_url="/ha/",
+            requires_setup=True,
+            pack={
+                "id": "home-assistant",
+                "title": "Home Assistant",
+                "summary": "",
+                "setup_url": "/ha/",
+            },
+        )],
+    })
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    h = _post_toggle_pack(
+        _handler_cls(str(cat), str(state)),
+        {"id": "home-assistant", "enabled": True},
+    )
+    h.do_POST()
+    assert h.status == 200
+    payload = json.loads(h.wfile.getvalue().decode())
+    assert payload == {
+        "ok": True,
+        "id": "home-assistant",
+        "enabled": True,
+        "pending": False,
+        "setup_required": True,
+    }
+    assert read_tool_state(str(state)).setup_enabled_packs == {"home-assistant"}
+
+
+def test_post_toggle_pack_needs_setup_off_clears_setup_intent(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "home_assistant",
+            status="needs_setup",
+            setup_url="/ha/",
+            requires_setup=True,
+            pack={
+                "id": "home-assistant",
+                "title": "Home Assistant",
+                "summary": "",
+                "setup_url": "/ha/",
+            },
+        )],
+    })
+    write_tool_state(
+        str(state),
+        ToolState(setup_enabled_packs=frozenset({"home-assistant"})),
+    )
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    h = _post_toggle_pack(
+        _handler_cls(str(cat), str(state)),
+        {"id": "home-assistant", "enabled": False},
+    )
+    h.do_POST()
+    assert h.status == 200
+    payload = json.loads(h.wfile.getvalue().decode())
+    assert payload["pending"] is False
+    assert payload["setup_required"] is True
+    assert read_tool_state(str(state)).setup_enabled_packs == frozenset()
+
+
+def test_post_tool_toggle_rejects_pack_disabled_tool(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "spotify_play",
+            pack={"id": "spotify", "title": "Spotify", "summary": ""},
+        )],
+        "packs": [_pack("spotify")],
+    })
+    write_tool_state(
+        str(state),
+        ToolState(disabled_packs=frozenset({"spotify"})),
+    )
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    h = _post_toggle(
+        _handler_cls(str(cat), str(state)),
+        {"name": "spotify_play", "enabled": True},
+    )
+    h.do_POST()
+    assert h.status == 400
+    assert json.loads(h.wfile.getvalue().decode())["error"] == "pack disabled"
 
 
 def test_post_toggle_no_op_does_not_rewrite(tmp_path, monkeypatch):
@@ -335,13 +546,13 @@ def test_post_toggle_no_op_does_not_rewrite(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("spotify_play")])
-    tools_setup.write_disabled_tools(str(state), {"spotify_play"})
+    write_disabled_tools(str(state), {"spotify_play"})
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
     calls = {"n": 0}
-    real_write = tools_setup.write_disabled_tools
+    real_write = write_tool_state
     monkeypatch.setattr(
-        tools_setup, "write_disabled_tools",
-        lambda p, n: (calls.__setitem__("n", calls["n"] + 1), real_write(p, n)),
+        tools_setup, "write_tool_state",
+        lambda p, s: (calls.__setitem__("n", calls["n"] + 1), real_write(p, s)),
     )
     h = _post_toggle(
         _handler_cls(str(cat), str(state)),
@@ -350,7 +561,46 @@ def test_post_toggle_no_op_does_not_rewrite(tmp_path, monkeypatch):
     h.do_POST()
     assert h.status == 200
     assert calls["n"] == 0  # no-op: never rewrote the file
-    assert tools_setup.read_disabled_tools(str(state)) == frozenset({"spotify_play"})
+    assert read_disabled_tools(str(state)) == frozenset({"spotify_play"})
+
+
+def test_post_prompt_override_and_reset_stage_without_restart(tmp_path, monkeypatch):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    prompts = tmp_path / "prompts.json"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "get_weather",
+            description="Default prompt",
+            default_description="Default prompt",
+            pack={"id": "weather", "title": "Weather", "summary": ""},
+        )],
+        "packs": [_pack("weather")],
+    })
+    restarted = {"n": 0}
+    monkeypatch.setattr(
+        tools_setup, "restart_voice_daemon",
+        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+    )
+    handler = tools_setup._make_handler({
+        "catalog_path": str(cat),
+        "state_path": str(state),
+        "prompt_overrides_path": str(prompts),
+    })
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": "Custom prompt"})
+    h.do_POST()
+    assert h.status == 200
+    assert read_prompt_overrides(str(prompts)) == {
+        "get_weather": "Custom prompt",
+    }
+    assert restarted["n"] == 0
+    assert json.loads(h.wfile.getvalue().decode())["pending"] is True
+
+    h = _post_prompt_reset(handler, {"name": "get_weather"})
+    h.do_POST()
+    assert h.status == 200
+    assert read_prompt_overrides(str(prompts)) == {}
 
 
 # --- POST /apply -----------------------------------------------------------
@@ -516,7 +766,7 @@ def test_concurrent_toggles_do_not_lose_updates(tmp_path, monkeypatch):
     for t in threads:
         t.join()
 
-    assert tools_setup.read_disabled_tools(str(state)) == frozenset(names)
+    assert read_disabled_tools(str(state)) == frozenset(names)
 
 
 def test_post_apply_missing_csrf_is_403(tmp_path, monkeypatch):
@@ -540,7 +790,7 @@ def test_catalog_overlays_fresh_disabled_set(tmp_path):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("get_weather", status="active")])
-    tools_setup.write_disabled_tools(str(state), {"get_weather"})
+    write_disabled_tools(str(state), {"get_weather"})
     h = _make_request(_handler_cls(str(cat), str(state)), "/catalog.json")
     h.do_GET()
     payload = json.loads(h.wfile.getvalue().decode())

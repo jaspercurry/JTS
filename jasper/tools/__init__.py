@@ -237,6 +237,10 @@ class Tool:
     # Mass-migrating the 28 tools to short llm_descriptions is a later,
     # eval-gated follow-up, NOT this change.
     llm_description: str | None = None
+    # User-edited override loaded from /var/lib/jasper/tool_prompt_overrides.json.
+    # This takes precedence over the code default at runtime, but the code
+    # default remains available for UI diff/reset and docs.
+    user_description_override: str | None = None
     # Catalog facet for the future tools UI / marketplace: free-form tags
     # like ("transit", "nyc", "subway") used to sort/filter/search tools.
     # NOT sent to the model (never in function_declarations/openai_tools —
@@ -262,11 +266,19 @@ class Tool:
     untrusted_output: bool = False
     consequential: bool = False
 
-    def model_facing_description(self) -> str:
-        """What the LLM sees: the `llm_description` override when set,
-        else the full docstring `description`. Default (None) preserves
-        today's behavior verbatim."""
+    def default_model_facing_description(self) -> str:
+        """Code default: the `llm_description` override when set, else the
+        full docstring `description`."""
         return self.llm_description if self.llm_description is not None else self.description
+
+    def model_facing_description(self) -> str:
+        """What the LLM sees: user override first, then the code default."""
+        if self.user_description_override is not None:
+            return self.user_description_override
+        return self.default_model_facing_description()
+
+    def prompt_customized(self) -> bool:
+        return self.user_description_override is not None
 
     def to_manifest_entry(self) -> dict[str, Any]:
         """One tool's manifest record — a stable, provider-neutral
@@ -372,6 +384,17 @@ class ToolRegistry:
         order. Additive surface; does not affect dispatch or the
         provider serializers."""
         return [t.to_manifest_entry() for t in self.tools.values()]
+
+    def apply_prompt_overrides(self, overrides: dict[str, str]) -> None:
+        """Apply user-edited model-facing prompt overrides in-place.
+
+        Unknown names are ignored; this keeps stale override files fail-soft
+        while preserving code defaults for every real tool.
+        """
+        for name, prompt in overrides.items():
+            tool = self.tools.get(name)
+            if tool is not None and prompt.strip():
+                self.tools[name] = replace(tool, user_description_override=prompt)
 
 
 def tool(

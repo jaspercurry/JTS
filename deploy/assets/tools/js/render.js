@@ -1,16 +1,8 @@
-// render.js — pure tool -> HTML-string builders for the /tools/ catalog.
+// render.js — pure catalog -> HTML-string builders for the /tools/ UI.
 //
-// Kept side-effect-free: main.js owns the fetch / filter / toggle wiring and
-// the event delegation; this module only turns catalog entries into cards,
-// groups, and detail views. Every tool field is treated as UNTRUSTED and run
-// through escapeHtml or URL validation before it lands in innerHTML — the
-// catalog is the marketplace's future home, and good hygiene + the conventions
-// test require it for first-party text too.
-//
-// The on/off control is the canonical .toggle checkbox (same markup
-// jasper.web._common.toggle_html() renders server-side); the toggle key rides
-// in an escaped data-tool attribute that main.js's delegated change listener
-// reads — never an inline onclick with an interpolated name.
+// main.js/detail.js own fetches, POSTs, and event delegation. This module
+// turns catalog packs/tools into markup only. Every catalog field is
+// untrusted and is escaped or URL-validated before landing in innerHTML.
 
 import { escapeHtml } from "/assets/shared/js/escape.js";
 
@@ -23,6 +15,11 @@ const CATEGORY_ORDER = [
   "System",
   "Other",
 ];
+
+const STATUS_BADGE = {
+  partial: { label: "Partial", tone: "var(--status-warn)" },
+  needs_setup: { label: "Needs setup", tone: "var(--status-warn)" },
+};
 
 // A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
 // "/google/"). Require an absolute path ("/..."), then RESOLVE it against the
@@ -53,22 +50,15 @@ function safeSetupUrl(u) {
   return u;
 }
 
-function safeDetailUrl(name) {
-  return typeof name === "string" && name
-    ? "/tools/tool/" + encodeURIComponent(name) + "/"
+function safePackUrl(id) {
+  return typeof id === "string" && id
+    ? "/tools/pack/" + encodeURIComponent(id) + "/"
     : null;
 }
 
-// status -> { label, --tone } for the .badge pill. needs_setup uses the idle
-// tone (it's not an error, just unconfigured); off is muted; active is green.
-const STATUS_BADGE = {
-  active: { label: "On", tone: "var(--status-ok)" },
-  off: { label: "Off", tone: "var(--status-idle)" },
-  needs_setup: { label: "Needs setup", tone: "var(--status-warn)" },
-};
-
 function badge(status) {
-  const spec = STATUS_BADGE[status] || STATUS_BADGE.off;
+  const spec = STATUS_BADGE[status];
+  if (!spec) return "";
   return (
     '<span class="badge" style="--tone: ' + spec.tone + '">' +
     escapeHtml(spec.label) + "</span>"
@@ -83,154 +73,150 @@ function labelChips(labels) {
   return '<div class="tool-labels">' + chips + "</div>";
 }
 
-function categoryOf(tool) {
-  return typeof tool.category === "string" && tool.category.trim()
-    ? tool.category.trim()
-    : "Other";
+function countLabel(n) {
+  return n === 1 ? "1 tool" : n + " tools";
 }
 
-function packOf(tool) {
-  return tool && typeof tool.pack === "object" && tool.pack !== null
-    ? tool.pack
-    : null;
+function providersOf(tool) {
+  return Array.isArray(tool.providers) && tool.providers.length
+    ? tool.providers.join(", ")
+    : "All voice providers";
 }
 
-function summaryOf(tool) {
-  return typeof tool.summary === "string" && tool.summary
-    ? tool.summary
-    : (tool.description || "");
-}
-
-function packKey(pack) {
-  return pack && typeof pack.id === "string" && pack.id
-    ? "pack:" + pack.id
-    : null;
-}
-
-function groupTools(tools) {
-  const categories = new Map();
-  for (const tool of tools) {
-    const category = categoryOf(tool);
-    if (!categories.has(category)) categories.set(category, []);
-    const groups = categories.get(category);
-    const pack = packOf(tool);
-    const key = packKey(pack);
-    let group = key ? groups.find((g) => g.key === key) : null;
-    if (!group) {
-      group = { key: key || "standalone:" + groups.length, pack, tools: [] };
-      groups.push(group);
-    }
-    group.tools.push(tool);
-  }
-  return [...categories.entries()].sort((a, b) => {
-    const ai = CATEGORY_ORDER.indexOf(a[0]);
-    const bi = CATEGORY_ORDER.indexOf(b[0]);
-    const ar = ai === -1 ? CATEGORY_ORDER.length : ai;
-    const br = bi === -1 ? CATEGORY_ORDER.length : bi;
-    return ar - br || a[0].localeCompare(b[0]);
-  });
-}
-
-// The right-hand control. A needs_setup tool can't be enabled usefully (its
-// backend isn't configured), so it shows a "Set up" link to its wizard. With
-// no (safe) wizard URL — e.g. a core tool that degraded to needs_setup, like
-// flag_recent_issue when the wake-events DB won't open — there's nothing to
-// toggle and nowhere to go, so it shows an honest "Unavailable" badge rather
-// than a dead disabled checkbox. Configured tools (active/off) show the
-// canonical toggle, checked when active.
-function control(tool) {
-  if (tool.status === "needs_setup") {
-    const href = safeSetupUrl(tool.setup_url);
-    if (href) {
-      return (
-        '<a class="btn btn--ghost tool-setup" href="' +
-        escapeHtml(href) + '">Set up</a>'
-      );
-    }
+function packControl(pack) {
+  if (pack.status === "needs_setup" && !safeSetupUrl(pack.setup_url)) {
     return '<span class="tool-unavailable">Unavailable</span>';
   }
-  const checked = tool.status === "active" ? " checked" : "";
-  // aria-label gives the checkbox an accessible name (otherwise a screen
-  // reader announces a bare "checkbox"); the tool name is the right label.
+  const checked = pack.status !== "off" ? " checked" : "";
   return (
-    '<label class="toggle"><input type="checkbox" data-tool="' +
-    escapeHtml(tool.name) + '" aria-label="Enable ' + escapeHtml(tool.name) +
+    '<label class="toggle"><input type="checkbox" data-pack="' +
+    escapeHtml(pack.id) + '" aria-label="Enable ' + escapeHtml(pack.title) +
     '"' + checked + ">" +
     '<span class="track"></span></label>'
   );
 }
 
-// One catalog entry -> card markup.
-export function toolCard(tool) {
-  const detailUrl = safeDetailUrl(tool.name);
-  const name = escapeHtml(tool.name);
-  const nameHtml = detailUrl
-    ? '<a class="tool-name" href="' +
-      escapeHtml(detailUrl) + '">' + name + "</a>"
-    : '<span class="tool-name">' + name + "</span>";
-  return (
-    '<div class="info-card tool-card">' +
-    '<div class="tool-card__head">' +
-    '<div class="tool-card__id">' +
-    nameHtml +
-    badge(tool.status) +
-    "</div>" +
-    control(tool) +
-    "</div>" +
-    '<p class="tool-desc">' + escapeHtml(summaryOf(tool)) + "</p>" +
-    labelChips(tool.labels) +
-    "</div>"
-  );
-}
-
-function countLabel(n) {
-  return n === 1 ? "1 tool" : n + " tools";
-}
-
-function packGroup(group) {
-  if (!group.pack) {
-    return group.tools.map(toolCard).join("");
+function toolControl(tool) {
+  if (tool.status === "needs_setup") {
+    return '<span class="tool-unavailable">Needs setup</span>';
   }
-  const pack = group.pack;
-  const title = pack.title || pack.id || "Tool pack";
-  const summary = pack.summary || "";
-  const setupHref = safeSetupUrl(pack.setup_url);
-  const setup = setupHref
-    ? '<a class="btn btn--ghost tool-pack__setup" href="' +
-      escapeHtml(setupHref) + '">Set up</a>'
+  const checked = tool.status === "active" ? " checked" : "";
+  const disabled = tool.disabled_by_pack ? " disabled" : "";
+  const title = tool.disabled_by_pack
+    ? ' title="Enable the parent pack before changing this tool"'
     : "";
   return (
-    '<section class="tool-pack">' +
-    '<div class="tool-pack__head">' +
-    "<div>" +
-    '<h3 class="tool-pack__title">' + escapeHtml(title) + "</h3>" +
-    (summary
-      ? '<p class="tool-pack__summary">' + escapeHtml(summary) + "</p>"
-      : "") +
-    "</div>" +
-    '<div class="tool-pack__meta">' +
-    '<span class="tool-count">' +
-    escapeHtml(countLabel(group.tools.length)) + "</span>" +
-    setup +
-    "</div>" +
-    "</div>" +
-    '<div class="tool-pack__tools">' + group.tools.map(toolCard).join("") + "</div>" +
-    "</section>"
+    '<label class="toggle"><input type="checkbox" data-tool="' +
+    escapeHtml(tool.name) + '" aria-label="Enable ' + escapeHtml(tool.name) +
+    '"' + checked + disabled + title + ">" +
+    '<span class="track"></span></label>'
   );
 }
 
-function categorySection(category, groups) {
+function categoryRank(category) {
+  const i = CATEGORY_ORDER.indexOf(category);
+  return i === -1 ? CATEGORY_ORDER.length : i;
+}
+
+function sortedPacks(packs) {
+  return [...packs].sort((a, b) => {
+    const ac = a.category || "Other";
+    const bc = b.category || "Other";
+    return categoryRank(ac) - categoryRank(bc) ||
+      ac.localeCompare(bc) ||
+      (a.title || a.id || "").localeCompare(b.title || b.id || "");
+  });
+}
+
+function packSearchText(pack, tools) {
+  return [
+    pack.id || "",
+    pack.title || "",
+    pack.summary || "",
+    pack.category || "",
+    ...(tools || []).flatMap((t) => [
+      t.name || "",
+      t.summary || "",
+      t.description || "",
+      ...(Array.isArray(t.labels) ? t.labels : []),
+    ]),
+  ].join(" ").toLowerCase();
+}
+
+function toolsForPack(catalog, pack) {
+  const names = Array.isArray(pack.tool_names) ? new Set(pack.tool_names) : null;
+  const tools = Array.isArray(catalog.tools) ? catalog.tools : [];
+  return names ? tools.filter((t) => names.has(t.name)) : [];
+}
+
+function packsFromTools(tools) {
+  const packs = new Map();
+  for (const tool of tools) {
+    const source = tool.pack && typeof tool.pack === "object" ? tool.pack : null;
+    const id = source && source.id ? source.id : "tool:" + (tool.name || "tool");
+    if (!packs.has(id)) {
+      packs.set(id, {
+        id,
+        title: (source && source.title) || tool.name || "Tool",
+        summary: (source && source.summary) || tool.summary || "",
+        setup_url: (source && source.setup_url) || tool.setup_url || null,
+        category: tool.category || "Other",
+        status: tool.status || "off",
+        tool_names: [],
+        tool_count: 0,
+        customized_count: 0,
+      });
+    }
+    const pack = packs.get(id);
+    pack.tool_names.push(tool.name);
+    pack.tool_count += 1;
+    if (tool.prompt_customized) pack.customized_count += 1;
+  }
+  return [...packs.values()];
+}
+
+export function packCard(pack, tools = []) {
+  const href = safePackUrl(pack.id);
+  const title = pack.title || pack.id || "Tool pack";
+  const linkAttrs = href
+    ? ' data-pack-href="' + escapeHtml(href) +
+      '" role="link" tabindex="0" aria-label="' + escapeHtml(title) + '"'
+    : "";
+  const customized = pack.customized_count
+    ? '<span class="tool-count">' +
+      escapeHtml(pack.customized_count + " customized") + "</span>"
+    : "";
+  return (
+    '<article class="info-card tool-pack-card"' + linkAttrs + ">" +
+    '<div class="tool-pack-card__head">' +
+    "<div>" +
+    '<div class="tool-pack-card__id">' +
+    '<span class="tool-pack-card__title">' + escapeHtml(title) + "</span>" +
+    badge(pack.status) + "</div>" +
+    '<p class="tool-pack-card__summary">' +
+    escapeHtml(pack.summary || "") + "</p>" +
+    "</div>" +
+    '<div class="tool-pack-card__actions">' + packControl(pack) + "</div>" +
+    "</div>" +
+    '<div class="tool-pack-card__meta">' +
+    '<span class="tool-count">' + escapeHtml(countLabel(tools.length)) + "</span>" +
+    customized +
+    "</div>" +
+    "</article>"
+  );
+}
+
+function categorySection(category, cards) {
   return (
     '<section class="tool-category">' +
     '<h2 class="tool-category__title">' + escapeHtml(category) + "</h2>" +
-    groups.map(packGroup).join("") +
+    '<div class="tool-pack-grid">' + cards.join("") + "</div>" +
     "</section>"
   );
 }
 
-// The whole list (or an empty / unavailable state) for a filtered set.
-export function toolList(tools, { unavailable } = {}) {
-  if (unavailable) {
+export function toolList(catalog, { query = "", unavailable } = {}) {
+  if (unavailable || (catalog && catalog.unavailable)) {
     return (
       '<div class="info-card tool-empty">' +
       "<p>Tool catalog isn&rsquo;t ready yet &mdash; jasper-voice writes it " +
@@ -239,53 +225,144 @@ export function toolList(tools, { unavailable } = {}) {
       "</div>"
     );
   }
-  if (!tools.length) {
+  const view = Array.isArray(catalog)
+    ? { tools: catalog, packs: packsFromTools(catalog) }
+    : catalog || {};
+  const q = (query || "").trim().toLowerCase();
+  const packs = sortedPacks(Array.isArray(view.packs) ? view.packs : []);
+  const filtered = packs
+    .map((pack) => ({ pack, tools: toolsForPack(view, pack) }))
+    .filter(({ pack, tools }) => !q || packSearchText(pack, tools).includes(q));
+  if (!filtered.length) {
     return '<div class="info-card tool-empty"><p>No tools match.</p></div>';
   }
-  return groupTools(tools)
-    .map(([category, groups]) => categorySection(category, groups))
+  const byCategory = new Map();
+  for (const item of filtered) {
+    const category = item.pack.category || "Other";
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category).push(packCard(item.pack, item.tools));
+  }
+  return [...byCategory.entries()]
+    .sort((a, b) => categoryRank(a[0]) - categoryRank(b[0]) || a[0].localeCompare(b[0]))
+    .map(([category, cards]) => categorySection(category, cards))
     .join("");
 }
 
-export function toolDetail(tool) {
-  if (!tool) {
+function schemaBlock(tool) {
+  const schema = tool.parameters || {};
+  return escapeHtml(JSON.stringify(schema, null, 2));
+}
+
+function riskLine(tool) {
+  const flags = [];
+  if (tool.untrusted_output) flags.push("Untrusted output");
+  if (tool.consequential) flags.push("Consequential action");
+  return flags.length ? flags.join(", ") : "None";
+}
+
+function toolRow(tool) {
+  const prompt = tool.description || "";
+  const customized = tool.prompt_customized
+    ? '<span class="badge" style="--tone: var(--status-warn)">Custom prompt</span>'
+    : "";
+  const resetDisabled = tool.prompt_customized ? "" : " disabled";
+  return (
+    '<section class="tool-row" data-tool-row="' + escapeHtml(tool.name) + '">' +
+    '<div class="tool-row__head">' +
+    "<div>" +
+    '<div class="tool-row__id">' +
+    '<span class="tool-name">' + escapeHtml(tool.name) + "</span>" +
+    badge(tool.status) + customized +
+    "</div>" +
+    '<p class="tool-desc">' + escapeHtml(tool.summary || "") + "</p>" +
+    "</div>" +
+    '<div class="tool-row__actions">' + toolControl(tool) + "</div>" +
+    "</div>" +
+    '<details class="tool-row__details">' +
+    "<summary>Prompt, schema, and metadata</summary>" +
+    '<dl class="deflist tool-row__meta">' +
+    '<div><dt>Providers</dt><dd>' + escapeHtml(providersOf(tool)) + "</dd></div>" +
+    '<div><dt>Timeout</dt><dd>' + escapeHtml(String(tool.timeout || "")) + " sec</dd></div>" +
+    '<div><dt>Risk flags</dt><dd>' + escapeHtml(riskLine(tool)) + "</dd></div>" +
+    "</dl>" +
+    labelChips(tool.labels) +
+    '<div class="prompt-editor" data-tool="' + escapeHtml(tool.name) + '">' +
+    '<div class="prompt-editor__bar">' +
+    '<span class="tool-count">' + escapeHtml(String(prompt.length)) + " chars</span>" +
+    '<button type="button" class="btn btn--ghost" data-action="edit-prompt" data-tool="' +
+    escapeHtml(tool.name) + '">Edit</button>' +
+    '<button type="button" class="btn btn--ghost" data-action="reset-prompt" data-tool="' +
+    escapeHtml(tool.name) + '"' + resetDisabled + ">Reset</button>" +
+    '<button type="button" class="btn" data-action="save-prompt" data-tool="' +
+    escapeHtml(tool.name) + '" hidden>Save</button>' +
+    '<button type="button" class="btn btn--ghost" data-action="cancel-prompt" data-tool="' +
+    escapeHtml(tool.name) + '" hidden>Cancel</button>' +
+    "</div>" +
+    '<p class="prompt-editor__warning">Advanced: edit at your own risk. Prompt overrides can change model behavior and weaken safety guidance.</p>' +
+    '<pre class="prompt-view">' +
+    escapeHtml(prompt) + "</pre>" +
+    '<textarea class="prompt-edit" hidden>' + escapeHtml(prompt) + "</textarea>" +
+    "</div>" +
+    '<h4 class="tool-section-title">Input schema</h4>' +
+    '<pre class="tool-schema">' + schemaBlock(tool) + "</pre>" +
+    "</details>" +
+    "</section>"
+  );
+}
+
+export function toolCard(tool) {
+  return toolRow(tool);
+}
+
+export function packDetail(pack, tools = []) {
+  if (!pack) {
     return (
       '<div class="info-card tool-empty">' +
-      '<p>Tool not found. <a href="/tools/">Back to tools</a>.</p>' +
+      '<p>Tool pack not found. <a href="/tools/">Back to tools</a>.</p>' +
       "</div>"
     );
   }
-  const pack = packOf(tool);
-  const setupHref = safeSetupUrl(tool.setup_url) ||
-    safeSetupUrl(pack && pack.setup_url);
-  const setup = setupHref
-    ? '<a class="btn" href="' + escapeHtml(setupHref) + '">Set up</a>'
-    : "";
-  const providers = Array.isArray(tool.providers) && tool.providers.length
-    ? tool.providers.join(", ")
-    : "All voice providers";
-  const packRow = pack
-    ? '<div><dt>Pack</dt><dd>' +
-      escapeHtml(pack.title || pack.id) + "</dd></div>"
+  const setupHref = safeSetupUrl(pack.setup_url);
+  const setup = setupHref && pack.status === "needs_setup"
+    ? '<a class="btn btn--ghost" href="' + escapeHtml(setupHref) + '">' +
+      "Set up</a>"
     : "";
   return (
     '<article class="info-card tool-detail">' +
     '<div class="tool-detail__head">' +
     "<div>" +
     '<a class="tool-back" href="/tools/">Tools</a>' +
-    '<h2 class="tool-detail__title">' + escapeHtml(tool.name) + "</h2>" +
+    '<h2 class="tool-detail__title">' + escapeHtml(pack.title || pack.id) + "</h2>" +
+    '<p class="tool-detail__summary">' + escapeHtml(pack.summary || "") + "</p>" +
     "</div>" +
-    '<div class="tool-detail__actions">' + badge(tool.status) + setup + "</div>" +
+    '<div class="tool-detail__actions">' +
+    badge(pack.status) + setup + packControl(pack) +
+    "</div>" +
     "</div>" +
     '<dl class="deflist tool-detail__meta">' +
-    '<div><dt>Category</dt><dd>' + escapeHtml(categoryOf(tool)) + "</dd></div>" +
-    packRow +
-    '<div><dt>Providers</dt><dd>' + escapeHtml(providers) + "</dd></div>" +
+    '<div><dt>Category</dt><dd>' + escapeHtml(pack.category || "Other") + "</dd></div>" +
+    '<div><dt>Tools</dt><dd>' + escapeHtml(countLabel(tools.length)) + "</dd></div>" +
+    '<div><dt>Custom prompts</dt><dd>' +
+    escapeHtml(String(pack.customized_count || 0)) + "</dd></div>" +
     "</dl>" +
-    labelChips(tool.labels) +
-    '<div class="tool-detail__description">' +
-    escapeHtml(tool.details || tool.description || tool.summary || "") +
-    "</div>" +
+    '<div class="tool-authoring-link"><a href="/tools/guide/" target="_blank" rel="noopener">Tool authoring guide</a></div>' +
+    '<div class="tool-rows">' + tools.map(toolRow).join("") + "</div>" +
     "</article>"
   );
+}
+
+export function toolDetail(tool) {
+  if (!tool) {
+    return packDetail(null, []);
+  }
+  const pack = tool.pack || {
+    id: "tool:" + tool.name,
+    title: tool.name,
+    summary: tool.summary || "",
+    setup_url: tool.setup_url || null,
+    category: tool.category || "Other",
+    status: tool.status,
+    tool_count: 1,
+  };
+  return packDetail(pack, [tool]);
 }
