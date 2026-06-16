@@ -477,58 +477,129 @@ outputd-owned active lane, so a config tested via direct-DAC could be compiled
 but **never applied** (`compiled_apply_blocked`). It could not produce a working
 speaker — dead-end functionality.
 
+**Two facts that shrink the work** (verified, vs an earlier mistaken framing):
+TTS already enters at fan-in (`jasper-voice.service` → `/run/jasper-fanin/tts.sock`,
+pre-CamillaDSP), so voice rides the crossover at every width — the active output
+transport needs **no** TTS lane. And the AEC reference is mono at both consumers
+(software AEC3 sums L+R→mono; the chip USB-IN producer downmixes), so the
+reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
+
 ### Critical path
 
-1. **DAC8x outputd active lane** (the hard prerequisite). The single path needs
-   the DAC the speaker uses to have an outputd active lane. Today only the
-   dual-Apple 4-channel composite declares one; the HiFiBerry DAC8x (8ch single
-   coherent DAC, the natural active-speaker DAC) does not. This is a new
-   multichannel transport in `jasper-outputd` (new `SinkMode`, configurable
-   channel width, single-PCM N-channel backend, reconciler branch, width-aware
-   ALSA lane + cutover gate). Full design + change set:
+1. **DAC-agnostic active-output transport** (the hard prerequisite). The single
+   path needs the speaker's DAC to have an outputd active lane. Today only the
+   dual-Apple 4-channel composite declares one. The transport is generalized to
+   dispatch on clock-domain *shape* (coherent single / paired composite) with
+   width + channel map as data, so a single coherent DAC8x (8ch) and any future
+   DAC ride it without per-DAC code. Full design + change set:
    [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
-   "Planned: single-coherent-DAC multichannel active lane (DAC8x)".
+   "DAC-agnostic active-output transport (design-of-record)".
 
 2. **Commissioning orchestration** (substrate built; wiring pending). Per driver:
    compile the preset from the saved crossover preview
    (`staging.compile_preset_from_crossover_preview`), emit the production graph
    with a per-output mute mask
-   (`camilla_yaml.emit_active_speaker_commissioning_config`, **built**, audible
-   = {target output}), load it muted through the guarded path, open
-   `correction.coordinator.measurement_window()`, play an ESS sweep into the
-   production fan-in lane (`correction.playback.play_sweep`), capture the phone
-   mic in the browser (reuse
+   (`camilla_yaml.emit_active_speaker_commissioning_config`, **built + tested
+   8×, but currently UNWIRED** — `staging.py` still calls the unmasked startup
+   emitter; **wire it, don't delete it**), load it muted through the guarded
+   path, open `correction.coordinator.measurement_window()`, play an ESS sweep
+   into the production fan-in lane (`correction.playback.play_sweep`), capture
+   the phone mic in the browser (reuse
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js)),
    analyze with `active_speaker.driver_acoustics.analyze_driver_capture`
    (**built** — per-driver verdict + real `observed_mic_dbfs`), and record via
-   `measurement.record_driver_measurement`. Advance to the next driver; then
-   unmute all for the summed check (`analyze_summed_crossover`, **built**);
-   then freeze the commissioned config as the durable profile
-   (`baseline_profile.build_baseline_profile_candidate` / `apply_baseline_profile`).
-   Per-driver isolation is the CamillaDSP **mute mask**, not a channel-targeted
-   WAV — so `driver_acoustics.write_driver_sweep_wav` is superseded and removed
-   when this lands.
+   `measurement.record_driver_measurement`. Advance per driver; then unmute all
+   for the summed check (`analyze_summed_crossover`, **built**); then freeze the
+   commissioned config as the durable profile (`baseline_profile.*`). Per-driver
+   isolation is the CamillaDSP **mute mask**, not a channel-targeted WAV — so
+   `driver_acoustics.write_driver_sweep_wav` is superseded and removed when this
+   lands. **Filters are designed to *acoustic* LR targets from the measured
+   per-driver response — not blindly inserted as electrical LR biquads** (the
+   sweep/deconv measurement is what makes the acoustic target achievable).
 
 3. **Delete the direct-DAC path** (do last, against working hardware).
    Remove `DirectDacTonePlaybackBackend` (`playback.py`), `DIRECT_DAC_SOURCE` /
    `resolve_diagnostic_playback_device` / the `diagnostic` route variant
-   (`playback_route.py` — collapse to one resolver/capability), the
-   `requires_protected_startup` branch in `_active_speaker_prepare_driver_test_payload`
-   (`web/sound_setup.py`), and the direct-DAC handling in the `/sound/` JS.
-   Rewrite the staging/topology tests that assert the direct-DAC route to the
-   single-path expectation (an install with no outputd active lane reports
-   active crossover unavailable — one honest capability gate). This deletion is
-   coupled to step 1: removing the bypass before the DAC8x active lane exists
-   leaves driver testing with no playback backend, so it lands only once the
-   production path works on hardware.
+   (`playback_route.py` — collapse to one resolver/capability; note the
+   3-hop self-shadowing of `resolve_active_playback_device` across
+   `playback_route.py`/`staging.py`/`__init__.py`), the `requires_protected_startup`
+   branch in `_active_speaker_prepare_driver_test_payload` (`web/sound_setup.py`),
+   and the direct-DAC handling in the `/sound/` JS. **The contract/schema tests
+   migrate in the SAME commit** (`tests/test_outputd_wiring.py` source-string +
+   solo-ordering contracts, `state.rs` `dual_apple` block, the doctor's
+   `=="dual_apple"` branches) or CI goes red. This deletion is coupled to step 1:
+   removing the bypass before the active lane exists leaves driver testing with
+   no backend, so it lands only once the production path works on hardware.
 
-### Sequencing + safety
+### Staged, hardware-verified build sequence (each independently green; deletion last)
 
-Build and verify on jts3 (real bi/tri-amp speaker, live drivers) step by step;
-never delete the old path before the new one is hardware-verified. Every
-on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
+jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
+(`PI_HOST=jts3.local`). **Every stage has a red/abort condition and rollback.**
+
+- **Stage 0 — HW-free Python.** `_common.py` diagnostics vocabulary (`_issue` in
+  16 files, `_finite_float` 9, …); `DacProfile.dac_channel_map` +
+  `is_coherent_single()` + import-time guards; `OutputLayout`/`OutputTransportPlan`;
+  resolvers → `OutputTopology`; collapse the resolver self-shadow;
+  `ActivePlaybackRouteCapability` reads `OutputLayout`. *Red:* any
+  `test_dac_*`/`test_output_topology`/`test_active_speaker_*` or `ruff` failure.
+- **Stage 1 — Rust transport, fake backend.** `SinkMode` rename + parse alias;
+  runtime `dac_channels` at the DAC-write sites; `DacSink` trait; unify the loop
+  (ledger + clip unconditional, `OutputCore`/TTS conditional on `tts_socket_path`);
+  `fold_reference` (`PairwiseAverage` byte-identical + N-lane clip-proof 1/N).
+  Migrate the `test_outputd_wiring.py` + `/state` + doctor contracts. *Red:*
+  `cargo test --locked` failure; the byte-identical width-2 / `PairwiseAverage`
+  regression tests must pass.
+- **Stage 2 — reconciler + wide content lane, dry-run.** `kind`-dispatched
+  `OutputTransportPlan` env; route from `dac_channel_map`; the
+  `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` wide lane, **ban `type plug`/`plughw:`**,
+  width-exact `hw:`. *Red:* `reconcile --print-env` diff non-empty for dual-Apple
+  or DAC8x-stereo; `aplay -D outputd_dac` not resolvable as the renderer user.
+- **Stage 3 — jts3, DAC8x as 2ch single, NO drivers at risk.** Prove music + TTS
+  (via fan-in) + AEC reference + honest ledger + real clip counter through
+  `SingleAlsa` width-2. **Load-test Pi-5 multichannel headroom here.** *Red:*
+  `jasper-doctor` not green, XRUNs under load, wake fails during a quiet sweep →
+  fix headroom before proceeding.
+- **Stage 4 — jts3, masked active load, drivers connected, speaker SILENT.** *Red:*
+  any audible output → fail closed, do not unmute.
+- **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed.**
+  **Before unmuting the tweeter, assert the high-pass filter is present in the
+  RUNNING CamillaDSP pipeline (not just the config file)**, plus subsonic/DC
+  protection, a low start level + ramp, and a sweep confined to the driver's safe
+  band. *Red:* HP not confirmed live, or any sibling audible → abort, re-mute.
+- **Stage 6 — sweep + AEC-reference validation (gate that can fail the feature).**
+  Per-driver `driver_acoustics`; validate the clip-proof mono reference: **capture
+  per-band ERLE + wake-during-music rate**, not a pass/fail. *Red ladder:* if
+  low-band convergence / wake-during-music regresses → (a) high-pass the sub's
+  contribution to the reference, else (b) drop the sub from the reference fold,
+  else (c) per-lane/per-band reference weighting (deferred end-state). *Red:*
+  `/state.output.clipped_samples` not real/≈0, or wake regression unresolved by (a)/(b).
+- **Stage 7 — freeze + delete the fork + dual-Apple regression.** Freeze baseline;
+  delete `run_alsa_dual_apple` + `downmix_dual_active_reference`; reboot →
+  deterministic boot into the active config with TTS; re-run dual-Apple
+  end-to-end on a dual-Apple Pi to prove `PairedCompositeSink` didn't regress the
+  4ch path (now also gaining ledger + clip). *Red:* `/state` mismatch across
+  reboot, or dual-Apple regression.
+
+### Resolved decisions + scope
+
+- **TTS stays at fan-in** (confirmed correct — voice must be band-split across
+  drivers like music; a post-crossover voice path would risk a tweeter and bypass
+  per-driver gain/delay/correction).
+- **Subwoofer folds into the AEC reference: yes, default.** It is part of the
+  echo path, and AEC3's ~8 kHz band split confines any risk to band 0; instrument
+  per-band ERLE at Stage 6 with the fallback ladder above.
+- **M>2 / 3+-device composite is out of scope** — it would generalize
+  `classify_output_cards`' `len(apple)==2`, `dual_apple_runtime_mapping`, and
+  `apply_observed_composite_policy`, which the new data fields do not reach. Named
+  as a limitation, not implied free.
+- **Do NOT collapse `safe_playback`'s floor tri-state to a bool** —
+  `floor_pending_operator` ("tone played, awaiting ACK") is load-bearing for
+  Stage 5. Consolidate ownership, preserve the state space.
+
+Every on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
 per-driver limiters, and the protective tweeter high-pass are preserved by the
-commissioning emitter (guarded by `test_commissioning_config_preserves_production_safety`).
+commissioning emitter (guarded by
+`test_commissioning_config_preserves_production_safety`).
 
 ## Layer Boundary
 
