@@ -63,13 +63,10 @@ from ..audio_profile_state import (
 )
 from ..env_load import subprocess_env_with_fresh_files
 from ..install_profile import (
-    FULL_INSTALL_PROFILE,
     STREAMBOX_INSTALL_PROFILE,
-    install_profile_allows_content_dsp,
-    install_profile_allows_local_sources,
-    install_profile_allows_voice_brain,
     install_role_for_profile,
     read_install_profile,
+    system_capabilities_for_profile,
 )
 from . import aec_endpoints as _aec_endpoints
 from . import control_token
@@ -171,29 +168,9 @@ def _control_route_allowed_for_install_profile(
     return True
 
 
-def _system_capabilities_for_profile(profile: str) -> dict[str, Any]:
-    role = install_role_for_profile(profile)
-    full = role == FULL_INSTALL_PROFILE
-    local_dsp = install_profile_allows_content_dsp(profile)
-    local_sources = install_profile_allows_local_sources(profile)
-    voice_brain = install_profile_allows_voice_brain(profile)
-    return {
-        "install_profile": profile,
-        "role": role,
-        "local_sources": local_sources,
-        "content_dsp": local_dsp,
-        "voice_brain": voice_brain,
-        "network_settings": True,
-        "speaker_settings": True,
-        "pair_management": True,
-        "developer_tools": full,
-        "audio_quality": local_dsp,
-        "restart_voice": voice_brain,
-        "restart_audio": local_dsp,
-        "reboot": True,
-        "poweroff": True,
-        "diagnostics": True,
-    }
+# _system_capabilities_for_profile was relocated to
+# jasper.install_profile.system_capabilities_for_profile so install.sh can
+# bake the same map into the static landing page (one source of truth).
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1249,7 +1226,7 @@ def _make_handler(
                 "voice_provider": read_active_provider(),
                 "speaker_name": _read_speaker_name_state().__dict__,
                 "home_assistant": ha_status,
-                "system_capabilities": _system_capabilities_for_profile(
+                "system_capabilities": system_capabilities_for_profile(
                     install_profile,
                 ),
             }

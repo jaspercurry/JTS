@@ -280,6 +280,37 @@ def test_landing_page_capability_gates_fail_closed() -> None:
             assert "hidden" in line, line.strip()
 
 
+def test_landing_page_bakes_capability_ceiling_at_first_paint() -> None:
+    # The capability ceiling is install-time-static, so it's baked into the
+    # page and applied SYNCHRONOUSLY at first paint — no /system/data.json
+    # round-trip to lay out the page (that was the two-layer stutter), and
+    # the layout survives a backend daemon being down.
+    html = _index_html()
+
+    # install.sh stamps this placeholder with the profile's capability map.
+    assert "var BAKED_CAPS = __JTS_CAPS_JSON__;" in html
+    assert "applyCapabilities(BAKED_CAPS);" in html
+
+    # The snapshot poll must NOT re-drive layout (live values only), so a slow
+    # or failed fetch can never blank or restyle the page.
+    render = html.split("function renderSnapshot(snap)", 1)[1].split(
+        "async function fetchSnapshot", 1,
+    )[0]
+    assert "applyCapabilities(" not in render
+
+
+def test_install_bakes_landing_capabilities() -> None:
+    # install.sh computes the profile's capability map from the SAME source
+    # the runtime snapshot uses (system_capabilities_for_profile) and replaces
+    # the placeholder, failing loud rather than shipping an unreplaced page.
+    install = _INSTALL_PATH.read_text(encoding="utf-8")
+
+    assert "system_capabilities_for_profile" in install
+    assert "read_install_profile" in install
+    assert "__JTS_CAPS_JSON__" in install
+    assert "refusing to ship a broken page" in install
+
+
 def test_landing_page_tracks_static_reference_visual_tokens() -> None:
     # Tokens and the .page container now live in the shared stylesheet
     # (the landing page links it); only landing-specific bits stay inline.

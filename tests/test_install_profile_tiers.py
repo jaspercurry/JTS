@@ -105,6 +105,34 @@ def test_legacy_aliases_never_raise():
         assert normalize_install_profile(token) == "streambox"
 
 
+def test_system_capabilities_map_per_profile():
+    # The capability map is the single source of truth shared by the runtime
+    # /system snapshot and the install-time landing-page bake; both derive the
+    # boolean caps from the normalized role, so baked and live always agree.
+    from jasper.install_profile import system_capabilities_for_profile as caps
+
+    full = caps("full")
+    streambox = caps("streambox")
+    # full has the voice brain + developer tools; streambox does not. Both run
+    # the local audio graph (sources + DSP) and keep the management surfaces.
+    assert full["voice_brain"] is True and full["developer_tools"] is True
+    assert streambox["voice_brain"] is False
+    assert streambox["developer_tools"] is False
+    for k in ("local_sources", "content_dsp"):
+        assert full[k] is True and streambox[k] is True
+    for k in ("network_settings", "speaker_settings", "pair_management", "reboot"):
+        assert full[k] is True and streambox[k] is True
+
+    # A legacy token passed DIRECTLY is echoed in install_profile while role +
+    # booleans normalize to streambox. (In production read_install_profile
+    # normalizes first, so /system and the baked page show streambox; this
+    # pins the function's pass-through contract, not the live field value.)
+    legacy = caps("endpoint")
+    assert legacy["install_profile"] == "endpoint"
+    assert legacy["role"] == "streambox"
+    assert legacy["voice_brain"] is False and legacy["local_sources"] is True
+
+
 def test_bash_normalize_maps_legacy_tokens_to_streambox():
     for token, expected in [
         ("endpoint", "streambox"),
