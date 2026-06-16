@@ -568,6 +568,21 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` wide lane, **ban `type plug`/`plughw:`**,
   width-exact `hw:`. *Red:* `reconcile --print-env` diff non-empty for dual-Apple
   or DAC8x-stereo; `aplay -D outputd_dac` not resolvable as the renderer user.
+  **2a landed:** `jasper-audio-hardware-reconcile` emits the wide single env
+  (`JASPER_OUTPUTD_SINK=single_alsa`, `JASPER_OUTPUTD_ACTIVE_CHANNELS=N`,
+  `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture`) for a recognized
+  coherent single DAC **only when an active baseline of that exact width is the
+  loaded CamillaDSP config** — the width-aware `active_graph_status` gate
+  (renamed from `dual_apple_active_graph_status`; status
+  `active_graph_width_mismatch expected=N got=M`); otherwise byte-identical
+  stereo, so a DAC8x is an ordinary stereo speaker until commissioning loads its
+  active baseline. The active content lane (snd-aloop substream 5) is
+  width-parametric raw `type hw` (rendered from
+  `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__`: 4 dual-Apple, 8 DAC8x), and the
+  DAC8x/DAC8x-Studio `DacProfile`s now declare `supports_active_outputd_lane=True`
+  (`active_outputd_lane_channels=8`). **2b remaining:** wiring the masked
+  commissioning emitter (critical-path step 2 below) — `stage_protected_startup_config`
+  still calls the unmasked startup emitter.
 - **Stage 3 — jts3, DAC8x as 2ch single, NO drivers at risk.** Prove music + TTS
   (via fan-in) + AEC reference + honest ledger + real clip counter through
   `SingleAlsa` width-2. **Load-test Pi-5 multichannel headroom here.** *Red:*

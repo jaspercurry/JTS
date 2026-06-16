@@ -41,8 +41,8 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
     assert dac.physical_output_count_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.physical_output_count_for("unknown_usb_dac") is None
     assert dac.active_outputd_lane_channels_for(APPLE_USB_C_DONGLE_ID) is None
-    assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_ID) is None
-    assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
+    assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_ID) == 8
+    assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_STUDIO_ID) == 8
     assert dac.active_outputd_lane_channels_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.active_outputd_lane_channels_for("unknown_usb_dac") is None
     assert dac.clock_domain_contract_for(APPLE_USB_C_DONGLE_ID) == "single_device"
@@ -90,8 +90,12 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     )
     assert HIFIBERRY_DAC8X.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
-    assert HIFIBERRY_DAC8X.supports_active_outputd_lane is False
-    assert HIFIBERRY_DAC8X.active_outputd_lane_channels is None
+    # Stage 2: the DAC-agnostic transport carries a coherent 8-channel single
+    # DAC, so the DAC8x declares the active outputd lane at its full width.
+    assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
+    assert HIFIBERRY_DAC8X.active_outputd_lane_channels == 8
+    # No explicit channel map => the transport builds an identity map.
+    assert HIFIBERRY_DAC8X.dac_channel_map is None
     assert (
         "snd_rpi_hifiberry_dac8x(?!.*studio)"
         in HIFIBERRY_DAC8X.supported_card_matches
@@ -104,7 +108,8 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
     assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "alsa"
-    assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels is None
+    assert HIFIBERRY_DAC8X_STUDIO.supports_active_outputd_lane is True
+    assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels == 8
     assert HIFIBERRY_DAC8X_STUDIO.validation_profile == (
         "hifiberry_dac8x_outputd_stability"
     )

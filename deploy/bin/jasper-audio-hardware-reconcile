@@ -429,7 +429,8 @@ for child in mapping.child_devices:
     DUAL_APPLE_DAC_A_PCM="$(printf '%s\n' "$parsed" | sed -n '2p')"
     DUAL_APPLE_DAC_B_PCM="$(printf '%s\n' "$parsed" | sed -n '3p')"
     local graph_status
-    if ! graph_status="$(dual_apple_active_graph_status)"; then
+    # The dual-Apple composite carries exactly 4 channels (two stereo children).
+    if ! graph_status="$(active_graph_status 4)"; then
         OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
         OUTPUT_DAC_CARD=""
         OUTPUT_DAC_RECOGNIZED=0
@@ -450,13 +451,26 @@ for child in mapping.child_devices:
         "status=ready action=outputd_dual_sink order_source=${DUAL_APPLE_ORDER_SOURCE} dac_a_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_A_PCM") dac_b_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_B_PCM")"
 }
 
-dual_apple_active_graph_status() {
+# Width-aware active-graph cutover gate.
+#
+# $1 = expected transport channel width — the resolved DacProfile's
+# active_outputd_lane_channels (4 for the dual-Apple composite, 8 for a
+# HiFiBerry DAC8x single). Prints "ready" and returns 0 ONLY when an
+# active-speaker baseline is loaded as the live CamillaDSP config AND that
+# config's channel width matches the transport width on the active outputd
+# lane. Otherwise it prints a reason and returns non-zero so the caller fails
+# closed: the composite shape parks, a coherent single stays ordinary stereo.
+# This is the second, independent fail-closed layer (the asoundrc active lane
+# is the first); never emit the wide env against a width-mismatched config.
+active_graph_status() {
+    local expected_channels="$1"
     if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
         printf 'python_unavailable'
         return 1
     fi
     JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE="$ACTIVE_SPEAKER_STARTUP_LOAD_STATE" \
     JASPER_CAMILLA_STATEFILE="$CAMILLA_STATEFILE" \
+    JASPER_ACTIVE_GRAPH_EXPECTED_CHANNELS="$expected_channels" \
     "$OUTPUT_HARDWARE_PYTHON" - <<'PY'
 import json
 import os
@@ -466,6 +480,11 @@ from pathlib import Path
 
 startup_state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE"])
 camilla_statefile = Path(os.environ["JASPER_CAMILLA_STATEFILE"])
+try:
+    expected_channels = int(os.environ["JASPER_ACTIVE_GRAPH_EXPECTED_CHANNELS"])
+except (KeyError, ValueError):
+    print("active_graph_expected_channels_invalid")
+    raise SystemExit(1)
 
 try:
     startup_state = json.loads(startup_state_path.read_text(encoding="utf-8"))
@@ -517,11 +536,44 @@ except Exception as exc:
 if "outputd_active_content_playback" not in active_text:
     print("active_outputd_lane_missing")
     raise SystemExit(1)
-if not re.search(r"(?m)^\s*channels:\s*4\s*$", active_text):
-    print("active_four_channel_shape_missing")
+
+# Width-aware shape check (replaces the old `channels: 4` grep). The active
+# CamillaDSP config's playback width must equal the transport width. The
+# capture side is always stereo (channels: 2) and active widths are >= 4, so
+# the widest `channels:` value is the playback/active width on both the real
+# emitter shape (capture + playback blocks) and the device-level shape.
+channel_values = [
+    int(match) for match in re.findall(r"(?m)^\s*channels:\s*(\d+)\s*$", active_text)
+]
+got = max(channel_values) if channel_values else 0
+if got != expected_channels:
+    print(f"active_graph_width_mismatch expected={expected_channels} got={got}")
     raise SystemExit(1)
 
 print("ready")
+PY
+}
+
+# Resolve a recognized single DAC's active-lane transport width via the Python
+# DacProfile registry (active_outputd_lane_channels_for). Prints the width
+# (e.g. 8 for a HiFiBerry DAC8x) or nothing for a DAC with no active lane
+# (Apple single dongle) or when Python is unavailable — both of which keep the
+# DAC on the ordinary stereo single path. This is the SINGLE source of the
+# active width; the asoundrc render lib mirrors it for the content lane and is
+# drift-guarded against this registry.
+active_lane_channels_for_dac() {
+    local dac_id="$1"
+    if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        return 0
+    fi
+    JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
+import os
+
+from jasper.audio_hardware.dac import active_outputd_lane_channels_for
+
+width = active_outputd_lane_channels_for(os.environ["JASPER_DAC_ID_QUERY"])
+if width:
+    print(width)
 PY
 }
 
@@ -616,6 +668,7 @@ start_outputd_if_recognized() {
 
 apply_audio_runtime_env() {
     local changed=0
+    local active_channels="" active_mode=0 graph_status=""
     if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "dual_apple" && changed=1
@@ -623,17 +676,44 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
+        # Composite width is fixed at 4 (two stereo children); clear the
+        # single-sink width knob so a stale value from a prior active single
+        # DAC cannot reach outputd (which rejects != 4 on the composite sink).
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
         log_event "runtime_env" \
             "mode=dual_apple outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+        # A coherent single DAC runs the active wide lane ONLY when it declares
+        # one (DacProfile.active_outputd_lane_channels) AND an active-speaker
+        # baseline of that exact width is the loaded CamillaDSP config. The
+        # width gate is fail-closed: without a confirmed active graph the DAC
+        # stays ordinary stereo (byte-identical to the pre-active path), so a
+        # recognized DAC8x is a normal stereo speaker until commissioning loads
+        # its active baseline.
+        active_channels="$(active_lane_channels_for_dac "$OUTPUT_DAC_ID")"
+        if [[ -n "$active_channels" ]]; then
+            if graph_status="$(active_graph_status "$active_channels")"; then
+                active_mode=1
+            fi
+        fi
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
-        log_event "runtime_env" \
-            "mode=single_alsa outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+        if [[ "$active_mode" == "1" ]]; then
+            set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_active_content_capture" && changed=1
+            set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "$active_channels" && changed=1
+            log_event "runtime_env" \
+                "mode=single_alsa_active active_channels=${active_channels} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+        else
+            set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
+            # Clear the width knob so outputd defaults to stereo; a stale active
+            # width would otherwise mis-size the (stereo) content lane.
+            set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
+            log_event "runtime_env" \
+                "mode=single_alsa outputd_env=${OUTPUTD_ENV_FILE} changed=${changed} active_graph=${graph_status:-none}"
+        fi
     else
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "fake" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
@@ -641,6 +721,7 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
         log_event "runtime_env" \
             "mode=parked outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     fi

@@ -254,6 +254,13 @@ HIFIBERRY_DAC8X = DacProfile(
         "hifiberry.*dac8x(?!.*studio)",
         r"\bdac8x\b(?!.*studio)",
     ),
+    # The DAC-agnostic active-output transport (Stage 1) can now carry a
+    # coherent single DAC of any width, so the 8-channel DAC8x rides the
+    # active-crossover lane end-to-end. The transport builds an identity
+    # channel map when dac_channel_map is None (one coherent clock domain,
+    # no permutation needed). Width is DATA, not a per-DAC code branch.
+    supports_active_outputd_lane=True,
+    active_outputd_lane_channels=8,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     dtoverlay="hifiberry-dac8x",
 )
@@ -271,6 +278,11 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
         "dac8x.*studio",
         "hifiberry.*dac8x.*studio",
     ),
+    # Same active-lane shape as the base DAC8x: a coherent 8-channel single
+    # device on the DAC-agnostic transport (Stage 1). dac_channel_map None =>
+    # identity map.
+    supports_active_outputd_lane=True,
+    active_outputd_lane_channels=8,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     dtoverlay="hifiberry-dac8x",
 )

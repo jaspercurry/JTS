@@ -40,17 +40,75 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert "type dsnoop" not in capture
 
 
-def test_asoundrc_declares_outputd_active_four_channel_lane():
+def test_asoundrc_active_content_lane_is_width_parametric_raw_hw():
+    """The active-crossover content lane (snd-aloop substream 5) is width-
+    parametric (rendered from __OUTPUTD_ACTIVE_CONTENT_CHANNELS__: 4 dual-Apple,
+    8 DAC8x) and uses raw width-exact `type hw` on both sides of the pair —
+    never `type plug` — so a width/rate/format mismatch fails closed at open
+    instead of silently remixing onto live drivers."""
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     playback = _pcm_block(rc, "outputd_active_content_playback")
     capture = _pcm_block(rc, "outputd_active_content_capture")
-    assert "type plug" in playback
-    assert 'pcm "hw:Loopback,0,5"' in playback
-    assert "channels 4" in playback
-    assert "type plug" in capture
-    assert 'pcm "hw:Loopback,1,5"' in capture
-    assert "channels 4" in capture
+    assert "type hw" in playback
+    assert "card Loopback" in playback
+    assert "device 0" in playback
+    assert "subdevice 5" in playback
+    assert "channels __OUTPUTD_ACTIVE_CONTENT_CHANNELS__" in playback
+    assert "type hw" in capture
+    assert "card Loopback" in capture
+    assert "device 1" in capture
+    assert "subdevice 5" in capture
+    assert "channels __OUTPUTD_ACTIVE_CONTENT_CHANNELS__" in capture
+    # The active path must never silently convert.
+    assert "type plug" not in playback
+    assert "type plug" not in capture
     assert "type dsnoop" not in capture
+
+
+def test_active_path_pcms_never_use_plug_or_plughw():
+    """Contract: NO `type plug` / `plughw:` anywhere on the active-crossover
+    path. `plug` is the auto-converting channel/rate/format plugin; on a live-
+    driver path it could remix 8->4 onto a tweeter (the single most dangerous
+    fail-open in active mode). Covers the asoundrc active content lanes and
+    every outputd_dac block the render lib emits (direct hw / composite null /
+    DAC8x route — all conversion-free)."""
+    rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
+    for name in ("outputd_active_content_playback", "outputd_active_content_capture"):
+        block = _pcm_block(rc, name)
+        assert "type plug" not in block, name
+        assert "plughw" not in block, name
+    render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
+    assert "type plug" not in render_lib
+    assert "plughw" not in render_lib
+
+
+def test_asoundrc_active_content_width_mapping_tracks_dac_registry():
+    """The render lib's bash DAC-id -> active-content-width mapping must not
+    drift from the Python DacProfile registry (active_outputd_lane_channels,
+    defaulting to 4 for a DAC with no active lane — the cosmetic value for a
+    lane that is never opened outside active mode)."""
+    import subprocess
+
+    lib = REPO / "deploy" / "lib" / "jasper-asound-render.sh"
+    ids = [profile.id for profile in dac.all_profiles()]
+    script = (
+        f'source "{lib}"\n'
+        'for id in "$@"; do\n'
+        '  OUTPUT_DAC_ID="$id" jasper_asound_active_content_channels\n'
+        '  printf "\\n"\n'
+        'done\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "_", *ids],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    widths = result.stdout.splitlines()
+    assert len(widths) == len(ids)
+    for profile_id, width in zip(ids, widths):
+        expected = dac.active_outputd_lane_channels_for(profile_id) or 4
+        assert width == str(expected), f"{profile_id}: bash {width} != python {expected}"
 
 
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
@@ -185,7 +243,10 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
-    assert "dual_apple_active_graph_status()" in reconcile
+    # The cutover gate is now width-aware and shared by the composite + single
+    # active paths (renamed from dual_apple_active_graph_status).
+    assert "active_graph_status()" in reconcile
+    assert "active_graph_width_mismatch" in reconcile
     assert "action=park_until_active_graph" in reconcile
     assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" in reconcile

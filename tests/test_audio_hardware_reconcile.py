@@ -102,6 +102,14 @@ def _run_reconcile(
             "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(
                 tmp_path / "output_hardware.json"
             ),
+            # Hermetic active-graph gate inputs: point the cutover gate's
+            # startup-load + statefile at tmp paths that are ABSENT unless a
+            # test explicitly stages them via _active_graph_env(). Without this
+            # the gate would read the real /var/lib/jasper paths on a dev box.
+            "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": str(
+                tmp_path / "active_speaker_startup_load.json"
+            ),
+            "JASPER_CAMILLA_STATEFILE": str(tmp_path / "outputd-statefile.yml"),
             # Hermetic: always source the repo's shared env-file lib, never
             # a (possibly stale) installed copy under /usr/local/lib.
             "JASPER_ENV_FILE_LIB": str(
@@ -169,12 +177,18 @@ def _render_log(tmp_path: Path) -> str:
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-def _active_dual_graph_env(tmp_path: Path) -> dict[str, str]:
+def _active_graph_env(tmp_path: Path, *, channels: int = 4) -> dict[str, str]:
+    """Stage a loaded active-speaker graph at ``channels`` width for the gate.
+
+    Default 4 = the dual-Apple composite shape; pass channels=8 for a DAC8x
+    coherent single. The reconciler's width-aware gate compares the loaded
+    config's widest ``channels:`` against the DAC's transport width.
+    """
     active_config = tmp_path / "active-speaker-startup.yml"
     active_config.write_text(
         "devices:\n"
         "  samplerate: 48000\n"
-        "  channels: 4\n"
+        f"  channels: {channels}\n"
         "  playback:\n"
         "    type: Alsa\n"
         "    device: outputd_active_content_playback\n",
@@ -357,6 +371,9 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The single stereo path now also manages the wide-lane width knob,
+        # cleared so a stale active width can't mis-size the stereo lane.
+        "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -467,7 +484,7 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
             "JASPER_SYS_CLASS_SOUND": str(sys_class),
             "JASPER_PROC_ASOUND": str(proc_asound),
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
-            **_active_dual_graph_env(tmp_path),
+            **_active_graph_env(tmp_path),
         },
     )
 
@@ -572,6 +589,13 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
     assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x" in env_text
     assert "JASPER_AUDIO_DAC_CARD=sndrpihifiberry" in env_text
+    # No active baseline loaded => a DAC8x is an ordinary stereo speaker, NOT
+    # the wide 8-channel active lane (fail-closed: the gate kept it stereo).
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "single_alsa_active" not in result.stderr
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
@@ -585,6 +609,51 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "stop jasper-voice.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+def test_reconcile_dac8x_active_graph_loaded_emits_wide_env(tmp_path: Path):
+    # A DAC8x with a loaded 8-channel active-speaker baseline engages the wide
+    # single_alsa lane: outputd reads the active content lane at width 8.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env=_active_graph_env(tmp_path, channels=8),
+    )
+
+    assert result.returncode == 0, result.stderr
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x" in env_text
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=8" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_PCM=outputd_dac" in outputd_env
+    assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
+    assert "mode=single_alsa_active active_channels=8" in result.stderr
+
+
+def test_reconcile_dac8x_active_graph_width_mismatch_stays_stereo(tmp_path: Path):
+    # An active config of the WRONG width (4 on a DAC8x whose transport is 8)
+    # must NOT engage the wide lane — it fails closed to ordinary stereo so the
+    # speaker never emits a mis-shaped topology onto live drivers.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env=_active_graph_env(tmp_path, channels=4),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "single_alsa_active" not in result.stderr
+    assert "active_graph=active_graph_width_mismatch expected=8 got=4" in result.stderr
 
 
 def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):

@@ -646,6 +646,27 @@ place to get it right and the most expensive to get wrong later.
 > emission (Stage 2) ride the plan. The plan is recomputed fresh from the topology
 > per call (no cached index); wiring the *udev/boot env emission* of it is Stage 2.
 
+> **Stage 2a landed (reconciler env + wide content lane + width gate + DAC8x
+> profile flip).** `jasper-audio-hardware-reconcile`'s `apply_audio_runtime_env`
+> emits the wide single env (item 3) — `JASPER_OUTPUTD_SINK=single_alsa`,
+> `JASPER_OUTPUTD_ACTIVE_CHANNELS=<active_outputd_lane_channels>`,
+> `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture` — for a recognized
+> coherent single DAC **only when an active baseline of that width is the loaded
+> CamillaDSP config**, decided by the width-aware cutover gate (item 5, the old
+> `dual_apple_active_graph_status` renamed to `active_graph_status`, status
+> `active_graph_width_mismatch expected=N got=M`); otherwise it stays
+> byte-identical stereo (a DAC8x is a normal stereo speaker until its active
+> baseline loads). `JASPER_OUTPUTD_ACTIVE_CHANNELS` is a managed var cleared in
+> every non-active branch. The active content lane (item 4) is now
+> width-parametric raw `type hw` rendered from `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__`
+> (4 dual-Apple, 8 DAC8x) with `type plug`/`plughw:` banned on the active path,
+> and the DAC8x/DAC8x-Studio `DacProfile`s now declare the active lane (item 6,
+> `supports_active_outputd_lane=True`, `active_outputd_lane_channels=8`; the
+> transport from Stage 1 carries it). **Still pending (2b):** wiring the masked
+> commissioning emitter into staging (per-output mute mask; crash recovery lands
+> muted) — see [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)
+> critical-path step 2.
+
 **4. One wide snd-aloop content substream — width on the substream, not more
 substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
 cannot raise that without patching the module); but one substream carries up to
