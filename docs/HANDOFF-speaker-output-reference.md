@@ -655,17 +655,26 @@ place to get it right and the most expensive to get wrong later.
 > CamillaDSP config**, decided by the width-aware cutover gate (item 5, the old
 > `dual_apple_active_graph_status` renamed to `active_graph_status`, status
 > `active_graph_width_mismatch expected=N got=M`); otherwise it stays
-> byte-identical stereo (a DAC8x is a normal stereo speaker until its active
-> baseline loads). `JASPER_OUTPUTD_ACTIVE_CHANNELS` is a managed var cleared in
-> every non-active branch. The active content lane (item 4) is now
-> width-parametric raw `type hw` rendered from `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__`
-> (4 dual-Apple, 8 DAC8x) with `type plug`/`plughw:` banned on the active path,
-> and the DAC8x/DAC8x-Studio `DacProfile`s now declare the active lane (item 6,
-> `supports_active_outputd_lane=True`, `active_outputd_lane_channels=8`; the
-> transport from Stage 1 carries it). **Still pending (2b):** wiring the masked
-> commissioning emitter into staging (per-output mute mask; crash recovery lands
-> muted) — see [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)
-> critical-path step 2.
+> byte-identical stereo. `JASPER_OUTPUTD_ACTIVE_CHANNELS` is a managed var
+> cleared in every non-active branch (so a stale active width can never
+> mis-size the stereo lane). The active content lane (item 4) is raw `type hw`
+> — card/device/subdevice only, exactly like the `outputd_dac` block; the ALSA
+> `hw` plugin rejects `channels`/`rate`/`format` as unknown fields, so the width
+> is set by the openers (CamillaDSP `playback: channels: N`; outputd's
+> `JASPER_OUTPUTD_ACTIVE_CHANNELS`) and locked by snd-aloop, with
+> `type plug`/`plughw:` banned. The DAC8x/DAC8x-Studio `DacProfile`s declare the
+> active lane (item 6, `supports_active_outputd_lane=True`,
+> `active_outputd_lane_channels=8`; the Stage 1 transport carries it).
+> **Known gap, by design:** the gate is `==` transport width, so a DAC8x engages
+> active mode only for an 8-channel config. The current per-speaker emitters
+> produce the driver count (2–6 ch), so a DAC8x stays stereo until a
+> full-transport-width config producer lands (drivers mapped across the 8
+> physical channels, unused outputs muted) — a later stage validated on jts3.
+> 2a is the transport/env/gate/profile, unit-tested with synthetic full-width
+> configs. **Still pending (2b):** wiring the masked commissioning emitter into
+> staging (per-output mute mask; crash recovery lands muted) — see
+> [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) critical-path
+> step 2.
 
 **4. One wide snd-aloop content substream — width on the substream, not more
 substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
@@ -674,6 +683,11 @@ cannot raise that without patching the module); but one substream carries up to
 make the active content lane **one substream at width N**, not to add substreams:
 - Render the active-content lane width from `JASPER_OUTPUTD_ACTIVE_CHANNELS`
   (`__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` token in `asoundrc.jasper`).
+  *(2a implementation note: the ALSA `hw` plugin rejects `channels`/`rate`/
+  `format` as unknown fields, so this token approach was abandoned — the active
+  lane is plain `type hw` card/device/subdevice and the width is set by the
+  openers + locked by snd-aloop, NOT pinned in the conf. See the "Stage 2a
+  landed" callout above.)*
 - **All format adaptation is explicit and owned by CamillaDSP; the active ALSA
   path fails closed on channel, rate, AND format mismatch.** Ban `type plug`
   (and `plughw:`, which is `plug`+`hw`) on the active path — use width-exact

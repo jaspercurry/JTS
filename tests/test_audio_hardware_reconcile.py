@@ -184,13 +184,20 @@ def _active_graph_env(tmp_path: Path, *, channels: int = 4) -> dict[str, str]:
     coherent single. The reconciler's width-aware gate compares the loaded
     config's widest ``channels:`` against the DAC's transport width.
     """
+    # Match the real emitter shape: capture is always stereo (channels: 2) and
+    # playback carries the active width. The gate must read the PLAYBACK width
+    # (the widest channels: line), not the capture's 2.
     active_config = tmp_path / "active-speaker-startup.yml"
     active_config.write_text(
         "devices:\n"
         "  samplerate: 48000\n"
-        f"  channels: {channels}\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        "    channels: 2\n"
+        "    device: plug:jasper_capture\n"
         "  playback:\n"
         "    type: Alsa\n"
+        f"    channels: {channels}\n"
         "    device: outputd_active_content_playback\n",
         encoding="utf-8",
     )

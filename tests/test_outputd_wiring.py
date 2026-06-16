@@ -40,12 +40,15 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert "type dsnoop" not in capture
 
 
-def test_asoundrc_active_content_lane_is_width_parametric_raw_hw():
-    """The active-crossover content lane (snd-aloop substream 5) is width-
-    parametric (rendered from __OUTPUTD_ACTIVE_CONTENT_CHANNELS__: 4 dual-Apple,
-    8 DAC8x) and uses raw width-exact `type hw` on both sides of the pair —
-    never `type plug` — so a width/rate/format mismatch fails closed at open
-    instead of silently remixing onto live drivers."""
+def test_asoundrc_active_content_lane_is_raw_hw_no_plug():
+    """The active-crossover content lane (snd-aloop substream 5) uses raw
+    `type hw` on both sides of the pair — card/device/subdevice only, exactly
+    like the outputd_dac block (the ALSA `hw` plugin rejects channels/rate/
+    format as unknown fields). The width is NOT pinned in the conf; it is set
+    by the openers (CamillaDSP playback: channels: N; outputd's
+    JASPER_OUTPUTD_ACTIVE_CHANNELS) and locked by snd-aloop, so a mismatch
+    fails closed at open rather than silently remixing onto live drivers.
+    `type plug` is banned (it is the auto-converting plugin)."""
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     playback = _pcm_block(rc, "outputd_active_content_playback")
     capture = _pcm_block(rc, "outputd_active_content_capture")
@@ -53,16 +56,18 @@ def test_asoundrc_active_content_lane_is_width_parametric_raw_hw():
     assert "card Loopback" in playback
     assert "device 0" in playback
     assert "subdevice 5" in playback
-    assert "channels __OUTPUTD_ACTIVE_CONTENT_CHANNELS__" in playback
     assert "type hw" in capture
     assert "card Loopback" in capture
     assert "device 1" in capture
     assert "subdevice 5" in capture
-    assert "channels __OUTPUTD_ACTIVE_CONTENT_CHANNELS__" in capture
-    # The active path must never silently convert.
-    assert "type plug" not in playback
-    assert "type plug" not in capture
-    assert "type dsnoop" not in capture
+    # No conversion plugin, and no channels/rate/format keys (the hw plugin
+    # would reject them, and the width is not pinned here by design).
+    for block in (playback, capture):
+        assert "type plug" not in block
+        assert "type dsnoop" not in block
+        assert "channels" not in block
+        assert "rate" not in block
+        assert "format" not in block
 
 
 def test_active_path_pcms_never_use_plug_or_plughw():
@@ -80,35 +85,6 @@ def test_active_path_pcms_never_use_plug_or_plughw():
     render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     assert "type plug" not in render_lib
     assert "plughw" not in render_lib
-
-
-def test_asoundrc_active_content_width_mapping_tracks_dac_registry():
-    """The render lib's bash DAC-id -> active-content-width mapping must not
-    drift from the Python DacProfile registry (active_outputd_lane_channels,
-    defaulting to 4 for a DAC with no active lane — the cosmetic value for a
-    lane that is never opened outside active mode)."""
-    import subprocess
-
-    lib = REPO / "deploy" / "lib" / "jasper-asound-render.sh"
-    ids = [profile.id for profile in dac.all_profiles()]
-    script = (
-        f'source "{lib}"\n'
-        'for id in "$@"; do\n'
-        '  OUTPUT_DAC_ID="$id" jasper_asound_active_content_channels\n'
-        '  printf "\\n"\n'
-        'done\n'
-    )
-    result = subprocess.run(
-        ["bash", "-c", script, "_", *ids],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    widths = result.stdout.splitlines()
-    assert len(widths) == len(ids)
-    for profile_id, width in zip(ids, widths):
-        expected = dac.active_outputd_lane_channels_for(profile_id) or 4
-        assert width == str(expected), f"{profile_id}: bash {width} != python {expected}"
 
 
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():

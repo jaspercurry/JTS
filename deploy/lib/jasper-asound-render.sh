@@ -111,27 +111,10 @@ jasper_asound_outputd_dac_pcm_block() {
     esac
 }
 
-# Active-speaker content-lane width (snd-aloop substream 5). Mirrors
-# DacProfile.active_outputd_lane_channels for the detected DAC: the
-# dual-Apple composite carries 4, a HiFiBerry DAC8x single carries 8. The
-# default (4) is byte-identical to the pre-width-token template and is only
-# cosmetic for non-active DACs (Apple single, unknown) — the active lane is
-# never opened outside active mode. The bash mapping is pinned against the
-# Python DacProfile registry by a drift-guard test
-# (tests/test_outputd_wiring.py) so it cannot fork from
-# active_outputd_lane_channels_for().
-jasper_asound_active_content_channels() {
-    case "${OUTPUT_DAC_ID:-}" in
-        hifiberry_dac8x|hifiberry_dac8x_studio) printf '8' ;;
-        *) printf '4' ;;
-    esac
-}
-
 jasper_asound_render_template() {
     local source="$1" dest="$2"
-    local block line active_content_channels
+    local block line
     block="$(jasper_asound_outputd_dac_pcm_block)"
-    active_content_channels="$(jasper_asound_active_content_channels)"
     while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" == "__OUTPUTD_DAC_PCM_BLOCK__" ]]; then
             printf '%s\n' "$block"
@@ -139,7 +122,6 @@ jasper_asound_render_template() {
         fi
         line="${line//__DONGLE_CARD__/${DONGLE_CARD}}"
         line="${line//__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}}"
-        line="${line//__OUTPUTD_ACTIVE_CONTENT_CHANNELS__/${active_content_channels}}"
         printf '%s\n' "$line"
     done < "$source" > "$dest"
 }
