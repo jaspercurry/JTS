@@ -25,6 +25,7 @@ list can only shrink.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -32,12 +33,19 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS_DIR = ROOT / "jasper" / "tools"
 REGRESSION_DIR = ROOT / "tests" / "voice_eval" / "regression"
 
-# `@tool(...)` (any args) immediately decorating an async def — the
-# shape every tool module uses. `build_tool` names the tool after the
-# function, so the def name is the LLM-visible tool name. (A
-# `registry.register(fn, name=...)` rename at a wiring point would
-# escape this extraction; none exists today.)
-_TOOL_DEF = re.compile(r"@tool\([^)]*\)\s*\n\s*async\s+def\s+([a-z0-9_]+)\s*\(")
+# `@tool(...)` immediately decorating an async def — the shape every
+# tool module uses. `build_tool` names the tool after the function, so
+# the def name is the LLM-visible tool name. (A `registry.register(fn,
+# name=...)` rename at a wiring point would escape this extraction;
+# none exists today.) Use AST rather than regex so decorator kwargs can
+# include tuples/dicts without confusing the guard.
+def _decorates_with_tool(node: ast.AsyncFunctionDef) -> bool:
+    return any(
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Name)
+        and decorator.func.id == "tool"
+        for decorator in node.decorator_list
+    )
 
 # Pre-existing coverage gaps surfaced when this guard first ran
 # (2026-06-10). Each violates the "no exceptions" rule and needs a
@@ -58,7 +66,12 @@ _KNOWN_UNCOVERED = {
 def _tool_names() -> set[str]:
     names: set[str] = set()
     for py in sorted(TOOLS_DIR.glob("*.py")):
-        names.update(_TOOL_DEF.findall(py.read_text(encoding="utf-8")))
+        module = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        names.update(
+            node.name
+            for node in ast.walk(module)
+            if isinstance(node, ast.AsyncFunctionDef) and _decorates_with_tool(node)
+        )
     return names
 
 
