@@ -338,6 +338,29 @@
 > high-frequency playback must remain high-passed, level-bounded,
 > Stop-controlled, microphone-aware when available, and start at the
 > test-level floor.
+>
+> **Update, 2026-06-16:** `jasper.active_speaker.driver_acoustics` adds the
+> mic-backed analysis half of the Consumer Wizard Triad below. It is a pure,
+> stateless module that reuses the room-correction sweep/deconvolution/analysis
+> primitives (`jasper.correction.{sweep,deconv,analysis,quality}`, imported
+> lazily so the wizard import stays numpy-free): `write_driver_sweep_wav` emits a
+> channel-targeted multichannel sweep (the one thing `jasper.correction.sweep`
+> can't do — it is mono only), `analyze_driver_capture` returns a per-driver
+> `present`/`out_of_band`/`silent`/`unusable_capture` verdict plus a real
+> `observed_mic_dbfs` from the capture RMS (the value `measurement.record_driver_
+> measurement` already consumes), and `analyze_summed_crossover` flags a
+> cancellation suckout at the crossover. This implements the *gated-summed flat
+> check* (triad item 3 — a deep null in the normal summed response means a
+> polarity/delay problem), **not** the rigorous *inverted null-depth
+> optimization* (triad item 2, "Delay, Phase, and Null Verification" below). It
+> is analysis-only: the sweep-playback endpoint, the capture-upload endpoint that
+> calls `analyze_driver_capture` → `record_driver_measurement`, and the browser
+> capture UI (reusing `deploy/assets/shared/js/measurement-audio.js`) are not yet
+> wired and need on-device hardware to validate the acoustic path. Separately,
+> the `/sound/` active-crossover setup copy was de-jargoned so no backend
+> vocabulary (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw
+> snake_case codes) reaches the household; `friendlySetupReason` now collapses
+> unmapped code-like strings to one actionable sentence instead of echoing them.
 
 ## Current Operational Truth
 
