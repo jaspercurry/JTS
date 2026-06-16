@@ -21,6 +21,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
+from ._common import issue as _issue
 from .calibration_level import (
     DEFAULT_TEST_LEVEL_DBFS,
     MAX_TEST_LEVEL_DBFS,
@@ -138,10 +139,6 @@ def _artifact_dir(path: str | Path | None) -> Path:
         or os.environ.get("JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR")
         or DEFAULT_ARTIFACT_DIR
     )
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _has_blocker(issues: list[dict[str, str]] | tuple[dict[str, str], ...]) -> bool:

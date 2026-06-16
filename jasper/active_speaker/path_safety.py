@@ -22,6 +22,7 @@ from typing import Any
 
 from jasper.output_topology import OutputTopology, channel_identity_report
 
+from ._common import issue as _issue
 from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
@@ -128,10 +129,6 @@ REQUIRED_PATHS: tuple[PathSafetyRequirement, ...] = (
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _normalise_issue(raw: Any) -> dict[str, str]:

@@ -27,6 +27,7 @@ from jasper.dsp_apply import (
 )
 from jasper.output_topology import OutputTopology, channel_identity_report
 
+from ._common import gate as _gate, issue as _issue
 from .calibration_level import (
     MIN_TEST_LEVEL_DBFS,
     load_calibration_level_state,
@@ -61,10 +62,6 @@ def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
-
-
 def _normalise_issue(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
         return _issue("warning", "unknown_issue", "unknown issue")
@@ -73,21 +70,6 @@ def _normalise_issue(raw: Any) -> dict[str, str]:
         str(raw.get("code") or "unknown_issue"),
         str(raw.get("message") or raw.get("code") or "unknown issue"),
     )
-
-
-def _gate(
-    gate_id: str,
-    *,
-    label: str,
-    passed: bool,
-    message: str,
-) -> dict[str, Any]:
-    return {
-        "id": gate_id,
-        "label": label,
-        "passed": bool(passed),
-        "message": message,
-    }
 
 
 def startup_load_state_path(path: str | Path | None = None) -> Path:

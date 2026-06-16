@@ -27,7 +27,9 @@ from .camilla_yaml import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
+    audible_outputs_for_role,
     emit_active_speaker_baseline_config,
+    emit_active_speaker_commissioning_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -159,6 +161,17 @@ from .baseline_profile import (
     baseline_config_path,
     baseline_profile_state_path,
 )
+from .driver_acoustics import (
+    DRIVER_ACOUSTIC_KIND,
+    SUMMED_ACOUSTIC_KIND,
+    DriverAcousticResult,
+    DriverAcousticsError,
+    DriverSweep,
+    SummedAcousticResult,
+    analyze_driver_capture,
+    analyze_summed_crossover,
+    write_driver_sweep_wav,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
@@ -167,6 +180,15 @@ __all__ = [
     "BASELINE_HEADROOM_DB",
     "BASELINE_LIMITER_CLIP_LIMIT_DB",
     "BASELINE_PROFILE_KIND",
+    "DRIVER_ACOUSTIC_KIND",
+    "SUMMED_ACOUSTIC_KIND",
+    "DriverAcousticResult",
+    "DriverAcousticsError",
+    "DriverSweep",
+    "SummedAcousticResult",
+    "analyze_driver_capture",
+    "analyze_summed_crossover",
+    "write_driver_sweep_wav",
     "CALIBRATION_LEVEL_KIND",
     "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_PATH_SAFETY_EVIDENCE_PATH",
@@ -235,6 +257,8 @@ __all__ = [
     "load_calibration_level_state",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
+    "audible_outputs_for_role",
+    "emit_active_speaker_commissioning_config",
     "build_safe_tone_plan",
     "build_bringup_preflight",
     "build_commissioning_rehearsal",

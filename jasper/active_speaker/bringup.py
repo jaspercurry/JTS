@@ -13,29 +13,11 @@ from typing import Any
 
 from jasper.output_topology import OutputTopology, channel_identity_report
 
+from ._common import gate as _gate, issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1
 BRINGUP_PREFLIGHT_KIND = "jts_active_speaker_bringup_preflight"
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
-
-
-def _gate(
-    gate_id: str,
-    *,
-    label: str,
-    passed: bool,
-    message: str,
-) -> dict[str, Any]:
-    return {
-        "id": gate_id,
-        "label": label,
-        "passed": bool(passed),
-        "message": message,
-    }
 
 
 def _requested_level(calibration_level: dict[str, Any]) -> float:

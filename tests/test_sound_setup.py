@@ -285,7 +285,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     )
     assert "Driver details are optional for now. Continue with output mapping." in js
     assert "saved driver info" in js
-    assert "Wiring and driver-test checks happen before any sound." in js
+    assert "Builds the crossover plan from your saved settings. No sound plays." in js
     assert "data-act=\"stop-active-speaker\"" in js
     assert "data-act=\"arm-active-speaker\"" not in js
     assert "data-act=\"stage-active-config\"" not in js
@@ -409,7 +409,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function quietStartTargetLabel(target)" in js
     assert "function readinessTargetLockReason(readiness)" in js
     assert "How to continue" in js
-    assert "Audible tests are limited to woofer, mid, and subwoofer targets in this slice." in js
+    assert "This driver cannot be tested from here yet. Choose a woofer, mid, or subwoofer driver to continue." in js
     assert "Starting with the quietest short pulse." in js
     assert "Heard ' + targetLabel" in js
     assert "Test progress" in js
@@ -421,7 +421,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Driver tests are not available on this install yet." in js
     assert "playbackResultMessage(playback, undefined, friendlySetupReason)" in js
     assert "Playback: ' + (issue.code" not in js
-    assert "JTS could not load the safe test setup" in js
+    assert "JTS could not get the test ready. No sound was played." in js
     assert "Save this speaker layout draft before confirming outputs." in js
     assert "Main speakers" in js
     assert "Speaker count" in js
@@ -450,6 +450,50 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
     assert "Saved speaker layout. No sound was played." in js
+
+
+def test_active_speaker_setup_copy_has_no_backend_jargon():
+    """The /sound/ active-speaker flow is a guided consumer setup, not an
+    engineering console. User-facing copy must never leak backend vocabulary
+    (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw "evidence")
+    and friendlySetupReason must never echo a raw snake_case code. See AGENTS.md
+    "Web wizard conventions" and the active-crossover flow simplification."""
+    js = _SOUND_MODULE.read_text()
+    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
+
+    # No backend vocabulary in any user-visible string.
+    for jargon in (
+        "No YAML",
+        "CamillaDSP baseline YAML",
+        "A durable CamillaDSP baseline",
+        "The baseline YAML is saved",
+        "reloads CamillaDSP",
+        "in this slice",
+        "missing playback evidence",
+        "the protected test setup",
+        "the safe audio path",
+        "safe test setup",
+        "Polarity or delay issue",
+        "was blocked before sound could play",
+    ):
+        assert jargon not in js, f"backend jargon leaked into main.js: {jargon!r}"
+
+    # friendlySetupReason must collapse code-like strings to a calm sentence
+    # instead of echoing the raw identifier (the old `text.replace(/_/g,' ')`).
+    assert "return raw.replace(/_/g, ' ')" not in js
+    assert "return outcome.replace(/_/g, ' ')" not in js
+    assert "One setup step still needs finishing. Choose the driver again to continue." in js
+
+    # The new consumer copy is present and stable.
+    assert "Builds the crossover plan from your saved settings. No sound plays." in js
+    assert "Save the measured crossover as your active speaker profile. No sound plays." in js
+    assert "Your active speaker profile, built from the saved crossover and driver checks." in js
+    assert "Your active speaker profile is saved. Apply it to start using it." in js
+    assert "Sounds hollow or thin" in js
+
+    # The pure vocabulary module owns the no-sound fallbacks and stays actionable.
+    assert "Choose the driver again to try." in helper_js
+    assert "did not complete" not in helper_js
 
 
 def test_active_speaker_environment_payload_uses_configured_evidence_path(

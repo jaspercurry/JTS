@@ -224,6 +224,122 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             supports_active_outputd_lane=True,
         )
 
+
+def _active_single(**overrides: object) -> DacProfile:
+    """A minimal valid single coherent active-lane DAC for channel-map tests."""
+
+    base: dict[str, object] = dict(
+        id="test_active_single",
+        label="Test active single",
+        kind="single",
+        physical_output_count=4,
+        coherent_clock_domain=True,
+        clock_domain_label="Test clock",
+        clock_domain_contract="single_device",
+        outputd_sink="alsa",
+        supported_card_matches=("test",),
+        supports_active_outputd_lane=True,
+        active_outputd_lane_channels=4,
+    )
+    base.update(overrides)
+    return DacProfile(**base)  # type: ignore[arg-type]
+
+
+def _identity_map(width: int) -> tuple[dac.ChannelMapEntry, ...]:
+    return tuple(dac.ChannelMapEntry(i, i) for i in range(width))
+
+
+def test_is_coherent_single_predicate() -> None:
+    # The single-PCM-transport shape: one device, one clock.
+    assert HIFIBERRY_DAC8X.is_coherent_single() is True
+    assert APPLE_USB_C_DONGLE.is_coherent_single() is True
+    # A composite of two independent-clock devices is not.
+    assert DUAL_APPLE_USB_C_DAC_4CH.is_coherent_single() is False
+
+
+def test_dac_channel_map_accepts_valid_permutations() -> None:
+    assert _active_single(dac_channel_map=_identity_map(4)).dac_channel_map == (
+        _identity_map(4)
+    )
+    # A non-identity permutation onto distinct, in-range physical channels.
+    swapped = _active_single(
+        dac_channel_map=(
+            dac.ChannelMapEntry(0, 1),
+            dac.ChannelMapEntry(1, 0),
+            dac.ChannelMapEntry(2, 3),
+            dac.ChannelMapEntry(3, 2),
+        )
+    )
+    assert len(swapped.dac_channel_map or ()) == 4
+    # Active lane narrower than physical outputs: map the 4 lanes onto a subset
+    # of the 8 physical channels (distinct, in range).
+    narrow = _active_single(
+        physical_output_count=8,
+        active_outputd_lane_channels=4,
+        dac_channel_map=(
+            dac.ChannelMapEntry(0, 0),
+            dac.ChannelMapEntry(1, 2),
+            dac.ChannelMapEntry(2, 4),
+            dac.ChannelMapEntry(3, 6),
+        ),
+    )
+    assert len(narrow.dac_channel_map or ()) == 4
+
+
+def test_dac_channel_map_validation_is_fail_closed() -> None:
+    # A map only means something for a DAC with an active lane.
+    with pytest.raises(ValueError, match="dac_channel_map requires"):
+        DacProfile(
+            id="map_no_lane",
+            label="x",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="c",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("x",),
+            dac_channel_map=_identity_map(2),
+        )
+    # One entry per active-lane channel (width is 4 here).
+    with pytest.raises(ValueError, match="one entry per active-lane channel"):
+        _active_single(dac_channel_map=_identity_map(2))
+    # camilla_out_index must be a clean 0..width-1 permutation (no gap/dup).
+    with pytest.raises(ValueError, match="camilla_out_index values must be"):
+        _active_single(
+            dac_channel_map=(
+                dac.ChannelMapEntry(0, 0),
+                dac.ChannelMapEntry(0, 1),
+                dac.ChannelMapEntry(2, 2),
+                dac.ChannelMapEntry(3, 3),
+            )
+        )
+    # No two lanes may share a physical channel.
+    with pytest.raises(ValueError, match="same"):
+        _active_single(
+            dac_channel_map=(
+                dac.ChannelMapEntry(0, 0),
+                dac.ChannelMapEntry(1, 0),
+                dac.ChannelMapEntry(2, 2),
+                dac.ChannelMapEntry(3, 3),
+            )
+        )
+    # physical_dac_channel must be within physical_output_count.
+    with pytest.raises(ValueError, match="exceeds physical_output_count"):
+        _active_single(
+            dac_channel_map=(
+                dac.ChannelMapEntry(0, 0),
+                dac.ChannelMapEntry(1, 1),
+                dac.ChannelMapEntry(2, 2),
+                dac.ChannelMapEntry(3, 9),
+            )
+        )
+    # The entry itself rejects negative indices.
+    with pytest.raises(ValueError, match="camilla_out_index must be"):
+        dac.ChannelMapEntry(-1, 0)
+    with pytest.raises(ValueError, match="physical_dac_channel must be"):
+        dac.ChannelMapEntry(0, -1)
+
     with pytest.raises(ValueError, match="cannot exceed physical_output_count"):
         DacProfile(
             id="bad_active_too_wide",

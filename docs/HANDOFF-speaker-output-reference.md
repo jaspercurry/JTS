@@ -479,6 +479,268 @@ What is still intentionally not done:
   accounting) still need Pi validation after an operator-approved
   deploy.
 
+## DAC-agnostic active-output transport (design-of-record)
+
+> **Status: design-of-record, 2026-06-16 — not yet built.** Finalized after a
+> multi-agent design pass (3 architects + 6 adversarial critics) and an external
+> hardware-grounded review. This is the canonical transport design for active
+> crossover; the commissioning flow that rides it is in
+> [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) "Single audio
+> path commissioning". The principle that governs every line below: **dispatch
+> on clock-domain *shape* (single coherent device vs paired composite), with
+> channel width and the channel map as DATA from the `DacProfile`/topology — never
+> a per-DAC code branch.** Adding a DAC of an established shape is a `DacProfile`
+> row; a new shape pays transport code once.
+
+### One path, and why outputd stays in it
+
+`fan-in (stereo) → CamillaDSP (the sole 2→N width fan-out) → outputd (reads the
+N-channel content lane, demuxes to physical DAC channel(s), publishes the AEC
+reference) → DAC`. CamillaDSP owns all width/EQ/gain/delay/limiter authority
+(`emit_active_speaker_*` already sizes `playback channels: {output_count}`).
+outputd stays the final owner because (a) a *composite* DAC needs an aggregator
+that CamillaDSP — which targets one ALSA device — cannot be, and (b) outputd
+owns the AEC reference, the playout ledger, and clip accounting. **TTS/cues are
+NOT an outputd concern in active mode:** they enter at fan-in (stereo,
+pre-CamillaDSP — `jasper-voice.service` `JASPER_TTS_OUTPUTD_SOCKET` →
+`/run/jasper-fanin/tts.sock`), so voice rides the crossover/protection chain at
+every width. The active loop therefore needs **no** TTS lane; `OutputCore`/the
+TTS mixer stays conditional on `tts_socket_path` being set (a solo stereo
+speaker pays zero new resident RAM). The dual/active loop's real gaps versus the
+single path are the **DAC-true playout ledger** and **real clip accounting**
+(today `main.rs` hardwires `clipped_samples=0` on the dual path — see
+Observability) — both width-clean, both must move into the unified loop.
+
+### Today's transport is welded to one DAC (the thing being generalized)
+
+The only active-lane transport, `DualAppleBackend`
+(`rust/jasper-outputd/src/alsa_backend.rs`), is welded to two stereo USB DACs:
+two child PCMs, `snd_pcm_link`, inter-DAC drift tracking,
+`deinterleave_4ch_to_dual_stereo` (ch0/1→DAC A, ch2/3→DAC B). DAC-side width is
+the compile-time `CHANNELS: u16 = 2` (`types.rs`); `content_channels` is
+hardcoded per `SinkMode` (`config.rs`); the active ALSA lane is fixed at
+`channels 4` wrapped in `type plug` (`deploy/alsa/asoundrc.jasper`); the cutover
+gate greps for `channels: 4` (`deploy/bin/jasper-audio-hardware-reconcile`).
+`SinkMode::DualApple` is itself the anti-pattern — a DAC's name in the transport
+enum. The generalization below pays down that debt rather than adding a twin.
+
+### The change set (build to this)
+
+**1. Transport dispatches on clock-domain shape via a `DacSink` trait.** One loop
+body serves both widths; both get the ledger + clip path:
+
+```rust
+trait DacSink {
+    fn write_period(&mut self, samples_nch: &[i16]) -> Result<()>;
+    fn dac_delay_frames(&self) -> Result<u64>;
+    fn health(&self) -> DacSinkHealth;   // per-child state, delay deltas, xrun counts
+    fn channels(&self) -> u16;
+}
+struct SingleAlsaSink { pcm: AlsaPcm, dac_channels: u16 }                  // any coherent N
+struct PairedCompositeSink { children: [AlsaPcm; 2], link: LinkState,     // exactly 2 children
+                             child_period_bufs: [Vec<i16>; 2] }            // preallocated, zero per-period alloc
+```
+
+- `SingleAlsaSink` = today's single backend with the **DAC-write** `CHANNELS=2`
+  literals replaced by runtime `dac_channels` at the enumerated write sites only
+  (`alsa_backend.rs` open + `write_dac_period` framing). Content-read framing
+  keeps `CHANNELS=2`. **Width 2 is byte-identical to today.** Covers single Apple
+  (2ch), DAC8x (8ch), any future coherent single DAC — zero per-DAC code.
+- `PairedCompositeSink` = today's `DualAppleBackend`, renamed, made a `DacSink`,
+  child PCMs driven by `dac_channel_map` instead of hardcoded A/B. **Stays
+  two-child** — a pairwise drift guard cannot be half-`Vec`-ified. M>2 composite
+  is a genuinely *new* `DacSink` impl (explicitly out of scope; named in the
+  active-speaker doc), not a config row.
+- **No `single_alsa_multi` sink string.** Width is already carried by
+  `active_outputd_lane_channels`; a second "is this wide?" field invites drift.
+  `config.rs` keeps `SinkMode { SingleAlsa, Composite }` (rename `DualApple` →
+  `Composite`; keep `"dual_apple"` as a parse alias one release). `dac_channels`
+  reads `JASPER_OUTPUTD_ACTIVE_CHANNELS` (validated `2..=8`; **required** for a
+  wide single DAC — fail-closed `EXIT_CONFIG`/78 if unset; the reconciler always
+  emits it from `active_outputd_lane_channels`). `types.rs CHANNELS=2` stays as
+  the reference/content-read/chip width.
+
+The loop body (single `run_alsa` over `Box<dyn DacSink>`): read N-channel content
+→ `sink.health()` (checked **before** writing — never write a period with a
+known-dead child) → `write_period` → ledger commit against
+`sink.dac_delay_frames()` → `fold_reference(content, &mut ref_mono, &plan)` →
+publish. `run_alsa_dual_apple` + `downmix_dual_active_reference` are **deleted
+last** (after the unified loop is hardware-verified).
+
+**2. The AEC reference is mono — verified — so the fold is trivial.** Both
+consumers collapse the reference to mono: software AEC3 sums L+R→mono
+(`aec_bridge.py` "L+R summed to mono"); the chip-AEC USB-IN producer downmixes
+(`main.rs` `chip_ref_downsampler_downmixes_and_decimates`, the XVF USB-IN being a
+2ch endpoint fed the downmixed signal — `HANDOFF-xvf3800.md` §3). **No consumer
+uses L vs R separately.** Therefore:
+- `fold_reference` sums **all driven active lanes** into one mono signal, then
+  publishes it into the existing stereo reference (L = R) so the published
+  contract (`speaker_reference_channels: 2`) is unchanged and the bridge/chip
+  producer are untouched. There is **no per-DAC L/R fold to author** — the driven
+  set is derived from the CamillaDSP output channel count / topology (single
+  source of truth; see §data-model).
+- **Clip-proof scaling.** Scale the sum by **1/N** (N = number of driven lanes):
+  N correlated full-scale lanes sum to N×, so 1/N guarantees the result stays in
+  range regardless of correlation. (`1/√N` is power-preserving only for
+  *uncorrelated* lanes — a woofer+sub share LF, L/R are correlated — so it can
+  still clip; a clipped reference is uniquely harmful because the linear AEC
+  cannot model the nonlinearity.) Accumulate in `i32`; the AEC adapts its own ERL
+  so the lower level costs nothing. The `PairwiseAverage` path for the existing
+  composite stays byte-identical to the deleted `downmix_dual_active_reference`
+  (regression test asserts equality); the N-lane path is the new clip-proof sum.
+  *Precondition note:* `1/N` is clip-proof **absolutely** (not relying on
+  band-splitting). Band-splitting is why the reference rarely approaches the `N×`
+  worst case — at any instant one lane is hot and the sum stays well below
+  full-scale — so `1/N`'s conservatism costs no real SNR. Do **not** "optimize"
+  back to `1/√N`: it is power-preserving only for uncorrelated lanes and would
+  reintroduce the clip hazard the moment a future mode routes full-range content
+  to multiple lanes.
+- **Match the fold to what the mic can hear (don't normalize on inaudible
+  energy).** A reference dominated by sub energy the mic can't pick up inflates
+  the NLMS denominator without contributing correlation, slowing convergence in
+  the voice band. The software AEC3 path **already** high-passes the reference at
+  125 Hz (`aec_bridge.py`), so sub content is already out of *its* denominator;
+  the open item is the **chip** path — verify the XVF3800 USB-IN reference band
+  and the mic-array low-frequency roll-off, and high-pass the fold to match mic
+  sensitivity if needed. The XVF exposes only **2** reference channels (not 3),
+  so a separate sub reference is impossible — this is a "what goes into the sum"
+  question, which is why the mono fold is the right shape.
+
+**3. Reconciler computes one `OutputTransportPlan`; it dispatches on `kind`, not
+DAC id.** `apply_audio_runtime_env()` reads the resolved `DacProfile`:
+- `kind == "single"` with an active lane → `JASPER_OUTPUTD_SINK=single_alsa`,
+  `JASPER_OUTPUTD_ACTIVE_CHANNELS=<active_outputd_lane_channels>`,
+  `CONTENT_PCM=outputd_active_content_capture`, `DAC_PCM=outputd_dac`. No
+  child-PCM env, no composite policy.
+- `kind == "composite"` → `SINK=composite` + the child PCMs from
+  `dac_channel_map`; the existing `apply_observed_composite_policy` (serial-pinned
+  A/B order, drift evidence) runs **only here**.
+
+The `OutputTransportPlan` (`sink`, `transport_channels`, `channel_map`,
+`dac_pcms`, `clock_domain_contract`) is the **single env+`/state` truth**,
+computed once and *read* on `/state` — never re-derived per `/state` hit.
+
+**Stable identity + invalidation (a Stage-0 decision, not a later fix).**
+`dac_pcms` and `clock_domain_contract` are exactly the fields that shift when a
+USB DAC re-enumerates or the Apple dongles return with different card indices
+across a reboot — a class of drift that has bitten JTS before
+([HANDOFF-identity.md](HANDOFF-identity.md)). So the plan MUST key on a **stable
+card identifier** — `hw:CARD=<name>` (the `DacProfile` already matches on card
+*name* regex, not index), or a serial where available — **never a numeric card
+index.** With `type plug` banned, a stale plan pointing at the wrong device now
+fails *closed* (silent until reconcile re-runs) rather than playing remixed
+content at the wrong drivers — but the cure is to not go stale: the reconciler
+(the single writer) recomputes the plan on **boot and on udev add/remove/change**,
+the same triggers it already self-heals on. Bake stable-identifier resolution
+into the Stage-0 resolver relocation onto `OutputTopology` — that is the cheapest
+place to get it right and the most expensive to get wrong later.
+
+**4. One wide snd-aloop content substream — width on the substream, not more
+substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
+cannot raise that without patching the module); but one substream carries up to
+`channels_max=32` and adopts the playback side's channel count. So the fix is to
+make the active content lane **one substream at width N**, not to add substreams:
+- Render the active-content lane width from `JASPER_OUTPUTD_ACTIVE_CHANNELS`
+  (`__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` token in `asoundrc.jasper`).
+- **All format adaptation is explicit and owned by CamillaDSP; the active ALSA
+  path fails closed on channel, rate, AND format mismatch.** Ban `type plug`
+  (and `plughw:`, which is `plug`+`hw`) on the active path — use width-exact
+  `hw:`/`dmix` so any mismatch fails at `snd_pcm_hw_params` (open error) instead
+  of silently remixing 8→4 (or resampling, or reformatting) onto live drivers
+  (the single most dangerous fail-open in the feature; `plug` is the automatic
+  channel/rate/format-conversion plugin). A contract test rejects `plug`/`plughw`
+  anywhere on the active path.
+- **Second, independent fail-closed layer:** CamillaDSP refuses to start if its
+  mixer output channel count ≠ the playback device `channels`. Rely on both.
+- **Open-ordering constraint:** snd-aloop locks rate/format/channels to the first
+  opener of a substream pair, so the active-content playback (CamillaDSP) and any
+  reference capture on the paired substream must agree on width; document the open
+  order. If PipeWire/PulseAudio is present it may grab the loopback device —
+  out of scope for the appliance, noted for dev hosts.
+
+**5. Width-aware cutover gate.** Replace the `channels: 4` grep with a
+width-aware assertion (active config channels == `OutputTransportPlan`
+transport channels); rename `active_four_channel_shape_missing` →
+`active_graph_width_mismatch expected=N got=M`.
+
+**6. `DacProfile` additions (pure data, IO-free, fail-closed at import).**
+- `dac_channel_map: tuple[ChannelMapEntry, ...] | None` — `(camilla_out_index,
+  physical_dac_channel)` permutation. **No gain field** (CamillaDSP owns gain).
+- `is_coherent_single() -> bool` predicate (folds `kind=="single" and
+  coherent_clock_domain`). **Device resolvers move to `OutputTopology`**, not onto
+  the IO-free registry (they read env + card_id, which would break `dac.py`'s
+  contract). No `reference_fold` field — the driven-channel set is the fold input
+  and is derived from the topology/CamillaDSP output, validated against the
+  active lane width at import.
+- **Profile flip is last:** set `supports_active_outputd_lane=True` +
+  `active_outputd_lane_channels` on a DAC only once the transport above can carry
+  it, so the Python route never resolves a lane the transport can't serve.
+
+### Resilience (every failure: detect → fail-closed → observable)
+
+- **Composite child loss:** `sink.health()` checked **before** the write; a
+  non-Running child is a hard fault → mute **all** children, `event=outputd.
+  composite.child_lost`, `/state.composite.children[].state`. The reconciler/
+  ExecCondition gates a composite on **all** child cards present.
+- **Unified xrun policy:** `write_period` uses bounded per-child `try_recover`
+  (mirror the single path), bailing only on recovery exhaustion or delay
+  divergence — never the dual path's bail-on-first-xrun (which reboot-loops via
+  `StartLimitAction`).
+- **Width mismatch (CamillaDSP N vs outputd M):** `EXIT_CONFIG`/78, parked, no
+  crash-loop. Belt-and-suspenders since both derive from one `OutputTransportPlan`.
+- **DAC hotplug:** reconciler re-derives on udev (pattern-3 self-heal); replug
+  re-arms **muted** via the masked startup config.
+
+### Observability
+
+- **Real clip accounting at every width** — replace the hardwired
+  `clipped_samples=0` so a clipping active period reports nonzero on `/state`
+  (the commissioning "no clip" gate is otherwise vacuously green).
+- **Width-agnostic `/state` block — decouple the wire string from the Rust type
+  name.** The serialized `/state` value is a cross-language contract (Rust
+  `state.rs` writes it; the Python doctor reads it). Renaming the internal type
+  (`DualAppleBackend`→`PairedCompositeSink`, `SinkMode::DualApple`→`Composite`)
+  must **not** be coupled to a serialization-format break. Either keep the wire
+  value stable while the type is renamed, or migrate every occurrence in one
+  atomic commit guarded by a **round-trip (serialize→parse) test**; either way
+  rename the block to a width-agnostic `composite` shape with a per-child array
+  and keep `dual_apple` as a **read alias** one release, migrating the doctor's
+  `=="dual_apple"` branches + the snapshot test in the same PR.
+- **"Why didn't my lane arm" via stable `issues[].code`** on `OutputHardwareState`
+  (not bare stderr). `check_outputd_service` becomes table-driven keyed by
+  `sink_mode` (today's 2-mode allowlist would FAIL every new DAC); the width check
+  diffs reconciler-resolved width against outputd's negotiated `dac.channels`.
+- **Edge-triggered hot-loop events with `*_count` companions** — no per-period
+  logging in the sink loop (a flapping child must not emit 48000 lines/sec).
+
+### Performance / resource (1 GB Pi)
+
+- **Zero allocation on the DAC-write hot path at any width** — preallocated
+  per-child period buffers; preallocated fold scratch. Test mirrors
+  `steady_state_reuses_segment_write_buffer_capacity`.
+- **`OutputCore`/`ReferenceFanout`/ledger-loudness stay conditional on TTS** — a
+  solo stereo speaker allocates none of it; the minimal clip/ledger counters the
+  active loop needs are cheap scalars, not the full `OutputCore`.
+- **Composite drift-sync cost gated to composite** — `SingleAlsaSink` pays
+  nothing; M=2 keeps exactly today's 2 `snd_pcm_delay` ioctls/period.
+- **No new threads, no new poll loops, no new resident process** — reconciler
+  reuses the existing boot/udev shell-out; N-channel passthrough is O(frames×N).
+- **Pi-5 RP1 multichannel I2S headroom:** CamillaDSP-Nch + outputd + voice + AEC
+  on one Pi 5 is plausible but not free (documented RP1 XRUNs at high rates under
+  load). Budget 48 kHz + a comfortable period; **load-test at Stage 3/6** and
+  state the per-SKU channel ceiling (a Pi Zero 2W cannot do Nch DSP + AEC). This
+  is monitored on `/system`, not CPU-capped (per the JTS "visibility over
+  constraints" stance).
+
+### Safety + verification (jts3, real bi/tri-amp speaker, live drivers)
+
+`volume_limit: 0.0` holds in the active config; per-driver limiters and the
+protective tweeter high-pass live in the CamillaDSP graph. Verify on jts3 in the
+staged order in the active-speaker doc, starting muted, unmuting one output at the
+calibration floor woofer-first/tweeter-last, with a **live high-pass-presence
+assertion** before the tweeter is unmuted. Single-DAC has no drift/link to soak;
+the stereo↔active cutover and xrun behavior do.
+
 ## Problem Boundaries
 
 This is primarily an output problem, not an input problem.

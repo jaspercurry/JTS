@@ -20,6 +20,7 @@ from typing import Any, Callable
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
+from ._common import gate as _gate, issue as _issue
 from .camilla_yaml import (
     PROTECTIVE_TWEETER_HP_MULTIPLIER,
     STARTUP_HEADROOM_DB,
@@ -61,25 +62,6 @@ _SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
-
-
-def _gate(
-    gate_id: str,
-    *,
-    label: str,
-    passed: bool,
-    message: str,
-) -> dict[str, Any]:
-    return {
-        "id": gate_id,
-        "label": label,
-        "passed": bool(passed),
-        "message": message,
-    }
 
 
 def _safe_stem(value: str) -> str:

@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology
+from ._common import issue as _issue
 
 SCHEMA_VERSION = 1
 DESIGN_DRAFT_KIND = "jts_active_speaker_design_draft"
@@ -41,10 +42,6 @@ class ActiveSpeakerDesignDraftError(ValueError):
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _design_draft_path(path: str | Path | None = None) -> Path:

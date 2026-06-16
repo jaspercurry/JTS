@@ -91,7 +91,7 @@ export function playbackResultMessage(playback, fallback, normalizeMessage) {
         message;
     }
   }
-  if (playback.status === 'blocked') return 'The driver test was blocked before sound could play.';
-  if (playback.status === 'failed') return 'The driver test did not complete.';
+  if (playback.status === 'blocked') return 'JTS could not start that test. Choose the driver again to try.';
+  if (playback.status === 'failed') return 'That test did not finish. Choose the driver again to try.';
   return fallback || 'No sound played.';
 }

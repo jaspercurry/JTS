@@ -338,6 +338,29 @@
 > high-frequency playback must remain high-passed, level-bounded,
 > Stop-controlled, microphone-aware when available, and start at the
 > test-level floor.
+>
+> **Update, 2026-06-16:** `jasper.active_speaker.driver_acoustics` adds the
+> mic-backed analysis half of the Consumer Wizard Triad below. It is a pure,
+> stateless module that reuses the room-correction sweep/deconvolution/analysis
+> primitives (`jasper.correction.{sweep,deconv,analysis,quality}`, imported
+> lazily so the wizard import stays numpy-free): `write_driver_sweep_wav` emits a
+> channel-targeted multichannel sweep (the one thing `jasper.correction.sweep`
+> can't do — it is mono only), `analyze_driver_capture` returns a per-driver
+> `present`/`out_of_band`/`silent`/`unusable_capture` verdict plus a real
+> `observed_mic_dbfs` from the capture RMS (the value `measurement.record_driver_
+> measurement` already consumes), and `analyze_summed_crossover` flags a
+> cancellation suckout at the crossover. This implements the *gated-summed flat
+> check* (triad item 3 — a deep null in the normal summed response means a
+> polarity/delay problem), **not** the rigorous *inverted null-depth
+> optimization* (triad item 2, "Delay, Phase, and Null Verification" below). It
+> is analysis-only: the sweep-playback endpoint, the capture-upload endpoint that
+> calls `analyze_driver_capture` → `record_driver_measurement`, and the browser
+> capture UI (reusing `deploy/assets/shared/js/measurement-audio.js`) are not yet
+> wired and need on-device hardware to validate the acoustic path. Separately,
+> the `/sound/` active-crossover setup copy was de-jargoned so no backend
+> vocabulary (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw
+> snake_case codes) reaches the household; `friendlySetupReason` now collapses
+> unmapped code-like strings to one actionable sentence instead of echoing them.
 
 ## Current Operational Truth
 
@@ -432,6 +455,185 @@ still must satisfy the safety gates before sound-emitting active use:
   This applies to renderers, TTS/cues, `/correction/` sweeps,
   autolevel/test tones, USB Audio Input, startup/reload states, and
   any direct `jasper_out` rollback path.
+
+## Single audio path commissioning
+
+> **Status: design-of-record, 2026-06-16 — partially built.** This is the
+> agreed target architecture for the `/sound/` active-crossover flow. It
+> replaces the earlier two-path model (a direct-DAC diagnostic bypass for test
+> tones plus an outputd lane for durable apply) with **one** audio path.
+
+**Principle.** Commission and validate the speaker *through the production
+audio path* — the outputd-owned active CamillaDSP graph — and "save" simply
+freezes the commissioned config as the durable profile. There is no separate
+validation path. Validating on a path you won't run is both pointless (it has to
+be re-set-up for production anyway) and unsafe: the old direct-DAC bypass wrote a
+tone straight to `hw:CARD=…,DEV=0`, so a tweeter test had **no** protective
+high-pass. Through the production graph, every driver is tested behind its own
+crossover/limiter exactly as it will run.
+
+**Why the old direct-DAC path was useless.** Durable apply has always required an
+outputd-owned active lane, so a config tested via direct-DAC could be compiled
+but **never applied** (`compiled_apply_blocked`). It could not produce a working
+speaker — dead-end functionality.
+
+**Two facts that shrink the work** (verified, vs an earlier mistaken framing):
+TTS already enters at fan-in (`jasper-voice.service` → `/run/jasper-fanin/tts.sock`,
+pre-CamillaDSP), so voice rides the crossover at every width — the active output
+transport needs **no** TTS lane. And the AEC reference is mono at both consumers
+(software AEC3 sums L+R→mono; the chip USB-IN producer downmixes), so the
+reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
+
+### Critical path
+
+1. **DAC-agnostic active-output transport** (the hard prerequisite). The single
+   path needs the speaker's DAC to have an outputd active lane. Today only the
+   dual-Apple 4-channel composite declares one. The transport is generalized to
+   dispatch on clock-domain *shape* (coherent single / paired composite) with
+   width + channel map as data, so a single coherent DAC8x (8ch) and any future
+   DAC ride it without per-DAC code. Full design + change set:
+   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+   "DAC-agnostic active-output transport (design-of-record)".
+
+2. **Commissioning orchestration** (substrate built; wiring pending). Per driver:
+   compile the preset from the saved crossover preview
+   (`staging.compile_preset_from_crossover_preview`), emit the production graph
+   with a per-output mute mask
+   (`camilla_yaml.emit_active_speaker_commissioning_config`, **built + tested
+   8×, but currently UNWIRED** — `staging.py` still calls the unmasked startup
+   emitter; **wire it, don't delete it**), load it muted through the guarded
+   path, open `correction.coordinator.measurement_window()`, play an ESS sweep
+   into the production fan-in lane (`correction.playback.play_sweep`), capture
+   the phone mic in the browser (reuse
+   [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js)),
+   analyze with `active_speaker.driver_acoustics.analyze_driver_capture`
+   (**built** — per-driver verdict + real `observed_mic_dbfs`), and record via
+   `measurement.record_driver_measurement`. Advance per driver; then unmute all
+   for the summed check (`analyze_summed_crossover`, **built**); then freeze the
+   commissioned config as the durable profile (`baseline_profile.*`). Per-driver
+   isolation is the CamillaDSP **mute mask**, not a channel-targeted WAV — so
+   `driver_acoustics.write_driver_sweep_wav` is superseded and removed when this
+   lands. **Filters are designed to *acoustic* LR targets from the measured
+   per-driver response — not blindly inserted as electrical LR biquads** (the
+   sweep/deconv measurement is what makes the acoustic target achievable).
+
+3. **Delete the direct-DAC path** (do last, against working hardware).
+   Remove `DirectDacTonePlaybackBackend` (`playback.py`), `DIRECT_DAC_SOURCE` /
+   `resolve_diagnostic_playback_device` / the `diagnostic` route variant
+   (`playback_route.py` — collapse to one resolver/capability; note the
+   3-hop self-shadowing of `resolve_active_playback_device` across
+   `playback_route.py`/`staging.py`/`__init__.py`), the `requires_protected_startup`
+   branch in `_active_speaker_prepare_driver_test_payload` (`web/sound_setup.py`),
+   and the direct-DAC handling in the `/sound/` JS. **The contract/schema tests
+   migrate in the SAME commit** (`tests/test_outputd_wiring.py` source-string +
+   solo-ordering contracts, `state.rs` `dual_apple` block, the doctor's
+   `=="dual_apple"` branches) or CI goes red. This deletion is coupled to step 1:
+   removing the bypass before the active lane exists leaves driver testing with
+   no backend, so it lands only once the production path works on hardware.
+
+### Staged, hardware-verified build sequence (each independently green; deletion last)
+
+jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
+(`PI_HOST=jts3.local`). **Every stage has a red/abort condition and rollback.**
+
+- **Stage 0 — HW-free Python.** `_common.py` diagnostics vocabulary (`_issue` in
+  16 files, `_finite_float` 9, …); `DacProfile.dac_channel_map` +
+  `is_coherent_single()` + import-time guards; `OutputLayout`/`OutputTransportPlan`;
+  resolvers → `OutputTopology`; collapse the resolver self-shadow;
+  `ActivePlaybackRouteCapability` reads `OutputLayout`. *Red:* any
+  `test_dac_*`/`test_output_topology`/`test_active_speaker_*` or `ruff` failure.
+- **Stage 1 — Rust transport, fake backend.** `SinkMode` rename + parse alias;
+  runtime `dac_channels` at the DAC-write sites; `DacSink` trait; unify the loop
+  (ledger + clip unconditional, `OutputCore`/TTS conditional on `tts_socket_path`);
+  `fold_reference` (`PairwiseAverage` byte-identical + N-lane clip-proof 1/N).
+  Migrate the `test_outputd_wiring.py` + `/state` + doctor contracts. *Red:*
+  `cargo test --locked` failure; the byte-identical width-2 / `PairwiseAverage`
+  regression tests must pass.
+- **Stage 2 — reconciler + wide content lane, dry-run.** `kind`-dispatched
+  `OutputTransportPlan` env; route from `dac_channel_map`; the
+  `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` wide lane, **ban `type plug`/`plughw:`**,
+  width-exact `hw:`. *Red:* `reconcile --print-env` diff non-empty for dual-Apple
+  or DAC8x-stereo; `aplay -D outputd_dac` not resolvable as the renderer user.
+- **Stage 3 — jts3, DAC8x as 2ch single, NO drivers at risk.** Prove music + TTS
+  (via fan-in) + AEC reference + honest ledger + real clip counter through
+  `SingleAlsa` width-2. **Load-test Pi-5 multichannel headroom here.** *Red:*
+  `jasper-doctor` not green, XRUNs under load, wake fails during a quiet sweep →
+  fix headroom before proceeding.
+- **Stage 4 — jts3, masked active load, drivers connected, speaker SILENT.** *Red:*
+  any audible output → fail closed, do not unmute.
+- **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed.**
+  **Before unmuting the tweeter, assert the high-pass filter is present in the
+  RUNNING CamillaDSP pipeline (not just the config file)**, plus subsonic/DC
+  protection, a low start level + ramp, and a sweep confined to the driver's safe
+  band. *Red:* HP not confirmed live, or any sibling audible → abort, re-mute.
+- **Stage 6 — sweep + AEC-reference validation (gate that can fail the feature).**
+  Per-driver `driver_acoustics`. **Pre-gate (check before Stage 6, not during):**
+  confirm there is **no sub latency outside CamillaDSP's alignment** — a plate-amp
+  with its own DSP, a sealed-sub correction stage, anything downstream of the
+  reference tap that adds group delay the fold can't see. That is the specific
+  thing that breaks the single-filter AEC model `mic ≈ ref·h` (see "Resolved
+  decisions"). Then validate the clip-proof mono reference with the **right
+  metric: low-band ERLE + delay-estimator stability, NOT aggregate ERLE**
+  (aggregate can look fine while the sub band quietly leaks). *Red ladder:* if
+  low-band convergence / delay stability regresses → (a) high-pass the sub's
+  contribution to the reference (band-match to mic sensitivity), else (b) drop
+  the sub from the reference fold, else (c) per-lane/per-band reference weighting
+  (deferred end-state). *Red:* `/state.output.clipped_samples` not real/≈0, or
+  low-band wake regression unresolved by (a)/(b).
+- **Stage 7 — freeze + delete the fork + dual-Apple regression.** Freeze baseline;
+  delete `run_alsa_dual_apple` + `downmix_dual_active_reference`; reboot →
+  deterministic boot into the active config with TTS; re-run dual-Apple
+  end-to-end on a dual-Apple Pi to prove `PairedCompositeSink` didn't regress the
+  4ch path (now also gaining ledger + clip). *Red:* `/state` mismatch across
+  reboot, or dual-Apple regression.
+
+### Resolved decisions + scope
+
+- **TTS stays at fan-in** — *positively* correct, two independent reasons, not
+  merely unchanged: (1) it keeps voice band-routed across drivers like music (a
+  post-crossover path would send full-range voice into a tweeter lane and bypass
+  per-driver gain/delay/correction); (2) because the reference is folded
+  post-mix, TTS automatically lands in the AEC reference — which is what lets the
+  speaker hear a **barge-in during its own spoken response** (real assistant
+  value, not incidental). *Latency budget to watch:* TTS now eats the crossover's
+  group delay on every response — negligible with IIR (LR biquads), but if
+  crossovers ever go linear-phase FIR (tens of ms) that adds directly to
+  perceived response latency. Not a reason to change — there is no safe way to
+  bypass the crossover for voice — just a budget to track.
+- **Subwoofer folds into the AEC reference: yes, default — and the determinant
+  is delay alignment, not bass.** AEC3 fits a single filter `mic ≈ ref·h`; a
+  wideband sub+mains reference sum admits one `h` only if the sub and mains reach
+  the mic through ~the same bulk delay. An active crossover *already* delay-aligns
+  every lane in CamillaDSP for acoustic summation, so if all lane delay lives
+  inside CamillaDSP the summed reference is phase-coherent and AEC3 converges. The
+  failure mode is the Stage-6 **pre-gate** above: a sub path with latency
+  CamillaDSP doesn't see breaks `h_main ≈ h_sub` and no single filter fits.
+  Confine the risk-check to **low-band ERLE + delay-estimator stability** (AEC3's
+  ~8 kHz band split keeps any exposure in band 0); the software path already
+  high-passes its reference at 125 Hz, so verify only the chip path's reference
+  band + mic roll-off.
+- **M>2 / 3+-device composite is out of scope** — it would generalize
+  `classify_output_cards`' `len(apple)==2`, `dual_apple_runtime_mapping`, and
+  `apply_observed_composite_policy`, which the new data fields do not reach. Named
+  as a limitation, not implied free.
+- **Do NOT collapse `safe_playback`'s floor tri-state to a bool** —
+  `floor_pending_operator` ("tone played, awaiting ACK") is load-bearing for
+  Stage 5: a process that deliberately unmutes drivers one at a time needs
+  "not-yet-operator-confirmed" to be **distinct from both "muted" and "confirmed
+  safe."** Consolidate ownership, preserve the state space.
+- **Crash recovery from any commissioning step lands MUTED** (the same safety
+  property as the tri-state + the muted-by-default startup config). A power loss
+  or crash partway through commissioning must reboot into everything-muted — never
+  into a tweeter unmuted at level with no crossover loaded. Therefore the
+  per-driver unmute states are **transient and never frozen as the boot config**;
+  only the final, all-validated freeze step persists a loadable active config.
+  When wiring the maskable emitter (the Stage-2 keystone), guard against any path
+  where a partially-commissioned unmute state could persist as "safe."
+
+Every on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
+per-driver limiters, and the protective tweeter high-pass are preserved by the
+commissioning emitter (guarded by
+`test_commissioning_config_preserves_production_safety`).
 
 ## Layer Boundary
 

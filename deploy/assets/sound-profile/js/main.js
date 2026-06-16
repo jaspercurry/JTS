@@ -1566,8 +1566,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     payload = payload || {};
     var raw = payload.status || 'not_prepared';
     if (crossoverPreviewReadyCount(payload) > 0) return 'preview ready';
+    if (raw === 'ready_for_protected_staging') return 'preview ready';
     if (raw === 'blocked') return 'not ready yet';
-    return raw.replace(/_/g, ' ');
+    if (raw === 'stale') return 'needs refresh';
+    if (raw === 'not_applicable') return 'not needed';
+    return 'not prepared';
   }
   function crossoverPreviewReviewIssues(issues) {
     return (Array.isArray(issues) ? issues : []).filter(function(issue) {
@@ -1618,11 +1621,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var hasSavedResearch = driverResearchCanPreparePreview();
     var canPrepare = hasSavedResearch && !outputTopology.dirty;
     var disabled = crossoverPreview.preparing || !canPrepare;
-    var draftStatus = (driverResearch.designDraft || {}).status || '';
     var hint = canPrepare ?
-      (draftStatus === 'blocked'
-        ? 'Builds a no-audio preview from saved research. Wiring and driver-test checks happen before any sound.'
-        : 'Builds bounded filter intent from the saved draft. No YAML, no Camilla load, no sound.') :
+      'Builds the crossover plan from your saved settings. No sound plays.' :
       (outputTopology.dirty
         ? 'Save the speaker layout before preparing a crossover preview.'
         : (hasSavedResearch
@@ -1975,7 +1975,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (outcome === 'silent') return 'not heard';
     if (outcome === 'heard_wrong_driver') return 'wrong driver';
     if (outcome === 'too_loud') return 'too loud';
-    return outcome ? outcome.replace(/_/g, ' ') : 'not recorded';
+    if (outcome === 'blend_ok') return 'blend sounds right';
+    if (outcome === 'needs_adjustment') return 'needs adjustment';
+    if (outcome === 'polarity_or_delay_problem') return 'sounds hollow or thin';
+    return 'not recorded';
   }
   function measurementTargetId(groupId, role) {
     return String(groupId || '') + ':' + String(role || '').trim().toLowerCase();
@@ -2064,7 +2067,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var buttons = [
         ['blend_ok', 'Blend sounds right', 'btn--primary'],
         ['needs_adjustment', 'Needs adjustment', 'btn--ghost'],
-        ['polarity_or_delay_problem', 'Polarity or delay issue', 'btn--ghost'],
+        ['polarity_or_delay_problem', 'Sounds hollow or thin', 'btn--ghost'],
         ['too_loud', 'Too loud', 'btn--danger']
       ].map(function(item) {
         return '<button type="button" class="btn ' + escapeHtml(item[2]) +
@@ -2115,7 +2118,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (issue.code === 'baseline_subwoofer_not_supported') {
       return 'Subwoofer groups are not included in the active profile compiler yet.';
     }
-    return issue.message || issue.code || 'Profile is not ready yet.';
+    return 'The active profile is not ready yet.';
   }
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
@@ -2138,9 +2141,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (applyBlocked ?
         '<p class="setting-row__hint">The active profile was saved for review, but this hardware path cannot be applied from this page yet.</p>' :
       (readyToApply ?
-        '<p class="setting-row__hint">The baseline YAML is saved. Apply it to make it the active CamillaDSP profile.</p>' :
+        '<p class="setting-row__hint">Your active speaker profile is saved. Apply it to start using it.</p>' :
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
-          'Compile the measured crossover into a durable CamillaDSP baseline YAML. No sound plays during compile.' :
+          'Save the measured crossover as your active speaker profile. No sound plays.' :
           'Finish the combined crossover check before saving the active profile.') + '</p>'));
     var actions = applied ? '' :
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
@@ -2153,7 +2156,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
-        '<p class="setting-row__hint">A durable CamillaDSP baseline built from the saved crossover and measurements.</p></div>' +
+        '<p class="setting-row__hint">Your active speaker profile, built from the saved crossover and driver checks.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
       body +
@@ -2192,7 +2195,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Choose this driver again so JTS can start it quiet.' : '';
     }
     if (audible.target_role_allowed === false) {
-      return 'Audible tests are limited to woofer, mid, and subwoofer targets in this slice.';
+      return 'This driver cannot be tested from here yet. Choose a woofer, mid, or subwoofer driver to continue.';
     }
     return '';
   }
@@ -2202,7 +2205,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var lower = text.toLowerCase();
     if (lower.indexOf('audible driver tests are not wired') >= 0 ||
         lower.indexOf('audible driver tests are not enabled') >= 0 ||
-        lower.indexOf('audible channel tests require explicit') >= 0 ||
+        lower.indexOf('require explicit') >= 0 ||
+        lower.indexOf('lab backend') >= 0 ||
         lower.indexOf('audio_backend_not_enabled') >= 0) {
       return 'Driver tests are not available on this install yet.';
     }
@@ -2226,7 +2230,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         lower.indexOf('volume_limit_missing') >= 0 ||
         lower.indexOf('volume_limit_positive') >= 0 ||
         lower.indexOf('unknown_custom_camilla_config') >= 0) {
-      return 'The current DSP profile is not safe for the guided test. Save a normal JTS sound profile, then choose the driver again.';
+      return 'The current sound profile cannot be used for testing. Save a normal JTS sound profile, then choose the driver again.';
     }
     if (lower.indexOf('route_verified') >= 0 ||
         lower.indexOf('protected_by_active_baseline') >= 0 ||
@@ -2234,7 +2238,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         lower.indexOf('path-safety evidence was not provided') >= 0 ||
         lower.indexOf('staged protected candidate') >= 0 ||
         lower.indexOf('active_startup_candidate') >= 0) {
-      return 'JTS could not prepare the protected test setup. Save the speaker layout and crossover settings, then choose the driver again.';
+      return 'JTS could not get the test ready. Save the speaker layout and crossover settings, then choose the driver again.';
     }
     if (lower.indexOf('protection') >= 0 || lower.indexOf('high_frequency') >= 0 ||
         lower.indexOf('high-frequency') >= 0) {
@@ -2242,14 +2246,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (lower.indexOf('path_safety') >= 0 || lower.indexOf('safety evidence') >= 0 ||
         lower.indexOf('evidence') >= 0 || lower.indexOf('protected path') >= 0) {
-      return 'JTS could not confirm the safe audio path yet. No sound was played.';
+      return 'JTS could not get this driver test ready. Choose the driver again to retry. No sound was played.';
     }
     if (lower.indexOf('crossover_preview') >= 0 || lower.indexOf('crossover preview') >= 0) {
       return 'Save the crossover settings, then choose this driver again. No sound was played.';
     }
     if (lower.indexOf('startup') >= 0 || lower.indexOf('staged') >= 0 ||
         lower.indexOf('camilla') >= 0) {
-      return 'JTS could not load the safe test setup. No sound was played.';
+      return 'JTS could not get the test ready. No sound was played.';
     }
     if (lower.indexOf('floor') >= 0 || lower.indexOf('calibration') >= 0) {
       return 'Choose the driver again so JTS can restart this test from the quietest level.';
@@ -2263,7 +2267,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         lower.indexOf('unverified') >= 0) {
       return 'Confirm which DAC output goes to each driver, then choose the driver again.';
     }
-    return text.replace(/_/g, ' ');
+    // Never echo raw backend codes to the user. A snake_case identifier we did
+    // not map above collapses to one calm, actionable sentence; already-readable
+    // backend copy (a normal sentence) passes through unchanged.
+    if (text.indexOf('_') >= 0) {
+      return 'One setup step still needs finishing. Choose the driver again to continue.';
+    }
+    return text;
   }
   function friendlySetupIssue(issue) {
     issue = issue || {};
@@ -3668,7 +3678,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
       ingestCrossoverPreview(payload);
-      status('Prepared crossover preview. No YAML was emitted, no filters were applied, and no sound was played.');
+      status('Crossover preview ready. No filters were applied and no sound was played.');
       render();
       return true;
     } catch (e) {
@@ -3892,7 +3902,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     var friendly = candidates.map(friendlySetupReason).filter(Boolean);
     return friendly[0] || fallback ||
-      'JTS could not get the safe audio path ready. No sound was played.';
+      'JTS could not get this driver test ready. No sound was played.';
   }
   async function checkOutputPlaybackReadiness(button) {
     if (outputTopology.dirty) {
@@ -4026,7 +4036,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function recordFloorAudioOutcome(outcome, playbackId, options) {
     options = options || {};
     if (!outcome || !playbackId) {
-      status('Driver-test result is missing playback evidence.', true);
+      status('JTS lost track of that test. Choose the driver again to retry.', true);
       return null;
     }
     var target = outputTopology.readiness && outputTopology.readiness.target || null;
@@ -4423,7 +4433,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (!await jtsConfirm(
       'Apply the active speaker profile "' + (config.basename || 'active speaker baseline') +
-        '"? This reloads CamillaDSP and makes it the normal speaker profile.',
+        '"? This makes it your normal speaker profile.',
       {danger: true}
     )) {
       return;

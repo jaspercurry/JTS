@@ -12,6 +12,7 @@ from typing import Any
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
+from ._common import issue as _issue
 from .playback_route import active_playback_route_capability
 from .audible_policy import audible_policy_payload
 from .calibration_level import calibration_level_payload, clamp_test_level_dbfs
@@ -25,10 +26,6 @@ from .tone_plan import (
 )
 
 SCHEMA_VERSION = 1
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:

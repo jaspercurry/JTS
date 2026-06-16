@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology, OutputTopologyError
+from ._common import issue as _issue
 
 SCHEMA_VERSION = 1
 CROSSOVER_PREVIEW_KIND = "jts_active_speaker_crossover_preview"
@@ -36,10 +37,6 @@ _DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def crossover_preview_path(path: str | Path | None = None) -> Path:
