@@ -618,9 +618,9 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
-def test_reconcile_dac8x_active_graph_loaded_emits_wide_env(tmp_path: Path):
-    # A DAC8x with a loaded 8-channel active-speaker baseline engages the wide
-    # single_alsa lane: outputd reads the active content lane at width 8.
+def test_reconcile_dac8x_active_graph_full_width_emits_that_width(tmp_path: Path):
+    # A DAC8x with a loaded active baseline that drives all 8 outputs engages
+    # the active lane at width 8: outputd reads the active content lane at 8.
     result = _run_reconcile(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
@@ -639,19 +639,40 @@ def test_reconcile_dac8x_active_graph_loaded_emits_wide_env(tmp_path: Path):
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=8" in outputd_env
     assert "JASPER_OUTPUTD_DAC_PCM=outputd_dac" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
-    assert "mode=single_alsa_active active_channels=8" in result.stderr
+    assert "mode=single_alsa_active active_channels=8 active_lane_cap=8" in result.stderr
 
 
-def test_reconcile_dac8x_active_graph_width_mismatch_stays_stereo(tmp_path: Path):
-    # An active config of the WRONG width (4 on a DAC8x whose transport is 8)
-    # must NOT engage the wide lane — it fails closed to ordinary stereo so the
-    # speaker never emits a mis-shaped topology onto live drivers.
+def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
+    # DRIVE WHAT WE USE: a 2-way baseline (2-channel config) on a DAC8x engages
+    # the active lane at width 2 — outputd opens the DAC at 2 and powers the two
+    # outputs the speaker actually uses, NOT all 8. This is the headline of the
+    # capacity (<= cap) model: the config's actual width is emitted verbatim.
     result = _run_reconcile(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
         "--reason",
         "test",
-        extra_env=_active_graph_env(tmp_path, channels=4),
+        extra_env=_active_graph_env(tmp_path, channels=2),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
+    assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
+
+
+def test_reconcile_dac8x_active_graph_over_cap_stays_stereo(tmp_path: Path):
+    # A config asking for MORE outputs than the DAC can drive (16 on an 8-output
+    # DAC8x) is impossible hardware — it fails closed to ordinary stereo so the
+    # speaker never tries to emit a topology the DAC cannot physically carry.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env=_active_graph_env(tmp_path, channels=16),
     )
 
     assert result.returncode == 0, result.stderr
@@ -660,7 +681,7 @@ def test_reconcile_dac8x_active_graph_width_mismatch_stays_stereo(tmp_path: Path
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "single_alsa_active" not in result.stderr
-    assert "active_graph=active_graph_width_mismatch expected=8 got=4" in result.stderr
+    assert "active_graph=active_graph_width_out_of_range got=16 cap=8" in result.stderr
 
 
 def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):

@@ -219,10 +219,12 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
-    # The cutover gate is now width-aware and shared by the composite + single
-    # active paths (renamed from dual_apple_active_graph_status).
+    # The cutover gate is width-aware and shared by the composite + single
+    # active paths (renamed from dual_apple_active_graph_status). It accepts any
+    # config width within the DAC's cap (drive-what-we-use) and fails closed
+    # when a config exceeds the cap.
     assert "active_graph_status()" in reconcile
-    assert "active_graph_width_mismatch" in reconcile
+    assert "active_graph_width_out_of_range" in reconcile
     assert "action=park_until_active_graph" in reconcile
     assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" in reconcile

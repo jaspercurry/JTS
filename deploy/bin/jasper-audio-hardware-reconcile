@@ -429,7 +429,9 @@ for child in mapping.child_devices:
     DUAL_APPLE_DAC_A_PCM="$(printf '%s\n' "$parsed" | sed -n '2p')"
     DUAL_APPLE_DAC_B_PCM="$(printf '%s\n' "$parsed" | sed -n '3p')"
     local graph_status
-    # The dual-Apple composite carries exactly 4 channels (two stereo children).
+    # The dual-Apple composite caps at 4 (two stereo children); the composite
+    # sink is rigidly 4-channel in outputd regardless, so the dual branch only
+    # needs the gate's pass/fail, not the returned width.
     if ! graph_status="$(active_graph_status 4)"; then
         OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
         OUTPUT_DAC_CARD=""
@@ -451,26 +453,30 @@ for child in mapping.child_devices:
         "status=ready action=outputd_dual_sink order_source=${DUAL_APPLE_ORDER_SOURCE} dac_a_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_A_PCM") dac_b_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_B_PCM")"
 }
 
-# Width-aware active-graph cutover gate.
+# Active-graph cutover gate. DRIVE WHAT WE USE, not the DAC's full channel count.
 #
-# $1 = expected transport channel width — the resolved DacProfile's
+# $1 = the DAC's active-lane channel CAP — the resolved DacProfile's
 # active_outputd_lane_channels (4 for the dual-Apple composite, 8 for a
-# HiFiBerry DAC8x single). Prints "ready" and returns 0 ONLY when an
-# active-speaker baseline is loaded as the live CamillaDSP config AND that
-# config's channel width matches the transport width on the active outputd
-# lane. Otherwise it prints a reason and returns non-zero so the caller fails
-# closed: the composite shape parks, a coherent single stays ordinary stereo.
-# This is the second, independent fail-closed layer (the asoundrc active lane
-# is the first); never emit the wide env against a width-mismatched config.
+# HiFiBerry DAC8x single). On success prints the loaded active config's ACTUAL
+# playback width W (the number of physical outputs the speaker actually drives,
+# in 2..cap) and returns 0 — ONLY when an active-speaker baseline is the live
+# CamillaDSP config AND its playback width is a valid active width within the
+# cap. A 100-output DAC powering a 2-way drives 2, not 100: outputd opens the
+# DAC at W and the reconciler emits W as JASPER_OUTPUTD_ACTIVE_CHANNELS, so we
+# never pump muted channels we are not using. Otherwise it prints a reason and
+# returns non-zero so the caller fails closed: the composite shape parks, a
+# coherent single stays ordinary stereo. This is the second, independent
+# fail-closed layer (the asoundrc active lane is the first); never emit the wide
+# env against a config that does not fit the cap.
 active_graph_status() {
-    local expected_channels="$1"
+    local cap_channels="$1"
     if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
         printf 'python_unavailable'
         return 1
     fi
     JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE="$ACTIVE_SPEAKER_STARTUP_LOAD_STATE" \
     JASPER_CAMILLA_STATEFILE="$CAMILLA_STATEFILE" \
-    JASPER_ACTIVE_GRAPH_EXPECTED_CHANNELS="$expected_channels" \
+    JASPER_ACTIVE_GRAPH_CAP_CHANNELS="$cap_channels" \
     "$OUTPUT_HARDWARE_PYTHON" - <<'PY'
 import json
 import os
@@ -481,9 +487,9 @@ from pathlib import Path
 startup_state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE"])
 camilla_statefile = Path(os.environ["JASPER_CAMILLA_STATEFILE"])
 try:
-    expected_channels = int(os.environ["JASPER_ACTIVE_GRAPH_EXPECTED_CHANNELS"])
+    cap_channels = int(os.environ["JASPER_ACTIVE_GRAPH_CAP_CHANNELS"])
 except (KeyError, ValueError):
-    print("active_graph_expected_channels_invalid")
+    print("active_graph_cap_channels_invalid")
     raise SystemExit(1)
 
 try:
@@ -537,30 +543,35 @@ if "outputd_active_content_playback" not in active_text:
     print("active_outputd_lane_missing")
     raise SystemExit(1)
 
-# Width-aware shape check (replaces the old `channels: 4` grep). The active
-# CamillaDSP config's playback width must equal the transport width. The
-# capture side is always stereo (channels: 2) and active widths are >= 4, so
-# the widest `channels:` value is the playback/active width on both the real
-# emitter shape (capture + playback blocks) and the device-level shape.
+# The active config's playback width is the number of physical outputs the
+# speaker actually drives. The capture side is always stereo (channels: 2) and
+# the playback block carries the driven-output count, so the widest `channels:`
+# value is the playback/active width on both the real emitter shape (capture +
+# playback blocks) and the device-level shape. DRIVE WHAT WE USE: accept any
+# valid active width within the DAC's cap (2..cap) and report it, rather than
+# forcing the config to fill the DAC's full channel count. A config wider than
+# the cap (more outputs than the DAC has) fails closed.
 channel_values = [
     int(match) for match in re.findall(r"(?m)^\s*channels:\s*(\d+)\s*$", active_text)
 ]
 got = max(channel_values) if channel_values else 0
-if got != expected_channels:
-    print(f"active_graph_width_mismatch expected={expected_channels} got={got}")
+if got < 2 or got > cap_channels:
+    print(f"active_graph_width_out_of_range got={got} cap={cap_channels}")
     raise SystemExit(1)
 
-print("ready")
+# Stdout payload on success is the ACTUAL driven width; the reconciler emits it
+# as JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at exactly W.
+print(got)
 PY
 }
 
-# Resolve a recognized single DAC's active-lane transport width via the Python
-# DacProfile registry (active_outputd_lane_channels_for). Prints the width
-# (e.g. 8 for a HiFiBerry DAC8x) or nothing for a DAC with no active lane
-# (Apple single dongle) or when Python is unavailable — both of which keep the
-# DAC on the ordinary stereo single path. This is the SINGLE source of the
-# active width; the asoundrc render lib mirrors it for the content lane and is
-# drift-guarded against this registry.
+# Resolve a recognized single DAC's active-lane channel CAP via the Python
+# DacProfile registry (active_outputd_lane_channels_for). Prints the cap
+# (e.g. 8 for a HiFiBerry DAC8x — the most active outputs outputd will drive on
+# this DAC) or nothing for a DAC with no active lane (Apple single dongle) or
+# when Python is unavailable — both of which keep the DAC on the ordinary
+# stereo single path. The cap is the upper bound; the ACTUAL driven width is the
+# loaded config's playback width, validated against this cap by the gate.
 active_lane_channels_for_dac() {
     local dac_id="$1"
     if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
@@ -668,7 +679,7 @@ start_outputd_if_recognized() {
 
 apply_audio_runtime_env() {
     local changed=0
-    local active_channels="" active_mode=0 graph_status=""
+    local active_channels="" active_mode=0 graph_status="" active_lane_cap=""
     if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "dual_apple" && changed=1
@@ -683,17 +694,23 @@ apply_audio_runtime_env() {
         log_event "runtime_env" \
             "mode=dual_apple outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
-        # A coherent single DAC runs the active wide lane ONLY when it declares
-        # one (DacProfile.active_outputd_lane_channels) AND an active-speaker
-        # baseline of that exact width is the loaded CamillaDSP config. The
-        # width gate is fail-closed: without a confirmed active graph the DAC
-        # stays ordinary stereo (byte-identical to the pre-active path), so a
-        # recognized DAC8x is a normal stereo speaker until commissioning loads
-        # its active baseline.
-        active_channels="$(active_lane_channels_for_dac "$OUTPUT_DAC_ID")"
-        if [[ -n "$active_channels" ]]; then
-            if graph_status="$(active_graph_status "$active_channels")"; then
+        # A coherent single DAC runs the active lane ONLY when it declares one
+        # (DacProfile.active_outputd_lane_channels = the cap) AND an
+        # active-speaker baseline whose playback width fits within that cap is
+        # the loaded CamillaDSP config. We DRIVE WHAT WE USE: the gate returns
+        # the config's ACTUAL driven width W (2..cap), and we emit that as
+        # JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at exactly W —
+        # a DAC8x running a 2-way drives 2 outputs, not 8. Fail-closed: without
+        # a confirmed in-cap active graph the DAC stays ordinary stereo
+        # (byte-identical to the pre-active path), so a recognized DAC8x is a
+        # normal stereo speaker until commissioning loads its active baseline.
+        active_lane_cap="$(active_lane_channels_for_dac "$OUTPUT_DAC_ID")"
+        if [[ -n "$active_lane_cap" ]]; then
+            if active_channels="$(active_graph_status "$active_lane_cap")"; then
                 active_mode=1
+            else
+                graph_status="$active_channels"
+                active_channels=""
             fi
         fi
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
@@ -705,7 +722,7 @@ apply_audio_runtime_env() {
             set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_active_content_capture" && changed=1
             set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "$active_channels" && changed=1
             log_event "runtime_env" \
-                "mode=single_alsa_active active_channels=${active_channels} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+                "mode=single_alsa_active active_channels=${active_channels} active_lane_cap=${active_lane_cap} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
         else
             set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
             # Clear the width knob so outputd defaults to stereo; a stale active
