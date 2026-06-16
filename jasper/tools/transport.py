@@ -319,7 +319,7 @@ def make_transport_tools(renderer, router):
     """Voice-side tool wrappers around the transport dispatcher."""
     _dispatch = make_transport_dispatcher(renderer, router)
 
-    @tool()
+    @tool(labels=("music", "playback", "transport"))
     async def next_track() -> dict:
         """Skip to the next song.
 
@@ -328,7 +328,7 @@ def make_transport_tools(renderer, router):
         """
         return await _dispatch("next")
 
-    @tool()
+    @tool(labels=("music", "playback", "transport"))
     async def previous_track() -> dict:
         """Go back to the previous song.
 
@@ -337,7 +337,7 @@ def make_transport_tools(renderer, router):
         """
         return await _dispatch("previous")
 
-    @tool()
+    @tool(labels=("music", "playback", "transport"))
     async def pause() -> dict:
         """Pause / stop the currently playing music. Use for 'pause',
         'stop', or any 'make it stop' phrasing.
@@ -347,7 +347,7 @@ def make_transport_tools(renderer, router):
         """
         return await _dispatch("pause")
 
-    @tool()
+    @tool(labels=("music", "playback", "transport"))
     async def resume() -> dict:
         """Resume music that was paused. Only call on bare 'play' /
         'resume' / 'keep playing' — do NOT call to start a new song
@@ -358,7 +358,7 @@ def make_transport_tools(renderer, router):
         """
         return await _dispatch("play")
 
-    @tool()
+    @tool(labels=("music", "playback", "transport"))
     async def get_now_playing() -> dict:
         """Return metadata about the currently playing track (title,
         artist, album, source).

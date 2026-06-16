@@ -26,7 +26,7 @@ def make_time_tools():
     `jasper.voice_daemon._build_tool_registry` looks uniform: every
     tool module has a `make_*_tools(...)` entry point."""
 
-    @tool()
+    @tool(labels=("time", "utility"))
     async def get_current_time() -> dict:
         """Return the current local date, time, and day-of-week.
 

@@ -9,7 +9,7 @@ def make_weather_tools(weather):
     high/low, and rain probability — Gemini reads what it needs based on
     the user's question."""
 
-    @tool()
+    @tool(labels=("weather", "utility"))
     async def get_weather(location: str = "") -> dict:
         """Return current conditions, today/tomorrow forecasts,
         hourly slots for the next 7 days, daily summaries for the

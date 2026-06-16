@@ -1,9 +1,9 @@
 // render.js — pure tool -> HTML-string builders for the /tools/ catalog.
 //
 // Kept side-effect-free: main.js owns the fetch / filter / toggle wiring and
-// the event delegation; this module only turns a catalog entry into the card
-// markup. Every tool field (name, description, labels, setup_url) is treated
-// as UNTRUSTED and run through escapeHtml before it lands in innerHTML — the
+// the event delegation; this module only turns catalog entries into cards,
+// groups, and detail views. Every tool field is treated as UNTRUSTED and run
+// through escapeHtml or URL validation before it lands in innerHTML — the
 // catalog is the marketplace's future home, and good hygiene + the conventions
 // test require it for first-party text too.
 //
@@ -13,6 +13,16 @@
 // reads — never an inline onclick with an interpolated name.
 
 import { escapeHtml } from "/assets/shared/js/escape.js";
+
+const CATEGORY_ORDER = [
+  "Music",
+  "Transit",
+  "Smart Home",
+  "Productivity",
+  "Utilities",
+  "System",
+  "Other",
+];
 
 // A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
 // "/google/"). Accept ONLY an absolute path whose first char is "/" and whose
@@ -26,6 +36,12 @@ import { escapeHtml } from "/assets/shared/js/escape.js";
 // links, so the href is a real boundary.
 function safeSetupUrl(u) {
   return typeof u === "string" && /^\/(?![/\\])/.test(u) ? u : null;
+}
+
+function safeDetailUrl(name) {
+  return typeof name === "string" && name
+    ? "/tools/tool/" + encodeURIComponent(name) + "/"
+    : null;
 }
 
 // status -> { label, --tone } for the .badge pill. needs_setup uses the idle
@@ -50,6 +66,54 @@ function labelChips(labels) {
     .map((l) => '<span class="tool-label">' + escapeHtml(l) + "</span>")
     .join("");
   return '<div class="tool-labels">' + chips + "</div>";
+}
+
+function categoryOf(tool) {
+  return typeof tool.category === "string" && tool.category.trim()
+    ? tool.category.trim()
+    : "Other";
+}
+
+function packOf(tool) {
+  return tool && typeof tool.pack === "object" && tool.pack !== null
+    ? tool.pack
+    : null;
+}
+
+function summaryOf(tool) {
+  return typeof tool.summary === "string" && tool.summary
+    ? tool.summary
+    : (tool.description || "");
+}
+
+function packKey(pack) {
+  return pack && typeof pack.id === "string" && pack.id
+    ? "pack:" + pack.id
+    : null;
+}
+
+function groupTools(tools) {
+  const categories = new Map();
+  for (const tool of tools) {
+    const category = categoryOf(tool);
+    if (!categories.has(category)) categories.set(category, []);
+    const groups = categories.get(category);
+    const pack = packOf(tool);
+    const key = packKey(pack);
+    let group = key ? groups.find((g) => g.key === key) : null;
+    if (!group) {
+      group = { key: key || "standalone:" + groups.length, pack, tools: [] };
+      groups.push(group);
+    }
+    group.tools.push(tool);
+  }
+  return [...categories.entries()].sort((a, b) => {
+    const ai = CATEGORY_ORDER.indexOf(a[0]);
+    const bi = CATEGORY_ORDER.indexOf(b[0]);
+    const ar = ai === -1 ? CATEGORY_ORDER.length : ai;
+    const br = bi === -1 ? CATEGORY_ORDER.length : bi;
+    return ar - br || a[0].localeCompare(b[0]);
+  });
 }
 
 // The right-hand control. A needs_setup tool can't be enabled usefully (its
@@ -83,18 +147,69 @@ function control(tool) {
 
 // One catalog entry -> card markup.
 export function toolCard(tool) {
+  const detailUrl = safeDetailUrl(tool.name);
+  const name = escapeHtml(tool.name);
+  const nameHtml = detailUrl
+    ? '<a class="tool-name" href="' +
+      escapeHtml(detailUrl) + '">' + name + "</a>"
+    : '<span class="tool-name">' + name + "</span>";
   return (
     '<div class="info-card tool-card">' +
     '<div class="tool-card__head">' +
     '<div class="tool-card__id">' +
-    '<span class="tool-name">' + escapeHtml(tool.name) + "</span>" +
+    nameHtml +
     badge(tool.status) +
     "</div>" +
     control(tool) +
     "</div>" +
-    '<p class="tool-desc">' + escapeHtml(tool.description) + "</p>" +
+    '<p class="tool-desc">' + escapeHtml(summaryOf(tool)) + "</p>" +
     labelChips(tool.labels) +
     "</div>"
+  );
+}
+
+function countLabel(n) {
+  return n === 1 ? "1 tool" : n + " tools";
+}
+
+function packGroup(group) {
+  if (!group.pack) {
+    return group.tools.map(toolCard).join("");
+  }
+  const pack = group.pack;
+  const title = pack.title || pack.id || "Tool pack";
+  const summary = pack.summary || "";
+  const setupHref = safeSetupUrl(pack.setup_url);
+  const setup = setupHref
+    ? '<a class="btn btn--ghost tool-pack__setup" href="' +
+      escapeHtml(setupHref) + '">Set up</a>'
+    : "";
+  return (
+    '<section class="tool-pack">' +
+    '<div class="tool-pack__head">' +
+    "<div>" +
+    '<h3 class="tool-pack__title">' + escapeHtml(title) + "</h3>" +
+    (summary
+      ? '<p class="tool-pack__summary">' + escapeHtml(summary) + "</p>"
+      : "") +
+    "</div>" +
+    '<div class="tool-pack__meta">' +
+    '<span class="tool-count">' +
+    escapeHtml(countLabel(group.tools.length)) + "</span>" +
+    setup +
+    "</div>" +
+    "</div>" +
+    '<div class="tool-pack__tools">' + group.tools.map(toolCard).join("") + "</div>" +
+    "</section>"
+  );
+}
+
+function categorySection(category, groups) {
+  return (
+    '<section class="tool-category">' +
+    '<h2 class="tool-category__title">' + escapeHtml(category) + "</h2>" +
+    groups.map(packGroup).join("") +
+    "</section>"
   );
 }
 
@@ -112,5 +227,50 @@ export function toolList(tools, { unavailable } = {}) {
   if (!tools.length) {
     return '<div class="info-card tool-empty"><p>No tools match.</p></div>';
   }
-  return tools.map(toolCard).join("");
+  return groupTools(tools)
+    .map(([category, groups]) => categorySection(category, groups))
+    .join("");
+}
+
+export function toolDetail(tool) {
+  if (!tool) {
+    return (
+      '<div class="info-card tool-empty">' +
+      '<p>Tool not found. <a href="/tools/">Back to tools</a>.</p>' +
+      "</div>"
+    );
+  }
+  const pack = packOf(tool);
+  const setupHref = safeSetupUrl(tool.setup_url) ||
+    safeSetupUrl(pack && pack.setup_url);
+  const setup = setupHref
+    ? '<a class="btn" href="' + escapeHtml(setupHref) + '">Set up</a>'
+    : "";
+  const providers = Array.isArray(tool.providers) && tool.providers.length
+    ? tool.providers.join(", ")
+    : "All voice providers";
+  const packRow = pack
+    ? '<div><dt>Pack</dt><dd>' +
+      escapeHtml(pack.title || pack.id) + "</dd></div>"
+    : "";
+  return (
+    '<article class="info-card tool-detail">' +
+    '<div class="tool-detail__head">' +
+    "<div>" +
+    '<a class="tool-back" href="/tools/">Tools</a>' +
+    '<h2 class="tool-detail__title">' + escapeHtml(tool.name) + "</h2>" +
+    "</div>" +
+    '<div class="tool-detail__actions">' + badge(tool.status) + setup + "</div>" +
+    "</div>" +
+    '<dl class="deflist tool-detail__meta">' +
+    '<div><dt>Category</dt><dd>' + escapeHtml(categoryOf(tool)) + "</dd></div>" +
+    packRow +
+    '<div><dt>Providers</dt><dd>' + escapeHtml(providers) + "</dd></div>" +
+    "</dl>" +
+    labelChips(tool.labels) +
+    '<div class="tool-detail__description">' +
+    escapeHtml(tool.details || tool.description || tool.summary || "") +
+    "</div>" +
+    "</article>"
+  );
 }

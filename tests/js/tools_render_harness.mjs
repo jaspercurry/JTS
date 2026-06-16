@@ -22,8 +22,8 @@ const stripImports = (s) => s.replace(/^\s*import\s.*$/gm, "");
 
 const escapeSrc = stripExports(readFileSync(process.argv[2], "utf8"));
 const renderSrc = stripExports(stripImports(readFileSync(process.argv[3], "utf8")));
-const { toolCard, toolList } = new Function(
-  escapeSrc + "\n" + renderSrc + "\nreturn { toolCard, toolList };",
+const { toolCard, toolDetail, toolList } = new Function(
+  escapeSrc + "\n" + renderSrc + "\nreturn { toolCard, toolDetail, toolList };",
 )();
 
 // Every field a malicious/compromised tool could control, with a distinct
@@ -31,7 +31,16 @@ const { toolCard, toolList } = new Function(
 const evil = {
   name: '<script>alert("name")</script>',
   description: '<img src=x onerror=alert("desc")>',
+  summary: '<img src=x onerror=alert("summary")>',
+  details: '<svg onload=alert("details")>',
   labels: ['<svg onload=alert("label")>'],
+  category: '<script>alert("category")</script>',
+  pack: {
+    id: "evil-pack",
+    title: '<img src=x onerror=alert("pack-title")>',
+    summary: '<svg onload=alert("pack-summary")>',
+    setup_url: 'javascript:alert("pack-url")',
+  },
   status: "active", // exercises the data-tool attribute path
 };
 // needs_setup tools whose setup_url is dangerous in an <a href>. escapeHtml
@@ -59,7 +68,8 @@ const noUrl = { name: "no_setup_tool", status: "needs_setup" };
 const html =
   toolCard(evil) +
   toolList([evil, evilScheme, evilProtoRel, evilBackslash, safeUrl, noUrl]) +
-  toolCard(noUrl);
+  toolCard(noUrl) +
+  toolDetail(evil);
 
 // Pull every href the card markup produced, to assert none point off-origin.
 const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);

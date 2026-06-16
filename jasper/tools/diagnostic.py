@@ -42,7 +42,7 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
     if wake_event_store is None:
         return []
 
-    @tool()
+    @tool(labels=("system", "diagnostic"))
     async def flag_recent_issue(reason: str) -> dict:
         """Mark the previous wake-event interaction as problematic
         for later offline review.

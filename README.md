@@ -210,13 +210,15 @@ when the configured AEC mic is present with 6-channel firmware — see
   (split between classic bikes and e-bikes, with open-dock counts;
   all configured via the `/transit/` wizard), current wall-clock time
 - ✅ Tool catalog wizard at `http://jts.local/tools/` — browse the
-  first-party voice tools, see each one's status (active / off /
-  needs-setup with a link to its setup page), and turn any of them
+  first-party voice tools grouped by category and optional pack, open a
+  generated detail page for each tool, see each one's status (active /
+  off / needs-setup with a link to its setup page), and turn any of them
   off or back on. Reads the catalog `jasper-voice` writes to
   `/run/jasper/tools.json`; the disabled-set persists to
   `/var/lib/jasper/tool_state.env` (fail-safe: a missing or malformed
-  file = nothing disabled). Saving a toggle restarts `jasper-voice`,
-  which re-filters the registry and re-writes the catalog
+  file = nothing disabled). Toggles stage instantly; Apply restarts
+  `jasper-voice` once, which re-filters the registry and re-writes the
+  catalog
 - ✅ Multi-user Spotify routing (each household member's account,
   routed by AirPlay title-match)
 - ✅ Transit setup wizard at `http://jts.local/transit/` — type your
@@ -496,7 +498,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker in ~30 min. Carries the chosen hostname through every step. |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
-| [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet and the built-in `/tools/` on/off catalog wizard |
+| [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet, optional display packs/categories, generated tool detail pages, and the built-in `/tools/` on/off catalog wizard |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, hotspot register, software-only dev-path notes, and deliberate deferrals |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |

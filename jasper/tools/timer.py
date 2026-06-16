@@ -74,7 +74,7 @@ def make_timer_tools(scheduler: "TimerScheduler"):
     `scheduler.set_pre_render(...)` on the daemon side); this
     module doesn't need a cue-manager reference."""
 
-    @tool()
+    @tool(labels=("productivity", "timer"))
     async def set_timer(seconds: int, label: str = "") -> dict:
         """Schedule a timer that announces when it fires.
 
@@ -116,7 +116,7 @@ def make_timer_tools(scheduler: "TimerScheduler"):
             **_serialise(timer),
         }
 
-    @tool()
+    @tool(labels=("productivity", "timer"))
     async def list_timers() -> dict:
         """Return all active timers with remaining time.
 
@@ -136,7 +136,7 @@ def make_timer_tools(scheduler: "TimerScheduler"):
             "timers": [_serialise(t) for t in timers],
         }
 
-    @tool()
+    @tool(labels=("productivity", "timer"))
     async def cancel_timer(timer: str) -> dict:
         """Cancel a timer by label or id.
 
@@ -189,7 +189,7 @@ def make_timer_tools(scheduler: "TimerScheduler"):
             ),
         }
 
-    @tool()
+    @tool(labels=("productivity", "timer"))
     async def update_timer(timer: str, seconds: int) -> dict:
         """Change an existing timer's duration in one atomic step.
 
