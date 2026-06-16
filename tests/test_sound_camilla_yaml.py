@@ -177,15 +177,18 @@ def test_room_peqs_right_bakes_per_seat_room_segment_with_shared_tail():
         output_trim_db=4.0,
     )
     left, right = _pipeline_chains(yaml)
-    # Per-seat ROOM segments differ…
-    assert left.startswith("    names: [room_peq_1, sound_preamp,")
+    # Per-seat ROOM segments differ…  The right seat carries a +1 dB boost,
+    # so a shared -1 dB room_headroom rides the tail (audio-safety; see
+    # test_room_boost_emits_headroom_preamp).
+    assert left.startswith("    names: [room_peq_1, room_headroom, sound_preamp,")
     assert right.startswith(
-        "    names: [room_peq_r1, room_peq_r2, sound_preamp,"
+        "    names: [room_peq_r1, room_peq_r2, room_headroom, sound_preamp,"
     )
     # …the preference tail (preamp + curve/EQ + flat) is IDENTICAL…
     assert left.split("sound_preamp", 1)[1] == right.split("sound_preamp", 1)[1]
     # …and shared filters are DEFINED once (referenced by both chains).
     assert yaml.count("sound_preamp:") == 1
+    assert yaml.count("room_headroom:") == 1
     assert "room_peq_r1:" in yaml and "room_peq_r2:" in yaml
 
 
@@ -204,6 +207,61 @@ def test_room_peqs_right_empty_bakes_flat_right_room_segment():
     assert "    names: [room_peq_1, flat]" in yaml
     assert "    names: [flat]" in yaml
     assert "room_peq_r" not in yaml
+
+
+# --- Audio-safety: room-correction boost headroom ---------------------------
+# Room-correction BOOSTS (the assertive strategy, cuts_only=False) raise
+# specific bands with no compensating attenuation, so a hot note in a boosted
+# band can clip above full scale. The emitter pulls the whole signal down by
+# the worst-case additive room boost. Cuts-only correction has zero boost, so
+# the trim emits nothing and the config stays byte-identical.
+def test_cuts_only_room_correction_emits_no_headroom():
+    profile = SoundProfile(enabled=False, curve_id="bk", simple_eq=SimpleEq())
+    yaml = emit_sound_config(
+        profile,
+        room_peqs=[
+            PeqFilter(freq=60.0, q=3.0, gain=-6.0),
+            PeqFilter(freq=120.0, q=4.0, gain=-3.0),
+        ],
+    )
+    assert "room_headroom" not in yaml
+    assert "    names: [room_peq_1, room_peq_2, flat]" in yaml
+
+
+def test_room_boost_emits_headroom_preamp_so_net_gain_stays_at_unity():
+    profile = SoundProfile(enabled=False, curve_id="bk", simple_eq=SimpleEq())
+    yaml = emit_sound_config(
+        profile,
+        room_peqs=[
+            PeqFilter(freq=45.0, q=5.0, gain=2.0),   # boost
+            PeqFilter(freq=80.0, q=6.0, gain=-4.0),  # cut (ignored for headroom)
+            PeqFilter(freq=120.0, q=4.0, gain=1.0),  # boost
+        ],
+    )
+    # Worst-case additive boost is +3 dB (2 + 1); the headroom preamp is -3 dB.
+    assert "room_headroom:" in yaml
+    assert "gain: -3.0000" in yaml
+    # …and it rides the chain right after the room PEQs.
+    assert (
+        "    names: [room_peq_1, room_peq_2, room_peq_3, room_headroom, flat]"
+        in yaml
+    )
+
+
+def test_room_headroom_trims_by_the_louder_channel_for_leader_bake():
+    """Asymmetric per-seat correction: the shared headroom must protect the
+    louder channel so neither can clip."""
+    profile = SoundProfile(enabled=False, curve_id="bk", simple_eq=SimpleEq())
+    yaml = emit_sound_config(
+        profile,
+        room_peqs=[PeqFilter(freq=50.0, q=4.0, gain=1.0)],        # +1 left
+        room_peqs_right=[PeqFilter(freq=90.0, q=4.0, gain=3.0)],  # +3 right (louder)
+    )
+    # Trim by the louder (+3 dB) channel, defined once and shared by both chains.
+    assert yaml.count("room_headroom:") == 1
+    assert "gain: -3.0000" in yaml
+    left, right = _pipeline_chains(yaml)
+    assert "room_headroom" in left and "room_headroom" in right
 
 
 def test_extract_room_peqs_skips_right_channel_filters_and_warns(caplog):
