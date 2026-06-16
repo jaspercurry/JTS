@@ -354,6 +354,14 @@
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
   .active-speaker-actions--targets { margin-top: -4px; }
+  .active-speaker-actions--driver-test {
+    display: grid;
+    grid-template-columns: minmax(13rem, 1fr) minmax(9rem, 0.72fr) minmax(7rem, 0.56fr);
+    align-items: stretch;
+  }
+  .active-speaker-actions--driver-test .btn {
+    width: 100%;
+  }
   .active-speaker-progress,
   .active-speaker-validation {
     display: grid;
@@ -395,14 +403,14 @@
     padding-top: 10px;
     border-top: 1px solid var(--line);
   }
-  .active-speaker-level__head,
-  .active-speaker-level__meter { gap: 10px; align-items: center; }
+  .active-speaker-level__head { gap: 10px; align-items: center; }
   .active-speaker-level__readout {
     min-width: 5.5rem; text-align: right;
     font-size: 13px; font-weight: 700; color: var(--foreground);
     font-variant-numeric: tabular-nums;
   }
   .active-speaker-level__bar {
+    position: relative;
     height: 12px; overflow: hidden;
     border-radius: 999px; border: 1px solid var(--line);
     background: color-mix(in oklch, var(--foreground) 5%, transparent);
@@ -416,8 +424,12 @@
       color-mix(in oklch, var(--status-warn) 58%, white)
     );
   }
-  .active-speaker-level__target {
-    margin-top: 2px;
+  .active-speaker-level__bar--running span {
+    animation: active-speaker-pulse 900ms ease-in-out infinite alternate;
+  }
+  @keyframes active-speaker-pulse {
+    from { opacity: 0.56; }
+    to { opacity: 1; }
   }
   .active-speaker-meter {
     display: grid; grid-template-columns: 1fr 1fr 1fr; overflow: hidden;
@@ -810,11 +822,13 @@
       grid-template-columns: minmax(0, 1fr);
       align-items: stretch;
     }
-    .active-speaker-level__head,
-    .active-speaker-level__meter {
+    .active-speaker-level__head {
       align-items: stretch; flex-direction: column;
     }
     .active-speaker-level__readout { text-align: left; }
+    .active-speaker-actions--driver-test {
+      grid-template-columns: minmax(0, 1fr);
+    }
     .active-speaker-mic-observation__fields {
       grid-template-columns: minmax(0, 1fr);
       align-items: stretch;

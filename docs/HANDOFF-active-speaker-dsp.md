@@ -28,7 +28,17 @@
 > physical output exists, the UI adds one `subwoofer` group and records it
 > in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
 > the output topology JSON and runs backend validation; it does not load
-> CamillaDSP or emit sound. The UI organizes this work as collapsible task
+> CamillaDSP or emit sound. The saved topology may describe more physical DAC
+> outputs than the current protected active-speaker runtime can test/apply:
+> `/sound/output-topology` also publishes
+> `jts_active_speaker_playback_route_capability`, which separates physical DAC
+> output count from active outputd route width. As of 2026-06-15, the product
+> outputd route is a daemon-owned lane, not an audible test-tone writer. The
+> topology can still prepare bounded no-audio diagnostic WAV artifacts for
+> mono active 2-way, mono active 3-way, and stereo active 2-way layouts;
+> stereo active 3-way and active subwoofer add-ons remain modeled but are
+> disabled/blocked until outputd, staging, baseline compilation, and tests are
+> widened together. The UI organizes this work as collapsible task
 > cards — choose layout, add driver info, confirm outputs, measure drivers,
 > validate the summed crossover, then save/apply the active profile. It
 > defaults to the first unfinished task card,
@@ -54,16 +64,22 @@
 > current environment report, but the returned plan still says
 > `would_play: false` and cannot emit sound.
 > `jasper.active_speaker.playback` now adds the first playback seam:
-> `/sound/active-speaker/play-tone` validates the current plan and
-> armed safe session, then renders a bounded multi-channel WAV artifact
-> through the default backend. It sets `audio_emitted: false`, does not
-> open ALSA, does not reload CamillaDSP, and does not touch live volume
-> unless the operator explicitly enables the lab `aplay` backend with
+> `/sound/active-speaker/play-tone` validates the current plan, then renders a
+> bounded multi-channel WAV artifact through the default backend without
+> requiring an armed safe session. It sets `audio_emitted: false`, does not
+> open ALSA, does not reload CamillaDSP, and does not touch live volume.
+> Audible tests are explicit-only: lab builds must set
 > `JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
 > `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
-> `JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`. Even then, the audible path is
-> short, clamped, selected-topology-gated, protected-startup-load-gated,
-> driver-protection-gated, and Stop/session-gated. The shared
+> `JASPER_ACTIVE_SPEAKER_TEST_PCM` to a dedicated test PCM that is not a
+> daemon-owned CamillaDSP/outputd lane. `outputd_active_content_playback`,
+> `outputd_content_capture`, `outputd_active_content_capture`, `outputd_dac`,
+> and `jasper_out` are forbidden as test writers. Even then, audible tests are
+> short, clamped, selected-topology-gated, driver-protection-gated, and
+> Stop/session-gated. Outputd-lane tests remain protected-startup-load-gated;
+> coherent single-DAC diagnostic tests instead pause outputd, play one bounded
+> direct-DAC artifact, and restart outputd before the result can be confirmed.
+> The shared
 > `driver_protection_auto_level_v1` policy is recorded in readiness reports,
 > tone plans, playback results, and generated artifact metadata. Woofer, mid,
 > and subwoofer targets use the normal commissioning envelope. Tweeter/
@@ -72,7 +88,7 @@
 > high-pass, and the driver-specific auto-level cap is respected. The playback
 > backend recomputes the protection envelope from code-owned policy and refuses
 > missing high-pass evidence or plan-provided cap/allow overrides. The backend
-> also enforces its own artifact envelope (48 kHz max, 16 channels max,
+> also enforces its own artifact envelope (48 kHz max, 64 channels max,
 > 100-500 ms, -80..-45 dBFS) and keeps a small rolling set of generated
 > artifacts so `/var/lib/jasper` cannot grow without bound during repeated
 > checks. The safe-session state now owns a quiet-start lifecycle:
@@ -84,9 +100,11 @@
 > `/sound/active-speaker/playback-readiness` diagnostic for one saved topology
 > target, but the `/sound/` UI no longer makes it a separate user step. The
 > product flow is deliberately simpler: choose one confirmed driver, let JTS
-> stage/check/load/arm the safe path internally, start from the quietest test
-> level, preview the signal before any audible test, confirm the selected driver
-> was heard, then raise toward audible in bounded steps. The sound-producing
+> prepare an artifact preview on default installs without staging or loading
+> CamillaDSP, and only stage/check/load/arm the safe path internally when the
+> explicit lab audio backend is enabled. Audible tests start from the quietest
+> test level, preview the signal first, confirm the selected driver was heard,
+> then raise toward audible in bounded steps. The sound-producing
 > `/sound/active-speaker/play-tone` route remains the boundary that revalidates
 > the selected topology target, armed safe session, protected startup-load state,
 > driver protection policy, calibration bounds, and explicit lab audio backend.
@@ -168,7 +186,7 @@
 > external research as measurement truth.
 > `jasper.active_speaker.baseline_profile` and
 > `/sound/active-speaker/baseline-profile` now compile that saved topology,
-> design draft, fresh/ready crossover preview, driver measurements, and summed
+> design draft, fresh/ready crossover preview, driver-test evidence, and summed
 > validation into a durable active-speaker baseline candidate at
 > `/var/lib/camilladsp/configs/active_speaker_baseline.yml`. Compilation is
 > explicit and no-audio: it writes YAML plus
@@ -185,9 +203,12 @@
 > observation. `/sound/active-speaker/baseline-profile/apply`
 > is the first user-facing "this is now your active speaker profile" step, but
 > it is currently enabled only when the generated baseline targets an
-> outputd-owned active lane. Single-device direct-DAC baselines can be compiled
-> and inspected, but apply is blocked until outputd owns that DAC handoff. Ready
-> candidates apply through the shared `dsp_apply` transaction and record applied
+> outputd-owned active lane. Today that product handoff is declared only by the
+> measured dual-Apple USB-C 4-channel profile. HiFiBerry DAC8x and single Apple
+> USB-C topologies can use a bounded direct-DAC diagnostic route for short
+> driver tests, but durable baseline apply is still blocked until outputd owns a
+> matching active handoff for that hardware. Ready candidates apply through the
+> shared `dsp_apply` transaction and record applied
 > state. Optional subwoofer groups and multi-group
 > group-specific delay correction still fail closed or warn until later slices
 > add a verified compiler path for them.
@@ -219,7 +240,7 @@
 > records either physical compression-driver protection evidence or a
 > software-guarded bring-up request. The normal UI path does not expose this as
 > a separate "protection" choice; after the operator confirms a high-frequency
-> output and chooses that named driver in the Measure drivers card, the page
+> output and chooses that named driver in the Test each driver card, the page
 > records the software-guard request internally before checking readiness. The
 > software-guard state is
 > deliberately still a topology/playback blocker; it only lets
@@ -227,7 +248,13 @@
 > CamillaDSP candidate plus
 > `/var/lib/jasper/active_speaker_staged_config.json` evidence. That route
 > refuses missing guard intent, non-contiguous output assignments, and missing
-> explicit hardware playback device evidence. For software-guarded bring-up it
+> active playback route evidence. Registered DAC profiles that support the
+> active outputd lane resolve staging to that lane; staging does not silently
+> default to `hw:<card>,0` on outputd-owned hardware. Route capacity is checked
+> separately from physical DAC output count, so layouts that require an
+> assigned active output beyond the current active outputd lane fail closed
+> before protected startup YAML or baseline YAML can be consumed for playback.
+> For software-guarded bring-up it
 > also records evidence that the generated graph contains startup mute,
 > protective high-pass, startup headroom, limiter, and no-load/no-playback
 > guarantees. It does not load the config, reload CamillaDSP, emit sound, or
@@ -468,8 +495,8 @@ USB controller/bus and exactly four physical outputs. That dual path is
 one-DAC-per-speaker only and requires one `jasper-outputd` process to
 open both hardware PCMs. The topology layer still has no playback
 authority; it only lets downstream staging choose the active outputd
-four-channel lane. Generic USB DAC aggregation through ALSA
-`multi`/`dmix`/`plug` or CamillaDSP multi-device playback remains
+transport lane declared by the DAC profile. Generic USB DAC aggregation through
+ALSA `multi`/`dmix`/`plug` or CamillaDSP multi-device playback remains
 unsupported.
 
 ## Hard Safety Rules
@@ -830,14 +857,16 @@ clamps to 100-500 ms, and level clamps to -80..-45 dBFS. It keeps the newest
 `JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_RETENTION`, capped at 100) and prunes
 older generated `tone_*.wav` / `tone_*.json` pairs after each successful
 render. `/sound/active-speaker/play-tone` returns the plan, playback result,
-and updated safe-session summary. The optional lab `aplay` backend can emit
-audio only when `JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
-`JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
-`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>` are all set, the saved topology target
-passes readiness, and the target is not a tweeter/compression driver. This is
-useful for verifying target selection, channel count, level clamp, artifact
-schema, logging, retention, and Stop semantics before richer measurement
-automation exists.
+and updated safe-session summary. Audible `aplay` emission is not derived from
+the saved topology; it requires explicit lab env pointing at a dedicated
+non-daemon test PCM. The daemon-owned outputd/CamillaDSP lanes are rejected as
+test writers because a running graph may already hold them and because they
+are sinks/readers in the product route. Audible emission still requires
+saved-target readiness, loaded protected startup DSP, same-target floor
+confirmation before raised levels, and driver-protection policy. This is
+useful for verifying target selection,
+channel count, level clamp, artifact schema, logging, retention, and Stop
+semantics before richer measurement automation exists.
 
 `jasper.active_speaker.calibration_level` owns the commissioning test-signal
 level contract. It deliberately separates test volume from normal system
@@ -1110,4 +1139,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-14
+Last verified: 2026-06-16

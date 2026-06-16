@@ -12,6 +12,7 @@ import pytest
 from jasper.active_speaker import ActiveSpeakerPreset, build_safe_tone_plan
 from jasper.active_speaker.playback import (
     AplayTonePlaybackBackend,
+    DirectDacTonePlaybackBackend,
     NullTonePlaybackBackend,
     WavArtifactTonePlaybackBackend,
     start_tone_playback,
@@ -150,6 +151,31 @@ def _floor_confirmed_session(plan: dict) -> dict:
     }
 
 
+def _floor_silent_session(plan: dict) -> dict:
+    target = plan["target"]
+    target_sig = {
+        "speaker_group_id": target.get("speaker_group_id"),
+        "role": target.get("driver_role") or target.get("role"),
+        "output_index": target.get("output_index"),
+    }
+    return {
+        "status": "armed",
+        "session_id": "session-test",
+        "quiet_start": {
+            "policy_version": "floor_first_per_target_v1",
+            "status": "floor_required",
+            "floor_audio_confirmed": False,
+            "current_target": target_sig,
+            "last_operator_result": {
+                "outcome": "silent",
+                "accepted": False,
+                "target": target_sig,
+                "playback_id": "floor-1",
+            },
+        },
+    }
+
+
 def test_wav_artifact_backend_renders_only_target_output_channel(
     tmp_path: Path,
 ) -> None:
@@ -197,6 +223,32 @@ def test_wav_artifact_backend_renders_only_target_output_channel(
         "safe_session_id": "session-test",
     }
     assert metadata["wav"]["channel_count"] == 2
+
+
+def test_wav_artifact_backend_honors_declared_active_lane_width(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    plan["channel_map"]["output_count"] = 4
+    backend = WavArtifactTonePlaybackBackend(artifact_dir=tmp_path)
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=backend,
+        now=lambda: 1000,
+    )
+
+    artifact = result["artifact"]
+    assert artifact["channel_count"] == 4
+    with wave.open(artifact["wav_path"], "rb") as wav:
+        assert wav.getnchannels() == 4
+        raw = wav.readframes(wav.getnframes())
+    samples = [item[0] for item in struct.iter_unpack("<h", raw)]
+    assert max(abs(sample) for sample in samples[0::4]) == 0
+    assert max(abs(sample) for sample in samples[1::4]) > 0
+    assert max(abs(sample) for sample in samples[2::4]) == 0
+    assert max(abs(sample) for sample in samples[3::4]) == 0
 
 
 def test_wav_artifact_metadata_recomputes_stale_driver_protection(
@@ -340,11 +392,31 @@ def test_start_tone_playback_passes_bounded_tone_to_backend() -> None:
     }
 
 
-def test_start_tone_playback_blocks_without_armed_session(tmp_path: Path) -> None:
+def test_wav_artifact_preview_does_not_require_armed_session(tmp_path: Path) -> None:
     result = start_tone_playback(
         _plan(),
         safe_session={"status": "idle"},
         backend=WavArtifactTonePlaybackBackend(artifact_dir=tmp_path),
+    )
+
+    assert result["status"] == "completed"
+    assert result["audio_emitted"] is False
+    assert result["artifact"]["wav_path"]
+    assert "safe_session_not_armed" not in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
+def test_audio_backend_blocks_without_armed_session(tmp_path: Path) -> None:
+    result = start_tone_playback(
+        _woofer_audio_plan(level_dbfs=-80.0),
+        safe_session={"status": "idle"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
     )
 
     assert result["status"] == "blocked"
@@ -426,13 +498,187 @@ def test_tone_backend_status_allows_dedicated_active_test_pcm() -> None:
     }
 
 
+def test_tone_backend_status_blocks_daemon_owned_topology_default_pcm() -> None:
+    blocked = tone_backend_status(
+        {},
+        default_pcm="outputd_active_content_playback",
+        default_audio_enabled=True,
+    )
+    explicit_artifact = tone_backend_status(
+        {"JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "wav_artifact"},
+        default_pcm="outputd_active_content_playback",
+        default_audio_enabled=True,
+    )
+
+    assert blocked["status"] == "blocked"
+    assert blocked["audio_enabled"] is False
+    assert "test_pcm_forbidden_main_lane" in {
+        issue["code"] for issue in blocked["issues"]
+    }
+    assert explicit_artifact["status"] == "artifact_only"
+    assert explicit_artifact["audio_enabled"] is False
+
+
 def test_aplay_backend_refuses_forbidden_main_lane_pcm(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="protected main lane"):
+    with pytest.raises(ValueError, match="daemon-owned audio lane"):
         AplayTonePlaybackBackend(
             pcm="plug:jasper_out",
             artifact_dir=tmp_path,
             runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
         )
+
+
+def test_aplay_backend_refuses_outputd_active_playback_pcm(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="daemon-owned audio lane"):
+        AplayTonePlaybackBackend(
+            pcm="outputd_active_content_playback",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        )
+
+
+def test_direct_dac_backend_targets_physical_channel_and_restores_outputd(
+    tmp_path: Path,
+) -> None:
+    service_commands: list[tuple[str, ...]] = []
+    aplay_commands: list[tuple[str, ...]] = []
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
+    plan["target"] = {
+        **plan["target"],
+        "driver_role": "tweeter",
+        "role": "tweeter",
+        "output_index": 1,
+    }
+    plan["safety"] = {
+        **(plan.get("safety") if isinstance(plan.get("safety"), dict) else {}),
+        "protected_startup_loaded": False,
+    }
+
+    def command_runner(argv, timeout):
+        service_commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    def aplay_runner(argv, timeout):
+        aplay_commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=DirectDacTonePlaybackBackend(
+            pcm="hw:CARD=sndrpihifiberry,DEV=0",
+            channel_count=8,
+            artifact_dir=tmp_path,
+            runner=aplay_runner,
+            command_runner=command_runner,
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "completed"
+    assert result["audio_emitted"] is True
+    assert result["audio_device"]["output_channel_count"] == 8
+    assert service_commands == [
+        ("systemctl", "is-active", "--quiet", "jasper-outputd.service"),
+        ("systemctl", "stop", "jasper-outputd.service"),
+        ("systemctl", "reset-failed", "jasper-outputd.service"),
+        ("systemctl", "start", "jasper-outputd.service"),
+    ]
+    assert aplay_commands[0][:4] == (
+        "aplay",
+        "-q",
+        "-D",
+        "hw:CARD=sndrpihifiberry,DEV=0",
+    )
+
+    artifact = result["artifact"]
+    with wave.open(artifact["wav_path"], "rb") as wav:
+        assert wav.getnchannels() == 8
+        raw = wav.readframes(wav.getnframes())
+    samples = [item[0] for item in struct.iter_unpack("<h", raw)]
+    assert max(abs(sample) for sample in samples[0::8]) == 0
+    assert max(abs(sample) for sample in samples[1::8]) > 0
+    assert max(abs(sample) for sample in samples[2::8]) == 0
+
+
+def test_direct_dac_backend_restarts_outputd_after_playback_failure(
+    tmp_path: Path,
+) -> None:
+    service_commands: list[tuple[str, ...]] = []
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
+
+    def command_runner(argv, timeout):
+        service_commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    def failing_aplay(argv, timeout):
+        return subprocess.CompletedProcess(argv, 1, stderr="Device or resource busy\n")
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=DirectDacTonePlaybackBackend(
+            pcm="hw:CARD=sndrpihifiberry,DEV=0",
+            channel_count=8,
+            artifact_dir=tmp_path,
+            runner=failing_aplay,
+            command_runner=command_runner,
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "failed"
+    assert result["audio_emitted"] is False
+    assert service_commands == [
+        ("systemctl", "is-active", "--quiet", "jasper-outputd.service"),
+        ("systemctl", "stop", "jasper-outputd.service"),
+        ("systemctl", "reset-failed", "jasper-outputd.service"),
+        ("systemctl", "start", "jasper-outputd.service"),
+    ]
+    assert result["backend_error"]["message"] == (
+        "aplay failed: Device or resource busy"
+    )
+
+
+def test_direct_dac_backend_plays_when_outputd_is_already_inactive(
+    tmp_path: Path,
+) -> None:
+    service_commands: list[tuple[str, ...]] = []
+    aplay_commands: list[tuple[str, ...]] = []
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
+
+    def command_runner(argv, timeout):
+        service_commands.append(tuple(argv))
+        if argv[:3] == ["systemctl", "is-active", "--quiet"]:
+            return subprocess.CompletedProcess(argv, 3)
+        return subprocess.CompletedProcess(argv, 0)
+
+    def aplay_runner(argv, timeout):
+        aplay_commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=DirectDacTonePlaybackBackend(
+            pcm="hw:CARD=sndrpihifiberry,DEV=0",
+            channel_count=8,
+            artifact_dir=tmp_path,
+            runner=aplay_runner,
+            command_runner=command_runner,
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "completed"
+    assert result["audio_emitted"] is True
+    assert service_commands == [
+        ("systemctl", "is-active", "--quiet", "jasper-outputd.service"),
+    ]
+    assert aplay_commands
 
 
 def test_audio_backend_blocks_when_readiness_did_not_authorize_audio(
@@ -528,6 +774,28 @@ def test_audio_backend_allows_raised_level_after_same_target_floor_audio(
     result = start_tone_playback(
         plan,
         safe_session=_floor_confirmed_session(plan),
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "completed"
+    assert result["audio_emitted"] is True
+    assert result["tone"]["level_dbfs"] == -55.0
+
+
+def test_audio_backend_allows_raised_level_after_same_target_silent_floor(
+    tmp_path: Path,
+) -> None:
+    plan = _woofer_audio_plan(level_dbfs=-55.0)
+
+    result = start_tone_playback(
+        plan,
+        safe_session=_floor_silent_session(plan),
         backend=AplayTonePlaybackBackend(
             pcm="hw:Active",
             artifact_dir=tmp_path,
@@ -800,9 +1068,13 @@ def test_start_tone_playback_reports_backend_failures_without_audio() -> None:
         "code": "tone_backend_failed",
         "message": (
             "tone playback backend failed; successful audio emission "
-            "was not confirmed: PermissionError"
+            "was not confirmed: PermissionError: cannot write artifact"
         ),
     }]
+    assert result["backend_error"] == {
+        "type": "PermissionError",
+        "message": "cannot write artifact",
+    }
 
 
 def test_safe_playback_state_records_and_stops_playback_result(

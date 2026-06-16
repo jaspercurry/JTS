@@ -177,6 +177,23 @@ function emptyTopologyPayload() {
   };
 }
 
+function activeRoutePayload(overrides = {}) {
+  return {
+    kind: "jts_active_speaker_playback_route_capability",
+    playback_device: "outputd_active_content_playback",
+    playback_device_source: "outputd_active_lane",
+    transport_channel_count: 4,
+    required_active_output_count: 0,
+    active_group_count: 0,
+    subwoofer_group_count: 0,
+    subwoofer_supported: false,
+    fits_required_outputs: true,
+    ready: true,
+    issues: [],
+    ...overrides,
+  };
+}
+
 function activePayloads() {
   const level = {
     status: "ready",
@@ -377,7 +394,7 @@ async function loadAndSetActiveState(harness) {
 
 function assertQuietTestSurfaceVisible(harness, label) {
   const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Measure drivers"]) {
+  for (const expected of ["Test each driver"]) {
     if (!html.includes(expected)) {
       fail(`${label} should keep the driver-test surface visible`, { expected, html });
     }
@@ -462,18 +479,8 @@ async function testQuietTestSurfaceSurvivesStartupActions() {
   return { quietTestSurfacePreserved: true };
 }
 
-async function testStaleLevelResponseDiscarded() {
-  const levelPosts = [];
-  const levelResponses = [];
-  const fetchHandler = baseFetch({
-    "./active-speaker/calibration-level": (path, options = {}) => {
-      if (!options.method) return Promise.resolve(response(activePayloads()[path]));
-      levelPosts.push(JSON.parse(options.body || "{}"));
-      const d = deferred();
-      levelResponses.push(d);
-      return d.promise;
-    },
-  });
+async function testDriverTestUsesAutomaticRampNotSlider() {
+  const fetchHandler = baseFetch();
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
   harness.dispatchClick({
@@ -488,33 +495,31 @@ async function testStaleLevelResponseDiscarded() {
   await harness.flush();
   await harness.flush();
 
-  harness.dispatchChange({
-    id: "active-speaker-level",
-    value: "-70",
-    getAttribute() { return null; },
-  });
-  harness.dispatchChange({
-    id: "active-speaker-level",
-    value: "-60",
-    getAttribute() { return null; },
-  });
-  await harness.flush();
-  if (levelPosts.length !== 2) fail("Two calibration POSTs should be in flight", { levelPosts });
-
-  levelResponses[1].resolve(response(levelPayload(-60)));
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-  levelResponses[0].resolve(response(levelPayload(-70)));
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
   const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("-60.0 dBFS") || html.includes("-70.0 dBFS")) {
-    fail("Stale calibration-level response should not overwrite the latest level", { html, levelPosts });
+  for (const expected of [
+    "Listen for this driver",
+    "Test progress",
+    "Start quiet test",
+    "JTS starts very quiet and automatically tries a little louder",
+    "Wrong driver",
+    "Stop",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("Driver test should use the automatic ramp surface", { expected, html });
+    }
   }
-  return { levelPosts: levelPosts.map((p) => p.level_dbfs), finalLevel: "-60.0 dBFS" };
+  for (const forbidden of [
+    "Test volume",
+    "active-speaker-level\" min=",
+    "I did not hear anything",
+    "move this a little louder",
+    "Did this driver make the sound?",
+  ]) {
+    if (html.includes(forbidden)) {
+      fail("Driver test should not expose the removed manual slider flow", { forbidden, html });
+    }
+  }
+  return { driverTestUsesAutomaticRampNotSlider: true };
 }
 
 async function testActiveCrossoverFirstStepRender() {
@@ -570,6 +575,47 @@ async function testActiveCrossoverFirstStepRender() {
   excludes("Use quiet-start");
   excludes("Check setup");
   return { activeCrossoverFirstStepRendered: true };
+}
+
+async function testActiveRouteLimitsRenderedTemplates() {
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: emptyTopologyPayload(),
+      active_playback_route: activeRoutePayload(),
+    })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "not_saved",
+      summary: {},
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      status: "not_prepared",
+      summary: {},
+      groups: [],
+      issues: [],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  harness.dispatchClick({
+    "data-act": "output-template-axis",
+    "data-axis": "layout",
+    "data-value": "stereo",
+  });
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("This install can test and apply up to 4 active outputs right now")) {
+    fail("Stereo active 3-way should explain the active route width limit", { html });
+  }
+  if (!html.includes('data-value="active_3way" aria-pressed="false" disabled')) {
+    fail("Stereo active 3-way should be disabled when the active route is four lanes", { html });
+  }
+  return { activeRouteLimitsRenderedTemplates: true };
 }
 
 async function testMeasuredDriversOpenProfileStep() {
@@ -637,11 +683,11 @@ async function testMeasuredDriversOpenProfileStep() {
     "Save active profile",
   ]) {
     if (!html.includes(expected)) {
-      fail("Completed driver measurements should advance to the profile card", { expected, html });
+      fail("Completed driver checks should advance to the profile card", { expected, html });
     }
   }
   if (html.includes('data-output-step="safety" open')) {
-    fail("Completed driver measurements should not reopen the driver measurement card", { html });
+    fail("Completed driver checks should not reopen the driver-test card", { html });
   }
   return { measuredDriversOpenProfileStep: true };
 }
@@ -866,7 +912,7 @@ async function testConfirmedOutputChoosesFirstQuietDriver() {
   await harness.flush();
 
   html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Selected driver", "Main full range on Output 1", "Preview test signal", "Test volume"]) {
+  for (const expected of ["Listen for this driver", "Main full range on Output 1", "Start quiet test", "Test progress"]) {
     if (!html.includes(expected)) {
       fail("Chosen driver should render the readiness result without playing sound", { expected, html });
     }
@@ -966,6 +1012,11 @@ async function testQuietTestPathIssuesStayActionable() {
           quiet_start: { status: "floor_required", floor_audio_confirmed: false },
         },
         calibration_level: levelPayload(-80),
+        tone_backend: {
+          status: "audio_enabled",
+          audio_enabled: true,
+          tone_playback_implemented: true,
+        },
         startup_load: {
           load: { status: "loaded", rollback_available: true },
           preflight: { status: "ready", load_allowed: true, issues: [] },
@@ -1015,7 +1066,7 @@ async function testQuietTestPathIssuesStayActionable() {
     fail("Driver test should ask the backend to prepare the selected driver in one product-level operation", { requestOrder });
   }
   const nextHtml = harness.elements.get("view-body").innerHTML;
-  if (!nextHtml.includes("Selected driver") || !nextHtml.includes("Start very quiet woofer tone")) {
+  if (!nextHtml.includes("Listen for this driver") || !nextHtml.includes("Start quiet test")) {
     fail("Driver test should land on the actual sound-test action", { html: nextHtml });
   }
   return { quietTestPathIssuesStayActionable: true };
@@ -1165,6 +1216,15 @@ async function testBlockedAudibleDriverTestDoesNotClaimSoundPlayed() {
   await harness.flush();
   await harness.flush();
 
+  let html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("ready to test") ||
+      !html.includes("Start quiet test")) {
+    fail("Audio-enabled readiness should land on the audible-test action", { html });
+  }
+  if (html.includes("preview ready")) {
+    fail("Audio-enabled readiness should not be framed as preview-only", { html });
+  }
+
   harness.dispatchClick({
     "data-act": "play-output-readiness-tone",
     "data-group-id": "main",
@@ -1177,26 +1237,496 @@ async function testBlockedAudibleDriverTestDoesNotClaimSoundPlayed() {
   await harness.flush();
 
   const statusText = harness.elements.get("status").textContent;
-  const html = harness.elements.get("view-body").innerHTML;
+  html = harness.elements.get("view-body").innerHTML;
   if (statusText.includes("Played quiet channel test")) {
     fail("Blocked audible playback must not be reported as played", { statusText, html });
   }
   if (!statusText.includes("No sound played") ||
-      !statusText.includes("Audible driver tests are not enabled")) {
+      !statusText.includes("Driver tests are not available")) {
     fail("Blocked audible playback should explain that no sound played", { statusText, html });
   }
-  if (!html.includes("Sound played") || !html.includes("<dd>No</dd>")) {
+  if (!html.includes("No sound played")) {
     fail("Blocked audible playback should render no-audio evidence", { html });
   }
+  for (const forbidden of ["Playback: audio_backend_not_enabled", "tone_plan_not_ready"]) {
+    if (html.includes(forbidden) || statusText.includes(forbidden)) {
+      fail("Blocked audible playback should not expose backend issue codes", { forbidden, statusText, html });
+    }
+  }
   return { blockedAudibleDriverTestDoesNotClaimSoundPlayed: true };
+}
+
+async function testAudibleRampRecordsSilenceAndAsksBackendForNextStep() {
+  const confirmedTopology = topologyPayload();
+  confirmedTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 1,
+    verified_channel_count: 1,
+    unverified_channel_count: 0,
+    targets: [{
+      id: "main:full_range",
+      speaker_group_id: "main",
+      speaker_label: "Main speaker",
+      role: "full_range",
+      assigned: true,
+      identity_verified: true,
+      physical_output_index: 0,
+    }],
+  };
+  const target = {
+    speaker_group_id: "main",
+    speaker_label: "Main speaker",
+    role: "full_range",
+    output_index: 0,
+    label: "Main full range on Output 1",
+  };
+  const persistedTarget = {
+    speaker_group_id: "main",
+    driver_role: "full_range",
+    physical_output_index: 0,
+  };
+  let session = activePayloads()["./active-speaker/safe-playback"];
+  let level = levelPayload(-80);
+  const playToneCalls = [];
+  const levelPosts = [];
+  const floorResults = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/prepare-driver-test": () => Promise.resolve(response({
+      status: "ready",
+      ready: true,
+      message: "Ready to start at the quietest test level.",
+      target,
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+      session,
+      calibration_level: level,
+      tone_backend: {
+        status: "audio_enabled",
+        audio_enabled: true,
+        tone_playback_implemented: true,
+      },
+      startup_load: activePayloads()["./active-speaker/startup-load"],
+      staged_config: activePayloads()["./active-speaker/staged-config"],
+    })),
+    "./active-speaker/play-tone": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      playToneCalls.push(body);
+      const playbackId = `play-${playToneCalls.length}`;
+      session = {
+        status: "armed",
+        issues: [],
+        quiet_start: {
+          status: "floor_pending_operator",
+          floor_audio_confirmed: false,
+          pending_playback_id: playbackId,
+          current_target: target,
+        },
+      };
+      return Promise.resolve(response({
+        playback: {
+          playback_id: playbackId,
+          status: "played",
+          audio_emitted: true,
+          backend: "unit-test",
+          target,
+          tone: {
+            frequency_hz: 500,
+            level_dbfs: level.test_signal.requested_level_dbfs,
+            duration_ms: 300,
+          },
+          issues: [],
+        },
+        session,
+      }));
+    },
+    "./active-speaker/floor-audio-result": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      floorResults.push(body);
+      session = {
+        status: "armed",
+        issues: [],
+        quiet_start: {
+          status: "floor_required",
+          floor_audio_confirmed: false,
+          current_target: persistedTarget,
+          last_operator_result: {
+            outcome: body.outcome,
+            playback_id: body.playback_id,
+            target: persistedTarget,
+          },
+        },
+      };
+      return Promise.resolve(response(session));
+    },
+    "./active-speaker/driver-measurement": () => Promise.resolve(response({
+      status: "needs_driver_measurements",
+      summary: {
+        required_driver_count: 1,
+        captured_driver_count: 0,
+        driver_measurements_complete: false,
+        latest_driver_measurements: {
+          "main:full_range": { captured: false, outcome: "silent" },
+        },
+      },
+      issues: [],
+    })),
+    "./active-speaker/calibration-level": (_path, options = {}) => {
+      if (!options.method) return Promise.resolve(response(level));
+      const body = JSON.parse(options.body || "{}");
+      levelPosts.push(body);
+      if (body.action === "auto_step") {
+        level = levelPayload(-80);
+        level.auto_level = { action: "hold_at_cap", status: "maxed", next_level_dbfs: -80 };
+        level.applied_delta_db = 0;
+      }
+      return Promise.resolve(response(level));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-output-index": "0",
+    "data-speaker-label": "Main speaker",
+    "data-label": "Main full range on Output 1",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  let html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="stop-active-speaker" disabled')) {
+    fail("Stop should be visible but inactive before a tone is playing", { html });
+  }
+
+  harness.dispatchClick({
+    "data-act": "play-output-readiness-tone",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-label": "Main full range on Output 1",
+    "data-audio": "true",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  html = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "I hear this driver",
+    "Wrong driver",
+    "Stop",
+    "active-speaker-actions--driver-test",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("After playback, the stable driver-test row should stay visible", { expected, html });
+    }
+  }
+  if (html.includes("Did this driver make the sound?") ||
+      html.includes("If you hear nothing, wait") ||
+      html.includes("Play full range tone")) {
+    fail("After playback, the UI should not swap in the old identity block", { html });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  html = harness.elements.get("view-body").innerHTML;
+  if (!/data-outcome="heard_correct_driver" data-playback-id="[^"]+">I hear this driver<\/button>/.test(html) ||
+      !/data-outcome="heard_wrong_driver" data-playback-id="[^"]+">Wrong driver<\/button>/.test(html)) {
+    fail("Response buttons should stay enabled after the first pulse while the ramp waits", { html });
+  }
+  if (!floorResults.some((body) => body.outcome === "silent")) {
+    fail("Automatic ramp should record an internal not-heard result before raising", { floorResults });
+  }
+  if (!levelPosts.some((body) => body.action === "auto_step" && body.speaker_group_id === "main")) {
+    fail("Automatic ramp should ask the backend for the next safe level", { levelPosts });
+  }
+  return { audibleRampRecordsSilenceAndAsksBackendForNextStep: true };
+}
+
+async function testHeardCorrectDriverAdvancesToNextDriver() {
+  const topology = activeTwoWayTopologyPayload();
+  let session = activePayloads()["./active-speaker/safe-playback"];
+  let playbackCounter = 0;
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+      channel_identity: {
+        status: "verified",
+        assigned_channel_count: 2,
+        verified_channel_count: 2,
+        unverified_channel_count: 0,
+        targets: [
+          { speaker_group_id: "main", speaker_label: "Main speaker", role: "woofer", assigned: true, identity_verified: true },
+          { speaker_group_id: "main", speaker_label: "Main speaker", role: "tweeter", assigned: true, identity_verified: true },
+        ],
+      },
+      active_playback_route: activeRoutePayload({ transport_channel_count: 2 }),
+    })),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "needs_driver_measurements",
+      summary: {
+        required_driver_count: 2,
+        captured_driver_count: 0,
+        driver_measurements_complete: false,
+        latest_driver_measurements: {},
+        latest_summed_validations: {},
+      },
+      issues: [],
+    })),
+    "./active-speaker/prepare-driver-test": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      return Promise.resolve(response({
+        status: "ready",
+        ready: true,
+        message: "Ready to start at the quietest test level.",
+        target: {
+          speaker_group_id: "main",
+          speaker_label: "Main speaker",
+          role: body.role || "woofer",
+          physical_output_index: body.role === "tweeter" ? 1 : 0,
+          label: body.role === "tweeter" ?
+            "Main speaker tweeter (Output 2)" :
+            "Main speaker woofer (Output 1)",
+        },
+        output_topology: topology,
+        channel_identity: {
+          status: "verified",
+          assigned_channel_count: 2,
+          verified_channel_count: 2,
+          unverified_channel_count: 0,
+        },
+        active_playback_route: activeRoutePayload({ transport_channel_count: 2 }),
+        session,
+        calibration_level: levelPayload(-80),
+        tone_backend: { status: "audio_enabled", audio_enabled: true },
+      }));
+    },
+    "./active-speaker/play-tone": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      playbackCounter += 1;
+      const target = {
+        speaker_group_id: "main",
+        role: body.role || "woofer",
+        output_index: body.role === "tweeter" ? 1 : 0,
+      };
+      const playbackId = "heard-playback-" + playbackCounter;
+      session = {
+        status: "armed",
+        issues: [],
+        quiet_start: {
+          status: "floor_pending_operator",
+          floor_audio_confirmed: false,
+          pending_playback_id: playbackId,
+          current_target: target,
+        },
+      };
+      return Promise.resolve(response({
+        playback: {
+          playback_id: playbackId,
+          status: "played",
+          audio_emitted: true,
+          target,
+          tone: { frequency_hz: 500, level_dbfs: -80, duration_ms: 300 },
+          issues: [],
+        },
+        session,
+      }));
+    },
+    "./active-speaker/floor-audio-result": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      session = {
+        status: "armed",
+        issues: [],
+        quiet_start: {
+          status: "floor_confirmed",
+          floor_audio_confirmed: true,
+          current_target: { speaker_group_id: "main", role: "woofer", output_index: 0 },
+          last_operator_result: {
+            outcome: body.outcome,
+            playback_id: body.playback_id,
+            accepted: body.outcome === "heard_correct_driver",
+            target: { speaker_group_id: "main", role: "woofer", output_index: 0 },
+          },
+        },
+      };
+      return Promise.resolve(response(session));
+    },
+    "./active-speaker/driver-measurement": () => Promise.resolve(response({
+      status: "needs_driver_measurements",
+      summary: {
+        required_driver_count: 2,
+        captured_driver_count: 1,
+        driver_measurements_complete: false,
+        latest_driver_measurements: {
+          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+        },
+        latest_summed_validations: {},
+      },
+      issues: [],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-output-index": "0",
+    "data-speaker-label": "Main speaker",
+    "data-label": "Main speaker woofer (Output 1)",
+  });
+  await harness.flush();
+  await harness.flush();
+  harness.dispatchClick({
+    "data-act": "play-output-readiness-tone",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-label": "Main speaker woofer (Output 1)",
+    "data-audio": "true",
+  });
+  await harness.flush();
+  await harness.flush();
+  harness.dispatchClick({
+    "data-act": "active-floor-result",
+    "data-outcome": "heard_correct_driver",
+    "data-playback-id": "heard-playback-1",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "Choose next driver",
+    "✓ Woofer confirmed",
+    "Test Tweeter",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("Confirmed driver should advance to the next-driver chooser", { expected, html });
+    }
+  }
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Driver confirmed. Choose the next driver.")) {
+    fail("Confirmed driver should tell the user what to do next", { statusText });
+  }
+  if (html.includes("Listen for this driver")) {
+    fail("Confirmed driver should not leave the previous driver test open", { html });
+  }
+  return { heardCorrectDriverAdvancesToNextDriver: true };
+}
+
+async function testUnavailableAudioBackendDoesNotPostAudibleTone() {
+  const confirmedTopology = topologyPayload();
+  let playToneCalls = 0;
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/prepare-driver-test": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      const topology = topologyPayload();
+      return Promise.resolve(response({
+        status: "ready",
+        ready: true,
+        message: "Ready to start at the quietest test level.",
+        target: {
+          speaker_group_id: body.speaker_group_id || "main",
+          speaker_label: "Main speaker",
+          role: body.role || "woofer",
+          physical_output_index: 0,
+          label: "Main speaker woofer (Output 1)",
+        },
+        output_topology: topology,
+        channel_identity: topology.channel_identity,
+        clock_domain: topology.clock_domain,
+        session: activePayloads()["./active-speaker/safe-playback"],
+        calibration_level: activePayloads()["./active-speaker/calibration-level"],
+        tone_backend: {
+          status: "artifact_only",
+          audio_enabled: false,
+          tone_playback_implemented: false,
+          issues: [{
+            code: "audio_backend_not_enabled",
+            message: "audible channel tests require explicit lab backend enablement",
+          }],
+        },
+        startup_load: activePayloads()["./active-speaker/startup-load"],
+        staged_config: activePayloads()["./active-speaker/staged-config"],
+      }));
+    },
+    "./active-speaker/play-tone": () => {
+      playToneCalls += 1;
+      return Promise.resolve(response({ playback: { status: "should_not_happen" } }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-output-index": "0",
+    "data-speaker-label": "Main speaker",
+    "data-label": "Main speaker woofer (Output 1)",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const statusText = harness.elements.get("status").textContent;
+  const html = harness.elements.get("view-body").innerHTML;
+  if (playToneCalls !== 0) {
+    fail("Unavailable audio backend should not POST an audible tone request", { playToneCalls, statusText, html });
+  }
+  if (statusText.includes("No sound played")) {
+    fail("Unavailable audio backend should not create a failed test after preparation", { statusText, html });
+  }
+  for (const expected of ["not available", "Driver tests are not available on this install yet."]) {
+    if (!html.includes(expected)) {
+      fail("Unavailable audio backend should render a clear no-test state", { expected, html });
+    }
+  }
+  if (html.includes("Generate WAV") || html.includes("data-audio=\"false\"")) {
+    fail("Unavailable audio backend should not expose diagnostic WAV generation", { html });
+  }
+  for (const hidden of [
+    "Play woofer tone",
+    "Test volume",
+    "Return test volume",
+    "data-act=\"stop-active-speaker\"",
+  ]) {
+    if (html.includes(hidden)) {
+      fail("Preview-only driver state should not expose audible-test controls", { hidden, html });
+    }
+  }
+  for (const forbidden of ["Playback: audio_backend_not_enabled", "tone_plan_not_ready"]) {
+    if (html.includes(forbidden) || statusText.includes(forbidden)) {
+      fail("Unavailable audio backend should not leak backend issue codes", { forbidden, statusText, html });
+    }
+  }
+  return { unavailableAudioBackendDoesNotPostAudibleTone: true };
 }
 
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
-results.push(await testStaleLevelResponseDiscarded());
+results.push(await testDriverTestUsesAutomaticRampNotSlider());
 results.push(await testActiveCrossoverFirstStepRender());
+results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
@@ -1204,5 +1734,8 @@ results.push(await testConfirmedOutputChoosesFirstQuietDriver());
 results.push(await testQuietTestPathIssuesStayActionable());
 results.push(await testProtectionSetupFailureDoesNotAskForDriverAgain());
 results.push(await testBlockedAudibleDriverTestDoesNotClaimSoundPlayed());
+results.push(await testAudibleRampRecordsSilenceAndAsksBackendForNextStep());
+results.push(await testHeardCorrectDriverAdvancesToNextDriver());
+results.push(await testUnavailableAudioBackendDoesNotPostAudibleTone());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

@@ -176,8 +176,8 @@ evidence labels before choosing the driver they want to hear.
 
 Good language:
 
-- "Measure drivers"
-- "Start very quiet woofer tone"
+- "Test each driver"
+- "Start quiet woofer test"
 - "What did you hear?"
 - "Too loud" as an always-available operator answer
 

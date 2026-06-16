@@ -1,9 +1,10 @@
-"""No-audio playback lifecycle for active-speaker tone plans.
+"""Playback lifecycle for active-speaker tone plans.
 
-This module is the seam a future real playback backend must implement. The
-current backends deliberately do not open ALSA devices, reload CamillaDSP, or
-emit sound. They either simulate completion or render a bounded multi-channel
-WAV artifact that can be inspected before hardware playback exists.
+The normal artifact backend still never emits audio. Audible commissioning
+uses an explicit diagnostic backend that temporarily releases outputd, plays a
+bounded multi-channel WAV directly to the selected DAC, then restores outputd.
+That keeps the first-driver test small and understandable: one selected
+hardware output receives the tone; every other channel is silence.
 """
 
 from __future__ import annotations
@@ -31,9 +32,17 @@ from .audible_policy import (
     audible_role_block_code,
     audible_role_block_message,
 )
+from jasper.camilla_config_contract import (
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+    DEFAULT_PLAYBACK_DEVICE,
+)
+
 from .camilla_yaml import _forbidden_playback_token
 from .driver_protection import driver_protection_payload, normalise_driver_role
-from .safe_playback import floor_audio_confirmed_for_target
+from .safe_playback import (
+    floor_audio_confirmed_for_target,
+    floor_audio_retry_allowed_for_target,
+)
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
     MAX_TONE_DURATION_MS,
@@ -49,25 +58,42 @@ DEFAULT_ARTIFACT_DIR = Path("/var/lib/jasper/active_speaker_tone_artifacts")
 DEFAULT_SAMPLE_RATE_HZ = 48_000
 MIN_ARTIFACT_SAMPLE_RATE_HZ = 8_000
 MAX_ARTIFACT_SAMPLE_RATE_HZ = DEFAULT_SAMPLE_RATE_HZ
-MAX_ARTIFACT_CHANNELS = 16
+MAX_ARTIFACT_CHANNELS = 64
 DEFAULT_ARTIFACT_RETENTION = 24
 MAX_ARTIFACT_RETENTION = 100
 MIN_PLAYBACK_FREQUENCY_HZ = 20.0
 MAX_PLAYBACK_FREQUENCY_HZ = 20_000.0
 INT16_PEAK = 32767
 DEFAULT_APLAY_BINARY = "aplay"
+DEFAULT_SYSTEMCTL_BINARY = "systemctl"
+DEFAULT_OUTPUTD_SERVICE = "jasper-outputd.service"
 DEFAULT_AUDIO_BACKEND = "wav_artifact"
 APLAY_AUDIO_BACKEND = "aplay"
+DIRECT_DAC_AUDIO_BACKEND = "direct_dac"
 ENABLE_AUDIO_VALUE = "1"
 TONE_BACKEND_ENV = "JASPER_ACTIVE_SPEAKER_TONE_BACKEND"
 ALLOW_AUDIO_ENV = "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO"
 TEST_PCM_ENV = "JASPER_ACTIVE_SPEAKER_TEST_PCM"
 APLAY_BINARY_ENV = "JASPER_APLAY"
+SYSTEMCTL_BINARY_ENV = "JASPER_SYSTEMCTL"
 APLAY_TIMEOUT_PAD_SEC = 1.0
+SERVICE_TIMEOUT_SEC = 8.0
+FORBIDDEN_TEST_PCM_TOKENS = (
+    DEFAULT_PLAYBACK_DEVICE,
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+    "jasper_out",
+    "outputd_content_capture",
+    "outputd_active_content_capture",
+    "outputd_dac",
+)
 
 logger = logging.getLogger(__name__)
 
 AplayRunner = Callable[
+    [Sequence[str], float],
+    subprocess.CompletedProcess[str],
+]
+CommandRunner = Callable[
     [Sequence[str], float],
     subprocess.CompletedProcess[str],
 ]
@@ -116,6 +142,17 @@ def _artifact_dir(path: str | Path | None) -> Path:
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
+
+
+def _has_blocker(issues: list[dict[str, str]] | tuple[dict[str, str], ...]) -> bool:
+    return any(issue.get("severity") == "blocker" for issue in issues)
+
+
+def _exception_summary(exc: Exception, *, limit: int = 220) -> str:
+    detail = str(exc).strip().replace("\n", " ")
+    if not detail:
+        return ""
+    return detail[:limit]
 
 
 def _finite_float(value: Any, *, default: float) -> float:
@@ -178,21 +215,75 @@ def _aplay_runner(
     )
 
 
-def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
+def _command_runner(
+    argv: Sequence[str],
+    timeout_sec: float,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(argv),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+    )
+
+
+def _completed_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    stderr = (completed.stderr or "").strip().splitlines()
+    stdout = (completed.stdout or "").strip().splitlines()
+    if stderr:
+        return stderr[0][:160]
+    if stdout:
+        return stdout[0][:160]
+    return f"exit {completed.returncode}"
+
+
+def _forbidden_test_pcm_token(pcm: str) -> str | None:
+    """Return a daemon-owned PCM token that must not be used as a test writer."""
+
+    lowered = str(pcm or "").lower()
+    for token in FORBIDDEN_TEST_PCM_TOKENS:
+        if token.lower() in lowered:
+            return token
+    return _forbidden_playback_token(str(pcm or ""))
+
+
+def tone_backend_status(
+    env: dict[str, str] | None = None,
+    *,
+    default_pcm: str | None = None,
+    default_audio_enabled: bool = False,
+) -> dict[str, Any]:
     """Return the current active-speaker tone backend boundary.
 
     The artifact backend is always available and never emits audio. The aplay
-    backend is only considered audio-enabled when the operator explicitly
-    chooses it, explicitly allows audio, and provides a PCM target.
+    backend is considered audio-enabled only when the operator explicitly
+    enables it and points it at a dedicated test PCM. Daemon-owned CamillaDSP /
+    outputd lanes are intentionally forbidden: they are sinks/readers in the
+    runtime graph, not test-tone injection points.
     """
 
     source = env if env is not None else os.environ
-    requested = str(source.get(TONE_BACKEND_ENV) or DEFAULT_AUDIO_BACKEND).strip()
+    fallback_requested = (
+        APLAY_AUDIO_BACKEND
+        if default_audio_enabled and default_pcm
+        else DEFAULT_AUDIO_BACKEND
+    )
+    requested = str(source.get(TONE_BACKEND_ENV) or fallback_requested).strip()
     requested = requested.lower() or DEFAULT_AUDIO_BACKEND
-    allow_audio = _env_flag(source.get(ALLOW_AUDIO_ENV))
-    pcm = str(source.get(TEST_PCM_ENV) or "").strip()
+    audio_backend_requested = requested in {APLAY_AUDIO_BACKEND, DIRECT_DAC_AUDIO_BACKEND}
+    allow_audio = (
+        _env_flag(source.get(ALLOW_AUDIO_ENV))
+        if ALLOW_AUDIO_ENV in source
+        else bool(default_audio_enabled and audio_backend_requested)
+    )
+    pcm = str(source.get(TEST_PCM_ENV) or default_pcm or "").strip()
     issues: list[dict[str, str]] = []
-    if requested not in {DEFAULT_AUDIO_BACKEND, APLAY_AUDIO_BACKEND}:
+    if requested not in {
+        DEFAULT_AUDIO_BACKEND,
+        APLAY_AUDIO_BACKEND,
+        DIRECT_DAC_AUDIO_BACKEND,
+    }:
         issues.append(
             _issue(
                 "blocker",
@@ -200,7 +291,7 @@ def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
                 "active-speaker tone backend is not recognized",
             )
         )
-    if requested == APLAY_AUDIO_BACKEND and not allow_audio:
+    if audio_backend_requested and not allow_audio:
         issues.append(
             _issue(
                 "blocker",
@@ -208,7 +299,7 @@ def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
                 f"{ALLOW_AUDIO_ENV}=1 is required before audible channel tests",
             )
         )
-    if requested == APLAY_AUDIO_BACKEND and not pcm:
+    if audio_backend_requested and not pcm:
         issues.append(
             _issue(
                 "blocker",
@@ -216,8 +307,8 @@ def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
                 f"{TEST_PCM_ENV} must name the active-speaker test PCM",
             )
         )
-    forbidden_token = _forbidden_playback_token(pcm) if pcm else None
-    if requested == APLAY_AUDIO_BACKEND and forbidden_token is not None:
+    forbidden_token = _forbidden_test_pcm_token(pcm) if pcm else None
+    if audio_backend_requested and forbidden_token is not None:
         logger.warning(
             "event=active_speaker.tone_backend.forbidden_test_pcm "
             "pcm=%r token=%r",
@@ -228,13 +319,13 @@ def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
             _issue(
                 "blocker",
                 "test_pcm_forbidden_main_lane",
-                f"{TEST_PCM_ENV} targets the protected main lane "
+                f"{TEST_PCM_ENV} targets a daemon-owned audio lane "
                 f"('{forbidden_token}'); audible channel tests must use a "
-                f"dedicated active-speaker PCM",
+                f"dedicated active-speaker test PCM",
             )
         )
     audio_enabled = (
-        requested == APLAY_AUDIO_BACKEND
+        audio_backend_requested
         and allow_audio
         and bool(pcm)
         and forbidden_token is None
@@ -250,10 +341,14 @@ def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
         "kind": TONE_BACKEND_STATUS_KIND,
         "status": status,
         "backend": requested
-        if requested in {DEFAULT_AUDIO_BACKEND, APLAY_AUDIO_BACKEND}
+        if requested in {
+            DEFAULT_AUDIO_BACKEND,
+            APLAY_AUDIO_BACKEND,
+            DIRECT_DAC_AUDIO_BACKEND,
+        }
         else requested,
         "artifact_backend": DEFAULT_AUDIO_BACKEND,
-        "audio_backend": APLAY_AUDIO_BACKEND if requested == APLAY_AUDIO_BACKEND else None,
+        "audio_backend": requested if audio_enabled else None,
         "tone_playback_implemented": audio_enabled,
         "audio_enabled": audio_enabled,
         "allow_audio_env": ALLOW_AUDIO_ENV,
@@ -276,11 +371,17 @@ def enabled_audio_backend(
     env: dict[str, str] | None = None,
     runner: AplayRunner = _aplay_runner,
     artifact_dir: str | Path | None = None,
+    default_pcm: str | None = None,
+    default_audio_enabled: bool = False,
 ) -> "AplayTonePlaybackBackend | None":
     """Return the configured audio backend, or ``None`` when not enabled."""
 
-    status = tone_backend_status(env)
-    if not status["audio_enabled"]:
+    status = tone_backend_status(
+        env,
+        default_pcm=default_pcm,
+        default_audio_enabled=default_audio_enabled,
+    )
+    if not status["audio_enabled"] or status.get("audio_backend") != APLAY_AUDIO_BACKEND:
         return None
     return AplayTonePlaybackBackend(
         pcm=str(status["test_pcm"]),
@@ -347,13 +448,14 @@ def _validate_plan_for_dry_backend(
     plan: dict[str, Any],
     *,
     safe_session: dict[str, Any],
+    require_safe_session: bool,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     issues.extend(
         issue for issue in plan.get("issues", [])
         if isinstance(issue, dict)
     )
-    if safe_session.get("status") != "armed":
+    if require_safe_session and safe_session.get("status") != "armed":
         issues.append(
             _issue(
                 "blocker",
@@ -488,6 +590,26 @@ def _plan_with_bounded_tone(plan: dict[str, Any], tone: dict[str, Any]) -> dict[
         **tone,
     }
     return bounded
+
+
+def _plan_with_output_count(plan: dict[str, Any], channel_count: int) -> dict[str, Any]:
+    bounded_count = _bounded_int(
+        channel_count,
+        default=2,
+        lo=1,
+        hi=MAX_ARTIFACT_CHANNELS,
+    )
+    out = dict(plan)
+    channel_map = (
+        dict(plan.get("channel_map"))
+        if isinstance(plan.get("channel_map"), dict)
+        else {}
+    )
+    output_indices = _target_output_indices(plan)
+    existing_count = _channel_count(plan, output_indices) if output_indices else 0
+    channel_map["output_count"] = max(bounded_count, existing_count)
+    out["channel_map"] = channel_map
+    return out
 
 
 def _tone_sample(
@@ -797,7 +919,7 @@ class AplayTonePlaybackBackend:
         self.pcm = str(pcm or "").strip()
         if not self.pcm:
             raise ValueError("active-speaker test PCM is required")
-        forbidden_token = _forbidden_playback_token(self.pcm)
+        forbidden_token = _forbidden_test_pcm_token(self.pcm)
         if forbidden_token is not None:
             logger.warning(
                 "event=active_speaker.tone_backend.forbidden_test_pcm "
@@ -806,8 +928,8 @@ class AplayTonePlaybackBackend:
                 forbidden_token,
             )
             raise ValueError(
-                f"active-speaker test PCM '{self.pcm}' targets the protected "
-                f"main lane ('{forbidden_token}'); audible channel tests must "
+                f"active-speaker test PCM '{self.pcm}' targets a daemon-owned "
+                f"audio lane ('{forbidden_token}'); audible channel tests must "
                 f"use a dedicated active-speaker PCM"
             )
         self.aplay_binary = str(aplay_binary or DEFAULT_APLAY_BINARY)
@@ -876,6 +998,174 @@ class AplayTonePlaybackBackend:
         }
 
 
+class DirectDacTonePlaybackBackend:
+    """Play a bounded diagnostic tone directly to the active DAC.
+
+    This backend is intentionally exclusive: outputd owns the physical DAC in
+    normal operation, so a driver-identity test must pause outputd before
+    opening the hardware device and always try to restart it afterwards.
+    """
+
+    backend_id = DIRECT_DAC_AUDIO_BACKEND
+    audio_backend = True
+    requires_protected_startup = False
+
+    def __init__(
+        self,
+        *,
+        pcm: str,
+        channel_count: int,
+        aplay_binary: str = DEFAULT_APLAY_BINARY,
+        systemctl_binary: str = DEFAULT_SYSTEMCTL_BINARY,
+        outputd_service: str = DEFAULT_OUTPUTD_SERVICE,
+        runner: AplayRunner = _aplay_runner,
+        command_runner: CommandRunner = _command_runner,
+        artifact_dir: str | Path | None = None,
+        sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+        artifact_retention: int | None = None,
+    ) -> None:
+        self.pcm = str(pcm or "").strip()
+        if not self.pcm:
+            raise ValueError("active-speaker direct DAC PCM is required")
+        self.channel_count = _bounded_int(
+            channel_count,
+            default=2,
+            lo=1,
+            hi=MAX_ARTIFACT_CHANNELS,
+        )
+        self.aplay_binary = str(aplay_binary or DEFAULT_APLAY_BINARY)
+        self.systemctl_binary = str(systemctl_binary or DEFAULT_SYSTEMCTL_BINARY)
+        self.outputd_service = str(outputd_service or DEFAULT_OUTPUTD_SERVICE)
+        self.runner = runner
+        self.command_runner = command_runner
+        self.artifact_backend = WavArtifactTonePlaybackBackend(
+            artifact_dir=artifact_dir,
+            sample_rate_hz=sample_rate_hz,
+            artifact_retention=artifact_retention,
+        )
+
+    def start(
+        self,
+        plan: dict[str, Any],
+        *,
+        playback_id: str,
+        now_epoch: float,
+    ) -> dict[str, Any]:
+        direct_plan = _plan_with_output_count(plan, self.channel_count)
+        artifact_result = self.artifact_backend.start(
+            direct_plan,
+            playback_id=playback_id,
+            now_epoch=now_epoch,
+        )
+        artifact = artifact_result.get("artifact") or {}
+        wav_path = str(artifact.get("wav_path") or "")
+        if not wav_path:
+            raise RuntimeError("tone artifact was not generated")
+
+        was_active = self._outputd_service_is_active()
+        stopped = False
+        play_error: Exception | None = None
+        restart_issue: dict[str, str] | None = None
+        try:
+            if was_active:
+                self._run_outputd_service("stop", "pause")
+                stopped = True
+            duration_sec = (
+                _bounded_int(
+                    artifact.get("duration_ms"),
+                    default=DEFAULT_TONE_DURATION_MS,
+                    lo=MIN_TONE_DURATION_MS,
+                    hi=MAX_TONE_DURATION_MS,
+                )
+                / 1000.0
+            )
+            argv = [self.aplay_binary, "-q", "-D", self.pcm, wav_path]
+            completed = self.runner(argv, duration_sec + APLAY_TIMEOUT_PAD_SEC)
+            if completed.returncode != 0:
+                raise RuntimeError(f"aplay failed: {_completed_detail(completed)}")
+        except Exception as exc:
+            play_error = exc
+        finally:
+            if stopped:
+                try:
+                    self._restore_outputd_service()
+                except Exception as exc:
+                    restart_issue = _issue(
+                        "blocker",
+                        "outputd_restart_failed_after_diagnostic_tone",
+                        f"JTS played or attempted the tone, but could not restart outputd: {_exception_summary(exc)}",
+                    )
+
+        if play_error is not None:
+            detail = _exception_summary(play_error)
+            if restart_issue is not None:
+                detail = f"{detail}; {restart_issue['message']}"
+            raise RuntimeError(detail)
+
+        issues = [restart_issue] if restart_issue is not None else []
+        return {
+            "backend": self.backend_id,
+            "status": "completed" if not issues else "completed_with_blocker",
+            "audio_emitted": True,
+            "confirmable": not _has_blocker(issues),
+            "audio_device": {
+                "pcm": self.pcm,
+                "command": Path(self.aplay_binary).name,
+                "exclusive_output_owner": self.outputd_service,
+                "output_channel_count": self.channel_count,
+            },
+            "artifact": artifact,
+            "issues": issues,
+        }
+
+    def stop(
+        self,
+        *,
+        playback_id: str | None,
+        reason: str,
+        now_epoch: float,
+    ) -> dict[str, Any]:
+        try:
+            self._restore_outputd_service()
+            status = "stopped"
+            issues: list[dict[str, str]] = []
+        except Exception as exc:
+            status = "failed"
+            issues = [
+                _issue(
+                    "blocker",
+                    "outputd_restart_failed_after_stop",
+                    f"Could not restart outputd: {_exception_summary(exc)}",
+                )
+            ]
+        return {
+            "backend": self.backend_id,
+            "status": status,
+            "playback_id": playback_id,
+            "reason": reason,
+            "audio_emitted": False,
+            "issues": issues,
+        }
+
+    def _run_outputd_service(self, action: str, label: str) -> None:
+        argv = [self.systemctl_binary, action, self.outputd_service]
+        completed = self.command_runner(argv, SERVICE_TIMEOUT_SEC)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"could not {label} {self.outputd_service}: "
+                f"{_completed_detail(completed)}"
+            )
+
+    def _outputd_service_is_active(self) -> bool:
+        argv = [self.systemctl_binary, "is-active", "--quiet", self.outputd_service]
+        completed = self.command_runner(argv, SERVICE_TIMEOUT_SEC)
+        return completed.returncode == 0
+
+    def _restore_outputd_service(self) -> None:
+        self._run_outputd_service("reset-failed", "reset failed state for")
+        self._run_outputd_service("start", "restart")
+
+
 def start_tone_playback(
     plan: dict[str, Any],
     *,
@@ -889,13 +1179,20 @@ def start_tone_playback(
     now_epoch = float(now())
     playback_id = uuid.uuid4().hex
     selected = backend or WavArtifactTonePlaybackBackend()
-    issues = _validate_plan_for_dry_backend(plan, safe_session=safe_session)
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     targets = plan.get("targets") if isinstance(plan.get("targets"), list) else []
     safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
     tone = _tone_fields(plan)
     bounded_plan = _plan_with_bounded_tone(plan, tone)
     audio_backend = bool(getattr(selected, "audio_backend", False))
+    requires_protected_startup = bool(
+        getattr(selected, "requires_protected_startup", True)
+    )
+    issues = _validate_plan_for_dry_backend(
+        plan,
+        safe_session=safe_session,
+        require_safe_session=audio_backend or allow_audio,
+    )
     driver_role = str(target.get("driver_role") or target.get("role") or "")
     driver_protection = _driver_protection_for_plan(plan)
     audible_policy = audible_policy_payload(
@@ -918,7 +1215,11 @@ def start_tone_playback(
                 "readiness gates did not authorize audible playback for this target",
             )
         )
-    if audio_backend and not safety.get("protected_startup_loaded"):
+    if (
+        audio_backend
+        and requires_protected_startup
+        and not safety.get("protected_startup_loaded")
+    ):
         issues.append(
             _issue(
                 "blocker",
@@ -961,6 +1262,7 @@ def start_tone_playback(
         audio_backend
         and not _tone_at_floor(tone)
         and not floor_audio_confirmed_for_target(safe_session, target)
+        and not floor_audio_retry_allowed_for_target(safe_session, target)
     ):
         issues.append(
             _issue(
@@ -982,6 +1284,7 @@ def start_tone_playback(
             "playback_id": playback_id,
             "created_at": _utc_from_epoch(now_epoch),
             "audio_emitted": False,
+            "confirmable": False,
             "target": {
                 "side": target.get("side"),
                 "speaker_group_id": target.get("speaker_group_id"),
@@ -1005,6 +1308,13 @@ def start_tone_playback(
             now_epoch=now_epoch,
         )
     except Exception as exc:
+        detail = _exception_summary(exc)
+        message = (
+            "tone playback backend failed; successful audio emission "
+            f"was not confirmed: {type(exc).__name__}"
+        )
+        if detail:
+            message = f"{message}: {detail}"
         return {
             "artifact_schema_version": SCHEMA_VERSION,
             "kind": TONE_PLAYBACK_RESULT_KIND,
@@ -1013,6 +1323,7 @@ def start_tone_playback(
             "playback_id": playback_id,
             "created_at": _utc_from_epoch(now_epoch),
             "audio_emitted": False,
+            "confirmable": False,
             "target": {
                 "side": target.get("side"),
                 "speaker_group_id": target.get("speaker_group_id"),
@@ -1026,16 +1337,22 @@ def start_tone_playback(
             "audible_test": audible_policy,
             "driver_protection": driver_protection,
             "artifact": None,
+            "backend_error": {
+                "type": type(exc).__name__,
+                "message": detail or None,
+            },
             "issues": [
                 _issue(
                     "blocker",
                     "tone_backend_failed",
-                    f"tone playback backend failed; successful audio emission "
-                    f"was not confirmed: "
-                    f"{type(exc).__name__}",
+                    message,
                 )
             ],
         }
+    result_issues = [
+        issue for issue in backend_result.get("issues", [])
+        if isinstance(issue, dict)
+    ]
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": TONE_PLAYBACK_RESULT_KIND,
@@ -1044,6 +1361,11 @@ def start_tone_playback(
         "playback_id": playback_id,
         "created_at": _utc_from_epoch(now_epoch),
         "audio_emitted": bool(backend_result.get("audio_emitted")),
+        "confirmable": (
+            bool(backend_result.get("audio_emitted"))
+            and bool(backend_result.get("confirmable", True))
+            and not _has_blocker(result_issues)
+        ),
         "audio_device": backend_result.get("audio_device"),
         "target": {
             "side": target.get("side"),
@@ -1058,10 +1380,7 @@ def start_tone_playback(
         "audible_test": audible_policy,
         "driver_protection": driver_protection,
         "artifact": backend_result.get("artifact"),
-        "issues": [
-            issue for issue in backend_result.get("issues", [])
-            if isinstance(issue, dict)
-        ],
+        "issues": result_issues,
     }
 
 

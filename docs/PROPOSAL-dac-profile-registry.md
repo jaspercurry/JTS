@@ -106,6 +106,7 @@ class DacProfile:
     child_profile_ids: tuple[str, ...] = ()
     requires_same_usb_bus: bool = False
     supports_active_outputd_lane: bool = False
+    active_outputd_lane_channels: int | None = None
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
     validation_profile: str | None = None

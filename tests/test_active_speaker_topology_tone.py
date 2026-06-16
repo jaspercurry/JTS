@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from jasper.active_speaker.calibration_level import calibration_level_payload
+from jasper.active_speaker.playback_route import active_playback_route_capability
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import build_playback_readiness
 from jasper.active_speaker.topology_tone import build_topology_tone_plan
+from jasper.audio_hardware import dac
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+
+
+HIFIBERRY_PHYSICAL_OUTPUTS = 8
+DUAL_APPLE_ACTIVE_ROUTE_CHANNELS = dac.active_outputd_lane_channels_for(
+    dac.DUAL_APPLE_USB_C_DAC_4CH_ID
+)
 
 
 def _topology() -> OutputTopology:
@@ -18,6 +26,7 @@ def _topology() -> OutputTopology:
             "device_id": "hifiberry_dac8x",
             "device_label": "HiFiBerry DAC8x",
             "physical_output_count": 8,
+            "card_id": "DAC8",
         },
         "speaker_groups": [
             {
@@ -110,7 +119,10 @@ def test_topology_tone_plan_uses_saved_physical_output_map() -> None:
     assert plan["status"] == "ready"
     assert plan["would_play"] is True
     assert plan["playback_allowed"] is True
-    assert plan["channel_map"] == {"layout": "output_topology", "output_count": 8}
+    assert plan["channel_map"] == {
+        "layout": "output_topology",
+        "output_count": HIFIBERRY_PHYSICAL_OUTPUTS,
+    }
     assert plan["target"]["speaker_group_id"] == "left"
     assert plan["target"]["driver_role"] == "woofer"
     assert plan["target"]["output_index"] == 0
@@ -122,6 +134,184 @@ def test_topology_tone_plan_uses_saved_physical_output_map() -> None:
         "driver_protection_auto_level_v1"
     )
     assert plan["driver_protection"]["role_class"] == "low_frequency"
+
+
+def test_topology_tone_plan_can_target_high_physical_output_without_active_lane() -> None:
+    raw = _topology().to_dict()
+    raw["speaker_groups"][0]["channels"][1]["physical_output_index"] = (
+        HIFIBERRY_PHYSICAL_OUTPUTS - 1
+    )
+    topology = OutputTopology.from_mapping(raw)
+
+    plan = build_topology_tone_plan(
+        topology,
+        speaker_group_id="left",
+        role="tweeter",
+        readiness_report=build_playback_readiness(
+            topology,
+            speaker_group_id="left",
+            role="tweeter",
+            environment_report=_environment(),
+            safe_session=_session(),
+            calibration_level=calibration_level_payload(),
+            startup_load_state=_startup_load(),
+            tone_backend=tone_backend_status({
+                "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+                "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+                "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            }),
+        ),
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["channel_map"]["output_count"] == HIFIBERRY_PHYSICAL_OUTPUTS
+    assert plan["target"]["output_index"] == HIFIBERRY_PHYSICAL_OUTPUTS - 1
+
+
+def test_active_playback_route_capability_uses_single_dac_direct_route() -> None:
+    topology = _topology()
+
+    capability = active_playback_route_capability(topology)
+
+    assert topology.hardware.physical_output_count == 8
+    assert capability.playback_device == "hw:CARD=DAC8,DEV=0"
+    assert capability.playback_device_source == "topology_direct_dac"
+    assert capability.transport_channel_count == 8
+    assert capability.required_active_output_count == 2
+    assert capability.fits_required_outputs is True
+    assert capability.ready is True
+    assert capability.issues == ()
+
+
+def test_active_playback_route_capability_counts_subwoofer_output_lane() -> None:
+    raw = _topology().to_dict()
+    raw["speaker_groups"].append({
+        "id": "sub",
+        "label": "Subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        "channels": [
+            {
+                "role": "subwoofer",
+                "physical_output_index": 2,
+                "identity_verified": True,
+            },
+        ],
+    })
+    raw["routing"]["subwoofer_group_ids"] = ["sub"]
+    topology = OutputTopology.from_mapping(raw)
+
+    capability = active_playback_route_capability(topology)
+
+    assert capability.playback_device_source == "topology_direct_dac"
+    assert capability.transport_channel_count == HIFIBERRY_PHYSICAL_OUTPUTS
+    assert capability.required_active_output_count == 3
+    assert capability.subwoofer_group_count == 1
+    assert capability.subwoofer_supported is True
+    assert capability.ready is True
+
+
+def test_active_playback_route_capability_counts_highest_assigned_subwoofer_lane() -> None:
+    raw = _topology().to_dict()
+    raw["speaker_groups"].append({
+        "id": "sub",
+        "label": "Subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        "channels": [
+            {
+                "role": "subwoofer",
+                "physical_output_index": HIFIBERRY_PHYSICAL_OUTPUTS - 1,
+                "identity_verified": True,
+            },
+        ],
+    })
+    raw["routing"]["subwoofer_group_ids"] = ["sub"]
+    topology = OutputTopology.from_mapping(raw)
+
+    capability = active_playback_route_capability(topology)
+
+    assert capability.required_active_output_count == HIFIBERRY_PHYSICAL_OUTPUTS
+    assert capability.fits_required_outputs is True
+    assert capability.ready is True
+
+
+def test_active_playback_route_capability_uses_actual_outputd_active_lane() -> None:
+    raw = _topology().to_dict()
+    raw["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+    }
+    topology = OutputTopology.from_mapping(raw)
+
+    capability = active_playback_route_capability(topology)
+
+    assert capability.transport_channel_count == DUAL_APPLE_ACTIVE_ROUTE_CHANNELS
+    assert capability.ready is True
+
+
+def test_active_playback_route_capability_accepts_four_lane_route_when_layout_fits() -> None:
+    raw = _topology().to_dict()
+    raw["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+    }
+    raw["speaker_groups"] = [
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": 0,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 1,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        },
+        {
+            "id": "right",
+            "label": "Right speaker",
+            "kind": "right",
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": 2,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 3,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        },
+    ]
+    raw["routing"] = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    topology = OutputTopology.from_mapping(raw)
+
+    capability = active_playback_route_capability(topology)
+
+    assert topology.hardware.physical_output_count == 4
+    assert capability.transport_channel_count == DUAL_APPLE_ACTIVE_ROUTE_CHANNELS
+    assert capability.required_active_output_count == 4
+    assert capability.fits_required_outputs is True
+    assert capability.ready is True
 
 
 def test_topology_tone_plan_can_prepare_artifact_without_audio_authority() -> None:
@@ -152,6 +342,28 @@ def test_topology_tone_plan_can_prepare_artifact_without_audio_authority() -> No
     assert plan["next_step"] == (
         "Ready for artifact verification; audible playback is still gated."
     )
+
+
+def test_topology_tone_plan_can_prepare_artifact_without_safe_session() -> None:
+    plan = build_topology_tone_plan(
+        _topology(),
+        speaker_group_id="left",
+        role="woofer",
+        safe_session={"status": "idle"},
+        startup_load_state={"status": "idle"},
+        playback_allowed=False,
+        tone_playback_implemented=False,
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["would_play"] is False
+    assert plan["playback_allowed"] is False
+    assert "safe_session_not_armed" not in {
+        issue["code"] for issue in plan["issues"]
+    }
+    assert "protected_startup_config_not_loaded" not in {
+        issue["code"] for issue in plan["issues"]
+    }
 
 
 def test_topology_tone_plan_accepts_guarded_frontend_selection_without_readiness_report() -> None:

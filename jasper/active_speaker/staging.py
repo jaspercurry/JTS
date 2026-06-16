@@ -17,9 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
-from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from .camilla_yaml import (
@@ -41,6 +39,11 @@ from .profile import (
     SafetyEnvelope,
     required_driver_roles,
 )
+from .playback_route import (
+    ACTIVE_PLAYBACK_DEVICE_ENV,
+    active_playback_route_capability,
+    resolve_active_playback_device as _resolve_active_playback_device,
+)
 from .tone_plan import load_active_speaker_preset
 
 logger = logging.getLogger(__name__)
@@ -52,7 +55,6 @@ DEFAULT_STAGED_METADATA_PATH = Path("/var/lib/jasper/active_speaker_staged_confi
 DEFAULT_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 STAGED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
-ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
 
 _SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
@@ -372,14 +374,7 @@ def _resolve_playback_device(
     *,
     playback_device: str | None,
 ) -> tuple[str | None, str]:
-    explicit = playback_device or os.environ.get(ACTIVE_PLAYBACK_DEVICE_ENV)
-    if explicit and explicit.strip():
-        return explicit.strip(), "explicit"
-    if topology.hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
-        return ACTIVE_OUTPUTD_PLAYBACK_DEVICE, "dual_apple_outputd_active_lane"
-    if topology.hardware.card_id:
-        return f"hw:{topology.hardware.card_id},0", "topology_hardware"
-    return None, "missing"
+    return _resolve_active_playback_device(topology, playback_device=playback_device)
 
 
 def resolve_active_playback_device(
@@ -1224,22 +1219,43 @@ def stage_protected_startup_config(
         topology,
         playback_device=playback_device,
     )
+    route_capability = active_playback_route_capability(
+        topology,
+        playback_device=playback_device,
+    )
+    route_fits = route_capability.fits_required_outputs
+    gates.append(_gate(
+        "active_playback_route_capacity",
+        label="Active playback route has enough output lanes",
+        passed=route_fits,
+        message=(
+            "Active output layout fits this install's playback route"
+            if route_fits
+            else (
+                "Choose a smaller active layout on this install, or widen "
+                "the active outputd route before testing"
+            )
+        ),
+    ))
+    for issue in route_capability.issues:
+        if issue.get("code") == "active_playback_route_too_narrow":
+            issues.append(issue)
     playback_device_ready = bool(resolved_playback_device)
     gates.append(_gate(
         "explicit_active_playback_device",
-        label="Active playback device is explicit hardware, not the JTS stereo lane",
+        label="Active playback route is resolved",
         passed=playback_device_ready,
         message=(
-            f"Using {resolved_playback_device}"
+            f"Using {resolved_playback_device} ({playback_device_source})"
             if resolved_playback_device
-            else f"Set {ACTIVE_PLAYBACK_DEVICE_ENV} or save detected hardware with a card id"
+            else f"Set {ACTIVE_PLAYBACK_DEVICE_ENV} for this active-speaker route"
         ),
     ))
     if not playback_device_ready:
         issues.append(_issue(
             "blocker",
             "active_playback_device_required",
-            "protected staging requires an explicit active hardware playback device",
+            "protected staging requires a resolved active playback route",
         ))
 
     out_path = staged_config_path(config_dir=config_dir, path=config_path)

@@ -389,9 +389,9 @@ def _high_frequency_driver_readiness(
         },
         "issues": issues,
         "next_step": (
-            "Preview only. Audible high-frequency playback still requires the normal playback endpoint gates."
+            "Diagnostic only. Audible high-frequency playback still requires the normal playback endpoint gates."
             if manual_passed
-            else "Resolve high-frequency readiness blockers before using this floor-test preview."
+            else "Resolve high-frequency readiness blockers before generating this floor-test diagnostic."
         ),
     }
     return {
