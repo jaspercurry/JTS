@@ -44,13 +44,13 @@ stage_dtln_models() {
             --optional-timeout 30 --optional-retries 2; then
         echo "  warning: one or more DTLN model downloads failed"
         echo "  the bridge will fall back to dual-stream (AEC ON + AEC OFF only)"
-        echo
-        echo "  Anonymous download from the release returns 404 while the"
-        echo "  jaspercurry/JTS repo is still private. Manual install:"
-        echo "    gh release download dtln-models-v1 --repo jaspercurry/JTS \\"
-        echo "        --dir /var/lib/jasper/dtln"
+        echo "  re-run install.sh once you're online to retry the downloads, or"
+        echo "  fetch the two ONNX assets manually from the public release:"
+        echo "    base=https://github.com/jaspercurry/JTS/releases/download/dtln-models-v1"
+        echo "    sudo curl -fL \"\$base/dtln_aec_256_1.onnx\" -o /var/lib/jasper/dtln/dtln_aec_256_1.onnx"
+        echo "    sudo curl -fL \"\$base/dtln_aec_256_2.onnx\" -o /var/lib/jasper/dtln/dtln_aec_256_2.onnx"
+        echo "    # or: sudo gh release download dtln-models-v1 --repo jaspercurry/JTS --dir /var/lib/jasper/dtln"
         echo "    sudo systemctl restart jasper-aec-bridge"
-        echo "  (one-time; once the repo goes public install.sh handles it)"
     fi
 }
 

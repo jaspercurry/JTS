@@ -187,6 +187,13 @@ Each of these was adversarially re-verified by an independent agent.
    `provenance.toml`'s own TODO says GitHub commit archives (not byte-stable)
    must be mirrored as release assets before public launch. Both are already
    self-documented — they just have to actually happen before announcement.
+   **Resolved 2026-06-16:** the repo is now public and both `dtln-models-v1`
+   ONNX assets download anonymously (HTTP 200); the source-build archives
+   (nqptp, shairport-sync, webrtc-audio-processing) now consume byte-exact JTS
+   release-asset mirrors under `build-deps-v1`, with upstream commit-archive
+   URLs retained only as provenance (`provenance.toml` `source-archive-mirroring`).
+   `stage_dtln_models()`'s now-stale "repo is still private" recovery message
+   was corrected in the same pass.
 
 5. **The LAN-trust security model is real but stated nowhere.** Any LAN device
    can, without auth: unmute the privacy mic switch, reboot/power off the
