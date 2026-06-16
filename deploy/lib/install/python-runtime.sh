@@ -18,9 +18,21 @@ install_jasper() {
     # Tighten the parent dirs too so non-root processes can't even
     # `ls` the per-household-member token filenames (the names are
     # PII-adjacent — they identify which household members linked
-    # accounts). install -d resets perms on existing dirs, so this
-    # also tightens any pre-existing 755 left from earlier installs.
-    install -d -m 0700 "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
+    # accounts). install -d resets perms on existing dirs.
+    # WS1 Phase 3b: 0750 + group `jasper` (was 0700 root-only) so the now-non-root
+    # jasper-voice can traverse to read its Google OAuth tokens. systemd's
+    # StateDirectory recursive-chown may re-own these to another jasper daemon,
+    # so group read — not owner — is what makes voice's Calendar/Gmail tools work
+    # after the drop. Per-daemon secret isolation is Phase 4 (LoadCredential).
+    if getent group jasper >/dev/null 2>&1; then
+        install -d -m 0750 -g jasper "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
+        # Widen pre-existing token files (0600) to group-jasper read.
+        chmod 0640 "${STATE_DIR}/google/accounts.json" 2>/dev/null || true
+        find "${STATE_DIR}/google/tokens" -type f -name '*.json' \
+            -exec chmod 0640 {} + 2>/dev/null || true
+    else
+        install -d -m 0700 "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
+    fi
 
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \

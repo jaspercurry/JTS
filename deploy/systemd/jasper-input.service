@@ -12,10 +12,21 @@ ExecStart=/opt/jasper/.venv/bin/jasper-input
 Restart=on-failure
 RestartSec=2
 
-# Hardening — daemon reads /dev/input/event*, watches udev, and
-# makes localhost HTTP requests to jasper-control. No writes outside
-# stdout/stderr (journald). Runs as root because /dev/input/event*
-# is root:input on Trixie and we don't run a service account.
+# WS1 Phase 3b — user drop (3b-1). Non-root service user; `input`
+# (supplementary) grants /dev/input/event* (root:input on Trixie), `jasper`
+# (primary) is the shared group. Talks to jasper-control over localhost TCP
+# (no UDS), writes nothing, needs no capability — CapabilityBoundingSet= drops
+# them all and SystemCallFilter=@system-service blocks the dangerous classes.
+# docs/HANDOFF-privilege-separation.md.
+User=jasper-input
+Group=jasper
+SupplementaryGroups=input
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+
+# Hardening — daemon reads /dev/input/event*, watches udev, and makes localhost
+# HTTP requests to jasper-control. No writes outside stdout/stderr (journald).
+# /dev/input/event* access comes from the `input` supplementary group above.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
@@ -23,8 +34,7 @@ NoNewPrivileges=true
 # WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
 # AF_NETLINK is required for the pyudev hot-plug monitor; AF_INET for the
 # localhost POST to jasper-control. Writes nothing, so ProtectSystem=strict
-# needs no ReadWritePaths. Capability filters + the `input`-group user drop
-# land in Phase 3.
+# needs no ReadWritePaths.
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

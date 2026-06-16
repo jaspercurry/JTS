@@ -84,6 +84,20 @@ def test_normalize_unit(raw, normalized):
     assert restart_broker._normalize_unit(raw) == normalized
 
 
+def test_managed_units_excludes_tier_b_reconcilers():
+    """Tier-B reconcilers stay root in Phase 3 and must NOT be brokerable — a
+    non-root daemon must never be able to ask the broker to restart the
+    self-healing units that recover Wi-Fi / AEC / the DAC / the dongle."""
+    tier_b = {
+        "jasper-wifi-guardian.service",
+        "jasper-dac-init.service",
+        "jasper-dongle-recover.service",
+    }
+    assert tier_b.isdisjoint(restart_broker.MANAGED_UNITS), (
+        f"Tier-B units in MANAGED_UNITS: {tier_b & restart_broker.MANAGED_UNITS}"
+    )
+
+
 def test_managed_units_cover_every_routed_client_unit():
     # Units the wizard / mux / correction / wake-corpus client sites send.
     must_contain = {

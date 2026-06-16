@@ -13,6 +13,19 @@
 
 ensure_state_dir() {
     install -d -m 0750 "${STATE_DIR}"
+    # WS1 Phase 3b: once the shared `jasper` group exists (created by
+    # create_jasper_service_users earlier in install), widen the state dir to
+    # root:jasper 0770 so the now-non-root jasper-voice/-mux (group jasper) can
+    # write group-shared state here (speaker_volume.json via atomic
+    # tempfile+rename, which needs dir write). Owner stays root (rollback-safe);
+    # idempotent and a no-op before the group exists (pre-3b / fresh install
+    # before users are created). Called repeatedly across install, so it lives
+    # here rather than as a one-shot — any later `install -d -m 0750` above
+    # would otherwise reset the mode/group.
+    if getent group jasper >/dev/null 2>&1; then
+        chgrp jasper "${STATE_DIR}" 2>/dev/null || true
+        chmod 0770 "${STATE_DIR}" 2>/dev/null || true
+    fi
 }
 
 render_voice_provider_ids_manifest() {

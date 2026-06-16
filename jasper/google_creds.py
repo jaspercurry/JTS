@@ -132,17 +132,20 @@ class GoogleRegistry:
         )
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.path), mode=0o750, exist_ok=True)
         payload = {
             "version": 1,
             "default": self.default_name,
             "accounts": [asdict(a) for a in self.accounts],
         }
         tmp = self.path + ".tmp"
-        # 0o600 — accounts.json contains the linked household members'
-        # Gmail addresses, which are PII-adjacent. Token files use the
-        # same mode (see save_token below).
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # 0o640 — accounts.json holds the linked members' Gmail addresses
+        # (PII-adjacent). WS1 Phase 3b: group-`jasper` read (was 0600) so the
+        # now-non-root jasper-voice can read it after systemd's StateDirectory
+        # recursive-chown re-owns it to another jasper daemon. No world read.
+        # Token files use the same mode (save_token below). Per-daemon secret
+        # isolation is Phase 4 (LoadCredential).
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
         os.replace(tmp, self.path)
@@ -211,9 +214,12 @@ def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None 
         "token_uri": token_uri or GOOGLE_TOKEN_URI,
         "scopes": list(scopes) if scopes else list(GOOGLE_SCOPES),
     }
-    os.makedirs(os.path.dirname(token_path), exist_ok=True)
+    os.makedirs(os.path.dirname(token_path), mode=0o750, exist_ok=True)
     tmp = token_path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # 0o640 — group-`jasper` read (was 0600) so the now-non-root jasper-voice
+    # can read the OAuth refresh token after systemd's StateDirectory
+    # recursive-chown re-owns it. No world read. See AccountRegistry.save.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
