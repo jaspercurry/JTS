@@ -29,6 +29,8 @@ from jasper.active_speaker.commissioning_capture import (
     record_summed_acoustic_capture,
 )
 from jasper.active_speaker.driver_acoustics import (
+    DRIVER_VERDICTS,
+    SUMMED_VERDICTS,
     DriverAcousticResult,
     SummedAcousticResult,
 )
@@ -106,8 +108,14 @@ def test_primary_crossover_is_lowest():
     assert primary_crossover_fc_hz(_three_way()) == 350.0
 
 
-def test_verdict_maps_have_no_unusable_outcome():
-    # An unusable capture must NOT map to a recordable outcome.
+def test_verdict_maps_cover_the_full_recordable_vocabulary():
+    # Guard the coupling to driver_acoustics' verdict vocabulary: every verdict
+    # except the un-recordable `unusable_capture` maps to an outcome. A renamed
+    # or added verdict then fails here instead of silently `.get()`->None->not
+    # recorded.
+    assert set(DRIVER_VERDICT_TO_OUTCOME) | {"unusable_capture"} == DRIVER_VERDICTS
+    assert set(SUMMED_VERDICT_TO_OUTCOME) | {"unusable_capture"} == SUMMED_VERDICTS
+    # The unusable verdict is never mapped (it must not record).
     assert "unusable_capture" not in DRIVER_VERDICT_TO_OUTCOME
     assert "unusable_capture" not in SUMMED_VERDICT_TO_OUTCOME
 
@@ -210,6 +218,29 @@ def test_mic_clipping_flows_through_to_record(tmp_path: Path):
     assert record["mic_clipping"] is True
     # Clipping demotes captured even for a "present" verdict.
     assert record["captured"] is False
+
+
+def test_present_without_floor_confirmation_is_not_captured(tmp_path: Path):
+    # The acoustic verdict must NEVER bypass the operator floor gate: a "present"
+    # verdict with no armed/floor-confirmed safe session records the evidence but
+    # leaves `captured` False (the same gate the operator quiet-test path uses).
+    out = record_driver_acoustic_capture(
+        _topology(),
+        _two_way(),
+        speaker_group_id="mono",
+        role="woofer",
+        captured_wav=tmp_path / "cap.wav",
+        sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+        playback_id="pb1",
+        safe_session=None,  # no floor confirmation
+        state_path=tmp_path / "measurements.json",
+        analyze=lambda *a, **k: _driver_result("present", present=True),
+    )
+    assert out["recorded"] is True
+    record = out["measurement"]["driver_measurements"][-1]
+    assert record["outcome"] == "heard_correct_driver"
+    assert record["captured"] is False
+    assert any(issue["severity"] == "blocker" for issue in record["issues"])
 
 
 # --- summed-crossover wire ---------------------------------------------------

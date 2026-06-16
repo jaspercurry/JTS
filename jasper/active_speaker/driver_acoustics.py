@@ -64,6 +64,19 @@ DEFAULT_NULL_THRESHOLD_DB = 6.0  # crossover suckout that flags polarity/delay
 DRIVER_ACOUSTIC_KIND = "jts_active_speaker_driver_acoustics"
 SUMMED_ACOUSTIC_KIND = "jts_active_speaker_summed_acoustics"
 
+# The complete verdict vocabulary each analyzer can return. Exported as the
+# single source so callers that MAP verdicts (commissioning_capture's
+# verdict->outcome maps) can guard-test that they cover the full set: a renamed
+# or added verdict then fails a test loudly instead of silently skipping a
+# capture (`.get()` -> None -> not recorded). Keep these in lockstep with the
+# verdict literals returned by analyze_driver_capture / analyze_summed_crossover.
+DRIVER_VERDICTS = frozenset(
+    {"present", "out_of_band", "silent", "unusable_capture"}
+)
+SUMMED_VERDICTS = frozenset(
+    {"blend_ok", "polarity_or_delay_problem", "unusable_capture"}
+)
+
 
 class DriverAcousticsError(ValueError):
     """Raised for malformed inputs (bad channel index, unreadable sweep meta)."""

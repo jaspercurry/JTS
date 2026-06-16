@@ -120,6 +120,14 @@ def record_driver_acoustic_capture(
     ``record_driver_measurement``. An ``unusable_capture`` records nothing.
     Returns ``{verdict, outcome, recorded, skipped_reason, passband_hz,
     acoustic, measurement}``.
+
+    ``playback_id`` must be the **accepted floor test's** playback id and
+    ``safe_session`` its armed session: a ``present`` verdict maps to
+    ``heard_correct_driver``, which ``record_driver_measurement`` only counts as
+    ``captured`` when that floor confirmation matches this target (see
+    ``measurement._floor_confirmation_issues``). A missing or mismatched floor
+    confirmation still records the acoustic evidence but leaves ``captured``
+    False — the acoustic verdict never bypasses the operator floor gate.
     """
     passband = driver_passband_hz(preset, role)
     result = analyze(
