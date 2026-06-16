@@ -533,7 +533,11 @@ class RuntimeIntegrityReport:
             "capture_count": len(self.captures),
             "snapshot_count": len(self.snapshots),
             "latest_snapshot": latest,
-            "issues": self.issues,
+            # Copy, not the live list: summary() feeds MeasurementSession.snapshot(),
+            # serialized on the /status handler thread while _add_issue may append
+            # from the loop thread. Point-in-time, like the session's own
+            # capture_quality / noise_reports copies.
+            "issues": list(self.issues),
         }
 
     def to_dict(self) -> dict[str, Any]:

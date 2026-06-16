@@ -106,12 +106,19 @@ def assess_capture(
     sweep_n_samples: int,
     has_mic_calibration: bool,
     input_device: dict[str, Any] | None = None,
+    truncated_from_samples: int | None = None,
 ) -> CaptureQuality:
     """Assess a browser-uploaded correction capture.
 
     Failures are conditions that make deconvolution unsafe or known-bad.
     Warnings are conditions where the run can continue, but downstream
     tools and humans should treat the result as lower confidence.
+
+    truncated_from_samples is the capture's length BEFORE the caller
+    bounded it for memory (see deconv.cap_capture_length). When it
+    exceeds the assessed length, a `capture_truncated` warning is
+    emitted so the truncation is visible at /status / bundle / doctor,
+    not just in the journal.
     """
     if captured.ndim != 1:
         raise ValueError(f"captured must be mono 1-D, got {captured.shape}")
@@ -150,6 +157,23 @@ def assess_capture(
             details={
                 "captured_samples": len(captured),
                 "sweep_samples": sweep_n_samples,
+            },
+        ))
+    if (
+        truncated_from_samples is not None
+        and truncated_from_samples > len(captured)
+    ):
+        issues.append(QualityIssue(
+            code="capture_truncated",
+            severity="warn",
+            message=(
+                "capture exceeded the analysis window and was truncated to "
+                "bound memory; re-measure if this was unintended"
+            ),
+            details={
+                "original_samples": int(truncated_from_samples),
+                "analyzed_samples": int(len(captured)),
+                "analyzed_seconds": round(duration_s, 1),
             },
         ))
     if clipped >= CLIP_FRACTION_FAIL:
