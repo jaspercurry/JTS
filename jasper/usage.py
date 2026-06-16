@@ -380,50 +380,68 @@ _SESSIONS_TABLE_DDL = """
 class UsageStore:
     def __init__(
         self, db_path: str, pricing: Pricing | None = None,
+        *, read_only: bool = False,
     ) -> None:
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path, isolation_level=None)
-        self._conn.execute(_SESSIONS_TABLE_DDL)
-        # `provider` is recorded per session at open_session() time. We
-        # deliberately do NOT backfill historic NULL rows: the active
-        # provider's source of truth is /var/lib/jasper/voice_provider.env,
-        # not this process's frozen env, and guessing a provider for rows
-        # that predate the column is exactly the kind of legacy-accounting
-        # code this project doesn't carry. Pre-existing rows aggregate as
-        # "unknown".
-        #
-        # Schema self-heal (a wipe, NOT a value-preserving migration): a
-        # usage DB that predates the `provider` column (pre-PR-#85) would
-        # fail open_session()'s INSERT with "no such column: provider" on
-        # every turn. Rather than carry migration code, drop & recreate —
-        # this is disposable cost telemetry, so the household loses nothing
-        # that matters, and the voice loop self-recovers instead of wedging.
-        # One-time: a no-op once the schema has the column (every current
-        # and fresh DB).
-        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
-        if "provider" not in cols:
-            self._conn.execute("DROP TABLE sessions")
-            self._conn.execute(_SESSIONS_TABLE_DDL)
-        # Connection-uptime intervals for time-billed providers (Grok).
-        # Each open connection is a row; cost = duration × rate snapshot.
-        # Separate from `sessions` (which is per-turn) because the billable
-        # unit for a flat-rate provider is connection time, not turns.
-        # NOTE: do NOT clean up dangling intervals here — UsageStore is
-        # constructed read-only by the dashboard on every poll, and
-        # closing the live connection's open interval from a reader would
-        # be wrong. Crash cleanup lives in ConnectionUptimeMeter (daemon
-        # startup only).
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS connection_intervals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                provider TEXT NOT NULL,
-                opened_at TEXT NOT NULL,
-                closed_at TEXT,
-                rate_per_hour_usd REAL NOT NULL DEFAULT 0
+        # Status surfaces (the /voice spend-cap card, jasper-doctor) read
+        # this DB but run as root, NOT as jasper-voice. They MUST pass
+        # read_only=True: a read-WRITE open auto-creates the file and runs
+        # the CREATE TABLE / self-heal DDL below — which can leave usage.db
+        # owned by the wrong user (root/jasper-mux, mode 644). Once that
+        # happens jasper-voice can no longer write its own DB, open_session()
+        # raises "attempt to write a readonly database" on EVERY wake, and
+        # the daemon plays the cant_connect cue instead of answering (the
+        # 2026-06-16 outage). mode=ro never creates the file and never
+        # writes, so a reader cannot corrupt ownership. Callers gate on
+        # os.path.exists() and fail soft, so an absent DB is handled
+        # upstream rather than silently created here.
+        if read_only:
+            self._conn = sqlite3.connect(
+                f"file:{db_path}?mode=ro", uri=True, isolation_level=None,
             )
-            """
-        )
+        else:
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(db_path, isolation_level=None)
+            self._conn.execute(_SESSIONS_TABLE_DDL)
+            # `provider` is recorded per session at open_session() time. We
+            # deliberately do NOT backfill historic NULL rows: the active
+            # provider's source of truth is /var/lib/jasper/voice_provider.env,
+            # not this process's frozen env, and guessing a provider for rows
+            # that predate the column is exactly the kind of legacy-accounting
+            # code this project doesn't carry. Pre-existing rows aggregate as
+            # "unknown".
+            #
+            # Schema self-heal (a wipe, NOT a value-preserving migration): a
+            # usage DB that predates the `provider` column (pre-PR-#85) would
+            # fail open_session()'s INSERT with "no such column: provider" on
+            # every turn. Rather than carry migration code, drop & recreate —
+            # this is disposable cost telemetry, so the household loses nothing
+            # that matters, and the voice loop self-recovers instead of wedging.
+            # One-time: a no-op once the schema has the column (every current
+            # and fresh DB).
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+            if "provider" not in cols:
+                self._conn.execute("DROP TABLE sessions")
+                self._conn.execute(_SESSIONS_TABLE_DDL)
+            # Connection-uptime intervals for time-billed providers (Grok).
+            # Each open connection is a row; cost = duration × rate snapshot.
+            # Separate from `sessions` (which is per-turn) because the billable
+            # unit for a flat-rate provider is connection time, not turns.
+            # NOTE: do NOT clean up dangling intervals here — UsageStore is
+            # also constructed read-only by status surfaces, and closing the
+            # live connection's open interval from a reader would be wrong.
+            # Crash cleanup lives in ConnectionUptimeMeter (daemon startup
+            # only).
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS connection_intervals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    rate_per_hour_usd REAL NOT NULL DEFAULT 0
+                )
+                """
+            )
         # Callers that don't pass `pricing=` (the dashboard read path, which
         # never computes cost, and tests) fall back to the cheapest current
         # model's rates. Production always passes the active model's pricing.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from jasper.usage import (
     ConnectionUptimeMeter,
@@ -590,3 +593,60 @@ def test_every_catalog_model_has_bundled_pricing():
             )
             pricing = pricing_for_model(model.id, defaults=table)
             assert not pricing.label.startswith("unpriced:")
+
+
+# ---------------------------------------------------------------------------
+# read_only mode — status surfaces (the /voice spend card, jasper-doctor) run
+# as root, not jasper-voice. A read-WRITE open from them can re-own usage.db
+# and lock the voice daemon out of its own DB (open_session then raises
+# "attempt to write a readonly database" on every wake → the cant_connect
+# cue). These tests pin that read_only=True never creates and never writes.
+# Regression for the 2026-06-16 outage.
+# ---------------------------------------------------------------------------
+def test_read_only_does_not_create_missing_db(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    assert not db.exists()
+    with pytest.raises(sqlite3.OperationalError):
+        UsageStore(str(db), read_only=True)
+    # The whole point: a reader must not bring the file into existence (a
+    # root-created file would lock jasper-voice out).
+    assert not db.exists()
+
+
+def test_read_only_cannot_write(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    UsageStore(str(db))  # create schema as the writer
+    ro = UsageStore(str(db), read_only=True)
+    with pytest.raises(sqlite3.OperationalError):
+        ro.open_session(provider="openai")
+
+
+def test_read_only_reads_existing_spend(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db), pricing=pricing_for_model("gpt-realtime-2"))
+    sid = store.open_session(provider="openai")
+    cost = store.close_session(sid, input_tokens=10_000, output_tokens=2_000)
+
+    ro = UsageStore(str(db), read_only=True)
+    assert ro.spend_last_24h_usd() == cost
+    assert ro.spend_month_to_date_usd() == cost
+    assert ro.session_count_today_utc() == 1
+    # And the breaker reads correctly through the read-only store.
+    assert SpendCap(ro, cap_usd=cost / 2).allowed() is False
+    assert SpendCap(ro, cap_usd=cost * 10).allowed() is True
+
+
+def test_read_only_open_performs_no_writes(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    store.close_session(store.open_session(provider="openai"), 1_000, 100)
+    before = db.read_bytes()
+
+    ro = UsageStore(str(db), read_only=True)
+    _ = ro.spend_last_24h_usd()  # exercise a read
+
+    # No rollback/WAL sidecars created, and the DB file is byte-identical:
+    # a reader must leave the writer's file untouched.
+    assert not os.path.exists(str(db) + "-journal")
+    assert not os.path.exists(str(db) + "-wal")
+    assert db.read_bytes() == before

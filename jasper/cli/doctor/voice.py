@@ -192,17 +192,27 @@ def check_tool_packs() -> CheckResult:
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:
         from ...usage import SpendCap, UsageStore
-        store = UsageStore(cfg.usage_db)
+        if cfg.daily_spend_cap_usd <= 0:
+            return CheckResult(
+                "daily spend cap", "ok",
+                "disabled (JASPER_DAILY_SPEND_CAP_USD=0)",
+            )
+        # The doctor runs as root. Never open usage.db read-write here:
+        # creating/re-owning it would lock jasper-voice out of its own DB
+        # (open_session would then fail on every wake). Treat an absent DB
+        # as "no spend yet" rather than creating it. See UsageStore.__init__.
+        if not os.path.exists(cfg.usage_db):
+            return CheckResult(
+                "daily spend cap", "ok",
+                f"no usage recorded yet; $0.00 of "
+                f"${cfg.daily_spend_cap_usd:.2f} used",
+            )
+        store = UsageStore(cfg.usage_db, read_only=True)
         cap = SpendCap(
             store,
             cfg.daily_spend_cap_usd,
             cfg.daily_spend_cap_safety_multiplier,
         )
-        if cap.disabled:
-            return CheckResult(
-                "daily spend cap", "ok",
-                "disabled (JASPER_DAILY_SPEND_CAP_USD=0)",
-            )
         remaining = cap.remaining_usd()
         if not cap.allowed():
             return CheckResult(

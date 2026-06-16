@@ -351,7 +351,10 @@ def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
     sessions_today = 0
     if usage_available:
         try:
-            store = UsageStore(usage_db)
+            # read_only: this runs in jasper-web (root), not jasper-voice.
+            # A read-write open could re-own usage.db and lock the voice
+            # daemon out of its own DB. See UsageStore.__init__.
+            store = UsageStore(usage_db, read_only=True)
             spend_last_24h = store.spend_last_24h_usd()
             month_to_date = store.spend_month_to_date_usd()
             sessions_today = store.session_count_today_utc()
