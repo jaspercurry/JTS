@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml as yaml_lib
@@ -805,3 +806,49 @@ def test_physical_protection_staged_config_reads_as_muted_via_fallback(
     assert payload["status"] == "staged"
     assert payload["software_guard"] == {}  # physical protection: no software guard
     assert _startup_muted_by_candidate(payload) is True
+
+
+def test_all_commission_mutes_engaged_requires_pipeline_wiring() -> None:
+    # The always-on crash-recovery gate must verify each per-output mute is not
+    # just DEFINED muted but actually WIRED into the pipeline on its channel.
+    # A mute filter that is defined (-120 dB, muted) but whose pipeline step is
+    # missing must fail closed — otherwise the gate trusts emitter lockstep.
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo"))
+    yaml = emit_active_speaker_commissioning_config(
+        preset, playback_device="hw:CARD=DAC8x,DEV=0", audible_outputs=frozenset()
+    )
+    assert staging_mod._all_commission_mutes_engaged(yaml, preset=preset) is True
+    # Drop output 0's commission-mute PIPELINE step; keep its filter definition.
+    unwired = yaml.replace(
+        "  - type: Filter\n    channels: [0]\n    names: [as_out0_commission_mute]",
+        "",
+    )
+    assert unwired != yaml  # the step existed and was removed
+    assert "as_out0_commission_mute:" in unwired  # definition still present + muted
+    assert staging_mod._all_commission_mutes_engaged(unwired, preset=preset) is False
+
+
+def test_software_guard_evidence_blocks_when_tweeter_protection_unwired() -> None:
+    # Isolate tweeter_pipeline_guarded: remove the tweeter's per-role protective
+    # HP + limiter pipeline step while leaving every mute intact. startup_muted
+    # stays True, but the HP/limiter no longer wrap the tweeter channel, so the
+    # structural guard (and therefore `passed`) must fail.
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo"))
+    yaml = emit_active_speaker_commissioning_config(
+        preset, playback_device="hw:CARD=DAC8x,DEV=0", audible_outputs=frozenset()
+    )
+    baseline = staging_mod._software_guard_evidence(yaml, preset=preset)
+    assert baseline["checks"]["tweeter_pipeline_guarded"] is True
+    # The tweeter per-role chain is the pipeline Filter on channels [1, 3] whose
+    # names begin with as_tweeter_protective_hp (unique to the tweeter chain).
+    stripped, n = re.subn(
+        r" {2}- type: Filter\n {4}channels: \[1, 3\]\n"
+        r" {4}names: \[as_tweeter_protective_hp[^\]]*\]\n",
+        "",
+        yaml,
+    )
+    assert n == 1  # exactly the tweeter HP/limiter chain step was removed
+    evidence = staging_mod._software_guard_evidence(stripped, preset=preset)
+    assert evidence["checks"]["tweeter_pipeline_guarded"] is False
+    assert evidence["checks"]["startup_muted"] is True  # mutes untouched
+    assert evidence["passed"] is False

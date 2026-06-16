@@ -15,6 +15,7 @@ from jasper.active_speaker import (
     write_path_safety_evidence,
 )
 from jasper.active_speaker.calibration_level import calibration_level_payload
+from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
@@ -270,3 +271,24 @@ def test_write_path_safety_evidence_persists_probe_payload(tmp_path: Path) -> No
     path = write_path_safety_evidence(evidence, path=tmp_path / "path_safety.json")
 
     assert path.read_text(encoding="utf-8").startswith("{\n")
+
+
+def test_startup_muted_prefers_fully_muted_gate_over_text_scan(tmp_path: Path) -> None:
+    # _startup_muted_by_candidate prefers the precise staged_candidate_fully_muted
+    # gate (every per-output mute -120 dB AND wired) over the coarse text scan.
+    payload = _staged(tmp_path)
+    assert payload["status"] == "staged"
+    gate = next(
+        g for g in payload["required_gates"]
+        if g["id"] == "staged_candidate_fully_muted"
+    )
+    assert gate["passed"] is True
+    assert _startup_muted_by_candidate(payload) is True
+
+    # If the gate reports NOT fully muted, the precise gate must win even though
+    # the on-disk config (and the loose text scan) still shows other muted
+    # outputs — the looseness the text fallback could not catch.
+    for g in payload["required_gates"]:
+        if g["id"] == "staged_candidate_fully_muted":
+            g["passed"] = False
+    assert _startup_muted_by_candidate(payload) is False

@@ -18,6 +18,7 @@ from jasper.active_speaker import (
     audible_outputs_for_role,
     emit_active_speaker_commissioning_config,
 )
+from jasper.active_speaker.environment import classify_camilla_config_text
 
 # Reuse the canonical preset fixtures.
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
@@ -139,3 +140,25 @@ def test_commissioning_config_is_parseable_yaml_for_all_layouts():
         )
         parsed = yaml_lib.safe_load(out)
         assert "filters" in parsed and "mixers" in parsed and "pipeline" in parsed
+
+
+def test_commissioning_config_classifies_as_active_startup_candidate():
+    # The commissioning config is what staging now PERSISTS as the boot config.
+    # It deliberately lacks the startup emitter's source-comment marker, so its
+    # safety classification hinges entirely on the split_active_Nway mixer
+    # (classify_camilla_config_text's _active_split_summary). That classification
+    # drives the volume-ceiling / playback-channel safety checks, so pin it
+    # directly: a rename of the split mixer or its regex must NOT silently demote
+    # the persisted boot config to unknown_custom.
+    for builder in (_two_way_preset("mono"), _two_way_preset("stereo"),
+                    _three_way_preset("stereo")):
+        preset = _preset(builder)
+        out = emit_active_speaker_commissioning_config(
+            preset, playback_device=ACTIVE_PCM, audible_outputs=frozenset()
+        )
+        # It must NOT carry the startup source marker — so classification cannot
+        # be leaning on the marker; it must come from the split mixer.
+        assert "emit_active_speaker_startup_config" not in out
+        result = classify_camilla_config_text(out)
+        assert result["classification"] == "active_startup_candidate"
+        assert result["volume_limit_ok"] is True
