@@ -25,17 +25,32 @@ const CATEGORY_ORDER = [
 ];
 
 // A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
-// "/google/"). Accept ONLY an absolute path whose first char is "/" and whose
-// SECOND char is neither "/" nor "\\". Both "//host" and "/\\host" are
-// scheme-relative (browsers normalize "\\" to "/" in special schemes), so they
-// navigate OFF-ORIGIN — the backslash form slips past a naive `!"//"` check.
-// This also neutralizes `javascript:`/`data:` schemes (they don't start with
-// "/") BEFORE the value reaches an <a href> — escapeHtml escapes characters
-// but does not validate schemes/authorities, so it can't stop these on its
-// own. The catalog is the marketplace's future home for third-party setup
-// links, so the href is a real boundary.
+// "/google/"). Require an absolute path ("/..."), then RESOLVE it against the
+// page origin and demand the result stay on that origin over http(s). A
+// character-level guard is not enough: the WHATWG URL parser folds "\" -> "/"
+// AND strips ASCII tab/newline from the whole input BEFORE parsing, so "//host",
+// "/\\host", and even "/<TAB>/host" / "/<LF>/host" all normalize to a
+// scheme-relative, OFF-ORIGIN URL while slipping past a regex that only inspects
+// the second character. Delegating to the real parser closes that whole
+// obfuscation class — and the `javascript:`/`data:` schemes, which an
+// absolute path can't form — in one place. escapeHtml escapes characters but
+// never validates origin/scheme, so this is the href's own boundary. The
+// catalog is the marketplace's future home for third-party setup links.
+// (`location` is absent in the Node test harness; fall back to a fixed
+// same-origin base so the same code path is exercised — Node's URL parser
+// matches the browser's for these cases.)
 function safeSetupUrl(u) {
-  return typeof u === "string" && /^\/(?![/\\])/.test(u) ? u : null;
+  if (typeof u !== "string" || !u.startsWith("/")) return null;
+  try {
+    const base = (typeof location !== "undefined" && location.href) ||
+      "http://jts.local/";
+    const url = new URL(u, base);
+    if (url.origin !== new URL(base).origin) return null;
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  } catch {
+    return null;
+  }
+  return u;
 }
 
 function safeDetailUrl(name) {
