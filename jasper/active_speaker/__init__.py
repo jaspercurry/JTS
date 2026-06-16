@@ -159,6 +159,17 @@ from .baseline_profile import (
     baseline_config_path,
     baseline_profile_state_path,
 )
+from .driver_acoustics import (
+    DRIVER_ACOUSTIC_KIND,
+    SUMMED_ACOUSTIC_KIND,
+    DriverAcousticResult,
+    DriverAcousticsError,
+    DriverSweep,
+    SummedAcousticResult,
+    analyze_driver_capture,
+    analyze_summed_crossover,
+    write_driver_sweep_wav,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
@@ -167,6 +178,15 @@ __all__ = [
     "BASELINE_HEADROOM_DB",
     "BASELINE_LIMITER_CLIP_LIMIT_DB",
     "BASELINE_PROFILE_KIND",
+    "DRIVER_ACOUSTIC_KIND",
+    "SUMMED_ACOUSTIC_KIND",
+    "DriverAcousticResult",
+    "DriverAcousticsError",
+    "DriverSweep",
+    "SummedAcousticResult",
+    "analyze_driver_capture",
+    "analyze_summed_crossover",
+    "write_driver_sweep_wav",
     "CALIBRATION_LEVEL_KIND",
     "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_PATH_SAFETY_EVIDENCE_PATH",
