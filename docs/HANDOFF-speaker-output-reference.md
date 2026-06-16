@@ -646,6 +646,38 @@ place to get it right and the most expensive to get wrong later.
 > emission (Stage 2) ride the plan. The plan is recomputed fresh from the topology
 > per call (no cached index); wiring the *udev/boot env emission* of it is Stage 2.
 
+> **Stage 2a landed (reconciler env + wide content lane + width gate + DAC8x
+> profile flip).** `jasper-audio-hardware-reconcile`'s `apply_audio_runtime_env`
+> emits the wide single env (item 3) — `JASPER_OUTPUTD_SINK=single_alsa`,
+> `JASPER_OUTPUTD_ACTIVE_CHANNELS=<active_outputd_lane_channels>`,
+> `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture` — for a recognized
+> coherent single DAC **only when an active baseline of that width is the loaded
+> CamillaDSP config**, decided by the width-aware cutover gate (item 5, the old
+> `dual_apple_active_graph_status` renamed to `active_graph_status`, status
+> `active_graph_width_mismatch expected=N got=M`); otherwise it stays
+> byte-identical stereo. The gate **drives what we use**: it reads the loaded
+> config's actual playback width W, accepts `2 ≤ W ≤ cap`
+> (`active_outputd_lane_channels`), and emits **that W** as
+> `JASPER_OUTPUTD_ACTIVE_CHANNELS` (a managed var cleared in every non-active
+> branch). A DAC8x running a 2-way drives 2 outputs, an 8-driver speaker drives
+> 8 — outputd opens the DAC at W. The active content lane (item 4) is raw
+> `type hw` — card/device/subdevice only, exactly like the `outputd_dac` block;
+> the ALSA `hw` plugin rejects `channels`/`rate`/`format` as unknown fields, so
+> the width is set by the openers and locked by snd-aloop, with
+> `type plug`/`plughw:` banned. The DAC8x/DAC8x-Studio `DacProfile`s declare the
+> active lane (item 6, `supports_active_outputd_lane=True`,
+> `active_outputd_lane_channels=8` = the cap; the Stage 1 transport carries any
+> width ≤ cap). Because the gate accepts the config's actual width, the existing
+> per-speaker emitters (which emit the driver count) engage active mode directly
+> — **no full-width-padding producer is needed.** **Load-bearing hardware fact
+> (verify on jts3 at Stage 3/4):** outputd opening the DAC at W < its physical
+> channel count must succeed and idle the undriven outputs safely; if a future
+> DAC requires native-width opens, that becomes a per-DAC `DacProfile` property,
+> not a reason to pad universally. **Still pending (2b):** wiring the masked
+> commissioning emitter into staging (per-output mute mask; crash recovery lands
+> muted) — see [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)
+> critical-path step 2.
+
 **4. One wide snd-aloop content substream — width on the substream, not more
 substreams.** The kernel caps loopback substreams at `MAX_PCM_SUBSTREAMS=8` (you
 cannot raise that without patching the module); but one substream carries up to
@@ -653,6 +685,11 @@ cannot raise that without patching the module); but one substream carries up to
 make the active content lane **one substream at width N**, not to add substreams:
 - Render the active-content lane width from `JASPER_OUTPUTD_ACTIVE_CHANNELS`
   (`__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` token in `asoundrc.jasper`).
+  *(2a implementation note: the ALSA `hw` plugin rejects `channels`/`rate`/
+  `format` as unknown fields, so this token approach was abandoned — the active
+  lane is plain `type hw` card/device/subdevice and the width is set by the
+  openers + locked by snd-aloop, NOT pinned in the conf. See the "Stage 2a
+  landed" callout above.)*
 - **All format adaptation is explicit and owned by CamillaDSP; the active ALSA
   path fails closed on channel, rate, AND format mismatch.** Ban `type plug`
   (and `plughw:`, which is `plug`+`hw`) on the active path — use width-exact
@@ -669,10 +706,20 @@ make the active content lane **one substream at width N**, not to add substreams
   order. If PipeWire/PulseAudio is present it may grab the loopback device —
   out of scope for the appliance, noted for dev hosts.
 
-**5. Width-aware cutover gate.** Replace the `channels: 4` grep with a
-width-aware assertion (active config channels == `OutputTransportPlan`
-transport channels); rename `active_four_channel_shape_missing` →
-`active_graph_width_mismatch expected=N got=M`.
+**5. Width-aware cutover gate — drive what we use, not the DAC's full width.**
+Replace the `channels: 4` grep with a capacity check: the active config's
+**actual** playback width W must be a valid active width **within the DAC's
+cap** (`2 ≤ W ≤ active_outputd_lane_channels`), and the reconciler emits that
+**actual W** as `JASPER_OUTPUTD_ACTIVE_CHANNELS` so outputd opens the DAC at
+exactly W. `active_outputd_lane_channels` is the **cap** (the most outputs
+outputd will drive on this DAC), not a fixed width — a 100-output DAC powering a
+2-way drives 2, never 100. This matches the `<=` model
+`ActivePlaybackRouteCapability` already uses (`required_active_output_count <=
+transport_channel_count`); a config wider than the cap fails closed. Renamed
+`active_four_channel_shape_missing` → `active_graph_width_out_of_range got=W
+cap=N`. (Earlier drafts used a fixed `== transport width` gate that would have
+forced narrow speakers to pad to the DAC's full channel count with muted lanes;
+rejected — see the "Stage 2a landed" callout above.)
 
 **6. `DacProfile` additions (pure data, IO-free, fail-closed at import).**
 - `dac_channel_map: tuple[ChannelMapEntry, ...] | None` — `(camilla_out_index,

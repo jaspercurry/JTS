@@ -298,8 +298,11 @@ def test_stage_protected_startup_config_writes_muted_candidate(
     assert payload["kind"] == STAGED_STARTUP_CONFIG_KIND
     assert payload["status"] == "staged"
     assert payload["preset"]["preset_id"] == "epique-e150he44-eminence-f110m8-safe-v1"
-    assert payload["config"]["playback_device"] == "hw:CARD=DAC8,DEV=0"
-    assert payload["config"]["playback_device_source"] == "topology_direct_dac"
+    # Stage 2: the DAC8x declares an active outputd lane, so staging resolves to
+    # that lane (not a direct-DAC route) — staging never silently defaults to
+    # hw:<card>,0 on outputd-owned hardware.
+    assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert payload["config"]["playback_device_source"] == "outputd_active_lane"
     assert payload["config"]["playback_channels"] == 2
     assert payload["config"]["validation"]["status"] == "valid"
     assert payload["config"]["tweeter_protective_highpass_hz"] == 5000
@@ -430,8 +433,10 @@ def test_stage_protected_startup_config_supports_stereo_three_way_on_dac8x(
     )
 
     assert payload["status"] == "staged"
-    assert payload["config"]["playback_device"] == "hw:CARD=DAC8,DEV=0"
-    assert payload["config"]["playback_device_source"] == "topology_direct_dac"
+    # Stage 2: a stereo 3-way (6 lanes) fits within the DAC8x active outputd
+    # lane (width 8), so staging resolves to it rather than a direct-DAC route.
+    assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert payload["config"]["playback_device_source"] == "outputd_active_lane"
     assert payload["config"]["playback_channels"] == 6
     capacity_gate = next(
         gate for gate in payload["required_gates"]

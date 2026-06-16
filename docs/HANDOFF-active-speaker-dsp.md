@@ -568,6 +568,31 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `__OUTPUTD_ACTIVE_CONTENT_CHANNELS__` wide lane, **ban `type plug`/`plughw:`**,
   width-exact `hw:`. *Red:* `reconcile --print-env` diff non-empty for dual-Apple
   or DAC8x-stereo; `aplay -D outputd_dac` not resolvable as the renderer user.
+  **2a landed (transport plumbing; drive-what-we-use width):**
+  `jasper-audio-hardware-reconcile` emits the active single env
+  (`JASPER_OUTPUTD_SINK=single_alsa`, `JASPER_OUTPUTD_ACTIVE_CHANNELS=W`,
+  `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture`) for a recognized
+  coherent single DAC when the loaded CamillaDSP config's playback width W is a
+  valid active width **within the DAC's cap** (`2 ≤ W ≤
+  active_outputd_lane_channels`) — the `active_graph_status` gate (renamed from
+  `dual_apple_active_graph_status`) reads W and returns it; the reconciler emits
+  **that actual W** so outputd opens the DAC at exactly the outputs the speaker
+  drives (a DAC8x running a 2-way drives 2, not 8). A config exceeding the cap
+  fails closed (`active_graph_width_out_of_range got=W cap=N`); otherwise
+  byte-identical stereo. The active content lane (snd-aloop substream 5) is raw
+  `type hw` (card/device/subdevice only — the `hw` plugin rejects
+  channels/rate/format; width is set by the openers and locked by snd-aloop),
+  `type plug`/`plughw:` banned. The DAC8x/DAC8x-Studio `DacProfile`s declare
+  `supports_active_outputd_lane=True` (`active_outputd_lane_channels=8` = the
+  cap). Because the gate accepts the config's actual width, the existing
+  per-speaker emitters (driver-count configs) engage active mode directly — **no
+  full-width-padding producer is needed.** **Load-bearing hardware fact (verify
+  on jts3):** outputd opening the DAC at W < its physical channel count must
+  succeed and idle undriven outputs safely; a DAC that requires native-width
+  opens would declare that per-profile rather than forcing universal padding.
+  **2b remaining:** wiring the masked commissioning emitter (critical-path step 2
+  below) — `stage_protected_startup_config` still calls the unmasked startup
+  emitter.
 - **Stage 3 — jts3, DAC8x as 2ch single, NO drivers at risk.** Prove music + TTS
   (via fan-in) + AEC reference + honest ledger + real clip counter through
   `SingleAlsa` width-2. **Load-test Pi-5 multichannel headroom here.** *Red:*

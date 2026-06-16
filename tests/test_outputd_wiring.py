@@ -40,17 +40,51 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert "type dsnoop" not in capture
 
 
-def test_asoundrc_declares_outputd_active_four_channel_lane():
+def test_asoundrc_active_content_lane_is_raw_hw_no_plug():
+    """The active-crossover content lane (snd-aloop substream 5) uses raw
+    `type hw` on both sides of the pair — card/device/subdevice only, exactly
+    like the outputd_dac block (the ALSA `hw` plugin rejects channels/rate/
+    format as unknown fields). The width is NOT pinned in the conf; it is set
+    by the openers (CamillaDSP playback: channels: N; outputd's
+    JASPER_OUTPUTD_ACTIVE_CHANNELS) and locked by snd-aloop, so a mismatch
+    fails closed at open rather than silently remixing onto live drivers.
+    `type plug` is banned (it is the auto-converting plugin)."""
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     playback = _pcm_block(rc, "outputd_active_content_playback")
     capture = _pcm_block(rc, "outputd_active_content_capture")
-    assert "type plug" in playback
-    assert 'pcm "hw:Loopback,0,5"' in playback
-    assert "channels 4" in playback
-    assert "type plug" in capture
-    assert 'pcm "hw:Loopback,1,5"' in capture
-    assert "channels 4" in capture
-    assert "type dsnoop" not in capture
+    assert "type hw" in playback
+    assert "card Loopback" in playback
+    assert "device 0" in playback
+    assert "subdevice 5" in playback
+    assert "type hw" in capture
+    assert "card Loopback" in capture
+    assert "device 1" in capture
+    assert "subdevice 5" in capture
+    # No conversion plugin, and no channels/rate/format keys (the hw plugin
+    # would reject them, and the width is not pinned here by design).
+    for block in (playback, capture):
+        assert "type plug" not in block
+        assert "type dsnoop" not in block
+        assert "channels" not in block
+        assert "rate" not in block
+        assert "format" not in block
+
+
+def test_active_path_pcms_never_use_plug_or_plughw():
+    """Contract: NO `type plug` / `plughw:` anywhere on the active-crossover
+    path. `plug` is the auto-converting channel/rate/format plugin; on a live-
+    driver path it could remix 8->4 onto a tweeter (the single most dangerous
+    fail-open in active mode). Covers the asoundrc active content lanes and
+    every outputd_dac block the render lib emits (direct hw / composite null /
+    DAC8x route — all conversion-free)."""
+    rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
+    for name in ("outputd_active_content_playback", "outputd_active_content_capture"):
+        block = _pcm_block(rc, name)
+        assert "type plug" not in block, name
+        assert "plughw" not in block, name
+    render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
+    assert "type plug" not in render_lib
+    assert "plughw" not in render_lib
 
 
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
@@ -185,7 +219,12 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
-    assert "dual_apple_active_graph_status()" in reconcile
+    # The cutover gate is width-aware and shared by the composite + single
+    # active paths (renamed from dual_apple_active_graph_status). It accepts any
+    # config width within the DAC's cap (drive-what-we-use) and fails closed
+    # when a config exceeds the cap.
+    assert "active_graph_status()" in reconcile
+    assert "active_graph_width_out_of_range" in reconcile
     assert "action=park_until_active_graph" in reconcile
     assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" in reconcile

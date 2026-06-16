@@ -43,6 +43,14 @@ from jasper.output_topology import (
 )
 
 
+# An unregistered coherent single DAC (no DacProfile, therefore no active
+# outputd lane). After the DAC8x profile flip, every registered single DAC
+# except the Apple dongle declares an active lane, so the direct-DAC
+# diagnostic branch — still real for an un-profiled single, deleted in
+# Stage 7 — is exercised through a generic id like this.
+GENERIC_SINGLE_DAC = "generic_single_dac"
+
+
 def _topology(device_id: str, count: int, *, card_id: str | None = None,
               children: list[dict] | None = None) -> OutputTopology:
     hardware: dict = {
@@ -233,9 +241,33 @@ def test_transport_plan_built_for_single_and_composite_with_same_code() -> None:
 # --- resolve_output_layout ------------------------------------------------
 
 
-def test_dac8x_diagnostic_uses_stable_direct_route() -> None:
+def test_dac8x_resolves_to_outputd_active_lane_in_both_modes() -> None:
+    # Stage 2: the DAC8x now DECLARES an active outputd lane, so it resolves to
+    # that lane and NEVER silently to a direct-DAC route — even in diagnostic
+    # mode (allow_direct_dac=True). The active lane wins in both modes.
+    for allow_direct in (True, False):
+        layout = resolve_output_layout(
+            _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8"),
+            allow_direct_dac=allow_direct,
+        )
+        assert layout.playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+        assert layout.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
+        assert layout.transport_channel_count == 8
+        assert layout.transport_plan is not None
+        assert layout.transport_plan.sink == TRANSPORT_SINK_SINGLE_ALSA
+        assert layout.transport_plan.transport_channels == 8
+        # Identity channel map (no per-DAC permutation) + stable card PCM.
+        assert layout.transport_plan.channel_map == tuple(
+            ChannelMapEntry(i, i) for i in range(8)
+        )
+        assert layout.transport_plan.dac_pcms == ("hw:CARD=DAC8,DEV=0",)
+
+
+def test_no_active_lane_single_diagnostic_uses_stable_direct_route() -> None:
+    # A coherent single DAC with NO active lane (un-profiled) still gets a
+    # stable direct-DAC route in diagnostic mode — the Stage-7-deleted bypass.
     layout = resolve_output_layout(
-        _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8"),
+        _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8"),
         allow_direct_dac=True,
     )
     assert layout.playback_device == "hw:CARD=DAC8,DEV=0"
@@ -247,10 +279,10 @@ def test_dac8x_diagnostic_uses_stable_direct_route() -> None:
 
 
 def test_durable_never_falls_back_to_direct_dac() -> None:
-    # DAC8x has no outputd active lane yet (profile flip is last), so durable
-    # apply must resolve MISSING rather than silently using a direct-DAC route.
+    # A coherent single DAC with NO outputd active lane must resolve MISSING
+    # under durable apply rather than silently using a direct-DAC route.
     layout = resolve_output_layout(
-        _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8"),
+        _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8"),
         allow_direct_dac=False,
     )
     assert layout.playback_device is None
@@ -311,10 +343,10 @@ def test_layout_recomputes_from_current_topology_card_identity() -> None:
     # index) — a card rename/re-enumeration in the topology flows straight
     # through to the resolved stable PCM. This is what survives index drift.
     first = resolve_output_layout(
-        _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8"), allow_direct_dac=True,
+        _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8"), allow_direct_dac=True,
     )
     second = resolve_output_layout(
-        _topology(HIFIBERRY_DAC8X.id, 8, card_id="sndrpihifiberry"),
+        _topology(GENERIC_SINGLE_DAC, 8, card_id="sndrpihifiberry"),
         allow_direct_dac=True,
     )
     assert first.playback_device == "hw:CARD=DAC8,DEV=0"
@@ -354,11 +386,11 @@ def test_output_layout_method_delegates_to_resolver() -> None:
 
 def test_output_layout_to_dict_shape() -> None:
     layout = resolve_output_layout(
-        _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8"), allow_direct_dac=True,
+        _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8"), allow_direct_dac=True,
     )
     out = layout.to_dict()
     assert out["kind"] == OUTPUT_LAYOUT_KIND
-    assert out["device_id"] == HIFIBERRY_DAC8X.id
+    assert out["device_id"] == GENERIC_SINGLE_DAC
     assert out["card_id"] == "DAC8"
     assert out["playback_device"] == "hw:CARD=DAC8,DEV=0"
     assert out["playback_device_source"] == DIRECT_DAC_SOURCE

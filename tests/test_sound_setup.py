@@ -2990,8 +2990,10 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
         get_payload = json.loads(get_resp.read().decode("utf-8"))
         assert get_payload["output_topology"]["status"] == "draft"
+        # Stage 2: the DAC8x declares an active outputd lane, so the route
+        # resolves to that lane (not a direct-DAC route) at its full width.
         assert get_payload["active_playback_route"]["playback_device_source"] == (
-            "topology_direct_dac"
+            "outputd_active_lane"
         )
         assert get_payload["active_playback_route"]["transport_channel_count"] == 8
 

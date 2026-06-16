@@ -59,7 +59,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   bluealsa-aplay     → pcm.bluealsa_substream    → hw:Loopback,0,2
 #   jasper-usbsink     → pcm.usbsink_substream     → hw:Loopback,0,3
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
-#   active 4ch DSP    ← outputd_active_content_*  ← hw:Loopback,0/1,5
+#   active Nch DSP    ← outputd_active_content_*  ← hw:Loopback,0/1,5
 #                                                       │
 #                                                       ▼ (loop)
 #   jasper-fanin reads        hw:Loopback,1,0..4
@@ -134,7 +134,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   2 — bluealsa-aplay     (Bluetooth A2DP)
 #   3 — jasper-usbsink     (USB audio input)
 #   4 — correction/test sweeps
-#   5 — outputd active-speaker 4-channel content lane (Camilla -> outputd)
+#   5 — outputd active-speaker N-channel content lane (Camilla -> outputd;
+#       width set by the openers + locked by snd-aloop: 4 for dual-Apple,
+#       8 for DAC8x — see the outputd_active_content_* block below)
 #   6 — outputd post-DSP content lane (Camilla -> outputd)
 #   7 — fan-in daemon's summed output → CamillaDSP / AEC fallback
 #
@@ -192,28 +194,41 @@ pcm.correction_substream {
 }
 
 # Active-speaker post-Camilla lane for jasper-outputd. Camilla writes
-# protected/crossed-over 4-channel active-speaker content here;
-# jasper-outputd reads the paired capture side and owns the physical
-# dual-DAC write loop. This keeps all sound, including TTS routed
-# through fan-in, behind the same CamillaDSP crossover/protection graph.
+# protected/crossed-over N-channel active-speaker content here;
+# jasper-outputd reads the paired capture side and owns the physical DAC
+# write loop. This keeps all sound, including TTS routed through fan-in,
+# behind the same CamillaDSP crossover/protection graph.
+#
+# FAIL CLOSED: these are raw `type hw` PCMs, NOT `type plug` — there is no
+# automatic channel/rate/format conversion on the active path. CamillaDSP
+# owns ALL format adaptation. The lane width is NOT pinned here (the ALSA
+# `hw` plugin only accepts card/device/subdevice — exactly like the
+# outputd_dac block below; `channels`/`rate`/`format` would be rejected as
+# unknown fields). Instead the width is set by the OPENERS and locked by
+# snd-aloop: CamillaDSP opens the playback side at its active config's
+# `playback: channels: N`, jasper-outputd opens the capture side at
+# JASPER_OUTPUTD_ACTIVE_CHANNELS (N) — and snd-aloop locks the substream-5
+# pair to the first opener, so a width/rate/format mismatch fails at
+# snd_pcm_hw_params (open error) instead of silently remixing N->M onto
+# live drivers (the single most dangerous fail-open in active mode). N is
+# kept consistent across the two openers by the reconciler: it emits
+# JASPER_OUTPUTD_ACTIVE_CHANNELS only after the cutover gate confirms the
+# loaded CamillaDSP config's playback width equals the DAC's transport
+# width. Open order: CamillaDSP (playback, hw:Loopback,0,5) opens first in
+# the normal startup order; outputd's capture (hw:Loopback,1,5) then matches
+# the locked params.
 pcm.outputd_active_content_playback {
-    type plug
-    slave {
-        pcm "hw:Loopback,0,5"
-        rate 48000
-        channels 4
-        format S16_LE
-    }
+    type hw
+    card Loopback
+    device 0
+    subdevice 5
 }
 
 pcm.outputd_active_content_capture {
-    type plug
-    slave {
-        pcm "hw:Loopback,1,5"
-        rate 48000
-        channels 4
-        format S16_LE
-    }
+    type hw
+    card Loopback
+    device 1
+    subdevice 5
 }
 
 ctl.outputd_active_content_capture {

@@ -6,6 +6,7 @@ from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import build_playback_readiness
 from jasper.active_speaker.topology_tone import build_topology_tone_plan
 from jasper.audio_hardware import dac
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
@@ -168,14 +169,16 @@ def test_topology_tone_plan_can_target_high_physical_output_without_active_lane(
     assert plan["target"]["output_index"] == HIFIBERRY_PHYSICAL_OUTPUTS - 1
 
 
-def test_active_playback_route_capability_uses_single_dac_direct_route() -> None:
+def test_active_playback_route_capability_resolves_dac8x_active_lane() -> None:
     topology = _topology()
 
     capability = active_playback_route_capability(topology)
 
     assert topology.hardware.physical_output_count == 8
-    assert capability.playback_device == "hw:CARD=DAC8,DEV=0"
-    assert capability.playback_device_source == "topology_direct_dac"
+    # Stage 2: the DAC8x declares an active outputd lane, so the capability
+    # reads that lane (not a direct-DAC route) at the full transport width.
+    assert capability.playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert capability.playback_device_source == "outputd_active_lane"
     assert capability.transport_channel_count == 8
     assert capability.required_active_output_count == 2
     assert capability.fits_required_outputs is True
@@ -203,7 +206,7 @@ def test_active_playback_route_capability_counts_subwoofer_output_lane() -> None
 
     capability = active_playback_route_capability(topology)
 
-    assert capability.playback_device_source == "topology_direct_dac"
+    assert capability.playback_device_source == "outputd_active_lane"
     assert capability.transport_channel_count == HIFIBERRY_PHYSICAL_OUTPUTS
     assert capability.required_active_output_count == 3
     assert capability.subwoofer_group_count == 1

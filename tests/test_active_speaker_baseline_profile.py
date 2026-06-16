@@ -441,7 +441,16 @@ def test_baseline_profile_apply_requires_registered_active_output_lane(
 def test_baseline_profile_does_not_apply_direct_dac_diagnostic_route(
     tmp_path: Path,
 ) -> None:
-    topology = _topology()
+    # A coherent single DAC with NO active outputd lane (un-profiled). Durable
+    # baseline apply must resolve MISSING — never silently fall back to a
+    # direct-DAC diagnostic route. (The registered DAC8x now declares an active
+    # lane, so it would resolve to that lane; this invariant needs a no-lane
+    # single to exercise the "missing, not direct-dac" path.)
+    topology = _topology(
+        device_id="unregistered_lab_dac",
+        device_label="Unregistered lab DAC",
+        card_id="LabDAC",
+    )
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
