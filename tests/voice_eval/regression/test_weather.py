@@ -40,11 +40,13 @@ async def test_sunset_today(harness, trial: int) -> None:
     sunset timestamp, and that timestamp should match Open-Meteo's
     independent answer within 1 minute.
 
-    **KNOWN FAILING (2026-05-21)**: the weather tool doesn't request
-    `sunrise,sunset` from Open-Meteo today — the assertion on the
-    `sunset` field will fail until the sunset fix lands. The
-    failure is the bug, documented in test form. When the fix
-    lands, this turns green and stays green.
+    Status (2026-06-15): `get_weather` now returns daily
+    sunrise/sunset, surfaced as `today.sunset` (an ISO-8601
+    local-time string) — exactly what assertion #2 reads. The
+    earlier "doesn't request sunrise,sunset" KNOWN-FAILING note is
+    obsolete; this scenario is expected to pass. (Not re-run in the
+    fix that corrected this note — confirm on the next paid eval
+    pass.)
     """
     if not harness.cfg.weather_prompt_location:
         pytest.skip(
