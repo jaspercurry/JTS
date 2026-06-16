@@ -141,6 +141,12 @@ def test_state_connected_status_card_masks_token():
     assert ha.mask_secret("eyJ0eXAiabcdefghijklmnopqrstuvwxyz0123456789") in out
 
 
+def test_state_connected_links_to_home_assistant_tool_pack():
+    out = _render(_state_connected())
+    assert 'href="/tools/pack/home-assistant/"' in out
+    assert "Manage Home Assistant tool" in out
+
+
 def test_state_connected_disconnect_uses_data_confirm():
     out = _render(_state_connected())
     assert 'action="./disconnect"' in out

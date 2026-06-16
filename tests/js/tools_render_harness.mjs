@@ -74,9 +74,37 @@ const evilTabBackslash = {
 const safeUrl = {
   name: "good_url", status: "needs_setup", setup_url: "/transit/",
 };
+const configuredWithSetup = {
+  name: "spotify_play",
+  status: "active",
+  setup_url: "/spotify/",
+  pack: {
+    id: "spotify",
+    title: "Spotify",
+    summary: "Music playback tools",
+    setup_url: "/spotify/",
+    status: "active",
+  },
+};
+const defaultPrompt = {
+  name: "default_prompt",
+  status: "active",
+  description: "Default prompt body",
+  summary: "Default prompt example",
+  prompt_customized: false,
+};
+const customPrompt = {
+  name: "custom_prompt",
+  status: "active",
+  description: "Custom prompt body",
+  summary: "Customized prompt example",
+  prompt_customized: true,
+};
 // needs_setup with NO setup_url (the flag_recent_issue case) must render an
 // honest "Unavailable" badge, never a dead disabled checkbox.
 const noUrl = { name: "no_setup_tool", status: "needs_setup" };
+const defaultPromptCard = toolCard(defaultPrompt);
+const customPromptCard = toolCard(customPrompt);
 const html =
   toolCard(evil) +
   toolList([
@@ -84,7 +112,10 @@ const html =
     evilTab, evilNewline, evilTabBackslash, safeUrl, noUrl,
   ]) +
   toolCard(noUrl) +
+  defaultPromptCard +
+  customPromptCard +
   toolDetail(safeUrl) +
+  toolDetail(configuredWithSetup) +
   toolDetail(evil);
 
 // Pull every href the card markup produced and RESOLVE each against a fixed
@@ -123,6 +154,8 @@ console.log(JSON.stringify({
   noOffOriginHref: !offOrigin,
   // A real same-origin path still renders as a clickable detail-page Set up link.
   safeHrefRendered: html.includes('href="/transit/"'),
+  configuredSetupLinkRendered:
+    html.includes('href="/spotify/"') && html.includes(">Configure</a>"),
   // needs_setup with no setup_url -> honest "Unavailable", never a checkbox.
   unavailableRendered: html.includes("tool-unavailable"),
   noDeadToggle: !/<input[^>]+data-tool="no_setup_tool"/.test(html),
@@ -130,4 +163,19 @@ console.log(JSON.stringify({
   noOnOffBadges: !/>On<\/span>/.test(html) && !/>Off<\/span>/.test(html),
   // Top-level pack cards are row-sized navigation targets.
   packCardsClickable: html.includes("data-pack-href="),
+  // Tool counts are compact title-row metadata now, not a separate card footer.
+  toolCountInTitleRow: html.includes("tool-count tool-count--title"),
+  // Pack detail already has canonical header back navigation; don't duplicate it.
+  noDuplicateDetailBack: !html.includes('class="tool-back"'),
+  // Non-actionable metadata stays in the catalog/code, not the operator UI.
+  noCustomPromptCount: !html.includes("Custom prompts") && !html.includes(" customized"),
+  noTimeoutMetadata: !/>Timeout<\/dt>/.test(html),
+  noRiskFlagMetadata: !/>Risk flags<\/dt>/.test(html),
+  promptSummaryRenamed: html.includes("<summary>Prompt and schema</summary>") &&
+    !html.includes("Prompt, schema, and metadata"),
+  resetOnlyForCustomPrompt: customPromptCard.includes(">Reset to default</button>") &&
+    !defaultPromptCard.includes('data-action="reset-prompt"') &&
+    !/data-action="reset-prompt"[^>]*disabled/.test(html),
+  saveStartsHiddenDisabled: /data-action="save-prompt"[^>]*hidden disabled/.test(html),
+  cancelStartsHidden: /data-action="cancel-prompt"[^>]*hidden/.test(html),
 }));

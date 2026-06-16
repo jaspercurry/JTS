@@ -124,13 +124,33 @@ function editorFor(toolName) {
   return mount.querySelector('.prompt-editor[data-tool="' + CSS.escape(toolName) + '"]');
 }
 
+function updatePromptSaveState(editor) {
+  if (!editor) return;
+  const save = editor.querySelector('[data-action="save-prompt"]');
+  const textarea = editor.querySelector(".prompt-edit");
+  if (!save || !textarea || textarea.hidden) return;
+  save.disabled = textarea.value === (editor.dataset.originalPrompt || "");
+}
+
 function setEditing(editor, editing) {
   if (!editor) return;
-  editor.querySelector(".prompt-view").hidden = editing;
-  editor.querySelector(".prompt-edit").hidden = !editing;
-  editor.querySelector('[data-action="edit-prompt"]').hidden = editing;
-  editor.querySelector('[data-action="save-prompt"]').hidden = !editing;
-  editor.querySelector('[data-action="cancel-prompt"]').hidden = !editing;
+  const view = editor.querySelector(".prompt-view");
+  const textarea = editor.querySelector(".prompt-edit");
+  const edit = editor.querySelector('[data-action="edit-prompt"]');
+  const reset = editor.querySelector('[data-action="reset-prompt"]');
+  const save = editor.querySelector('[data-action="save-prompt"]');
+  const cancel = editor.querySelector('[data-action="cancel-prompt"]');
+  if (view) view.hidden = editing;
+  if (textarea) textarea.hidden = !editing;
+  if (edit) edit.hidden = editing;
+  if (reset) reset.hidden = editing;
+  if (save) {
+    save.hidden = !editing;
+    save.disabled = true;
+  }
+  if (cancel) cancel.hidden = !editing;
+  if (!editing) delete editor.dataset.originalPrompt;
+  updatePromptSaveState(editor);
 }
 
 async function onPromptClick(e) {
@@ -143,22 +163,27 @@ async function onPromptClick(e) {
   const textarea = editor.querySelector(".prompt-edit");
   const view = editor.querySelector(".prompt-view");
   if (action === "edit-prompt") {
+    textarea.value = view.textContent || "";
+    editor.dataset.originalPrompt = textarea.value;
     setEditing(editor, true);
     textarea.focus();
     return;
   }
   if (action === "cancel-prompt") {
-    textarea.value = view.textContent || "";
+    textarea.value = editor.dataset.originalPrompt || view.textContent || "";
     setEditing(editor, false);
     return;
   }
   if (action === "save-prompt") {
     const prompt = textarea.value;
+    if (prompt === (editor.dataset.originalPrompt || "")) return;
+    btn.disabled = true;
     try {
       await postJSON("/tools/prompt", { name: tool, prompt });
       statusEl.textContent = "Saved prompt override - Apply to restart the assistant.";
       await load();
     } catch (err) {
+      btn.disabled = false;
       await jtsAlert("Couldn't save prompt: " + err.message);
     }
     return;
@@ -172,6 +197,11 @@ async function onPromptClick(e) {
       await jtsAlert("Couldn't reset prompt: " + err.message);
     }
   }
+}
+
+function onPromptInput(e) {
+  if (!e.target.matches(".prompt-edit")) return;
+  updatePromptSaveState(e.target.closest(".prompt-editor"));
 }
 
 async function onApply() {
@@ -209,5 +239,6 @@ async function onApply() {
 
 mount.addEventListener("change", onToggle);
 mount.addEventListener("click", onPromptClick);
+mount.addEventListener("input", onPromptInput);
 applyBtn.addEventListener("click", onApply);
 load();

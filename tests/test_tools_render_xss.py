@@ -34,8 +34,10 @@ import pytest
 
 _NODE = shutil.which("node")
 _HARNESS = Path("tests/js/tools_render_harness.mjs")
+_DETAIL_HARNESS = Path("tests/js/tools_detail_harness.mjs")
 _ESCAPE = Path("deploy/assets/shared/js/escape.js")
 _RENDER = Path("deploy/assets/tools/js/render.js")
+_DETAIL = Path("deploy/assets/tools/js/detail.js")
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node not on PATH")
 
@@ -65,9 +67,29 @@ def test_render_escapes_every_untrusted_tool_field():
     assert out["noJavascriptScheme"] is True, "a javascript: setup_url survived"
     assert out["noOffOriginHref"] is True, "an off-origin setup_url href survived"
     assert out["safeHrefRendered"] is True, "a safe /transit/ setup link was dropped"
+    assert out["configuredSetupLinkRendered"] is True, "configured setup pages should render as Configure links"
     # needs_setup with no setup_url renders an honest Unavailable badge, never
     # a dead disabled checkbox (the flag_recent_issue degraded case).
     assert out["unavailableRendered"] is True, "no Unavailable badge for a urlless needs_setup tool"
     assert out["noDeadToggle"] is True, "a urlless needs_setup tool rendered a toggle"
     assert out["noOnOffBadges"] is True, "active/off status badges should not render"
     assert out["packCardsClickable"] is True, "pack cards should expose full-card navigation"
+    assert out["toolCountInTitleRow"] is True, "pack/detail tool counts should sit by the title"
+    assert out["noDuplicateDetailBack"] is True, "detail cards should not duplicate the header back link"
+    assert out["noCustomPromptCount"] is True, "custom prompt counts should not render as metadata"
+    assert out["noTimeoutMetadata"] is True, "tool timeout metadata should not render"
+    assert out["noRiskFlagMetadata"] is True, "risk flags should not render in the operator UI"
+    assert out["promptSummaryRenamed"] is True, "prompt details should be labeled Prompt and schema"
+    assert out["resetOnlyForCustomPrompt"] is True, "reset should appear only for custom prompts"
+    assert out["saveStartsHiddenDisabled"] is True, "save should start hidden and disabled"
+    assert out["cancelStartsHidden"] is True, "cancel should start hidden"
+
+
+def test_prompt_editor_actions_follow_view_and_edit_modes():
+    proc = subprocess.run(
+        [_NODE, str(_DETAIL_HARNESS), str(_DETAIL)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, f"detail harness errored:\n{proc.stderr}"
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["ok"] is True

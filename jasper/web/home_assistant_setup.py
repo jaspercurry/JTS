@@ -888,6 +888,11 @@ def _state_connected_html(state: dict[str, str], csrf_token: str = "") -> str:
 to this Home Assistant instance.</p>
 
 <div class="info-card">
+  <p class="form-hint"><strong>Voice tools.</strong> Manage Home Assistant tool
+  prompts and enablement in <a href="/tools/pack/home-assistant/">Tools</a>.</p>
+</div>
+
+<div class="info-card">
   <dl class="deflist">
     <dt>URL</dt>
     <dd>{html.escape(url)}</dd>

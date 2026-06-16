@@ -77,12 +77,6 @@ function countLabel(n) {
   return n === 1 ? "1 tool" : n + " tools";
 }
 
-function providersOf(tool) {
-  return Array.isArray(tool.providers) && tool.providers.length
-    ? tool.providers.join(", ")
-    : "All voice providers";
-}
-
 function packControl(pack) {
   if (pack.status === "needs_setup" && !safeSetupUrl(pack.setup_url)) {
     return '<span class="tool-unavailable">Unavailable</span>';
@@ -182,25 +176,19 @@ export function packCard(pack, tools = []) {
     ? ' data-pack-href="' + escapeHtml(href) +
       '" role="link" tabindex="0" aria-label="' + escapeHtml(title) + '"'
     : "";
-  const customized = pack.customized_count
-    ? '<span class="tool-count">' +
-      escapeHtml(pack.customized_count + " customized") + "</span>"
-    : "";
   return (
     '<article class="info-card tool-pack-card"' + linkAttrs + ">" +
     '<div class="tool-pack-card__head">' +
     "<div>" +
     '<div class="tool-pack-card__id">' +
     '<span class="tool-pack-card__title">' + escapeHtml(title) + "</span>" +
+    '<span class="tool-count tool-count--title">' +
+      escapeHtml(countLabel(tools.length)) + "</span>" +
     badge(pack.status) + "</div>" +
     '<p class="tool-pack-card__summary">' +
     escapeHtml(pack.summary || "") + "</p>" +
     "</div>" +
     '<div class="tool-pack-card__actions">' + packControl(pack) + "</div>" +
-    "</div>" +
-    '<div class="tool-pack-card__meta">' +
-    '<span class="tool-count">' + escapeHtml(countLabel(tools.length)) + "</span>" +
-    customized +
     "</div>" +
     "</article>"
   );
@@ -253,19 +241,15 @@ function schemaBlock(tool) {
   return escapeHtml(JSON.stringify(schema, null, 2));
 }
 
-function riskLine(tool) {
-  const flags = [];
-  if (tool.untrusted_output) flags.push("Untrusted output");
-  if (tool.consequential) flags.push("Consequential action");
-  return flags.length ? flags.join(", ") : "None";
-}
-
 function toolRow(tool) {
   const prompt = tool.description || "";
   const customized = tool.prompt_customized
     ? '<span class="badge" style="--tone: var(--status-warn)">Custom prompt</span>'
     : "";
-  const resetDisabled = tool.prompt_customized ? "" : " disabled";
+  const resetButton = tool.prompt_customized
+    ? '<button type="button" class="btn btn--ghost" data-action="reset-prompt" data-tool="' +
+      escapeHtml(tool.name) + '">Reset to default</button>'
+    : "";
   return (
     '<section class="tool-row" data-tool-row="' + escapeHtml(tool.name) + '">' +
     '<div class="tool-row__head">' +
@@ -279,22 +263,16 @@ function toolRow(tool) {
     '<div class="tool-row__actions">' + toolControl(tool) + "</div>" +
     "</div>" +
     '<details class="tool-row__details">' +
-    "<summary>Prompt, schema, and metadata</summary>" +
-    '<dl class="deflist tool-row__meta">' +
-    '<div><dt>Providers</dt><dd>' + escapeHtml(providersOf(tool)) + "</dd></div>" +
-    '<div><dt>Timeout</dt><dd>' + escapeHtml(String(tool.timeout || "")) + " sec</dd></div>" +
-    '<div><dt>Risk flags</dt><dd>' + escapeHtml(riskLine(tool)) + "</dd></div>" +
-    "</dl>" +
+    "<summary>Prompt and schema</summary>" +
     labelChips(tool.labels) +
     '<div class="prompt-editor" data-tool="' + escapeHtml(tool.name) + '">' +
     '<div class="prompt-editor__bar">' +
     '<span class="tool-count">' + escapeHtml(String(prompt.length)) + " chars</span>" +
     '<button type="button" class="btn btn--ghost" data-action="edit-prompt" data-tool="' +
     escapeHtml(tool.name) + '">Edit</button>' +
-    '<button type="button" class="btn btn--ghost" data-action="reset-prompt" data-tool="' +
-    escapeHtml(tool.name) + '"' + resetDisabled + ">Reset</button>" +
+    resetButton +
     '<button type="button" class="btn" data-action="save-prompt" data-tool="' +
-    escapeHtml(tool.name) + '" hidden>Save</button>' +
+    escapeHtml(tool.name) + '" hidden disabled>Save</button>' +
     '<button type="button" class="btn btn--ghost" data-action="cancel-prompt" data-tool="' +
     escapeHtml(tool.name) + '" hidden>Cancel</button>' +
     "</div>" +
@@ -323,16 +301,20 @@ export function packDetail(pack, tools = []) {
     );
   }
   const setupHref = safeSetupUrl(pack.setup_url);
-  const setup = setupHref && pack.status === "needs_setup"
+  const setupLabel = pack.status === "needs_setup" ? "Set up" : "Configure";
+  const setup = setupHref
     ? '<a class="btn btn--ghost" href="' + escapeHtml(setupHref) + '">' +
-      "Set up</a>"
+      escapeHtml(setupLabel) + "</a>"
     : "";
   return (
     '<article class="info-card tool-detail">' +
     '<div class="tool-detail__head">' +
     "<div>" +
-    '<a class="tool-back" href="/tools/">Tools</a>' +
+    '<div class="tool-detail__titleline">' +
     '<h2 class="tool-detail__title">' + escapeHtml(pack.title || pack.id) + "</h2>" +
+    '<span class="tool-count tool-count--title">' +
+      escapeHtml(countLabel(tools.length)) + "</span>" +
+    "</div>" +
     '<p class="tool-detail__summary">' + escapeHtml(pack.summary || "") + "</p>" +
     "</div>" +
     '<div class="tool-detail__actions">' +
@@ -341,9 +323,6 @@ export function packDetail(pack, tools = []) {
     "</div>" +
     '<dl class="deflist tool-detail__meta">' +
     '<div><dt>Category</dt><dd>' + escapeHtml(pack.category || "Other") + "</dd></div>" +
-    '<div><dt>Tools</dt><dd>' + escapeHtml(countLabel(tools.length)) + "</dd></div>" +
-    '<div><dt>Custom prompts</dt><dd>' +
-    escapeHtml(String(pack.customized_count || 0)) + "</dd></div>" +
     "</dl>" +
     '<div class="tool-authoring-link"><a href="/tools/guide/" target="_blank" rel="noopener">Tool authoring guide</a></div>' +
     '<div class="tool-rows">' + tools.map(toolRow).join("") + "</div>" +
