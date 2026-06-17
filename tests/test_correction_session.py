@@ -714,6 +714,38 @@ async def test_needs_noise_capture_times_out_on_later_positions_too(tmp_path: Pa
     assert sess.state == SessionState.FAILED
 
 
+@pytest.mark.asyncio
+async def test_repeat_capture_times_out_to_failed(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    sess.state = SessionState.NEEDS_REPEAT_CAPTURE
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_repeat_sweep(fake_play_sweep)
+    assert sess.state == SessionState.AWAITING_REPEAT_CAPTURE
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+    assert "capture" in (sess.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_verify_capture_times_out_to_failed(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    sess.state = SessionState.APPLIED
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.start_verify_sweep(fake_play_sweep)
+    assert sess.state == SessionState.AWAITING_VERIFY_CAPTURE
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+    assert "capture" in (sess.error or "").lower()
+
+
 # --- reset() must not race an in-flight sweep/analysis task -----------------
 @pytest.mark.asyncio
 async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: Path):
