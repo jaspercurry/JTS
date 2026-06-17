@@ -1,0 +1,81 @@
+// WS1 Phase 3b-3 — polkit grant for the non-root `jasper-web` service user.
+//
+// docs/HANDOFF-privilege-separation.md. Installed to
+// /etc/polkit-1/rules.d/49-jasper-web.rules (root:root 0644) by install.sh's
+// install_jasper_web_polkit. polkitd monitors rules.d and auto-reloads on
+// change — no daemon-reload or polkit restart is needed.
+//
+// jasper-web is the setup-wizard HTTP server (the /wifi/ page in particular).
+// Once it drops from root to the `jasper-web` system user
+// (deploy/jasper-web.service), every NetworkManager write it performs is
+// mediated by polkit instead of being a uid-0 bypass. nmcli talks to
+// NetworkManager over D-Bus, and NM gates the privileged operations behind
+// these polkit actions. Their implicit defaults DENY a sessionless system
+// daemon — measured on jts.local (NM 1.52, polkit 126), the implicit_any slot
+// (the slot a no-session daemon falls under) is:
+//
+//     settings.modify.system   auth_admin_keep   -> DENY (no admin agent)
+//     settings.modify.own      auth_self_keep    -> DENY (no auth agent)
+//     network-control          auth_admin        -> DENY
+//     enable-disable-wifi      no                -> DENY
+//     wifi.scan                auth_admin        -> DENY
+//
+// so without this rule the /wifi/ wizard cannot scan, connect, forget, toggle
+// the radio, or re-read a saved PSK for the guardian stash — and a headless,
+// often Ethernet-less speaker that can't manage its own Wi-Fi is the
+// worst-case brick this whole phase is gated on avoiding. Each grant maps to a
+// real wifi_setup.py operation:
+//
+//     wifi.scan               nmcli device wifi rescan / list (scan_networks)
+//     network-control         nmcli connection up <profile>; nmcli dev wifi
+//                             connect (activate) — incl. the failed-connect
+//                             ROLLBACK `connection up <previous>` path
+//     settings.modify.system  nmcli dev wifi connect (create profile);
+//                             connection delete (forget); GetSecrets (-s) to
+//                             refresh the wifi-guardian PSK stash on reconnect
+//     settings.modify.own     the .own counterpart NM may consult for a
+//                             jasper-web-created profile
+//     enable-disable-wifi     nmcli radio wifi on|off
+//
+// Validated on hardware (jts.local): with this rule a sessionless jasper-web
+// performs all of the above (real `nmcli connection modify/delete`, `wifi
+// rescan`, and the `-s` PSK GetSecrets) identically to root; WITHOUT it every
+// one is denied (a load-bearing grant, not decoration).
+//
+// IMPORTANT — match on subject.user ONLY. A sessionless system daemon has
+// subject.active == false AND subject.local == false (no seat/session), so the
+// ubiquitous desktop idiom (gate on subject.active) would NEVER fire here. This
+// is the single most likely implementation mistake; pinned by
+// tests/test_polkit_jasper_web.py.
+//
+// SCOPE — deliberately NOT granted to jasper-web:
+//   * the `bluetooth` group (BlueZ adapter Alias/Powered for the /speaker
+//     rename) is a D-Bus policy grant, not polkit — it rides the unit's
+//     SupplementaryGroups=, not this file.
+//   * CAP_NET_ADMIN for jasper/wifi_scan_repair.py's NL80211
+//     CRIT_PROTOCOL_STOP is NOT granted — the most network-exposed daemon
+//     stays cap-less and the scan-repair degrades fail-soft (the /wifi/ page
+//     keeps "Join by name"). See docs/HANDOFF-privilege-separation.md.
+//   * NetworkManager's own reload / sleep / wake / checkpoint actions — the
+//     wizard never calls them; granting only what wifi_setup.py exercises
+//     keeps the blast radius of a jasper-web compromise to the Wi-Fi
+//     management it already owns by design.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "jasper-web") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // Keep this list in sync with the NetworkManager actions wifi_setup.py
+    // drives (pinned by tests/test_polkit_jasper_web.py). These are NOT
+    // unit-scopable (NM passes no allowlist-able detail), so the scope is the
+    // action set itself — exactly the Wi-Fi management jasper-web owns.
+    if (action.id == "org.freedesktop.NetworkManager.settings.modify.system" ||
+        action.id == "org.freedesktop.NetworkManager.settings.modify.own" ||
+        action.id == "org.freedesktop.NetworkManager.network-control" ||
+        action.id == "org.freedesktop.NetworkManager.enable-disable-wifi" ||
+        action.id == "org.freedesktop.NetworkManager.wifi.scan") {
+        return polkit.Result.YES;
+    }
+
+    return polkit.Result.NOT_HANDLED;
+});

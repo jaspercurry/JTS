@@ -110,9 +110,10 @@ def test_tmpfs_home_where_no_home_needed(unit):
 
 # --------------------------------------------------------------------------
 # WS1 Phase 3b — the non-root user drop. 3b-1 dropped voice/mux/input; 3b-2
-# dropped jasper-control (it gained a polkit rule for its broker/supervisor
-# systemctl+reboot and group-readable secret env for the jasper-doctor it
-# spawns). jasper-web stays root until 3b-3 (NetworkManager/BlueZ/wifi-lockout).
+# dropped jasper-control (polkit rule for its broker/supervisor systemctl+reboot
+# + group-readable secret env for the jasper-doctor it spawns); 3b-3 dropped
+# jasper-web (polkit rule for its NetworkManager wifi management + bluetooth /
+# systemd-journal groups). All five Tier-A daemons now run non-root.
 # --------------------------------------------------------------------------
 
 # unit -> (expected User=, expected SupplementaryGroups set)
@@ -125,11 +126,13 @@ DROPPED = {
     # ALSA/input device. The one supplementary group is `systemd-journal` —
     # several /state cards (airplay_health, dial, wifi_guardian) read the journal.
     "jasper-control": ("jasper-control", {"systemd-journal"}),
+    # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
+    # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
+    # are `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus
+    # policy grant) and `systemd-journal` (journalctl -k Wi-Fi diagnostics). No
+    # CAP_NET_ADMIN — the NL80211 scan-repair degrades fail-soft.
+    "jasper-web": ("jasper-web", {"bluetooth", "systemd-journal"}),
 }
-
-# Still root (drop deferred). Moving jasper-web here to DROPPED is exactly what
-# the 3b-3 fast-follow (NetworkManager polkit / BlueZ / wifi-lockout) does.
-DEFERRED_ROOT = {"jasper-web"}
 
 
 @pytest.mark.parametrize("unit,expected", sorted(DROPPED.items()))
@@ -185,17 +188,6 @@ def test_control_keeps_runtimedir_and_avahi_rwpaths_after_drop():
     # ProtectKernelLogs stays OMITTED (the spawned doctor reads dmesg).
     assert ("ProtectKernelLogs", "true") not in pairs, (
         "ProtectKernelLogs must stay omitted for the doctor's dmesg fingerprint read."
-    )
-
-
-@pytest.mark.parametrize("unit", sorted(DEFERRED_ROOT))
-def test_deferred_daemons_not_user_dropped(unit):
-    """Guard against a half-drop: jasper-web must not gain a User= until its
-    dedicated, validation-gated 3b-3 work lands (NetworkManager polkit; BlueZ
-    access; the wifi-lockout recovery validation)."""
-    assert not any(k == "User" for k, _ in _directives(TIER_A[unit])), (
-        f"{unit} is deferred; dropping it needs its own gated PR "
-        "(see docs/HANDOFF-privilege-separation.md Phase 3b)."
     )
 
 

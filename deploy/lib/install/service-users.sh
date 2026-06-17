@@ -1,11 +1,13 @@
 # shellcheck shell=bash
-# WS1 Phase 3b (3b-1) — dedicated non-root service users + the shared `jasper`
-# group for the Tier-A daemons being dropped from root (jasper-voice,
-# jasper-mux, jasper-input). jasper-control + jasper-web stay root in 3b-1 (their
-# drops are the gated 3b-2 / 3b-3 fast-follows) but jasper-control still joins
-# the `jasper` group via its unit so the broker socket is reachable by the
-# now-non-root mux. Mirrors the existing shairport-sync user-creation pattern in
-# renderers.sh. All operations are idempotent and safe to re-run.
+# WS1 Phase 3b — dedicated non-root service users + the shared `jasper` group for
+# the Tier-A daemons dropped from root: jasper-voice / jasper-mux / jasper-input
+# (3b-1), jasper-control (3b-2, polkit-mediated restarts/reboots), and jasper-web
+# (3b-3, polkit-mediated NetworkManager + bluetooth/systemd-journal groups). All
+# share primary group `jasper` so the cross-daemon /run sockets (the broker) and
+# /var/lib/jasper state are reachable. Mirrors the existing shairport-sync
+# user-creation pattern in renderers.sh. All operations are idempotent and safe
+# to re-run (useradd only when absent; supplementary-group adds via usermod -aG
+# on the upgrade path).
 #
 # See docs/HANDOFF-privilege-separation.md.
 
@@ -49,7 +51,26 @@ create_jasper_service_users() {
     if getent group systemd-journal >/dev/null 2>&1; then
         usermod -aG systemd-journal jasper-control 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control (group: jasper)"
+    # WS1 Phase 3b-3 — jasper-web (the wizard HTTP server) drops to non-root too.
+    # The /wifi/ page drives NetworkManager: its privileged restarts/reboots are
+    # NOT needed, but its NM writes are granted by polkit
+    # (deploy/polkit/49-jasper-web.rules), keyed on User=jasper-web. The two
+    # supplementary groups are `bluetooth` (BlueZ Adapter1 Alias for the /speaker
+    # rename — a D-Bus policy grant) and `systemd-journal` (journalctl -k for
+    # Wi-Fi scan-suppression diagnostics). No netdev (polkit is authoritative on
+    # modern NM), no CAP_NET_ADMIN (scan-repair degrades fail-soft).
+    if ! getent passwd jasper-web >/dev/null 2>&1; then
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G bluetooth,systemd-journal jasper-web
+    fi
+    # Idempotent supplementary-group adds on UPGRADE (useradd above is skipped
+    # when the user already exists — e.g. a Pi from a pre-3b-3 build). Takes
+    # effect on jasper-web's next socket-activated start.
+    for g in bluetooth systemd-journal; do
+        if getent group "$g" >/dev/null 2>&1; then
+            usermod -aG "$g" jasper-web 2>/dev/null || true
+        fi
+    done
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

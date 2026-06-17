@@ -74,22 +74,63 @@ ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure
 RestartSec=2
 
+# WS1 Phase 3b — user drop (3b-3). jasper-web is the most network-exposed
+# surface (untrusted SSID / form / OAuth input), so de-rooting it is the highest-
+# value drop — and the riskiest, because a Wi-Fi-management break is the
+# worst-case brick for a headless, often Ethernet-less speaker. It runs as a
+# dedicated non-root service user in the shared `jasper` group (the cross-daemon
+# /run socket + /var/lib/jasper access boundary).
+#
+# This drop is GATED on hardware validation (recovery matrix in
+# docs/HANDOFF-privilege-separation.md) of every privileged surface it owns.
+# Each one's mechanism, validated on jts.local (systemd 257, polkit 126, NM 1.52):
+#   * NetworkManager (/wifi/ scan/connect/forget/radio/PSK-stash) — a polkit
+#     rule (deploy/polkit/49-jasper-web.rules) grants this uid the 5 NM actions
+#     wifi_setup.py drives; NM denies a sessionless daemon by default, so the
+#     rule is load-bearing. `netdev` group is neither necessary nor sufficient.
+#   * BlueZ adapter Alias/Powered (/speaker rename, BT radio) — the `bluetooth`
+#     supplementary group (D-Bus policy grant, not polkit).
+#   * journalctl -k (Wi-Fi scan-suppression diagnostics) — the `systemd-journal`
+#     supplementary group (also fail-soft, so non-load-bearing).
+#   * NL80211 scan-repair (jasper/wifi_scan_repair.py) — intentionally NOT given
+#     CAP_NET_ADMIN; it degrades fail-soft (the /wifi/ page keeps "Join by name").
+#   * systemctl restarts after a wizard save — already routed through
+#     jasper-control's restart broker (manage_units); once non-root the broker
+#     is the only path (geteuid()!=0 removes the direct-systemctl fallback).
+#
+# CapabilityBoundingSet= drops ALL caps (the privileged ops go through polkit /
+# the broker / D-Bus groups, never a capability — and the scan-repair cap is
+# deliberately withheld). SystemCallFilter=@system-service blocks the dangerous
+# syscall classes while permitting fork/execve, so the nmcli / busctl /
+# journalctl children it spawns exec cleanly. ProtectKernelLogs stays OMITTED
+# (below) for the same diagnostic-subprocess caution as jasper-control.
+User=jasper-web
+Group=jasper
+SupplementaryGroups=bluetooth systemd-journal
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+
 # Hardening — this process needs to read /etc/jasper/jasper.env,
 # read+write /var/lib/jasper/ and generated CamillaDSP configs,
-# update BlueZ's local name, accept connections on systemd-passed
-# loopback fds, and call `systemctl restart` after a wizard updates
-# state.
+# update BlueZ's local name (/etc/bluetooth/main.conf), re-render the speaker-
+# name Avahi advert (/etc/avahi/services), accept connections on systemd-passed
+# loopback fds, and drive the restart broker after a wizard updates state.
+# /etc/bluetooth and /var/lib/camilladsp/configs are root:jasper 2775 (setgid,
+# group-writable, set by install.sh) so the non-root user can atomically replace
+# files there; /etc/avahi/services is the same (set by 3b-2's install). Adding
+# /etc/avahi/services to ReadWritePaths also fixes a latent bug: under
+# ProtectSystem=strict the /speaker rename's Avahi re-render silently no-op'd
+# (the dir was outside the writable set).
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth
-# WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md):
-# jasper-web is the most network-exposed surface (untrusted SSID / form / OAuth
-# input), so it gets the full phase-1 stanza. ProtectKernelLogs is OMITTED — the
-# wizards shell to nmcli/bluetoothctl and must not be starved of kernel-log
-# access a future check might need. Capability/syscall filters + the user drop
-# (it becomes a broker client for restarts) land in Phases 2-3.
+ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
+# WS1 phase-1 hardening (docs/HANDOFF-privilege-separation.md): jasper-web gets
+# the full phase-1 stanza. ProtectKernelLogs is OMITTED — the wizards shell to
+# nmcli / journalctl -k for Wi-Fi diagnostics and must not be starved of kernel-
+# log access. CapabilityBoundingSet= + SystemCallFilter= landed with the 3b-3
+# user drop (above).
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
