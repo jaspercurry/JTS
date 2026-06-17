@@ -209,7 +209,10 @@ function commissionIssueReason(codes) {
     return 'Start the tone again so JTS can open the quiet driver test first.';
   }
   if (codes.indexOf('commission_ramp_at_limit') >= 0) {
-    return 'Reached the safe test limit. If you still hear nothing, stop and check amp gain, wiring, and the DAC output mapping before trying again.';
+    return 'Reached the safe test limit. If you still hear nothing, check amp gain, wiring, and the DAC output mapping.';
+  }
+  if (codes.indexOf('commission_output_hardware_reconcile_failed') >= 0) {
+    return 'JTS could not switch the speaker output path into active-driver mode, so it did not start the tone.';
   }
   if (
     codes.indexOf('commission_tone_playback_failed') >= 0 ||

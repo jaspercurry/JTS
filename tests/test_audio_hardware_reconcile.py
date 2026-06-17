@@ -663,6 +663,32 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
 
 
+def test_reconcile_active_graph_ignores_legacy_dac_route(tmp_path: Path):
+    # The legacy DAC8x route knob is for ordinary stereo playback. Once outputd
+    # is reading the active lane, its channel count already matches the active
+    # graph, so applying mono/stereo route aliases would collapse or remap
+    # driver channels below CamillaDSP.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUT_DAC_ROUTE=mono:5\n",
+        extra_env=_active_graph_env(tmp_path, channels=2),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "pcm.outputd_dac {\n    type hw\n    card sndrpihifiberry\n" in template
+    assert "type route" not in template
+    assert "0.4 0.5" not in template
+    assert "reason=active_outputd_direct" in result.stderr
+    assert "outputd_active_mode=1 outputd_active_channels=2" in result.stderr
+
+
 def test_reconcile_dac8x_active_graph_over_cap_stays_stereo(tmp_path: Path):
     # A config asking for MORE outputs than the DAC can drive (16 on an 8-output
     # DAC8x) is impossible hardware — it fails closed to ordinary stereo so the

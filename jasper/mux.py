@@ -107,6 +107,7 @@ MUX_CONTROL_SOCKET = os.environ.get(
 MUX_MODE_STATE_PATH = os.environ.get(
     "JASPER_MUX_MODE_STATE_PATH", mux_mode_persistence.DEFAULT_PATH,
 )
+FANIN_TEST_LABELS = frozenset({"correction"})
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
@@ -204,6 +205,10 @@ class Mux:
         self._handoff_seq = 0
         self._transition_lock = asyncio.Lock()
         self._pending_auto_target: Source | None = None
+        # Non-music diagnostic lanes (currently the correction/test lane) can
+        # temporarily own the fan-in gate without changing the household's
+        # persisted manual-vs-auto source selection.
+        self._test_fanin_label: str | None = None
 
     async def run(self) -> None:
         logger.info(
@@ -259,6 +264,10 @@ class Mux:
 
         self._state.playing = current
         self._winner_age_ticks += 1
+
+        if self._test_fanin_label is not None:
+            await self._reassert_test_fanin_label()
+            return
 
         if self._manual_source is not None:
             await self._reassert_manual_source()
@@ -469,6 +478,43 @@ class Mux:
         log_event(logger, "source.auto_select")
         return self._status_payload(current)
 
+    async def select_test_fanin_label(self, label: str) -> dict[str, Any]:
+        """Temporarily route a non-music diagnostic lane through fan-in.
+
+        This is intentionally not persisted and does not change the household
+        source selector. It exists for same-path tests such as active-speaker
+        commissioning that enter through the correction lane while the speaker
+        may otherwise be manually pinned to AirPlay/Spotify/etc.
+        """
+
+        label = str(label or "").strip()
+        if label not in FANIN_TEST_LABELS:
+            return {"error": f"not a selectable test fan-in label {label!r}"}
+        async with self._transition_lock:
+            self._test_fanin_label = label
+            await self._fanin_select_label(label)
+        log_event(logger, "source.test_select", label=label)
+        return self._status_payload(self._state.playing)
+
+    async def release_test_fanin_label(self) -> dict[str, Any]:
+        async with self._transition_lock:
+            released = self._test_fanin_label
+            self._test_fanin_label = None
+            if self._manual_source is not None:
+                await self._fanin_select_best_effort(
+                    self._manual_source, reason="test_release_manual",
+                )
+            elif self._winner is not None and self._state.playing.get(
+                self._winner, False,
+            ):
+                await self._fanin_select_best_effort(
+                    self._winner, reason="test_release_auto",
+                )
+            else:
+                await self._fanin_none_best_effort(reason="test_release_idle")
+        log_event(logger, "source.test_release", label=released)
+        return self._status_payload(self._state.playing)
+
     def _status_payload(
         self, current: dict[Source, bool] | None = None,
     ) -> dict[str, Any]:
@@ -479,6 +525,7 @@ class Mux:
             "selected_source": (
                 self._manual_source.value if self._manual_source else None
             ),
+            "test_source": self._test_fanin_label,
             "active_source": active,
             "winner": self._winner.value if self._winner else None,
             "last_handoff": self._last_handoff,
@@ -489,6 +536,8 @@ class Mux:
         }
 
     def _active_source_name(self, current: dict[Source, bool]) -> str:
+        if self._test_fanin_label is not None:
+            return self._test_fanin_label
         if self._manual_source is not None:
             return self._manual_source.value
         if self._winner is not None and current.get(self._winner, False):
@@ -521,6 +570,15 @@ class Mux:
             if winner is None or not current.get(winner, False):
                 return
             await self._fanin_select_best_effort(winner, reason="auto_tick")
+
+    async def _reassert_test_fanin_label(self) -> None:
+        async with self._transition_lock:
+            label = self._test_fanin_label
+            if label is None:
+                return
+            await self._fanin_select_label_best_effort(
+                label, reason="test_tick",
+            )
 
     def _ensure_volume_coordinator(self) -> Any:
         if self._volume_coordinator is not None:
@@ -708,6 +766,9 @@ class Mux:
 
     async def _fanin_select(self, source: Source) -> dict[str, Any]:
         label = SOURCE_TO_FANIN_LABEL[source]
+        return await self._fanin_select_label(label)
+
+    async def _fanin_select_label(self, label: str) -> dict[str, Any]:
         return await _fanin_command(f"SELECT {label}")
 
     async def _fanin_auto(self) -> dict[str, Any]:
@@ -725,6 +786,17 @@ class Mux:
             logger.warning(
                 "fanin source gate reassert failed source=%s reason=%s: %s",
                 source.value, reason, e,
+            )
+
+    async def _fanin_select_label_best_effort(
+        self, label: str, *, reason: str,
+    ) -> None:
+        try:
+            await self._fanin_select_label(label)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "fanin test gate reassert failed label=%s reason=%s: %s",
+                label, reason, e,
             )
 
     async def _fanin_auto_best_effort(self, *, reason: str) -> None:
@@ -782,6 +854,11 @@ class Mux:
                 payload = self._status_payload()
             elif command == "AUTO":
                 payload = await self.auto_select()
+            elif command.startswith("TEST_SELECT "):
+                label = command.split(" ", 1)[1].strip()
+                payload = await self.select_test_fanin_label(label)
+            elif command == "TEST_RELEASE":
+                payload = await self.release_test_fanin_label()
             elif command.startswith("SELECT "):
                 source_name = command.split(" ", 1)[1].strip()
                 try:

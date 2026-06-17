@@ -25,6 +25,7 @@ from .camilla_yaml import (
     ACTIVE_STARTUP_CONFIG_NAME,
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
+    COMMISSIONING_HEADROOM_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     audible_outputs_for_role,
@@ -156,6 +157,7 @@ from .startup_load import (
     rollback_protected_startup_config,
 )
 from .commission_ramp import (
+    COMMISSION_RAMP_MAX_LEVEL_DBFS,
     RAMP_ROLE_ORDER,
     RAMP_STATE_ENV,
     RAMP_STATE_KIND,
@@ -212,6 +214,7 @@ __all__ = [
     "ACTIVE_PRESET_KIND",
     "BASELINE_HEADROOM_DB",
     "BASELINE_LIMITER_CLIP_LIMIT_DB",
+    "COMMISSIONING_HEADROOM_DB",
     "BASELINE_PROFILE_KIND",
     "DRIVER_ACOUSTIC_KIND",
     "DRIVER_VERDICTS",
@@ -231,6 +234,7 @@ __all__ = [
     "record_driver_acoustic_capture",
     "record_summed_acoustic_capture",
     "CALIBRATION_LEVEL_KIND",
+    "COMMISSION_RAMP_MAX_LEVEL_DBFS",
     "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_PATH_SAFETY_EVIDENCE_PATH",
     "DEFAULT_TEST_LEVEL_DBFS",
