@@ -327,20 +327,26 @@ def test_load_blocks_when_speaker_not_ready(monkeypatch, tmp_path):
     assert gates["speaker_ready_for_active_load"] is False
 
 
-def test_durable_statefile_drift_fails_closed(monkeypatch, tmp_path):
+def test_durable_statefile_drift_fails_closed(monkeypatch, caplog, tmp_path):
     # Defensive: if the persisted statefile somehow points at the transient
     # commissioning config (impossible with the inline transport), the load must
     # FAIL CLOSED inside the lock (roll back to staged), not report 'loaded' with
     # a buried blocker -- a reboot must never come up on the transient config.
+    import jasper.active_speaker.startup_load as startup_load_mod
+
     commission_path = str(tmp_path / "commission.yml")
-    result, cam, staged, staged_path, statefile, state_path = _load(
-        tmp_path, monkeypatch, role="woofer", statefile_target=commission_path
-    )
+    with caplog.at_level("WARNING", logger=startup_load_mod.logger.name):
+        result, cam, staged, staged_path, statefile, state_path = _load(
+            tmp_path, monkeypatch, role="woofer", statefile_target=commission_path
+        )
     assert result["load"]["status"] == "failed"
     assert result["load"]["durable_statefile_intact"] is False
     assert "drifted" in result["load"]["dsp_apply"]["persist_error"]
     # Rolled the running graph back to the all-muted staged anchor.
     assert cam.loaded_paths[-1] == staged_path
+    # The safety reason reaches the journal, not just the state file.
+    assert "result=failed" in caplog.text
+    assert "drifted" in caplog.text
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "failed"
     assert state["rollback_available"] is False

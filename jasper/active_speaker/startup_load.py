@@ -1585,13 +1585,17 @@ async def load_driver_commissioning_config(
             ],
         )
         _record_commission_state(payload, state_path=state_path)
+        # Surface the safety reason (live-mask drift / missing HP / statefile
+        # drift / unreadable graph) in the journal, not just the state file — the
+        # journal is the operator's first debug surface.
+        reason = exc.state.persist_error or exc.state.load_error or str(exc)
         logger.warning(
             "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "rolled_back=%s error=%s",
+            "rolled_back=%s reason=%s",
             candidate_path,
             staged_path,
             getattr(exc.state, "rollback_succeeded", None),
-            type(exc).__name__,
+            reason,
         )
         return {"preflight": preflight, "load": payload}
 
