@@ -397,12 +397,8 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     "jasper-audio-hardware-reconcile": (
         ROOT / "deploy/systemd/jasper-audio-hardware-reconcile.service"
     ),
-    "jasper-dac-init": ROOT / "deploy/systemd/jasper-dac-init.service",
     "jasper-dongle-recover": ROOT / "deploy/systemd/jasper-dongle-recover.service",
     "jasper-wifi-guardian": ROOT / "deploy/systemd/jasper-wifi-guardian.service",
-    "jasper-headphone-monitor": (
-        ROOT / "deploy/systemd/jasper-headphone-monitor.service"
-    ),
     "jasper-grouping-reconcile": (
         ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
     ),
@@ -414,6 +410,12 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
 }
 
 APPLE_DONGLE_UDEV_RULE = ROOT / "deploy/udev/99-jasper-apple-dongle.rules"
+TIER_B_DAC_MIXER_UNITS = {
+    "jasper-dac-init": ROOT / "deploy/systemd/jasper-dac-init.service",
+    "jasper-headphone-monitor": (
+        ROOT / "deploy/systemd/jasper-headphone-monitor.service"
+    ),
+}
 
 
 @pytest.mark.parametrize(
@@ -428,13 +430,57 @@ def test_privileged_support_units_stay_root_until_validated(unit, path):
     )
 
 
-def test_apple_dongle_udev_mixer_fast_path_stays_in_tier_b_scope():
+@pytest.mark.parametrize("unit,path", sorted(TIER_B_DAC_MIXER_UNITS.items()))
+def test_dac_mixer_units_run_as_recon_user(unit, path):
+    """WS1 Tier-B DAC mixer slice: the service/daemon pin paths are non-root.
+
+    The matching installer contract is below. The udev RUN+= fast path is tested
+    separately because it deliberately remains root-owned for immediate hotplug
+    recovery.
+    """
+    pairs = set(_directives(path))
+    assert ("User", "jasper-recon") in pairs, (
+        f"{unit}: Apple DAC mixer pinning should run as jasper-recon."
+    )
+    assert ("Group", "jasper") in pairs, (
+        f"{unit}: jasper-recon primary group must stay jasper."
+    )
+    assert ("SupplementaryGroups", "audio") in pairs, (
+        f"{unit}: amixer needs /dev/snd/controlC* via the audio group."
+    )
+    assert ("CapabilityBoundingSet", "") in pairs, (
+        f"{unit}: must set CapabilityBoundingSet= (empty) to drop all caps."
+    )
+    assert ("SystemCallFilter", "@system-service") in pairs, (
+        f"{unit}: must set SystemCallFilter=@system-service."
+    )
+    assert ("NoNewPrivileges", "true") in pairs, (
+        f"{unit}: must set NoNewPrivileges=true."
+    )
+
+
+def test_install_creates_recon_user_for_dac_mixer_slice():
+    sh = SERVICE_USERS_SH.read_text()
+    lines = sh.splitlines()
+    useradd = [ln for ln in lines if "useradd" in ln and " jasper-recon" in ln]
+    assert useradd, "service-users.sh must create jasper-recon for DAC mixer units"
+    assert "-g jasper" in useradd[0], "jasper-recon primary group must be jasper"
+    assert "-G audio" in useradd[0], (
+        "jasper-recon must be in supplementary group audio for amixer."
+    )
+    assert "usermod -aG audio jasper-recon" in sh, (
+        "upgrade path must add audio to an existing jasper-recon user."
+    )
+
+
+def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
     """The DAC mixer-pin slice must account for the udev hotplug fast path too.
 
     `jasper-dac-init.service` is not the only root-owned Headphone=100% writer:
     the Apple dongle udev rule also runs amixer on sound-card add, and udev
-    RUN+= executes as root. If a later PR moves DAC mixer pinning to a
-    non-root user, update this guard with the validated replacement boundary.
+    RUN+= executes as root. The service and monitor paths now run as
+    jasper-recon, but this root fast path stays explicit until a fixed helper or
+    systemd oneshot replacement is hardware-validated against real replug.
     """
     text = APPLE_DONGLE_UDEV_RULE.read_text(encoding="utf-8")
     assert (

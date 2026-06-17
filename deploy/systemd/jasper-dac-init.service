@@ -19,6 +19,16 @@ Requires=sound.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/jasper-dac-init __APPLE_DONGLE_CARD__ Headphone
+# WS1 Tier-B DAC mixer slice: amixer access works through the `audio`
+# supplementary group on Apple USB-C DAC hardware, so the boot pin no longer
+# needs uid 0. The udev hotplug fast path remains a root-owned exception in
+# deploy/udev/99-jasper-apple-dongle.rules to preserve immediate replug repair.
+User=jasper-recon
+Group=jasper
+SupplementaryGroups=audio
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+NoNewPrivileges=true
 StandardOutput=journal
 StandardError=journal
 

@@ -9,9 +9,12 @@
 > `jasper-intsecrets` readable/writable by voice+control+mux+web) have landed.
 > The remaining WS1 scope is now explicit below: the streambox `jasper-web`
 > drop still needs Zero-class hardware validation, and the Tier-B privileged
-> support surfaces are mapped for small follow-up PRs. The Phase 4 mechanism was
-> revised from the original `LoadCredential`/`systemd-creds` sketch to group
-> compartments after a hardware probe (see Phase 4). This doc is the
+> support surfaces are mapped for small follow-up PRs. The first Tier-B DAC
+> mixer increment has landed: boot pin + drift monitor now run as
+> `jasper-recon`, while the udev hotplug fast path remains a documented root
+> exception. The Phase 4
+> mechanism was revised from the original `LoadCredential`/`systemd-creds`
+> sketch to group compartments after a hardware probe (see Phase 4). This doc is the
 > threat-model + ADR for the work; update it as each phase lands.
 
 How JTS contains a compromise of its always-on daemons, and the staged plan
@@ -700,9 +703,9 @@ Rules for all Tier-B slices:
 
 | Surface | Trigger | Privileged operation today | Likely split |
 |---|---|---|---|
-| `jasper-dac-init.service` + [`deploy/bin/jasper-dac-init`](../deploy/bin/jasper-dac-init) | boot and output-hardware reconcile | Detect Apple USB-C DACs with `aplay -L`; run `amixer -c <card> sset Headphone 100% unmute`. | Best first code slice once Apple-DAC hardware is available: run as `jasper-recon` with `audio` group if `amixer` works under that user. No broker needed. |
-| `jasper-headphone-monitor.service` + [`deploy/bin/jasper-headphone-monitor`](../deploy/bin/jasper-headphone-monitor) | long-running DAC drift monitor | Poll the same Apple DAC mixer and self-heal drift back to 100%. | Pair with the DAC slice or leave root until then. Same `jasper-recon` + `audio` hypothesis as `jasper-dac-init`. |
-| Apple dongle udev fast path + [`99-jasper-apple-dongle.rules`](../deploy/udev/99-jasper-apple-dongle.rules) | Apple dongle sound-card / USB add | udev runs the hotplug `amixer -c $card sset Headphone 100% unmute` fast path as root and writes USB autosuspend `power/control=on`; it also triggers `jasper-dongle-recover.service`. | Treat as part of the DAC mixer slice, not as background noise. Either keep the udev `amixer` path root-by-design and document that exception, or replace it with a fixed root helper / systemd oneshot that preserves hotplug pinning. Validate with `udevadm test` / replug, not only boot. |
+| `jasper-dac-init.service` + [`deploy/bin/jasper-dac-init`](../deploy/bin/jasper-dac-init) | boot and output-hardware reconcile | Detect Apple USB-C DACs with `aplay -L`; run `amixer -c <card> sset Headphone 100% unmute`. | **Landed:** runs as `jasper-recon` (primary `jasper`, supplementary `audio`) with empty capabilities and `SystemCallFilter=@system-service`. No broker needed. |
+| `jasper-headphone-monitor.service` + [`deploy/bin/jasper-headphone-monitor`](../deploy/bin/jasper-headphone-monitor) | long-running DAC drift monitor | Poll the same Apple DAC mixer and self-heal drift back to 100%. | **Landed:** same `jasper-recon` + `audio` permission contract as `jasper-dac-init`. |
+| Apple dongle udev fast path + [`99-jasper-apple-dongle.rules`](../deploy/udev/99-jasper-apple-dongle.rules) | Apple dongle sound-card / USB add | udev runs the hotplug `amixer -c $card sset Headphone 100% unmute` fast path as root and writes USB autosuspend `power/control=on`; it also triggers `jasper-dongle-recover.service`. | **Root exception remains:** the immediate `RUN+=amixer` repair path stayed root-owned to preserve hotplug recovery. A later PR can replace it with a fixed root helper or systemd oneshot if real replug/`udevadm test` validation proves the replacement preserves Headphone repinning. |
 | `jasper-wifi-guardian.service` + [`deploy/bin/jasper-wifi-guardian`](../deploy/bin/jasper-wifi-guardian) | boot after NetworkManager wait-online | Read the root-only PSK stash, inspect NM state, run `nmcli connection up`, `nmcli dev wifi connect`, and cleanup of broken profiles. | `jasper-recon` could own the stash plus a narrow NetworkManager polkit rule parallel to `jasper-web`, but the failed-connect/recreate path is lockout-sensitive. Not first without Wi-Fi hardware validation. |
 | `jasper-aec-init.service` + `jasper-aec-init` | boot and AEC reconcile restarts | Raw XVF3800 USB control writes through `xvf_host`; `amixer` on the `Array` UAC mixer; volatile chip profile only, with `SAVE_CONFIGURATION` and `REBOOT` deliberately forbidden. | Needs a hardware-gated design. Either `jasper-recon` gets a device-specific udev group for the XVF control endpoint plus `audio`, or a root helper owns the raw USB writes. Brick-loop hazards mean this is not an early slice. |
 | `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
@@ -722,11 +725,12 @@ forgotten:
 | `jasper-wake-enroll` | Requires root so it can stop/start `jasper-voice` and bind/capture the same mic/UDP resources without fighting the daemon. | Later split could use the restart broker plus an `audio`/state-writer user, but this is operator-only and not first. |
 | `jasper-noise-capture` | Same stop/start and capture shape as wake enrollment, without active wake prompts. | Same direction as wake enrollment. |
 
-### Smallest safe next Tier-B slice
+### First Tier-B DAC mixer slice (landed 2026-06-17)
 
-The smallest implementation slice after this mapping is **DAC mixer pinning**:
-`jasper-dac-init.service`, the Apple dongle udev fast path, and, if validation
-confirms the same permissions, `jasper-headphone-monitor.service`.
+The first implementation slice after this mapping was **DAC mixer pinning**:
+`jasper-dac-init.service` and `jasper-headphone-monitor.service` now run as
+`jasper-recon` with primary group `jasper` and supplementary `audio`.
+The Apple dongle udev fast path remains a root-owned exception by design.
 
 Why this slice is first:
 
@@ -737,24 +741,35 @@ Why this slice is first:
   headroom rather than a dead speaker
 - the shell helpers already have focused tests and narrow, fixed operations
 
-Required validation before landing that code slice:
+Validated before landing on Apple USB-C DAC hardware (`jts.local`, 2026-06-17):
 
 - installer creates `jasper-recon` with primary group `jasper` and
   supplementary `audio`
 - service unit(s) declare `User=jasper-recon`, `Group=jasper`, empty
   `CapabilityBoundingSet=`, and an appropriate system-call filter
-- on Apple USB-C DAC hardware, `sudo -u jasper-recon -g jasper -G audio
-  amixer -c <card> -- sset Headphone 100% unmute` succeeds
-- the udev hotplug `amixer` fast path is either deliberately left root-owned
-  and documented as the exception, or replaced with an equally fixed-argv root
-  helper / oneshot; `udevadm test` and a real replug show Headphone repins
+- on Apple USB-C DAC hardware, `id jasper-recon` shows primary group `jasper`
+  plus supplementary `audio`, and `sudo -u jasper-recon -g jasper amixer -c
+  <card> -- sset Headphone 100% unmute` succeeds. The Raspberry Pi OS sudo on
+  the validation host does not support the checklist's literal `-G audio`
+  option, so the group membership was verified separately.
+- the udev hotplug `amixer` fast path is deliberately left root-owned and
+  documented/tested as the exception
 - reboot with the dongle present keeps the control pinned at 100%
-- dongle remove/reinsert still recovers through `jasper-dongle-recover` and the
-  output-hardware reconciler
+- `udevadm test /sys/class/sound/controlC2` queues the root `RUN+=amixer`
+  command and `jasper-dongle-recover.service`
+- headphone-monitor drift correction works under `jasper-recon` (70% → 100%)
+- real Apple USB-C DAC remove/reinsert repins the control and recovers through
+  `jasper-dongle-recover` and the output-hardware reconciler
 - `jasper-doctor` reports no output-hardware regression and the journal has no
   permission-denied lines from the changed units
 
-If any of those checks fail, stop at the mapping PR. Do not compensate by
+Remaining DAC mixer privilege work:
+
+- replace the root `RUN+=/usr/bin/amixer ...` udev fast path only if a fixed
+  root helper or systemd oneshot preserves immediate hotplug repinning under
+  `udevadm test` and real Apple-dongle replug validation
+
+For future Tier-B slices, do not compensate for failed hardware validation by
 granting broad sudo, adding the units to `MANAGED_UNITS`, or weakening the
 hotplug recovery path.
 
