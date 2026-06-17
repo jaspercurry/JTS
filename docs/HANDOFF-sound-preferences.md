@@ -234,7 +234,10 @@ quiet tone and asks the operator to press **I hear the tone** as soon as the
 selected driver is audible; **Wrong driver** and **Stop tone** remain visible
 beside it. Internally, `/sound/active-speaker/commission-ramp-step` still raises
 the per-driver active graph only in bounded, guarded steps over about 30 seconds,
-while the same cancellable `correction_substream` tone keeps playing. If the
+while the same cancellable `correction_substream` tone keeps playing. The tone
+frequency is not role-hardcoded: it is planned from the same compiled
+active-speaker preset/crossover edges and tweeter-protection policy as the graph,
+and a missing/narrow safe band blocks playback before fan-in is selected. If the
 safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
 operator to check amp gain, wiring, and DAC output mapping. The level state is
 separate from normal listening volume; the older direct-DAC diagnostic route for

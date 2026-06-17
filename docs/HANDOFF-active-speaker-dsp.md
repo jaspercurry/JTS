@@ -643,9 +643,13 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `STARTUP_HEADROOM_DB=40` crash-recovery headroom. The `/sound/` commission
   ramp pairs that graph load with one bounded continuous sine into
   `correction_substream` (currently a 35 s `aplay` session, reused across the
-  browser's ~30 s ramp), so the tone enters fan-in and then the protected active
-  CamillaDSP graph; if the tone backend fails, the endpoint rolls back to the
-  all-muted staged config and does not leave a pending by-ear confirmation.
+  browser's ~30 s ramp). The sine frequency is planned by
+  `active_speaker.test_signal_plan` from the same compiled preset/crossover
+  edges and tweeter-protection policy that emitted the active CamillaDSP graph;
+  if no margin-bounded in-band tone exists, the planner blocks before WAV
+  generation or fan-in selection. The tone enters fan-in and then the protected
+  active CamillaDSP graph; if the tone backend fails, the endpoint rolls back to
+  the all-muted staged config and does not leave a pending by-ear confirmation.
   The gate (`build_stage5_ramp_gate`, fails closed) **re-asserts the protective
   high-pass on the RUNNING graph before any tweeter step** (not just the config
   file, via `running_commission_evidence`), bounds the gain, asserts the 0 dB
@@ -1202,7 +1206,12 @@ but the preset-era public routes (`/sound/active-speaker/tone-targets` and
 `/sound/active-speaker/tone-plan`) have been removed. Product playback goes
 through saved-topology targets only: `prepare-driver-test` selects and gates the
 driver, and `/sound/active-speaker/play-tone` builds the final bounded plan at
-the execution boundary.
+the execution boundary. The reusable driver-test signal policy lives in
+`jasper.active_speaker.test_signal_plan`: the production adapter consumes a
+compiled `ActiveSpeakerPreset` for active 2/3-way main speakers, while the
+edge-level helper already covers a future subwoofer low-pass plus subsonic floor
+once the subwoofer compiler/staging slice exists. Until then, optional subwoofer
+groups still fail closed before active startup staging or baseline compile.
 
 `jasper.active_speaker.playback` is the first backend seam for executing that
 intent. The default backend is still no-audio: it writes a bounded

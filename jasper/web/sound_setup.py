@@ -2070,17 +2070,6 @@ _COMMISSION_TONE_LOCK = threading.Lock()
 _COMMISSION_TONE_SESSION: dict[str, Any] | None = None
 
 
-def _commission_tone_frequency_hz(role: str) -> float:
-    role = str(role or "").strip().lower()
-    if role == "tweeter":
-        return 5000.0
-    if role == "mid":
-        return 800.0
-    if role in {"woofer", "subwoofer"}:
-        return 120.0 if role == "woofer" else 50.0
-    return 500.0
-
-
 def _commission_tone_target_key(
     *,
     role: str,
@@ -2171,19 +2160,121 @@ def _commission_tone_issue(exc: BaseException) -> dict[str, str]:
     }
 
 
+def _commission_tone_driver_style(
+    *,
+    topology: Any,
+    group_id: str | None,
+    role: str,
+) -> str | None:
+    for group in getattr(topology, "speaker_groups", ()):
+        if group_id and getattr(group, "id", None) != group_id:
+            continue
+        for channel in getattr(group, "channels", ()):
+            if getattr(channel, "role", None) == role:
+                return getattr(channel, "driver_style", None)
+    return None
+
+
+def _commission_tone_signal_plan(
+    *,
+    role: str,
+    group_id: str | None,
+    topology: Any = None,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from jasper.active_speaker import (
+        DRIVER_TEST_SIGNAL_PLAN_KIND,
+        driver_test_signal_plan,
+        load_active_speaker_preset,
+    )
+
+    role_id = str(role or "").strip().lower()
+    source = "explicit_preset" if preset is not None else "preset_fallback"
+    bound_preset = preset
+    if bound_preset is None and crossover_preview is not None:
+        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+
+        source = "crossover_preview"
+        topology = topology or load_output_topology()
+        bound_preset, preview_issues, _ = compile_preset_from_crossover_preview(
+            topology,
+            crossover_preview,
+        )
+        if bound_preset is None:
+            issues = [
+                issue for issue in preview_issues if isinstance(issue, dict)
+            ] or [
+                {
+                    "severity": "blocker",
+                    "code": "commission_tone_preset_unresolved",
+                    "message": (
+                        "could not compile the saved crossover preview into a "
+                        "driver test preset"
+                    ),
+                }
+            ]
+            return {
+                "artifact_schema_version": 1,
+                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
+                "status": "blocked",
+                "role": role_id,
+                "frequency_hz": None,
+                "preset_source": source,
+                "issues": issues,
+            }
+    if bound_preset is None:
+        try:
+            bound_preset = load_active_speaker_preset()
+        except Exception as exc:  # noqa: BLE001 - fail closed before playback.
+            return {
+                "artifact_schema_version": 1,
+                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
+                "status": "blocked",
+                "role": role_id,
+                "frequency_hz": None,
+                "preset_source": source,
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "commission_tone_preset_unreadable",
+                    "message": f"could not load active-speaker preset: {exc}",
+                }],
+            }
+
+    driver_style = (
+        _commission_tone_driver_style(
+            topology=topology,
+            group_id=group_id,
+            role=role_id,
+        )
+        if topology is not None
+        else None
+    )
+    plan = driver_test_signal_plan(
+        bound_preset,
+        role_id,
+        driver_style=driver_style,
+    )
+    plan["preset_source"] = source
+    plan["preset_id"] = getattr(bound_preset, "preset_id", None)
+    plan["preset_name"] = getattr(bound_preset, "name", None)
+    return plan
+
+
 def _commission_tone_payload(
     *,
     status: str,
     playback_id: str,
     role: str,
     level_dbfs: float,
-    frequency_hz: float,
+    frequency_hz: float | None,
     target: dict[str, Any] | None,
     group_id: str | None,
     audio_emitted: bool,
     issues: list[dict[str, str]],
     session_reused: bool = False,
     fanin_gate: dict[str, Any] | None = None,
+    signal_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "status": status,
@@ -2205,6 +2296,8 @@ def _commission_tone_payload(
     }
     if fanin_gate is not None:
         payload["fanin_gate"] = fanin_gate
+    if signal_plan is not None:
+        payload["signal_plan"] = signal_plan
     return payload
 
 
@@ -2256,12 +2349,50 @@ async def _active_speaker_play_commission_tone(
     playback_id: str,
     group_id: str | None = None,
     target: dict[str, Any] | None = None,
+    topology: Any = None,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ensure one bounded continuous commissioning tone is playing."""
 
     global _COMMISSION_TONE_SESSION
 
-    frequency_hz = _commission_tone_frequency_hz(role)
+    role = str(role or "").strip().lower()
+    signal_plan = _commission_tone_signal_plan(
+        role=role,
+        group_id=group_id,
+        topology=topology,
+        preset=preset,
+        crossover_preview=crossover_preview,
+    )
+    frequency_hz = signal_plan.get("frequency_hz")
+    if signal_plan.get("status") != "ready" or frequency_hz is None:
+        logger.warning(
+            "event=sound.active_speaker_commission_tone action=plan status=blocked "
+            "group=%s role=%s issues=%s",
+            group_id,
+            role,
+            ",".join(
+                str(issue.get("code"))
+                for issue in signal_plan.get("issues", [])
+                if isinstance(issue, dict)
+            ),
+        )
+        return _commission_tone_payload(
+            status="blocked",
+            playback_id=playback_id,
+            role=role,
+            level_dbfs=level_dbfs,
+            frequency_hz=None,
+            target=target,
+            group_id=group_id,
+            audio_emitted=False,
+            issues=[
+                issue for issue in signal_plan.get("issues", [])
+                if isinstance(issue, dict)
+            ],
+            signal_plan=signal_plan,
+        )
     target_key = _commission_tone_target_key(role=role, group_id=group_id, target=target)
     try:
         wav_path = _commission_tone_wav_path(frequency_hz=frequency_hz)
@@ -2276,6 +2407,7 @@ async def _active_speaker_play_commission_tone(
             group_id=group_id,
             audio_emitted=False,
             issues=[_commission_tone_issue(exc)],
+            signal_plan=signal_plan,
         )
 
     try:
@@ -2291,6 +2423,7 @@ async def _active_speaker_play_commission_tone(
             group_id=group_id,
             audio_emitted=False,
             issues=[_commission_tone_issue(exc)],
+            signal_plan=signal_plan,
         )
 
     started_proc = None
@@ -2323,6 +2456,7 @@ async def _active_speaker_play_commission_tone(
                         issues=[],
                         session_reused=True,
                         fanin_gate=fanin_gate,
+                        signal_plan=signal_plan,
                     )
                 _stop_commission_tone_locked(reason="replace")
 
@@ -2354,6 +2488,7 @@ async def _active_speaker_play_commission_tone(
             audio_emitted=False,
             issues=[_commission_tone_issue(exc)],
             fanin_gate=fanin_gate,
+            signal_plan=signal_plan,
         )
     if started_proc is not None:
         await asyncio.sleep(COMMISSION_TONE_STARTUP_CHECK_S)
@@ -2382,15 +2517,18 @@ async def _active_speaker_play_commission_tone(
                     )
                 ],
                 fanin_gate=fanin_gate,
+                signal_plan=signal_plan,
             )
 
     logger.info(
         "event=sound.active_speaker_commission_tone action=start group=%s role=%s "
-        "frequency_hz=%.1f duration_s=%.1f",
+        "frequency_hz=%.1f duration_s=%.1f highpass_hz=%s lowpass_hz=%s",
         group_id,
         role,
         frequency_hz,
         COMMISSION_TONE_DURATION_S,
+        (signal_plan.get("allowed_band") or {}).get("highpass_hz"),
+        (signal_plan.get("allowed_band") or {}).get("lowpass_hz"),
     )
     return _commission_tone_payload(
         status="completed",
@@ -2403,6 +2541,7 @@ async def _active_speaker_play_commission_tone(
         audio_emitted=True,
         issues=[],
         fanin_gate=fanin_gate,
+        signal_plan=signal_plan,
     )
 
 
@@ -2692,6 +2831,15 @@ async def _active_speaker_commission_ramp_step_payload(
     load_config, read_running_config, get_current_config_path = (
         commission_seams(cam)
     )
+
+    async def _play_commission_tone(**kwargs: Any) -> dict[str, Any]:
+        return await _active_speaker_play_commission_tone(
+            **kwargs,
+            topology=topology,
+            preset=preset,
+            crossover_preview=crossover_preview,
+        )
+
     payload = await ramp_audible_step(
         topology,
         speaker_group_id=group,
@@ -2703,7 +2851,7 @@ async def _active_speaker_commission_ramp_step_payload(
         crossover_preview=crossover_preview,
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
-        play_tone=_active_speaker_play_commission_tone,
+        play_tone=_play_commission_tone,
     )
     logger.info(
         "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
