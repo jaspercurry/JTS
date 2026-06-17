@@ -145,7 +145,7 @@ source's current value and feeds detected changes into
 
 - AirPlay: `busctl get-property` for `AirplayVolume` (read but
   unconditionally ignored downstream — see exception below)
-- Spotify: read `/run/librespot/state.json` (written atomically by librespot's `--onevent` hook on every player event; `volume` field is raw 0-65535, mapped to percent)
+- Spotify: read `/run/librespot/state.json` (written atomically at 0644 by librespot's `--onevent` hook on every player event, so non-root mux/control readers can observe it; `volume` field is raw 0-65535, mapped to percent)
 - Bluetooth: `bluealsa-cli list-pcms` to find the transport, then
   `busctl get-property` for `Volume`
 - USB sink: observed in the `jasper-usbsink` daemon itself. The host
@@ -588,4 +588,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-14 (active-speaker baseline `volume_limit` guard rechecked against `camilla_yaml.py`; prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-06-17 (librespot state-file reader mode rechecked against `jasper-librespot-event`; prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

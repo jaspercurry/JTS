@@ -16,7 +16,9 @@ read surface without us having to write our own daemon to bridge.
 
 Path is hardcoded at /run/librespot/state.json — librespot.service's
 RuntimeDirectory=librespot creates the directory at start with the
-right ownership, and tears it down on stop.
+right ownership, and tears it down on stop. The file is published
+0644 because non-root JTS daemons in other groups read this
+non-secret renderer telemetry.
 """
 from __future__ import annotations
 
@@ -71,6 +73,10 @@ def main() -> int:
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(state, f)
+        # mkstemp publishes tempfiles at 0600. The state is non-secret
+        # renderer telemetry consumed by non-root JTS daemons
+        # (jasper-mux/jasper-control), so widen before the atomic rename.
+        os.chmod(tmp, 0o644)
         os.replace(tmp, STATE)
     except Exception:
         try:

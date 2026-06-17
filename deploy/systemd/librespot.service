@@ -27,8 +27,10 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # RuntimeDirectory creates /run/librespot/ at start with mode 0755.
 # Other components (jasper-mux, jasper-voice volume_observers,
 # jasper-control coordinator) read /run/librespot/state.json — the
-# file is written atomically by the --onevent hook on every player
-# event (volume_set, playing, paused, stopped, etc).
+# file is written atomically at 0644 by the --onevent hook on every
+# player event (volume_set, playing, paused, stopped, etc), so
+# non-root mux/control readers in other service groups can detect
+# Spotify activity.
 RuntimeDirectory=librespot
 RuntimeDirectoryMode=0755
 # CacheDirectory creates /var/cache/librespot/ owned by pi:audio.
