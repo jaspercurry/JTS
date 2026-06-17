@@ -589,10 +589,14 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `supports_active_outputd_lane=True` (`active_outputd_lane_channels=8` = the
   cap). Because the gate accepts the config's actual width, the existing
   per-speaker emitters (driver-count configs) engage active mode directly — **no
-  full-width-padding producer is needed.** **Load-bearing hardware fact (verify
-  on jts3):** outputd opening the DAC at W < its physical channel count must
-  succeed and idle undriven outputs safely; a DAC that requires native-width
-  opens would declare that per-profile rather than forcing universal padding.
+  full-width-padding producer is needed.** **Load-bearing hardware fact (#741) —
+  DAC capability VERIFIED on jts3:** `aplay --dump-hw-params` on the raw DAC8x
+  reports `CHANNELS: [2 8]`, so opening the DAC at W < its physical channel count
+  is hardware-supported (no native-width `DacProfile` property is needed). The
+  remaining bench item is exercising that open + idle-undriven-outputs behaviour
+  *through the active outputd lane* at Stage 4 (a staged active config, not the
+  base cutover.yml jts3 has been running). A DAC that required native-width opens
+  would declare that per-profile rather than forcing universal padding.
   **2b landed (masked commissioning emitter wired):**
   `stage_protected_startup_config` now stages the production graph via
   `emit_active_speaker_commissioning_config(..., audible_outputs=frozenset())` —
@@ -610,11 +614,25 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   fix headroom before proceeding.
 - **Stage 4 — jts3, masked active load, drivers connected, speaker SILENT.** *Red:*
   any audible output → fail closed, do not unmute.
-- **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed.**
-  **Before unmuting the tweeter, assert the high-pass filter is present in the
-  RUNNING CamillaDSP pipeline (not just the config file)**, plus subsonic/DC
-  protection, a low start level + ramp, and a sweep confined to the driver's safe
-  band. *Red:* HP not confirmed live, or any sibling audible → abort, re-mute.
+- **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed
+  (built; runnable via `jasper-active-speaker commission-ramp`).** A commission
+  load arms a driver at the protected floor (gain −120 dB, mute off — silent);
+  `commission_ramp.ramp_audible_step` raises that per-output gain (the threaded
+  `audible_gain_db`) one bounded, gated step at a time toward a low audible level
+  (`MIN_TEST_LEVEL_DBFS` → `MAX_TEST_LEVEL_DBFS`, ≤ `AUDIBLE_RAMP_STEP_DB`/step).
+  The gate (`build_stage5_ramp_gate`, fails closed) **re-asserts the protective
+  high-pass on the RUNNING graph before any tweeter step** (not just the config
+  file, via `running_commission_evidence`), bounds the gain, asserts the 0 dB
+  ceiling + the audible driver's limiter, and enforces woofer-before-tweeter.
+  Each step lands the safe_playback floor tri-state at `floor_pending_operator`;
+  the operator confirms by ear (`commission-ramp ack`) → `floor_confirmed`
+  (`silent` retries louder; `too_loud`/`heard_wrong_driver` re-mute). The swept
+  measurement is Stage 6. **"Subsonic/DC protection present" is satisfied by the
+  protections already in the graph** — the 0 dB ceiling, the per-driver limiter,
+  and the startup headroom — **not a dedicated woofer high-pass** (a deliberate
+  deferral; see "Resolved decisions"). *Red:* HP not confirmed live, or any
+  sibling audible → abort, re-mute. **On-device ch1 woofer ramp is bench-gated
+  on jts3 (amps off until confirmed); validation plan in the gap-1 increment.**
 - **Stage 6 — sweep + AEC-reference validation (gate that can fail the feature).**
   Per-driver `driver_acoustics`. **Pre-gate (check before Stage 6, not during):**
   confirm there is **no sub latency outside CamillaDSP's alignment** — a plate-amp
@@ -669,7 +687,23 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `floor_pending_operator` ("tone played, awaiting ACK") is load-bearing for
   Stage 5: a process that deliberately unmutes drivers one at a time needs
   "not-yet-operator-confirmed" to be **distinct from both "muted" and "confirmed
-  safe."** Consolidate ownership, preserve the state space.
+  safe."** Consolidate ownership, preserve the state space. *Landed:*
+  `commission_ramp.ramp_audible_step` drives exactly this tri-state per driver
+  (each audible step → `floor_pending_operator`; `commission-ramp ack
+  heard_correct_driver` → `floor_confirmed`); `silent` retries louder via
+  `floor_audio_retry_allowed_for_target`. It is not replaced by a bool.
+- **"Subsonic/DC protection present" (Stage-5 gate) = assert the EXISTING
+  protections, no dedicated woofer high-pass (decided 2026-06-17).** The active
+  graph has a protective high-pass only on the tweeter; the woofer/low path has
+  none (its crossover is a low-pass, which passes DC). Rather than add a woofer
+  subsonic HP — whose corner is driver/enclosure-specific and which would touch
+  the production graph + the acoustic baseline — the Stage-5 gate stands on what
+  is already there: the 0 dB volume ceiling, the per-driver limiter, and the
+  startup headroom (all re-asserted live, plus the band-limited commissioning
+  tone). A real woofer subsonic/DC-block HP is a deliberate deferral; revisit if
+  a direct-amp woofer's excursion at commissioning level proves it necessary.
+  The gate names its checks for what they enforce — it does not claim a subsonic
+  filter exists.
 - **Crash recovery from any commissioning step lands MUTED** (the same safety
   property as the tri-state + the muted-by-default startup config). A power loss
   or crash partway through commissioning must reboot into everything-muted — never
@@ -701,12 +735,20 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
     refuses to run unless the staged boot config is already the active graph.
     Built + hardware-free tested (`tests/test_active_speaker_commission_load.py`,
     incl. the S3 guard that the durable statefile still points at the all-muted
-    staged config after a commissioning load). **On-device Stage-4 validation on
-    jts3 (the active DAC8x opens at width < physical — the scoped #741 fact — and
-    the inline transport leaves the statefile untouched against real CamillaDSP
-    4.x) is pending the bench.** Per-driver *audible* unmute is the Stage-5 gain
-    ramp, not this load: the load arms the target at the protected floor
-    (`{gain:-120, mute:False}`) — a commission load is silent until Stage 5.
+    staged config after a commissioning load). **The operator trigger now
+    exists**: `jasper-active-speaker commission-load --group … --role …`
+    (single-flight, `--dry-run` preflight) + `commission-rollback` wire the real
+    `CamillaController` seams (inline `set_active_config_raw` loader,
+    `get_active_config_raw` read-back, `get_config_file_path` anchor). **The
+    inline-transport S3 property is proven on jts3** (a `/tmp` reload probe
+    against real CamillaDSP 4.x confirmed `set_active_config_raw` left the
+    statefile untouched). **Still pending the bench:** the full per-driver flow
+    end-to-end + the active-lane-open at W < physical *through* a staged active
+    config (jts3 was running the base `outputd-cutover.yml`, not an active-speaker
+    staged config; the #741 hardware capability itself is verified — see the Stage
+    2b fact). Per-driver *audible* unmute is the Stage-5 gain ramp, not this load:
+    the load arms the target at the protected floor (`{gain:-120, mute:False}`) —
+    a commission load is silent until Stage 5.
 
 Every on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
 per-driver limiters, and the protective tweeter high-pass are preserved by the
@@ -1419,4 +1461,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-16
+Last verified: 2026-06-17
