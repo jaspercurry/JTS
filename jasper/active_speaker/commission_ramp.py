@@ -524,6 +524,39 @@ async def ramp_audible_step(
             ],
         }
 
+    # Precondition (fail-closed): the per-driver operator-confirmation session must
+    # be armed BEFORE we make the driver audible, so a confirm can always land. If
+    # it cannot arm, do NOT load — emit no new audible level.
+    if not _ensure_safe_session_armed(
+        environment_report=environment_report,
+        safe_playback_state_path=safe_playback_state_path,
+    ):
+        log_event(
+            logger,
+            "active_speaker.stage5_ramp",
+            level=logging.WARNING,
+            result="arm_failed",
+            group=group_id,
+            role=role,
+            next_db=next_gain_db,
+        )
+        return {
+            "status": "blocked",
+            "role": role,
+            "speaker_group_id": group_id,
+            "next_gain_db": next_gain_db,
+            "gate": gate,
+            "load": None,
+            "issues": [
+                _issue(
+                    "blocker",
+                    "stage5_safe_session_arm_failed",
+                    "could not arm the operator-confirmation session; the driver "
+                    "was NOT made audible",
+                )
+            ],
+        }
+
     load_kwargs: dict[str, Any] = {}
     if validate is not None:
         load_kwargs["validate"] = validate
@@ -572,10 +605,9 @@ async def ramp_audible_step(
             ],
         }
 
-    # The driver is now audible at next_gain_db. Record the per-driver floor
-    # confirmation request into the safe_playback tri-state (arming if needed so
-    # the operator ACK can land), and mark the ramp step pending so a second step
-    # cannot precede the ACK.
+    # The driver is now audible at next_gain_db. Record it into the (already-armed)
+    # safe_playback tri-state -> floor_pending_operator, and mark the ramp step
+    # pending so a second step cannot precede the ACK.
     playback_id = (
         (load_payload.get("load") or {}).get("dsp_apply") or {}
     ).get("op_id") or f"{group_id}:{role}:{next_gain_db:.1f}"
@@ -583,9 +615,6 @@ async def ramp_audible_step(
         target=target,
         level_dbfs=next_gain_db,
         playback_id=playback_id,
-        environment_report=environment_report,
-        path_safety_evidence_path=path_safety_evidence_path,
-        statefile_path=statefile_path,
         safe_playback_state_path=safe_playback_state_path,
     )
     ramp_payload = _record_ramp_state(
@@ -627,27 +656,48 @@ async def ramp_audible_step(
     }
 
 
+# The Stage-5 gate (`build_stage5_ramp_gate`) + the guarded load ARE the safety
+# authority for the audible step. The safe_playback session is only the per-driver
+# operator-confirmation tri-state holder, armed so the ACK can land. So it arms on
+# a static ready report rather than re-running `probe_active_speaker_environment`,
+# whose `ok_to_load_active_config` folds in `calibration_level_not_at_floor` — a
+# gate orthogonal to the ramp's own gated gain that would otherwise block the
+# confirm flow (observed live on jts3).
+_RAMP_ARM_REPORT: dict[str, Any] = {
+    "status": "ready",
+    "load_gate": "ready",
+    "ok_to_load_active_config": True,
+    "camilla_config": {},
+    "safe_playback": {},
+    "issues": [],
+}
+
+
+def _ensure_safe_session_armed(
+    *,
+    environment_report: dict[str, Any] | None,
+    safe_playback_state_path: str | Path | None,
+) -> bool:
+    """Ensure an armed safe_playback session exists to hold the per-driver floor
+    tri-state. Returns whether it is armed. Arming an already-armed session is a
+    no-op (so a mid-ramp ``floor_confirmed`` is preserved)."""
+    state = load_safe_playback_state(state_path=safe_playback_state_path)
+    if state.get("status") == "armed":
+        return True
+    report = environment_report if environment_report is not None else _RAMP_ARM_REPORT
+    armed = arm_safe_playback_session(report, state_path=safe_playback_state_path)
+    return armed.get("status") == "armed"
+
+
 def _record_floor_pending(
     *,
     target: dict[str, Any],
     level_dbfs: float,
     playback_id: str,
-    environment_report: dict[str, Any] | None,
-    path_safety_evidence_path: str | Path | None,
-    statefile_path: str | Path | None,
     safe_playback_state_path: str | Path | None,
 ) -> dict[str, Any]:
-    state = load_safe_playback_state(state_path=safe_playback_state_path)
-    if state.get("status") != "armed":
-        report = environment_report
-        if report is None:
-            from .environment import probe_active_speaker_environment
-
-            report = probe_active_speaker_environment(
-                statefile_path=statefile_path,
-                path_safety_evidence_path=path_safety_evidence_path,
-            )
-        arm_safe_playback_session(report, state_path=safe_playback_state_path)
+    """Record the now-audible step into the (already-armed) safe_playback session,
+    moving the per-driver tri-state to ``floor_pending_operator``."""
     return record_safe_playback_result(
         {
             "status": "completed",
@@ -695,18 +745,33 @@ async def record_ramp_operator_ack(
             ],
         }
 
-    safe = record_floor_audio_operator_result(
-        outcome=outcome,
-        playback_id=pending.get("playback_id"),
-        state_path=safe_playback_state_path,
+    # Two distinct things are being acknowledged, and conflating them was a bug:
+    #   * ramp.pending — the per-STEP gate (you can't take another step until you
+    #     acknowledge this one). The authority for that is ``pending`` here.
+    #   * the safe_playback floor tri-state — the per-DRIVER "heard correctly"
+    #     confirmation. Its API only accepts a verdict while it is
+    #     ``floor_pending_operator`` (the floor step, or a silent-retry step). A
+    #     LOUDER step on an already-confirmed driver leaves it ``floor_confirmed``,
+    #     so driving it there returns ``floor_confirmation_not_pending`` — which
+    #     used to wedge the ramp. Drive the tri-state only while it is genuinely
+    #     awaiting a confirm; the ramp.pending gate below stands on its own.
+    safe = load_safe_playback_state(state_path=safe_playback_state_path)
+    floor_pending = (safe.get("quiet_start") or {}).get("status") == (
+        "floor_pending_operator"
     )
+    if floor_pending:
+        safe = record_floor_audio_operator_result(
+            outcome=outcome,
+            playback_id=pending.get("playback_id"),
+            state_path=safe_playback_state_path,
+        )
     safe_issues = safe.get("issues") or []
     confirmed_roles = set(ramp_state.get("confirmed_roles") or [])
     aborted: dict[str, Any] | None = None
 
-    if outcome == "heard_correct_driver" and not safe_issues:
-        # The driver was heard correctly (at the floor, or louder after a silent
-        # floor) — record it confirmed for the woofer-before-tweeter ordering.
+    if outcome == "heard_correct_driver":
+        # The driver was heard correctly — record it confirmed for the
+        # woofer-before-tweeter ordering and release the per-step gate.
         confirmed_roles.add(str(pending.get("role")))
         new_pending = None
         status = "confirmed"
