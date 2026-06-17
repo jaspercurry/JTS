@@ -615,7 +615,10 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
 - **Stage 4 — jts3, masked active load, drivers connected, speaker SILENT.** *Red:*
   any audible output → fail closed, do not unmute.
 - **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed
-  (built; runnable via `jasper-active-speaker commission-ramp`).** A commission
+  (built; runnable via `jasper-active-speaker commission-ramp` **or** the
+  `/sound/` Advanced-speaker-setup "Protected driver commissioning" card —
+  POST `/active-speaker/commission-{load,ramp-step,ramp-ack,ramp-abort}` +
+  read-only GET `/active-speaker/commission-state`).** A commission
   load arms a driver at the protected floor (gain −120 dB, mute off — silent);
   `commission_ramp.ramp_audible_step` raises that per-output gain (the threaded
   `audible_gain_db`) one bounded, gated step at a time toward a low audible level
