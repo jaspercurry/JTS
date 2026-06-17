@@ -206,11 +206,34 @@ def test_install_creates_every_dropped_user():
         assert useradd, f"service-users.sh must `useradd ... {user}` (for {unit})"
         line = useradd[0]
         assert "-g jasper" in line, f"{user} primary group must be jasper"
-        for g in supp:  # audio / input land via `-G <group>`
-            assert f"-G {g}" in line or f"-G {g}," in line or f",{g}" in line, (
-                f"{user} must be in supplementary group {g} (matches the unit's "
-                "SupplementaryGroups=)"
+        for g in supp:
+            # Always-present groups (audio / input / systemd-journal) land via
+            # the useradd -G. A package-owned group — bluetooth, created by bluez
+            # during install_deps, which runs AFTER create_jasper_service_users —
+            # is added via a guarded `usermod -aG` instead, so a missing group
+            # can't fail the useradd and abort the fresh install under `set -e`.
+            in_useradd = f"-G {g}" in line or f"-G {g}," in line or f",{g}" in line
+            in_usermod = f"usermod -aG {g} {user}" in sh
+            assert in_useradd or in_usermod, (
+                f"{user} must be in supplementary group {g} (via useradd -G or a "
+                "guarded usermod -aG, matching the unit's SupplementaryGroups=)"
             )
+
+
+def test_streambox_web_unit_stays_root_until_validated():
+    """The streambox web unit intentionally stays root in 3b-3 — it's a Pi class
+    (Pi Zero 2 W) the drop could not be hardware-validated on. install.sh installs
+    the web polkit rule + group-writable dirs in BOTH profiles, so dropping it is
+    a one-line `User=`/`Group=` edit here once validated. Guard against an
+    accidental half-drop (a User= without the validation) by pinning the
+    deferral — when it's deliberately dropped, this test is updated in the same PR."""
+    streambox = ROOT / "deploy/jasper-web-streambox.service"
+    assert streambox.is_file(), f"missing {streambox}"
+    assert not any(k == "User" for k, _ in _directives(streambox)), (
+        "deploy/jasper-web-streambox.service gained User= — the streambox web "
+        "drop needs streambox-hardware validation first (see "
+        "docs/HANDOFF-privilege-separation.md Phase 3b-3)."
+    )
 
 
 # The root audio daemons whose UDS the now-non-root voice/mux must connect to.
