@@ -1886,6 +1886,7 @@ def prepare_driver_commissioning_config(
     preset: ActiveSpeakerPreset | None = None,
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
+    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
     run_config_check: bool = True,
@@ -1986,6 +1987,7 @@ def prepare_driver_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
                 audible_outputs=audible_outputs,
+                audible_gain_db=audible_gain_db,
                 out_path=out_path,
                 baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",
             )
@@ -2081,10 +2083,15 @@ def prepare_driver_commissioning_config(
         "kind": COMMISSIONING_CONFIG_KIND,
         "status": status,
         "created_at": created_at,
+        # The speaker's way count, so a caller (the Stage-5 ramp ordering gate)
+        # knows which driver roles exist in this cabinet without re-binding the
+        # preset itself.
+        "way_count": bound_preset.way_count if bound_preset is not None else None,
         "target": {
             "speaker_group_id": group_id,
             "role": role,
             "audible_outputs": sorted(audible_outputs),
+            "audible_gain_db": audible_gain_db,
         },
         "config": {
             "path": str(out_path),

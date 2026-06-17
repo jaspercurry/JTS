@@ -604,6 +604,7 @@ def _emit_commissioning_filter_definitions(
     startup_headroom_db: float,
     limiter_clip_limit_db: float,
     audible_outputs: frozenset[int],
+    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
@@ -638,11 +639,18 @@ def _emit_commissioning_filter_definitions(
     # Per-output commissioning mute: only audible outputs pass; the rest are
     # hard-muted so exactly one physical driver is excited through the real
     # graph. Default (empty set) is fully muted — the safe initial load.
+    # Audible outputs carry ``audible_gain_db`` as their per-output gain — the
+    # Stage-5 ramp variable. It defaults to the silent mute floor
+    # (``STARTUP_MUTE_GAIN_DB``), so an un-ramped commission load arms the target
+    # at {gain: -120, mute: off} (silent); the Stage-5 gate raises it within the
+    # commissioning level envelope. Muted outputs always stay at the -120 dB
+    # mute floor regardless of ``audible_gain_db``.
     for index in range(_output_count(preset)):
+        is_audible = index in audible_outputs
         lines.extend(emit_gain_filter(
             output_commission_mute_name(index),
-            STARTUP_MUTE_GAIN_DB,
-            mute=index not in audible_outputs,
+            audible_gain_db if is_audible else STARTUP_MUTE_GAIN_DB,
+            mute=not is_audible,
         ))
     return "\n".join(lines)
 
@@ -677,6 +685,7 @@ def emit_active_speaker_commissioning_config(
     *,
     playback_device: str,
     audible_outputs: frozenset[int] | set[int] | None = None,
+    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
@@ -723,6 +732,7 @@ def emit_active_speaker_commissioning_config(
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
     limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
+    audible_gain_db = _finite_float(audible_gain_db, "audible_gain_db")
     if volume_limit_db > 0:
         raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
     if startup_headroom_db < 0 or startup_headroom_db > 80:
@@ -730,6 +740,14 @@ def emit_active_speaker_commissioning_config(
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
         raise ActiveSpeakerConfigError(
             "limiter_clip_limit_db must be between -120 and 0 dB"
+        )
+    # Structural bound only: the per-output audible gain is an attenuation, so it
+    # never exceeds the 0 dB ceiling and never drops below the -120 dB mute floor.
+    # The tighter commissioning *level envelope* (the audible test range and the
+    # per-step ramp limit) is owned by the Stage-5 ramp gate, not this primitive.
+    if audible_gain_db < STARTUP_MUTE_GAIN_DB or audible_gain_db > 0:
+        raise ActiveSpeakerConfigError(
+            f"audible_gain_db must be between {STARTUP_MUTE_GAIN_DB:.0f} and 0 dB"
         )
 
     output_count = _output_count(preset)
@@ -746,12 +764,14 @@ def emit_active_speaker_commissioning_config(
         startup_headroom_db=startup_headroom_db,
         limiter_clip_limit_db=limiter_clip_limit_db,
         audible_outputs=audible,
+        audible_gain_db=audible_gain_db,
     )
     mixer_yaml = _emit_split_mixer(preset)
     pipeline_yaml = _emit_commissioning_pipeline(preset)
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# audible_outputs={sorted(audible)}",
+        f"# audible_gain_db={fmt(audible_gain_db)}",
     ]
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")
