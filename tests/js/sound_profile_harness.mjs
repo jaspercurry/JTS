@@ -199,7 +199,7 @@ function activePayloads() {
     status: "ready",
     test_signal: {
       min_level_dbfs: -80,
-      max_level_dbfs: -45,
+      max_level_dbfs: -30,
       step_db: 1,
       default_level_dbfs: -80,
       requested_level_dbfs: -72,
@@ -259,7 +259,7 @@ function levelPayload(value) {
     status: "ready",
     test_signal: {
       min_level_dbfs: -80,
-      max_level_dbfs: -45,
+      max_level_dbfs: -30,
       step_db: 1,
       default_level_dbfs: -80,
       requested_level_dbfs: value,
@@ -389,6 +389,13 @@ function baseFetch(overrides = {}) {
 
 function fail(message, details = {}) {
   throw new Error(`${message}\n${JSON.stringify(details, null, 2)}`);
+}
+
+function commissionCardHtml(html) {
+  const match = String(html || "").match(
+    /<div class="commission-card">[\s\S]*?commission-card__followup[\s\S]*?<\/p><\/div>/
+  );
+  return match ? match[0] : "";
 }
 
 async function loadAndSetActiveState(harness) {
@@ -1323,6 +1330,7 @@ async function testCommissionCardArmsAndSteps() {
     floor: { status: "floor_required", floor_audio_confirmed: false },
   };
   const posts = [];
+  let stepCount = 0;
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
@@ -1337,12 +1345,32 @@ async function testCommissionCardArmsAndSteps() {
     },
     "./active-speaker/commission-ramp-step": (p, o) => {
       posts.push({ path: p, body: JSON.parse(o.body || "{}") });
+      stepCount += 1;
+      const gain = -80 + ((stepCount - 1) * 5);
       commissionState = {
-        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -80 }, rollback_available: true },
-        ramp: { confirmed_roles: [], pending: { role: "woofer", gain_db: -80 } },
+        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: gain }, rollback_available: true },
+        ramp: { confirmed_roles: [], pending: { role: "woofer", gain_db: gain } },
         floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
       };
-      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
+      return Promise.resolve(response({ status: "stepped", next_gain_db: gain }));
+    },
+    "./active-speaker/commission-ramp-ack": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      if (body.outcome === "heard_correct_driver") {
+        commissionState = {
+          commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -80 }, rollback_available: true },
+          ramp: { confirmed_roles: ["woofer"], pending: null },
+          floor: { status: "floor_confirmed", floor_audio_confirmed: true },
+        };
+        return Promise.resolve(response({ status: "confirmed", outcome: body.outcome }));
+      }
+      commissionState = {
+        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -80 }, rollback_available: true },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "retry", outcome: body.outcome }));
     },
   });
   const harness = setupHarness(fetchHandler);
@@ -1350,27 +1378,81 @@ async function testCommissionCardArmsAndSteps() {
 
   let html = harness.elements.get("view-body").innerHTML;
   if (!html.includes('class="commission-card"')) fail("commission card not rendered", { html });
-  if (!html.includes('data-act="commission-arm"')) fail("arm button missing", { html });
+  if (html.includes('data-act="commission-arm"')) fail("arm button should not be visible", { html });
+  if (!html.includes('data-act="commission-step"')) fail("start button missing before arm", { html });
+  if (!html.includes(">Start tone</button>")) fail("idle card should expose Start tone", { html });
 
-  // Arming is silent -> posts commission-load, then the card offers a step.
-  harness.dispatchClick({ "data-act": "commission-arm", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  if (!posts.some((x) => x.path === "./active-speaker/commission-load" && x.body.role === "woofer")) {
-    fail("commission-load not posted on arm", { posts });
-  }
-  html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-act="commission-step"')) fail("step button missing after arm", { html });
-
-  // The step is gated by a confirm (auto-true in the harness) -> posts ramp-step,
-  // then the card asks for the operator's by-ear verdict.
+  // Start tone silently opens the quiet driver setup, then begins the
+  // automatic ramp. The card treats the whole ramp as one playing state; "too
+  // quiet" is internal, not a visible operator button.
   harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
   await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (!posts.some((x) => x.path === "./active-speaker/commission-load" && x.body.role === "woofer")) {
+    fail("commission-load not posted before ramp start", { posts });
+  }
   if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
     fail("commission-ramp-step not posted on step", { posts });
   }
   html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-act="commission-ack"')) fail("ack buttons missing after step", { html });
+  let cardHtml = commissionCardHtml(html);
+  for (const expected of ["Stop tone", "I hear the tone", "Wrong driver"]) {
+    if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
+  }
+  for (const hidden of ["Too quiet", "Too loud"]) {
+    if (cardHtml.includes(hidden)) fail("automatic ramp should not expose legacy manual loudness buttons", { hidden, cardHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "commission-ack", "data-outcome": "heard_correct_driver" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (!posts.some((x) =>
+      x.path === "./active-speaker/commission-ramp-ack" &&
+      x.body.outcome === "heard_correct_driver")) {
+    fail("heard verdict should be posted when the user hears the tone", { posts });
+  }
+  const visibleSilentAcks = posts.filter((x) =>
+    x.path === "./active-speaker/commission-ramp-ack" && x.body.outcome === "silent");
+  if (visibleSilentAcks.length) {
+    fail("user-visible controls should not post manual silent retries", { posts });
+  }
   return { commissionCardArmsAndSteps: true };
+}
+
+async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
+  const commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { role: "woofer", audible_gain_db: -45 },
+      rollback_available: true,
+    },
+    ramp: {
+      confirmed_roles: [],
+      pending: { role: "woofer", gain_db: -45, playback_id: "old-step" },
+    },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const cardHtml = commissionCardHtml(html);
+  if (!html.includes('data-act="commission-ack"')) {
+    fail("pending ramp step must expose acknowledgement buttons even with a stale floor flag", { html });
+  }
+  for (const expected of ["Stop tone", "I hear the tone", "Wrong driver"]) {
+    if (!cardHtml.includes(expected)) fail("pending ramp step should reuse the stable playing row", { expected, cardHtml });
+  }
+  for (const hidden of ["Too quiet", "Too loud"]) {
+    if (cardHtml.includes(hidden)) fail("pending ramp step should not expose legacy manual loudness buttons", { hidden, cardHtml });
+  }
+  if (html.includes('data-act="commission-step"')) {
+    fail("pending ramp step must block another step until it is acknowledged", { html });
+  }
+  return { commissionPendingStepShowsAckWithoutFloorFlag: true };
 }
 
 async function testCommissionArmBlockedSurfacesReason() {
@@ -1406,7 +1488,7 @@ async function testCommissionArmBlockedSurfacesReason() {
   const harness = setupHarness(fetchHandler);
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
 
-  harness.dispatchClick({ "data-act": "commission-arm", "data-role": "woofer" });
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
   const html = harness.elements.get("view-body").innerHTML;
@@ -1417,6 +1499,100 @@ async function testCommissionArmBlockedSurfacesReason() {
     if (html.includes(leak)) fail("blocked arm reason must not leak backend codes", { leak, html });
   }
   return { commissionArmBlockedSurfacesReason: true };
+}
+
+async function testCommissionActiveGraphBlockSurfacesReason() {
+  const commissionState = {
+    commission_load: { status: "idle", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-load": () => Promise.resolve(response({
+      load: {
+        status: "blocked",
+        issues: [{
+          code: "commission_active_graph_not_staged",
+          message: "current persisted config is /etc/camilladsp/outputd-cutover.yml",
+        }],
+      },
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("silent active-speaker setup")) {
+    fail("active-graph-not-staged block should surface specific setup copy", { html });
+  }
+  for (const leak of ["commission_active_graph_not_staged", "outputd-cutover"]) {
+    if (html.includes(leak)) fail("active graph block reason must not leak raw codes", { leak, html });
+  }
+  return { commissionActiveGraphBlockSurfacesReason: true };
+}
+
+async function testCommissionToneFailureStopsAutoRamp() {
+  let commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { role: "woofer", audible_gain_db: -120 },
+      rollback_available: true,
+    },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-ramp-step": (p, o) => {
+      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
+      commissionState = {
+        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({
+        status: "tone_failed",
+        next_gain_db: -80,
+        tone_playback: {
+          status: "failed",
+          issues: [{
+            code: "commission_tone_backend_failed",
+            message: "could not play commissioning tone: Permission denied",
+          }],
+        },
+        issues: [{
+          code: "commission_tone_playback_failed",
+            message: "JTS loaded the quiet driver setup but could not play the test tone.",
+        }],
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const rampSteps = posts.filter((x) => x.path === "./active-speaker/commission-ramp-step");
+  if (rampSteps.length !== 1) {
+    fail("tone_failed must stop the automatic ramp instead of retrying after rollback", { posts });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("could not play the test tone")) {
+    fail("tone failure should surface the real playback failure", { html });
+  }
+  if (html.includes("Press Arm for this driver first")) {
+    fail("tone failure should not be overwritten by the follow-up not-armed copy", { html });
+  }
+  return { commissionToneFailureStopsAutoRamp: true };
 }
 
 const results = [];
@@ -1434,6 +1610,9 @@ results.push(await testBlockedAudibleDriverTestDoesNotClaimSoundPlayed());
 results.push(await testAudibleRampRecordsSilenceAndAsksBackendForNextStep());
 results.push(await testUnavailableAudioBackendDoesNotPostAudibleTone());
 results.push(await testCommissionCardArmsAndSteps());
+results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
+results.push(await testCommissionActiveGraphBlockSurfacesReason());
+results.push(await testCommissionToneFailureStopsAutoRamp());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

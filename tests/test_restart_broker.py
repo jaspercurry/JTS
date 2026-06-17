@@ -100,6 +100,16 @@ def test_managed_units_excludes_tier_b_reconcilers():
     )
 
 
+def test_start_only_units_are_not_general_managed_units():
+    """Graph transitions may kick the fixed hardware reconcile helper, but only
+    with `start`; it must not become generally restartable/stoppable through the
+    broker."""
+    assert restart_broker.START_ONLY_UNITS == frozenset({
+        "jasper-audio-hardware-reconcile.service",
+    })
+    assert restart_broker.START_ONLY_UNITS.isdisjoint(restart_broker.MANAGED_UNITS)
+
+
 def test_managed_units_cover_every_routed_client_unit():
     # Units the wizard / mux / correction / wake-corpus client sites send.
     must_contain = {
@@ -190,6 +200,32 @@ def test_unit_not_in_allowlist_rejected(broker):
     sock_path, calls, _ = broker
     resp = restart_broker.request_restart(
         "sshd.service", verb="stop", socket_path=sock_path,
+    )
+    assert resp["ok"] is False
+    assert "allowlist" in resp["error"]
+    assert calls == []
+
+
+def test_start_only_unit_allows_start(broker):
+    sock_path, calls, _ = broker
+    resp = restart_broker.request_restart(
+        "jasper-audio-hardware-reconcile.service",
+        verb="start",
+        no_block=False,
+        socket_path=sock_path,
+    )
+    assert resp["ok"] is True
+    assert calls == [
+        ["systemctl", "start", "jasper-audio-hardware-reconcile.service"],
+    ]
+
+
+def test_start_only_unit_rejects_restart(broker):
+    sock_path, calls, _ = broker
+    resp = restart_broker.request_restart(
+        "jasper-audio-hardware-reconcile.service",
+        verb="restart",
+        socket_path=sock_path,
     )
     assert resp["ok"] is False
     assert "allowlist" in resp["error"]

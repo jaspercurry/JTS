@@ -395,7 +395,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Confirm output" in js
     assert "'✓ ' + humanRole(channel.role) + ' confirmed'" in js
     assert "'Test ' + humanRole(channel.role)" in js
-    assert "Continue to Test each driver; JTS will start it very quiet" in js
+    assert "JTS will add the tweeter guard before any sound starts" in js
     assert "Getting ' + label + ' ready. No sound will play yet." in js
     assert "Hardware protected" not in js
     assert "Use software guard" not in js
@@ -500,6 +500,8 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
 
     # The pure vocabulary module owns the no-sound fallbacks and stays actionable.
     assert "Choose the driver again to try." in helper_js
+    assert "Start the tone again so JTS can open the quiet driver test first." in helper_js
+    assert "The tweeter guard still needs to be set up" in helper_js
     assert "did not complete" not in helper_js
 
 
@@ -571,18 +573,9 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     )
 
     armed = sound_setup._active_speaker_arm_payload()
-    targets = sound_setup._active_speaker_tone_targets_payload()
     guarded = sound_setup._active_speaker_calibration_level_payload({
         "action": "set",
         "level_dbfs": -55,
-    })
-    plan = sound_setup._active_speaker_tone_plan_payload({
-        "side": "mono",
-        "driver_role": "tweeter",
-    })
-    level_plan = sound_setup._active_speaker_tone_plan_payload({
-        "side": "mono",
-        "driver_role": "tweeter",
     })
     playback = sound_setup._active_speaker_tone_playback_payload({
         "side": "mono",
@@ -594,22 +587,13 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
 
     assert armed["status"] == "armed"
     assert armed["playback_allowed"] is False
-    assert targets["targets"]
-    assert targets["calibration_level"]["test_signal"]["default_level_dbfs"] == -80.0
     assert guarded["test_signal"]["requested_level_dbfs"] == -79.0
     assert guarded["issues"][0]["code"] == "upward_step_limited"
-    assert plan["status"] == "ready"
-    assert plan["would_play"] is False
-    assert plan["target"]["driver_role"] == "tweeter"
-    assert plan["channel_map"]["output_count"] == 2
-    assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -79.0
-    assert level_plan["tone"]["level_dbfs"] == -79.0
-    assert level_plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -79.0
-    assert playback["playback"]["status"] == "completed"
+    assert playback["playback"]["status"] == "blocked"
     assert playback["playback"]["audio_emitted"] is False
-    assert playback["playback"]["artifact"]["channel_count"] == 2
-    assert playback["playback"]["artifact"]["target_output_index"] == 1
-    assert playback["session"]["playback"]["status"] == "completed"
+    assert "saved_topology_target_required" in {
+        issue["code"] for issue in playback["playback"]["issues"]
+    }
     assert status["status"] == "armed"
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
@@ -660,7 +644,7 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     assert stopped["calibration_level"]["status"] == "reset_failed"
 
 
-def test_active_speaker_playback_readiness_payload_is_no_audio(
+def test_active_speaker_topology_tone_playback_payload_is_no_audio(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -761,10 +745,6 @@ def test_active_speaker_playback_readiness_payload_is_no_audio(
     })
 
     armed = sound_setup._active_speaker_arm_payload()
-    readiness = sound_setup._active_speaker_playback_readiness_payload({
-        "speaker_group_id": "left",
-        "role": "woofer",
-    })
     artifact = sound_setup._active_speaker_tone_playback_payload({
         "speaker_group_id": "left",
         "role": "woofer",
@@ -776,13 +756,6 @@ def test_active_speaker_playback_readiness_payload_is_no_audio(
     })
 
     assert armed["status"] == "armed"
-    assert readiness["status"] == "preconditions_passed"
-    assert readiness["preconditions_passed"] is True
-    assert readiness["playback_allowed"] is False
-    assert readiness["would_play"] is False
-    assert readiness["tone_playback_implemented"] is False
-    assert readiness["target"]["physical_output_index"] == 0
-    assert readiness["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
     assert artifact["plan"]["source"] == "output_topology"
     assert artifact["plan"]["target"]["output_index"] == 0
     assert artifact["playback"]["backend"] == "wav_artifact"
@@ -1081,6 +1054,11 @@ def test_active_speaker_auto_level_step_does_not_bypass_tweeter_protection(
             }
         ],
         "routing": {"mono_group_id": "mono"},
+    })
+    sound_setup._active_speaker_channel_protection_save_payload({
+        "speaker_group_id": "mono",
+        "role": "tweeter",
+        "protection_present": False,
     })
 
     payload = sound_setup._active_speaker_calibration_level_payload({
@@ -1758,18 +1736,7 @@ def test_active_speaker_crossover_preview_refreshes_current_output_topology(
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="required_missing")
     )
-    blocked = _save_active_speaker_design_and_preview()
-    assert blocked["status"] == "blocked"
-    assert "tweeter_protection_unverified" in {
-        issue["code"] for issue in blocked["issues"]
-    }
-
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="software_guard_requested"
-        )
-    )
-    refreshed = sound_setup._active_speaker_crossover_preview_save_payload()
+    refreshed = _save_active_speaker_design_and_preview()
 
     assert refreshed["status"] == "ready_for_protected_staging"
     assert "tweeter_protection_unverified" not in {
@@ -1904,24 +1871,17 @@ def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
         _active_speaker_mono_topology_payload(protection_status="required_missing")
     )
 
-    preview_blocked = _save_active_speaker_design_and_preview()
-    blocked = sound_setup._active_speaker_stage_config_payload({})
-    protected = sound_setup._active_speaker_channel_protection_save_payload({
-        "speaker_group_id": "mono",
-        "role": "tweeter",
-        "protection_present": True,
-    })
     preview_ready = _save_active_speaker_design_and_preview()
     staged = sound_setup._active_speaker_stage_config_payload({})
     loaded = sound_setup._active_speaker_staged_config_payload()
 
-    assert saved["output_topology"]["status"] == "blocked"
-    assert preview_blocked["status"] == "blocked"
-    assert blocked["status"] == "blocked"
-    assert "crossover_preview_not_ready" in {
-        issue["code"] for issue in blocked["issues"]
-    }
-    assert protected["output_topology"]["status"] == "verified"
+    assert saved["output_topology"]["status"] == "verified"
+    assert (
+        saved["output_topology"]["speaker_groups"][0]["channels"][1][
+            "protection_status"
+        ]
+        == "software_guard_requested"
+    )
     assert preview_ready["status"] == "ready_for_protected_staging"
     assert staged["status"] == "staged"
     assert staged["preset"]["source"]["mode"] == "crossover_preview"

@@ -28,10 +28,13 @@ Why this is safe to centralise:
   owned by the root ``jasper-aec-reconcile``. The verbs stay in the vocabulary
   for a future root client / Phase-4 grant.)
 - **Unit allowlist.** Every requested unit must be in :data:`MANAGED_UNITS` —
-  the single source of truth for "units the privileged surface may touch."
-  The Phase-3 *user-drop* PR derives the polkit rule (which grants the
-  ``jasper-control`` user ``manage-units`` for exactly this set) from the same
-  constant, so the broker authz and the polkit grant can never drift.
+  the single source of truth for "units the privileged surface may generally
+  touch" — or, for graph-transition root helpers, in
+  :data:`START_ONLY_UNITS` with verb ``start``. The Phase-3 *user-drop* PR
+  derives the polkit rule (which grants the ``jasper-control`` user
+  ``manage-units`` for exactly these units) from the same constants, so the
+  broker authz and the polkit grant can never drift. The broker, not polkit,
+  enforces start-only semantics for the helper set.
 - **Audit.** Every request and every denial emits a stable ``event=`` log line
   with the peer uid/pid, verb, units, and reason. Nothing here is a secret, so
   the lines are safe to journal.
@@ -116,6 +119,15 @@ MANAGED_UNITS = frozenset({
     "bt-agent.service",
 })
 
+# Fixed root helpers that non-root clients may only *start*. These remain out
+# of MANAGED_UNITS so Tier-B reconcilers are not generally brokerable; this is
+# just enough for graph transitions to request a bounded reconciliation pass.
+START_ONLY_UNITS = frozenset({
+    "jasper-audio-hardware-reconcile.service",
+})
+
+POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS
+
 # Service users permitted to call the broker (root is always permitted — the
 # still-root clients in this PR, and operator debugging). Resolved fresh per
 # request so a user created by a deploy works without restarting the broker.
@@ -184,6 +196,10 @@ def _build_argv(verb: str, units: list[str], *, no_block: bool) -> list[str]:
         argv.append("--no-block")
     argv.extend(units)
     return argv
+
+
+def _unit_allowed_for_verb(unit: str, verb: str) -> bool:
+    return unit in MANAGED_UNITS or (verb == "start" and unit in START_ONLY_UNITS)
 
 
 def _allowed_uids() -> set[int]:
@@ -272,7 +288,7 @@ class _BrokerHandler(StreamRequestHandler):
             )
             return
         units = [_normalize_unit(u) for u in raw_units]
-        bad = [u for u in units if u not in MANAGED_UNITS]
+        bad = [u for u in units if not _unit_allowed_for_verb(u, verb)]
         if bad:
             log_event(
                 logger, "restart_broker.denied", reason="unit",

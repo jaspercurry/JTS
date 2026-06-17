@@ -13,12 +13,12 @@ import json
 import logging
 import math
 import os
-import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.control.restart_broker import manage_units
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -176,34 +176,26 @@ def _record_state(
 def _trigger_audio_hardware_reconcile(*, source: str) -> None:
     """Ask PID 1 to reconcile outputd after Camilla graph transitions.
 
-    Dual-Apple outputd activation is gated on both hardware presence and the
-    active four-channel Camilla graph. Hardware events already trigger this
-    unit via udev; startup load/rollback are the matching graph events.
+    Active outputd activation is gated on both hardware presence and the
+    active Camilla graph. Hardware events already trigger this unit via udev;
+    startup load/rollback are the matching graph events.
     """
 
-    systemctl = os.environ.get("JASPER_SYSTEMCTL", "systemctl")
-    try:
-        completed = subprocess.run(
-            [systemctl, "start", AUDIO_HARDWARE_RECONCILE_UNIT],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-    except Exception as exc:  # noqa: BLE001
+    result = manage_units(
+        AUDIO_HARDWARE_RECONCILE_UNIT,
+        verb="start",
+        reason=source,
+        # Wait for the oneshot here. The next commissioning step may play a
+        # tone immediately, and outputd must already be reading the active lane.
+        no_block=False,
+        timeout=15.0,
+    )
+    if not result.get("ok"):
         logger.warning(
             "event=active_speaker.audio_hardware_reconcile_trigger_failed source=%s unit=%s error=%s",
             source,
             AUDIO_HARDWARE_RECONCILE_UNIT,
-            type(exc).__name__,
-        )
-        return
-    if completed.returncode != 0:
-        logger.warning(
-            "event=active_speaker.audio_hardware_reconcile_trigger_failed source=%s unit=%s returncode=%d",
-            source,
-            AUDIO_HARDWARE_RECONCILE_UNIT,
-            completed.returncode,
+            result.get("error") or f"rc={result.get('rc')}",
         )
         return
     logger.info(
@@ -1070,6 +1062,7 @@ def _commission_base_state(path: Path) -> dict[str, Any]:
         "rollback_available": False,
         "last_action": "status",
         "target": {},
+        "runtime_status": {},
         "issues": [],
     }
 
@@ -1156,10 +1149,160 @@ def _commission_state_payload(
 def _compact_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(evidence, dict):
         return {}
-    return {
+    payload = {
         "passed": bool(evidence.get("passed")),
         "checks": dict(evidence.get("checks") or {}),
     }
+    for key in (
+        "audible_outputs",
+        "muted_outputs",
+        "tweeter_outputs",
+        "audible_tweeter_outputs",
+        "protective_highpass_hz",
+    ):
+        if key in evidence:
+            payload[key] = evidence.get(key)
+    return payload
+
+
+def _commission_live_mask(state: dict[str, Any]) -> dict[str, Any]:
+    """Return the saved mask needed to re-prove a transient commission load.
+
+    Newer state files persist the compact mask from the original off-device
+    evidence. Older files only have the target output; those are deliberately
+    treated as stale because they cannot prove every non-target output is muted.
+    """
+
+    evidence = state.get("audible_evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    live_evidence = state.get("live_evidence")
+    if not isinstance(live_evidence, dict):
+        live_evidence = {}
+    target = state.get("target")
+    if not isinstance(target, dict):
+        target = {}
+
+    audible = evidence.get("audible_outputs") or live_evidence.get("audible_outputs")
+    muted = evidence.get("muted_outputs") or live_evidence.get("muted_outputs")
+    tweeters = evidence.get("tweeter_outputs") or live_evidence.get("tweeter_outputs")
+    hp_hz = (
+        evidence.get("protective_highpass_hz")
+        if "protective_highpass_hz" in evidence
+        else live_evidence.get("protective_highpass_hz")
+    )
+    if audible is None:
+        audible = target.get("audible_outputs")
+    return {
+        "audible_outputs": audible if isinstance(audible, list) else [],
+        "muted_outputs": muted if isinstance(muted, list) else [],
+        "tweeter_outputs": tweeters if isinstance(tweeters, list) else [],
+        "protective_highpass_hz": hp_hz,
+        "complete": isinstance(audible, list)
+        and isinstance(muted, list)
+        and isinstance(tweeters, list),
+    }
+
+
+def commission_load_runtime_status(
+    state: dict[str, Any],
+    running_config_raw: str | None,
+) -> dict[str, Any]:
+    """Compare persisted commission-load state to the live Camilla graph.
+
+    Per-driver commissioning is intentionally transient: it is uploaded with
+    CamillaDSP's inline ``SetConfig`` path and the durable statefile remains
+    pointed at the all-muted startup graph. Therefore the JSON state is only
+    true while the live graph still proves the saved mask. A service restart,
+    Camilla restart, or returned browser session can leave the JSON behind; this
+    helper fails closed and reports that as ``stale``.
+    """
+
+    status = str(state.get("status") or "idle")
+    if status != "loaded":
+        return {
+            "kind": "jts_active_speaker_commission_load_runtime_status",
+            "status": status,
+            "loaded": False,
+            "stale": False,
+            "checks": {"persisted_loaded": False},
+            "issues": [],
+        }
+
+    mask = _commission_live_mask(state)
+    checks = {
+        "persisted_loaded": True,
+        "mask_evidence_complete": bool(mask["complete"]),
+    }
+    live: dict[str, Any] = {}
+    if mask["complete"]:
+        live = running_commission_evidence(
+            running_config_raw,
+            audible_outputs=mask["audible_outputs"],
+            muted_outputs=mask["muted_outputs"],
+            tweeter_outputs=mask["tweeter_outputs"],
+            protective_hp_hz=mask["protective_highpass_hz"],
+        )
+        checks["live_mask_and_highpass"] = bool(live.get("passed"))
+    else:
+        checks["live_mask_and_highpass"] = False
+    loaded = all(checks.values())
+    issue = None if loaded else _issue(
+        "blocker",
+        "commission_live_state_stale",
+        (
+            "the saved driver test session no longer matches the live "
+            "CamillaDSP graph; start the tone again to re-open it"
+        ),
+    )
+    return {
+        "kind": "jts_active_speaker_commission_load_runtime_status",
+        "status": "loaded" if loaded else "stale",
+        "loaded": loaded,
+        "stale": not loaded,
+        "checks": checks,
+        "live_evidence": _compact_evidence(live),
+        "target": state.get("target") or {},
+        "issues": [issue] if issue else [],
+    }
+
+
+def commission_load_state_with_runtime_status(
+    state: dict[str, Any],
+    runtime_status: dict[str, Any],
+) -> dict[str, Any]:
+    """Overlay read-only live status onto persisted commission-load state."""
+
+    out = dict(state)
+    out["runtime_status"] = runtime_status
+    if state.get("status") == "loaded" and runtime_status.get("status") == "stale":
+        out["status"] = "stale"
+        out["loaded"] = False
+        out["rollback_available"] = False
+        out["issues"] = [
+            *[
+                issue
+                for issue in out.get("issues", [])
+                if isinstance(issue, dict)
+            ],
+            *runtime_status.get("issues", []),
+        ]
+    return out
+
+
+def mark_commission_load_state_stale(
+    state: dict[str, Any],
+    runtime_status: dict[str, Any],
+    *,
+    state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Persist that a previously loaded transient commission graph has expired."""
+
+    payload = commission_load_state_with_runtime_status(state, runtime_status)
+    payload["last_action"] = "stale_detected"
+    payload["runtime_status"] = runtime_status
+    _record_commission_state(payload, state_path=state_path)
+    return load_commission_load_state(state_path=state_path)
 
 
 def _read_statefile_config_path(statefile_path: str | Path | None) -> str | None:

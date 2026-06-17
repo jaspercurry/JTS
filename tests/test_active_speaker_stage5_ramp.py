@@ -90,7 +90,7 @@ def test_evidence_gates_unaffected_by_audible_gain():
     # so a louder audible gain must NOT change their verdict.
     preset = _two_way()
     woofer = set(audible_outputs_for_role(preset, "woofer"))
-    for gain in (STARTUP_MUTE_GAIN_DB, -80.0, -45.0):
+    for gain in (STARTUP_MUTE_GAIN_DB, -80.0, MAX_TEST_LEVEL_DBFS):
         yaml_text = _emit(preset, woofer, gain=gain)
         off = driver_commission_audible_evidence(
             yaml_text, preset=preset, audible_outputs=woofer
@@ -301,7 +301,15 @@ _READY_ENV = {
 }
 
 
-def _ramp_step(tmp_path, monkeypatch, *, role, confirm_first=None, env_report=_READY_ENV):
+def _ramp_step(
+    tmp_path,
+    monkeypatch,
+    *,
+    role,
+    confirm_first=None,
+    env_report=_READY_ENV,
+    play_tone=None,
+):
     """Arm ``role`` at the silent floor, then take one audible ramp step."""
     # Arm at the silent floor via the guarded commission load (reuses the
     # commission-load test harness for the full staged/path-safety/statefile setup).
@@ -325,6 +333,8 @@ def _ramp_step(tmp_path, monkeypatch, *, role, confirm_first=None, env_report=_R
         environment_report=env_report,
         validate=_valid_config,
     )
+    if play_tone is not None:
+        common["play_tone"] = play_tone
     if confirm_first:
         # Pre-seed the ramp's ordering memory (e.g. woofer already confirmed).
         from jasper.active_speaker.commission_ramp import _record_ramp_state, _ramp_base_state, ramp_state_path
@@ -355,6 +365,31 @@ def test_ramp_step_woofer_floor_happy_path(monkeypatch, tmp_path):
     assert load_commission_load_state(state_path=state_path)["target"][
         "audible_gain_db"
     ] == MIN_TEST_LEVEL_DBFS
+
+
+def test_ramp_step_re_mutes_when_tone_playback_fails(monkeypatch, tmp_path):
+    async def _failed_tone(**kwargs):
+        return {
+            "status": "failed",
+            "audio_emitted": False,
+            "issues": [{
+                "severity": "blocker",
+                "code": "commission_tone_backend_failed",
+                "message": "aplay failed",
+            }],
+        }
+
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer", play_tone=_failed_tone
+    )
+
+    assert step["status"] == "tone_failed"
+    assert {issue["code"] for issue in step["issues"]} == {
+        "commission_tone_backend_failed",
+        "commission_tone_playback_failed",
+    }
+    assert cam.loaded_paths[-1] == staged_path
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["pending"] is None
 
 
 def test_ramp_step_blocked_when_not_loaded(tmp_path, monkeypatch):
@@ -463,6 +498,36 @@ def test_silent_floor_allows_a_louder_retry(monkeypatch, tmp_path):
     again = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))
     assert again["status"] == "stepped"
     assert again["next_gain_db"] == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+
+
+def test_ramp_step_at_ceiling_blocks_noop_louder_retry(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+
+    def _ack_silent():
+        return asyncio.run(
+            record_ramp_operator_ack(
+                outcome="silent",
+                ramp_state_path_override=tmp_path / "ramp.json",
+                safe_playback_state_path=tmp_path / "safe.json",
+                commission_load_state_path=state_path,
+            )
+        )
+
+    while step["next_gain_db"] < MAX_TEST_LEVEL_DBFS:
+        assert _ack_silent()["status"] == "retry"
+        step = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))
+        assert step["status"] == "stepped"
+
+    assert step["next_gain_db"] == MAX_TEST_LEVEL_DBFS
+    assert _ack_silent()["status"] == "retry"
+    loads_at_ceiling = len(cam.loaded_paths)
+    blocked = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))
+
+    assert blocked["status"] == "blocked"
+    assert {i["code"] for i in blocked["issues"]} == {"commission_ramp_at_limit"}
+    assert len(cam.loaded_paths) == loads_at_ceiling
 
 
 def test_louder_step_after_confirmed_floor_can_be_acked(monkeypatch, tmp_path):

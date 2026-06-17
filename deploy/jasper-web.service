@@ -119,9 +119,10 @@ Group=jasper
 # + read the split-out LLM keys, Google client secret, and Google OAuth
 # token tree in /var/lib/jasper-secrets. WS1 Phase 4b — `jasper-intsecrets`
 # lets the wizards write/read HA + Spotify credentials and token caches.
+# `audio` (active-speaker commissioning correction_substream tone),
 # `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
 # docs/HANDOFF-privilege-separation.md.
-SupplementaryGroups=bluetooth systemd-journal jasper-secrets jasper-intsecrets
+SupplementaryGroups=audio bluetooth systemd-journal jasper-secrets jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 

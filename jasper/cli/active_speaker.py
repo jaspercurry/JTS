@@ -474,8 +474,7 @@ def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
 
 def _cmd_commission_ramp_ack(args: argparse.Namespace) -> int:
     cam = _camilla_controller()
-    # load_config is only used for the abort outcomes (too_loud / heard_wrong);
-    # harmless to pass for the others.
+    # load_config lets terminal by-ear outcomes re-mute the transient graph.
     payload = asyncio.run(
         record_ramp_operator_ack(
             outcome=args.outcome,

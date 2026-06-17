@@ -334,8 +334,7 @@ present, and the tone plan still enforces role-specific caps and high-pass
 guards.
 
 Lower-level diagnostics still exist for tests and operator debugging:
-`/sound/active-speaker/playback-readiness` returns the no-audio readiness
-packet, `/sound/active-speaker/commissioning-rehearsal` derives a no-audio
+`/sound/active-speaker/commissioning-rehearsal` derives a no-audio
 sequence from durable evidence, `/sound/active-speaker/stage-config` stages the
 protected startup candidate, `/sound/active-speaker/check-path-safety` writes
 the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
@@ -700,6 +699,6 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-16 (`/sound/` active-speaker UI rechecked after the
-Test each driver rename, automatic quiet-ramp controls, direct-DAC diagnostic
-route, and outputd-only durable apply boundary.)
+Last verified: 2026-06-17 (`/sound/` active-speaker UI rechecked after the
+commission ramp tone injection, automatic quiet-ramp controls, direct-DAC
+diagnostic route, and removal of unused legacy public test routes.)

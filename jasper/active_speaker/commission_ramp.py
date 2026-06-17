@@ -86,6 +86,7 @@ _EPS = 1e-6
 PathLoader = Callable[[str], Awaitable[bool]]
 RunningConfigReader = Callable[[], Awaitable[str | None]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
+ToneEmitter = Callable[..., Awaitable[dict[str, Any]]]
 
 
 def next_ramp_gain_db(current_gain_db: float) -> float:
@@ -168,6 +169,28 @@ def _record_ramp_state(
 def reset_ramp_state(*, state_path: str | Path | None = None) -> dict[str, Any]:
     return _record_ramp_state(
         {**_ramp_base_state(ramp_state_path(state_path)), "last_action": "reset"},
+        state_path=state_path,
+    )
+
+
+def clear_pending_ramp_step(
+    *,
+    speaker_group_id: str,
+    state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Start a fresh silent arm with no stale audible step awaiting ACK."""
+
+    prior = load_ramp_state(state_path=state_path)
+    group = str(speaker_group_id or "")
+    same_group = not prior.get("speaker_group_id") or prior.get("speaker_group_id") == group
+    return _record_ramp_state(
+        {
+            **_ramp_base_state(ramp_state_path(state_path)),
+            "speaker_group_id": group or prior.get("speaker_group_id"),
+            "confirmed_roles": prior.get("confirmed_roles") if same_group else [],
+            "pending": None,
+            "last_action": "clear_pending",
+        },
         state_path=state_path,
     )
 
@@ -395,6 +418,7 @@ async def ramp_audible_step(
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
     validate: Callable[..., Any] | None = None,
+    play_tone: ToneEmitter | None = None,
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
 
@@ -448,6 +472,18 @@ async def ramp_audible_step(
     except (TypeError, ValueError):
         current_gain_db = STARTUP_MUTE_GAIN_DB
     next_gain_db = next_ramp_gain_db(current_gain_db)
+    if current_gain_db >= MAX_TEST_LEVEL_DBFS - _EPS and next_gain_db <= current_gain_db + _EPS:
+        return _blocked(
+            "commission_ramp_at_limit",
+            "the driver test is already at the maximum bounded level",
+            role=role,
+            group_id=group_id,
+            extra={
+                "current_gain_db": current_gain_db,
+                "next_gain_db": next_gain_db,
+                "max_gain_db": MAX_TEST_LEVEL_DBFS,
+            },
+        )
 
     # Mask params for the gate: re-emit the per-driver config at the next gain
     # (stateless, no syntax check — the load re-validates) and read the off-device
@@ -616,6 +652,64 @@ async def ramp_audible_step(
     playback_id = (
         (load_payload.get("load") or {}).get("dsp_apply") or {}
     ).get("op_id") or f"{group_id}:{role}:{next_gain_db:.1f}"
+    tone_payload: dict[str, Any] | None = None
+    if play_tone is not None:
+        try:
+            tone_payload = await play_tone(
+                group_id=group_id,
+                role=role,
+                level_dbfs=next_gain_db,
+                playback_id=playback_id,
+                target=target,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed and re-mute.
+            tone_payload = {
+                "status": "failed",
+                "audio_emitted": False,
+                "issues": [
+                    _issue(
+                        "blocker",
+                        "commission_tone_backend_failed",
+                        f"commissioning tone backend raised {type(exc).__name__}: {exc}",
+                    )
+                ],
+            }
+        if not _tone_playback_confirmable(tone_payload):
+            rollback = await rollback_driver_commissioning_config(
+                load_config=load_config,
+                state_path=commission_load_state_path,
+                **({"validate": validate} if validate is not None else {}),
+            )
+            log_event(
+                logger,
+                "active_speaker.stage5_ramp",
+                level=logging.WARNING,
+                result="tone_failed",
+                group=group_id,
+                role=role,
+                next_db=next_gain_db,
+                tone_status=tone_payload.get("status"),
+            )
+            return {
+                "status": "tone_failed",
+                "role": role,
+                "speaker_group_id": group_id,
+                "current_gain_db": current_gain_db,
+                "next_gain_db": next_gain_db,
+                "gate": gate,
+                "load": load_payload,
+                "tone_playback": tone_payload,
+                "rollback": rollback.get("rollback"),
+                "issues": [
+                    *_tone_playback_issues(tone_payload),
+                    _issue(
+                        "blocker",
+                        "commission_tone_playback_failed",
+                        "JTS loaded the protected driver graph but could not play "
+                        "the test tone, so it re-muted the driver",
+                    ),
+                ],
+            }
     safe = _record_floor_pending(
         target=target,
         level_dbfs=next_gain_db,
@@ -655,6 +749,7 @@ async def ramp_audible_step(
         "next_gain_db": next_gain_db,
         "gate": gate,
         "load": load_payload,
+        "tone_playback": tone_payload,
         "safe_playback": _safe_summary(safe),
         "ramp": ramp_payload,
         "issues": [],
@@ -728,11 +823,12 @@ async def record_ramp_operator_ack(
     """Record the operator's verdict for the pending audible step.
 
     ``heard_correct_driver`` confirms the floor (safe_playback ->
-    ``floor_confirmed``) and, for a floor step, adds the role to the ramp's
-    confirmed-roles ordering memory. ``too_loud`` / ``heard_wrong_driver`` abort
-    the ramp — rolling the running graph back to the all-muted staged config when
-    a loader seam is provided. ``silent`` clears the step so it can be retried
-    louder. Either way the pending step is cleared (ACK-before-each-step).
+    ``floor_confirmed``), adds the role to the ramp's confirmed-roles ordering
+    memory, and — when a loader seam is provided — re-mutes the transient graph
+    so a returned browser session starts from a clean state. ``too_loud`` /
+    ``heard_wrong_driver`` abort the ramp with the same rollback. ``silent``
+    clears the step so it can be retried louder. Either way the pending step is
+    cleared (ACK-before-each-step).
     """
     outcome = str(outcome or "").strip().lower()
     ramp_state = load_ramp_state(state_path=ramp_state_path_override)
@@ -776,10 +872,17 @@ async def record_ramp_operator_ack(
 
     if outcome == "heard_correct_driver":
         # The driver was heard correctly — record it confirmed for the
-        # woofer-before-tweeter ordering and release the per-step gate.
+        # woofer-before-tweeter ordering, release the per-step gate, and re-mute
+        # the transient graph when the operator surface gave us a loader seam.
         confirmed_roles.add(str(pending.get("role")))
         new_pending = None
         status = "confirmed"
+        if load_config is not None:
+            aborted = await rollback_driver_commissioning_config(
+                load_config=load_config,
+                state_path=commission_load_state_path,
+                **({"validate": validate} if validate is not None else {}),
+            )
     elif outcome in {"too_loud", "heard_wrong_driver"}:
         new_pending = None
         status = "aborted"
@@ -913,3 +1016,21 @@ def _safe_summary(safe: dict[str, Any]) -> dict[str, Any]:
         "last_level_dbfs": quiet.get("last_level_dbfs"),
         "current_target": playback_target_signature(quiet.get("current_target")),
     }
+
+
+def _tone_playback_issues(payload: dict[str, Any] | None) -> list[dict[str, str]]:
+    issues = payload.get("issues") if isinstance(payload, dict) else []
+    return [issue for issue in issues if isinstance(issue, dict)]
+
+
+def _tone_playback_confirmable(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("status") != "completed":
+        return False
+    if payload.get("audio_emitted") is not True:
+        return False
+    return not any(
+        issue.get("severity") == "blocker"
+        for issue in _tone_playback_issues(payload)
+    )

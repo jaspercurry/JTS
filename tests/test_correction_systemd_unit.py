@@ -47,12 +47,13 @@ def test_correction_location_allows_large_capture_upload():
 
 def test_install_sh_creates_correction_state_dirs():
     body = INSTALL_SH.read_text()
-    assert "install -d -m 0750 \\" in body
+    assert "install -d -m 2770 -g jasper \\" in body
     for path in [
         "/var/lib/jasper/correction",
         "/var/lib/jasper/correction/sweeps",
         "/var/lib/jasper/correction/captures",
         "/var/lib/jasper/correction/sessions",
         "/var/lib/jasper/correction/calibration_mics",
+        "/var/lib/jasper/correction/tones",
     ]:
         assert path in body

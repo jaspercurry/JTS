@@ -185,8 +185,10 @@ finishes it as a local **UNIX socket + `SO_PEERCRED`** at
 in-repo's first peer-cred reader — peer uid check *is* the auth), with a
 **closed verb vocabulary** (`restart` / `try-restart` / `start` / `stop` /
 `enable` / `enable-now` / `disable-now` / `reset-failed`) scoped to the single
-source of truth `MANAGED_UNITS` allowlist. Every request and denial emits a
-stable `event=restart_broker.*` line with the peer uid/pid, verb, units, reason.
+source of truth `MANAGED_UNITS` allowlist, plus a tiny `START_ONLY_UNITS`
+allowlist for fixed root helpers that may only be `start`ed. Every request and
+denial emits a stable `event=restart_broker.*` line with the peer uid/pid, verb,
+units, reason.
 
 The clients now route through it via `restart_broker.manage_units(...)`:
 `jasper-web`'s restart sites (`_common.restart_systemd_units` /
@@ -198,9 +200,10 @@ the broker is unreachable** — logged loudly (`event=restart_broker.
 fallback_direct`) so a silently-broken broker path is caught *before* the user
 drop removes the safety net. Once a client is a non-root service user
 (`geteuid() != 0`) the fallback is structurally impossible: the broker is the
-only path, as intended. `MANAGED_UNITS` is the same list the 3b polkit rule will
-grant `jasper-control`, so broker authz and the polkit grant can't drift. Pinned
-by [`tests/test_restart_broker.py`](../tests/test_restart_broker.py) (verb
+only path, as intended. `MANAGED_UNITS | START_ONLY_UNITS` is the same unit set
+the 3b polkit rule will grant `jasper-control`; the broker enforces the narrower
+start-only semantics so authz and the polkit grant can't drift. Pinned by
+[`tests/test_restart_broker.py`](../tests/test_restart_broker.py) (verb
 vocabulary, unit allowlist, peer-cred auth, wire contract, root fallback).
 
 ### Phase 3b — Tier-A user drop
@@ -277,13 +280,14 @@ coupled artifacts make the drop work:
 - **The polkit rule** ([`deploy/polkit/49-jasper-control.rules`](../deploy/polkit/49-jasper-control.rules),
   installed to `/etc/polkit-1/rules.d/` by `install.sh`; polkitd auto-reloads).
   It grants the `jasper-control` user `org.freedesktop.systemd1.manage-units`
-  **scoped per-unit** to the `MANAGED_UNITS` allowlist via `action.lookup("unit")`,
-  plus `org.freedesktop.login1.reboot`/`power-off` and their `-multiple-sessions`/
-  `-ignore-inhibit` variants. It keys on `subject.user` **only** — a sessionless
-  system daemon has `subject.active == false`, so the desktop `subject.active`
-  idiom would never fire. The allowlist is pinned set-equal to
-  `restart_broker.MANAGED_UNITS` by `tests/test_polkit_jasper_control.py` so the
-  broker authz and the polkit grant can't drift.
+  **scoped per-unit** to the `MANAGED_UNITS | START_ONLY_UNITS` allowlist via
+  `action.lookup("unit")`, plus `org.freedesktop.login1.reboot`/`power-off` and
+  their `-multiple-sessions`/`-ignore-inhibit` variants. It keys on
+  `subject.user` **only** — a sessionless system daemon has
+  `subject.active == false`, so the desktop `subject.active` idiom would never
+  fire. The allowlists are pinned set-equal to the matching `restart_broker`
+  constants by `tests/test_polkit_jasper_control.py` so the broker authz and the
+  polkit grant can't drift.
 
   **`manage-unit-files` is deliberately NOT granted — this corrects the
   original design above.** Hardware testing (Pi 5, systemd 257, polkit 126)
@@ -689,6 +693,8 @@ Rules for all Tier-B slices:
   `jasper-wifi-guardian.service`, `jasper-dac-init.service`,
   `jasper-audio-hardware-reconcile.service`, and
   `jasper-dongle-recover.service` stay outside the Tier-A restart broker today.
+  If a graph transition needs one fixed helper, prefer `START_ONLY_UNITS` over
+  general brokerability and pin that narrower verb contract in tests.
 - A hardware-sensitive change is not "landed" until the relevant hardware path
   is validated on-device. For docs/tests-only work, say "planned" or "mapped."
 

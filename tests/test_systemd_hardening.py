@@ -135,13 +135,14 @@ DROPPED = {
     "jasper-control": ("jasper-control", {"systemd-journal", "jasper-intsecrets"}),
     # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
-    # are `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus
-    # policy grant) and `systemd-journal` (journalctl -k Wi-Fi diagnostics) and,
-    # since 4a, `jasper-secrets` (the wizards write + render the secret files). No
+    # are `audio` (ALSA correction_substream for active-speaker commissioning),
+    # `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus policy
+    # grant), `systemd-journal` (journalctl -k Wi-Fi diagnostics), and, since 4a,
+    # `jasper-secrets` (the wizards write + render the secret files). No
     # CAP_NET_ADMIN — the NL80211 scan-repair degrades fail-soft.
     "jasper-web": (
         "jasper-web",
-        {"bluetooth", "systemd-journal", "jasper-secrets", "jasper-intsecrets"},
+        {"audio", "bluetooth", "systemd-journal", "jasper-secrets", "jasper-intsecrets"},
     ),
 }
 
