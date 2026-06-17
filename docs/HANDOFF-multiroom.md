@@ -63,7 +63,8 @@ playout ledger. The reconciler arms both ends (grouping-outputd.env +
 grouping-voice.env; drift check: `grouping: TTS lane`, which replaced the
 PR-1 standing `TTS interim` warn). Runtime liveness is owned by
 `jasper.control.grouping_supervisor` (starvation watch → rate-limited
-reconciler kick; continuous leader binding read-repair; off via
+reconciler kick; continuous leader binding read-repair; rostered-follower
+reassert using the household credential; off via
 `JASPER_GROUPING_SUPERVISOR=disabled`). Auto-unwind to solo is deliberately
 NOT built — disband stays one tap on /rooms until a real non-converging
 failure shape is observed.
@@ -753,7 +754,14 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min);
   the leader additionally re-runs the `ensure_groups_on_stream` ownership
   pin every poll, making binding read-repair continuous (a runtime rebind
-  from any snapcast app self-heals in ≤30 s). Surfaced at
+  from any snapcast app self-heals in ≤30 s). Phase D of the control-plane
+  auth work adds the matching grouping-plane self-heal: a rostered leader
+  first reads the follower's `/grouping`; if that peer is absent or drifted,
+  the supervisor POSTs the intended follower role back to `/grouping/set`
+  with `X-JTS-Household` when this leader has a household secret. If no
+  secret exists, the POST carries no fake header and the member's fail-safe
+  bootstrap behavior decides the outcome; already-converged peers are skipped
+  so their reconciler is not restarted on every poll. Surfaced at
   `/state.resilience.grouping_supervisor`; off-switch
   `JASPER_GROUPING_SUPERVISOR=disabled` (exact match, mirrors the
   shairport/system supervisors). Auto-unwind to solo is deliberately NOT
@@ -1348,6 +1356,9 @@ The full threat model, prior art, and design live in
 [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md), which is the
 single source of truth for cross-device control auth; this subsection is the
 multiroom-side summary.
+The autonomous supervisor path uses the same credential when reasserting a
+rostered follower without a browser in the loop; two-Pi reboot smoke remains
+pending.
 
 What the fan-out adds — and how each piece is now covered:
 

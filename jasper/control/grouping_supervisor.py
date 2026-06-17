@@ -59,16 +59,25 @@ import threading
 import time
 from typing import Any
 
+from jasper import identity
 from jasper.log_event import log_event
 
+from . import household_credential
+from .client import AsyncControlClient, DEFAULT_PORT
 from ..multiroom.config import GroupingConfig, is_active_member, load_config
 from ..multiroom.reconcile import SNAP_STREAM_ID
+from ..multiroom.state import parse_grouping_response
 from ..multiroom.snapcast_rpc import ensure_groups_on_stream
 
 logger = logging.getLogger(__name__)
 
 OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+
+
+def _paired_follower_channel(leader_channel: str) -> str | None:
+    """Current /rooms topology is a 2-speaker left/right stereo pair."""
+    return {"left": "right", "right": "left"}.get(leader_channel)
 
 
 class GroupingSupervisor:
@@ -119,6 +128,11 @@ class GroupingSupervisor:
         self.binding_fixed_total: int = 0
         self.binding_failed_total: int = 0
         self.binding_last_repair_at: float | None = None
+        self.reassert_attempt_count: int = 0
+        self.reassert_failed_count: int = 0
+        self.reassert_last_attempt_at: float | None = None
+        self.reassert_last_ok: bool | None = None
+        self.reassert_last_detail: str = ""
         # Monotonic clock for rate-limit math — separate from the
         # wall-clock display fields so NTP jumps can't reopen or
         # extend the window.
@@ -131,6 +145,7 @@ class GroupingSupervisor:
         # counters regardless.) Both reset on a healthy poll.
         self._streak_warned: bool = False
         self._rate_limit_warned_window: float | None = None
+        self._reassert_failed_latched: bool = False
 
     # ---- main loop ----
 
@@ -178,6 +193,8 @@ class GroupingSupervisor:
         if cfg.role == "leader":
             await self._binding_tick()
         await self._starvation_tick()
+        if cfg.role == "leader":
+            await self._reassert_peer_tick(cfg)
 
     async def _binding_tick(self) -> None:
         """Continuous read-repair of snapcast group→stream bindings."""
@@ -209,6 +226,72 @@ class GroupingSupervisor:
                 stream=SNAP_STREAM_ID,
                 level=logging.WARNING,
             )
+
+    async def _reassert_peer_tick(self, cfg: GroupingConfig) -> None:
+        """Leader-only autonomous re-grouping for the persisted pair sibling.
+
+        The /rooms wizard records a 2-speaker roster on the leader. Use that
+        roster, not broad discovery, so a foreign same-bond claimer cannot be
+        reconfigured by a repair loop. A matching follower is left untouched
+        (avoids a 30 s idempotent /grouping/set that would kick its reconciler);
+        a missing/drifted follower gets the same body the /rooms bond flow would
+        send, authenticated by X-JTS-Household when this leader has one.
+        """
+        desired = self.peer_reassert_body(cfg)
+        if desired is None:
+            return
+        try:
+            current = await self.read_peer_grouping(cfg.peer_addr)
+        except Exception:  # noqa: BLE001
+            current = None
+            log_event(
+                logger,
+                "grouping_supervisor.reassert_read_crash",
+                peer=cfg.peer_addr,
+                level=logging.ERROR,
+                exc_info=True,
+            )
+        if self.peer_grouping_matches(current, desired):
+            self.reassert_last_ok = True
+            self.reassert_last_detail = "already-converged"
+            self._reassert_failed_latched = False
+            return
+
+        self.reassert_attempt_count += 1
+        self.reassert_last_attempt_at = time.time()
+        try:
+            ok, detail = await self.post_peer_grouping(cfg.peer_addr, desired)
+        except Exception as exc:  # noqa: BLE001
+            ok, detail = False, repr(exc)
+            log_event(
+                logger,
+                "grouping_supervisor.reassert_post_crash",
+                peer=cfg.peer_addr,
+                level=logging.ERROR,
+                exc_info=True,
+            )
+        self.reassert_last_ok = ok
+        self.reassert_last_detail = detail[:200]
+        if ok:
+            self._reassert_failed_latched = False
+            log_event(
+                logger,
+                "grouping_supervisor.reasserted",
+                peer=cfg.peer_addr,
+                bond=cfg.bond_id,
+            )
+            return
+        self.reassert_failed_count += 1
+        level = logging.DEBUG if self._reassert_failed_latched else logging.WARNING
+        self._reassert_failed_latched = True
+        log_event(
+            logger,
+            "grouping_supervisor.reassert_failed",
+            peer=cfg.peer_addr,
+            bond=cfg.bond_id,
+            detail=self.reassert_last_detail,
+            level=level,
+        )
 
     async def _starvation_tick(self) -> None:
         status = None
@@ -347,6 +430,81 @@ class GroupingSupervisor:
             ensure_groups_on_stream, SNAP_STREAM_ID, attempts=1,
         )
 
+    def peer_reassert_body(self, cfg: GroupingConfig) -> dict[str, Any] | None:
+        """Desired follower /grouping/set payload, or None outside v1 pairs."""
+        if cfg.role != "leader" or not cfg.peer_addr or not cfg.bond_id:
+            return None
+        follower_channel = _paired_follower_channel(cfg.channel)
+        if follower_channel is None:
+            return None
+        return {
+            "enabled": True,
+            "role": "follower",
+            "channel": follower_channel,
+            "bond_id": cfg.bond_id,
+            "leader_addr": self.leader_handle(),
+            # Match the /rooms bond fan-out: followers must not retain a stale
+            # roster from a previous leadership role.
+            "peer_addr": "",
+            "peer_name": "",
+        }
+
+    def peer_grouping_matches(
+        self, current: dict[str, Any] | None, desired: dict[str, Any],
+    ) -> bool:
+        """True when the peer is already in the intended follower role."""
+        if not isinstance(current, dict):
+            return False
+        for key in (
+            "enabled", "role", "channel", "bond_id", "leader_addr",
+            "peer_addr", "peer_name",
+        ):
+            if current.get(key) != desired.get(key):
+                return False
+        return True
+
+    async def read_peer_grouping(self, peer_addr: str) -> dict[str, Any] | None:
+        """Read the roster peer's grouping state; None on any bad response."""
+        try:
+            resp = await self.peer_client(peer_addr).get("/grouping")
+            if not resp.ok:
+                return None
+            parsed = resp.json()
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return parse_grouping_response(parsed)
+
+    async def post_peer_grouping(
+        self, peer_addr: str, body: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """POST /grouping/set to the roster peer with the household header."""
+        try:
+            resp = await self.peer_client(peer_addr).post(
+                "/grouping/set",
+                body,
+                headers=self.household_headers(),
+            )
+        except Exception as exc:  # noqa: BLE001 — peer offline is expected IO
+            return False, repr(exc)
+        detail = f"HTTP {resp.status}"
+        if not resp.ok and resp.body:
+            detail = f"{detail}: {resp.body.decode(errors='replace')[:160]}"
+        return resp.ok, detail
+
+    def peer_client(self, peer_addr: str) -> AsyncControlClient:
+        return AsyncControlClient(f"http://{peer_addr}:{DEFAULT_PORT}")
+
+    def household_headers(self) -> dict[str, str] | None:
+        secret = household_credential.current()
+        if not secret:
+            return None
+        return {"X-JTS-Household": secret}
+
+    def leader_handle(self) -> str:
+        return identity.read_identity().hostname
+
     async def kick_reconciler(self) -> None:
         """`reset-failed` clears StartLimitBurst parking from prior failed
         reconciles (rc=1 on unreachable snapserver is by-design); then
@@ -386,6 +544,13 @@ class GroupingSupervisor:
                 "fixed_total": self.binding_fixed_total,
                 "failed_total": self.binding_failed_total,
                 "last_repair_at": self.binding_last_repair_at,
+            },
+            "reassert": {
+                "attempt_total": self.reassert_attempt_count,
+                "failed_total": self.reassert_failed_count,
+                "last_attempt_at": self.reassert_last_attempt_at,
+                "last_ok": self.reassert_last_ok,
+                "last_detail": self.reassert_last_detail,
             },
         }
 

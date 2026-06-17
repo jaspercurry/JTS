@@ -1,8 +1,9 @@
 # Handoff: control-plane authentication (device-to-device / household)
 
 > **Status: design approved 2026-06-16 — Phases A-C landed on `main`,
-> hardware-free verified, on-device validation pending; Phase D paused on a
-> scope decision.** This is the threat-model + design + execution plan for how
+> hardware-free verified, on-device validation pending; Phase D is implemented
+> in the grouping supervisor with hardware-free tests, with the two-Pi reboot
+> smoke still pending.** This is the threat-model + design + execution plan for how
 > JTS authenticates *control* across speakers on the household LAN. The
 > per-device **CSRF control token** (browser → its own speaker) already
 > shipped and is documented in
@@ -13,8 +14,8 @@
 > design (Option 1, §5) was ratified after a counter-proposal advocating HMAC
 > request-signing was reviewed and **rejected** (§5 "Rejected: HMAC
 > request-signing"). The reconciliation phase (§8 Phase A: rewrite multiroom §7
-> + privilege-sep) and build Phases B-C are implemented; Phase D remains
-> paused until the owner chooses the autonomous re-grouping scope. Update each
+> + privilege-sep) and build Phases B-D are implemented; the two-Pi reboot smoke
+> remains the open validation item. Update each
 > phase as work lands (see §8 for per-phase status).
 
 Read [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md) (the
@@ -429,12 +430,18 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   (proves self-heal survives file loss). *Verify:* unit tests ✅ + **two-Pi smoke**
   (leader→follower `/grouping/set` succeeds with the credential, 403s without) —
   pending.
-- **Phase D — autonomous re-grouping uses the credential (resilience).** The
-  grouping leader path presents the household secret when re-asserting a bond
-  with no browser. *Files:* `jasper/control/grouping_supervisor.py`,
-  `jasper/multiroom/*` (not `jasper/peering/`, which owns wake arbitration).
-  *Verify:*
-  two-Pi reboot smoke — follower reboots, leader re-bonds it automatically.
+- **Phase D — autonomous re-grouping uses the credential (resilience).**
+  *Status: implemented + HW-free-verified; two-Pi smoke pending.* A rostered
+  grouping leader now reads its persisted household secret and presents
+  `X-JTS-Household` when the supervisor re-asserts the follower's
+  `/grouping/set` after detecting follower drift. If the secret is absent or
+  unreadable, it sends no fake header and the follower's existing fail-safe
+  bootstrap semantics decide whether to accept the request. Already-converged
+  followers are skipped so the leader does not kick their reconciler every
+  30-second poll. *Files:* `jasper/control/grouping_supervisor.py`,
+  `tests/test_grouping_supervisor.py`. *Verify:* HW-free supervisor tests ✅;
+  two-Pi reboot smoke pending — follower reboots, leader re-bonds it
+  automatically.
 - **Phase E — per-device keys / mTLS over mkcert CA (DEFERRED, Option 2).** Only
   if the posture is being upgraded; documented here so it is not lost.
 
