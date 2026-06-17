@@ -104,12 +104,14 @@ from .topology_tone import build_summed_topology_tone_plan, build_topology_tone_
 from .playback_route import resolve_active_playback_device
 from .staging import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
+    COMMISSIONING_CONFIG_KIND,
     STAGED_CONFIG_PATH_ENV,
     STAGED_METADATA_PATH_ENV,
     STAGED_STARTUP_CONFIG_KIND,
     compile_preset_from_crossover_preview,
     driver_commission_audible_evidence,
     load_staged_startup_config,
+    prepare_driver_commissioning_config,
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
@@ -288,8 +290,10 @@ __all__ = [
     "build_startup_load_path_safety_evidence",
     "build_summed_topology_tone_plan",
     "build_topology_tone_plan",
+    "COMMISSIONING_CONFIG_KIND",
     "compile_preset_from_crossover_preview",
     "driver_commission_audible_evidence",
+    "prepare_driver_commissioning_config",
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
     "load_active_speaker_preset",

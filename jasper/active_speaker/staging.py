@@ -56,6 +56,11 @@ STAGED_STARTUP_CONFIG_KIND = "jts_active_speaker_staged_startup_config"
 DEFAULT_STAGED_CONFIG_NAME = "active_speaker_staged_startup.yml"
 DEFAULT_STAGED_METADATA_PATH = Path("/var/lib/jasper/active_speaker_staged_config.json")
 DEFAULT_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
+# A per-driver commissioning config is a TRANSIENT runtime load, never the
+# durable boot config: it is written to its own path so it can never overwrite
+# the all-muted staged boot config (the crash-recovery-MUTED invariant).
+DEFAULT_COMMISSIONING_CONFIG_NAME = "active_speaker_commissioning.yml"
+COMMISSIONING_CONFIG_KIND = "jts_active_speaker_commissioning_config"
 STAGED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 
@@ -1282,24 +1287,26 @@ def _bind_preset_to_topology(
     return bound, issues, gates, active_groups
 
 
-def stage_protected_startup_config(
+def _build_active_commissioning_context(
     topology: OutputTopology,
     *,
-    preset: ActiveSpeakerPreset | None = None,
-    crossover_preview: dict[str, Any] | None = None,
-    playback_device: str | None = None,
-    config_dir: str | Path | None = None,
-    config_path: str | Path | None = None,
-    metadata_path: str | Path | None = None,
-    run_config_check: bool = True,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-    created_at: str | None = None,
+    preset: ActiveSpeakerPreset | None,
+    crossover_preview: dict[str, Any] | None,
+    playback_device: str | None,
 ) -> dict[str, Any]:
-    """Stage a muted/protected startup YAML and return versioned evidence."""
+    """Compile + bind + resolve the shared active-commissioning context.
 
-    created_at = created_at or _utc_now()
+    Both the all-muted staged boot config
+    (:func:`stage_protected_startup_config`) and a per-driver commissioning
+    config (:func:`prepare_driver_commissioning_config`) do exactly this before
+    emitting their YAML: resolve the preset (from a crossover preview or the
+    bundled fallback), bind it to the topology, reject not-yet-staged subwoofer
+    groups, and resolve + capacity-check the active playback route. Returns the
+    bound preset, active groups, source, resolved device, and the accumulated
+    gates/issues, so each caller only adds its own emit + per-config safety gate
+    (the all-muted crash-recovery gate vs the per-driver protection-while-audible
+    gate) rather than duplicating this ~100-line sequence.
+    """
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
     source: dict[str, Any]
@@ -1407,6 +1414,50 @@ def stage_protected_startup_config(
             "active_playback_device_required",
             "protected staging requires a resolved active playback route",
         ))
+    return {
+        "preset": preset,
+        "bound_preset": bound_preset,
+        "active_groups": active_groups,
+        "source": source,
+        "resolved_playback_device": resolved_playback_device,
+        "playback_device_source": playback_device_source,
+        "gates": gates,
+        "issues": issues,
+    }
+
+
+def stage_protected_startup_config(
+    topology: OutputTopology,
+    *,
+    preset: ActiveSpeakerPreset | None = None,
+    crossover_preview: dict[str, Any] | None = None,
+    playback_device: str | None = None,
+    config_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+    metadata_path: str | Path | None = None,
+    run_config_check: bool = True,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Stage a muted/protected startup YAML and return versioned evidence."""
+
+    created_at = created_at or _utc_now()
+    ctx = _build_active_commissioning_context(
+        topology,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        playback_device=playback_device,
+    )
+    preset = ctx["preset"]
+    bound_preset = ctx["bound_preset"]
+    active_groups = ctx["active_groups"]
+    source = ctx["source"]
+    resolved_playback_device = ctx["resolved_playback_device"]
+    playback_device_source = ctx["playback_device_source"]
+    gates = ctx["gates"]
+    issues = ctx["issues"]
 
     out_path = staged_config_path(config_dir=config_dir, path=config_path)
     meta_path = staged_metadata_path(metadata_path)
@@ -1617,6 +1668,244 @@ def stage_protected_startup_config(
         topology.topology_id,
         source.get("mode"),
         out_path,
+        blocker_count,
+    )
+    return payload
+
+
+def commissioning_config_path(
+    *, config_dir: str | Path | None = None, path: str | Path | None = None
+) -> Path:
+    """Path of the TRANSIENT per-driver commissioning config (never the boot config)."""
+    if path:
+        return Path(path)
+    return Path(config_dir or DEFAULT_CAMILLA_CONFIG_DIR) / DEFAULT_COMMISSIONING_CONFIG_NAME
+
+
+def prepare_driver_commissioning_config(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    role: str,
+    preset: ActiveSpeakerPreset | None = None,
+    crossover_preview: dict[str, Any] | None = None,
+    playback_device: str | None = None,
+    config_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+    run_config_check: bool = True,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Emit + safety-assert (NO load) the per-driver commissioning config.
+
+    Emits the production graph with ``audible_outputs`` = the ``(speaker_group_id,
+    role)`` target's physical outputs (every other output hard-muted), asserts
+    the protection-while-audible invariant
+    (:func:`driver_commission_audible_evidence`) + the CamillaDSP volume ceiling,
+    validates syntax, and returns evidence with ``load_allowed`` gated behind the
+    guarded runtime load. Shares the compile/bind/resolve work with
+    :func:`stage_protected_startup_config` via
+    :func:`_build_active_commissioning_context`.
+
+    Per-driver unmute is a TRANSIENT runtime load: this config is never the
+    durable boot config (which ``stage_protected_startup_config`` keeps all-muted
+    for crash recovery), so it is written to its own commissioning path. The
+    actual CamillaDSP reload + rollback is the separate guarded load step; this
+    function opens nothing and loads nothing.
+    """
+    created_at = created_at or _utc_now()
+    role = (role or "").strip().lower()
+    group_id = (speaker_group_id or "").strip()
+    ctx = _build_active_commissioning_context(
+        topology,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        playback_device=playback_device,
+    )
+    bound_preset = ctx["bound_preset"]
+    active_groups = ctx["active_groups"]
+    resolved_playback_device = ctx["resolved_playback_device"]
+    playback_device_source = ctx["playback_device_source"]
+    gates = ctx["gates"]
+    issues = ctx["issues"]
+
+    # Resolve the target's audible outputs from the bound preset / topology.
+    audible_outputs: frozenset[int] = frozenset()
+    if group_id and group_id not in {group.id for group in active_groups}:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_target_group_unknown",
+            "driver commissioning target group is not an active speaker group",
+        ))
+    if bound_preset is not None and role:
+        audible_outputs = audible_outputs_for_role(bound_preset, role)
+    if not audible_outputs:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_target_role_unknown",
+            f"no active outputs carry the role {role!r}",
+        ))
+    gates.append(_gate(
+        "commissioning_target_resolved",
+        label="Per-driver commissioning target resolves to physical outputs",
+        passed=bool(audible_outputs),
+        message=(
+            f"Target {group_id}/{role} -> outputs {sorted(audible_outputs)}"
+            if audible_outputs
+            else f"No active outputs carry the role {role!r}"
+        ),
+    ))
+
+    out_path = commissioning_config_path(config_dir=config_dir, path=config_path)
+    validation: dict[str, Any] = {"status": "skipped", "reason": "not_generated"}
+    classification: dict[str, Any] = {}
+    audible_evidence: dict[str, Any] = {}
+    blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
+
+    if (
+        blocker_count == 0
+        and bound_preset is not None
+        and resolved_playback_device
+        and audible_outputs
+    ):
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            yaml = emit_active_speaker_commissioning_config(
+                bound_preset,
+                playback_device=resolved_playback_device,
+                audible_outputs=audible_outputs,
+                out_path=out_path,
+                baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",
+            )
+            classification = classify_camilla_config_text(yaml)
+            gates.append(_gate(
+                "generated_active_commissioning_candidate",
+                label="Generated config is classified as active-speaker startup",
+                passed=(
+                    classification.get("classification") == "active_startup_candidate"
+                ),
+                message=classification.get("label", "classified generated config"),
+            ))
+            gates.append(_gate(
+                "volume_ceiling_preserved",
+                label="CamillaDSP volume ceiling is <= 0 dB",
+                passed=bool(classification.get("volume_limit_ok")),
+                message=(
+                    "Volume ceiling is preserved"
+                    if classification.get("volume_limit_ok")
+                    else "Generated config did not preserve the volume ceiling"
+                ),
+            ))
+            for issue in classification.get("issues", []):
+                if isinstance(issue, dict):
+                    issues.append({
+                        "severity": str(issue.get("severity", "blocker")),
+                        "code": str(issue.get("code", "config_issue")),
+                        "message": str(issue.get("message", "generated config issue")),
+                    })
+            # The per-driver protection-while-audible gate (the config-level
+            # form of the Stage-5 "HP present before the tweeter is unmuted").
+            audible_evidence = driver_commission_audible_evidence(
+                yaml, preset=bound_preset, audible_outputs=audible_outputs
+            )
+            gates.append(_gate(
+                "driver_protection_while_audible",
+                label="Only the target is audible; an audible tweeter keeps its protection",
+                passed=bool(audible_evidence.get("passed")),
+                message=(
+                    "Audible mask is exactly the target and tweeter protection is intact"
+                    if audible_evidence.get("passed")
+                    else "Config failed the per-driver protection-while-audible gate"
+                ),
+            ))
+            if not audible_evidence.get("passed"):
+                missing = sorted(
+                    key
+                    for key, passed in audible_evidence.get("checks", {}).items()
+                    if not passed
+                )
+                issues.append(_issue(
+                    "blocker",
+                    "driver_protection_while_audible_incomplete",
+                    "per-driver commissioning config failed protection-while-audible: "
+                    + ", ".join(missing),
+                ))
+            validation = (
+                validate(out_path).to_dict()
+                if run_config_check
+                else {"status": "skipped", "reason": "disabled"}
+            )
+        except (ActiveSpeakerConfigError, OSError) as exc:
+            issues.append(_issue(
+                "blocker",
+                "commissioning_config_generation_failed",
+                f"could not generate commissioning config: {type(exc).__name__}",
+            ))
+
+    validation_status = str(validation.get("status") or "unknown")
+    validation_ok = validation_status in {"valid", "missing"}
+    if validation_status not in {"skipped", "not_generated"}:
+        gates.append(_gate(
+            "camilla_syntax_preflight",
+            label="Generated config passed CamillaDSP syntax preflight",
+            passed=validation_ok,
+            message=(
+                f"Validation status is {validation_status}"
+                if validation_ok
+                else "CamillaDSP validation blocked the commissioning config"
+            ),
+        ))
+    if validation_status not in {"valid", "missing", "skipped", "not_generated"}:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_config_validation_failed",
+            f"CamillaDSP validation status is {validation_status}",
+        ))
+
+    blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
+    status = "prepared" if blocker_count == 0 and out_path.exists() else "blocked"
+    payload = {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": COMMISSIONING_CONFIG_KIND,
+        "status": status,
+        "created_at": created_at,
+        "target": {
+            "speaker_group_id": group_id,
+            "role": role,
+            "audible_outputs": sorted(audible_outputs),
+        },
+        "config": {
+            "path": str(out_path),
+            "basename": out_path.name,
+            "exists": out_path.exists(),
+            "playback_device": resolved_playback_device,
+            "playback_device_source": playback_device_source,
+            "classification": classification.get("classification"),
+            "volume_limit_db": classification.get("volume_limit_db"),
+            "volume_limit_ok": classification.get("volume_limit_ok"),
+            "validation": validation,
+        },
+        "audible_evidence": audible_evidence,
+        "load": {
+            "load_allowed": False,
+            "load_gate": "driver_commissioning_load_preflight_required",
+            "next_step": (
+                "Run the guarded per-driver commissioning load before CamillaDSP "
+                "reloads this transient graph."
+            ),
+        },
+        "required_gates": gates,
+        "issues": issues,
+    }
+    logger.info(
+        "event=active_speaker.driver_commission_prepared status=%s group=%s role=%s "
+        "outputs=%s blockers=%d",
+        status,
+        group_id,
+        role,
+        sorted(audible_outputs),
         blocker_count,
     )
     return payload
