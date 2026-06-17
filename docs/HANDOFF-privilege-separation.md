@@ -1,10 +1,11 @@
 # Handoff: privilege separation (WS1)
 
-> **Status: current-state reference + approved phased plan.** Phase 1
-> (hardened root) has landed and is validated on hardware. Phases 2–4 and
-> the Tier-B follow-up are designed and committed-to below, not yet built.
-> This doc is the threat-model + ADR for the work; update it as each phase
-> lands.
+> **Status: current-state reference + approved phased plan.** Phases 1, 2,
+> 3a, and the full 3b Tier-A user drop (3b-1 voice/mux/input, 3b-2 control,
+> 3b-3 web) have landed and are validated on hardware — **all five Tier-A
+> daemons now run non-root.** Phase 4 (secret credentialization) and the
+> Tier-B reconciler drop remain designed, not yet built. This doc is the
+> threat-model + ADR for the work; update it as each phase lands.
 
 How JTS contains a compromise of its always-on daemons, and the staged plan
 to go from "every daemon is root" to "least-privilege service users behind a
@@ -208,7 +209,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-mux | `jasper-mux` | — | **3b-1 (LANDED)** | broker client (librespot recovery); only shared file is `speaker_volume.json` |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
 | jasper-control | `jasper-control` | `systemd-journal` | **3b-2 (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), group-readable config it reads off disk, and `systemd-journal` for the journal-based /state cards |
-| jasper-web | `jasper-web` | `netdev`?/`bluetooth`? | **3b-3 (designed)** | the big one: NetworkManager polkit, BlueZ, `CAP_NET_ADMIN` scan-repair, `/etc/{bluetooth,avahi}` writes — and **wifi-lockout** is the worst-case brick for a headless speaker |
+| jasper-web | `jasper-web` | `bluetooth`, `systemd-journal` | **3b-3 (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` scan-repair withheld (degrades fail-soft) — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
 `/var/lib/jasper` becomes `root:jasper 0770` (group-aware `ensure_state_dir`,
@@ -335,29 +336,77 @@ the `shairport_supervisor` `reset-failed`+restart path works under polkit; a
 recovered with `jasper-control` back non-root + healthy; secrets readable; the
 token gate still 403s an unauthenticated POST.
 
-**3b-3 (designed) — web.** web pulls in NetworkManager access (the
-investigation found upstream NM defaults deny a sessionless caller —
-`settings.modify.system` is `auth_admin` in all columns — so a JS polkit rule
-returning `YES` is **required**; `netdev` membership alone does not suffice),
-BlueZ adapter-Alias (the `bluetooth` group works — adapter properties are gated
-by D-Bus policy, not polkit), the `/etc/bluetooth` + `/etc/avahi/services`
-writes (chown to `jasper` or move behind a broker verb — the `/speaker` rename's
-avahi re-render already silently no-ops under the strict-root unit today), and a
-decision on the `CAP_NET_ADMIN` scan-repair (grant the cap, or accept its
-graceful degradation to manual "Join by name"). **wifi-lockout is the worst-case
-brick for a headless speaker**, so it stays hardened-root until the NM-polkit +
-failed-connect-rollback path is validated under the dropped user on hardware.
+**3b-3 (LANDED) — web.** `jasper-web` (the wizard HTTP server) drops to a
+non-root `jasper-web` user (primary group `jasper`, supplementary groups
+`bluetooth` + `systemd-journal`) with `CapabilityBoundingSet=` (empty) +
+`SystemCallFilter=@system-service`. The mechanism for each privileged surface
+was empirically determined on hardware (jts.local, NM 1.52, polkit 126, systemd
+257) via reversible `pkcheck` / `sudo -u jasper-web` / dummy-NM-profile probes
+before the drop:
+
+- **NetworkManager** ([`deploy/polkit/49-jasper-web.rules`](../deploy/polkit/49-jasper-web.rules)).
+  The `/wifi/` wizard drives `nmcli`; NM's implicit-`any` defaults (the slot a
+  sessionless daemon falls under) **deny** every action it needs:
+  `settings.modify.system`/`.own` (`auth_admin_keep`/`auth_self_keep`),
+  `network-control` + `wifi.scan` (`auth_admin`), `enable-disable-wifi` (`no`).
+  So a JS polkit rule keyed on `subject.user == "jasper-web"` granting exactly
+  those five actions is **required and load-bearing** — proven on hardware:
+  without it a real `nmcli connection modify` as jasper-web is DENIED; with it
+  it (plus `wifi rescan`, `connection delete`, and the `-s` saved-PSK GetSecrets
+  the guardian stash needs) succeed identically to root. `netdev` is **neither
+  necessary nor sufficient** on modern NM (polkit is authoritative) — omitted.
+  Pinned by `tests/test_polkit_jasper_web.py`.
+- **BlueZ adapter Alias/Powered** (`/speaker` rename, BT radio) — the
+  **`bluetooth` group** (a D-Bus policy grant, not polkit). Proven:
+  `sudo -u jasper-web busctl set-property … Adapter1 Alias` succeeds in-group.
+- **`journalctl -k`** (Wi-Fi scan-suppression diagnostics) — the
+  **`systemd-journal` group** (also fail-soft: returns `None`, so non-load-bearing).
+- **NL80211 scan-repair** ([`jasper/wifi_scan_repair.py`](../jasper/wifi_scan_repair.py))
+  needs `CAP_NET_ADMIN`; the cap is **deliberately withheld** — the most
+  network-exposed daemon stays cap-less and the repair **degrades fail-soft**
+  (the netlink send is `try/except`-wrapped → `event=wifi_scan_repair.attempt_failed`
+  WARNING → the `/wifi/` page keeps "Join by name").
+- **Group-writable dirs for atomic replace.** `os.replace()` needs write on the
+  *directory*, so `/etc/bluetooth` (the BlueZ name persists across the rename's
+  `bluetooth.service` restart, so `main.conf` is load-bearing, not just the
+  runtime D-Bus Alias) and `/var/lib/camilladsp/configs` (the `/sound/` EQ
+  editor) become `root:jasper 2775` (setgid). `/etc/avahi/services` was already
+  `2775` from 3b-2; adding it to the unit's `ReadWritePaths` also fixes a
+  **latent bug** — the `/speaker` avahi re-render silently no-op'd under
+  `ProtectSystem=strict` (the dir was outside the writable set). The WiFi PSK
+  stash stays `0600` owner `jasper-web` (the root guardian reads it fine — root
+  reads all, so no group-widening).
+
+`jasper-web` already routes its restarts through the broker (`manage_units`,
+and it's in `BROKER_CLIENT_USERS`); once non-root the broker is the only path.
+The full-profile unit is dropped and hardware-validated; the **streambox** web
+unit stays root this increment (a Pi-class that can't be validated here) —
+`install.sh` installs the web polkit rule + dir widenings in both profiles so
+the streambox drop is a later one-line unit edit.
+
+Measured on hardware (jts.local, `systemd-analyze security`): **jasper-web
+6.5 → 2.5 OK**. Validated: jasper-web `NRestarts=0` non-root serving `/system/`
++ `/wifi/` + `/sound/` + `/speaker/` (200, **zero permission-denied** WARNINGs in
+the journal — the off-disk-read audit, not just HTTP 200); NM scan/list, BlueZ
+Alias set, and writes to all three widened dirs work as jasper-web; the restart
+broker socket is reachable (group `jasper`); and the **failed-connect rollback**
+ran under the dropped user — a nonexistent-SSID connect failed and `connection
+up <active>` re-activated without `wlan0` ever dropping (the wifi-lockout brick
+path the whole increment was gated on).
 
 **The drop is gated on recovery-path validation, not happy-path** (validate
 recovery under the dropped user, or ship hardened-root and don't pretend the
 drop is done). The 3b-1 increment validated the mux→broker path; the
-control-as-non-root paths were validated with the 3b-2 drop (✅ below):
+control-as-non-root paths were validated with the 3b-2 drop, and the
+web-as-non-root paths (including the wifi-lockout brick path) with 3b-3
+(✅ below):
 
 | Recovery path (changed by the drop) | Now runs as | Validation result |
 |---|---|---|
 | `system_supervisor` reboot | control (polkit) | ✅ ran the exact `systemctl --no-block reboot` as `jasper-control` → authorized, Pi rebooted + recovered non-root |
 | `shairport_supervisor` restart | control (polkit) | ✅ `reset-failed`+restart of `shairport-sync`/`nqptp` authorized as `jasper-control`; non-allowlisted units denied |
-| `jasper-web` config-save restarts | web → broker | ✅ broker proxies `restart jasper-voice` (allowlisted) as `jasper-control` |
+| `jasper-web` config-save restarts | web (non-root) → broker | ✅ (3b-3) non-root `jasper-web` reaches the broker socket (group `jasper`, `0660`); broker proxies `restart jasper-voice` (allowlisted) |
+| `jasper-web` failed-connect rollback | web (polkit NM) | ✅ (3b-3) as `jasper-web`: a nonexistent-SSID connect failed, then `connection up <active>` re-activated — `wlan0` never dropped (no lockout) |
 | `jasper-mux` librespot recovery | mux → broker | ✅ (3b-1) mux→broker; `librespot` is in the allowlist |
 
 Class-2 (unchanged — still root — regression smoke only): `jasper-wifi-guardian`

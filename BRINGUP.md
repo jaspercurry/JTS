@@ -232,8 +232,9 @@ mid-session:
 | **Keep a sudo password** | You must run *every* deploy yourself from an interactive terminal so it can prompt. Unattended and agent-driven deploys are impossible. | You specifically want sudo to require a password. |
 
 For the JTS appliance, **passwordless sudo is the right posture.** It is a
-trusted-LAN device you own, its daemons already run as root, and the
-threat model ([SECURITY.md](SECURITY.md)) already assumes a trusted
+trusted-LAN device you own, its deploys already require root to install and
+update system services (and the boot/recovery reconcilers still run as root),
+and the threat model ([SECURITY.md](SECURITY.md)) already assumes a trusted
 household network. The alternative — re-typing a password on every deploy
 and blocking every agent session — buys you almost nothing here.
 
