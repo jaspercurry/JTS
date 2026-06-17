@@ -109,12 +109,19 @@ def test_ensure_generates_when_absent(monkeypatch, tmp_path):
     assert hc.verify("nope") is False
 
 
-def test_ensure_is_0600(monkeypatch, tmp_path):
+def test_ensure_is_0640_group_readable(monkeypatch, tmp_path):
+    # 0640, NOT 0600: two non-root daemons in the shared `jasper` group read it
+    # (jasper-web mints, jasper-control verifies/adopts/clears). 0600 would make
+    # one daemon's file unreadable by the other — mirrors WS1's control_token
+    # widening. (Group ownership comes from the setgid /var/lib/jasper dir on the
+    # Pi; the mode bits are what we can assert hermetically here.)
     path = tmp_path / "household_secret"
     monkeypatch.setattr(hc, "SECRET_FILE", str(path))
     hc.ensure()
     mode = stat.S_IMODE(os.stat(path).st_mode)
-    assert mode == 0o600, f"secret file is {oct(mode)}, expected 0o600"
+    assert mode == 0o640, f"secret file is {oct(mode)}, expected 0o640"
+    assert mode & stat.S_IRGRP, "secret must be group-readable for cross-daemon access"
+    assert not (mode & (stat.S_IROTH | stat.S_IWOTH)), "secret must not be world-accessible"
 
 
 def test_ensure_is_idempotent_and_never_rotates(monkeypatch, tmp_path):
@@ -136,7 +143,7 @@ def test_adopt_writes_when_absent(monkeypatch, tmp_path):
     assert path.read_text().strip() == "leader-secret"
     assert hc.verify("leader-secret") is True
     mode = stat.S_IMODE(os.stat(path).st_mode)
-    assert mode == 0o600
+    assert mode == 0o640  # group-readable for the other non-root daemon
 
 
 def test_adopt_refuses_to_overwrite_existing(monkeypatch, tmp_path):

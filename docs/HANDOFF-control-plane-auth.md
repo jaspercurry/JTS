@@ -165,8 +165,8 @@ bootstrapped at JTS's existing human pairing moment — `POST /bond` on the
 
 - **Option 1 — household shared secret (RECOMMENDED).** At `/bond`, mint a
   single household secret (or reuse the household's existing one), persist it on
-  each member (atomic `0600` file under `/var/lib/jasper/`, mirroring
-  `control_token` + the Wi-Fi guardian stash), and present it on the
+  each member (atomic `0640` group-jasper file under `/var/lib/jasper/`, mirroring
+  the WS1-widened `control_token` + the Wi-Fi guardian stash), and present it on the
   cross-device grouping path via a **distinct** credential/header (e.g.
   `X-JTS-Household`) that each member verifies independently of its own CSRF
   token. Machine-usable + persistent → survives reboots and the autonomous
@@ -246,8 +246,10 @@ upgrade — is also the cheapest.
 
 **Credential module.** A new `jasper/control/household_credential.py` mirroring
 `jasper/control/control_token.py`: `ensure()/current()/verify()` over
-`/var/lib/jasper/household_secret` (`0600`, atomic write, constant-time compare,
-fail-safe "" on read error, never logged). Distinct file + distinct header from
+`/var/lib/jasper/household_secret` (`0640` group jasper — TWO non-root daemons
+read it, jasper-web mints + jasper-control verifies/adopts/clears, so unlike
+`control_token` it can't be 0600; atomic write, constant-time compare, fail-safe
+"" on read error, never logged). Distinct file + distinct header from
 `control_token` so the two trust domains never blur.
 
 **Fail direction — mirror `control_token` (absent ⇒ accept, present ⇒ require).**
@@ -344,8 +346,8 @@ audit (below) shows it is the *only* such client besides the M2M path.
 
   **On the token's exposure (precise — not "equivalent to the wizards"):** baking
   it into `/usr/share/jasper-web/index.html` (mode `0644`) makes it world-readable
-  *on disk* — wider than `control_token`'s `0600` file, and unlike the wizards,
-  which deliver it per-request from that `0600` file. But it is **not new
+  *on disk* — wider than `control_token`'s `0640 group-jasper` file, and unlike the
+  wizards, which deliver it per-request from that file. But it is **not new
   exposure**: the management read guard (`management_read_allowed`) permits
   non-browser local requests, so any local process can already
   `curl -H 'Host: jts.local' http://127.0.0.1/voice/` and read the token from a
@@ -397,7 +399,7 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   *Status: implemented + HW-free-verified (stacked PR, not yet on `main`); two-Pi
   smoke pending.* `jasper/control/household_credential.py` is a
   **near-line-for-line clone of `control_token.py`** (`ensure`/`current`/`verify`,
-  atomic `0600` write, `hmac.compare_digest`, absent⇒accept) — a **static bearer**
+  atomic `0640` group-jasper write, `hmac.compare_digest`, absent⇒accept) — a **static bearer**
   in `X-JTS-Household`, **no nonce store, no clock/timestamp handling**
   (HMAC-signing rejected, §5) — plus `adopt()` (trust-on-first-use distribution,
   refuses to overwrite) and `clear()`. Mint lives in `rooms_setup._save_bond`

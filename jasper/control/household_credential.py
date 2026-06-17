@@ -56,8 +56,20 @@ from jasper.atomic_io import atomic_write_text
 
 # The household-secret file. Seeded from the env var at import; callers read the
 # module attribute (not the env var) so tests can monkeypatch this single
-# constant. /var/lib/jasper is the wizard/secret directory (root, 0600 files),
-# the same home as control_token and the Wi-Fi guardian stash.
+# constant. /var/lib/jasper is the wizard/secret directory (root:jasper 2775,
+# setgid → files created there inherit group jasper), the same home as
+# control_token and the Wi-Fi guardian stash.
+#
+# Mode 0640 group jasper (NOT 0600), because — unlike control_token, which only
+# jasper-control touches — TWO non-root daemons in the shared `jasper` group
+# read+write this file: jasper-web mints it (rooms_setup._save_bond -> ensure())
+# and jasper-control adopts/clears/verifies it (server._post_grouping_set). A
+# 0600 file written by one would be unreadable by the other. This mirrors the
+# WS1 Phase 3b widening of control_token + the other secret env files to 0640
+# group jasper once the daemons dropped to non-root. Group-read suffices: writes
+# go through atomic_write_text (a new tempfile the writer owns, renamed over the
+# old — needs dir-write on the group-writable 2775 dir, not file-write), and the
+# reader needs only group-read.
 SECRET_FILE = os.environ.get(
     "JASPER_HOUSEHOLD_SECRET_FILE", "/var/lib/jasper/household_secret"
 )
@@ -101,14 +113,15 @@ def ensure() -> str:
 
     Minted by the LEADER at the pairing moment (``rooms_setup._save_bond``) —
     NOT at install or daemon startup. Idempotent and atomic (tempfile +
-    ``os.replace`` at mode 0600): an existing secret is returned unchanged, so
-    re-bonding the same household reuses it.
+    ``os.replace`` at mode 0640, group jasper via the setgid dir — see the
+    SECRET_FILE note): an existing secret is returned unchanged, so re-bonding
+    the same household reuses it.
     """
     existing = _stored_secret()
     if existing:
         return existing
     secret = secrets.token_urlsafe(32)
-    atomic_write_text(SECRET_FILE, secret + "\n", mode=0o600)
+    atomic_write_text(SECRET_FILE, secret + "\n", mode=0o640)
     return secret
 
 
@@ -131,7 +144,9 @@ def adopt(secret: str | None) -> bool:
         return False
     if _stored_secret():
         return False
-    atomic_write_text(SECRET_FILE, secret + "\n", mode=0o600)
+    # 0640 group jasper (see the SECRET_FILE note): a follower's jasper-control
+    # writes it here, the leader's jasper-web reads it on a later re-bond.
+    atomic_write_text(SECRET_FILE, secret + "\n", mode=0o640)
     return True
 
 
