@@ -9,6 +9,8 @@ high-pass, per-driver limiters) is preserved.
 """
 from __future__ import annotations
 
+import stat
+
 import pytest
 import yaml as yaml_lib
 
@@ -162,3 +164,23 @@ def test_commissioning_config_classifies_as_active_startup_candidate():
         result = classify_camilla_config_text(out)
         assert result["classification"] == "active_startup_candidate"
         assert result["volume_limit_ok"] is True
+
+
+def test_commissioning_config_file_is_group_readable(tmp_path):
+    """The web commissioning route must read the staged rollback/candidate YAML.
+
+    A 0600 file works from the sudo CLI but wedges jasper-web with
+    ``startup_config_unreadable`` before it can arm a driver.
+    """
+
+    preset = _preset(_two_way_preset("mono"))
+    out_path = tmp_path / "active_speaker_commissioning.yml"
+    emit_active_speaker_commissioning_config(
+        preset,
+        playback_device=ACTIVE_PCM,
+        audible_outputs={0},
+        out_path=out_path,
+    )
+
+    mode = stat.S_IMODE(out_path.stat().st_mode)
+    assert mode == 0o640
