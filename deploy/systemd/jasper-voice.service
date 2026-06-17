@@ -54,17 +54,25 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # spotify_play tool then short-circuits to a "visit
 # JASPER_SPOTIFY_SETUP_URL" error which Gemini speaks).
 EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
-# Voice provider keys (GEMINI / OPENAI / XAI) and active-provider
-# selection written by the wizard at https://jts.local/voice.
-# Sourced AFTER /etc/jasper/jasper.env so wizard-written values
-# override operator-managed defaults — same pattern as the
-# Spotify creds file above. Optional via the leading `-`.
+# Voice provider SELECTION (JASPER_VOICE_PROVIDER + per-provider model /
+# voice) written by the wizard at https://jts.local/voice. Sourced AFTER
+# /etc/jasper/jasper.env so wizard-written values override operator
+# defaults. Optional via the leading `-`. The API keys themselves are
+# NOT here anymore — see voice_keys.env below (WS1 Phase 4a split).
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
+# WS1 Phase 4a — the GEMINI / OPENAI / XAI API keys, split out of
+# voice_provider.env into the group-`jasper-secrets` dir so only
+# jasper-voice + jasper-web can read them (mux/control/input cannot).
+# Readable because this unit joins the jasper-secrets supplementary
+# group (below). Optional via the leading `-`.
+EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # Google OAuth client ID/SECRET written by the wizard at
 # http://jts.local/google. Calendar + Gmail tools register only
 # when this file's CLIENT_ID/SECRET are set AND at least one
 # household member has linked an account. Optional via leading `-`.
-EnvironmentFile=-/var/lib/jasper/google_credentials.env
+# WS1 Phase 4a — moved into the group-`jasper-secrets` dir alongside
+# the OAuth token tree (/var/lib/jasper-secrets/google/).
+EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
 # Wake-word selection (JASPER_WAKE_MODEL) written by the picker at
 # http://jts.local/wake/, or seeded by install.sh on a fresh install
 # to point at /var/lib/jasper/wake/jarvis_v2.onnx. Sourced AFTER
@@ -162,7 +170,11 @@ RestartSec=5
 # enforce). docs/HANDOFF-privilege-separation.md.
 User=jasper-voice
 Group=jasper
-SupplementaryGroups=audio
+# WS1 Phase 4a — `jasper-secrets` (supplementary) grants read of the
+# split-out LLM API keys + Google client secret/token tree in
+# /var/lib/jasper-secrets (which mux/control/input are NOT in). `audio`
+# covers ALSA. docs/HANDOFF-privilege-separation.md "Phase 4".
+SupplementaryGroups=audio jasper-secrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 StateDirectory=jasper
@@ -194,6 +206,13 @@ ProtectSystem=strict
 ProtectHome=tmpfs
 PrivateTmp=true
 NoNewPrivileges=true
+# WS1 Phase 4a — jasper-voice only READS /var/lib/jasper-secrets (the LLM keys
+# arrive via EnvironmentFile, which systemd reads as root before the drop; the
+# Google token tree is read off disk via the jasper-secrets group). It never
+# WRITES there — the OAuth save_token / registry.save paths live in jasper-web +
+# the operator CLI, not the daemon. ProtectSystem=strict still allows reads, so
+# the dir is deliberately NOT in ReadWritePaths: least privilege, and no hard
+# dependency on a non-StateDirectory path for the most critical daemon.
 ReadWritePaths=/var/lib/jasper
 ProtectKernelTunables=true
 ProtectKernelModules=true

@@ -179,15 +179,27 @@ def _read_gemini_api_key() -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     if api_key:
         return api_key
-    env_path = Path("/etc/jasper/jasper.env")
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
+    # WS1 Phase 4a — the key moved out of jasper.env into the
+    # group-`jasper-secrets` voice_keys.env. Check both (run as root on the Pi);
+    # a permission/read error on one file falls through to the next.
+    for env_path in (
+        Path("/var/lib/jasper-secrets/voice_keys.env"),
+        Path("/etc/jasper/jasper.env"),
+    ):
+        try:
+            text = env_path.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
             line = line.strip()
             if line.startswith("GEMINI_API_KEY="):
                 v = line.split("=", 1)[1].strip().strip('"').strip("'")
                 if v:
                     return v
-    sys.exit("GEMINI_API_KEY not set (env or /etc/jasper/jasper.env)")
+    sys.exit(
+        "GEMINI_API_KEY not set (env, "
+        "/var/lib/jasper-secrets/voice_keys.env, or /etc/jasper/jasper.env)"
+    )
 
 
 def _gemini_tts(client, text: str, voice: str) -> bytes:

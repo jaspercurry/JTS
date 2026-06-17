@@ -193,6 +193,9 @@ class _FakeHandler:
 def _handler_cls(tmp_path):
     return voice_setup._make_handler({
         "state_path": str(tmp_path / "voice.env"),
+        # WS1 Phase 4a — the split-out keys file (mirrors make_server's cfg);
+        # point it at the tempdir so handlers never touch /var/lib/jasper-secrets.
+        "keys_path": str(tmp_path / "voice_keys.env"),
         "discovery_cache_path": str(tmp_path / "discovery.json"),
         "discovery_http_client": None,
         "pricing_path": str(tmp_path / "pricing.json"),

@@ -28,6 +28,136 @@ ensure_state_dir() {
     fi
 }
 
+# WS1 Phase 4a — the group-`jasper-secrets` secret compartment (LLM API keys +
+# Google client secret + OAuth token tree), narrowed to jasper-voice +
+# jasper-web. A SIBLING of STATE_DIR on purpose: STATE_DIR is voice/mux's
+# StateDirectory, whose recursive chown forces its contents' group back to
+# `jasper` — which would re-expose these secrets to every jasper daemon. Installs
+# the boot self-heal tmpfiles and creates the parent dir for an immediate
+# (no-reboot) deploy. Idempotent; no-op before the group exists.
+ensure_secrets_dir() {
+    getent group jasper-secrets >/dev/null 2>&1 || return 0
+    if [[ -f "${REPO_DIR}/deploy/tmpfiles/jts-secrets.conf" ]]; then
+        install -m 0644 "${REPO_DIR}/deploy/tmpfiles/jts-secrets.conf" \
+            /etc/tmpfiles.d/ 2>/dev/null || true
+    fi
+    # 2770 setgid: voice+web (group jasper-secrets) rwx; other daemons none;
+    # setgid → new files inherit group jasper-secrets. Owner root = rollback-safe.
+    install -d -m 2770 -g jasper-secrets "${SECRETS_DIR}"
+}
+
+# WS1 Phase 4a — move the high-value secrets OUT of the broad /var/lib/jasper
+# StateDirectory into the jasper-secrets compartment. Guarded + idempotent: each
+# move runs only when the old path exists and the new one does not, so a re-run
+# (or a fresh install) is a no-op. mv on the same filesystem is an atomic rename
+# — no token loss. See docs/HANDOFF-privilege-separation.md "Phase 4".
+migrate_secrets_phase4a() {
+    getent group jasper-secrets >/dev/null 2>&1 || return 0
+    ensure_secrets_dir
+
+    local old_google="${STATE_DIR}/google"
+    local new_google="${SECRETS_DIR}/google"
+    if [[ -d "${old_google}" && ! -e "${new_google}" ]]; then
+        mv "${old_google}" "${new_google}"
+        # accounts.json bakes ABSOLUTE token_path values; rewrite the prefix so
+        # google_creds.load_credentials() finds the moved per-account tokens.
+        if [[ -f "${new_google}/accounts.json" ]]; then
+            sed -i.bak "s#${STATE_DIR}/google/#${SECRETS_DIR}/google/#g" \
+                "${new_google}/accounts.json"
+            rm -f "${new_google}/accounts.json.bak"
+        fi
+        echo "  migrate_secrets_phase4a: moved Google token tree -> ${new_google}"
+    fi
+
+    local old_creds="${STATE_DIR}/google_credentials.env"
+    local new_creds="${SECRETS_DIR}/google_credentials.env"
+    if [[ -f "${old_creds}" && ! -e "${new_creds}" ]]; then
+        mv "${old_creds}" "${new_creds}"
+        echo "  migrate_secrets_phase4a: moved google_credentials.env -> ${SECRETS_DIR}"
+    fi
+
+    # (Re-)assert the tree layout + perms at the new location. mv preserves the
+    # moved files' OLD owner:group (jasper-voice:jasper from the StateDirectory)
+    # — setgid only affects NEW files — so an explicit recursive chown to
+    # root:jasper-secrets is required (owner root = rollback-safe + matches the
+    # tmpfiles spec; group-read is the access path). install -d is idempotent
+    # (fresh install: just creates the subdirs).
+    install -d -m 2770 -g jasper-secrets "${new_google}" "${new_google}/tokens"
+    chown -R root:jasper-secrets "${SECRETS_DIR}" 2>/dev/null || true
+    chmod 0640 "${new_creds}" 2>/dev/null || true
+    chmod 0640 "${new_google}/accounts.json" 2>/dev/null || true
+    find "${new_google}/tokens" -type f -name '*.json' \
+        -exec chmod 0640 {} + 2>/dev/null || true
+
+    migrate_voice_keys_split
+
+    # Reconcile against the tmpfiles spec (also surfaces a syntax error early).
+    systemd-tmpfiles --create --prefix="${SECRETS_DIR}" 2>/dev/null || true
+}
+
+# WS1 Phase 4a — split the three provider API keys out of the broad
+# voice_provider.env (and any operator seed in /etc/jasper/jasper.env) into the
+# group-jasper-secrets voice_keys.env. The non-secret JASPER_VOICE_PROVIDER +
+# per-provider model/voice selectors stay in voice_provider.env so jasper-control
+# keeps reading the active provider for /system/. Safe: never strips a key from
+# the broad files until its value is confirmed written to voice_keys.env.
+migrate_voice_keys_split() {
+    getent group jasper-secrets >/dev/null 2>&1 || return 0
+    local provider_env="${STATE_DIR}/voice_provider.env"
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local keys_env="${SECRETS_DIR}/voice_keys.env"
+    local key line val moved=0
+
+    for key in GEMINI_API_KEY OPENAI_API_KEY XAI_API_KEY; do
+        # Already split out (e.g. the wizard wrote it post-4a)? Just clean any
+        # stale copy left on the broad files.
+        if [[ -f "${keys_env}" ]] && grep -qE "^${key}=" "${keys_env}"; then
+            _strip_key_from_broad "${key}" "${provider_env}" "${jasper_env}"
+            continue
+        fi
+        # Find the value: wizard file first, then operator seed in jasper.env.
+        val=""
+        if [[ -f "${provider_env}" ]]; then
+            line=$(grep -E "^${key}=" "${provider_env}" || true)
+            val="${line#"${key}"=}"
+        fi
+        if [[ -z "${val}" && -f "${jasper_env}" ]]; then
+            line=$(grep -E "^${key}=" "${jasper_env}" || true)
+            val="${line#"${key}"=}"
+        fi
+        val="${val%[$'\r\n ']*}"
+        [[ -z "${val}" ]] && continue
+        # Write to the secret file, then verify before stripping the source.
+        touch "${keys_env}"
+        chgrp jasper-secrets "${keys_env}" 2>/dev/null || true
+        chmod 0640 "${keys_env}"
+        printf '%s=%s\n' "${key}" "${val}" >> "${keys_env}"
+        if grep -qE "^${key}=" "${keys_env}"; then
+            _strip_key_from_broad "${key}" "${provider_env}" "${jasper_env}"
+            moved=1
+        fi
+    done
+    # NOTE: `if/then/fi`, NOT `[[ ... ]] && echo` — the latter returns the test's
+    # exit status (1 when moved=0, the common re-deploy case), which under
+    # install.sh's `set -e` would abort the whole install on every run after the
+    # first migration. The function must end on a clean (zero) status.
+    if [[ "${moved}" == "1" ]]; then
+        echo "  migrate_voice_keys_split: provider API keys -> ${keys_env}"
+    fi
+}
+
+_strip_key_from_broad() {
+    local key="$1" provider_env="$2" jasper_env="$3"
+    if [[ -f "${provider_env}" ]]; then
+        sed -i.bak "/^${key}=/d" "${provider_env}"
+        rm -f "${provider_env}.bak"
+    fi
+    if [[ -f "${jasper_env}" ]]; then
+        sed -i.bak "/^${key}=/d" "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+    fi
+}
+
 render_voice_provider_ids_manifest() {
     local provider_ids_file="${STATE_DIR}/voice_provider_ids"
     local python_bin="${JASPER_INSTALL_PYTHON:-${INSTALL_DIR}/.venv/bin/python}"
@@ -801,8 +931,14 @@ widen_control_secret_env_modes() {
     # (only the SSID, which it derives from nmcli/the journal), so it stays
     # owner-only 0600. Least privilege over blanket widening. See
     # docs/HANDOFF-privilege-separation.md.
+    #
+    # WS1 Phase 4a — google_credentials.env is NO LONGER widened here: it moved
+    # to the group-`jasper-secrets` compartment (voice+web only). jasper-control
+    # does not read it (the root /system/diagnostics jasper-doctor does, as
+    # root). migrate_secrets_phase4a owns its perms now. voice_provider.env stays
+    # (now keyless; control reads the provider name for /system/).
     local f
-    for f in voice_provider.env spotify_credentials.env google_credentials.env \
+    for f in voice_provider.env spotify_credentials.env \
              home_assistant.env control_token \
              sound_profile.json sound_settings.json; do
         if [[ -f "${STATE_DIR}/${f}" ]]; then

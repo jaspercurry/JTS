@@ -649,6 +649,9 @@ def _start_server(
     server = voice_setup.make_server(
         ("127.0.0.1", 0),
         state_path=state_path,
+        # WS1 Phase 4a — point the split-out keys file at the tempdir too, so the
+        # e2e save/clear paths never touch the real /var/lib/jasper-secrets.
+        keys_path=str(tmp_path / "voice_keys.env"),
         discovery_cache_path=str(tmp_path / "voice_model_discovery.json"),
         discovery_http_client=discovery_http_client,
         pricing_path=str(tmp_path / "pricing.json"),
@@ -766,8 +769,12 @@ def test_e2e_save_writes_file_and_redirects(
         assert state_path.exists()
         assert (os.stat(state_path).st_mode & 0o777) == 0o640
         loaded = voice_setup._load_state(str(state_path))
-        assert loaded["OPENAI_API_KEY"] == "sk-fresh"
         assert loaded["JASPER_VOICE_PROVIDER"] == "openai"
+        # WS1 Phase 4a — the API key is SPLIT OUT into voice_keys.env; the broad
+        # voice_provider.env must NOT carry it.
+        assert "OPENAI_API_KEY" not in loaded
+        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        assert keys["OPENAI_API_KEY"] == "sk-fresh"
         # Restart was invoked.
         assert called == [True]
     finally:
@@ -796,7 +803,11 @@ def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
         assert status == 303
         assert "Saved spend cap" in urllib.parse.unquote(location)
         loaded = voice_setup._load_state(str(state_path))
-        assert loaded["OPENAI_API_KEY"] == "sk-keep"
+        # WS1 Phase 4a — the key is preserved across a spend-cap save, but lives
+        # in the split-out keys file, not the broad voice_provider.env.
+        assert "OPENAI_API_KEY" not in loaded
+        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        assert keys["OPENAI_API_KEY"] == "sk-keep"
         assert loaded["JASPER_DAILY_SPEND_CAP_USD"] == "5.00"
         assert loaded["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] == "1.1"
         assert called == [True]
@@ -886,8 +897,10 @@ def test_e2e_save_and_test_runs_one_bounded_loudness_seed(
         assert "sk-fresh" not in urllib.parse.unquote(location)
 
         state = voice_setup._load_state(str(tmp_path / "voice_provider.env"))
-        assert state["OPENAI_API_KEY"] == "sk-fresh"
         assert state["JASPER_VOICE_PROVIDER"] == "openai"
+        assert "OPENAI_API_KEY" not in state  # split into voice_keys.env (4a)
+        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        assert keys["OPENAI_API_KEY"] == "sk-fresh"
         assert events == [
             (
                 "seed",
@@ -929,7 +942,9 @@ def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
         assert "sk-s" in flash and "9999" in flash
 
         state = voice_setup._load_state(str(tmp_path / "voice_provider.env"))
-        assert state["OPENAI_API_KEY"] == "sk-secret-tail9999"
+        assert "OPENAI_API_KEY" not in state  # split into voice_keys.env (4a)
+        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        assert keys["OPENAI_API_KEY"] == "sk-secret-tail9999"
         assert restarted == [True]
     finally:
         server.shutdown()
@@ -1028,9 +1043,12 @@ def test_e2e_clear_credentials_removes_provider_keys(
         assert status == 303
         assert "Cleared" in urllib.parse.unquote(location)
         loaded = voice_setup._load_state(str(state_path))
-        assert "OPENAI_API_KEY" not in loaded
+        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        # WS1 Phase 4a — OPENAI creds gone from BOTH files; the kept GEMINI key
+        # lives in the split-out keys file; the non-secret model stays broad.
+        assert "OPENAI_API_KEY" not in loaded and "OPENAI_API_KEY" not in keys
         assert "JASPER_OPENAI_MODEL" not in loaded
-        assert loaded["GEMINI_API_KEY"] == "AIza-keep"
+        assert keys["GEMINI_API_KEY"] == "AIza-keep"
     finally:
         server.shutdown()
         server.server_close()

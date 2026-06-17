@@ -20,7 +20,13 @@ def test_sound_wizard_is_socket_nginx_and_web_wired():
     assert "JASPER_SOUND_WEB_PORT" in web_main
     assert "sound_setup.make_server" in web_main
     assert "/sound/" in landing
-    assert "ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs" in service
+    # The /sound/ EQ editor writes CamillaDSP configs, so jasper-web's
+    # ReadWritePaths must cover that dir. (Order-robust: WS1 Phase 4a inserted
+    # /var/lib/jasper-secrets into this list.)
+    rwpaths = next(
+        ln for ln in service.splitlines() if ln.startswith("ReadWritePaths=")
+    )
+    assert "/var/lib/jasper" in rwpaths and "/var/lib/camilladsp/configs" in rwpaths
 
 
 def test_sound_setup_import_keeps_numpy_out_of_cold_start():

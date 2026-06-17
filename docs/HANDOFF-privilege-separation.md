@@ -3,8 +3,12 @@
 > **Status: current-state reference + approved phased plan.** Phases 1, 2,
 > 3a, and the full 3b Tier-A user drop (3b-1 voice/mux/input, 3b-2 control,
 > 3b-3 web) have landed and are validated on hardware — **all five Tier-A
-> daemons now run non-root.** Phase 4 (secret credentialization) and the
-> Tier-B reconciler drop remain designed, not yet built. This doc is the
+> daemons now run non-root.** Phase 4a (secret compartmentalization, Group A:
+> the LLM API keys + Google moved to a `jasper-secrets` compartment readable
+> only by voice+web) has landed; Phase 4b (Group B: HA + Spotify) and the
+> Tier-B reconciler drop remain designed, not yet built. The Phase 4 mechanism
+> was revised from the original `LoadCredential`/`systemd-creds` sketch to
+> group compartments after a hardware probe (see Phase 4). This doc is the
 > threat-model + ADR for the work; update it as each phase lands.
 
 How JTS contains a compromise of its always-on daemons, and the staged plan
@@ -449,13 +453,124 @@ directly, not the broker) are now polkit-authorized — noted in the
 `HANDOFF-resilience.md` Tier-3 / system-supervisor sections and the
 `HANDOFF-observability.md` debug-restart note.
 
-## Phase 4 — secret credentialization (DESIGNED)
+## Phase 4 — secret compartmentalization (4a LANDED; 4b designed)
 
-`LoadCredential=` + `systemd-creds encrypt` for the provider keys. JTS-specific
-cost: secrets are read as env vars via `EnvironmentFile`, written by wizards at
-runtime, so this is a `jasper/config.py` change (read `$CREDENTIALS_DIRECTORY`
-for the ~8 secret fields) + a wizard-write-path change + the unit edit — a
-contained refactor, not a one-liner. Cheap interim wins already covered by
-Phase 1: per-daemon `EnvironmentFile` least-privilege and `ProtectHome=tmpfs`.
+Closes the documented group-secret-exposure ACCEPT carried by 3b: the secret env
+files + the Google/Spotify token trees were `0640` group `jasper`, readable by
+ALL five jasper daemons. Phase 4 narrows each secret to only the daemons that use
+it.
 
-Last verified: 2026-06-16
+### Mechanism — group compartments, NOT LoadCredential/systemd-creds
+
+The original sketch (`LoadCredential=` + `systemd-creds encrypt`) was revised
+after probing the mechanism on jts.local (systemd 257). Three JTS realities make
+it the wrong fit:
+
+1. **Secrets are written at runtime by a non-root wizard** (jasper-web).
+   `systemd-creds encrypt` needs the host key
+   (`/var/lib/systemd/credential.secret`, `0600 root`) or a TPM; the Pi 5 has
+   **no usable TPM** (`systemd-analyze has-tpm2` = partial, no driver/firmware),
+   so encryption falls back to a host-key file *on the same SD card* as the
+   ciphertext — near-worthless against the only at-rest threat (card theft), and
+   a non-root wizard can't encrypt at all without a new privileged broker (the
+   opposite of WS1's goal).
+2. **Cross-daemon fresh reads.** jasper-control reads `home_assistant.env` (HA
+   token) and `voice_provider.env` (provider name) *fresh on every /state*
+   because it is not restarted on a wizard save. `LoadCredential` loads once at
+   unit start → would go stale or force extra restarts.
+3. **Mutable off-disk token trees** (Google, Spotify) are read+written by 2–4
+   daemons → `LoadCredential` can't model them; they need group/ACL anyway.
+
+And the isolation `LoadCredential`'s per-unit injection would add (even from a
+same-user compromise) does not materialize here: jasper-voice + jasper-web both
+legitimately need ~every secret (voice uses them; web writes + renders them), so
+the two daemons that matter can't be isolated from each other by *any* mechanism.
+Group compartments deliver the realizable exclusion (mux/control/input lose
+access to secrets they don't use) at a fraction of the brick risk, preserve the
+fresh reads, and cover the token trees uniformly. Plaintext on disk — the threat
+model (trusted LAN; the structural gap was *root* RCE, closed by the 3b drop)
+does not call for at-rest encryption, and no-TPM host-key encryption wouldn't
+deliver it anyway.
+
+**The StateDirectory constraint (why secrets must relocate).** Both jasper-voice
+and jasper-mux declare `StateDirectory=jasper`, and systemd **recursively chowns
+`/var/lib/jasper` to the unit's `User:Group` whenever the top-level owner doesn't
+match** — so every file there is forced to group `jasper`, owner flip-flopping
+between voice and mux. A dedicated secret group therefore **cannot** be applied
+to files under `/var/lib/jasper` (verified on hardware: a file chgrp'd to a test
+group reverted to `jasper` on the next mux start). The secrets must live in
+**sibling directories** outside the StateDirectory, created by `install.sh` + a
+`tmpfiles.d` rule (which *can* set an arbitrary group, unlike StateDirectory).
+
+### Two compartments
+
+| Dir (group; mode 2770 setgid) | Members | Holds |
+|---|---|---|
+| `/var/lib/jasper-secrets/` (`jasper-secrets`) | voice, web | `voice_keys.env` (the 3 LLM API keys, split out of `voice_provider.env`), `google_credentials.env`, the `google/` OAuth token tree |
+| `/var/lib/jasper-intsecrets/` (`jasper-intsecrets`) — **Phase 4b** | voice, control, mux, web | `home_assistant.env`, `spotify_credentials.env`, the Spotify token cache |
+
+`2770` setgid: members rwx (read/write/traverse), non-members get nothing
+(stronger than the old group-read — they can't even traverse); setgid → token
+files written at runtime inherit the compartment group. `voice_provider.env` (now
+keyless: provider + model/voice) and `transit.env` (the low-value MTA key) stay
+in `/var/lib/jasper` group `jasper`, because jasper-control reads them fresh for
+`/system/` and `/state.transit` and the MTA key is not worth a split.
+
+### Phase 4a — Group A (LANDED): LLM keys + Google
+
+- New `jasper-secrets` group ([`service-users.sh`](../deploy/lib/install/service-users.sh)),
+  members jasper-voice + jasper-web (a `SupplementaryGroups=` on each unit).
+- `/var/lib/jasper-secrets/` created by `install.sh` (`ensure_secrets_dir`) +
+  [`deploy/tmpfiles/jts-secrets.conf`](../deploy/tmpfiles/jts-secrets.conf)
+  (boot self-heal — `tmpfiles.d` can set the `jasper-secrets` group, which
+  `StateDirectory` cannot).
+- The 3 provider API keys are **split** out of `voice_provider.env` into
+  `voice_keys.env` (`KEYS_FILE` in
+  [`jasper/voice/provider_state.py`](../jasper/voice/provider_state.py)); the
+  `/voice` wizard writes both via one `_write_split` helper, and `provider_state`
+  + jasper-control keep reading the keyless `voice_provider.env` for the active
+  provider. `config.py` is unchanged for the keys (still read via
+  `EnvironmentFile`); only the Google path defaults move.
+- `migrate_secrets_phase4a` (install) does a guarded **atomic `mv`** of the
+  `google/` tree + `google_credentials.env` out of `/var/lib/jasper` (rewriting
+  the absolute `token_path`s baked into `accounts.json`), re-groups them to
+  `jasper-secrets`, and splits the keys out of `voice_provider.env` +
+  `jasper.env`. Idempotent; never strips a key from the broad files until it is
+  confirmed written to `voice_keys.env`.
+- Result: jasper-mux/-control/-input lose the LLM API keys + the Gmail/Calendar
+  refresh tokens (the monetizable + identity-grade secrets); only voice + web
+  read them.
+
+Pinned by `tests/test_systemd_hardening.py` (`test_secrets_compartment_phase4a`
+— group created, voice+web source the secret files + can write the compartment,
+mux/control/input do NOT), `tests/test_google_creds.py`
+(`test_install_creates_google_dir_setgid` → 2770 group jasper-secrets),
+`tests/test_voice_setup.py` (the split: keys land in `voice_keys.env`, never the
+broad file), and `tests/test_secret_env_modes.py` (google_credentials.env no
+longer in the broad widen set).
+
+**Validated on hardware (jts.local, build 249a8f2a):** the install migration
+moved the live Google tree (1 linked account) — `accounts.json`'s baked
+`token_path` was rewritten and the token file was preserved byte-for-byte (mtime
+unchanged) — and split the 3 API keys into `voice_keys.env`; the old
+`/var/lib/jasper/google*` paths are gone and `voice_provider.env` is keyless
+(group `jasper`, so control still reads the active provider). Compartment is
+`2770 root:jasper-secrets`, files `0640`. Runtime: `systemd-analyze security`
+**jasper-voice 2.3 OK / jasper-web 2.5 OK** (unchanged), `NRestarts=0`;
+jasper-voice connected to OpenAI (key via `EnvironmentFile`) and logged
+`google: 1 account(s) linked` (Google tree read via the group **with no
+`ReadWritePaths` grant** — voice only reads); jasper-web rendered `/voice/` +
+`/google/` 200; control `/state` shows `provider=openai`. **Exclusion confirmed:**
+jasper-mux/-control/-input each get `Permission denied`; all-surfaces journal
+audit **zero permission-denied**. A **second deploy** (the idempotent re-run,
+`moved=0`) completed cleanly — confirming the migration's `set -e` safety.
+
+### Phase 4b — Group B (designed): HA + Spotify
+
+Same shape for `/var/lib/jasper-intsecrets/` {voice, control, mux, web}:
+relocate `home_assistant.env`, `spotify_credentials.env`, and the Spotify token
+cache/tree. control + mux genuinely use these (the `/state` HA card, the Spotify
+Web API volume/transport router), so the compartment includes them; only
+jasper-input is excluded.
+
+Last verified: 2026-06-17

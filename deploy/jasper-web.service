@@ -30,11 +30,18 @@ EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # Optional file written by the voice-provider wizard at
 # /voice/. Same override pattern: wizard values beat operator
 # defaults. Sourced here so the wizard's process can render the
-# current state correctly even on cold boot.
+# current state correctly even on cold boot. WS1 Phase 4a: this holds
+# only the non-secret selectors now; the API keys are in voice_keys.env.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
+# WS1 Phase 4a — the GEMINI/OPENAI/XAI API keys (group `jasper-secrets`).
+# The /voice/ wizard writes + renders them; jasper-web joins the
+# jasper-secrets group (below) so it can read/replace this file. systemd
+# itself reads EnvironmentFile= as root, so sourcing it always works.
+EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # Optional file written by the Google wizard at /google/ — holds
 # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Same override pattern.
-EnvironmentFile=-/var/lib/jasper/google_credentials.env
+# WS1 Phase 4a — moved into the group-`jasper-secrets` dir.
+EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
 # Optional file written by the wake-word picker at /wake/ — holds
 # JASPER_WAKE_MODEL pointing at either a bundled openWakeWord name
 # or an absolute path under /var/lib/jasper/wake/. The wizard reads
@@ -106,7 +113,11 @@ RestartSec=2
 # (below) for the same diagnostic-subprocess caution as jasper-control.
 User=jasper-web
 Group=jasper
-SupplementaryGroups=bluetooth systemd-journal
+# WS1 Phase 4a — `jasper-secrets` (supplementary) lets the wizards write
+# + read the split-out LLM keys, Google client secret, and Google OAuth
+# token tree in /var/lib/jasper-secrets. `bluetooth` (BlueZ Alias),
+# `systemd-journal` (journalctl -k). docs/HANDOFF-privilege-separation.md.
+SupplementaryGroups=bluetooth systemd-journal jasper-secrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 
@@ -125,7 +136,10 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
+# /var/lib/jasper-secrets (WS1 Phase 4a) is writable so the /voice +
+# /google wizards can atomically replace the secret files + write OAuth
+# tokens there (setgid dir → group `jasper-secrets`).
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
 # WS1 phase-1 hardening (docs/HANDOFF-privilege-separation.md): jasper-web gets
 # the full phase-1 stanza. ProtectKernelLogs is OMITTED — the wizards shell to
 # nmcli / journalctl -k for Wi-Fi diagnostics and must not be starved of kernel-

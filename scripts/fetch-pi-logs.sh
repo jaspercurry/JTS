@@ -208,7 +208,8 @@ REMOTE
 remote "sudo sh -c 'for f in \
         /etc/jasper/jasper.env \
         /var/lib/jasper/voice_provider.env \
-        /var/lib/jasper/google_credentials.env \
+        /var/lib/jasper-secrets/voice_keys.env \
+        /var/lib/jasper-secrets/google_credentials.env \
         /var/lib/jasper/home_assistant.env \
         /var/lib/jasper/transit.env \
         /var/lib/jasper/wifi_guardian.env; do \
