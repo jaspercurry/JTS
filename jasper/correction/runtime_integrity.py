@@ -82,32 +82,6 @@ def _read_meminfo_mb() -> dict[str, int] | None:
     }
 
 
-def _read_proc_status() -> dict[str, int] | None:
-    path = Path("/proc/self/status")
-    if not path.exists():
-        return None
-    out: dict[str, int] = {}
-    try:
-        for line in path.read_text().splitlines():
-            key, _, rest = line.partition(":")
-            if key not in {"VmRSS", "Threads"}:
-                continue
-            parts = rest.split()
-            if not parts:
-                continue
-            try:
-                value = int(parts[0])
-            except ValueError:
-                continue
-            if key == "VmRSS":
-                out["process_rss_mb"] = value // 1024
-            elif key == "Threads":
-                out["process_threads"] = value
-    except OSError:
-        return None
-    return out or None
-
-
 def _read_fanin_status(
     socket_path: str = FANIN_CONTROL_SOCKET,
     timeout_sec: float = FANIN_STATUS_TIMEOUT_SEC,
@@ -174,7 +148,6 @@ def _system_snapshot(
     cpu_count = os.cpu_count() or 1
     load_1m = _read_loadavg_1m()
     mem = _read_meminfo_mb() or {}
-    proc = _read_proc_status() or {}
     fanin = _fanin_summary(_read_fanin_status())
     snapshot: dict[str, Any] = {
         "label": label,
@@ -191,8 +164,6 @@ def _system_snapshot(
     }
     if mem:
         snapshot["memory"] = mem
-    if proc:
-        snapshot["process"] = proc
     if fanin:
         snapshot["fanin"] = fanin
     if isinstance(camilla_status, dict):

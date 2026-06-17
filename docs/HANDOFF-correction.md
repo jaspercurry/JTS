@@ -174,7 +174,7 @@
   include `artifact_manifest.json` with checksums, kinds, schemas,
   provenance, dependencies, sensitivity, and recomputability flags for
   raw captures and derived artifacts. They also write
-  `runtime_integrity.json`: system load/memory/process snapshots,
+  `runtime_integrity.json`: system load/memory snapshots,
   capture sample-count sanity, fan-in xrun deltas, and CamillaDSP
   runtime counters around each sweep/verify pass. Runtime warnings and
   failures feed the same confidence report and bundle validator.
