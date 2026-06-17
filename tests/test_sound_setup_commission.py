@@ -173,3 +173,50 @@ def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):
     assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
         encoding="utf-8"
     )
+
+
+def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):
+    """Arming must repair a tweeter that drifted to ``required_missing``.
+
+    The old "Test each driver" card re-synced the software-guard request on every
+    driver-choice via prepare-driver-test; the #780 commission-card fold removed
+    that path, so the live topology could drift away from the staged config with
+    no UI repair and the arm blocked forever (the jts3 "speaker isn't fully set
+    up for driver tests yet" wedge). Commission-load now re-requests the missing
+    software guards, mirroring prepare-driver-test.
+    """
+    from jasper.output_topology import set_channel_protection_status
+
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+
+    # Drift the tweeter to required_missing (the live jts3 state).
+    drifted = set_channel_protection_status(
+        _topology(),
+        speaker_group_id="mono",
+        role="tweeter",
+        protection_status="required_missing",
+    )
+    live = {"topology": drifted}
+    monkeypatch.setattr(
+        sound_setup, "load_output_topology", lambda path=None: live["topology"]
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "save_output_topology",
+        lambda topology: live.__setitem__("topology", topology),
+    )
+
+    asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+
+    tweeter = next(
+        channel
+        for group in live["topology"].speaker_groups
+        for channel in group.channels
+        if channel.role == "tweeter"
+    )
+    assert tweeter.protection_status == "software_guard_requested"

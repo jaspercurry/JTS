@@ -2079,7 +2079,24 @@ async def _active_speaker_commission_load_payload(
             ),
         }
 
-    topology = load_output_topology()
+    # Re-sync the live topology's protection state before staging the per-driver
+    # candidate. An active commission requires every protection-required channel
+    # (e.g. a compression-driver tweeter) to carry its software-guard request; the
+    # old "Test each driver" card recorded this on driver-choice via
+    # prepare-driver-test, but the commission card replaced that path (#780), so
+    # the live topology can drift to required_missing with no UI repair — the arm
+    # then blocks forever. Mirror prepare-driver-test so arming repairs the drift.
+    # The actual high-pass is still enforced by the protection-while-audible gate.
+    topology, guards_changed = _active_speaker_request_missing_software_guards(
+        load_output_topology()
+    )
+    if guards_changed:
+        logger.info(
+            "event=sound.active_speaker_commission action=request_software_guards "
+            "group=%s role=%s",
+            group,
+            role,
+        )
     staged = load_staged_startup_config()
     preset, crossover_preview = resolve_commission_inputs()
     cam = camilla_factory()
