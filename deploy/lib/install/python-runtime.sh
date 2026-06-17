@@ -38,6 +38,23 @@ install_jasper() {
         install -d -m 0700 "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
     fi
 
+    # WS1 Phase 3b: the Spotify OAuth token cache (one JSON per linked account,
+    # written by jasper-voice via spotipy) must be group-`jasper` READABLE so the
+    # now-non-root jasper-control (/transport title-match router) + jasper-web
+    # (/spotify wizard status) can read it — otherwise they log "Couldn't read
+    # cache" on every poll and report linked accounts as needs-relink. spotipy
+    # writes 0600 owner-only; jasper.accounts.build_cache_handler now re-chmods
+    # NEW writes to 0640, but widen any PRE-EXISTING cache here so already-linked
+    # households converge on this deploy rather than on the next token refresh.
+    # 2750 setgid mirrors the Google tree above (filenames are PII-adjacent —
+    # they name which household members linked). Per-daemon isolation is Phase 4.
+    if getent group jasper >/dev/null 2>&1; then
+        install -d -m 2750 -g jasper "${STATE_DIR}/spotify" "${STATE_DIR}/spotify/caches"
+        chmod 0640 "${STATE_DIR}/spotify/accounts.json" 2>/dev/null || true
+        find "${STATE_DIR}/spotify/caches" -type f -name '*.json' \
+            -exec chmod 0640 {} + 2>/dev/null || true
+    fi
+
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \

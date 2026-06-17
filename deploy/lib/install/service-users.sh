@@ -59,17 +59,24 @@ create_jasper_service_users() {
     # rename — a D-Bus policy grant) and `systemd-journal` (journalctl -k for
     # Wi-Fi scan-suppression diagnostics). No netdev (polkit is authoritative on
     # modern NM), no CAP_NET_ADMIN (scan-repair degrades fail-soft).
+    # systemd-journal is always present (systemd owns it), so it is safe in the
+    # useradd -G. bluetooth is NOT: it is created by the bluez package, which
+    # install_deps apt-installs AFTER create_jasper_service_users runs — so a
+    # hard `-G bluetooth` would make `useradd` exit 6 ("group does not exist")
+    # and, under `set -euo pipefail`, abort the whole fresh install on any base
+    # image that doesn't already ship bluez. Standard Raspberry Pi OS does ship
+    # bluez (the group is present here), so the add below lands in a single
+    # install; on a bare base image jasper-web simply picks up bluetooth on the
+    # next deploy, and the /speaker BlueZ-name rename degrades fail-soft until
+    # then. Add both groups idempotently (also the upgrade path: useradd is
+    # skipped when the user already exists).
     if ! getent passwd jasper-web >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G bluetooth,systemd-journal jasper-web
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal jasper-web
     fi
-    # Idempotent supplementary-group adds on UPGRADE (useradd above is skipped
-    # when the user already exists — e.g. a Pi from a pre-3b-3 build). Takes
-    # effect on jasper-web's next socket-activated start.
-    for g in bluetooth systemd-journal; do
-        if getent group "$g" >/dev/null 2>&1; then
-            usermod -aG "$g" jasper-web 2>/dev/null || true
-        fi
-    done
+    usermod -aG systemd-journal jasper-web 2>/dev/null || true
+    if getent group bluetooth >/dev/null 2>&1; then
+        usermod -aG bluetooth jasper-web 2>/dev/null || true
+    fi
     echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the

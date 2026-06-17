@@ -33,8 +33,17 @@
 //     settings.modify.system  nmcli dev wifi connect (create profile);
 //                             connection delete (forget); GetSecrets (-s) to
 //                             refresh the wifi-guardian PSK stash on reconnect
-//     settings.modify.own     the .own counterpart NM may consult for a
-//                             jasper-web-created profile
+//     settings.modify.own     retained defensively. The wizard creates SYSTEM
+//                             connections (`nmcli dev wifi connect` sets no
+//                             connection.permissions), so settings.modify.system
+//                             is what the validated paths actually exercise; this
+//                             grant only authorizes modifying a jasper-web-OWNED
+//                             connection (none exist today) and was not observed
+//                             firing in the hardware validation. Kept rather than
+//                             dropped to avoid a re-validation pass on the
+//                             wifi-only Pi for an inert grant; drop it (and
+//                             re-validate connect/forget) if strict least-
+//                             privilege is preferred.
 //     enable-disable-wifi     nmcli radio wifi on|off
 //
 // Validated on hardware (jts.local): with this rule a sessionless jasper-web

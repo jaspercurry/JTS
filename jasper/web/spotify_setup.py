@@ -79,6 +79,7 @@ from typing import Any
 from ..accounts import (
     Account,
     Registry,
+    build_cache_handler,
     default_cache_path_for,
     DEFAULT_REGISTRY_PATH,
 )
@@ -933,7 +934,9 @@ def _spotify_client_for_account(cfg: dict[str, Any], account_name: str):
             client_id=cfg["client_id"],
             redirect_uri=_redirect_uri_for_mode(cfg["mode"], cfg),
             scope=SPOTIFY_SCOPE,
-            cache_path=account.cache_path,
+            # group-`jasper`-readable cache (0640) so the non-root readers can
+            # read it; see accounts.build_cache_handler (WS1 Phase 3b).
+            cache_handler=build_cache_handler(account.cache_path),
             open_browser=False,
         )
         if not auth.get_cached_token():
@@ -1195,7 +1198,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 client_id=cfg["client_id"],
                 redirect_uri=redirect_uri,
                 scope=SPOTIFY_SCOPE,
-                cache_path=cache_path,
+                # group-`jasper`-readable cache (0640); see
+                # accounts.build_cache_handler (WS1 Phase 3b).
+                cache_handler=build_cache_handler(cache_path),
                 state=nonce,
                 open_browser=False,
             )
@@ -1406,7 +1411,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 client_id=cfg["client_id"],
                 redirect_uri=_redirect_uri_for_mode(cfg["mode"], cfg),
                 scope=SPOTIFY_SCOPE,
-                cache_path=account.cache_path,
+                # group-`jasper`-readable cache (0640); see
+                # accounts.build_cache_handler (WS1 Phase 3b).
+                cache_handler=build_cache_handler(account.cache_path),
                 open_browser=False,
             )
             # Restore BOTH verifier and challenge before exchange.

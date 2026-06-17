@@ -230,7 +230,17 @@ google/`): jasper-voice reads it *off disk* (not via env injection), so it
 becomes group-`jasper` readable (`0750` dirs, `0640` files). That widens the
 linked-member Gmail addresses + refresh tokens to the other jasper daemons
 (mux/input — low attack surface); per-daemon isolation is Phase 4
-(`LoadCredential`). No polkit. Cross-user `/run` sockets work via the shared
+(`LoadCredential`). No polkit. The **Spotify OAuth token cache**
+(`/var/lib/jasper/spotify/caches/`) is the same off-disk-read class — jasper-voice
+writes it, and the now-non-root jasper-control (`/transport` title-match router)
++ jasper-web (`/spotify` wizard) read it — so it is likewise group-`jasper`
+readable (`0640`, dir `2750` setgid). spotipy writes the cache `0600` by default,
+so [`jasper.accounts.build_cache_handler`](../jasper/accounts.py) re-chmods each
+write and an `install_jasper` migration widens any pre-existing cache. This was a
+regression caught by the 3b-3 review's all-surfaces off-disk-read audit and fixed
+in the follow-up: before the fix the dropped readers logged "Couldn't read cache"
+on every poll (22k+/day on jasper-control) and reported linked accounts as
+needs-relink. Cross-user `/run` sockets work via the shared
 `jasper` group: a UNIX socket needs **write** permission to `connect()`, so
 `jasper-control` joins the group (stays root) and `jasper-fanin`/`jasper-outputd`
 join it with `UMask=0007` — their TTS/control sockets become `root:jasper 0770`
