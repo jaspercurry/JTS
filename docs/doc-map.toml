@@ -781,12 +781,16 @@ title = "Control-plane authentication (device-to-device / household)"
 safety = "connectivity-risk"
 # The per-DEVICE CSRF control token stays owned by the privilege-separation
 # stanza above. THIS doc owns the cross-device / machine-to-machine path — the
-# grouping fan-out and the (proposed) household credential. Currently a PROPOSAL
-# (see the doc's status banner); the household_credential module + gate change
-# join `code` when Phase C lands. Coarse on purpose.
+# grouping fan-out and the household credential (Phase C landed it). The
+# gate change lives in jasper/control/server.py:_guard_control_token, but that
+# file is edited constantly for unrelated reasons, so it is intentionally NOT
+# globbed here (would drown the signal); the dedicated credential module is the
+# canonical trigger. Coarse on purpose.
 code = [
+  "jasper/control/household_credential.py",
   "jasper/web/rooms_setup.py",
   "tests/test_control_server.py",
+  "tests/test_household_credential.py",
 ]
 docs = [
   "docs/HANDOFF-control-plane-auth.md",

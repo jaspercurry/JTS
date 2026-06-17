@@ -11,9 +11,11 @@
 > reconciles a live contradiction between two canonical docs (see §2). The
 > design (Option 1, §5) was ratified after a counter-proposal advocating HMAC
 > request-signing was reviewed and **rejected** (§5 "Rejected: HMAC
-> request-signing"). The reconciliation phases (§8 Phase A: rewrite multiroom §7
-> + privilege-sep) and the build (Phases B–D) have not yet landed; until they do,
-> treat §2's contradiction as the known-bug-of-record. Update each phase as work lands.
+> request-signing"). The reconciliation phase (§8 Phase A: rewrite multiroom §7
+> + privilege-sep) and the build (Phases B–D) are **in flight**: Phases A–C are
+> implemented in stacked PRs (HW-free-verified, not yet on `main`), Phase D
+> remains. Until the stack merges, treat §2's contradiction as the
+> known-bug-of-record. Update each phase as work lands (see §8 for per-phase status).
 
 Read [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md) (the
 per-device token + daemon-hardening story) and
@@ -257,12 +259,22 @@ bootstrap — the secret is distributed *over* the gated `/grouping/set` itself,
 an unbonded follower would 403 the very request that installs it — and (b) lock a
 follower out of re-bonding if its secret file is ever lost. Safe within the threat
 model: forcing the downgrade needs local write access (out of scope; such an
-attacker could read the secret anyway). **One honest nuance to document, not hide:**
-the realistic trigger is *non-malicious* corruption (the 2026-05-23 ext4-loss
-class), and during the window between loss and re-bond the follower's
-`/grouping/set` is briefly open to an in-scope casual-curl actor — acceptable (the
-same transient window `control_token` already has; a grouping flip is
-annoyance-class) but *stated*, not called a flat non-exposure. Pin the semantics
+attacker could read the secret anyway). **Two honest nuances, stated not hidden:**
+(1) the open window is not only the transient loss→re-bond case (the 2026-05-23
+ext4-loss class) — a speaker that has NEVER been bonded is unpaired *permanently*,
+until its first bond, so its `/grouping/set` is open the whole time. (2) This is
+genuinely *weaker* than today's status quo for the unpaired case: `control_token`
+is always armed (`ensure_token()` at startup) so it has no open window, whereas
+this fail-safe re-opens `/grouping/set` to a casual-curl actor on any unpaired
+speaker — worst case, output-routing hijack (forcing a solo speaker to follow an
+attacker's leader). Accepted only as the trusted-LAN / annoyance-class residual the
+multiroom doc already conceded ("unauthenticated by design"), and unavoidable for
+TOFU bootstrap: the secret is distributed *over* the gated route, and a
+header-gated variant just trades casual-hijack for a pairing-DoS (a curl adopts a
+bogus secret and blocks the real bond). The doctor's "bonded but household
+credential missing" check + `jasper-doctor` surface this state for a *paired*
+speaker that lost its secret; a never-bonded speaker reads `ok` (correctly, it has
+no household to protect yet). Pin the semantics
 with tests (§8 Phase C) so a refactor can't silently flip it back to fail-closed
 and brick re-bonding.
 
@@ -328,8 +340,25 @@ audit (below) shows it is the *only* such client besides the M2M path.
   templating seam (`install.sh` calls `control_token.ensure_token()` first so the
   value exists; serve `location = /` `no-store`); have `postMute()` read the meta
   (+ localStorage fallback) and send `X-JTS-Token`, and **surface the 403**
-  instead of silently reverting. Exposure is equivalent to the wizards (same
-  constant token, unreadable cross-origin by SOP).
+  instead of silently reverting.
+
+  **On the token's exposure (precise — not "equivalent to the wizards"):** baking
+  it into `/usr/share/jasper-web/index.html` (mode `0644`) makes it world-readable
+  *on disk* — wider than `control_token`'s `0600` file, and unlike the wizards,
+  which deliver it per-request from that `0600` file. But it is **not new
+  exposure**: the management read guard (`management_read_allowed`) permits
+  non-browser local requests, so any local process can already
+  `curl -H 'Host: jts.local' http://127.0.0.1/voice/` and read the token from a
+  wizard's meta tag — the disk file is just another path to an already
+  locally-obtainable value, so it doesn't widen what a compromised non-root daemon
+  already has. Cross-origin browsers still can't read it (SOP makes the `/`
+  response opaque; `no-store` keeps it out of caches). This stays within the
+  "annoyance-class defense-in-depth, not a hard boundary" posture
+  ([HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)); tightening
+  the file mode would buy nothing against an attacker who already has the HTTP
+  path. If the model ever tightens to contain local non-root readers, deliver `/`
+  through `canonical_page()` instead of baking (trading the static page's
+  daemon-independent resilience).
 
 **Audit result (June 2026):** across all six token-gated routes, the *only*
 clients missing the token are (a) this landing-page button and (b) the M2M
@@ -353,29 +382,49 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   test asserting `/grouping/set` ∈ `_TOKEN_GATED_ROUTES` (the contradiction
   cannot silently reappear). *Files:* the three docs, `jasper/web/rooms_setup.py`
   comment, `tests/test_control_server.py`. *Verify:* `pytest tests/test_control_server.py`.
-- **Phase B — mic-mute landing-page delivery fix (self-contained, §7).** *Files:*
-  `deploy/index.html`, `deploy/install.sh`, `deploy/nginx-jasper.conf` (no-store on
-  `location = /`), a conventions test (the landing page attaches `X-JTS-Token`
-  and does not silently revert). *Verify:* HW-free static test + on-device deploy
-  probe (the page's Mute button actually mutes).
+- **Phase B — mic-mute landing-page delivery fix (self-contained, §7).**
+  *Status: implemented + HW-free-verified (in a stacked PR, not yet on `main`);
+  on-device deploy probe pending.* The token bake is folded into install.sh's
+  existing fail-loud `PYBAKE` block, and no-store was added to BOTH nginx sites
+  (`nginx-jasper.conf` and `nginx-jasper-streambox.conf` — each serves the same
+  token-baked `index.html`). The mute failure path now surfaces the error
+  (`failMute`) instead of silently reverting. *Files:* `deploy/index.html`,
+  `deploy/install.sh`, `deploy/nginx-jasper.conf`,
+  `deploy/nginx-jasper-streambox.conf`, `tests/test_landing_control_token.py`.
+  *Verify:* HW-free static test ✅ + on-device deploy probe (the page's Mute
+  button actually mutes) — pending.
 - **Phase C — household credential: mint + distribute + verify (the core).**
-  `jasper/control/household_credential.py` is a **near-line-for-line clone of
-  `control_token.py`** (`ensure`/`current`/`verify`, atomic `0600` write,
-  `hmac.compare_digest`, absent⇒accept) — a **static bearer** in `X-JTS-Household`,
-  **no nonce store, no clock/timestamp handling** (HMAC-signing rejected, §5).
-  `/bond` mints + distributes; `/unbond` clears; the `/grouping/set` gate accepts
-  household-cred **or** control-token; the fan-out (`rooms_setup` +
-  `AsyncControlClient.request`, which needs a 2-line `headers=` kwarg) attaches the
-  secret. *Files:* `jasper/control/household_credential.py`,
-  `jasper/control/server.py` (gate), `jasper/web/rooms_setup.py`,
-  `jasper/control/client.py`, new `tests/test_household_credential.py` +
-  `tests/test_control_server.py`. **Pin-the-semantics tests (required):**
+  *Status: implemented + HW-free-verified (stacked PR, not yet on `main`); two-Pi
+  smoke pending.* `jasper/control/household_credential.py` is a
+  **near-line-for-line clone of `control_token.py`** (`ensure`/`current`/`verify`,
+  atomic `0600` write, `hmac.compare_digest`, absent⇒accept) — a **static bearer**
+  in `X-JTS-Household`, **no nonce store, no clock/timestamp handling**
+  (HMAC-signing rejected, §5) — plus `adopt()` (trust-on-first-use distribution,
+  refuses to overwrite) and `clear()`. Mint lives in `rooms_setup._save_bond`
+  (the bond entry — there is **no `/bond` route in server.py**; it's a `/rooms/`
+  wizard handler); the receiving `_post_grouping_set` adopts on bond / clears on
+  unbond; `/unbond` reads the secret ONCE and passes it explicitly so the
+  concurrent per-member clears can't race a peer out of its credential. The
+  `/grouping/set` gate accepts household-cred **or** control-token (on that route
+  ONLY); the fan-out chokepoint `_post_grouping_to_member` attaches the secret
+  (disk read — the intentional break of `_request_control_token`'s relay-only
+  invariant); `AsyncControlClient.request/.post` gained the 2-line `headers=`
+  kwarg (the Phase D enabler). One consequence to note: an **unpaired** speaker's
+  `/grouping/set` is fail-safe-OPEN (the bootstrap window) — so two existing
+  control-token gate tests now pair the speaker to keep asserting the closed
+  state. *Files:* `jasper/control/household_credential.py`,
+  `jasper/control/server.py` (gate + adopt/clear), `jasper/web/rooms_setup.py`,
+  `jasper/control/client.py`, `.env.example`, `docs/doc-map.toml`,
+  `tests/test_household_credential.py`, `tests/test_control_server.py`,
+  `tests/test_web_rooms_setup.py`, `tests/test_control_client.py`.
+  **Pin-the-semantics tests (required, all ✅):**
   (1) `verify()` accepts on absent/empty/unreadable; (2) requires on present;
   (3) **bootstrap regression** — an unbonded follower's `/grouping/set` succeeds for
   the secret-distributing fan-out (proves no deadlock); (4) **recovery regression**
   — a follower with a deleted `household_secret` can be autonomously re-bonded
-  (proves self-heal survives file loss). *Verify:* unit tests + **two-Pi smoke**:
-  leader→follower `/grouping/set` succeeds with the credential, 403s without.
+  (proves self-heal survives file loss). *Verify:* unit tests ✅ + **two-Pi smoke**
+  (leader→follower `/grouping/set` succeeds with the credential, 403s without) —
+  pending.
 - **Phase D — autonomous re-grouping uses the credential (resilience).** The
   peering / leader path presents the household secret when re-asserting a bond
   with no browser. *Files:* `jasper/peering/*` and/or

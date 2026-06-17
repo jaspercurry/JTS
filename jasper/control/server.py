@@ -69,6 +69,7 @@ from ..install_profile import (
 )
 from . import aec_endpoints as _aec_endpoints
 from . import control_token
+from . import household_credential
 from . import restart_broker
 from . import dial as _dial
 from . import state_aggregate as _state_aggregate
@@ -610,9 +611,10 @@ def _write_grouping(
     Read-modify-write (via _atomic_rewrite_env) so operator-tuned
     JASPER_GROUPING_BUFFER_MS / _CODEC survive a role change. This is the
     single control-plane WRITER of grouping.env; jasper-grouping-reconcile is
-    the single READER->action. The endpoint that calls this is the same
-    no-auth LAN surface as the dial's /volume — so one speaker can configure
-    another by POSTing to its :PORT/grouping/set (the bond-forming flow).
+    the single READER->action. The endpoint that calls this (/grouping/set) is
+    token-gated (WS1 Phase 2); the cross-device bond-forming flow — one speaker
+    POSTing to another's :PORT/grouping/set — authenticates with the household
+    credential (docs/HANDOFF-control-plane-auth.md).
     """
     updates = {
         "JASPER_GROUPING": "on" if enabled else "off",
@@ -1314,6 +1316,20 @@ def _make_handler(
                 return True
             if control_token.verify(self.headers.get("X-JTS-Token")):
                 return True
+            # /grouping/set is the one DEVICE-TO-DEVICE gated route: a peer
+            # fan-out (rooms_setup) or autonomous re-group (Phase D) presents the
+            # household credential (X-JTS-Household), which each member verifies
+            # against its own persisted copy — NOT the per-device CSRF token a
+            # leader can't hold for a follower. Accept EITHER on this route only;
+            # the other gated routes (poweroff/reboot/restart/mic-mute) are
+            # browser->own-speaker and stay control-token-only. household_credential
+            # is fail-safe (absent => accept) so the first bond, which DISTRIBUTES
+            # the secret over this very route, isn't rejected by the gate it
+            # installs. See docs/HANDOFF-control-plane-auth.md §6.
+            if self.path == "/grouping/set" and household_credential.verify(
+                self.headers.get("X-JTS-Household")
+            ):
+                return True
             log_event(
                 logger,
                 "control_token.denied",
@@ -1437,11 +1453,12 @@ def _make_handler(
             self._send_json(self._volume_payload(new_pct))
 
         def _post_grouping_set(self) -> None:
-            # Set this speaker's grouping role. Same no-auth LAN surface
-            # as /volume (the dial) — so the bond-forming UI on speaker A
-            # configures speaker B by POSTing here on B's port. The
-            # reconciler (kicked below) is the single applier of the
-            # snapcast units + the outputd tap.
+            # Set this speaker's grouping role. /grouping/set is token-gated
+            # (WS1 Phase 2, _TOKEN_GATED_ROUTES); the cross-device bond-forming
+            # UI on speaker A configures speaker B by POSTing here on B's port,
+            # authenticated by the household credential (Phase C,
+            # docs/HANDOFF-control-plane-auth.md). The reconciler (kicked below)
+            # is the single applier of the snapcast units + the outputd tap.
             body = self._read_json()
             enabled = bool(body.get("enabled"))
             role = str(body.get("role", "")).strip()
@@ -1532,6 +1549,24 @@ def _make_handler(
                 logger.exception("grouping set failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
+            # Persist / drop the household credential as the bond forms or
+            # dissolves (control-plane-auth §6). A bond fan-out (enabled) carries
+            # the leader's X-JTS-Household; an unpaired member adopts it
+            # (trust-on-first-use over the trusted LAN) so every subsequent
+            # cross-device /grouping/set verifies against it. An unbond
+            # (disabled) clears it so the speaker can later re-pair. The leader
+            # reads its secret ONCE before the unbond fan-out, so this clear
+            # can't race the concurrent peer POSTs out of their credential. The
+            # secret value is never logged — only the transition.
+            if enabled:
+                if household_credential.adopt(self.headers.get("X-JTS-Household")):
+                    log_event(
+                        logger, "household_credential.adopted",
+                        bond=bond_id or "(none)",
+                    )
+            elif household_credential.is_paired():
+                household_credential.clear()
+                log_event(logger, "household_credential.cleared")
             log_event(
                 logger,
                 "grouping.set",

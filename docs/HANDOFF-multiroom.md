@@ -1327,46 +1327,47 @@ ceiling; all volume is done in software upstream):
    `volume_limit: 0.0` ceiling; on a *dumb* endpoint the analog
    ceiling (1) is the floor.
 
-### Grouping control plane — threat model (UNAUTHENTICATED by design)
-
-> **Superseded in practice (2026-06-16).** This subsection's "unauthenticated
-> by design" stance no longer matches runtime: WS1 Phase 2
-> ([HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)) made the
-> control token **mandatory** on `/grouping/set`, so the cross-device fan-out
-> now `403`s (each speaker mints a distinct per-device token). The reconciled
-> design — a household credential for the device-to-device path — lives in
-> [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md); this section
-> gets rewritten when that plan's Phase A lands. Until then, treat the text
-> below as the *original intent*, not current behaviour.
+### Grouping control plane — threat model (authenticated; see HANDOFF-control-plane-auth.md)
 
 The grouping control plane — `POST /grouping/set`, `GET /grouping`, and
-the bond/unbond fan-out that POSTs to those on *other* speakers — is
-**unauthenticated, by design**. It is the *same* home-LAN trust model as
-the dial's `/volume` endpoint on `jasper-control:8780` (which already binds
-`0.0.0.0`): JTS treats the home LAN as the trust boundary, so any LAN
-client may set this speaker's grouping role exactly as it may set its
-volume. This is called out explicitly so it is a **decision, not an
-accident**.
+the bond/unbond fan-out that POSTs to those on *other* speakers — is now
+**authenticated**. WS1 Phase 2
+([HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)) made
+the per-device `control_token` **mandatory** on `/grouping/set` (and five
+other destructive routes), so a tokenless caller gets
+`403 control_token_required`. That per-device token gates **browser → its
+own speaker**; it is a CSRF token and carries no caller identity, so it
+cannot do the **device-to-device** (leader → follower) leg. That leg
+authenticates with a separate **household credential** — a shared secret
+minted at the human pairing moment (`POST /bond`), distributed over the
+trusted LAN, persisted `0600` per member (mirroring `control_token`), and
+presented on the cross-device grouping path in an `X-JTS-Household` header.
+The full threat model, prior art, and design live in
+[HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md), which is the
+single source of truth for cross-device control auth; this subsection is the
+multiroom-side summary.
 
-What the fan-out adds — and, importantly, does **not** add:
+What the fan-out adds — and how each piece is now covered:
 
-- **It grants no capability a LAN client lacked.** The `/rooms` bond/unbond
-  flow is a *convenience* that fans the same `POST /grouping/set` out to
-  each member server-side; a LAN client could already hit any peer's
-  `/grouping/set` directly. The fan-out is not a new privilege, just a
-  one-flow wrapper.
-- **The SSRF guard is a target restriction, not an auth layer.**
-  `rooms_setup._post_grouping_to_member` (and the unbond fan-out) constrain
-  cross-speaker POST/GET targets to **private or loopback IPv4** and reject
-  bare hostnames — so the no-auth surface can never be aimed at an internet
-  host (no internet-proxy / no DNS-rebinding pivot). It does not
-  authenticate the caller; it bounds *where* the server will talk.
-- **What's genuinely new: "LAN = trusted" is now load-bearing ACROSS
-  devices.** Before bonding, the no-auth assumption only let a LAN client
-  reconfigure *one* box. Bond/unbond makes one speaker reconfigure *another*
-  on the household's behalf. That is the same trust boundary stretched
-  across devices — an explicit, accepted trade-off for a home appliance,
-  surfaced here rather than left implicit.
+- **The SSRF guard is a target restriction, not an auth layer — still true
+  and complementary.** `rooms_setup._post_grouping_to_member` (and the
+  unbond fan-out) constrain cross-speaker POST/GET targets to **private or
+  loopback IPv4** and reject bare hostnames — so the cross-speaker surface
+  can never be aimed at an internet host (no internet-proxy / no
+  DNS-rebinding pivot). It bounds *where* the server will talk; the
+  household credential is what authenticates the *caller*. The two are
+  orthogonal and both apply.
+- **"LAN = trusted" is load-bearing ACROSS devices — now mitigated, not
+  merely accepted.** Bond/unbond makes one speaker reconfigure *another* on
+  the household's behalf, stretching the home-LAN trust boundary across
+  devices. The household credential closes the steady-state hole: once a
+  household is bonded, every subsequent `/grouping/set` requires the shared
+  secret, so a casual / cross-site / curl actor can no longer flip the
+  group. **Residual:** a malicious LAN device could still *initiate* its own
+  `POST /bond` to mint a secret — the same residual the whole LAN-trust
+  posture accepts, closed only by a future pairing code at bond time
+  (HANDOFF-control-plane-auth.md §5 Option 2 / §9 decision 2). State it
+  honestly; do not over-claim.
 
 This subsection covers the *grouping control plane*; the *audio* threat
 surface (Snapcast's 1704/1705 ports, the post-clamp tap, the dumb-endpoint
@@ -1570,9 +1571,10 @@ bond: the server discovers membership by reading each member's `GET
 /grouping` (the new CSRF-free read on `jasper-control`) and fans
 `{enabled:false}` to the matches plus self. Both fan-outs run
 **concurrently** across members (a slow/absent peer never serializes the
-rest) over the same no-auth LAN surface the dial uses, SSRF-guarded to
+rest) over the LAN to each member's `jasper-control`, SSRF-guarded to
 private/loopback IPv4 (bare hostnames rejected) — see §7 "Grouping control
-plane — threat model" for why that surface is unauthenticated by design.
+plane — threat model" for the auth posture (token-gated browser→own-speaker;
+the household credential authenticates the device-to-device fan-out).
 Configuration is fully automatic (no per-speaker tinkering). What's honestly
 *not* done: **audio does not yet flow to followers** — the outputd snapfifo
 producer is unwired (`SNAPFIFO_PRODUCER_WIRED` is `False`, blocked on TTS

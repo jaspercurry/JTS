@@ -31,10 +31,27 @@ from email.message import Message
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+
+from jasper.control import household_credential
 from jasper.web import rooms_setup
 
 
 _REPO = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _isolate_household_secret(monkeypatch, tmp_path):
+    """Point the household credential at a throwaway path for every test here.
+
+    _save_bond now mints the household secret (household_credential.ensure()),
+    which writes /var/lib/jasper/household_secret in production. Redirect it to a
+    tmp file so the bond tests neither touch a real system path nor crash where
+    that dir is absent — and so a test can assert the mint happened.
+    """
+    monkeypatch.setattr(
+        household_credential, "SECRET_FILE", str(tmp_path / "household_secret"),
+    )
 
 
 # A representative grouping-state snapshot (the shape
@@ -902,7 +919,7 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     (handler, calls) where calls is the list of (addr, body) fanned out."""
     calls: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, member_body, known=None, *, token=None):
+    def fake_member_post(addr, member_body, known=None, *, token=None, household=None):
         calls.append((addr, member_body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -937,7 +954,7 @@ def test_bond_forwards_browser_control_token_to_members(monkeypatch):
     received."""
     seen_tokens: list[str | None] = []
 
-    def capture(addr, member_body, known=None, *, token=None):
+    def capture(addr, member_body, known=None, *, token=None, household=None):
         seen_tokens.append(token)
         return (True, "HTTP 200")
 
@@ -964,7 +981,7 @@ def test_bond_forwards_no_token_when_browser_sent_none(monkeypatch):
     None, so the existing 3-arg call shape is preserved."""
     seen_tokens: list[str | None] = []
 
-    def capture(addr, member_body, known=None, *, token=None):
+    def capture(addr, member_body, known=None, *, token=None, household=None):
         seen_tokens.append(token)
         return (True, "HTTP 200")
 
@@ -1113,6 +1130,121 @@ def test_member_post_lan_peer_targets_its_control_port(monkeypatch):
     assert urls == ["http://192.168.1.9:8780/grouping/set"]
 
 
+# ---- household credential on the fan-out (control-plane-auth §6) ----
+
+
+def _capture_member_request_headers(monkeypatch):
+    """Stub urlopen and return a dict that fills with the lowercased request
+    headers of the LAST _post_grouping_to_member call."""
+    captured: dict[str, str] = {}
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured.clear()
+        captured.update({k.lower(): v for k, v in req.header_items()})
+        return FakeResp()
+
+    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
+    return captured
+
+
+def test_post_grouping_to_member_attaches_household_credential(monkeypatch):
+    """The fan-out injects the household secret (X-JTS-Household) from disk —
+    the device-to-device credential each member verifies — alongside any relayed
+    browser X-JTS-Token."""
+    secret = household_credential.ensure()  # pair this speaker (autouse tmp file)
+    headers = _capture_member_request_headers(monkeypatch)
+    ok, _ = rooms_setup._post_grouping_to_member(
+        "192.168.1.9", {"x": 1}, token="browser-tok",
+    )
+    assert ok is True
+    assert headers["x-jts-household"] == secret
+    assert headers["x-jts-token"] == "browser-tok"
+
+
+def test_post_grouping_to_member_omits_household_when_unpaired(monkeypatch):
+    """A lone/unpaired speaker (no secret) attaches no X-JTS-Household — there is
+    nothing to present, and the member fail-safe-accepts during bootstrap."""
+    assert household_credential.is_paired() is False  # autouse tmp file is absent
+    headers = _capture_member_request_headers(monkeypatch)
+    ok, _ = rooms_setup._post_grouping_to_member("192.168.1.9", {"x": 1})
+    assert ok is True
+    assert "x-jts-household" not in headers
+
+
+def test_post_grouping_to_member_explicit_household_overrides_live_read(monkeypatch):
+    """An explicit household= (the race-free unbond path) is used verbatim,
+    even over a different on-disk value."""
+    household_credential.ensure()  # disk has some secret
+    headers = _capture_member_request_headers(monkeypatch)
+    rooms_setup._post_grouping_to_member(
+        "192.168.1.9", {"x": 1}, household="pre-read-secret",
+    )
+    assert headers["x-jts-household"] == "pre-read-secret"
+
+
+def test_save_bond_mints_household_credential(monkeypatch):
+    """_save_bond mints the household secret on this leader BEFORE the fan-out,
+    so the leader has it to distribute (control-plane-auth §6)."""
+    assert household_credential.is_paired() is False
+
+    def capture(addr, member_body, known=None, *, token=None, household=None):
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", capture)
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
+
+    handler_cls = rooms_setup._make_handler()
+    raw = json.dumps({"members": _stereo_pair_members()}).encode()
+    h = _FakeHandler("/bond")
+    h.headers["Content-Length"] = str(len(raw))
+    h.rfile = BytesIO(raw)
+    handler_cls.do_POST(h)
+
+    assert h.status == 200
+    assert household_credential.is_paired() is True  # minted
+
+
+def test_unbond_reads_household_once_and_passes_it_to_fanout(monkeypatch):
+    """Unbond reads the secret ONCE and passes it explicitly to the fan-out, so
+    the concurrent per-member clears can't race a peer out of the credential it
+    needs to authenticate its own unbond."""
+    secret = household_credential.ensure()
+    seen_household: list[str | None] = []
+
+    def capture(addr, body, known=None, *, token=None, household=None):
+        seen_household.append(household)
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "read_grouping_state",
+                        lambda *a, **k: {"enabled": True, "role": "leader",
+                                         "bond_id": "bond-1", "peer_addr": "192.168.1.9"})
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_resolve_bond_peer",
+                        lambda *a, **k: ("192.168.1.9", None, None))
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", capture)
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/unbond")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+
+    # Self + the matched peer both got the SAME pre-read secret (never None).
+    assert seen_household and all(hh == secret for hh in seen_household)
+
+
 # ---- _fan_out_grouping: concurrent, INPUT-ORDER-preserving fan-out ----
 
 
@@ -1126,7 +1258,7 @@ def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monk
 
     started = threading.Event()
 
-    def fake_member_post(addr, body, known=None, *, token=None):
+    def fake_member_post(addr, body, known=None, *, token=None, household=None):
         if addr == "192.168.1.5":
             # First target: block until the second has had a chance to finish,
             # then fail. If results were ordered by completion this would land
@@ -1166,7 +1298,7 @@ def test_fan_out_grouping_computes_self_addresses_once_not_per_member(monkeypatc
     monkeypatch.setattr(rooms_setup, "_self_addresses", counting_self_addresses)
     monkeypatch.setattr(
         rooms_setup, "_post_grouping_to_member",
-        lambda addr, body, known=None, *, token=None: (True, "HTTP 200"),
+        lambda addr, body, known=None, *, token=None, household=None: (True, "HTTP 200"),
     )
     out = rooms_setup._fan_out_grouping([(f"192.168.1.{i}", {}) for i in (10, 11, 12)])
     assert len(out) == 3
@@ -1329,7 +1461,7 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     member_results — {address: (ok, detail)} overriding the disable POST."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body, known=None, *, token=None):
+    def fake_member_post(addr, body, known=None, *, token=None, household=None):
         posts.append((addr, body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -1550,7 +1682,7 @@ def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
     stub set as _post_unbond — swap shares its discovery + fan-out path."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body, known=None, *, token=None):
+    def fake_member_post(addr, body, known=None, *, token=None, household=None):
         posts.append((addr, body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -1697,7 +1829,7 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
     (never a silent stuck pair) — the journal carries the per-member lines."""
     calls = {"n": 0}
 
-    def flaky_self(addr, body, known=None, *, token=None):
+    def flaky_self(addr, body, known=None, *, token=None, household=None):
         # self swap write succeeds; the later self ROLLBACK fails.
         calls["n"] += 1
         if addr == "" and calls["n"] >= 3:
@@ -1777,7 +1909,7 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
     monkeypatch.setattr(rooms_setup, "_get_member_grouping",
                         lambda a, known=None: (peer_grouping or {}).get(a))
     monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
-                        lambda a, b, known=None, *, token=None: posts.append((a, b)) or (True, "HTTP 200"))
+                        lambda a, b, known=None, *, token=None, household=None: posts.append((a, b)) or (True, "HTTP 200"))
     handler_cls = rooms_setup._make_handler()
     h = _FakeHandler("/trim")
     raw = json.dumps(body).encode()
@@ -1950,7 +2082,7 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     roster from a previous leadership must not survive a role flip)."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body, known=None, *, token=None):
+    def fake_member_post(addr, body, known=None, *, token=None, household=None):
         posts.append((addr, body))
         return (True, "HTTP 200")
 
