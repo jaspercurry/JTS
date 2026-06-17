@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,12 @@ from jasper.active_speaker.path_safety import (
 from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.staging import load_staged_startup_config
+from jasper.active_speaker.startup_load import (
+    build_driver_commission_load_preflight,
+    load_commission_load_state,
+    load_driver_commissioning_config,
+    rollback_driver_commissioning_config,
+)
 from jasper.dsp_apply import validate_camilla_config
 from jasper.output_topology import load_output_topology
 
@@ -206,6 +214,238 @@ def _cmd_environment_probe(args: argparse.Namespace) -> int:
     return 0 if payload["ok_to_load_active_config"] else 1
 
 
+def _camilla_controller() -> Any:
+    """Return a CamillaController bound to the live CamillaDSP websocket.
+
+    Mirrors the web wizard's ``_camilla`` factory so an operator running the
+    commission-load CLI reaches the same running graph the daemons drive.
+    """
+    from jasper.camilla import CamillaController
+
+    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
+    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
+    return CamillaController(host, port)
+
+
+def _commission_load_config(cam: Any) -> Any:
+    """The INLINE loader seam: read the candidate file and apply it as the
+    running graph WITHOUT repointing the persisted statefile.
+
+    ``CamillaController.set_active_config_raw`` is CamillaDSP's ``SetConfig``;
+    it leaves ``config_file_path`` (the outputd statefile boot anchor) untouched,
+    which is what makes crash-recovery-MUTED structural — a reboot still comes up
+    on the all-muted staged boot config. Loading via ``set_config_file_path``
+    instead would repoint the statefile and break that invariant.
+    """
+
+    async def _load(path: str) -> bool:
+        text = Path(path).read_text(encoding="utf-8")
+        return await cam.set_active_config_raw(text, best_effort=False)
+
+    return _load
+
+
+async def _current_config_path(cam: Any) -> tuple[str | None, str | None]:
+    try:
+        return (await cam.get_config_file_path(best_effort=False)), None
+    except Exception as exc:  # noqa: BLE001
+        return None, type(exc).__name__
+
+
+def _resolve_commission_inputs(
+    args: argparse.Namespace,
+) -> tuple[ActiveSpeakerPreset | None, dict[str, Any] | None]:
+    """Resolve (preset, crossover_preview) so the per-driver commissioning config
+    matches what protected staging emitted.
+
+    The `/sound/` staging flow compiles from the saved crossover preview; the
+    per-driver load must use the SAME source or its mask/crossover would not
+    match the active all-muted graph. Default: load that saved preview and use it
+    only when it is ready for staging (otherwise fall back to the bundled preset,
+    which is exactly what staging does when no ready preview exists). ``--preset``
+    is an explicit override for bench/preset-fallback work.
+    """
+    if args.preset:
+        preset = ActiveSpeakerPreset.from_mapping(
+            _load_json_object(Path(args.preset), label="preset")
+        )
+        return preset, None
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    preview = load_crossover_preview(current_design_draft=load_design_draft())
+    if preview.get("status") == "ready_for_protected_staging":
+        return None, preview
+    return None, None
+
+
+def _write_commission_path_safety(
+    topology: Any,
+    staged: dict[str, Any],
+    current_config_path: str | None,
+    current_config_error: str | None,
+) -> Path:
+    """Build + persist fresh no-audio startup-load path-safety evidence.
+
+    Mirrors the startup-load flow (`path-probe` / the `/sound/` check): the
+    per-driver commissioning preflight reuses :func:`build_startup_load_preflight`,
+    which binds to this evidence to prove the speaker is ready for an active load
+    and the all-muted staged config is a valid rollback anchor.
+    """
+    evidence = build_startup_load_path_safety_evidence(
+        topology,
+        staged_config=staged,
+        calibration_level=load_calibration_level_state(),
+        current_config_path=current_config_path,
+        current_config_error=current_config_error,
+    )
+    return write_path_safety_evidence(evidence)
+
+
+def _print_commission_load_summary(payload: dict[str, Any], *, dry_run: bool) -> None:
+    load = payload.get("load") or {}
+    preflight = payload.get("preflight") or {}
+    target = (load.get("target") or preflight.get("target") or {})
+    if dry_run:
+        print(f"Commission-load preflight: {preflight.get('status')}")
+        print(
+            f"  load_allowed: {'yes' if preflight.get('load_allowed') else 'no'}"
+        )
+    else:
+        print(f"Commission load: {load.get('status')}")
+    print(
+        f"  target: group={target.get('speaker_group_id')} "
+        f"role={target.get('role')} outputs={target.get('audible_outputs')}"
+    )
+    candidate = load.get("candidate_config_path") or preflight.get(
+        "candidate_config_path"
+    )
+    print(f"  candidate config: {candidate}")
+    if not dry_run:
+        print(f"  rollback anchor (staged boot config): {load.get('previous_config_path')}")
+        print(
+            "  durable statefile intact (crash-recovery-MUTED): "
+            f"{load.get('durable_statefile_intact')}"
+        )
+        live = load.get("live_evidence") or {}
+        print(
+            "  live read-back gate: "
+            f"{'passed' if live.get('passed') else 'failed/none'}"
+        )
+    gates = preflight.get("required_gates") or []
+    failed_gates = [g for g in gates if not g.get("passed")]
+    if failed_gates:
+        print("  failed gates:")
+        for gate in failed_gates:
+            print(f"    - {gate['id']}: {gate.get('message')}")
+    issues = load.get("issues") or preflight.get("issues") or []
+    if issues:
+        print("  issues:")
+        for issue in issues:
+            print(f"    [{issue['severity']}] {issue['code']}: {issue['message']}")
+    if not dry_run and load.get("status") == "loaded":
+        print(
+            "Armed at the protected floor (gain -120 dB, mute off) — SILENT. "
+            "The audible level is the Stage-5 ramp; no audio was emitted by this load."
+        )
+
+
+def _commission_load_exit_code(payload: dict[str, Any], *, dry_run: bool) -> int:
+    if dry_run:
+        return 0 if (payload.get("preflight") or {}).get("load_allowed") else 1
+    return 0 if (payload.get("load") or {}).get("status") == "loaded" else 1
+
+
+def _cmd_commission_load(args: argparse.Namespace) -> int:
+    # Single-flight: an armed per-driver commissioning load is exclusive. The
+    # commissioning config path is shared, so refuse a second concurrent arm
+    # rather than silently overwrite a live load — roll back first. (Stage-5
+    # gain-ramp re-loads of the SAME armed target go through their own command,
+    # not this one.)
+    existing = load_commission_load_state()
+    if existing.get("status") == "loaded" and not args.force:
+        refusal = {
+            "status": "refused",
+            "reason": "commission_load_already_active",
+            "active_target": existing.get("target"),
+            "candidate_config_path": existing.get("candidate_config_path"),
+            "next_step": (
+                "A per-driver commissioning config is already loaded. Run "
+                "`commission-rollback` to return to the all-muted staged config, "
+                "or pass --force to re-arm."
+            ),
+        }
+        if args.json:
+            print(json.dumps(refusal, indent=2, sort_keys=True))
+        else:
+            print("Commission load refused: a load is already active.")
+            print(f"  active target: {existing.get('target')}")
+            print(f"  {refusal['next_step']}")
+        return 1
+
+    topology = load_output_topology(args.topology)
+    staged = load_staged_startup_config()
+    preset, crossover_preview = _resolve_commission_inputs(args)
+    cam = _camilla_controller()
+
+    async def _run() -> dict[str, Any]:
+        current_config_path, current_config_error = await _current_config_path(cam)
+        evidence_path = _write_commission_path_safety(
+            topology, staged, current_config_path, current_config_error
+        )
+        if args.dry_run:
+            return {
+                "preflight": build_driver_commission_load_preflight(
+                    topology,
+                    speaker_group_id=args.group,
+                    role=args.role,
+                    staged_config=staged,
+                    preset=preset,
+                    crossover_preview=crossover_preview,
+                    path_safety_evidence_path=evidence_path,
+                    current_config_path=current_config_path,
+                ),
+                "load": {},
+            }
+        return await load_driver_commissioning_config(
+            topology,
+            speaker_group_id=args.group,
+            role=args.role,
+            load_config=_commission_load_config(cam),
+            read_running_config=lambda: cam.get_active_config_raw(best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+            preset=preset,
+            crossover_preview=crossover_preview,
+            staged_config=staged,
+            path_safety_evidence_path=evidence_path,
+        )
+
+    payload = asyncio.run(_run())
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        _print_commission_load_summary(payload, dry_run=args.dry_run)
+    return _commission_load_exit_code(payload, dry_run=args.dry_run)
+
+
+def _cmd_commission_rollback(args: argparse.Namespace) -> int:
+    cam = _camilla_controller()
+    payload = asyncio.run(
+        rollback_driver_commissioning_config(
+            load_config=_commission_load_config(cam),
+        )
+    )
+    rollback = payload.get("rollback") or {}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Commission rollback: {rollback.get('status')}")
+        print(f"  reloaded staged boot config: {rollback.get('active_config_path')}")
+        for issue in rollback.get("issues") or []:
+            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+    return 0 if rollback.get("status") in {"rolled_back", "blocked"} else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-active-speaker",
@@ -329,6 +569,60 @@ def build_parser() -> argparse.ArgumentParser:
     )
     environment.add_argument("--json", action="store_true")
     environment.set_defaults(func=_cmd_environment_probe)
+
+    commission_load = sub.add_parser(
+        "commission-load",
+        help=(
+            "load a per-driver commissioning config into the RUNNING CamillaDSP "
+            "graph (armed at the protected floor — SILENT)"
+        ),
+    )
+    commission_load.add_argument(
+        "--group",
+        required=True,
+        help="speaker group id to commission (must be the single active group)",
+    )
+    commission_load.add_argument(
+        "--role",
+        required=True,
+        help="driver role to arm audible (e.g. woofer, tweeter)",
+    )
+    commission_load.add_argument(
+        "--preset",
+        help=(
+            "optional preset JSON override (preset-fallback mode); default loads "
+            "the saved crossover preview to match protected staging"
+        ),
+    )
+    commission_load.add_argument(
+        "--topology",
+        help="optional output-topology JSON path (default: JTS output topology state)",
+    )
+    commission_load.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "run the guarded preflight only (writes the candidate config; loads "
+            "nothing, emits no audio)"
+        ),
+    )
+    commission_load.add_argument(
+        "--force",
+        action="store_true",
+        help="re-arm even if a commissioning load is already active (single-flight override)",
+    )
+    commission_load.add_argument("--json", action="store_true")
+    commission_load.set_defaults(func=_cmd_commission_load)
+
+    commission_rollback = sub.add_parser(
+        "commission-rollback",
+        help=(
+            "reload the all-muted staged config, ending a per-driver "
+            "commissioning load (returns the speaker to everything-muted)"
+        ),
+    )
+    commission_rollback.add_argument("--json", action="store_true")
+    commission_rollback.set_defaults(func=_cmd_commission_rollback)
     return parser
 
 
