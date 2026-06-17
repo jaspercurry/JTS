@@ -864,7 +864,19 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     # _post_grouping_to_member) and adopts it on receipt — locking down every
     # subsequent cross-device grouping change. Idempotent: re-bonding the same
     # household reuses the existing secret (control-plane-auth §6).
-    household_credential.ensure()
+    try:
+        household_credential.ensure()
+    except OSError as exc:
+        # A write failure (e.g. the 2026-05-23 read-only-rootfs class) must not
+        # fail the bond: members fail-safe-accept, so the bond still forms — the
+        # cross-device credential is just not minted, leaving /grouping/set open
+        # until a later bond succeeds. Visible, not silent: the WARN here plus
+        # the doctor's "bonded but household credential missing" check surface
+        # the degraded auth. Mirrors control_token's ensure_failed guard.
+        log_event(
+            logger, "household_credential.ensure_failed",
+            error=str(exc), level=logging.WARNING,
+        )
     token = _request_control_token(handler)
     for slot, (addr, body), (ok, detail) in zip(
         target_idx, targets, _fan_out_grouping(targets, token=token)

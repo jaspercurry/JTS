@@ -259,12 +259,22 @@ bootstrap — the secret is distributed *over* the gated `/grouping/set` itself,
 an unbonded follower would 403 the very request that installs it — and (b) lock a
 follower out of re-bonding if its secret file is ever lost. Safe within the threat
 model: forcing the downgrade needs local write access (out of scope; such an
-attacker could read the secret anyway). **One honest nuance to document, not hide:**
-the realistic trigger is *non-malicious* corruption (the 2026-05-23 ext4-loss
-class), and during the window between loss and re-bond the follower's
-`/grouping/set` is briefly open to an in-scope casual-curl actor — acceptable (the
-same transient window `control_token` already has; a grouping flip is
-annoyance-class) but *stated*, not called a flat non-exposure. Pin the semantics
+attacker could read the secret anyway). **Two honest nuances, stated not hidden:**
+(1) the open window is not only the transient loss→re-bond case (the 2026-05-23
+ext4-loss class) — a speaker that has NEVER been bonded is unpaired *permanently*,
+until its first bond, so its `/grouping/set` is open the whole time. (2) This is
+genuinely *weaker* than today's status quo for the unpaired case: `control_token`
+is always armed (`ensure_token()` at startup) so it has no open window, whereas
+this fail-safe re-opens `/grouping/set` to a casual-curl actor on any unpaired
+speaker — worst case, output-routing hijack (forcing a solo speaker to follow an
+attacker's leader). Accepted only as the trusted-LAN / annoyance-class residual the
+multiroom doc already conceded ("unauthenticated by design"), and unavoidable for
+TOFU bootstrap: the secret is distributed *over* the gated route, and a
+header-gated variant just trades casual-hijack for a pairing-DoS (a curl adopts a
+bogus secret and blocks the real bond). The doctor's "bonded but household
+credential missing" check + `jasper-doctor` surface this state for a *paired*
+speaker that lost its secret; a never-bonded speaker reads `ok` (correctly, it has
+no household to protect yet). Pin the semantics
 with tests (§8 Phase C) so a refactor can't silently flip it back to fail-closed
 and brick re-bonding.
 
@@ -330,8 +340,25 @@ audit (below) shows it is the *only* such client besides the M2M path.
   templating seam (`install.sh` calls `control_token.ensure_token()` first so the
   value exists; serve `location = /` `no-store`); have `postMute()` read the meta
   (+ localStorage fallback) and send `X-JTS-Token`, and **surface the 403**
-  instead of silently reverting. Exposure is equivalent to the wizards (same
-  constant token, unreadable cross-origin by SOP).
+  instead of silently reverting.
+
+  **On the token's exposure (precise — not "equivalent to the wizards"):** baking
+  it into `/usr/share/jasper-web/index.html` (mode `0644`) makes it world-readable
+  *on disk* — wider than `control_token`'s `0600` file, and unlike the wizards,
+  which deliver it per-request from that `0600` file. But it is **not new
+  exposure**: the management read guard (`management_read_allowed`) permits
+  non-browser local requests, so any local process can already
+  `curl -H 'Host: jts.local' http://127.0.0.1/voice/` and read the token from a
+  wizard's meta tag — the disk file is just another path to an already
+  locally-obtainable value, so it doesn't widen what a compromised non-root daemon
+  already has. Cross-origin browsers still can't read it (SOP makes the `/`
+  response opaque; `no-store` keeps it out of caches). This stays within the
+  "annoyance-class defense-in-depth, not a hard boundary" posture
+  ([HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)); tightening
+  the file mode would buy nothing against an attacker who already has the HTTP
+  path. If the model ever tightens to contain local non-root readers, deliver `/`
+  through `canonical_page()` instead of baking (trading the static page's
+  daemon-independent resilience).
 
 **Audit result (June 2026):** across all six token-gated routes, the *only*
 clients missing the token are (a) this landing-page button and (b) the M2M

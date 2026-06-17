@@ -401,6 +401,39 @@ def check_grouping_pair_channels() -> CheckResult:
     )
 
 
+@doctor_check(order=75.8, group="grouping")
+def check_grouping_household_credential() -> CheckResult:
+    """A BONDED member must hold the household credential — the device-to-device
+    secret that authenticates the cross-device ``/grouping/set`` fan-out
+    (docs/HANDOFF-control-plane-auth.md §6).
+
+    A bonded member with NO secret is the recovery shape (the 2026-05-23
+    ext4-loss class, or an adopt that never landed): its ``/grouping/set`` is
+    fail-safe-OPEN to any LAN caller until it re-pairs, and this is the only
+    place that loss is visible. A solo speaker needs no credential (absence =
+    not-yet-paired), so it reads ``ok``. Strictly secret-free — it reports only
+    whether the file is present, never reads or echoes the value (mirrors
+    ``check_control_token``)."""
+    from ...control import household_credential
+    from ...multiroom.config import is_active_member, load_config
+
+    label = "grouping: household credential"
+    cfg = load_config()
+    if not is_active_member(cfg):
+        return CheckResult(label, "ok", "solo / not a bonded member (n/a)")
+    if household_credential.is_paired():
+        return CheckResult(
+            label, "ok",
+            "present — cross-device /grouping/set is authenticated",
+        )
+    return CheckResult(
+        label, "warn",
+        "bonded but the household credential is missing — cross-device "
+        "/grouping/set is unauthenticated (fail-safe open) until this speaker "
+        "re-pairs; re-save the bond from http://jts.local/rooms to restore it",
+    )
+
+
 # NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED
 # 2026-06-11 with the rest of the retired outputd-as-producer machinery
 # (`SnapfifoSink` / `SNAPFIFO_PRODUCER_WIRED` / the reconciler tap limb): the

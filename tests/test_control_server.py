@@ -32,6 +32,22 @@ from jasper.control.server import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_household_secret(monkeypatch, tmp_path):
+    """Point household_credential at a throwaway path for every test here.
+
+    _post_grouping_set adopts (on bond) and CLEARS (on unbond) the household
+    secret, so any /grouping/set test that reaches the handler would otherwise
+    read/delete the real /var/lib/jasper/household_secret if the suite ran on a
+    bonded Pi. Redirect it to a tmp file (absent ⇒ unpaired) so the tests never
+    touch real system state; tests that need a specific state call
+    `_pair_household`/`_unpair_household`, which override this.
+    """
+    import jasper.control.household_credential as hc
+
+    monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "household_secret"))
+
+
 class FakeCoordinator:
     """In-memory stand-in. Same async surface as VolumeCoordinator."""
 
@@ -3404,7 +3420,14 @@ def test_unpaired_grouping_set_is_open_bootstrap_window(
     """The deliberate, documented trade: on an UNPAIRED speaker /grouping/set is
     fail-safe-OPEN (so the distributing fan-out is never rejected), while the
     OTHER gated routes — which never consult the household credential — stay
-    closed under the armed control-token gate."""
+    closed under the armed control-token gate.
+
+    Honest framing (control-plane-auth §6): this is NOT only a transient window.
+    A never-bonded speaker is unpaired permanently (until its first bond), so its
+    /grouping/set is open the whole time — genuinely weaker than the always-armed
+    control_token for the unpaired case. Accepted as the trusted-LAN residual and
+    unavoidable for TOFU bootstrap; pinned here so a change to that posture is
+    deliberate, not silent."""
     base, _ = server_with_coordinator
     _enable_control_token(monkeypatch, tmp_path)
     _unpair_household(monkeypatch, tmp_path)

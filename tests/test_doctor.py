@@ -245,6 +245,43 @@ def test_check_grouping_off_is_ok(monkeypatch):
     assert "single-speaker" in r.detail
 
 
+def test_check_household_credential_solo_is_ok(monkeypatch):
+    # Solo short-circuits before reading the secret file (a lone speaker needs
+    # no household credential).
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_grouping_household_credential()
+    assert r.status == "ok"
+    assert "solo" in r.detail
+
+
+def test_check_household_credential_bonded_paired_ok(monkeypatch, tmp_path):
+    import jasper.control.household_credential as hc
+
+    secret = tmp_path / "household_secret"
+    secret.write_text("s\n")
+    monkeypatch.setattr(hc, "SECRET_FILE", str(secret))
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="x"), "")
+    r = doctor.check_grouping_household_credential()
+    assert r.status == "ok"
+    assert "present" in r.detail
+
+
+def test_check_household_credential_bonded_unpaired_warns(monkeypatch, tmp_path):
+    """RECOVERY drift: bonded but the secret was lost -> /grouping/set is
+    fail-safe-open; the doctor is the only place that loss is visible."""
+    import jasper.control.household_credential as hc
+
+    monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "absent"))
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="follower", channel="right",
+        bond_id="x", leader_addr="192.168.1.50"), "")
+    r = doctor.check_grouping_household_credential()
+    assert r.status == "warn"
+    assert "household credential is missing" in r.detail
+    assert "/rooms" in r.detail
+
+
 def test_check_grouping_invalid_config_warns(monkeypatch):
     cfg = _grouping_cfg(
         enabled=True, role="leader", channel="left",

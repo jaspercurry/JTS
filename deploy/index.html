@@ -1327,6 +1327,11 @@
         renderMic(prevMuted, available);
         setMicState(message);
         if (sub) sub.textContent = message;
+        // Hold off the 3 s poll so the failure message stays readable instead
+        // of being overwritten ~1.5 s later by the next state render. The UI
+        // already shows the real (unchanged) mic state, so suppressing the poll
+        // briefly is safe.
+        ignorePollUntil = Date.now() + 5000;
       }
 
       function renderMic(wantMuted, isAvailable) {

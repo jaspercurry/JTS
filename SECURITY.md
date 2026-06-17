@@ -78,10 +78,15 @@ is enforced at runtime by the pairing agent's window-scoped adapter
 toggling, not by BlueZ `main.conf`; already-paired devices can still
 reconnect without reopening pairing.
 
-Peering and multiroom control messages are unauthenticated LAN
-multicast today. A device on the same LAN can spoof those control
-messages. The planned follow-up is to add an HMAC over peering messages
-using a shared household secret.
+The peer-discovery gossip (mDNS/multicast) is unauthenticated LAN
+traffic today; a device on the same LAN can spoof those messages. The
+cross-device multiroom **grouping** control path (`POST /grouping/set`)
+is separately authenticated by a shared **household credential** minted
+at the bond — a static bearer in an `X-JTS-Household` header (HMAC
+request-signing was considered and rejected for that HTTP path; see
+[HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md)). A
+future HMAC over the peering gossip could reuse that same household
+secret.
 
 ### Control token
 
@@ -98,7 +103,12 @@ automatically (embedded in each page behind the read guard, read by
   assistant / the audio chain.
 - `POST /mic/mute` — the privacy mic mute, the one promise a household relies
   on to know the mic is off.
-- `POST /grouping/set` — rewires multiroom output routing.
+- `POST /grouping/set` — rewires multiroom output routing. This route
+  **additionally** accepts a distinct **household credential**
+  (`X-JTS-Household`) for the cross-device bond fan-out — a paired peer
+  or the autonomous re-group path authenticates with that instead of the
+  per-device token; see
+  [HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md).
 
 A gated request without a matching `X-JTS-Token` header gets a `403
 {"error":"control_token_required"}` (compared in constant time via

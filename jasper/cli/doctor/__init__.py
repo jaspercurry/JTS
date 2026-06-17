@@ -287,6 +287,7 @@ from . import grouping as grouping
 from .grouping import (
     check_grouping,
     check_grouping_channel_pick,
+    check_grouping_household_credential,
     check_grouping_leader_pipe,
     check_grouping_pair_channels,
     check_grouping_tts_lane,
@@ -533,6 +534,7 @@ __all__ = [
     "_local_peer_id",
     "check_grouping",
     "check_grouping_channel_pick",
+    "check_grouping_household_credential",
     "check_grouping_leader_pipe",
     "check_grouping_pair_channels",
     "check_grouping_tts_lane",
