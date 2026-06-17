@@ -176,14 +176,19 @@ def read_wav_mono(
     from scipy.io import wavfile
 
     sr, data = wavfile.read(str(path))
+    # Capture the source dtype BEFORE downmixing: np.mean promotes an
+    # integer array to float, so keying the normalization off data.dtype
+    # after a stereo mean would skip the integer scaling and leave the
+    # signal at ±32767 instead of ±1.0.
+    source_dtype = data.dtype
     if data.ndim == 2:
         # Downmix stereo → mono by simple average. We expect mono
         # capture from iOS (channelCount: 1 in getUserMedia), but
         # accept stereo defensively.
         data = data.mean(axis=1)
-    # Convert to float32 in [-1, 1] regardless of source dtype.
-    if np.issubdtype(data.dtype, np.integer):
-        max_val = float(np.iinfo(data.dtype).max)
+    # Convert to float32 in [-1, 1] based on the source dtype.
+    if np.issubdtype(source_dtype, np.integer):
+        max_val = float(np.iinfo(source_dtype).max)
         signal = data.astype(np.float32) / max_val
     else:
         signal = data.astype(np.float32)

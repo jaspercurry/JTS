@@ -12,6 +12,12 @@ SpatialConfidence = Literal["high", "medium", "low"]
 HIGH_CONFIDENCE_STD_DB = 4.0
 MEDIUM_CONFIDENCE_STD_DB = 6.0
 
+# A per-frequency std from only two seats is too few samples to call
+# repeatability "high": two measurements that happen to agree can't be
+# distinguished from genuine seat-to-seat stability. Require at least
+# this many positions before "high" is allowed.
+MIN_POSITIONS_FOR_HIGH = 3
+
 
 @dataclass(frozen=True)
 class SpatialMatrix:
@@ -25,13 +31,29 @@ class SpatialMatrix:
         return int(self.magnitudes_db.shape[0])
 
 
-def confidence_for_std(std_db: float) -> SpatialConfidence:
-    """Classify repeatability from per-frequency standard deviation."""
+def confidence_for_std(
+    std_db: float, n_positions: int | None = None,
+) -> SpatialConfidence:
+    """Classify repeatability from per-frequency standard deviation.
+
+    With fewer than MIN_POSITIONS_FOR_HIGH positions, "high" is capped to
+    "medium": a 2-seat std is from too few samples to trust. Pass
+    n_positions to apply the gate; None keeps the legacy std-only
+    classification.
+    """
     if std_db <= HIGH_CONFIDENCE_STD_DB:
-        return "high"
-    if std_db <= MEDIUM_CONFIDENCE_STD_DB:
+        level: SpatialConfidence = "high"
+    elif std_db <= MEDIUM_CONFIDENCE_STD_DB:
+        level = "medium"
+    else:
+        level = "low"
+    if (
+        level == "high"
+        and n_positions is not None
+        and n_positions < MIN_POSITIONS_FOR_HIGH
+    ):
         return "medium"
-    return "low"
+    return level
 
 
 def build_spatial_matrix(
@@ -110,7 +132,9 @@ def band_summary(
     worst_idx = int(np.argmax(band_range))
     out.update({
         "available": True,
-        "confidence_level": confidence_for_std(p90_std),
+        "confidence_level": confidence_for_std(
+            p90_std, n_positions=matrix.position_count,
+        ),
         "median_std_db": round(float(np.median(band_std)), 2),
         "p90_std_db": round(p90_std, 2),
         "max_range_db": round(float(np.max(band_range)), 2),
@@ -136,7 +160,9 @@ def point_summary(
         return out
     std_db = float(matrix.std_db[idx])
     out.update({
-        "confidence_level": confidence_for_std(std_db),
+        "confidence_level": confidence_for_std(
+            std_db, n_positions=matrix.position_count,
+        ),
         "std_db": round(std_db, 2),
         "range_db": round(float(matrix.range_db[idx]), 2),
     })

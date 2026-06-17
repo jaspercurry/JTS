@@ -115,6 +115,30 @@ def test_write_sweep_wav_roundtrip(tmp_path):
     assert rmse < 1e-3
 
 
+def test_read_wav_mono_normalizes_stereo_int16(tmp_path):
+    """A stereo int16 WAV is downmixed AND normalized to [-1, 1]. np.mean
+    promotes the array to float, so normalization must key off the SOURCE
+    dtype — keying off the post-mean dtype leaves the signal at int scale
+    (±32767 instead of ±1.0)."""
+    from scipy.io import wavfile
+
+    sr = 48000
+    half = np.iinfo(np.int16).max // 2  # 16383
+    stereo = np.column_stack([
+        np.full(100, half, dtype=np.int16),
+        np.full(100, half, dtype=np.int16),
+    ])
+    wav_path = tmp_path / "stereo.wav"
+    wavfile.write(str(wav_path), sr, stereo)
+
+    signal, read_sr = sweep.read_wav_mono(wav_path)
+
+    assert read_sr == sr
+    assert signal.dtype == np.float32
+    # ~0.5 (normalized), NOT ~16383 (raw int scale).
+    assert abs(float(signal[0]) - 0.5) < 0.01
+
+
 # ---------- deconvolution roundtrips ----------------------------------------
 
 

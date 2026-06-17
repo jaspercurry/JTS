@@ -78,3 +78,25 @@ def test_runtime_integrity_flags_camilla_clipping_delta(monkeypatch):
 
     assert issues[0]["code"] == "camilla_clipping_increased"
     assert issues[0]["details"]["delta"] == 6
+
+
+def test_runtime_snapshot_omits_wizard_process_rss(monkeypatch):
+    """The snapshot no longer carries the wizard process's RSS/threads:
+    /proc/self/status measured the web worker, not the audio chain, so it
+    was misleading runtime-health evidence."""
+    from jasper.correction import runtime_integrity
+
+    # The reader function is gone (platform-independent deletion pin).
+    assert not hasattr(runtime_integrity, "_read_proc_status")
+
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    report = RuntimeIntegrityReport("abc123")
+    report.record_snapshot(
+        "sweep_start",
+        capture_kind="measurement",
+        position_index=0,
+        camilla_status=None,
+    )
+    snap = report.snapshots[-1]
+    assert "process" not in snap
+    assert "process_rss_mb" not in snap

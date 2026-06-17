@@ -173,7 +173,9 @@ def _position_variance(
 
     return {
         "available": True,
-        "confidence_level": spatial.confidence_for_std(p90_std),
+        "confidence_level": spatial.confidence_for_std(
+            p90_std, n_positions=len(position_magnitudes),
+        ),
         "band_hz": [band_hz[0], band_hz[1]],
         "position_count": len(position_magnitudes),
         "median_std_db": round(median_std, 2),

@@ -2,7 +2,55 @@ from __future__ import annotations
 
 import numpy as np
 
-from jasper.correction import confidence
+from jasper.correction import confidence, spatial
+
+
+def test_confidence_for_std_caps_high_below_three_positions():
+    """A 2-seat std is too few samples to call repeatability 'high' — cap it
+    to 'medium'. With >=3 positions (or an unknown count) the std-only
+    classification stands; the cap only touches the 'high' band."""
+    low = spatial.HIGH_CONFIDENCE_STD_DB - 1.0   # std that classifies "high"
+    assert spatial.confidence_for_std(low, n_positions=2) == "medium"
+    assert spatial.confidence_for_std(low, n_positions=3) == "high"
+    assert spatial.confidence_for_std(low) == "high"  # legacy: no count given
+
+    mid = spatial.MEDIUM_CONFIDENCE_STD_DB - 0.5
+    assert spatial.confidence_for_std(mid, n_positions=2) == "medium"
+    high = spatial.MEDIUM_CONFIDENCE_STD_DB + 1.0
+    assert spatial.confidence_for_std(high, n_positions=2) == "low"
+
+
+def test_two_position_low_variance_capped_to_medium_costs_score():
+    """End-to-end ripple of the <3-position cap (the only case where it
+    fires): two near-identical seats have a low per-frequency std that would
+    classify 'high', but with only two positions it is capped to 'medium' —
+    which costs the confidence score 10 points (moderate_position_variance)
+    and so can tighten the score-gated strategies. Conservative, not neutral."""
+    freqs = np.array([20.0, 40.0, 80.0, 160.0, 320.0])
+    # Two near-identical seats → low std (would be "high" with 3+ positions).
+    positions = [
+        np.array([0.0, 1.0, 3.0, 2.0, 0.0]),
+        np.array([0.1, 1.1, 3.1, 2.1, 0.1]),
+    ]
+    report = confidence.build_confidence_report(
+        total_positions=2,
+        completed_positions=2,
+        has_mic_calibration=True,
+        input_device={"label": "UMIK-2", "device_id_hash": "abc123"},
+        capture_quality=[{"issues": []}, {"issues": []}],
+        strategy_choice="balanced",
+        repeatability_report={"available": True, "level": "high"},
+        position_magnitudes=positions,
+        freqs_hz=freqs,
+    )
+
+    assert report["position_variance"]["available"] is True
+    # The cap fired: a low-std two-seat band reads "medium", not "high".
+    assert report["position_variance"]["confidence_level"] == "medium"
+    # ...which surfaces the score-penalty path (the gate-affecting effect).
+    assert any(
+        f["code"] == "moderate_position_variance" for f in report["findings"]
+    )
 
 
 def test_confidence_high_for_calibrated_multi_position_clean_capture():
