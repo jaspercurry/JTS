@@ -386,6 +386,30 @@ class CamillaController:
                 return False
             raise
 
+    async def get_active_config_raw(
+        self, *, best_effort: bool = False,
+    ) -> str | None:
+        """Return the RUNNING CamillaDSP graph as a raw YAML string.
+
+        The read-back counterpart to :meth:`set_active_config_raw`: it reports
+        the config CamillaDSP is actually running right now (CamillaDSP's own
+        re-serialization of the active graph), not the persisted file path. Use
+        this — not :meth:`get_config_file_path` — to verify a live audition that
+        was applied with ``set_active_config_raw``, because that loader
+        deliberately leaves the persisted ``config_file_path`` unchanged, so the
+        path would still report the durable anchor rather than what is running.
+        """
+        try:
+            raw = await self._call(lambda c: c.config.active_raw())
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_active_config_raw → None: %s", e,
+                )
+                return None
+            raise
+        return str(raw) if raw is not None else None
+
     async def patch_config(
         self, patch: dict[str, Any], *, best_effort: bool = False,
     ) -> bool:

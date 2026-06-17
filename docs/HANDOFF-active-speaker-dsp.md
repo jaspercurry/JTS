@@ -678,6 +678,35 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   only the final, all-validated freeze step persists a loadable active config.
   When wiring the maskable emitter (the Stage-2 keystone), guard against any path
   where a partially-commissioned unmute state could persist as "safe."
+  - **Mechanism — the transient load is `set_active_config_raw`, never
+    `set_config_file_path` (gap-1 slice 2b-ii).** `jasper-camilla` runs CamillaDSP
+    with `--statefile outputd-statefile.yml` and no `-c`, so the statefile's
+    `config_path` is what it boots into, and `SetConfigFilePath` *repoints* it.
+    The guarded per-driver load
+    (`active_speaker.startup_load.load_driver_commissioning_config`) therefore
+    applies the commissioning config **inline** (`CamillaController.set_active_config_raw`
+    of the file's contents — CamillaDSP's `SetConfig`, which leaves the persisted
+    path untouched), so crash-recovery-MUTED is **structural**: the running graph
+    holds the per-driver config while the statefile still points at the all-muted
+    staged boot config. The same transaction shape as
+    `load_protected_startup_config` (snapshot anchor → preflight gate →
+    `apply_dsp_config` load with rollback) but with two differences: (1) the inline
+    transport above; (2) because the persisted path no longer reflects the running
+    graph, the post-load gate reads the **running graph** back over the websocket
+    (`CamillaController.get_active_config_raw` → `active_raw`) and re-asserts the
+    mask + protective high-pass with `staging.running_commission_evidence` — a
+    `yaml.safe_load`-based check robust to CamillaDSP's block-style
+    re-serialization, run inside the apply lock so a drift or a stale-graph
+    read-back rolls back to the staged anchor and fails closed. A precondition gate
+    refuses to run unless the staged boot config is already the active graph.
+    Built + hardware-free tested (`tests/test_active_speaker_commission_load.py`,
+    incl. the S3 guard that the durable statefile still points at the all-muted
+    staged config after a commissioning load). **On-device Stage-4 validation on
+    jts3 (the active DAC8x opens at width < physical — the scoped #741 fact — and
+    the inline transport leaves the statefile untouched against real CamillaDSP
+    4.x) is pending the bench.** Per-driver *audible* unmute is the Stage-5 gain
+    ramp, not this load: the load arms the target at the protected floor
+    (`{gain:-120, mute:False}`) — a commission load is silent until Stage 5.
 
 Every on-device step starts at the protected quiet floor: `volume_limit: 0.0`,
 per-driver limiters, and the protective tweeter high-pass are preserved by the

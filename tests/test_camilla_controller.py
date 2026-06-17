@@ -18,14 +18,18 @@ class _FakeVolume:
 
 
 class _FakeClient:
-    def __init__(self) -> None:
+    def __init__(self, active_raw_value: str | None = None) -> None:
         self.volume = _FakeVolume()
         self.config = self
         self.active_raw_values: list[str] = []
+        self.active_raw_value = active_raw_value
         self.queries: list[tuple[str, object]] = []
 
     def set_active_raw(self, value: str) -> None:
         self.active_raw_values.append(value)
+
+    def active_raw(self):
+        return self.active_raw_value
 
     def query(self, command: str, *, arg=None):
         self.queries.append((command, arg))
@@ -103,6 +107,24 @@ async def test_set_active_config_raw_rejects_empty_config():
     assert await cam.set_active_config_raw("", best_effort=True) is False
 
     assert fake.active_raw_values == []
+
+
+@pytest.mark.asyncio
+async def test_get_active_config_raw_returns_running_graph_yaml():
+    fake = _FakeClient(active_raw_value="---\nfilters: {}\n")
+    cam = _controller(fake)
+
+    # Reads the RUNNING graph (active_raw), the read-back counterpart to
+    # set_active_config_raw — distinct from the persisted config file path.
+    assert await cam.get_active_config_raw() == "---\nfilters: {}\n"
+
+
+@pytest.mark.asyncio
+async def test_get_active_config_raw_none_when_no_active_config():
+    fake = _FakeClient(active_raw_value=None)
+    cam = _controller(fake)
+
+    assert await cam.get_active_config_raw() is None
 
 
 @pytest.mark.asyncio
