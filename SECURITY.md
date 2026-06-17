@@ -130,7 +130,8 @@ not by this token.
 
 Operators can inspect or rotate the value with `sudo jasper-control-token
 --show` / `--disable` (disabling reverts to the unauthenticated trusted-LAN
-posture); curl / Home Assistant / scripts pass `-H "X-JTS-Token: <token>"`.
+posture until `jasper-control` starts and recreates it); curl, Home Assistant,
+and scripts pass `-H "X-JTS-Token: <token>"`.
 `jasper-doctor` reports the gate posture, never the secret.
 
 Diagnostic scripts redact environment-style secret assignments in their

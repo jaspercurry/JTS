@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 from jasper.web import _common
@@ -128,3 +129,49 @@ def test_install_widens_secret_env_on_upgrade():
     assert sh.count("widen_control_secret_env_modes") >= 2, (
         "widen_control_secret_env_modes must be called in both main() paths"
     )
+
+
+def test_widen_control_secret_env_modes_skips_symlinks(tmp_path: Path):
+    """Behavioural guard for the root migration in a group-writable state dir."""
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    regular = state_dir / "control_token"
+    regular.write_text("token\n")
+    outside = tmp_path / "outside_secret"
+    outside.write_text("do-not-touch\n")
+    link = state_dir / "household_secret"
+    link.symlink_to(outside)
+    ops_log = tmp_path / "ops.log"
+
+    lib = ROOT / "deploy/lib/install/env-migrations.sh"
+    helper = subprocess.run(
+        ["bash", "-c", rf"sed -n '/^widen_control_secret_env_modes()/,/^}}/p' '{lib}'"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "widen_control_secret_env_modes()" in helper
+    stubs = r"""
+getent() { return 0; }
+chgrp() { printf 'chgrp:%s\n' "${@: -1}" >> "${OPS_LOG}"; }
+chmod() { printf 'chmod:%s\n' "${@: -1}" >> "${OPS_LOG}"; }
+"""
+    proc = subprocess.run(
+        ["/bin/bash", "-c", f"{stubs}\n{helper}\nwiden_control_secret_env_modes"],
+        env={
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "ENV_DIR": str(env_dir),
+            "STATE_DIR": str(state_dir),
+            "OPS_LOG": str(ops_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    ops = ops_log.read_text()
+    assert str(regular) in ops
+    assert str(link) not in ops
+    assert str(outside) not in ops
+    assert f"skipping symlink {link}" in proc.stdout

@@ -37,13 +37,13 @@ narrow question of *who may control grouping across devices*.
      the token at all → `403`, silently reverted. **(delivery bug)**
 - Two canonical docs now **contradict** each other about `/grouping/set`
   (§2). That drift is the bug-of-record.
-- **Proposal (§5):** stop using the per-device CSRF token for M2M. Introduce
-  a **household credential** minted at the human pairing moment (`POST /bond`)
-  and presented on the cross-device grouping path — separate from the CSRF
-  token. This is the proportionate, prior-art-backed answer (ESPHome-class),
-  and unlike the #739 browser-token-forward it survives the **autonomous
-  re-grouping** case (leader re-asserts a bond after a follower reboots, with
-  no browser in the loop).
+- **Design (§5):** stop using the per-device CSRF token for M2M. Introduce
+  a **household credential** minted at the human pairing moment (the `/rooms/`
+  wizard's `POST /bond`) and presented on the cross-device grouping path —
+  separate from the CSRF token. This is the proportionate, prior-art-backed
+  answer (ESPHome-class), and unlike the #739 browser-token-forward it survives
+  the **autonomous re-grouping** case (leader re-asserts a bond after a follower
+  reboots, with no browser in the loop).
 - **Scope:** one workstream covering the device-to-device credential *and* the
   mic-mute delivery bug — every token-gated-route client + the M2M path as one
   auditable surface. Phased plan for multiple agents in §8.
@@ -160,13 +160,14 @@ Sources: [OWASP CSRF cheat sheet](https://cheatsheetseries.owasp.org/cheatsheets
 Keep the gate (a casual/cross-site actor flipping your speakers' grouping is the
 real `/grouping/set` threat), but **stop using the per-device CSRF token for the
 device-to-device path.** Introduce a distinct **household credential**,
-bootstrapped at JTS's existing human pairing moment — `POST /bond` on the
-`/rooms/` wizard *is* the "commissioning" step.
+bootstrapped at JTS's existing human pairing moment — the `/rooms/` wizard's
+`POST /bond` *is* the "commissioning" step.
 
-- **Option 1 — household shared secret (RECOMMENDED).** At `/bond`, mint a
-  single household secret (or reuse the household's existing one), persist it on
-  each member (atomic `0640` group-jasper file under `/var/lib/jasper/`, mirroring
-  the WS1-widened `control_token` + the Wi-Fi guardian stash), and present it on the
+- **Option 1 — household shared secret (RECOMMENDED).** At the `/rooms/`
+  wizard's `POST /bond`, mint a single household secret (or reuse the
+  household's existing one), persist it on each member (atomic `0640`
+  group-jasper file under `/var/lib/jasper/`, mirroring the WS1-widened
+  `control_token` + the Wi-Fi guardian stash), and present it on the
   cross-device grouping path via a **distinct** credential/header (e.g.
   `X-JTS-Household`) that each member verifies independently of its own CSRF
   token. Machine-usable + persistent → survives reboots and the autonomous
@@ -280,10 +281,11 @@ no household to protect yet). Pin the semantics
 with tests (§8 Phase C) so a refactor can't silently flip it back to fail-closed
 and brick re-bonding.
 
-**Bootstrap at the pairing moment (`POST /bond`).** The leader (the speaker
-whose `/rooms/` page the human used) ensures a household secret exists, then
-distributes it to each member during the existing bond fan-out — the same loop
-that already POSTs `/grouping/set` to members (`rooms_setup` `_post_grouping_to_member`).
+**Bootstrap at the pairing moment (`/rooms/` `POST /bond`).** The leader (the
+speaker whose `/rooms/` page the human used) ensures a household secret exists,
+then distributes it to each member during the existing bond fan-out — the same
+loop that already POSTs `/grouping/set` to members (`rooms_setup`
+`_post_grouping_to_member`).
 The **first** distribution is accepted over the trusted LAN: this is *no weaker
 than today* (the bond was already "unauthenticated by design"), and it
 **upgrades the steady state** — once a household is bonded, every subsequent

@@ -328,7 +328,10 @@ refuses to start until you've picked one. Visit
 `http://jts.local/voice/`: paste keys, pick model and voice from
 curated dropdowns, flip the active provider with a single radio
 group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
-0600), which `jasper-voice.service` sources via `EnvironmentFile=`.
+0640 group `jasper`, provider selection only) and
+`/var/lib/jasper-secrets/voice_keys.env` (mode 0640 group
+`jasper-secrets`, API keys), which `jasper-voice.service` sources via
+`EnvironmentFile=`.
 `install.sh` actively migrates any stale `JASPER_VOICE_PROVIDER`
 out of `/etc/jasper/jasper.env` on each run, so the wizard file is
 the only place it lives.

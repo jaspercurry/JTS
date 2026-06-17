@@ -2,11 +2,12 @@
 
 JTS is a trusted-LAN appliance: ``jasper-control`` (``0.0.0.0:8780``) has
 no auth, so any LAN device can ``curl`` the high-impact mutations
-(``/system/poweroff``, ``/system/reboot``, ``/mic/mute``,
-``/grouping/set``). ``jasper-control`` auto-generates this token at startup so
-those routes are gated with no operator action; this CLI lets an operator
-inspect, rotate, or temporarily remove that ``X-JTS-Token``. See SECURITY.md for
-the threat model and the gated routes.
+(``/system/poweroff``, ``/system/reboot``, ``/system/restart/voice``,
+``/system/restart/audio``, ``/mic/mute``, ``/grouping/set``).
+``jasper-control`` auto-generates this token at startup so those routes are
+gated with no operator action; this CLI lets an operator inspect, rotate, or
+temporarily remove that ``X-JTS-Token``. See SECURITY.md for the threat model
+and the gated routes.
 
 Usage::
 
@@ -28,38 +29,45 @@ import argparse
 import os
 import secrets
 import sys
+import tempfile
 
 from ..control import control_token
 
 
 def _write_token(token: str) -> None:
-    """Atomically write the token file at mode 0640.
+    """Atomically write the token file at mode 0640 and the parent directory's
+    group.
 
     tmp + chmod + os.replace so a reader never sees a half-written file
     and the secret is never briefly world-readable. The directory is
     created if missing (matches the wizard-file pattern in
     jasper/cli/airplay_mode.py)."""
     path = control_token.TOKEN_FILE
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    # Open with 0600 from the start so the secret is never momentarily
-    # readable by other users between create and chmod.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    parent_gid = os.stat(parent).st_gid
+    basename = os.path.basename(path)
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{basename}.", suffix=".tmp", dir=parent,
+    )
     try:
+        # mkstemp creates 0600, so the secret is never momentarily readable by
+        # other users between create and chmod.
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(token + "\n")
+        # WS1 Phase 3b-2: publish 0640 with the token directory's group
+        # (normally jasper). A root-run rotation in /var/lib/jasper would
+        # otherwise create root:root 0640, which the non-root jasper-control
+        # cannot read, silently failing the mandatory gate open.
+        os.chown(tmp, -1, parent_gid)
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
     except Exception:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
-    # WS1 Phase 3b-2: publish 0640 group jasper (chmod-before-rename) so the
-    # non-root jasper-control/jasper-web can read the gate token — the file is
-    # created 0600 above so it's never group/world-readable mid-write. Matches
-    # control_token.ensure_token's mode; see docs/HANDOFF-privilege-separation.md.
-    os.chmod(tmp, 0o640)
-    os.replace(tmp, path)
 
 
 def _enable(force: bool) -> int:
@@ -86,8 +94,7 @@ def _enable(force: bool) -> int:
         return 1
     print(token)
     print(
-        "control token gate ENABLED. Provision this to the /system "
-        "dashboard (you will be prompted once) or send it as the "
+        "control token written. Reload management pages or send it as the "
         "X-JTS-Token header from curl/scripts.",
         file=sys.stderr,
     )
@@ -129,7 +136,10 @@ def _disable() -> int:
     except OSError as e:
         print(f"jasper-control-token: could not remove token: {e}", file=sys.stderr)
         return 1
-    print("control token gate DISABLED — mutations are open on the trusted LAN.")
+    print(
+        "control token gate DISABLED until jasper-control starts and "
+        "recreates it.",
+    )
     return 0
 
 
@@ -138,8 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="jasper-control-token",
         description=(
             "Manage the jasper-control mutation token "
-            "(gates /system/poweroff, /system/reboot, /mic/mute, "
-            "/grouping/set). See SECURITY.md."
+            "(gates power/reboot/restart, mic-mute, and grouping routes). "
+            "See SECURITY.md."
         ),
     )
     group = parser.add_mutually_exclusive_group(required=True)

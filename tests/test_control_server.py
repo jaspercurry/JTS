@@ -3097,12 +3097,12 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
 
 
 # --------------------------------------------------------------------------
-# Opt-in control-token gate (jasper/control/control_token.py).
+# Control-token gate (jasper/control/control_token.py).
 #
-# The gate is DEFAULT-OFF: with no token file the four high-impact routes
-# (/system/poweroff, /system/reboot, /mic/mute, /grouping/set) behave exactly
-# as today. With a token file, each requires a matching X-JTS-Token header.
-# Ungated routes (/volume*, /healthz, …) are never affected.
+# The primitive is fail-safe-open with no token file, but production startup
+# auto-generates one so the high-impact route set requires a matching
+# X-JTS-Token header by default. Ungated routes (/volume*, /healthz, …) are
+# never affected.
 # --------------------------------------------------------------------------
 
 # Derived from the server's own frozenset so a newly gated route is exercised
@@ -3151,7 +3151,7 @@ def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):
 
 
 def _disable_control_token(monkeypatch, tmp_path):
-    """Point control_token at an absent file (gate DEFAULT-OFF)."""
+    """Point control_token at an absent file (primitive fail-safe-open)."""
     import jasper.control.control_token as ct
 
     monkeypatch.setattr(ct, "TOKEN_FILE", str(tmp_path / "absent"))
@@ -3185,7 +3185,7 @@ def _unpair_household(monkeypatch, tmp_path):
 def test_default_off_gated_routes_reach_handlers(
     monkeypatch, tmp_path, server_with_coordinator, server_with_voice_socket,
 ):
-    """DEFAULT-OFF invariant: with NO token file, none of the four gated
+    """Primitive fail-open invariant: with NO token file, none of the gated
     routes return control_token_required — each reaches its real handler
     exactly as before the gate existed. We assert the *gate* is a no-op by
     confirming no 403 control_token_required comes back; the handler's own

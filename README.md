@@ -202,8 +202,9 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ Web setup wizard at `http://jts.local/voice/` — paste API keys,
   pick the active provider, choose tested/fallback models, manually
   refresh provider model lists for experimental trials, manage pricing
-  and spend cap settings, save. Writes `/var/lib/jasper/voice_provider.env`
-  at mode 0600 and restarts `jasper-voice`
+  and spend cap settings, save. Writes provider selection to
+  `/var/lib/jasper/voice_provider.env`, writes API keys to
+  `/var/lib/jasper-secrets/voice_keys.env`, and restarts `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify
   search & queue, weather (now including daily sunrise/sunset),
   NYC subway times, NYC MTA bus arrivals, NYC Citi Bike availability
@@ -513,7 +514,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/HANDOFF-observability.md](docs/HANDOFF-observability.md) | Operator + AI | Logging/observability model (heartbeat-vs-forensic split, the three steady-state verbosity hotspots, persistent-journald rationale) + the approved per-subsystem debug-mode toggle, flight-recorder, and download-diagnostics design |
 | [docs/HANDOFF-privilege-separation.md](docs/HANDOFF-privilege-separation.md) | Maintainers / security | Threat model + ADR for hardening and de-rooting the daemons: Phase 1 hardened-root stanza (landed, measured), the restart-broker + invisible-token, the Tier-A user drop with its recovery-validation matrix, and the tracked Tier-B follow-up |
-| [docs/HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md) | Maintainers / security | **Proposal (RFC + phased plan).** Device-to-device / household control-plane auth: why the per-device CSRF control token cannot authenticate cross-speaker grouping, the prior-art research, the household-credential proposal, and the plan that reconciles the privilege-separation ↔ multiroom §7 contradiction. Also folds in the landing-page mic-mute token-delivery fix |
+| [docs/HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md) | Maintainers / security | Device-to-device / household control-plane auth: why the per-device CSRF control token cannot authenticate cross-speaker grouping, the prior-art research, the household-credential design, shipped Phase A-C status, and the Phase D scope decision. Also folds in the landing-page mic-mute token-delivery fix |
 | [docs/doc-map.toml](docs/doc-map.toml) | Maintainers / AI agents | Documentation impact routing: code globs → canonical docs to scan, safety class, and suggested verification. Used by `scripts/docs-impact.py` and the non-blocking PR comment workflow. |
 | [docs/audit-pending-followups.md](docs/audit-pending-followups.md) | Maintainers | Deferred/rejected follow-ups from the May 2026 architectural-pattern audit |
 | [docs/historical/](docs/historical/) | Maintainers / archaeology | Completed or superseded runbooks preserved for context; not current operational truth |
