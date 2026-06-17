@@ -26,6 +26,16 @@ from jasper.active_speaker.startup_load import (
     load_driver_commissioning_config,
     rollback_driver_commissioning_config,
 )
+from jasper.active_speaker.commission_ramp import (
+    abort_ramp,
+    load_ramp_state,
+    ramp_audible_step,
+    record_ramp_operator_ack,
+)
+from jasper.active_speaker.safe_playback import (
+    FLOOR_OPERATOR_OUTCOMES,
+    load_safe_playback_state,
+)
 from jasper.dsp_apply import validate_camilla_config
 from jasper.output_topology import load_output_topology
 
@@ -446,6 +456,130 @@ def _cmd_commission_rollback(args: argparse.Namespace) -> int:
     return 0 if rollback.get("status") in {"rolled_back", "blocked"} else 1
 
 
+def _print_ramp_step_summary(payload: dict[str, Any]) -> None:
+    status = payload.get("status")
+    print(f"Stage-5 ramp step: {status}")
+    print(
+        f"  target: group={payload.get('speaker_group_id')} role={payload.get('role')}"
+    )
+    gate = payload.get("gate") or {}
+    if gate:
+        print(
+            "  gain: "
+            f"{gate.get('current_gain_db')} -> {gate.get('next_gain_db')} dB"
+        )
+        failed = sorted(k for k, ok in (gate.get("checks") or {}).items() if not ok)
+        if failed:
+            print(f"  gate failed: {', '.join(failed)}")
+    safe = payload.get("safe_playback") or {}
+    if safe:
+        print(
+            "  per-driver floor: "
+            f"{safe.get('floor_status')} (awaiting operator ACK)"
+        )
+    if status == "stepped":
+        print(
+            "  The driver is now AUDIBLE at this level. Confirm by ear, then run "
+            "`commission-ramp ack --outcome heard_correct_driver` (or too_loud / "
+            "silent / heard_wrong_driver). `commission-ramp abort` re-mutes."
+        )
+    for issue in payload.get("issues") or []:
+        print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+
+
+def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
+    topology = load_output_topology(args.topology)
+    staged = load_staged_startup_config()
+    preset, crossover_preview = _resolve_commission_inputs(args)
+    cam = _camilla_controller()
+
+    async def _run() -> dict[str, Any]:
+        current_config_path, current_config_error = await _current_config_path(cam)
+        evidence_path = _write_commission_path_safety(
+            topology, staged, current_config_path, current_config_error
+        )
+        return await ramp_audible_step(
+            topology,
+            speaker_group_id=args.group,
+            role=args.role,
+            load_config=_commission_load_config(cam),
+            read_running_config=lambda: cam.get_active_config_raw(best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+            preset=preset,
+            crossover_preview=crossover_preview,
+            path_safety_evidence_path=evidence_path,
+            staged_config=staged,
+        )
+
+    payload = asyncio.run(_run())
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        _print_ramp_step_summary(payload)
+    return 0 if payload.get("status") == "stepped" else 1
+
+
+def _cmd_commission_ramp_ack(args: argparse.Namespace) -> int:
+    cam = _camilla_controller()
+    # load_config is only used for the abort outcomes (too_loud / heard_wrong);
+    # harmless to pass for the others.
+    payload = asyncio.run(
+        record_ramp_operator_ack(
+            outcome=args.outcome,
+            load_config=_commission_load_config(cam),
+        )
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Stage-5 ramp ack ({args.outcome}): {payload.get('status')}")
+        safe = payload.get("safe_playback") or {}
+        if safe:
+            print(f"  per-driver floor: {safe.get('floor_status')}")
+        rollback = payload.get("rollback")
+        if rollback:
+            print(f"  re-muted via rollback: {rollback.get('status')}")
+        for issue in payload.get("issues") or []:
+            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+    return 0 if payload.get("status") in {"confirmed", "retry", "aborted"} else 1
+
+
+def _cmd_commission_ramp_status(args: argparse.Namespace) -> int:
+    payload = {
+        "commission_load": load_commission_load_state(),
+        "ramp": load_ramp_state(),
+        "safe_playback": load_safe_playback_state(),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        commission = payload["commission_load"]
+        ramp = payload["ramp"]
+        quiet = (payload["safe_playback"].get("quiet_start") or {})
+        target = commission.get("target") or {}
+        print(f"Commission load: {commission.get('status')}")
+        print(
+            f"  armed target: group={target.get('speaker_group_id')} "
+            f"role={target.get('role')} gain={target.get('audible_gain_db')} dB"
+        )
+        print(f"Ramp: confirmed_roles={ramp.get('confirmed_roles')}")
+        print(f"  pending step: {ramp.get('pending')}")
+        print(f"Per-driver floor tri-state: {quiet.get('status')}")
+    return 0
+
+
+def _cmd_commission_ramp_abort(args: argparse.Namespace) -> int:
+    cam = _camilla_controller()
+    payload = asyncio.run(abort_ramp(load_config=_commission_load_config(cam)))
+    rollback = payload.get("rollback") or {}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Stage-5 ramp abort: {payload.get('status')}")
+        print(f"  re-muted via rollback: {rollback.get('status')}")
+    return 0 if rollback.get("status") in {"rolled_back", "blocked"} else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-active-speaker",
@@ -623,6 +757,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commission_rollback.add_argument("--json", action="store_true")
     commission_rollback.set_defaults(func=_cmd_commission_rollback)
+
+    ramp = sub.add_parser(
+        "commission-ramp",
+        help=(
+            "Stage-5: raise an armed driver from the silent floor to a low audible "
+            "level, one gated step at a time (operator-confirmed, woofer first)"
+        ),
+    )
+    ramp_sub = ramp.add_subparsers(dest="ramp_action", required=True)
+
+    ramp_step = ramp_sub.add_parser(
+        "step", help="take one gated audible gain step on the armed driver"
+    )
+    ramp_step.add_argument("--group", required=True, help="armed speaker group id")
+    ramp_step.add_argument("--role", required=True, help="armed driver role")
+    ramp_step.add_argument(
+        "--preset",
+        help="optional preset JSON override (must match the armed load)",
+    )
+    ramp_step.add_argument("--topology", help="optional output-topology JSON path")
+    ramp_step.add_argument("--json", action="store_true")
+    ramp_step.set_defaults(func=_cmd_commission_ramp_step)
+
+    ramp_ack = ramp_sub.add_parser(
+        "ack", help="record the operator's verdict for the pending audible step"
+    )
+    ramp_ack.add_argument(
+        "--outcome",
+        required=True,
+        choices=sorted(FLOOR_OPERATOR_OUTCOMES),
+        help=(
+            "heard_correct_driver confirms; too_loud / heard_wrong_driver re-mute; "
+            "silent allows a louder retry"
+        ),
+    )
+    ramp_ack.add_argument("--json", action="store_true")
+    ramp_ack.set_defaults(func=_cmd_commission_ramp_ack)
+
+    ramp_status = ramp_sub.add_parser(
+        "status", help="show the commission-load, ramp, and per-driver floor state"
+    )
+    ramp_status.add_argument("--json", action="store_true")
+    ramp_status.set_defaults(func=_cmd_commission_ramp_status)
+
+    ramp_abort = ramp_sub.add_parser(
+        "abort", help="re-mute: roll back to the all-muted staged config and reset"
+    )
+    ramp_abort.add_argument("--json", action="store_true")
+    ramp_abort.set_defaults(func=_cmd_commission_ramp_abort)
     return parser
 
 

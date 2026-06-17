@@ -1,4 +1,5 @@
 from __future__ import annotations
+import yaml
 
 import json
 from pathlib import Path
@@ -372,7 +373,107 @@ def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) ->
         str(tmp_path / "commission_load.json"),
     )
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    # Stage-5 ramp + per-driver floor tri-state live in their own files.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE", str(tmp_path / "ramp.json")
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", str(tmp_path / "safe.json")
+    )
     return {"staged": staged, "staged_path": staged_path, "statefile": statefile}
+
+
+_READY_ENV_CLI = {
+    "status": "ready",
+    "load_gate": "ready",
+    "ok_to_load_active_config": True,
+    "camilla_config": {},
+    "safe_playback": {},
+    "issues": [],
+}
+
+
+def _arm_woofer(monkeypatch, tmp_path, capsys):
+    from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
+
+    controller = _FakeController("placeholder")
+    env = _commission_env(monkeypatch, tmp_path, controller)
+    controller.persisted_path = env["staged_path"]
+    # The ramp arms a safe_playback session via the env probe before the first
+    # audible step; make that deterministic in CI.
+    monkeypatch.setattr(
+        "jasper.active_speaker.environment.probe_active_speaker_environment",
+        lambda **kwargs: _READY_ENV_CLI,
+    )
+    assert main(["commission-load", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+    return controller, env, MIN_TEST_LEVEL_DBFS
+
+
+def test_commission_ramp_step_then_ack_cli(monkeypatch, tmp_path: Path, capsys):
+    controller, env, floor = _arm_woofer(monkeypatch, tmp_path, capsys)
+
+    code = main([
+        "commission-ramp", "step", "--group", "mono", "--role", "woofer", "--json"
+    ])
+    step = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert step["status"] == "stepped"
+    assert step["next_gain_db"] == floor
+    assert step["safe_playback"]["floor_status"] == "floor_pending_operator"
+    # The running graph now carries the woofer un-muted at the audible floor.
+    assert yaml.safe_load(controller.running_raw)["filters"]["as_out0_commission_mute"][
+        "parameters"
+    ]["gain"] == floor
+
+    code = main([
+        "commission-ramp", "ack", "--outcome", "heard_correct_driver", "--json"
+    ])
+    ack = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert ack["status"] == "confirmed"
+    assert ack["safe_playback"]["floor_status"] == "floor_confirmed"
+
+
+def test_commission_ramp_abort_cli_remutes(monkeypatch, tmp_path: Path, capsys):
+    controller, env, _ = _arm_woofer(monkeypatch, tmp_path, capsys)
+    assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+
+    code = main(["commission-ramp", "abort", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["status"] == "aborted"
+    # Re-muted: the last thing applied to the running graph is the staged config.
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_commission_ramp_tweeter_blocked_before_woofer_cli(
+    monkeypatch, tmp_path: Path, capsys
+):
+    # Arm the tweeter and try to ramp it before the woofer is confirmed: the gate
+    # blocks (woofer-before-tweeter) and the CLI exits non-zero.
+    controller = _FakeController("placeholder")
+    env = _commission_env(monkeypatch, tmp_path, controller)
+    controller.persisted_path = env["staged_path"]
+    monkeypatch.setattr(
+        "jasper.active_speaker.environment.probe_active_speaker_environment",
+        lambda **kwargs: _READY_ENV_CLI,
+    )
+    assert main(["commission-load", "--group", "mono", "--role", "tweeter"]) == 0
+    capsys.readouterr()
+    loads_before = len(controller.applied_texts)
+
+    code = main([
+        "commission-ramp", "step", "--group", "mono", "--role", "tweeter", "--json"
+    ])
+    step = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert step["status"] == "gate_blocked"
+    assert step["gate"]["checks"]["role_order_woofer_first"] is False
+    assert len(controller.applied_texts) == loads_before  # loaded nothing more
 
 
 def test_commission_load_cli_arms_woofer_at_floor(monkeypatch, tmp_path: Path, capsys):
