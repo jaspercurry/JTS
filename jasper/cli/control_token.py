@@ -29,8 +29,8 @@ import argparse
 import os
 import secrets
 import sys
-import tempfile
 
+from ..atomic_io import atomic_write_text
 from ..control import control_token
 
 
@@ -43,31 +43,13 @@ def _write_token(token: str) -> None:
     created if missing (matches the wizard-file pattern in
     jasper/cli/airplay_mode.py)."""
     path = control_token.TOKEN_FILE
-    parent = os.path.dirname(path) or "."
-    os.makedirs(parent, exist_ok=True)
-    parent_gid = os.stat(parent).st_gid
-    basename = os.path.basename(path)
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{basename}.", suffix=".tmp", dir=parent,
+    # WS1 Phase 3b-2: publish 0640 with the token directory's group
+    # (normally jasper). A root-run rotation in /var/lib/jasper would
+    # otherwise create root:root 0640, which the non-root jasper-control
+    # cannot read, silently failing the mandatory gate open.
+    atomic_write_text(
+        path, token + "\n", mode=0o640, group_from_parent=True,
     )
-    try:
-        # mkstemp creates 0600, so the secret is never momentarily readable by
-        # other users between create and chmod.
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(token + "\n")
-        # WS1 Phase 3b-2: publish 0640 with the token directory's group
-        # (normally jasper). A root-run rotation in /var/lib/jasper would
-        # otherwise create root:root 0640, which the non-root jasper-control
-        # cannot read, silently failing the mandatory gate open.
-        os.chown(tmp, -1, parent_gid)
-        os.chmod(tmp, 0o640)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def _enable(force: bool) -> int:

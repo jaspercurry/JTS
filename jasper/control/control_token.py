@@ -132,9 +132,11 @@ def ensure_token() -> str:
     token = secrets.token_urlsafe(32)
     # Canonical atomic writer (chmod-before-rename, same-FS replace) at 0640 so
     # the secret is never even briefly world-readable, while staying group-`jasper`
-    # readable for the non-root jasper-control/jasper-web (see docstring). Raises
-    # OSError on failure; the single caller (ensure_token at startup) fails open.
-    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640)
+    # readable for the non-root jasper-control/jasper-web (see docstring). Use
+    # the parent directory group too, because install.sh may mint this as root
+    # before the daemon starts. Raises OSError on failure; the single caller
+    # (ensure_token at startup) fails open.
+    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640, group_from_parent=True)
     return token
 
 

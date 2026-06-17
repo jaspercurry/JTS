@@ -222,6 +222,28 @@ def test_ensure_token_is_0640(monkeypatch, tmp_path):
     assert mode == 0o640, f"token file is {oct(mode)}, expected 0o640"
 
 
+def test_ensure_token_sets_token_group_to_parent_directory(monkeypatch, tmp_path):
+    """Install-time minting may run as root, so startup generation needs the
+    same parent-group publish contract as the CLI rotation path."""
+    path = tmp_path / "control_token"
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    calls: list[tuple[str, int, int]] = []
+
+    def fake_chown(target: str, uid: int, gid: int) -> None:
+        calls.append((target, uid, gid))
+
+    monkeypatch.setattr(os, "chown", fake_chown)
+    control_token.ensure_token()
+
+    parent_gid = os.stat(tmp_path).st_gid
+    assert calls, "ensure_token must set group before publishing the token"
+    target, uid, gid = calls[-1]
+    assert os.path.dirname(target) == str(tmp_path)
+    assert os.path.basename(target).startswith(".control_token.")
+    assert uid == -1
+    assert gid == parent_gid
+
+
 def test_ensure_token_is_idempotent_and_never_rotates(monkeypatch, tmp_path):
     path = tmp_path / "control_token"
     path.write_text("household-set-token\n")
