@@ -3141,6 +3141,31 @@ def _disable_control_token(monkeypatch, tmp_path):
     monkeypatch.setattr(ct, "TOKEN_FILE", str(tmp_path / "absent"))
 
 
+def _pair_household(monkeypatch, tmp_path, secret="hh-secret-value"):
+    """Point household_credential at a tmp file containing `secret` (PAIRED).
+
+    A paired speaker is the steady state: its /grouping/set requires EITHER the
+    control token OR this household credential (HANDOFF-control-plane-auth.md §6).
+    """
+    import jasper.control.household_credential as hc
+
+    path = tmp_path / "household_secret"
+    path.write_text(secret + "\n")
+    monkeypatch.setattr(hc, "SECRET_FILE", str(path))
+    return secret
+
+
+def _unpair_household(monkeypatch, tmp_path):
+    """Point household_credential at an absent file (NOT yet paired).
+
+    Unpaired ⇒ verify() fail-safe-accepts, so /grouping/set is open — the
+    deliberate bootstrap window (the secret is distributed over that very route).
+    """
+    import jasper.control.household_credential as hc
+
+    monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "absent_household"))
+
+
 def test_default_off_gated_routes_reach_handlers(
     monkeypatch, tmp_path, server_with_coordinator, server_with_voice_socket,
 ):
@@ -3170,9 +3195,15 @@ def test_enabled_gated_routes_403_without_token(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
     """With the gate enabled, every gated route 403s control_token_required
-    when no X-JTS-Token is sent — including before any side effect runs."""
+    when no X-JTS-Token is sent — including before any side effect runs.
+
+    /grouping/set also consults the household credential, so we PAIR the speaker
+    here: a paired speaker rejects a tokenless, householdless call on every gated
+    route (an UNPAIRED speaker's /grouping/set is the open bootstrap window,
+    pinned separately below)."""
     base, _ = server_with_coordinator
     _enable_control_token(monkeypatch, tmp_path)
+    _pair_household(monkeypatch, tmp_path)
     for route in _GATED_ROUTES:
         status, body = _post(f"{base}{route}", {"muted": True})
         assert status == 403, route
@@ -3184,6 +3215,7 @@ def test_enabled_gated_routes_403_with_wrong_token(
 ):
     base, _ = server_with_coordinator
     _enable_control_token(monkeypatch, tmp_path, token="correct-horse")
+    _pair_household(monkeypatch, tmp_path)  # paired: /grouping/set also gated
     for route in _GATED_ROUTES:
         status, body = _post(
             f"{base}{route}", {"muted": True},
@@ -3226,3 +3258,181 @@ def test_enabled_gate_does_not_affect_ungated_routes(
     # Ungated GET liveness: unaffected.
     status, body = _get(f"{base}/healthz")
     assert status == 200 and body == {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Household credential on /grouping/set (jasper/control/household_credential.py).
+#
+# The device-to-device gate: a peer fan-out / autonomous re-group presents the
+# household secret as X-JTS-Household, verified against each member's persisted
+# copy — NOT the per-device CSRF token a leader can't hold for a follower. The
+# gate accepts EITHER on /grouping/set ONLY; every other gated route stays
+# control-token-only. Fail-safe (absent ⇒ accept) so the first bond, which
+# distributes the secret over this very route, isn't rejected by the gate it
+# installs. Full design: docs/HANDOFF-control-plane-auth.md §6.
+# --------------------------------------------------------------------------
+
+
+def test_grouping_set_accepts_household_credential_without_token(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """A paired member accepts /grouping/set on a valid X-JTS-Household with NO
+    X-JTS-Token — the cross-device path. Gate accepts EITHER credential."""
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)  # CSRF gate armed
+    secret = _pair_household(monkeypatch, tmp_path)
+    env, _ = _grouping_test_setup(monkeypatch, tmp_path)
+    status, body = _post(
+        f"{base}/grouping/set",
+        {"enabled": True, "role": "leader", "channel": "left", "bond_id": "x"},
+        headers={"X-JTS-Household": secret},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert "JASPER_GROUPING=on" in env.read_text()
+
+
+def test_grouping_set_403_without_either_credential_when_paired(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """Once a household is bonded, a tokenless+householdless caller can no longer
+    flip grouping — the whole point of the gate."""
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    _pair_household(monkeypatch, tmp_path)
+    status, body = _post(f"{base}/grouping/set", {"enabled": False})
+    assert status == 403
+    assert body["error"] == "control_token_required"
+
+
+def test_grouping_set_403_with_wrong_household(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    _pair_household(monkeypatch, tmp_path, secret="correct-household")
+    status, body = _post(
+        f"{base}/grouping/set", {"enabled": False},
+        headers={"X-JTS-Household": "wrong-household"},
+    )
+    assert status == 403
+    assert body["error"] == "control_token_required"
+
+
+def test_household_credential_not_accepted_on_other_gated_routes(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """Scope: X-JTS-Household authorizes ONLY /grouping/set. The other gated
+    routes are browser→own-speaker and stay control-token-only — a household
+    bearer must NOT open /mic/mute, poweroff, reboot, or the restart routes."""
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    secret = _pair_household(monkeypatch, tmp_path)
+    for route in (
+        "/system/poweroff", "/system/reboot", "/mic/mute",
+        "/system/restart/voice", "/system/restart/audio",
+    ):
+        status, body = _post(
+            f"{base}{route}", {"muted": True},
+            headers={"X-JTS-Household": secret},
+        )
+        assert status == 403, route
+        assert body["error"] == "control_token_required", route
+
+
+def test_unbonded_follower_accepts_and_adopts_grouping_fanout(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """BOOTSTRAP regression: an UNPAIRED follower (no secret) must accept the
+    secret-distributing bond fan-out — proving the gate the secret installs
+    doesn't deadlock the install — and ADOPT it so the next cross-device call
+    verifies against it. The CSRF gate is armed; the leader sends only
+    X-JTS-Household."""
+    import jasper.control.household_credential as hc
+
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    secret_path = tmp_path / "household_secret"
+    monkeypatch.setattr(hc, "SECRET_FILE", str(secret_path))  # follower UNPAIRED
+    env, _ = _grouping_test_setup(monkeypatch, tmp_path)
+    assert hc.is_paired() is False
+    status, body = _post(
+        f"{base}/grouping/set",
+        {"enabled": True, "role": "leader", "channel": "left", "bond_id": "x"},
+        headers={"X-JTS-Household": "leader-minted-secret"},
+    )
+    assert status == 200  # fail-safe accept → no bootstrap deadlock
+    assert body["ok"] is True
+    # ...and the follower ADOPTED the leader's secret (trust-on-first-use).
+    assert hc.current() == "leader-minted-secret"
+    # Now the gate requires it: a tokenless, householdless call 403s (the
+    # bootstrap window has closed for this member).
+    status, _ = _post(f"{base}/grouping/set", {"enabled": False})
+    assert status == 403
+
+
+def test_follower_with_deleted_secret_can_be_rebonded(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """RECOVERY regression: a follower whose household_secret was DELETED (the
+    2026-05-23 ext4-loss class) must be re-bondable — fail-safe accept on absent,
+    then re-adopt. Proves self-heal survives file loss (would be bricked by a
+    fail-CLOSED gate)."""
+    import jasper.control.household_credential as hc
+
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    secret_path = tmp_path / "household_secret"
+    secret_path.write_text("original-secret\n")
+    monkeypatch.setattr(hc, "SECRET_FILE", str(secret_path))
+    env, _ = _grouping_test_setup(monkeypatch, tmp_path)
+    secret_path.unlink()  # simulate filesystem loss of the secret
+    assert hc.is_paired() is False
+    status, body = _post(
+        f"{base}/grouping/set",
+        {"enabled": True, "role": "leader", "channel": "left", "bond_id": "x"},
+        headers={"X-JTS-Household": "fresh-secret"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert hc.current() == "fresh-secret"  # re-adopted → re-bonded
+
+
+def test_unpaired_grouping_set_is_open_bootstrap_window(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """The deliberate, documented trade: on an UNPAIRED speaker /grouping/set is
+    fail-safe-OPEN (so the distributing fan-out is never rejected), while the
+    OTHER gated routes — which never consult the household credential — stay
+    closed under the armed control-token gate."""
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    _unpair_household(monkeypatch, tmp_path)
+    env, _ = _grouping_test_setup(monkeypatch, tmp_path)
+    # Unpaired /grouping/set: open even with no credential at all.
+    status, _ = _post(f"{base}/grouping/set", {"enabled": False})
+    assert status == 200
+    # The other gated routes are NOT loosened by the household fail-safe.
+    status, body = _post(f"{base}/mic/mute", {"muted": True})
+    assert status == 403
+    assert body["error"] == "control_token_required"
+
+
+def test_unbond_clears_household_secret(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """An unbond (/grouping/set enabled=false) carrying the matching secret
+    clears it, so the speaker can later re-pair to a different household."""
+    import jasper.control.household_credential as hc
+
+    base, _ = server_with_coordinator
+    _enable_control_token(monkeypatch, tmp_path)
+    secret = _pair_household(monkeypatch, tmp_path, secret="to-be-cleared")
+    _grouping_test_setup(monkeypatch, tmp_path)
+    assert hc.is_paired() is True
+    status, body = _post(
+        f"{base}/grouping/set", {"enabled": False},
+        headers={"X-JTS-Household": secret},
+    )
+    assert status == 200
+    assert hc.is_paired() is False  # cleared → re-pairable

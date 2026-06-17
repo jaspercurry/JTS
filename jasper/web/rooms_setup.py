@@ -84,6 +84,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
+from ..control import household_credential
 from ..mdns import browse_once
 from ..multiroom.state import parse_grouping_response, read_grouping_state
 from ..peering import config as peering_config
@@ -615,17 +616,21 @@ def _request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     The /rooms/ grouping mutations fan out SERVER-side to each member's
     /grouping/set, so the browser's control token (the mandatory gate since
     WS1 Phase 2) would be lost unless this leader forwards it. We relay only
-    what the operator's browser sent — never inject a token from disk — so the
-    gate stays real. A forwarded browser token authenticates only
+    what the operator's browser sent — never inject THIS token from disk — so
+    the CSRF gate stays real. A forwarded browser token authenticates only
     browser→own-speaker; the cross-device fan-out's own auth is the household
-    credential (Phase C, docs/HANDOFF-control-plane-auth.md)."""
+    credential — a DISTINCT bearer (``X-JTS-Household``) that
+    ``_post_grouping_to_member`` injects from disk. That disk read is the
+    intentional, scoped break of this relay-only rule for a DIFFERENT credential
+    and trust domain (docs/HANDOFF-control-plane-auth.md §6); the control-token
+    relay-only invariant here is unchanged."""
     token = handler.headers.get("X-JTS-Token")
     return token or None
 
 
 def _post_grouping_to_member(
     addr: str, body: dict, known: set[str] | None = None,
-    *, token: str | None = None,
+    *, token: str | None = None, household: str | None = None,
 ) -> tuple[bool, str]:
     """Configure ONE member by POSTing to its jasper-control /grouping/set.
 
@@ -637,15 +642,20 @@ def _post_grouping_to_member(
     remote target must be a PRIVATE / loopback IPv4 — the control API is a
     home-LAN surface, never a public host. ``known`` is forwarded to the guard
     so a fan-out computes the self-address set once. ``token`` is the
-    browser-supplied control token relayed to each member. The /grouping/set
-    gate is now MANDATORY (WS1 Phase 2 — no longer opt-in), and a member mints
-    its OWN distinct control_token, so this relayed token only authenticates the
-    browser→its-own-speaker call; a cross-device POST to another member's
-    /grouping/set 403s without a credential this leader does not hold.
-    Cross-device fan-out auth is the forthcoming household credential
-    (Phase C of docs/HANDOFF-control-plane-auth.md), not yet built — so today
-    the server-side fan-out only succeeds against an unbonded / transitional
-    member whose gate isn't yet armed. Returns (ok, detail); never raises.
+    browser-supplied control token relayed to each member; a member mints its
+    OWN distinct control_token, so it only authenticates the
+    browser→its-own-speaker call, never a cross-device POST.
+
+    Cross-device fan-out auth is the HOUSEHOLD CREDENTIAL (``X-JTS-Household``):
+    the household secret, attached here — ``household=`` when the caller pre-read
+    it (the unbond path reads it ONCE before it clears, so the concurrent peer
+    POSTs can't race the secret out from under each other), else a fresh
+    ``household_credential.current()`` read. Reading the secret from disk here is
+    the intentional, documented break of ``_request_control_token``'s relay-only
+    invariant — a DIFFERENT credential, so injecting IT from disk is correct
+    (docs/HANDOFF-control-plane-auth.md §6). A member with no secret yet (unpaired
+    or lost) fail-safe-accepts and adopts it. Attaches nothing on a lone speaker
+    (no secret). Returns (ok, detail); never raises.
     """
     target = _lan_target(addr, known)
     if target is None:
@@ -658,6 +668,9 @@ def _post_grouping_to_member(
     headers = {"Content-Type": "application/json"}
     if token:
         headers["X-JTS-Token"] = token
+    cred = household if household is not None else household_credential.current()
+    if cred:
+        headers["X-JTS-Household"] = cred
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
@@ -708,7 +721,7 @@ def _map_peers(fn, items):
 
 def _fan_out_grouping(
     targets: list[tuple[str, dict]], *, known: set[str] | None = None,
-    token: str | None = None,
+    token: str | None = None, household: str | None = None,
 ) -> list[tuple[bool, str]]:
     """POST a grouping config to several members concurrently, ``(ok, detail)``
     results in INPUT order (the caller pairs them back positionally).
@@ -721,11 +734,17 @@ def _fan_out_grouping(
     :func:`_unbond`, which also used it for discovery) pass it in. ``token``
     is the browser-supplied control token forwarded to every member's
     /grouping/set (mandatory gate since WS1 Phase 2; None when the request
-    carried no X-JTS-Token)."""
+    carried no X-JTS-Token). ``household`` is the household credential
+    (X-JTS-Household) for the cross-device path; pass it explicitly (read ONCE)
+    when the fan-out also mutates the secret — the unbond clear — so a per-member
+    live read can't race the clear; leave it None for bond/swap/trim and each
+    member reads the current secret itself."""
     if known is None:
         known = _self_addresses()
     return _map_peers(
-        lambda t: _post_grouping_to_member(t[0], t[1], known, token=token),
+        lambda t: _post_grouping_to_member(
+            t[0], t[1], known, token=token, household=household,
+        ),
         targets,
     )
 
@@ -840,6 +859,12 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         targets.append((addr, body))
         target_idx.append(i)
 
+    # Mint the household credential on THIS leader before the fan-out, so each
+    # member's /grouping/set carries it (X-JTS-Household, attached live by
+    # _post_grouping_to_member) and adopts it on receipt — locking down every
+    # subsequent cross-device grouping change. Idempotent: re-bonding the same
+    # household reuses the existing secret (control-plane-auth §6).
+    household_credential.ensure()
     token = _request_control_token(handler)
     for slot, (addr, body), (ok, detail) in zip(
         target_idx, targets, _fan_out_grouping(targets, token=token)
@@ -943,8 +968,16 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     targets += [(addr, {"enabled": False}) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
 
+    # Read the household credential ONCE before the fan-out. Each member's
+    # /grouping/set (enabled=false) clears its own secret — and self (loopback)
+    # clears ours — so a per-member live read could race the clear and strip a
+    # peer of the credential it needs to authenticate the very unbond that
+    # dissolves it. Passing the pre-read value makes every peer POST carry it
+    # regardless of clear ordering (control-plane-auth §6).
+    household = household_credential.current()
     fan_results = _fan_out_grouping(
         targets, known=known, token=_request_control_token(handler),
+        household=household,
     )
     results = [
         {"addr": addr, "ok": ok, "detail": detail}

@@ -235,7 +235,8 @@ class AsyncControlClient:
         self._timeout = timeout
 
     async def request(
-        self, method: str, path: str, body: dict | None = None
+        self, method: str, path: str, body: dict | None = None,
+        *, headers: dict[str, str] | None = None,
     ) -> ControlResponse:
         return await asyncio.to_thread(
             _request,
@@ -244,13 +245,21 @@ class AsyncControlClient:
             base_url=self._base_url,
             body=body,
             timeout=self._timeout,
+            headers=headers,
         )
 
     async def get(self, path: str) -> ControlResponse:
         return await self.request("GET", path)
 
-    async def post(self, path: str, body: dict | None = None) -> ControlResponse:
-        return await self.request("POST", path, body)
+    async def post(
+        self, path: str, body: dict | None = None,
+        *, headers: dict[str, str] | None = None,
+    ) -> ControlResponse:
+        # `headers=` lets a daemon-side caller attach the household credential
+        # (X-JTS-Household) on a cross-device /grouping/set — the autonomous
+        # re-grouping path (Phase D). _request refuses to let a caller header
+        # clobber Content-Type, so the bearer rides safely.
+        return await self.request("POST", path, body, headers=headers)
 
     async def adjust_volume(self, delta_percent: int) -> ControlResponse:
         return await self.post("/volume/adjust", {"delta_percent": delta_percent})

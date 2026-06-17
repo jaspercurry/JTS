@@ -139,6 +139,49 @@ async def test_async_client_raises_control_error_when_down():
         await c.get("/state")
 
 
+@pytest.mark.asyncio
+async def test_async_client_post_threads_headers_to_request(monkeypatch):
+    """AsyncControlClient.post(headers=...) forwards the headers to _request —
+    the seam the autonomous re-grouping path (Phase D) uses to attach the
+    household credential (X-JTS-Household) on a daemon-side /grouping/set."""
+    seen: dict = {}
+
+    def fake_request(method, path, *, base_url=client.DEFAULT_BASE_URL,
+                     body=None, data=None, timeout=client.DEFAULT_TIMEOUT,
+                     headers=None):
+        seen.update(method=method, path=path, headers=headers)
+        return client.ControlResponse(200, b"{}")
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    c = client.AsyncControlClient("http://127.0.0.1:8780")
+    r = await c.post(
+        "/grouping/set", {"enabled": True},
+        headers={"X-JTS-Household": "secret"},
+    )
+    assert r.status == 200
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/grouping/set"
+    assert seen["headers"] == {"X-JTS-Household": "secret"}
+
+
+@pytest.mark.asyncio
+async def test_async_client_headers_default_none_is_backward_compatible(monkeypatch):
+    """headers defaults to None, so the existing positional callers (bridge.py
+    binds .request as a callable) keep working unchanged."""
+    seen: dict = {}
+
+    def fake_request(method, path, *, base_url=client.DEFAULT_BASE_URL,
+                     body=None, data=None, timeout=client.DEFAULT_TIMEOUT,
+                     headers=None):
+        seen["headers"] = headers
+        return client.ControlResponse(200, b"{}")
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    c = client.AsyncControlClient("http://127.0.0.1:8780")
+    await c.request("GET", "/state")
+    assert seen["headers"] is None
+
+
 # ----------------------------------------------------------------------
 # _connect_host — bind-address vs connect-address mapping
 # ----------------------------------------------------------------------
