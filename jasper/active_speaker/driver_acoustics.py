@@ -228,12 +228,20 @@ def _capture_to_magnitude(
     n_samples = int(sweep_meta["n_samples"])
 
     captured, sr = sweep_mod.read_wav_mono(captured_wav)
+    # Bound the capture before assess + deconv (mirrors the /correction
+    # session path) so quality and the IR describe the same signal and an
+    # over-long capture can't drive the FFT to OOM on the 1 GB Pi.
+    raw_capture_samples = len(captured)
+    captured = deconv.cap_capture_length(
+        captured, sweep_len=n_samples, sample_rate=sr,
+    )
     report = quality.assess_capture(
         captured,
         sample_rate=sr,
         expected_sample_rate=sample_rate,
         sweep_n_samples=n_samples,
         has_mic_calibration=has_mic_calibration,
+        truncated_from_samples=raw_capture_samples,
     )
     if report.failed:
         return report, None, None

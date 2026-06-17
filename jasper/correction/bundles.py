@@ -22,15 +22,16 @@ ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)
 RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 
-# On the frequent `validate_bundle` path (jasper-doctor runs it across
-# every bundle on every invocation), skip the full SHA-256 re-hash for
-# artifacts larger than this. Raw capture WAVs are ~2 MB each and a
-# bundle holds several; re-hashing them all on every doctor run is
-# unbounded CPU/I/O for little gain — the artifacts are immutable once
-# written and the cheap byte_size equality check (a single stat()) still
-# catches truncation/size-changing corruption. The on-demand forensic
-# CLI (`jasper-correction-bundle inspect`) passes max_sha_verify_bytes=
-# None to force a full hash check of every artifact.
+# On the frequent default `validate_bundle` path — jasper-doctor, the
+# evidence packet (jasper.correction.evidence), and agent intake all run
+# it across every bundle — skip the full SHA-256 re-hash for artifacts
+# larger than this. Raw capture WAVs are ~2 MB each and a bundle holds
+# several; re-hashing them all on every run is unbounded CPU/I/O for
+# little gain — the artifacts are immutable once written and the cheap
+# byte_size equality check (a single stat()) still catches truncation/
+# size-changing corruption. Only the on-demand forensic CLI
+# (`jasper-correction-bundle inspect`) passes max_sha_verify_bytes=None
+# to force a full hash check of every artifact.
 DEFAULT_MAX_SHA_VERIFY_BYTES = 1 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,14 @@ def record_artifact(
     The manifest is an integrity surface, not a transaction log: entries
     are upserted by relative path, so frequently rewritten artifacts
     such as info.json keep one current checksum.
+
+    Thread-safety: the per-file write is atomic (tempfile + os.replace),
+    but the manifest read-modify-write below is NOT. It is safe today
+    only because there is one global MeasurementSession and the state
+    machine serializes analysis (ANALYZING is reset-busy), so just one
+    worker touches a given bundle at a time — even now that analysis
+    runs on an asyncio.to_thread worker. A future multi-session or
+    parallel-bundle change MUST add a per-bundle lock here.
     """
     bundle_dir.mkdir(parents=True, exist_ok=True)
     rel_path = _relative_artifact_path(bundle_dir, artifact_path)

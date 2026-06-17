@@ -247,6 +247,12 @@ def _dbfs(value: float) -> float:
 def _band_levels_dbfs(samples: np.ndarray, sample_rate: int) -> list[dict[str, Any]]:
     if samples.ndim != 1 or sample_rate <= 0 or samples.size < 8:
         return []
+    # Bound the FFT input the same way deconvolve() does: callers pass
+    # uploaded WAVs (noise floor, capture band-SNR) limited only by the
+    # 32 MB HTTP body cap, so an oversized/stuck upload would otherwise
+    # drive this rfft + hanning to OOM on the 1 GB Pi. Band levels need
+    # only a few seconds; sweep_len=0 = "nothing to preserve".
+    samples = deconv.cap_capture_length(samples, sweep_len=0, sample_rate=sample_rate)
     x = np.asarray(samples, dtype=np.float64)
     window = np.hanning(x.size)
     spectrum = np.fft.rfft(x * window)
@@ -995,6 +1001,10 @@ class MeasurementSession:
         position_index: int,
     ) -> dict[str, Any]:
         samples, sample_rate = sweep.read_wav_mono(noise_wav_path)
+        # Bound the noise array up front: the /upload-noise body is limited
+        # only by the 32 MB HTTP cap, and the rms/peak/abs math below (plus
+        # _band_levels_dbfs) would otherwise spike memory on the 1 GB Pi.
+        samples = deconv.cap_capture_length(samples, sweep_len=0, sample_rate=sample_rate)
         samples64 = samples.astype(np.float64)
         abs_samples = np.abs(samples64)
         rms = (
@@ -1046,6 +1056,10 @@ class MeasurementSession:
             captured, sample_rate = sweep.read_wav_mono(captured_wav_path)
         except Exception:  # noqa: BLE001
             return []
+        # Bound before the float64 cast (mirrors _noise_report_dict): this
+        # re-reads the raw upload from disk, so an oversized capture would
+        # otherwise pay a full-length 64-bit copy before the FFT cap fires.
+        captured = deconv.cap_capture_length(captured, sweep_len=0, sample_rate=sample_rate)
         capture_levels = _band_levels_dbfs(captured.astype(np.float64), sample_rate)
         noise_by_band = {
             band.get("band_id"): band
@@ -1180,7 +1194,10 @@ class MeasurementSession:
         captured, sr = sweep.read_wav_mono(captured_wav_path)
         # Bound the capture once, here at the session boundary, so the
         # recorded capture quality and the deconvolved IR describe the
-        # same signal (deconvolve re-caps, idempotently).
+        # same signal (deconvolve re-caps, idempotently). Pass the
+        # pre-cap length so assess_capture can surface a truncation
+        # warning at /status / bundle / doctor, not just the journal.
+        raw_capture_samples = len(captured)
         captured = deconv.cap_capture_length(
             captured,
             sweep_len=self.sweep_meta.n_samples,
@@ -1193,6 +1210,7 @@ class MeasurementSession:
             sweep_n_samples=self.sweep_meta.n_samples,
             has_mic_calibration=self.mic_calibration is not None,
             input_device=self.input_device,
+            truncated_from_samples=raw_capture_samples,
         )
         for issue in capture_quality.issues:
             logger.warning(

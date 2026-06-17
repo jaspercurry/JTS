@@ -62,9 +62,11 @@ def cap_capture_length(
     max_capture_seconds=None reads the module default at call time; a
     value ≤ 0 disables the cap.
 
-    Used inside deconvolve() (defense at the FFT, for every caller) and
-    by callers that want quality assessment and deconvolution to see the
-    same signal.
+    Used inside deconvolve() (defense at the FFT, for every caller), by
+    callers that want quality assessment and deconvolution to see the
+    same signal, and by other FFT inputs derived from the same uploads
+    (e.g. session band-level estimation). sweep_len=0 means "no sweep to
+    preserve" — just bound to the seconds cap.
     """
     seconds = (
         DEFAULT_MAX_CAPTURE_SECONDS
@@ -77,7 +79,7 @@ def cap_capture_length(
     if len(captured) <= max_samples:
         return captured
     logger.warning(
-        "deconv: capture %d samples (%.1f s) exceeds cap %d samples "
+        "deconv: FFT input %d samples (%.1f s) exceeds cap %d samples "
         "(%.1f s); truncating to bound FFT memory",
         len(captured), len(captured) / sample_rate,
         max_samples, max_samples / sample_rate,

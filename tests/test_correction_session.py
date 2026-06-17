@@ -11,6 +11,7 @@ math; this test pins the wiring.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 
@@ -256,6 +257,13 @@ def test_snapshot_returns_point_in_time_copies(tmp_path: Path):
     assert snap["noise_reports"] == [{"n": 1}]
     assert snap["design_report"] == {"d": 1}
 
+    # runtime_integrity issues reach the snapshot via summary() and must be a
+    # point-in-time copy too (the same loop-thread-append tear class).
+    sess.runtime_integrity.issues.append({"code": "a", "severity": "warn"})
+    snap2 = sess.snapshot()
+    sess.runtime_integrity.issues.append({"code": "b", "severity": "warn"})
+    assert snap2["runtime_integrity"]["issues"] == [{"code": "a", "severity": "warn"}]
+
 
 @pytest.mark.asyncio
 async def test_overlong_capture_truncated_before_quality_assessment(
@@ -285,6 +293,113 @@ async def test_overlong_capture_truncated_before_quality_assessment(
     assert sess.state == SessionState.READY
     # Duration reflects the 2 s cap, not the ~6 s captured length.
     assert sess.capture_quality[-1]["duration_s"] == pytest.approx(2.0, abs=0.05)
+    # ...and the truncation is surfaced as an operator-visible quality warning
+    # (→ /status / bundle / doctor), not just a journal line.
+    assert any(
+        i["code"] == "capture_truncated" and i["severity"] == "warn"
+        for i in sess.capture_quality[-1]["issues"]
+    )
+
+
+def test_band_levels_dbfs_bounds_oversized_input(monkeypatch, caplog):
+    """_band_levels_dbfs caps its FFT input (like deconvolve) so an oversized
+    uploaded WAV — noise floor or capture band-SNR — can't drive the rfft to
+    OOM on the 1 GB Pi."""
+    from jasper.correction.session import _band_levels_dbfs
+
+    monkeypatch.setattr(deconv, "DEFAULT_MAX_CAPTURE_SECONDS", 1.0)
+    sr = 8000
+    t = np.arange(5 * sr) / sr  # 5 s, well past the 1 s cap
+    tone = (0.5 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float64)
+    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+        bands = _band_levels_dbfs(tone, sr)
+    # Identical to feeding the pre-truncated 1 s slice → the cap was applied.
+    assert bands == _band_levels_dbfs(tone[:sr], sr)
+    assert any("truncating" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_overlong_noise_capture_is_bounded(tmp_path: Path, monkeypatch):
+    """An over-long /upload-noise WAV is bounded before the rms/peak/abs/FFT
+    math in _noise_report_dict, so it can't spike memory on the 1 GB Pi; the
+    recorded noise report's duration reflects the cap."""
+    monkeypatch.setattr(deconv, "DEFAULT_MAX_CAPTURE_SECONDS", 1.0)
+    sess = _make_session(tmp_path)
+    await sess.begin_noise_capture()
+    noise_path = sess.noise_capture_path_for_position(0)
+    noise_path.parent.mkdir(parents=True, exist_ok=True)
+    sr = sess.cfg.sample_rate
+    # 5 s of low-level noise, well past the 1 s cap.
+    samples = (0.01 * np.ones(5 * sr, dtype=np.float64)).astype(np.float32)
+    sweep.write_sweep_wav(noise_path, samples, sr)
+
+    await sess.on_noise_capture_uploaded(noise_path)
+
+    assert sess.noise_reports[0]["duration_s"] == pytest.approx(1.0, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_repeat_and_verify_analysis_offloaded_to_worker_thread(
+    tmp_path: Path, monkeypatch,
+):
+    """SF3: pin the off-loop execution of the repeat- and verify-capture
+    analysis. The to_thread offload shipped in #755 covers these sites too,
+    but only the measurement site was pinned — guard the symmetric sites
+    against silently regressing to inline."""
+    sess = _make_session(tmp_path)
+    sess.repeat_main_position = True
+    main_ident = threading.get_ident()
+    smooth_idents: set[int] = set()
+    design_idents: set[int] = set()
+
+    real_smooth = sess._smooth_capture
+    real_design = sess._run_design_from_positions
+
+    def spy_smooth(*a, **k):
+        smooth_idents.add(threading.get_ident())
+        return real_smooth(*a, **k)
+
+    def spy_design(*a, **k):
+        design_idents.add(threading.get_ident())
+        return real_design(*a, **k)
+
+    monkeypatch.setattr(sess, "_smooth_capture", spy_smooth)
+    monkeypatch.setattr(sess, "_run_design_from_positions", spy_design)
+
+    async def fake_play(path, **kw):
+        pass
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await sess.prepare_and_play_sweep(fake_play)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    cap_path = sess.capture_path_for_position(0)
+    cap_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(cap_path, sweep_signal.astype(np.float32), sr)
+    await sess.on_capture_uploaded(cap_path)
+    assert sess.state == SessionState.NEEDS_REPEAT_CAPTURE
+
+    # Repeat path → on_repeat_capture_uploaded (to_thread smooth + design).
+    await sess.prepare_and_play_repeat_sweep(fake_play)
+    repeat_path = sess.repeat_capture_path_for_position(0)
+    repeat_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(repeat_path, sweep_signal.astype(np.float32), sr)
+    await sess.on_repeat_capture_uploaded(repeat_path)
+    assert sess.state == SessionState.READY
+
+    # Verify path → on_verify_capture_uploaded (to_thread smooth).
+    await sess.apply(fake_camilla)
+    await sess.start_verify_sweep(fake_play)
+    verify_path = sess.verify_capture_path()
+    verify_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(verify_path, sweep_signal.astype(np.float32), sr)
+    await sess.on_verify_capture_uploaded(verify_path)
+    assert sess.state == SessionState.VERIFIED
+
+    # Every offloaded invocation ran off the event-loop thread.
+    assert smooth_idents and main_ident not in smooth_idents
+    assert design_idents and main_ident not in design_idents
 
 
 @pytest.mark.asyncio

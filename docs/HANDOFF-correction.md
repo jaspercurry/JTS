@@ -1377,7 +1377,14 @@ New bundles use schema v3 and write an `artifact_manifest.json` beside
 `jasper.correction.bundles.validate_bundle` now validates manifest
 shape, missing files, size/checksum drift, missing dependency entries,
 runtime-integrity issues, acoustic-quality issues, and current-schema
-bundles that still rely only on filename conventions.
+bundles that still rely only on filename conventions. Full SHA-256
+re-verification of every artifact runs only on the on-demand forensic
+CLI (`jasper-correction-bundle inspect`, i.e.
+`validate_bundle(max_sha_verify_bytes=None)`); the default callers
+(jasper-doctor, the evidence packet, and agent intake) skip the re-hash
+for artifacts larger than `DEFAULT_MAX_SHA_VERIFY_BYTES` (1 MiB —
+i.e. raw-capture WAVs) and gate those on byte-size drift instead, to
+keep CPU/I/O bounded on the 1 GB Pi.
 
 ### Schema and version compatibility
 
@@ -1415,7 +1422,11 @@ Compatibility rules:
 - Treat `artifact_manifest.json` as the integrity surface for new
   bundles. If it is present, validate checksums, sizes, dependency
   paths, sensitivity classes, and artifact schema versions before
-  trusting derived artifacts.
+  trusting derived artifacts. The default `validate_bundle` path
+  (doctor / evidence / agent intake) SHA-verifies only artifacts ≤
+  `DEFAULT_MAX_SHA_VERIFY_BYTES` (1 MiB); large raw-capture WAVs are
+  gated on byte-size there, with full hashing reserved for
+  `jasper-correction-bundle inspect`.
 - Do not expose raw WAVs in browser report surfaces. Raw recordings
   are private evidence and stay in `captures/`, `noise/`,
   `repeat_captures/`, and `verify.wav` for CLI/operator workflows.

@@ -24,6 +24,7 @@ from scipy.io import wavfile
 from scipy.signal import firwin, firwin2, fftconvolve
 
 from jasper.active_speaker import driver_acoustics as da
+from jasper.correction import deconv
 from jasper.correction import sweep as sweep_mod
 
 SR = 48000
@@ -95,6 +96,29 @@ def test_driver_in_its_band_reads_present(tmp_path):
     assert result.peak_dbfs > da.SILENT_PEAK_DBFS
     # observed_mic_dbfs is the real capture RMS, not a passed-in number.
     assert -120.0 < result.observed_mic_dbfs < 0.0
+
+
+def test_overlong_capture_is_bounded_before_analysis(tmp_path, monkeypatch):
+    """A driver capture longer than the cap is bounded before assess/deconv
+    (mirrors the /correction session path) so it can't drive the FFT to OOM,
+    and an otherwise-good over-long capture still reads 'present'."""
+    monkeypatch.setattr(deconv, "DEFAULT_MAX_CAPTURE_SECONDS", 1.5)
+    sig, meta = _reference_sweep()  # 1 s sweep
+    ir = firwin(1023, 400, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    # Pad well past the 1.5 s cap; the full driver response stays within it.
+    overlong = np.concatenate([captured, np.zeros(3 * SR, dtype=np.float64)])
+    path = _write_capture(tmp_path, "woofer_long.wav", overlong)
+
+    result = da.analyze_driver_capture(path, meta, passband_hz=(40.0, 400.0))
+    assert result.verdict == "present"
+    # Pin the pre-assess cap specifically (not deconvolve's own internal cap):
+    # `capture_truncated` is emitted only when _capture_to_magnitude passes
+    # truncated_from_samples to assess_capture. If the production cap here is
+    # dropped, this assertion fails even though deconvolve still bounds the IR.
+    assert any(
+        issue["code"] == "capture_truncated" for issue in result.quality["issues"]
+    )
 
 
 def test_silent_capture_reads_silent(tmp_path):
