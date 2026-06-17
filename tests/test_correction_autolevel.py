@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.correction.autolevel import AutolevelController, AutolevelData
 from jasper.correction.session import (
     AutolevelStatus,
     MeasurementSession,
@@ -87,6 +88,27 @@ async def test_state_changed_from_accepts_set_of_states(tmp_path):
 
 
 # ---------- run_autolevel --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_autolevel_controller_restores_locked_level_once():
+    controller = AutolevelController(session_id="restore-once")
+    restored: list[float] = []
+
+    async def fake_set_vol(db):
+        restored.append(db)
+
+    controller.main_volume_setter = fake_set_vol
+    controller.data = AutolevelData(
+        status=AutolevelStatus.LOCKED,
+        original_main_volume_db=-18.0,
+    )
+
+    await controller.restore_listening_volume_if_ramped()
+    await controller.restore_listening_volume_if_ramped()
+
+    assert restored == [-18.0]
+    assert controller.data.restored is True
 
 
 class _StubTonePlayer:
