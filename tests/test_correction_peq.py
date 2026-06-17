@@ -7,9 +7,11 @@ behavior on synthetic curves with known peak structure.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from jasper.correction import peq, target
+from jasper.correction import peq, strategy, target
 
 
 def _log_freqs(n: int = 480) -> np.ndarray:
@@ -24,6 +26,25 @@ def _bell(freqs: np.ndarray, fc: float, q: float, gain_db: float) -> np.ndarray:
     estimation, so the designer's answer should be very close to the
     truth here."""
     return peq._bell_response_db(freqs, fc, q, gain_db)
+
+
+def _rbj_peaking_db(
+    freqs: np.ndarray, fc: float, q: float, gain_db: float, fs: float = 48000.0,
+) -> np.ndarray:
+    """TRUE RBJ peaking-EQ biquad magnitude in dB — the actual shape
+    CamillaDSP realizes from (freq, q, gain). Used to build test rooms
+    and to realize designed filters, so a pin is NOT self-referential
+    with peq._bell_response_db (the internal model bell)."""
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * fc / fs
+    alpha = np.sin(w0) / (2.0 * q)
+    cw = np.cos(w0)
+    b0, b1, b2 = 1.0 + alpha * A, -2.0 * cw, 1.0 - alpha * A
+    a0, a1, a2 = 1.0 + alpha / A, -2.0 * cw, 1.0 - alpha / A
+    z1 = np.exp(-1j * 2.0 * np.pi * freqs / fs)
+    z2 = z1 * z1
+    h = (b0 + b1 * z1 + b2 * z2) / (a0 + a1 * z1 + a2 * z2)
+    return 20.0 * np.log10(np.abs(h))
 
 
 def test_flat_response_yields_no_peqs():
@@ -163,6 +184,78 @@ def test_predicted_response_negates_measured_peak_approximately():
     # Corrected response should be flatter — peak < 2 dB residual.
     band_mask = (freqs >= 40.0) & (freqs <= 200.0)
     assert float(np.max(np.abs(corrected[band_mask]))) < 2.0
+
+
+def test_bell_half_gain_width_matches_rbj_q():
+    """The model bell's half-gain octave half-width now equals the RBJ
+    peaking half-bandwidth asinh(1/(2Q))/ln2, not the old (~1.4x too wide)
+    1/Q. Pins the prediction-bell fix; fails on the pre-fix bw = 1/Q form."""
+    fc, gain = 80.0, -6.0
+    for q in (1.0, 2.0, 4.0):
+        bw_oct = math.asinh(1.0 / (2.0 * q)) / math.log(2.0)
+        f_half = fc * 2.0 ** bw_oct
+        resp = float(peq._bell_response_db(np.array([f_half]), fc, q, gain)[0])
+        # Response is exactly half the peak gain at the RBJ half-bandwidth.
+        assert abs(resp - gain / 2.0) < 1e-6
+        # ...and strictly narrower than the old 1/Q half-width: at the OLD
+        # half-width point the new bell has already dropped past half-gain.
+        f_half_old = fc * 2.0 ** (1.0 / q)
+        resp_old_pt = float(
+            peq._bell_response_db(np.array([f_half_old]), fc, q, gain)[0]
+        )
+        assert abs(resp_old_pt) < abs(gain) / 2.0
+
+
+def test_design_peq_flattens_a_true_rbj_room():
+    """Real validation (NOT self-referential with the model bell): synthesize
+    a room from TRUE RBJ peaking responses, design PEQs, realize the chosen
+    (freq,q,gain) as RBJ biquads, and confirm the ACTUAL corrected residual
+    flattens in-band."""
+    freqs = _log_freqs()
+    fs = 48000.0
+    target_db = target.flat_target(freqs)
+    measured = (
+        _rbj_peaking_db(freqs, 63.0, 4.0, 6.0, fs)
+        + _rbj_peaking_db(freqs, 160.0, 5.0, 5.0, fs)
+    )
+    band = (freqs >= 50.0) & (freqs <= 200.0)
+    assert float(np.max(np.abs(measured[band]))) > 4.0  # uncorrected room
+
+    peqs = peq.design_peq(measured, target_db, freqs)
+    assert len(peqs) >= 2
+    corrected = measured.copy()
+    for p in peqs:
+        corrected += _rbj_peaking_db(freqs, p.freq, p.q, p.gain, fs)
+    assert float(np.max(np.abs(corrected[band]))) < 2.5
+
+
+def test_predicted_overlay_matches_realized_biquads_on_peak_null_pair():
+    """The fix's actual purpose: the predicted overlay now tracks what
+    CamillaDSP realizes. On a 63 Hz peak + adjacent 80 Hz null — where the
+    old ~1.4x-too-wide bell over-stated how far the cut's skirt drove the
+    null — the predicted post-correction curve matches the real RBJ biquad
+    realization within ~0.1 dB in-band (pre-fix this gap was ~0.77 dB).
+
+    NOTE: improvement.max_abs stays slightly negative and prediction_worse
+    still fires here — cutting a peak 0.35 octaves from a null genuinely
+    deepens the null; that is real acoustics, not a prediction artifact.
+    The fix corrects the PREDICTION's accuracy, not that physical fact."""
+    freqs = _log_freqs()
+    fs = 48000.0
+    measured = (
+        _rbj_peaking_db(freqs, 63.0, 4.0, 6.0, fs)
+        + _rbj_peaking_db(freqs, 80.0, 4.0, -6.0, fs)
+    )
+    design = strategy.design_correction(
+        measured, freqs, strategy_choice="balanced",
+    )
+    assert len(design.peqs) >= 1
+    realized = measured.copy()
+    for p in design.peqs:
+        realized += _rbj_peaking_db(freqs, p.freq, p.q, p.gain, fs)
+    band = (freqs >= 40.0) & (freqs <= 200.0)
+    gap = float(np.max(np.abs(design.predicted_db[band] - realized[band])))
+    assert gap < 0.1
 
 
 def test_total_max_boost_zero_when_cuts_only():

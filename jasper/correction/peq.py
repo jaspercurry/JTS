@@ -27,6 +27,7 @@ CamillaDSP does that at config-load time.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -59,11 +60,18 @@ def _bell_response_db(
     from (freq, q, gain). We just need a shape that's close enough
     that the next greedy iteration picks a sensible second peak.
 
-    The shape is a peak in log-frequency: magnitude_db(f) ≈
-    gain_db / (1 + (Δoct / bw)²) where Δoct = log2(f / fc) and
-    bw = 1/Q. Accurate within ~1 dB at the peak vs the digital
-    biquad realization; off in the skirts but that doesn't affect
-    where the NEXT peak gets selected.
+    The shape is a Lorentzian peak in log-frequency: magnitude_db(f) ≈
+    gain_db / (1 + (Δoct / bw)²) where Δoct = log2(f / fc) and `bw` is
+    the half-bandwidth in OCTAVES at which the response falls to
+    gain_db/2. For a CamillaDSP/RBJ peaking biquad of quality Q that
+    half-bandwidth is bw = asinh(1/(2Q)) / ln(2) — so the model's
+    half-gain width matches the biquad CamillaDSP will actually realize
+    from (freq, q, gain). (The earlier bw = 1/Q was ~1.4× too wide,
+    which made predicted_response and the greedy residual over-subtract
+    into neighbouring bands — a pessimistic prediction, not a wrong
+    filter.) The far skirts are still a Lorentzian approximation, but the
+    half-width — what the greedy residual subtraction needs to pick a
+    sensible NEXT peak — is now correct.
     """
     if fc <= 0:
         return np.zeros_like(eval_freqs)
@@ -71,7 +79,9 @@ def _bell_response_db(
     # Avoid log of 0 / negative
     safe = np.where(omega > 0, omega, 1.0)
     delta_oct = np.log2(safe)
-    bw = 1.0 / max(q, 1e-3)
+    # RBJ peaking-EQ half-bandwidth (octaves) for this Q; the max() keeps
+    # the q→0 guard the prior 1/Q form had.
+    bw = math.asinh(1.0 / (2.0 * max(q, 1e-3))) / math.log(2.0)
     response = gain_db / (1.0 + (delta_oct / bw) ** 2)
     response[omega <= 0] = 0.0
     return response
