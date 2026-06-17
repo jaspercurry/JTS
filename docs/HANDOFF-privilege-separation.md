@@ -6,10 +6,12 @@
 > daemons now run non-root.** Phase 4a (secret compartmentalization, Group A:
 > the LLM API keys + Google moved to a `jasper-secrets` compartment readable
 > only by voice+web) and Phase 4b (Group B: HA + Spotify moved to
-> `jasper-intsecrets` readable/writable by voice+control+mux+web) have landed;
-> the Tier-B reconciler drop remains designed, not yet built. The Phase 4 mechanism
-> was revised from the original `LoadCredential`/`systemd-creds` sketch to
-> group compartments after a hardware probe (see Phase 4). This doc is the
+> `jasper-intsecrets` readable/writable by voice+control+mux+web) have landed.
+> The remaining WS1 scope is now explicit below: the streambox `jasper-web`
+> drop still needs Zero-class hardware validation, and the Tier-B privileged
+> support surfaces are mapped for small follow-up PRs. The Phase 4 mechanism was
+> revised from the original `LoadCredential`/`systemd-creds` sketch to group
+> compartments after a hardware probe (see Phase 4). This doc is the
 > threat-model + ADR for the work; update it as each phase lands.
 
 How JTS contains a compromise of its always-on daemons, and the staged plan
@@ -628,5 +630,120 @@ journal audit had zero permission-denied lines. A **second deploy** completed
 cleanly with no move lines, proving the idempotent re-run path. The Spotify
 `invalid_grant` warning is pre-existing revoked-token state, not a migration
 failure.
+
+## Remaining WS1 scope (2026-06-17)
+
+### Streambox `jasper-web` drop
+
+The full-profile `deploy/jasper-web.service` is non-root and hardware-validated.
+The streambox profile still installs
+[`deploy/jasper-web-streambox.service`](../deploy/jasper-web-streambox.service)
+as root on purpose. The streambox/Zero-class device was not available during the
+3b-3 validation pass, and the streambox unit has a narrower service/socket
+shape even though it serves many of the same wizard surfaces.
+
+Do not remove the deferral test until validation happens on a streambox target.
+The validation matrix for the drop is:
+
+- socket activation and idle exit for `jasper-web-streambox.socket` /
+  `jasper-web-streambox.service`
+- profile-scoped env-file chain, including `/var/lib/jasper-intsecrets` for
+  `/spotify/`
+- `ReadWritePaths` for the streambox surfaces it serves
+- HTTP 200 plus zero permission-denied journal lines for `/spotify/`,
+  `/sources/`, `/sound/`, `/speaker/`, `/wifi/`, and `/rooms/`
+- the same recovery-sensitive checks as full-profile web where the surface
+  exists: NetworkManager rollback for `/wifi/`, broker reachability for
+  config-save restarts, BlueZ speaker rename if Bluetooth is installed, and
+  grouping reconcile through `/rooms/`
+
+Pinned by
+`tests/test_systemd_hardening.py::test_streambox_web_unit_stays_root_until_validated`.
+
+### Tier-B privileged support inventory
+
+Tier-B is not one unit. It is a set of privileged boot/udev/operator support
+surfaces, plus adjacent long-running helpers, where "drop the unit user" is only
+safe after separating **policy** from the privileged **apply** step. Some can
+probably run as a dedicated `jasper-recon` user with narrow groups; others
+should remain fixed-argv root-owned helpers because the privileged operation is
+the whole job.
+
+Rules for all Tier-B slices:
+
+- Keep the resilience ladder from
+  [`HANDOFF-resilience.md`](HANDOFF-resilience.md) intact. Wi-Fi recovery, DAC
+  hotplug, AEC/mic reconcile, and dongle re-enumeration must not become less
+  reliable.
+- Do not add broad sudo or broad polkit grants. If a non-root policy process
+  needs root, add a tiny root helper or a broker verb with closed argv and a
+  unit/action allowlist.
+- Do not expand `restart_broker.MANAGED_UNITS` for the deferred support units
+  unless the specific slice designs that as its boundary. In particular,
+  `jasper-wifi-guardian.service`, `jasper-dac-init.service`,
+  `jasper-audio-hardware-reconcile.service`, and
+  `jasper-dongle-recover.service` stay outside the Tier-A restart broker today.
+- A hardware-sensitive change is not "landed" until the relevant hardware path
+  is validated on-device. For docs/tests-only work, say "planned" or "mapped."
+
+| Surface | Trigger | Privileged operation today | Likely split |
+|---|---|---|---|
+| `jasper-dac-init.service` + [`deploy/bin/jasper-dac-init`](../deploy/bin/jasper-dac-init) | boot and output-hardware reconcile | Detect Apple USB-C DACs with `aplay -L`; run `amixer -c <card> sset Headphone 100% unmute`. | Best first code slice once Apple-DAC hardware is available: run as `jasper-recon` with `audio` group if `amixer` works under that user. No broker needed. |
+| `jasper-headphone-monitor.service` + [`deploy/bin/jasper-headphone-monitor`](../deploy/bin/jasper-headphone-monitor) | long-running DAC drift monitor | Poll the same Apple DAC mixer and self-heal drift back to 100%. | Pair with the DAC slice or leave root until then. Same `jasper-recon` + `audio` hypothesis as `jasper-dac-init`. |
+| Apple dongle udev fast path + [`99-jasper-apple-dongle.rules`](../deploy/udev/99-jasper-apple-dongle.rules) | Apple dongle sound-card / USB add | udev runs the hotplug `amixer -c $card sset Headphone 100% unmute` fast path as root and writes USB autosuspend `power/control=on`; it also triggers `jasper-dongle-recover.service`. | Treat as part of the DAC mixer slice, not as background noise. Either keep the udev `amixer` path root-by-design and document that exception, or replace it with a fixed root helper / systemd oneshot that preserves hotplug pinning. Validate with `udevadm test` / replug, not only boot. |
+| `jasper-wifi-guardian.service` + [`deploy/bin/jasper-wifi-guardian`](../deploy/bin/jasper-wifi-guardian) | boot after NetworkManager wait-online | Read the root-only PSK stash, inspect NM state, run `nmcli connection up`, `nmcli dev wifi connect`, and cleanup of broken profiles. | `jasper-recon` could own the stash plus a narrow NetworkManager polkit rule parallel to `jasper-web`, but the failed-connect/recreate path is lockout-sensitive. Not first without Wi-Fi hardware validation. |
+| `jasper-aec-init.service` + `jasper-aec-init` | boot and AEC reconcile restarts | Raw XVF3800 USB control writes through `xvf_host`; `amixer` on the `Array` UAC mixer; volatile chip profile only, with `SAVE_CONFIGURATION` and `REBOOT` deliberately forbidden. | Needs a hardware-gated design. Either `jasper-recon` gets a device-specific udev group for the XVF control endpoint plus `audio`, or a root helper owns the raw USB writes. Brick-loop hazards mean this is not an early slice. |
+| `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
+| `jasper-audio-hardware-reconcile.service` + [`deploy/bin/jasper-audio-hardware-reconcile`](../deploy/bin/jasper-audio-hardware-reconcile) | install, boot, udev sound add/remove | Detect output hardware, write `/var/lib/jasper/outputd.env` and `/run/jasper-output-hardware/output_hardware.json`, render `/etc/jasper/asoundrc.jasper.template`, toggle `jasper-dac-init`/monitor, and kick outputd/AEC reconcile. | Split policy from root apply. Rendering `/etc/jasper/*` and unit orchestration should stay behind a fixed root helper; state observation can move to `jasper-recon`. |
+| `jasper-dongle-recover.service` | Apple dongle sound-card udev add | Fixed `systemctl reset-failed` and `start` sequence for Camilla/outputd/audio-hardware/AEC after Card A reappears. | Keep as a root-owned fixed-argv recovery helper unless a later reconciler broker explicitly absorbs it. It is already tiny and exists to preserve hotplug self-healing. |
+| `jasper-grouping-reconcile.service` + `jasper.multiroom.reconcile` | `/rooms/`, install, grouping state changes | Apply snapserver/snapclient role changes via `systemctl`, write grouping env/FIFO runtime state, and kick `jasper-aec-reconcile` rather than restarting voice directly. | Candidate for `jasper-recon` policy with a root apply helper for systemctl. It is already broker-routed from Tier-A clients; do not broaden that surface while changing other Tier-B units. |
+| `jasper-identity-reconcile.service` + timer + [`deploy/bin/jasper-identity-reconcile`](../deploy/bin/jasper-identity-reconcile) | boot and 5-minute timer | Read hostname/Avahi over subprocess/DBus and write non-secret `/var/lib/jasper/identity.env`. | Probably safe to move to `jasper-recon` or another non-root writer after verifying `/var/lib/jasper` write ownership. Low security value compared with hardware recovery paths, so do not use it to claim Tier-B done. |
+| `jasper-usbsink-init.service` + `deploy/usbsink/jasper-usbsink-*` | `/sources/` USB audio input enable/disable | Load/unload kernel modules, patch `usb_f_uac2`, create/remove ConfigFS gadget descriptors under `/sys/kernel/config`. | Root helper by design. Treat separately from the reconciler drop; the privileged operation is kernel/configfs setup. |
+| `jasper-bootloop-guard.service` + [`deploy/bin/jasper-bootloop-guard`](../deploy/bin/jasper-bootloop-guard) | early boot | Write runtime systemd drop-ins under `/run/systemd/system` to disarm reboot loops after repeated bad boots. | Keep root. This is part of the T5.1 safety ladder and should not depend on the restart broker or a non-root user. |
+
+Operator CLIs are Tier-B-adjacent, not daemon RCE surface, but they should not be
+forgotten:
+
+| CLI | Privileged operation today | Direction |
+|---|---|---|
+| `jasper-aec-tune` | Stops/starts services, adjusts Camilla volume, captures audio, writes `/var/lib/jasper/aec_delay.txt`, and talks to XVF hardware. | Leave sudo-only until the AEC root-helper boundary exists. |
+| `jasper-wake-enroll` | Requires root so it can stop/start `jasper-voice` and bind/capture the same mic/UDP resources without fighting the daemon. | Later split could use the restart broker plus an `audio`/state-writer user, but this is operator-only and not first. |
+| `jasper-noise-capture` | Same stop/start and capture shape as wake enrollment, without active wake prompts. | Same direction as wake enrollment. |
+
+### Smallest safe next Tier-B slice
+
+The smallest implementation slice after this mapping is **DAC mixer pinning**:
+`jasper-dac-init.service`, the Apple dongle udev fast path, and, if validation
+confirms the same permissions, `jasper-headphone-monitor.service`.
+
+Why this slice is first:
+
+- it has no NetworkManager lockout risk
+- it has no raw XVF USB control path and no chip brick hazard
+- it does not need `systemctl` orchestration
+- failure is observable (`event=apple_dongle.*`) and degrades to reduced analog
+  headroom rather than a dead speaker
+- the shell helpers already have focused tests and narrow, fixed operations
+
+Required validation before landing that code slice:
+
+- installer creates `jasper-recon` with primary group `jasper` and
+  supplementary `audio`
+- service unit(s) declare `User=jasper-recon`, `Group=jasper`, empty
+  `CapabilityBoundingSet=`, and an appropriate system-call filter
+- on Apple USB-C DAC hardware, `sudo -u jasper-recon -g jasper -G audio
+  amixer -c <card> -- sset Headphone 100% unmute` succeeds
+- the udev hotplug `amixer` fast path is either deliberately left root-owned
+  and documented as the exception, or replaced with an equally fixed-argv root
+  helper / oneshot; `udevadm test` and a real replug show Headphone repins
+- reboot with the dongle present keeps the control pinned at 100%
+- dongle remove/reinsert still recovers through `jasper-dongle-recover` and the
+  output-hardware reconciler
+- `jasper-doctor` reports no output-hardware regression and the journal has no
+  permission-denied lines from the changed units
+
+If any of those checks fail, stop at the mapping PR. Do not compensate by
+granting broad sudo, adding the units to `MANAGED_UNITS`, or weakening the
+hotplug recovery path.
 
 Last verified: 2026-06-17
