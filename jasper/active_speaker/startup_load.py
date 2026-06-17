@@ -1464,18 +1464,19 @@ async def load_driver_commissioning_config(
         )
         return {"preflight": preflight, "load": payload}
 
-    # Precondition gate: the active graph must ALREADY be the all-muted staged
-    # boot config (loaded by load_protected_startup_config at Stage 4).
-    # Commissioning swaps the running graph at the same width; running it against
-    # an unrelated active config (a stereo/correction config, a stale graph) is
-    # not a safe transition. Fail closed rather than swap blindly.
+    # Precondition gate: the persisted (boot / rollback-anchor) config must
+    # ALREADY be the all-muted staged config (loaded by load_protected_startup_config
+    # at Stage 4 via set_config_file_path). Commissioning swaps the running graph
+    # at the same width and rolls back to this anchor; running it when the boot
+    # config is an unrelated graph (a stereo/correction config) is not a safe
+    # transition. Fail closed rather than swap blindly.
     if not _paths_equal(prior_config_path, staged_path):
         issue = _issue(
             "blocker",
             "commission_active_graph_not_staged",
             (
-                "per-driver commissioning requires the all-muted staged boot config "
-                f"to be the active graph first; current persisted config is "
+                "per-driver commissioning requires the all-muted staged config to be "
+                f"the persisted boot config first; current persisted config is "
                 f"{prior_config_path or '(none)'}"
             ),
         )
@@ -1498,12 +1499,41 @@ async def load_driver_commissioning_config(
         )
         return {"preflight": preflight, "load": payload}
 
-    captured: dict[str, Any] = {}
+    captured: dict[str, Any] = {"evidence": evidence}
+
+    def _emit_in_lock() -> None:
+        # apply_dsp_config runs this inside its writer lock, immediately before
+        # validate+load. Re-emitting the candidate here (rather than trusting the
+        # file the preflight wrote) closes the write→read window on the shared
+        # commissioning path: no concurrent prepare can overwrite the candidate
+        # between gate and load, and the live-confirm mask is re-derived fresh.
+        # `run_config_check=False` — apply_dsp_config's own validate(candidate)
+        # is the load-time syntax gate; the preflight already ran the full check.
+        fresh = prepare_driver_commissioning_config(
+            topology,
+            speaker_group_id=speaker_group_id,
+            role=role,
+            preset=preset,
+            crossover_preview=crossover_preview,
+            playback_device=playback_device,
+            config_dir=config_dir,
+            config_path=config_path,
+            run_config_check=False,
+            validate=validate,
+        )
+        if fresh.get("status") != "prepared" or not (
+            fresh.get("audible_evidence") or {}
+        ).get("passed"):
+            raise RuntimeError(
+                "per-driver commissioning config no longer prepares cleanly under lock"
+            )
+        captured["evidence"] = fresh.get("audible_evidence") or {}
 
     async def _live_confirm() -> None:
         # Runs inside apply_dsp_config's lock, after the inline load. Raising here
         # rolls the running graph back to the staged anchor INSIDE the lock, so
         # both safety checks below fail closed atomically.
+        live_evidence = captured["evidence"]
         # (1) The RUNNING graph (read back over the websocket, not the file) must
         #     match the intended per-driver mask + keep the protective high-pass.
         try:
@@ -1518,10 +1548,10 @@ async def load_driver_commissioning_config(
             ) from exc
         live = running_commission_evidence(
             running_raw,
-            audible_outputs=evidence.get("audible_outputs", []),
-            muted_outputs=evidence.get("muted_outputs", []),
-            tweeter_outputs=evidence.get("tweeter_outputs", []),
-            protective_hp_hz=evidence.get("protective_highpass_hz"),
+            audible_outputs=live_evidence.get("audible_outputs", []),
+            muted_outputs=live_evidence.get("muted_outputs", []),
+            tweeter_outputs=live_evidence.get("tweeter_outputs", []),
+            protective_hp_hz=live_evidence.get("protective_highpass_hz"),
         )
         captured["live"] = live
         if not live["passed"]:
@@ -1559,6 +1589,7 @@ async def load_driver_commissioning_config(
             # running graph never equals the candidate path. Skip apply's
             # path-confirm; the live read-back below is the real confirm.
             get_current_config_path=None,
+            prepare=_emit_in_lock,
             persist=_live_confirm,
             validate=validate,
         )

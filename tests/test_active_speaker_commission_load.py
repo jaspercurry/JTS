@@ -406,6 +406,32 @@ def test_live_confirm_readback_failure_is_observable(monkeypatch, tmp_path):
     assert cam.loaded_paths[-1] == staged_path
 
 
+def test_commissioning_load_re_emits_candidate_inside_the_lock(monkeypatch, tmp_path):
+    # The candidate is re-emitted under apply_dsp_config's writer lock (with
+    # run_config_check=False) immediately before load, so a concurrent prepare
+    # cannot overwrite the shared commissioning path between gate and load
+    # (TOCTOU) and the live mask is fresh.
+    import jasper.active_speaker.startup_load as startup_load_mod
+
+    real = startup_load_mod.prepare_driver_commissioning_config
+    run_checks: list[bool] = []
+
+    def _spy(*args, **kwargs):
+        run_checks.append(kwargs.get("run_config_check", True))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        startup_load_mod, "prepare_driver_commissioning_config", _spy
+    )
+    result, cam, *_ = _load(tmp_path, monkeypatch, role="woofer")
+
+    assert result["load"]["status"] == "loaded"
+    # Preflight prepares with the full syntax check; the in-lock re-emit skips it
+    # (apply_dsp_config's own validate is the load-time gate).
+    assert True in run_checks  # preflight gate
+    assert False in run_checks  # in-lock re-emit
+
+
 def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
     result, cam, staged, staged_path, statefile, state_path = _load(
         tmp_path, monkeypatch, role="woofer"
