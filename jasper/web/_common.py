@@ -439,16 +439,20 @@ def read_env_file(path: str) -> dict[str, str]:
     return out
 
 
-# WS1 Phase 3b-2 — the mode for secret env files that the now-non-root
-# jasper-control (and the jasper-doctor it spawns) must read OFF DISK:
-# voice_provider.env, spotify_credentials.env, google_credentials.env,
-# home_assistant.env. 0o640 group-`jasper` read (vs the 0o600 default) so a
-# sibling jasper-group daemon can read them. This is the deliberate, documented
-# group-level secret-exposure that the jasper-control user drop requires;
-# per-daemon isolation is Phase 4 (LoadCredential). The files land group
-# `jasper` via the /var/lib/jasper StateDirectory recursive-chown (and the
-# install-side widen_control_secret_env_modes upgrade path). Files only one
-# daemon reads keep the 0o600 default. See docs/HANDOFF-privilege-separation.md.
+# 0o640 group-readable mode for wizard-written secret/config env files (vs
+# the 0o600 default), so the daemons that need a file can read it off disk.
+# WHICH group depends on WHERE the file lives:
+#   - Files under /var/lib/jasper (the shared StateDirectory) land group
+#     `jasper` via systemd's recursive StateDirectory chown — voice_provider.env
+#     (now keyless), spotify_credentials.env, home_assistant.env, etc.
+#   - WS1 Phase 4a moved the high-value {jasper-voice, jasper-web}-only
+#     secrets into the setgid /var/lib/jasper-secrets dir, so a file written
+#     there inherits group `jasper-secrets` instead: voice_keys.env (the LLM
+#     API keys split out of voice_provider.env) and google_credentials.env.
+#     The mode is the same 0o640; only the inherited group differs, which is
+#     what narrows those secrets away from jasper-mux/-control/-input.
+# Files only one daemon reads keep the 0o600 default. See
+# docs/HANDOFF-privilege-separation.md "Phase 4".
 SECRET_ENV_MODE = 0o640
 
 

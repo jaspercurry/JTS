@@ -66,6 +66,7 @@ from jasper.voice.catalog import (
     provider_by_id,
 )
 from jasper.voice.provider_state import (
+    KEYS_FILE,
     PROVIDER_FILE,
     resolve_active_provider,
 )
@@ -143,14 +144,56 @@ _KEY_VALID_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
 # ----------------------------------------------------------------------
 
 
+# WS1 Phase 4a — the provider API keys are the only secrets the /voice
+# wizard owns; they live in a separate file (KEYS_FILE) in the
+# group-`jasper-secrets` dir, while the non-secret selectors
+# (JASPER_VOICE_PROVIDER + per-provider model/voice/extras) stay in the
+# broad PROVIDER_FILE so jasper-control can keep reading the active
+# provider for /system/. This set is catalog-derived so a new provider's
+# key env joins it automatically. See docs/HANDOFF-privilege-separation.md.
+_SECRET_KEY_ENVS = frozenset(p.key_env for p in PROVIDERS)
+
+
 def _load_state(path: str = PROVIDER_FILE) -> dict[str, str]:
-    """Read the wizard-managed env file into a {key: value} dict.
+    """Read one wizard-managed env file into a {key: value} dict.
 
     Empty values, missing file, blank file all resolve to {}. The
     daemon's view of the env is this dict UNIONED with
     /etc/jasper/jasper.env — but the wizard only reads/writes this
-    file."""
+    file. Most callers want :func:`_load_merged`, which also folds in the
+    split-out secret keys file."""
     return read_env_file(path)
+
+
+def _load_merged(cfg: dict[str, Any]) -> dict[str, str]:
+    """Wizard's full view: the non-secret selectors in ``state_path``
+    UNIONED with the API keys in ``keys_path`` (the Phase-4a split). The
+    two files own disjoint keys, so order does not matter. Reads are
+    fail-soft (missing/unreadable → {})."""
+    merged = read_env_file(cfg["state_path"])
+    merged.update(read_env_file(cfg["keys_path"]))
+    return merged
+
+
+def _write_split(cfg: dict[str, Any], new: dict[str, str]) -> None:
+    """Persist ``new`` across the two files: provider API keys go to the
+    group-`jasper-secrets` ``keys_path``; everything else to the broad
+    ``state_path``. Each file is deleted when its slice is empty (so a
+    fully-cleared provider leaves no stale file). Atomic per file via
+    ``write_env_file``; the setgid jasper-secrets dir gives keys_path its
+    narrowed group automatically. Raises OSError on write failure — the
+    callers wrap this to surface a flash + keep the daemon's last-good
+    config."""
+    secrets = {k: v for k, v in new.items() if k in _SECRET_KEY_ENVS}
+    rest = {k: v for k, v in new.items() if k not in _SECRET_KEY_ENVS}
+    if rest:
+        write_env_file(cfg["state_path"], rest, mode=SECRET_ENV_MODE)
+    else:
+        delete_env_file(cfg["state_path"])
+    if secrets:
+        write_env_file(cfg["keys_path"], secrets, mode=SECRET_ENV_MODE)
+    else:
+        delete_env_file(cfg["keys_path"])
 
 
 def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
@@ -1249,7 +1292,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/":
                 if not guard_read_request(self):
                     return
-                state = _load_state(cfg["state_path"])
+                state = _load_merged(cfg)
                 discovery = load_cache(cfg["discovery_cache_path"])
                 overrides = load_pricing_overrides(cfg["pricing_path"])
                 default_as_of = default_pricing_as_of()
@@ -1306,16 +1349,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self,
             form: dict[str, str],
         ) -> tuple[dict[str, str] | None, str | None]:
-            current = _load_state(cfg["state_path"])
+            current = _load_merged(cfg)
             new, err = _apply_save(form, current)
             if err is not None:
                 return None, err
             try:
-                # _apply_save always sets JASPER_VOICE_PROVIDER to a valid id on
-                # the success path (errors guarded above), and it survives the
-                # blank-value filter — so `new` is never empty: always write,
-                # never delete.
-                write_env_file(cfg["state_path"], new, mode=SECRET_ENV_MODE)
+                # _apply_save always sets JASPER_VOICE_PROVIDER + the active
+                # provider's API key (the has_key guard), so both slices of the
+                # split are non-empty: provider/model → state_path, keys →
+                # keys_path (group-jasper-secrets). Never deletes on this path.
+                _write_split(cfg, new)
             except OSError as e:
                 logger.exception("could not write voice provider env file")
                 return None, f"Could not save: {e}"
@@ -1418,16 +1461,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def _handle_clear(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
+            current = _load_merged(cfg)
             new, err = _apply_clear(form, current)
             if err is not None:
                 send_see_other(self, "./", flash=err)
                 return
             try:
-                if new:
-                    write_env_file(cfg["state_path"], new, mode=SECRET_ENV_MODE)
-                else:
-                    delete_env_file(cfg["state_path"])
+                # _write_split deletes whichever file's slice is now empty —
+                # clearing the last provider removes both state_path AND the
+                # keys_path, so no stale key file lingers.
+                _write_split(cfg, new)
             except OSError as e:
                 logger.exception("could not write voice provider env file")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
@@ -1447,7 +1490,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             send_see_other(self, "./", flash=f"Cleared {label} credentials.")
 
         def _handle_refresh_models(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
+            current = _load_merged(cfg)
             pid = (form.get("provider") or "").strip()
             provider = provider_by_id(pid)
             if provider is None:
@@ -1504,13 +1547,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def _handle_spend_cap(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
+            current = _load_merged(cfg)
             new, err = _apply_spend_cap(form, current)
             if err is not None:
                 send_see_other(self, "./", flash=err)
                 return
             try:
-                write_env_file(cfg["state_path"], new, mode=SECRET_ENV_MODE)
+                # current came from _load_merged, so `new` still carries the API
+                # keys; _write_split keeps them in keys_path rather than writing
+                # them back into the broad state_path.
+                _write_split(cfg, new)
             except OSError as e:
                 logger.exception("could not write spend-cap env settings")
                 send_see_other(self, "./", flash=f"Could not save spend cap: {e}")
@@ -1624,6 +1670,7 @@ def make_server(
     target,
     *,
     state_path: str = PROVIDER_FILE,
+    keys_path: str = KEYS_FILE,
     discovery_cache_path: str = DISCOVERY_CACHE_FILE,
     discovery_http_client: Any | None = None,
     pricing_path: str | None = None,
@@ -1640,6 +1687,7 @@ def make_server(
     from . import _systemd
     cfg = {
         "state_path": state_path,
+        "keys_path": keys_path,
         "discovery_cache_path": discovery_cache_path,
         "discovery_http_client": discovery_http_client,
         "pricing_path": pricing_path or os.environ.get(
@@ -1673,6 +1721,9 @@ def main(argv: list[str] | None = None) -> int:
         "--state", default=os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE),
     )
     parser.add_argument(
+        "--keys", default=os.environ.get("JASPER_VOICE_KEYS_FILE", KEYS_FILE),
+    )
+    parser.add_argument(
         "--discovery-cache",
         default=os.environ.get(
             "JASPER_VOICE_MODEL_DISCOVERY_FILE",
@@ -1687,6 +1738,7 @@ def main(argv: list[str] | None = None) -> int:
     server = make_server(
         (args.host, args.port),
         state_path=args.state,
+        keys_path=args.keys,
         discovery_cache_path=args.discovery_cache,
     )
     logger.info(

@@ -63,13 +63,16 @@ def main() -> int:
     SLUG = _slug(args.word)
 
     load_env()
-    # Also load the wizard-written overlay if present (voice provider
-    # may be set there).
+    # Also load the wizard-written overlays if present (voice provider may be
+    # set in voice_provider.env; WS1 Phase 4a moved the OPENAI_API_KEY itself
+    # into the group-jasper-secrets voice_keys.env). Reading as root on the Pi.
     load_env("/var/lib/jasper/voice_provider.env")
+    load_env("/var/lib/jasper-secrets/voice_keys.env")
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("ERROR: OPENAI_API_KEY missing in /etc/jasper/jasper.env",
+        print("ERROR: OPENAI_API_KEY missing in /etc/jasper/jasper.env or "
+              "/var/lib/jasper-secrets/voice_keys.env",
               file=sys.stderr)
         return 1
 

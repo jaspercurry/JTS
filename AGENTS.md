@@ -990,7 +990,17 @@ writes the file. The doctor and the `/system/` dashboard surface
 this state. Same pattern applies to the per-provider keys
 (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`) and model /
 voice selectors — all wizard-owned per
-[`jasper/web/voice_setup.py`](jasper/web/voice_setup.py).
+[`jasper/web/voice_setup.py`](jasper/web/voice_setup.py). **WS1 Phase 4a
+moved the three API keys into a separate file,
+`/var/lib/jasper-secrets/voice_keys.env`** (group `jasper-secrets`,
+readable only by jasper-voice + jasper-web), so a compromise of
+jasper-mux/-control/-input can't read them. The model / voice selectors
+and `JASPER_VOICE_PROVIDER` stay in `voice_provider.env` (group `jasper`)
+so jasper-control keeps reading the active provider for `/system/`. The
+`/voice` wizard writes both files; the split is invisible to the
+household. See
+[docs/HANDOFF-privilege-separation.md](docs/HANDOFF-privilege-separation.md)
+"Phase 4".
 
 **Reading the active provider in code — one reader, never `os.environ`.**
 Surfaces that display or aggregate the active provider but are *not*
@@ -1034,9 +1044,9 @@ bash scripts/switch-voice-provider.sh grok      # grok-voice-think-fast-1.0
 The script refuses to switch if the destination provider's API key
 isn't already in `/etc/jasper/jasper.env` (`GEMINI_API_KEY`,
 `OPENAI_API_KEY`, or `XAI_API_KEY`) or in the wizard-written
-`/var/lib/jasper/voice_provider.env`. Set the key first via
-either path; the script sets the provider and restarts
-`jasper-voice` in one shot.
+`/var/lib/jasper-secrets/voice_keys.env` (WS1 Phase 4a moved the keys
+here, out of `voice_provider.env`). Set the key first via either path;
+the script sets the provider and restarts `jasper-voice` in one shot.
 
 **Per-provider model env var** is independent of the provider switch
 — `JASPER_GEMINI_MODEL`, `JASPER_OPENAI_MODEL`, `JASPER_GROK_MODEL`.

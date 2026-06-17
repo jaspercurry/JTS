@@ -24,6 +24,10 @@ CAMILLA_DIR="/opt/camilladsp"
 CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
+# WS1 Phase 4a — the group-`jasper-secrets` secret compartment, a SIBLING of
+# STATE_DIR (not under it): STATE_DIR is jasper-voice/-mux's StateDirectory,
+# whose recursive chown would force this tree's group back to `jasper`.
+SECRETS_DIR="/var/lib/jasper-secrets"
 SYSTEMD_DIR="/etc/systemd/system"
 INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"

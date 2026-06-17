@@ -267,7 +267,7 @@ def _make_google_server(target: object) -> object:
         target,
         registry_path=os.environ.get(
             "JASPER_GOOGLE_ACCOUNTS_PATH",
-            "/var/lib/jasper/google/accounts.json",
+            "/var/lib/jasper-secrets/google/accounts.json",
         ),
         redirect_uri=os.environ.get(
             "GOOGLE_REDIRECT_URI",

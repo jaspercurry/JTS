@@ -86,10 +86,12 @@ _PAGE_CSS_HREF = "/assets/google/google.css"
 
 
 # Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
-# the systemd unit picks both up via `EnvironmentFile=`. Written at
-# SECRET_ENV_MODE (0640 group jasper) so the non-root jasper-control's
-# spawned jasper-doctor can read GOOGLE_CLIENT_SECRET (WS1 Phase 3b-2).
-CREDS_FILE = "/var/lib/jasper/google_credentials.env"
+# the systemd unit picks both up via `EnvironmentFile=`. WS1 Phase 4a:
+# this file lives in the setgid `jasper-secrets` dir (readable only by
+# jasper-voice + jasper-web), so a tempfile written here inherits group
+# `jasper-secrets`. GOOGLE_CLIENT_SECRET is no longer on the broad
+# `jasper` group; the /system/diagnostics jasper-doctor reads it as root.
+CREDS_FILE = "/var/lib/jasper-secrets/google_credentials.env"
 
 # Google OAuth client IDs end in `.apps.googleusercontent.com`.
 # Loose pattern — Google has changed the leading numeric chunk's
@@ -130,8 +132,9 @@ def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
 
 
 def _write_creds_file(client_id: str, client_secret: str, *, path: str = CREDS_FILE) -> None:
-    # WS1 Phase 3b-2: 0640 group jasper so the jasper-doctor jasper-control spawns
-    # (which reads GOOGLE_CLIENT_SECRET via Config.from_env) can read it.
+    # WS1 Phase 4a: 0640 in the setgid jasper-secrets dir → group
+    # `jasper-secrets` (voice + web only). GOOGLE_CLIENT_SECRET stays off the
+    # broad `jasper` group; the root /system/diagnostics jasper-doctor reads it.
     write_env_file(path, {
         "GOOGLE_CLIENT_ID": client_id,
         "GOOGLE_CLIENT_SECRET": client_secret,
@@ -267,7 +270,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
               <input id="client_secret" name="client_secret" type="password" required
                      autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
                      placeholder="GOCSPX-…">
-              <p class="form-hint">Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</p>
+              <p class="form-hint">Stored on this speaker only at <code>/var/lib/jasper-secrets/google_credentials.env</code>. Never sent anywhere except Google.</p>
             </div>
             <div class="form-actions">
               <button type="submit" class="btn btn--primary">Save credentials →</button>
@@ -1040,7 +1043,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    registry_path: str = "/var/lib/jasper/google/accounts.json",
+    registry_path: str = "/var/lib/jasper-secrets/google/accounts.json",
     redirect_uri: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is socket/tuple/int per
@@ -1084,7 +1087,7 @@ def main(argv: list[str] | None = None) -> int:
         "--registry",
         default=os.environ.get(
             "JASPER_GOOGLE_ACCOUNTS_PATH",
-            "/var/lib/jasper/google/accounts.json",
+            "/var/lib/jasper-secrets/google/accounts.json",
         ),
     )
     parser.add_argument(

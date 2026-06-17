@@ -47,7 +47,26 @@ from .catalog import (
 # JASPER_VOICE_PROVIDER_FILE, mirroring the wizard's own --state default.
 # That env var is a static deploy constant, so reading it once is fine —
 # only the file's *contents* are read fresh on every call.
+#
+# WS1 Phase 4a — this file is deliberately KEPT broad (group `jasper`,
+# under the /var/lib/jasper StateDirectory). It holds only the
+# non-secret selectors (JASPER_VOICE_PROVIDER + the per-provider model /
+# voice). The high-value API keys live separately in KEYS_FILE below, in
+# the group-`jasper-secrets` dir that only jasper-voice + jasper-web can
+# read. So jasper-control keeps reading the active provider/model here for
+# /system/ (this module) without gaining access to the LLM keys. See
+# docs/HANDOFF-privilege-separation.md "Phase 4".
 PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
+
+# WS1 Phase 4a — the three provider API keys (GEMINI/OPENAI/XAI) split out
+# of PROVIDER_FILE into a sibling secret dir narrowed to the
+# `jasper-secrets` group {jasper-voice, jasper-web}. The /voice wizard
+# writes it; jasper-voice + jasper-web source it via EnvironmentFile.
+# Outside the /var/lib/jasper StateDirectory on purpose — systemd's
+# recursive StateDirectory chown would otherwise force its group back to
+# `jasper`, re-exposing the keys to every jasper daemon. NOT read by this
+# module (jasper-control has no business reading the keys).
+KEYS_FILE = "/var/lib/jasper-secrets/voice_keys.env"
 
 ProviderStateStatus = Literal[
     "configured",

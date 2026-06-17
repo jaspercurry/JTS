@@ -764,9 +764,14 @@ class Config:
                 "GOOGLE_REDIRECT_URI",
                 f"https://jaspercurry.github.io/google-oauth-callback/?host={hostname}",
             ),
+            # WS1 Phase 4a — the Google OAuth token tree (per-member refresh
+            # tokens + Gmail/Calendar identities) moved out of the shared
+            # /var/lib/jasper StateDirectory into the group-`jasper-secrets`
+            # dir, readable only by jasper-voice + jasper-web. See
+            # docs/HANDOFF-privilege-separation.md "Phase 4".
             google_accounts_path=_env(
                 "JASPER_GOOGLE_ACCOUNTS_PATH",
-                "/var/lib/jasper/google/accounts.json",
+                "/var/lib/jasper-secrets/google/accounts.json",
             ),
             google_setup_url=_env(
                 "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",

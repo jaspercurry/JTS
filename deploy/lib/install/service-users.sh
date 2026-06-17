@@ -18,6 +18,15 @@ create_jasper_service_users() {
     if ! getent group jasper >/dev/null 2>&1; then
         groupadd -r jasper
     fi
+    # WS1 Phase 4a — `jasper-secrets` narrows the high-value secrets (LLM API
+    # keys + Google OAuth client secret + token tree) to just the voice + web
+    # service users. Created HERE, before the -G group lists below reference it,
+    # so a fresh install adds members in one shot. Safe to put in a -G list
+    # precisely because WE create it (unlike the package-created `bluetooth`
+    # group, which must be added via a guarded usermod after install_deps).
+    if ! getent group jasper-secrets >/dev/null 2>&1; then
+        groupadd -r jasper-secrets
+    fi
     # Primary group `jasper` for every dropped daemon. Supplementary groups
     # match each unit's SupplementaryGroups=: audio (ALSA) for voice, input
     # (/dev/input/event*) for input. -r = system account, -M = no home,
@@ -25,7 +34,7 @@ create_jasper_service_users() {
     # runtime authority; keeping the passwd entry consistent avoids surprises
     # for tools that read /etc/passwd.
     if ! getent passwd jasper-voice >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio jasper-voice
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio,jasper-secrets jasper-voice
     fi
     if ! getent passwd jasper-mux >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper jasper-mux
@@ -71,13 +80,22 @@ create_jasper_service_users() {
     # then. Add both groups idempotently (also the upgrade path: useradd is
     # skipped when the user already exists).
     if ! getent passwd jasper-web >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal jasper-web
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-secrets jasper-web
     fi
     usermod -aG systemd-journal jasper-web 2>/dev/null || true
     if getent group bluetooth >/dev/null 2>&1; then
         usermod -aG bluetooth jasper-web 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper)"
+    # WS1 Phase 4a — ensure jasper-secrets membership on UPGRADE too (the
+    # useradd -G above is skipped when the user already exists, e.g. a Pi from a
+    # pre-4a build). Idempotent; takes effect on the daemon's next start (the
+    # deploy restarts jasper-voice; jasper-web is socket-activated so its next
+    # spawn picks it up).
+    if getent group jasper-secrets >/dev/null 2>&1; then
+        usermod -aG jasper-secrets jasper-voice 2>/dev/null || true
+        usermod -aG jasper-secrets jasper-web 2>/dev/null || true
+    fi
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper; secrets: jasper-secrets = voice+web)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

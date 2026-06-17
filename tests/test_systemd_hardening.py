@@ -118,20 +118,26 @@ def test_tmpfs_home_where_no_home_needed(unit):
 
 # unit -> (expected User=, expected SupplementaryGroups set)
 DROPPED = {
-    "jasper-voice": ("jasper-voice", {"audio"}),
+    # 4a: `jasper-secrets` grants read of the split-out LLM API keys + Google
+    # client secret/token tree in /var/lib/jasper-secrets (mux/control/input are
+    # NOT in it — exact-set assertion below is the exclusion guard). `audio` = ALSA.
+    "jasper-voice": ("jasper-voice", {"audio", "jasper-secrets"}),
     "jasper-mux": ("jasper-mux", set()),
     "jasper-input": ("jasper-input", {"input"}),
     # 3b-2: control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
     # ALSA/input device. The one supplementary group is `systemd-journal` —
     # several /state cards (airplay_health, dial, wifi_guardian) read the journal.
+    # Deliberately NOT in jasper-secrets: it reads the active provider NAME from
+    # the (now keyless) voice_provider.env, never the keys (Phase 4a).
     "jasper-control": ("jasper-control", {"systemd-journal"}),
     # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
     # are `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus
-    # policy grant) and `systemd-journal` (journalctl -k Wi-Fi diagnostics). No
+    # policy grant) and `systemd-journal` (journalctl -k Wi-Fi diagnostics) and,
+    # since 4a, `jasper-secrets` (the wizards write + render the secret files). No
     # CAP_NET_ADMIN — the NL80211 scan-repair degrades fail-soft.
-    "jasper-web": ("jasper-web", {"bluetooth", "systemd-journal"}),
+    "jasper-web": ("jasper-web", {"bluetooth", "systemd-journal", "jasper-secrets"}),
 }
 
 
@@ -218,6 +224,65 @@ def test_install_creates_every_dropped_user():
                 f"{user} must be in supplementary group {g} (via useradd -G or a "
                 "guarded usermod -aG, matching the unit's SupplementaryGroups=)"
             )
+
+
+def test_secrets_compartment_phase4a():
+    """WS1 Phase 4a — the high-value secrets (LLM API keys + Google client
+    secret/token tree) live in the group-`jasper-secrets` compartment, readable
+    only by jasper-voice + jasper-web. Pin: (1) the group is created; (2) voice +
+    web source voice_keys.env + the RELOCATED google_credentials.env; (3) only
+    jasper-web (which WRITES the compartment via the /voice + /google wizards)
+    gets it in ReadWritePaths — jasper-voice only READS (keys via EnvironmentFile,
+    Google tree via the group), so under ProtectSystem=strict it needs NO write
+    grant; (4) the daemons that must NOT see the keys (mux/control/input) don't
+    source voice_keys.env."""
+    secret_keys = "/var/lib/jasper-secrets/voice_keys.env"
+    secret_google = "/var/lib/jasper-secrets/google_credentials.env"
+
+    # (1) group created in service-users.sh (before the useradd -G that uses it).
+    sh = SERVICE_USERS_SH.read_text()
+    assert "groupadd -r jasper-secrets" in sh, (
+        "service-users.sh must create the jasper-secrets group"
+    )
+
+    # (2) both voice + web source the secret files (and are in the group, asserted
+    #     by test_user_drop's exact-set check).
+    for unit in ("jasper-voice", "jasper-web"):
+        pairs = list(_directives(TIER_A[unit]))
+        envfiles = " ".join(v for k, v in pairs if k == "EnvironmentFile")
+        assert secret_keys in envfiles, f"{unit} must source {secret_keys}"
+        assert secret_google in envfiles, f"{unit} must source {secret_google}"
+        # The OLD broad path must be gone (no dual-source re-exposure).
+        assert "/var/lib/jasper/google_credentials.env" not in envfiles, (
+            f"{unit} still sources the pre-4a broad google_credentials.env path"
+        )
+
+    # (3) WRITE grant is asymmetric on purpose: web writes the compartment (OAuth
+    #     + wizard saves) so it needs ReadWritePaths; voice only reads, so it must
+    #     NOT have the write grant (least privilege + no hard dep on a
+    #     non-StateDirectory path for the most critical daemon).
+    web_rw = " ".join(
+        v for k, v in _directives(TIER_A["jasper-web"]) if k == "ReadWritePaths"
+    )
+    assert "/var/lib/jasper-secrets" in web_rw, (
+        "jasper-web writes the compartment (OAuth tokens + wizard saves) and "
+        "needs it in ReadWritePaths"
+    )
+    voice_rw = " ".join(
+        v for k, v in _directives(TIER_A["jasper-voice"]) if k == "ReadWritePaths"
+    )
+    assert "/var/lib/jasper-secrets" not in voice_rw, (
+        "jasper-voice only READS the compartment (keys via EnvironmentFile, "
+        "Google tree via the group); it must NOT get a write grant"
+    )
+
+    # (4) the excluded daemons must NOT source the secret-keys file.
+    for unit in ("jasper-mux", "jasper-control", "jasper-input"):
+        pairs = list(_directives(TIER_A[unit]))
+        envfiles = " ".join(v for k, v in pairs if k == "EnvironmentFile")
+        assert secret_keys not in envfiles, (
+            f"{unit} must NOT source {secret_keys} (Phase 4a compartmentalization)"
+        )
 
 
 def test_streambox_web_unit_stays_root_until_validated():

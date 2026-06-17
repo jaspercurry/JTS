@@ -14,29 +14,16 @@ install_jasper() {
 
     write_build_manifest
 
-    # Per-account Google refresh tokens live under here at mode 0600.
-    # Tighten the parent dirs too so non-root processes can't even
-    # `ls` the per-household-member token filenames (the names are
-    # PII-adjacent — they identify which household members linked
-    # accounts). install -d resets perms on existing dirs.
-    # WS1 Phase 3b: 2750 (setgid) + group `jasper` (was 0700 root-only) so the
-    # now-non-root jasper-voice can traverse to read its Google OAuth tokens.
-    # The setgid bit is load-bearing: the /google/ wizard writes tokens as root
-    # (egid root), so without setgid a freshly-linked account's token would be
-    # group `root` and unreadable by voice until systemd's StateDirectory
-    # recursive-chown re-grouped it on the next restart; setgid makes new files
-    # inherit group `jasper` from the dir immediately. Group read — not owner —
-    # is what makes voice's Calendar/Gmail tools work after the drop. Per-daemon
-    # secret isolation is Phase 4 (LoadCredential).
-    if getent group jasper >/dev/null 2>&1; then
-        install -d -m 2750 -g jasper "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
-        # Widen pre-existing token files (0600) to group-jasper read.
-        chmod 0640 "${STATE_DIR}/google/accounts.json" 2>/dev/null || true
-        find "${STATE_DIR}/google/tokens" -type f -name '*.json' \
-            -exec chmod 0640 {} + 2>/dev/null || true
-    else
-        install -d -m 0700 "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
-    fi
+    # WS1 Phase 4a — the per-account Google OAuth token tree + client secret now
+    # live in the group-`jasper-secrets` compartment (jasper-voice + jasper-web
+    # only), NOT here under the /var/lib/jasper StateDirectory (whose recursive
+    # chown would force the group back to `jasper`, re-exposing the refresh
+    # tokens to every jasper daemon). ensure_secrets_dir creates the compartment
+    # parent + installs the boot self-heal tmpfiles; migrate_secrets_phase4a (in
+    # the migrate list below) moves any existing tree out of /var/lib/jasper,
+    # rewrites the absolute token_paths baked into accounts.json, re-groups the
+    # tree to jasper-secrets, and splits the LLM API keys into voice_keys.env.
+    ensure_secrets_dir
 
     # WS1 Phase 3b: the Spotify OAuth token cache (one JSON per linked account,
     # written by jasper-voice via spotipy) must be group-`jasper` READABLE so the
@@ -282,6 +269,11 @@ install_jasper() {
         echo "  speaker name: JTS"
     fi
     migrate_voice_provider
+    # WS1 Phase 4a — runs AFTER migrate_voice_provider so JASPER_VOICE_PROVIDER
+    # is already in voice_provider.env; this moves the Google tree + client
+    # secret into the jasper-secrets compartment and splits the LLM API keys out
+    # of voice_provider.env (+ any jasper.env seed) into voice_keys.env.
+    migrate_secrets_phase4a
     migrate_openai_noise_reduction_default
     migrate_tts_outputd_socket_default
     render_voice_provider_ids_manifest

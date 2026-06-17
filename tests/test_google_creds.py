@@ -92,7 +92,8 @@ def test_registry_remove_updates_default():
 def test_default_token_path_blocks_traversal():
     p = default_token_path_for("alice/../etc/passwd")
     assert "/etc/passwd" not in p
-    assert p.startswith("/var/lib/jasper/google/tokens/")
+    # WS1 Phase 4a — the token tree moved into the jasper-secrets compartment.
+    assert p.startswith("/var/lib/jasper-secrets/google/tokens/")
     assert p.endswith(".json")
 
 
@@ -146,21 +147,22 @@ def test_save_token_writes_mode_0640(tmp_path):
     assert payload["scopes"] == ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
-_PYTHON_RUNTIME_SH = (
-    Path(__file__).resolve().parents[1] / "deploy/lib/install/python-runtime.sh"
+_ENV_MIGRATIONS_SH = (
+    Path(__file__).resolve().parents[1] / "deploy/lib/install/env-migrations.sh"
 )
 
 
 def test_install_creates_google_dir_setgid():
-    """The Google tree's group-`jasper` access (so the non-root voice can read
-    its OAuth tokens after the drop) is set authoritatively by install.sh as
-    root, and setgid so tokens the root /google/ wizard writes inherit group
-    `jasper` directly. Guard the setgid + group so the bit can't be silently
-    dropped back to 0750 — which would re-break a freshly linked account."""
-    sh = _PYTHON_RUNTIME_SH.read_text()
-    assert "install -d -m 2750 -g jasper" in sh and "google" in sh, (
-        "python-runtime.sh must create /var/lib/jasper/google setgid + group "
-        "jasper (install -d -m 2750 -g jasper ...)"
+    """The Google tree's group access (so non-root voice + web can read/write
+    OAuth tokens) is set authoritatively by install as root, setgid so tokens the
+    /google/ wizard writes inherit the group directly. WS1 Phase 4a moved it into
+    the jasper-secrets compartment at mode 2770 group jasper-secrets (was the
+    broad 2750 group jasper). Guard the setgid + group so the bit can't be
+    silently dropped — which would re-break a freshly linked account."""
+    sh = _ENV_MIGRATIONS_SH.read_text()
+    assert "install -d -m 2770 -g jasper-secrets" in sh and "google" in sh, (
+        "env-migrations.sh must create the jasper-secrets Google tree setgid + "
+        "group jasper-secrets (install -d -m 2770 -g jasper-secrets ...)"
     )
 
 

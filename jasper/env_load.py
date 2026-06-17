@@ -47,7 +47,14 @@ ENV_FILES = (
     "/var/lib/jasper/speaker_name.env",
     "/var/lib/jasper/spotify_credentials.env",
     "/var/lib/jasper/voice_provider.env",
-    "/var/lib/jasper/google_credentials.env",
+    # WS1 Phase 4a — the provider API keys split out of voice_provider.env
+    # and the Google client secret moved into the group-`jasper-secrets`
+    # dir (jasper-voice + jasper-web only). A non-member CLI/daemon that
+    # runs env_load (e.g. jasper-control) simply reads {} for these
+    # (parse_env_file is fail-soft on EACCES); the root jasper-doctor reads
+    # them fine. See docs/HANDOFF-privilege-separation.md "Phase 4".
+    "/var/lib/jasper-secrets/voice_keys.env",
+    "/var/lib/jasper-secrets/google_credentials.env",
     "/var/lib/jasper/wake_model.env",
     "/var/lib/jasper/weather.env",
     "/var/lib/jasper/transit.env",
