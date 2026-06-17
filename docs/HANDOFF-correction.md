@@ -391,6 +391,155 @@
   Wake Lock, auto-level copy, and the mic-picker UX still need an on-device
   confirmation pass.
 
+## Task C: `MeasurementSession` decomposition status (2026-06-17)
+
+Task C is the current maintainability campaign for
+[`jasper/correction/session.py`](../jasper/correction/session.py).
+The goal is not to change room-correction behavior. The goal is to
+keep the shipped safety stack intact while moving cohesive pieces out
+of the large session orchestrator so future correction, REW, FIR, and
+advisor work can land without every change editing one long file.
+
+Why this matters:
+
+- `MeasurementSession` owns a safety-critical state machine: browser
+  capture, sweep playback, CamillaDSP apply/reset, bundle writes,
+  confidence/evidence generation, and autolevel volume restore.
+- The file is too broad, but broad refactors are the risk. This speaker
+  is hardware, not a web toy: a wrong reset/apply/volume path can leave
+  the room loud, corrected when it should be flat, or wedged while the
+  household expects the speaker to recover.
+- The decomposition bar is therefore "extract ownership, preserve
+  behavior." Each PR should remove one cohesive responsibility,
+  keep `MeasurementSession` as the orchestration boundary, and pin the
+  behavior with hardware-free tests.
+
+What has shipped:
+
+- ✅ **Auto-level controller extraction.** PR #788 (merged 2026-06-17)
+  moved the autolevel ramp controller and listening-volume restore
+  mechanics into
+  [`jasper/correction/autolevel.py`](../jasper/correction/autolevel.py).
+  `MeasurementSession` still exposes the public methods the web handler
+  calls, but the ramp state, lock/cancel events, retained `main_volume`
+  setter, cap math, and idempotent restore live with the controller.
+  Do not rework this slice unless tests or review find a concrete bug.
+- ✅ **State guard extraction.** PR #790 (merged 2026-06-17) moved the
+  stranded-capture watchdog and reset-busy predicate into
+  [`jasper/correction/state_guard.py`](../jasper/correction/state_guard.py).
+  `MeasurementSession._set_state()` still owns state mutation, state
+  events, logging, and best-effort `info.json` writes. The guard owns
+  only timeout task cancellation/arming, `event=correction_capture_timeout`,
+  and reset-busy membership. Tests pin `needs_noise_capture`, all
+  `awaiting_*_capture` timeout states, timeout cancellation on upload,
+  the log event fields, reset-busy rejection, and failed-measurement
+  autolevel restore.
+
+Do not disturb these guardrails while decomposing:
+
+- **Autolevel ceiling and restore behavior.** Autolevel may raise
+  CamillaDSP `main_volume` above listening level for measurement SNR.
+  Apply/reset handlers and failed/verify terminal paths must restore
+  the original listening level.
+- **Stranded-capture watchdog.** Automatic browser-upload states must
+  self-abandon to `FAILED` after `AWAITING_CAPTURE_TIMEOUT_SEC` and log
+  `event=correction_capture_timeout`. User-paced states
+  (`needs_next_position`, `needs_repeat_capture`) must remain unguarded
+  and cancellable.
+- **Cuts-only correction.** Room correction remains restrained PEQ by
+  default. Do not widen this campaign into boost, FIR generation, or
+  phase correction.
+- **CamillaDSP output safety.** Preserve `devices.volume_limit=0.0`
+  and the outputd-safe baseline assumptions in generated configs.
+- **Flat-before-measure invariant.** `/start` must reset CamillaDSP to
+  `/etc/camilladsp/outputd-cutover.yml` before the first sweep so every
+  measurement captures the raw room through the protected baseline.
+- **Task B surfaces are live.** Confidence reports, evidence packets,
+  replay artifacts, FIR-runtime inspection/staging, and calibration-agent
+  advisor surfaces are not dead code. Do not delete or bypass them
+  while shrinking `session.py`.
+- **PEQ math boundary.** Do not touch `_bell_response_db` or
+  `_estimate_q` as part of Task C. The Q-estimation warning was
+  previously misattributed; see the project memory
+  `project_correction_pr2_fix_bell_not_estimate_q`.
+
+Good next slices:
+
+1. **Status/snapshot serialization.** Lowest risk. Move the JSON-ish
+   status payload helpers out of `MeasurementSession` while preserving
+   `/status`, bundle summaries, and report consumers. This should be a
+   small PR with before/after snapshot tests.
+2. **Capture analysis orchestration.** Higher value, higher risk. The
+   repeated "capture arrived -> set ANALYZING -> smooth -> record
+   artifacts -> refresh confidence/acoustic evidence -> transition"
+   paths for measurement, repeat, and verify could become a typed
+   collaborator. Take this only after mapping every artifact write and
+   terminal-state restore. Tests need to cover normal measurement,
+   repeat capture, verify capture, capture-quality failure, and runtime
+   evidence writes.
+3. **Camilla apply/reset orchestration.** Useful but audio-safety
+   sensitive. If extracted, the collaborator must preserve flat reset,
+   generated-config apply, failed apply behavior, and autolevel restore
+   exactly. This slice needs the tightest review.
+
+Probably stop if the next slice feels like architecture for its own
+sake. The purpose is to make future work safer, not to make
+`MeasurementSession` tiny at any cost.
+
+### Pickup prompt for the next Task C session
+
+Use this when starting a fresh agent/session:
+
+```text
+You are continuing the JTS room-correction Task C decomposition campaign.
+
+Repo: jaspercurry/JTS. Start by finding the repo, run
+`git fetch --prune origin`, and verify current `origin/main`.
+
+Read first:
+- AGENTS.md
+- docs/HANDOFF-correction.md, especially "Task C: MeasurementSession
+  decomposition status"
+- docs/HANDOFF-calibration-agent.md
+- Memory entries:
+  - project_correction_pr2_fix_bell_not_estimate_q
+  - project_correction_design_hub
+  - feedback_review_workflows_clobber_shared_worktree
+  - feedback_always_use_pr_flow
+
+Current Task C status:
+- PR #788 merged 2026-06-17: extracted `jasper.correction.autolevel`.
+- PR #790 merged 2026-06-17: extracted
+  `jasper.correction.state_guard.SessionStateGuard`.
+- Do not rework those slices unless tests or review find a concrete issue.
+- Do not touch `_bell_response_db` or `_estimate_q`.
+- Do not treat confidence/evidence/FIR/calibration-agent surfaces as dead code.
+
+Mission:
+- Continue decomposing `jasper/correction/session.py` in one small PR.
+- Prefer the next lowest-risk slice: status/snapshot serialization.
+- Preserve the safety stack verbatim:
+  - autolevel ceiling and restore behavior
+  - stranded-capture watchdog
+  - cuts-only correction
+  - CamillaDSP `devices.volume_limit=0.0`
+  - `/start` resets to the flat outputd-safe baseline before measuring
+  - failed/verify measurement restores `main_volume` to listening level
+
+Working rules:
+- Short-lived `codex/` branch off current `origin/main`.
+- Diagnose by reading existing session/web/tests before patching.
+- Keep `MeasurementSession` as the orchestration boundary; extract only one
+  cohesive collaborator.
+- Use `/Users/jaspercurry/Code/JTS/.venv/bin/pytest` if this worktree lacks
+  `.venv`.
+- Run targeted pytest, `ruff check .`, `scripts/docs-impact.py`, and
+  `scripts/docs-linkcheck.py`.
+- Commit before adversarial review; any review agents must be isolated or
+  read-only.
+- Open a small PR and ask before merging unless explicitly granted.
+```
+
 **Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
 before more filter types. The multi-position confidence layer,
@@ -1647,4 +1796,5 @@ Last verified: 2026-06-17 (auto-level controller ownership rechecked against
 `jasper/correction/autolevel.py` and `jasper/correction/session.py`; stranded
 capture watchdog / reset-busy guard ownership rechecked against
 `jasper/correction/state_guard.py` and `jasper/correction/session.py`.
+Task C decomposition status and pickup prompt refreshed after PR #790.
 Behavior, routes, and safety invariants remain unchanged.)
