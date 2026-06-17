@@ -803,9 +803,11 @@ jasper/
 │   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
 │   ├── artifacts.py                     per-session bundle writer / manifest owner
+│   ├── autolevel.py                     auto-level ramp controller + volume restore
 │   ├── fir_runtime.py                   FIR coefficient inspect/stage substrate
 │   ├── evidence.py                      deterministic human/agent evidence packet
 │   └── session.py                       measurement state machine + DSP orchestration
+│                                        (delegates auto-level ramping)
 │
 ├── cli/
 │   └── doctor.py                        correction socket / bundle / config checks
@@ -1640,4 +1642,6 @@ pauses outputd content loudness metering instead of the retired TTS
 RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
 still apply.)
 
-Last verified: 2026-06-16
+Last verified: 2026-06-17 (auto-level controller ownership rechecked against
+`jasper/correction/autolevel.py` and `jasper/correction/session.py`; behavior,
+routes, and safety invariants remain unchanged.)

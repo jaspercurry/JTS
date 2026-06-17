@@ -58,6 +58,12 @@ from . import (
     sweep,
 )
 from .artifacts import ANALYSIS_NORMALIZE_BAND_HZ, SessionArtifacts
+from .autolevel import (
+    AutolevelController,
+    AutolevelData as AutolevelData,
+    AutolevelStatus as AutolevelStatus,
+    compute_autolevel_cap as compute_autolevel_cap,
+)
 from .calibration import CalibrationRecord
 from .peq import PEQ
 from ..log_event import log_event
@@ -324,59 +330,6 @@ class SessionEvent:
     payload: dict[str, Any]
 
 
-class AutolevelStatus(Enum):
-    """Auto-level sub-state. Orthogonal to the measurement state
-    machine — autolevel can run from any "idle-ish" session state
-    (IDLE / READY / APPLIED / VERIFIED / FAILED) without affecting
-    the session's measurement flow.
-    """
-    IDLE = "idle"
-    RAMPING = "ramping"
-    LOCKED = "locked"
-    MAXED_OUT = "maxed_out"
-    CANCELLED = "cancelled"
-    ERROR = "error"
-
-
-@dataclass
-class AutolevelData:
-    """Tracks one auto-level run. Replaced (not mutated) when the
-    user starts a new one.
-
-    `original_main_volume_db` is the CamillaDSP `main_volume` value
-    saved at the start of the run, so we can restore it when the
-    measurement ends — apply / reset (the web handlers) or fail /
-    verify (the session's `_restore_listening_volume_if_ramped`).
-    `current` is
-    where the ramp is right now; `locked` is where it ended up
-    when the user signalled lock (or where it was when the ramp
-    completed without lock). `cap_db` is the dynamic end-of-ramp
-    cap computed from `original + bump`; exposed so the client and
-    tests can verify what cap the run is operating under.
-    """
-    status: AutolevelStatus = AutolevelStatus.IDLE
-    current_main_volume_db: float = -50.0
-    original_main_volume_db: float | None = None
-    locked_main_volume_db: float | None = None
-    cap_db: float | None = None
-    error: str | None = None
-    # Set once the listening level has been restored after a measurement
-    # ending, so the session's terminal-state restore stays idempotent.
-    restored: bool = False
-
-    def snapshot(self) -> dict[str, Any]:
-        def r(x: float | None) -> float | None:
-            return round(x, 2) if x is not None else None
-        return {
-            "status": self.status.value,
-            "current_main_volume_db": r(self.current_main_volume_db),
-            "original_main_volume_db": r(self.original_main_volume_db),
-            "locked_main_volume_db": r(self.locked_main_volume_db),
-            "cap_db": r(self.cap_db),
-            "error": self.error,
-        }
-
-
 @dataclass
 class SessionConfig:
     sweep_dir: Path = Path("/var/lib/jasper/correction/sweeps")
@@ -443,17 +396,6 @@ _RESET_BUSY_STATES = frozenset({
     SessionState.ANALYZING,
     SessionState.VERIFYING,
 })
-
-
-def compute_autolevel_cap(
-    original_db: float, *, bump_db: float, floor_db: float, ceil_db: float
-) -> float:
-    """End-of-ramp cap for auto-level: +bump over the user's listening
-    volume, clamped to [floor, ceil]. The floor raises a very quiet listener
-    UP to a usable measurement level; the ceiling is the room safety limit.
-    Pinned by tests so the maxed_out UI reads cap_db rather than hardcoding it.
-    """
-    return max(floor_db, min(original_db + bump_db, ceil_db))
 
 
 class MeasurementSession:
@@ -532,19 +474,12 @@ class MeasurementSession:
         self.sweep_wav_path: Path | None = None
         self.last_capture_path: Path | None = None
 
-        # Auto-level sub-state — orthogonal to the measurement
-        # state machine; runs against CamillaDSP main_volume +
-        # iPhone-mic feedback.
-        self.autolevel: AutolevelData = AutolevelData()
-        self._autolevel_lock_event: asyncio.Event | None = None
-        self._autolevel_cancel_event: asyncio.Event | None = None
-        # The main_volume setter the most recent autolevel run ramped with,
-        # retained so the session can restore the listening level when a
-        # measurement ENDS on a path the web apply/reset handlers never see
-        # (watchdog FAILED, verify VERIFIED). None until autolevel runs.
-        self._main_volume_setter: (
-            Callable[[float], Awaitable[Any]] | None
-        ) = None
+        # Auto-level is orthogonal to the measurement state machine. The
+        # controller owns the ramp events and retained main_volume setter; the
+        # session keeps the public methods for web-handler compatibility.
+        self._autolevel_controller = AutolevelController(
+            session_id=self.session_id,
+        )
 
         # Single-slot watchdog that abandons a session stranded waiting for a
         # capture upload (see AWAITING_CAPTURE_TIMEOUT_SEC). Armed/cancelled
@@ -591,6 +526,27 @@ class MeasurementSession:
         if self._lock_obj is None:
             self._lock_obj = asyncio.Lock()
         return self._lock_obj
+
+    @property
+    def autolevel(self) -> AutolevelData:
+        return self._autolevel_controller.data
+
+    @autolevel.setter
+    def autolevel(self, data: AutolevelData) -> None:
+        self._autolevel_controller.data = data
+
+    @property
+    def _main_volume_setter(
+        self,
+    ) -> Callable[[float], Awaitable[Any]] | None:
+        return self._autolevel_controller.main_volume_setter
+
+    @_main_volume_setter.setter
+    def _main_volume_setter(
+        self,
+        setter: Callable[[float], Awaitable[Any]] | None,
+    ) -> None:
+        self._autolevel_controller.main_volume_setter = setter
 
     # ------------------------------------------------------------------
     # Internal helpers.
@@ -944,30 +900,7 @@ class MeasurementSession:
         success paths; this fires only for the endings they never see. It
         holds no lock and swallows errors, so it is safe to call from _fail
         (which runs under the session lock)."""
-        al = self.autolevel
-        if al.restored:
-            return
-        if al.status not in (AutolevelStatus.LOCKED, AutolevelStatus.MAXED_OUT):
-            return
-        if al.original_main_volume_db is None or self._main_volume_setter is None:
-            return
-        al.restored = True
-        try:
-            await self._main_volume_setter(al.original_main_volume_db)
-            log_event(
-                logger,
-                "correction_autolevel_volume_restored",
-                session=self.session_id,
-                to_db=f"{al.original_main_volume_db:.1f}",
-                trigger="measurement_ended",
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "autolevel volume restore on measurement end failed "
-                "(session=%s) — speaker may remain at the measurement level "
-                "until /reset",
-                self.session_id,
-            )
+        await self._autolevel_controller.restore_listening_volume_if_ramped()
 
     def _ensure_sweep_cache(self) -> tuple[Path, sweep.SweepMeta]:
         """Generate or reuse the cached sweep WAV. Cached on disk
@@ -2200,7 +2133,7 @@ class MeasurementSession:
         auto-locks when the captured level enters the target range,
         OR the user taps a manual "Lock now" button. Either path
         POSTs to `/autolevel/lock`, which sets
-        `_autolevel_lock_event` and causes this function to freeze
+        the controller's lock event and causes this function to freeze
         main_volume at the current ramp value.
 
         Three exits:
@@ -2255,176 +2188,33 @@ class MeasurementSession:
         far quieter than the prior -6 dBFS tone × -6 dB cap = -12
         dBFS that blasted the user.
         """
-        al = self.autolevel = AutolevelData()
-        # Retain the setter so a measurement that ends via FAIL/VERIFY (which
-        # the web apply/reset handlers never observe) can still restore the
-        # listening level instead of stranding the speaker at the ramped level.
-        self._main_volume_setter = set_main_volume_db
-        self._autolevel_lock_event = asyncio.Event()
-        self._autolevel_cancel_event = asyncio.Event()
-        loop = asyncio.get_event_loop()
-        tone_task: asyncio.Task | None = None
-
-        async def _graceful_stop(lock_value_db: float | None) -> None:
-            """Fade main_volume down to `fade_down_to_db`, then kill
-            the tone. Avoids the click that bare proc.kill() would
-            produce mid-tone. After the fade, the caller's choice of
-            final main_volume (locked / restored) is set."""
-            try:
-                cur = al.current_main_volume_db
-                while cur > fade_down_to_db:
-                    cur = max(fade_down_to_db, cur - 2.0)
-                    try:
-                        await set_main_volume_db(cur)
-                    except Exception:  # noqa: BLE001
-                        break
-                    await asyncio.sleep(fade_step_s)
-            finally:
-                cancel_tone()
-                if tone_task is not None:
-                    try:
-                        await asyncio.wait_for(tone_task, timeout=2.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
-                        pass
-                # After tone is silenced, set the final main_volume.
-                if lock_value_db is not None:
-                    try:
-                        await set_main_volume_db(lock_value_db)
-                        al.current_main_volume_db = lock_value_db
-                    except Exception:  # noqa: BLE001
-                        pass
-
-        try:
-            al.original_main_volume_db = float(await get_main_volume_db())
-            # Compute the dynamic cap NOW that we know original.
-            if end_db is None:
-                end_db = compute_autolevel_cap(
-                    al.original_main_volume_db,
-                    bump_db=end_db_bump,
-                    floor_db=end_db_absolute_min,
-                    ceil_db=end_db_absolute_max,
-                )
-                logger.info(
-                    "autolevel: dynamic end_db=%.1f dB "
-                    "(original=%.1f + bump=%.1f, clamped to [%.1f, %.1f])",
-                    end_db, al.original_main_volume_db, end_db_bump,
-                    end_db_absolute_min, end_db_absolute_max,
-                )
-            al.cap_db = float(end_db)
-            al.status = AutolevelStatus.RAMPING
-            logger.info(
-                "autolevel: START original_main_volume=%.1f dB "
-                "(ramp %.1f → %.1f dB, step=%.1f dB/%.0f ms)",
-                al.original_main_volume_db, start_db, end_db,
-                step_db, step_interval_s * 1000,
-            )
-
-            # CRITICAL: set main_volume to the quiet start BEFORE
-            # starting the tone. Without this, the tone briefly plays
-            # at the user's previous (often loud) listening level
-            # before the ramp drops it — a real "menace" complaint
-            # from the first-user test.
-            current_db = float(start_db)
-            await set_main_volume_db(current_db)
-            al.current_main_volume_db = current_db
-            # Brief settle so CamillaDSP's volume change reaches the
-            # output before any tone arrives.
-            await asyncio.sleep(0.1)
-
-            tone_task = asyncio.create_task(play_continuous_tone())
-
-            start_time = loop.time()
-
-            while current_db < end_db:
-                # Subdivide each ramp step so lock/cancel can
-                # respond within ~10 ms instead of waiting out the
-                # full step interval.
-                interval_end = loop.time() + step_interval_s
-                while loop.time() < interval_end:
-                    await asyncio.sleep(0.01)
-                    if self._autolevel_lock_event.is_set():
-                        al.status = AutolevelStatus.LOCKED
-                        al.locked_main_volume_db = current_db
-                        logger.info(
-                            "autolevel: LOCKED at main_volume=%.1f dB "
-                            "(elapsed %.2f s)",
-                            current_db, loop.time() - start_time,
-                        )
-                        await _graceful_stop(current_db)
-                        return
-                    if self._autolevel_cancel_event.is_set():
-                        al.status = AutolevelStatus.CANCELLED
-                        logger.info(
-                            "autolevel: CANCELLED at main_volume=%.1f dB "
-                            "(elapsed %.2f s) — restoring to %.1f dB",
-                            current_db, loop.time() - start_time,
-                            al.original_main_volume_db,
-                        )
-                        await _graceful_stop(al.original_main_volume_db)
-                        return
-                    if loop.time() - start_time > safety_timeout_s:
-                        al.status = AutolevelStatus.CANCELLED
-                        al.error = (
-                            f"safety timeout after {safety_timeout_s}s"
-                        )
-                        logger.warning(
-                            "autolevel: SAFETY TIMEOUT at "
-                            "main_volume=%.1f dB — restoring to %.1f dB",
-                            current_db, al.original_main_volume_db,
-                        )
-                        await _graceful_stop(al.original_main_volume_db)
-                        return
-
-                current_db = min(end_db, current_db + step_db)
-                await set_main_volume_db(current_db)
-                al.current_main_volume_db = current_db
-                logger.debug(
-                    "autolevel: step main_volume=%.1f dB", current_db,
-                )
-
-            # Ramp completed without lock.
-            al.status = AutolevelStatus.MAXED_OUT
-            al.locked_main_volume_db = end_db
-            logger.info(
-                "autolevel: MAXED_OUT at main_volume=%.1f dB "
-                "(software cap) — user must turn up amplifier OR "
-                "tap manual Lock button next time",
-                end_db,
-            )
-            # Even on MAXED_OUT, fade gracefully. main_volume stays
-            # at end_db (so a manual Lock follow-up would work).
-            await _graceful_stop(end_db)
-        except Exception as e:  # noqa: BLE001
-            al.status = AutolevelStatus.ERROR
-            al.error = str(e)
-            logger.exception("autolevel failed")
-            try:
-                if al.original_main_volume_db is not None:
-                    await _graceful_stop(al.original_main_volume_db)
-                else:
-                    cancel_tone()
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            self._autolevel_lock_event = None
-            self._autolevel_cancel_event = None
+        await self._autolevel_controller.run(
+            get_main_volume_db=get_main_volume_db,
+            set_main_volume_db=set_main_volume_db,
+            play_continuous_tone=play_continuous_tone,
+            cancel_tone=cancel_tone,
+            start_db=start_db,
+            end_db=end_db,
+            end_db_bump=end_db_bump,
+            end_db_absolute_max=end_db_absolute_max,
+            end_db_absolute_min=end_db_absolute_min,
+            step_db=step_db,
+            step_interval_s=step_interval_s,
+            safety_timeout_s=safety_timeout_s,
+            fade_down_to_db=fade_down_to_db,
+            fade_step_s=fade_step_s,
+        )
 
     async def lock_autolevel(self) -> bool:
         """Signal the running autolevel task to stop ramping and
         lock at the current main_volume. Returns True if a task was
         running."""
-        if self._autolevel_lock_event is None:
-            return False
-        self._autolevel_lock_event.set()
-        return True
+        return await self._autolevel_controller.lock()
 
     async def cancel_autolevel(self) -> bool:
         """Signal the running autolevel task to abort and restore
         the original main_volume."""
-        if self._autolevel_cancel_event is None:
-            return False
-        self._autolevel_cancel_event.set()
-        return True
+        return await self._autolevel_controller.cancel()
 
     # ------------------------------------------------------------------
     # Snapshot.
