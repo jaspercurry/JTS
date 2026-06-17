@@ -1601,8 +1601,11 @@ widen_jasper_web_writable_dirs() {
     # EQ editor). os.replace() needs WRITE on the *directory*, so make both
     # root:jasper 2775 (setgid → new files inherit group jasper). Mirrors
     # install_avahi_jasper_control's /etc/avahi/services widening (3b-2). The
-    # files inside keep their own owners (root reads/writes them fine; the
-    # group-writable dir is what lets the dropped daemon swap them atomically).
+    # ordinary sound-profile files inside keep their own owners (root reads/writes
+    # them fine; the group-writable dir is what lets the dropped daemon swap them
+    # atomically). Active-speaker startup/commissioning YAML is also read by
+    # jasper-web during the driver-test arm flow, so repair stale root:root 0600
+    # files from earlier builds to root:jasper 0640.
     # Idempotent; harmless while jasper-web is still root.
     if getent group jasper >/dev/null 2>&1; then
         if [[ -d /etc/bluetooth ]]; then
@@ -1610,6 +1613,8 @@ widen_jasper_web_writable_dirs() {
             chmod 2775 /etc/bluetooth 2>/dev/null || true
         fi
         install -d -m 2775 -g jasper /var/lib/camilladsp/configs
+        find /var/lib/camilladsp/configs -maxdepth 1 -type f -name 'active_speaker_*.yml' \
+            -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }

@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import re
-import tempfile
 from pathlib import Path
 
+from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -980,16 +979,9 @@ pipeline:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as f:
-        f.write(text)
-        tmp_name = f.name
-    os.replace(tmp_name, path)
+    # Active-speaker configs are read by both root-owned CamillaDSP helpers and
+    # the non-root jasper-web commissioning route. Keep them group-readable.
+    atomic_write_text(path, text, mode=0o640)
 
 
 def active_speaker_startup_config_path(config_dir: str | Path) -> Path:

@@ -96,6 +96,19 @@ def test_install_sh_creates_camilladsp_state_dirs():
     assert "install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs" in body
 
 
+def test_install_sh_repairs_active_speaker_config_modes_for_web_commissioning():
+    """Stale active-speaker YAML may predate the non-root web arm flow.
+
+    The sudo CLI can read root:root 0600 generated configs, but jasper-web must
+    read the all-muted startup anchor before arming a driver silently.
+    """
+
+    body = INSTALL_SH.read_text()
+    assert "-name 'active_speaker_*.yml'" in body
+    assert "-exec chgrp jasper {} +" in body
+    assert "-exec chmod 0640 {} +" in body
+
+
 def test_install_sh_seeds_statefile_when_missing():
     """Because the unit's ExecStart has no positional CONFIGFILE,
     a fresh install with no statefile would leave CamillaDSP with
