@@ -380,6 +380,69 @@ def test_streambox_web_unit_stays_root_until_validated():
     )
 
 
+# --------------------------------------------------------------------------
+# Remaining WS1 scope - Tier-B / adjacent privileged support units.
+#
+# These are not Tier-A network-facing daemons, but they still run privileged
+# boot/udev/recovery work. The next WS1 increments should move them only one
+# validated vertical slice at a time. Guard against accidental half-drops:
+# adding User= here must come with the matching hardware validation, installer
+# user/group contract, and docs/HANDOFF-privilege-separation.md update.
+# --------------------------------------------------------------------------
+
+DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
+    "jasper-aec-reconcile": ROOT / "deploy/systemd/jasper-aec-reconcile.service",
+    "jasper-aec-init": ROOT / "deploy/systemd/jasper-aec-init.service",
+    "jasper-audio-hardware-reconcile": (
+        ROOT / "deploy/systemd/jasper-audio-hardware-reconcile.service"
+    ),
+    "jasper-dac-init": ROOT / "deploy/systemd/jasper-dac-init.service",
+    "jasper-dongle-recover": ROOT / "deploy/systemd/jasper-dongle-recover.service",
+    "jasper-wifi-guardian": ROOT / "deploy/systemd/jasper-wifi-guardian.service",
+    "jasper-headphone-monitor": (
+        ROOT / "deploy/systemd/jasper-headphone-monitor.service"
+    ),
+    "jasper-grouping-reconcile": (
+        ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
+    ),
+    "jasper-identity-reconcile": (
+        ROOT / "deploy/systemd/jasper-identity-reconcile.service"
+    ),
+    "jasper-usbsink-init": ROOT / "deploy/systemd/jasper-usbsink-init.service",
+    "jasper-bootloop-guard": ROOT / "deploy/systemd/jasper-bootloop-guard.service",
+}
+
+APPLE_DONGLE_UDEV_RULE = ROOT / "deploy/udev/99-jasper-apple-dongle.rules"
+
+
+@pytest.mark.parametrize(
+    "unit,path", sorted(DEFERRED_PRIVILEGED_SUPPORT_UNITS.items()),
+)
+def test_privileged_support_units_stay_root_until_validated(unit, path):
+    assert path.is_file(), f"{unit}: expected unit at {path}"
+    assert not any(k == "User" for k, _ in _directives(path)), (
+        f"{unit}: gained User= without updating the WS1 Tier-B plan and "
+        "validation guard. Drop these units one vertical slice at a time; see "
+        "docs/HANDOFF-privilege-separation.md Remaining WS1 scope."
+    )
+
+
+def test_apple_dongle_udev_mixer_fast_path_stays_in_tier_b_scope():
+    """The DAC mixer-pin slice must account for the udev hotplug fast path too.
+
+    `jasper-dac-init.service` is not the only root-owned Headphone=100% writer:
+    the Apple dongle udev rule also runs amixer on sound-card add, and udev
+    RUN+= executes as root. If a later PR moves DAC mixer pinning to a
+    non-root user, update this guard with the validated replacement boundary.
+    """
+    text = APPLE_DONGLE_UDEV_RULE.read_text(encoding="utf-8")
+    assert (
+        'RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} '
+        'sset Headphone 100%% unmute"'
+    ) in text
+    assert 'ATTR{power/control}="on"' in text
+
+
 # The root audio daemons whose UDS the now-non-root voice/mux must connect to.
 # A UNIX socket needs WRITE permission to connect(), so these stay root but join
 # the `jasper` group with UMask=0007 — making their umask-derived sockets
