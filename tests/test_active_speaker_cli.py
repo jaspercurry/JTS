@@ -383,28 +383,12 @@ def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) ->
     return {"staged": staged, "staged_path": staged_path, "statefile": statefile}
 
 
-_READY_ENV_CLI = {
-    "status": "ready",
-    "load_gate": "ready",
-    "ok_to_load_active_config": True,
-    "camilla_config": {},
-    "safe_playback": {},
-    "issues": [],
-}
-
-
 def _arm_woofer(monkeypatch, tmp_path, capsys):
     from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
 
     controller = _FakeController("placeholder")
     env = _commission_env(monkeypatch, tmp_path, controller)
     controller.persisted_path = env["staged_path"]
-    # The ramp arms a safe_playback session via the env probe before the first
-    # audible step; make that deterministic in CI.
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.probe_active_speaker_environment",
-        lambda **kwargs: _READY_ENV_CLI,
-    )
     assert main(["commission-load", "--group", "mono", "--role", "woofer"]) == 0
     capsys.readouterr()
     return controller, env, MIN_TEST_LEVEL_DBFS
@@ -458,10 +442,6 @@ def test_commission_ramp_tweeter_blocked_before_woofer_cli(
     controller = _FakeController("placeholder")
     env = _commission_env(monkeypatch, tmp_path, controller)
     controller.persisted_path = env["staged_path"]
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.probe_active_speaker_environment",
-        lambda **kwargs: _READY_ENV_CLI,
-    )
     assert main(["commission-load", "--group", "mono", "--role", "tweeter"]) == 0
     capsys.readouterr()
     loads_before = len(controller.applied_texts)

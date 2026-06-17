@@ -301,7 +301,7 @@ _READY_ENV = {
 }
 
 
-def _ramp_step(tmp_path, monkeypatch, *, role, confirm_first=None):
+def _ramp_step(tmp_path, monkeypatch, *, role, confirm_first=None, env_report=_READY_ENV):
     """Arm ``role`` at the silent floor, then take one audible ramp step."""
     # Arm at the silent floor via the guarded commission load (reuses the
     # commission-load test harness for the full staged/path-safety/statefile setup).
@@ -322,7 +322,7 @@ def _ramp_step(tmp_path, monkeypatch, *, role, confirm_first=None):
         commission_load_state_path=state_path,
         ramp_state_path_override=tmp_path / "ramp.json",
         safe_playback_state_path=tmp_path / "safe.json",
-        environment_report=_READY_ENV,
+        environment_report=env_report,
         validate=_valid_config,
     )
     if confirm_first:
@@ -463,6 +463,55 @@ def test_silent_floor_allows_a_louder_retry(monkeypatch, tmp_path):
     again = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))
     assert again["status"] == "stepped"
     assert again["next_gain_db"] == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+
+
+def test_louder_step_after_confirmed_floor_can_be_acked(monkeypatch, tmp_path):
+    # Regression: a louder step after a confirmed floor left safe_playback at
+    # floor_confirmed, so record_floor_audio_operator_result rejected the second
+    # ACK (floor_confirmation_not_pending) and the ramp wedged — the operator
+    # could never go past the floor. The per-step ACK (ramp.pending) must release
+    # independent of the per-driver floor tri-state.
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"  # at the audible floor
+
+    def _ack(outcome):
+        return asyncio.run(
+            record_ramp_operator_ack(
+                outcome=outcome,
+                ramp_state_path_override=tmp_path / "ramp.json",
+                safe_playback_state_path=tmp_path / "safe.json",
+                commission_load_state_path=state_path,
+            )
+        )
+
+    assert _ack("heard_correct_driver")["status"] == "confirmed"
+    louder = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))
+    assert louder["status"] == "stepped"
+    assert louder["next_gain_db"] == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+    # The louder step is ACK-able (previously wedged), and the per-step gate clears.
+    assert _ack("heard_correct_driver")["status"] == "confirmed"
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["pending"] is None
+
+
+def test_ramp_step_fails_closed_when_session_cannot_arm(monkeypatch, tmp_path):
+    # If the operator-confirmation session cannot arm, the step must NOT make the
+    # driver audible (fail-closed) — better silent than audible-but-unconfirmable.
+    not_ready = {
+        "status": "blocked",
+        "ok_to_load_active_config": False,
+        "camilla_config": {},
+        "safe_playback": {},
+        "issues": [],
+    }
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer", env_report=not_ready
+    )
+    assert step["status"] == "blocked"
+    assert {i["code"] for i in step["issues"]} == {"stage5_safe_session_arm_failed"}
+    # Only the arm loaded; the ramp emitted no new audible level.
+    assert cam.loaded_paths == [str(tmp_path / "commission.yml")]
 
 
 def test_operator_ack_too_loud_aborts_to_staged(monkeypatch, tmp_path):

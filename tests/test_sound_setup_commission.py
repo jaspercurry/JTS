@@ -44,17 +44,6 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
         "jasper.active_speaker.crossover_preview.load_crossover_preview",
         lambda path=None, current_design_draft=None: {"status": "not_prepared"},
     )
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.probe_active_speaker_environment",
-        lambda **kwargs: {
-            "status": "ready",
-            "load_gate": "ready",
-            "ok_to_load_active_config": True,
-            "camilla_config": {},
-            "safe_playback": {},
-            "issues": [],
-        },
-    )
     fake_camilla = tmp_path / "camilladsp"
     fake_camilla.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_camilla.chmod(0o755)

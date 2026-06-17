@@ -582,7 +582,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div><span class="commission-status__k">Armed driver</span>' +
         '<span class="commission-status__v">' +
         (c.armed ? roleLabel(c.armedRole) + ' (' +
-          (c.armedGainDb == null ? '—' : escapeHtml(String(c.armedGainDb)) + ' dB') + ')'
+          (c.armedGainDb == null ? '—'
+            : (Number(c.armedGainDb) <= -120 ? 'silent floor'
+              : escapeHtml(String(c.armedGainDb)) + ' dB')) + ')'
           : 'none — silent') + '</span></div>' +
       '<div><span class="commission-status__k">By-ear</span>' +
         '<span class="commission-status__v">' +
