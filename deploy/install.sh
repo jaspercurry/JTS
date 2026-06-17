@@ -436,6 +436,12 @@ Profile guard:
      + reboot/power-off — its restart broker + supervisors run as that uid
      (WS1 Phase 3b-2). Make /etc/avahi/services group-jasper writable so it
      can render the peering advert.
+   - Install /etc/polkit-1/rules.d/49-jasper-web.rules granting the non-root
+     jasper-web the NetworkManager actions (scan / connect / forget / radio /
+     PSK re-read) the /wifi/ wizard drives (WS1 Phase 3b-3).
+   - Widen /etc/bluetooth + /var/lib/camilladsp/configs to group-jasper 2775
+     so the non-root jasper-web can atomically replace the BlueZ name and the
+     generated sound profiles (WS1 Phase 3b-3).
    - Widen the config/secret env files jasper-control reads off disk
      (jasper.env + voice_provider/spotify/google/home_assistant/control_token)
      to 0640 group jasper so the jasper-doctor it spawns + /state can read
@@ -1551,6 +1557,42 @@ install_jasper_control_polkit() {
     echo "  Installed polkit rule for jasper-control (manage-units allowlist + reboot/power-off)"
 }
 
+install_jasper_web_polkit() {
+    # WS1 Phase 3b-3 — the polkit grant for the non-root jasper-web user. The
+    # /wifi/ wizard drives NetworkManager (scan / connect / forget / radio /
+    # PSK re-read); NM's implicit defaults DENY a sessionless daemon for every
+    # one of those, so without this rule a non-root jasper-web cannot manage
+    # Wi-Fi — the worst-case brick for a headless, often Ethernet-less speaker.
+    # polkitd monitors /etc/polkit-1/rules.d and auto-reloads (no restart). See
+    # deploy/polkit/49-jasper-web.rules + docs/HANDOFF-privilege-separation.md.
+    install -d -m 0755 /etc/polkit-1/rules.d
+    install -m 0644 \
+        "${REPO_DIR}/deploy/polkit/49-jasper-web.rules" \
+        /etc/polkit-1/rules.d/49-jasper-web.rules
+    echo "  Installed polkit rule for jasper-web (NetworkManager wifi management)"
+}
+
+widen_jasper_web_writable_dirs() {
+    # WS1 Phase 3b-3 — the non-root jasper-web user atomically replaces files in
+    # two root-owned dirs: /etc/bluetooth/main.conf (BlueZ name persistence
+    # across a bluetooth.service restart — the /speaker rename) and generated
+    # CamillaDSP sound profiles under /var/lib/camilladsp/configs (the /sound/
+    # EQ editor). os.replace() needs WRITE on the *directory*, so make both
+    # root:jasper 2775 (setgid → new files inherit group jasper). Mirrors
+    # install_avahi_jasper_control's /etc/avahi/services widening (3b-2). The
+    # files inside keep their own owners (root reads/writes them fine; the
+    # group-writable dir is what lets the dropped daemon swap them atomically).
+    # Idempotent; harmless while jasper-web is still root.
+    if getent group jasper >/dev/null 2>&1; then
+        if [[ -d /etc/bluetooth ]]; then
+            chgrp jasper /etc/bluetooth 2>/dev/null || true
+            chmod 2775 /etc/bluetooth 2>/dev/null || true
+        fi
+        install -d -m 2775 -g jasper /var/lib/camilladsp/configs
+        echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
+    fi
+}
+
 install_peering_template() {
     # Multi-device peering. The TEMPLATE goes under /etc/jasper/ so
     # Avahi doesn't try to parse it as a service file (the
@@ -1798,6 +1840,8 @@ main() {
         install_journald_persistent_storage
         install_avahi_jasper_control
         install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
+        install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
+        widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
         install_peering_template
         remove_legacy_https_artifacts
         provision_correction_tls
@@ -1826,6 +1870,8 @@ main() {
     install_journald_persistent_storage
     install_avahi_jasper_control
     install_jasper_control_polkit  # WS1 3b-2: grant non-root jasper-control its scoped systemctl/reboot
+    install_jasper_web_polkit  # WS1 3b-3: grant jasper-web NetworkManager wifi management
+    widen_jasper_web_writable_dirs  # WS1 3b-3: /etc/bluetooth + camilladsp/configs group-jasper writable
     install_peering_template
     remove_legacy_https_artifacts
     provision_correction_tls   # cert files must exist before nginx -t

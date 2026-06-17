@@ -59,6 +59,8 @@ _STEP_TO_PLAN_MARKER = {
     "install_journald_persistent_storage": "journald persistence",
     "install_avahi_jasper_control": "Avahi service templates",
     "install_jasper_control_polkit": "49-jasper-control.rules",
+    "install_jasper_web_polkit": "49-jasper-web.rules",
+    "widen_jasper_web_writable_dirs": "generated sound profiles",
     "widen_control_secret_env_modes": "Widen the config/secret env files",
     "install_peering_template": "peer_id",
     "remove_legacy_https_artifacts": "legacy self-signed HTTPS artifacts",
