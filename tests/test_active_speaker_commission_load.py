@@ -36,6 +36,7 @@ from jasper.active_speaker import (
 # Reuse the canonical mono DAC8x topology + passing-validation stub + path-safety
 # evidence writer from the protected-startup-load tests.
 from tests.test_active_speaker_startup_load import (
+    _protected_prior,
     _staged,
     _topology,
     _valid_config,
@@ -180,6 +181,13 @@ def _statefile(tmp_path: Path, config_path: str) -> Path:
     return sf
 
 
+class ReadFailingCamilla(FakeCommissionCamilla):
+    """The running graph cannot be read back after the load (camilla wedged)."""
+
+    async def read_running_config(self) -> str | None:
+        raise RuntimeError("camilla unavailable")
+
+
 def _load(
     tmp_path,
     monkeypatch,
@@ -188,6 +196,7 @@ def _load(
     group_id: str = "mono",
     drift_raw: str | None = None,
     statefile_target: str | None = None,
+    camilla: FakeCommissionCamilla | None = None,
     with_path_safety: bool = True,
 ):
     staged = _staged(tmp_path)
@@ -203,7 +212,7 @@ def _load(
         if with_path_safety
         else None
     )
-    cam: FakeCommissionCamilla = (
+    cam: FakeCommissionCamilla = camilla or (
         DriftingCamilla(staged_path, drift_raw)
         if drift_raw is not None
         else FakeCommissionCamilla(staged_path)
@@ -318,18 +327,77 @@ def test_load_blocks_when_speaker_not_ready(monkeypatch, tmp_path):
     assert gates["speaker_ready_for_active_load"] is False
 
 
-def test_durable_statefile_drift_is_flagged(monkeypatch, tmp_path):
+def test_durable_statefile_drift_fails_closed(monkeypatch, tmp_path):
     # Defensive: if the persisted statefile somehow points at the transient
     # commissioning config (impossible with the inline transport), the load must
-    # surface the drift as a blocker rather than silently leaving an unsafe boot.
+    # FAIL CLOSED inside the lock (roll back to staged), not report 'loaded' with
+    # a buried blocker -- a reboot must never come up on the transient config.
     commission_path = str(tmp_path / "commission.yml")
-    result, cam, staged, staged_path, statefile, _ = _load(
+    result, cam, staged, staged_path, statefile, state_path = _load(
         tmp_path, monkeypatch, role="woofer", statefile_target=commission_path
     )
-    assert result["load"]["status"] == "loaded"
+    assert result["load"]["status"] == "failed"
     assert result["load"]["durable_statefile_intact"] is False
+    assert "drifted" in result["load"]["dsp_apply"]["persist_error"]
+    # Rolled the running graph back to the all-muted staged anchor.
+    assert cam.loaded_paths[-1] == staged_path
+    state = load_commission_load_state(state_path=state_path)
+    assert state["status"] == "failed"
+    assert state["rollback_available"] is False
+
+
+def test_load_blocks_when_active_graph_is_not_staged(monkeypatch, tmp_path):
+    # Precondition: commissioning requires the all-muted staged boot config to be
+    # the active graph first. If a different config is persisted/active, fail
+    # closed (the path-safety binding + the explicit precondition gate both
+    # refuse) and load nothing.
+    staged = _staged(tmp_path)
+    other = _protected_prior(tmp_path, staged, "other_active.yml")
+    statefile = _statefile(tmp_path, str(other))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    # Path-safety evidence is bound to `other` as the current config, so the
+    # startup binding PASSES -- isolating the active-graph-not-staged gate.
+    path_safety = _write_path_safety(
+        tmp_path / "path_safety.json", staged=staged, current_config_path=other
+    )
+    cam = FakeCommissionCamilla(str(other))
+    result = asyncio.run(
+        load_driver_commissioning_config(
+            _topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            load_config=cam.apply_running_config,
+            read_running_config=cam.read_running_config,
+            get_current_config_path=cam.get_config_file_path,
+            path_safety_evidence_path=path_safety,
+            staged_config=staged,
+            config_path=tmp_path / "commission.yml",
+            statefile_path=statefile,
+            state_path=tmp_path / "commission_load.json",
+            validate=_valid_config,
+        )
+    )
+    assert result["load"]["status"] == "blocked"
+    assert cam.loaded_paths == []
     codes = {issue["code"] for issue in result["load"]["issues"]}
-    assert "durable_statefile_drifted" in codes
+    assert "commission_active_graph_not_staged" in codes
+
+
+def test_live_confirm_readback_failure_is_observable(monkeypatch, tmp_path):
+    # If the running graph can't be read back after the load (camilla wedged), the
+    # gate fails closed (rolls back) AND records WHY -- distinguishable from an
+    # actual unsafe-graph failure.
+    result, cam, staged, staged_path, statefile, state_path = _load(
+        tmp_path,
+        monkeypatch,
+        role="woofer",
+        camilla=ReadFailingCamilla(_staged(tmp_path)["config"]["path"]),
+    )
+    assert result["load"]["status"] == "failed"
+    assert result["load"]["live_evidence"]["checks"] == {
+        "running_config_readable": False
+    }
+    assert cam.loaded_paths[-1] == staged_path
 
 
 def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):

@@ -919,9 +919,10 @@ def running_commission_evidence(
             mask_correct = False
 
     # (2) Protection-while-audible: an audible tweeter keeps its protective HP +
-    # limiter, wired. A muted tweeter is vacuously safe.
+    # limiter, wired. A muted tweeter is vacuously safe — independent of parse
+    # health, which the dedicated ``running_config_parsed`` check already gates.
     if not audible_tweeter:
-        tweeter_protected = parse_ok
+        tweeter_protected = True
     else:
         hp_defined = protective_hp_hz is not None and _running_filter_matches(
             config,

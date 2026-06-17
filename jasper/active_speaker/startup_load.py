@@ -1178,6 +1178,24 @@ def _read_statefile_config_path(statefile_path: str | Path | None) -> str | None
     return parse_camilla_statefile_config_path(text)
 
 
+def _paths_equal(a: str | Path | None, b: str | Path | None) -> bool:
+    """Compare two config paths, dereferencing symlinks where possible.
+
+    Config paths reach us from heterogeneous sources — a staged metadata dict, a
+    `staged_config_path()` default, and a CamillaDSP statefile's raw YAML — that
+    may spell the same file differently (symlink vs real path). Resolve both so a
+    safety equality check (active-graph-is-staged, statefile-still-staged) does
+    not spuriously fail on a benign spelling difference.
+    """
+
+    if not a or not b:
+        return False
+    try:
+        return Path(str(a)).resolve() == Path(str(b)).resolve()
+    except (OSError, RuntimeError):
+        return Path(str(a)) == Path(str(b))
+
+
 def build_driver_commission_load_preflight(
     topology: OutputTopology,
     *,
@@ -1446,10 +1464,58 @@ async def load_driver_commissioning_config(
         )
         return {"preflight": preflight, "load": payload}
 
+    # Precondition gate: the active graph must ALREADY be the all-muted staged
+    # boot config (loaded by load_protected_startup_config at Stage 4).
+    # Commissioning swaps the running graph at the same width; running it against
+    # an unrelated active config (a stereo/correction config, a stale graph) is
+    # not a safe transition. Fail closed rather than swap blindly.
+    if not _paths_equal(prior_config_path, staged_path):
+        issue = _issue(
+            "blocker",
+            "commission_active_graph_not_staged",
+            (
+                "per-driver commissioning requires the all-muted staged boot config "
+                f"to be the active graph first; current persisted config is "
+                f"{prior_config_path or '(none)'}"
+            ),
+        )
+        payload = _commission_state_payload(
+            status="blocked",
+            candidate_config_path=candidate_path,
+            active_config_path=None,
+            previous_config_path=str(staged_path),
+            last_action="load_blocked",
+            target=target,
+            audible_evidence=evidence,
+            preflight=preflight,
+            issues=[issue],
+        )
+        _record_commission_state(payload, state_path=state_path)
+        logger.info(
+            "event=active_speaker.driver_commission_load result=blocked reason=active_graph_not_staged current=%s anchor=%s",
+            prior_config_path,
+            staged_path,
+        )
+        return {"preflight": preflight, "load": payload}
+
     captured: dict[str, Any] = {}
 
     async def _live_confirm() -> None:
-        running_raw = await read_running_config()
+        # Runs inside apply_dsp_config's lock, after the inline load. Raising here
+        # rolls the running graph back to the staged anchor INSIDE the lock, so
+        # both safety checks below fail closed atomically.
+        # (1) The RUNNING graph (read back over the websocket, not the file) must
+        #     match the intended per-driver mask + keep the protective high-pass.
+        try:
+            running_raw = await read_running_config()
+        except Exception as exc:  # noqa: BLE001
+            captured["live"] = {
+                "passed": False,
+                "checks": {"running_config_readable": False},
+            }
+            raise RuntimeError(
+                f"could not read back the running CamillaDSP graph: {type(exc).__name__}"
+            ) from exc
         live = running_commission_evidence(
             running_raw,
             audible_outputs=evidence.get("audible_outputs", []),
@@ -1465,6 +1531,22 @@ async def load_driver_commissioning_config(
             raise RuntimeError(
                 "running CamillaDSP graph failed live commissioning safety: "
                 + ", ".join(failed)
+            )
+        # (2) S3: the durable boot config / outputd statefile MUST still point at
+        #     the all-muted staged config — the transient graph is in RUNNING
+        #     CamillaDSP only. Structurally guaranteed by the inline transport
+        #     (set_active_config_raw never repoints the persisted path); a drift
+        #     here means something else moved it, so fail closed (reboot would
+        #     otherwise come up on the transient config — crash-recovery-MUTED).
+        durable_target = _read_statefile_config_path(statefile_path)
+        captured["durable_target"] = durable_target
+        captured["durable_intact"] = (
+            None if durable_target is None else _paths_equal(durable_target, staged_path)
+        )
+        if durable_target is not None and not captured["durable_intact"]:
+            raise RuntimeError(
+                f"durable CamillaDSP statefile drifted to {durable_target}, expected "
+                f"the all-muted staged boot config {staged_path}"
             )
 
     try:
@@ -1490,49 +1572,30 @@ async def load_driver_commissioning_config(
             target=target,
             audible_evidence=evidence,
             live_evidence=captured.get("live"),
+            durable_statefile_target=captured.get("durable_target"),
+            durable_statefile_intact=captured.get("durable_intact"),
             preflight=preflight,
             dsp_apply=exc.state.to_dict(),
             issues=[
                 _issue(
                     "blocker",
                     "driver_commission_load_failed",
-                    f"CamillaDSP commissioning load failed: {exc}",
+                    f"CamillaDSP commissioning load failed (rolled back to staged): {exc}",
                 )
             ],
         )
         _record_commission_state(payload, state_path=state_path)
         logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s error=%s",
+            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
+            "rolled_back=%s error=%s",
             candidate_path,
             staged_path,
+            getattr(exc.state, "rollback_succeeded", None),
             type(exc).__name__,
         )
         return {"preflight": preflight, "load": payload}
 
-    # S3: the durable boot config / outputd statefile MUST still point at the
-    # all-muted staged config — the transient graph is in RUNNING CamillaDSP only.
-    durable_target = _read_statefile_config_path(statefile_path)
-    durable_intact = (
-        durable_target is not None and Path(durable_target) == Path(str(staged_path))
-    )
-    issues: list[dict[str, str]] = []
-    if durable_target is not None and not durable_intact:
-        issues.append(
-            _issue(
-                "blocker",
-                "durable_statefile_drifted",
-                (
-                    f"durable CamillaDSP statefile points at {durable_target}, "
-                    f"expected the all-muted staged boot config {staged_path}"
-                ),
-            )
-        )
-        logger.error(
-            "event=active_speaker.driver_commission_load durable_statefile_drift target=%s expected=%s",
-            durable_target,
-            staged_path,
-        )
-
+    # live-confirm + S3 both passed inside the lock.
     payload = _commission_state_payload(
         status="loaded",
         candidate_config_path=str(candidate_path),
@@ -1542,11 +1605,11 @@ async def load_driver_commissioning_config(
         target=target,
         audible_evidence=evidence,
         live_evidence=captured.get("live"),
-        durable_statefile_target=durable_target,
-        durable_statefile_intact=durable_intact,
+        durable_statefile_target=captured.get("durable_target"),
+        durable_statefile_intact=captured.get("durable_intact"),
         preflight=preflight,
         dsp_apply=apply_state.to_dict(),
-        issues=issues,
+        issues=[],
     )
     _record_commission_state(payload, state_path=state_path)
     logger.info(
@@ -1554,7 +1617,7 @@ async def load_driver_commissioning_config(
         "durable_intact=%s op_id=%s",
         candidate_path,
         staged_path,
-        durable_intact,
+        captured.get("durable_intact"),
         apply_state.op_id,
     )
     return {"preflight": preflight, "load": payload}
