@@ -567,10 +567,56 @@ audit **zero permission-denied**. A **second deploy** (the idempotent re-run,
 
 ### Phase 4b — Group B (designed): HA + Spotify
 
-Same shape for `/var/lib/jasper-intsecrets/` {voice, control, mux, web}:
-relocate `home_assistant.env`, `spotify_credentials.env`, and the Spotify token
-cache/tree. control + mux genuinely use these (the `/state` HA card, the Spotify
-Web API volume/transport router), so the compartment includes them; only
-jasper-input is excluded.
+Relocate the remaining secrets into a second compartment,
+`/var/lib/jasper-intsecrets/` (`2770` setgid, group `jasper-intsecrets`), members
+{jasper-voice, jasper-control, jasper-mux, jasper-web}. **Mirror Phase 4a's
+machinery** — group in [`service-users.sh`](../deploy/lib/install/service-users.sh),
+the sibling dir via `ensure_secrets_dir`-style creation + a second
+`tmpfiles.d` stanza, a guarded `migrate_secrets_phase4b` in
+[`env-migrations.sh`](../deploy/lib/install/env-migrations.sh), unit
+`SupplementaryGroups=` + `ReadWritePaths=` — the 4a code is the template.
+
+**Files to relocate out of `/var/lib/jasper`:** `home_assistant.env` (the
+`JASPER_HA_TOKEN`); `spotify_credentials.env` (`SPOTIFY_CLIENT_ID` — PKCE,
+semi-public, moved with the rest so the compartment is whole); the Spotify token
+cache — both the legacy `.spotify-cache` and the multi-account `spotify/` tree
+(`accounts.json` + `caches/<name>.json`).
+
+**Reader/writer matrix (verify against the units before editing):** the HA token
+is read by {voice (the HA tool), control (`/state` HA card, fresh off-disk read),
+web (`/ha` wizard)} — **NOT mux**. It still lands in the {voice,control,mux,web}
+group, so mux gains a read it doesn't need — the documented 2-group accept (a 3rd
+group would isolate it; deferred). Spotify (creds + cache) is read by all of
+{voice, control, mux, web}.
+
+**The key 4a-vs-4b difference: Spotify is read-WRITE, Google was read-only.**
+spotipy persists refreshed tokens via `accounts.build_cache_handler` (the
+`_GroupReadableCacheFileHandler` in [`jasper/accounts.py`](../jasper/accounts.py),
+which re-chmods `0640` after every `save_token_to_cache`). voice, control
+(`volume_ops`), and mux all build routers that refresh → **all WRITE the cache**.
+So unlike 4a (voice read-only, no write grant), **4b needs
+`/var/lib/jasper-intsecrets` in `ReadWritePaths` on voice + control + mux + web**.
+Confirm by checking which daemons construct a Spotify router with the cache
+handler.
+
+**`accounts.json` bakes absolute paths** — like google's `token_path`, spotify's
+`accounts.json` stores absolute `cache_path` values
+(`/var/lib/jasper/spotify/caches/<name>.json`); `migrate_secrets_phase4b` MUST
+rewrite that prefix on move (parallel to 4a's google rewrite) or the per-account
+caches orphan. Update the new-location defaults in
+[`jasper/config.py`](../jasper/config.py) (`spotify_cache_path`,
+`spotify_accounts_path`) + [`jasper/accounts.py`](../jasper/accounts.py)
+(`default_cache_path_for`).
+
+**Reuse the 4a lessons** (all pinned by
+[`tests/test_install_secrets_migration.py`](../tests/test_install_secrets_migration.py)
+— mirror it for 4b): end every bash migration helper on a CLEAN exit status
+(`if/then/fi`, never a trailing `[[ ... ]] && echo` — that returns the test's
+exit code and aborts the installer under `set -e`, the Blocker the 4a self-review
+caught); `mv` preserves the old group so `chown -R root:jasper-intsecrets` after
+the move; never strip a secret from the broad files until it is confirmed written
+to the new location. control reads `home_assistant.env` FRESH for `/state`, so it
+stays group-readable (the group handles it; no LoadCredential). `transit.env`'s
+MTA key stays group `jasper` (low value, control reads `/state.transit` fresh).
 
 Last verified: 2026-06-17
