@@ -109,7 +109,7 @@ def _request(
     body sent verbatim (the byte-forwarding path the web wizards' proxy
     uses). Pass at most one. ``headers`` adds extra request headers — the
     web wizards forward a browser-supplied ``X-JTS-Token`` through this path
-    so the opt-in control-token gate sees the operator's token (the wizards
+    so the control-token gate sees the operator's token (the wizards
     proxy server-side, so the header can't ride the original fetch). It never
     overrides ``Content-Type``.
     """

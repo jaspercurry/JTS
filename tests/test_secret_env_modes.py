@@ -9,6 +9,7 @@ Phase 4 hardening/migration tests instead of this broad-widening guard.
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -77,6 +78,9 @@ def test_install_widens_secret_env_on_upgrade():
     # the file), so an unrelated reference (migrate_wifi_guardian writes the
     # stash) doesn't false-match.
     mig = full.split("widen_control_secret_env_modes() {", 1)[1]
+    loop_match = re.search(r"for f in (?P<items>.*?); do", mig, flags=re.S)
+    assert loop_match is not None, "widening must iterate an explicit file list"
+    widened_files = set(loop_match.group("items").replace("\\", " ").split())
     for fname in (
         "voice_provider.env",
         # NOTE: google_credentials.env is NOT in this list anymore — WS1 Phase 4a
@@ -88,14 +92,29 @@ def test_install_widens_secret_env_on_upgrade():
         # home_assistant.env to the group-`jasper-intsecrets` compartment
         # (voice/control/mux/web only), pinned by test_secrets_compartment_phase4b.
         "control_token",
-        "jasper.env",
+        "household_secret",
         # Non-secret state jasper-control also reads off disk for /state:
         "sound_profile.json",
         "sound_settings.json",
     ):
-        assert fname in mig, f"widening must cover {fname}"
+        assert fname in widened_files, f"widening loop must cover {fname}"
+    for fname in (
+        "google_credentials.env",
+        "spotify_credentials.env",
+        "home_assistant.env",
+    ):
+        assert fname not in widened_files, (
+            f"{fname} moved to a Phase 4 compartment and must not be "
+            "re-widened to the broad jasper group"
+        )
+    assert "jasper_env" in mig and "chgrp jasper" in mig, (
+        "widening must still chgrp /etc/jasper/jasper.env"
+    )
     assert "chgrp jasper" in mig and "chmod 0640" in mig, (
         "widening must chgrp jasper + chmod 0640 the files"
+    )
+    assert '[[ -L "${path}" ]]' in mig, (
+        "widening must refuse symlinks in the group-writable state directory"
     )
     # The WiFi PSK stash is DELIBERATELY excluded — jasper-control needs only the
     # SSID (not the PSK value), so the PSK stays owner-only 0600 (least privilege).

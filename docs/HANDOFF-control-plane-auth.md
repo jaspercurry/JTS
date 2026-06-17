@@ -1,8 +1,9 @@
 # Handoff: control-plane authentication (device-to-device / household)
 
-> **Status: design approved 2026-06-16 — phased plan ready to execute, not yet
-> built.** This is the threat-model + design + execution plan for how JTS
-> authenticates *control* across speakers on the household LAN. The
+> **Status: design approved 2026-06-16 — Phases A-C landed on `main`,
+> hardware-free verified, on-device validation pending; Phase D paused on a
+> scope decision.** This is the threat-model + design + execution plan for how
+> JTS authenticates *control* across speakers on the household LAN. The
 > per-device **CSRF control token** (browser → its own speaker) already
 > shipped and is documented in
 > [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md) Phase 2;
@@ -12,10 +13,9 @@
 > design (Option 1, §5) was ratified after a counter-proposal advocating HMAC
 > request-signing was reviewed and **rejected** (§5 "Rejected: HMAC
 > request-signing"). The reconciliation phase (§8 Phase A: rewrite multiroom §7
-> + privilege-sep) and the build (Phases B–D) are **in flight**: Phases A–C are
-> implemented in stacked PRs (HW-free-verified, not yet on `main`), Phase D
-> remains. Until the stack merges, treat §2's contradiction as the
-> known-bug-of-record. Update each phase as work lands (see §8 for per-phase status).
+> + privilege-sep) and build Phases B-C are implemented; Phase D remains
+> paused until the owner chooses the autonomous re-grouping scope. Update each
+> phase as work lands (see §8 for per-phase status).
 
 Read [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md) (the
 per-device token + daemon-hardening story) and
@@ -385,8 +385,8 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   cannot silently reappear). *Files:* the three docs, `jasper/web/rooms_setup.py`
   comment, `tests/test_control_server.py`. *Verify:* `pytest tests/test_control_server.py`.
 - **Phase B — mic-mute landing-page delivery fix (self-contained, §7).**
-  *Status: implemented + HW-free-verified (in a stacked PR, not yet on `main`);
-  on-device deploy probe pending.* The token bake is folded into install.sh's
+  *Status: implemented + HW-free-verified on `main`; on-device deploy probe
+  pending.* The token bake is folded into install.sh's
   existing fail-loud `PYBAKE` block, and no-store was added to BOTH nginx sites
   (`nginx-jasper.conf` and `nginx-jasper-streambox.conf` — each serves the same
   token-baked `index.html`). The mute failure path now surfaces the error
@@ -396,8 +396,8 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   *Verify:* HW-free static test ✅ + on-device deploy probe (the page's Mute
   button actually mutes) — pending.
 - **Phase C — household credential: mint + distribute + verify (the core).**
-  *Status: implemented + HW-free-verified (stacked PR, not yet on `main`); two-Pi
-  smoke pending.* `jasper/control/household_credential.py` is a
+  *Status: implemented + HW-free-verified on `main`; two-Pi smoke pending.*
+  `jasper/control/household_credential.py` is a
   **near-line-for-line clone of `control_token.py`** (`ensure`/`current`/`verify`,
   atomic `0640` group-jasper write, `hmac.compare_digest`, absent⇒accept) — a **static bearer**
   in `X-JTS-Household`, **no nonce store, no clock/timestamp handling**
@@ -428,9 +428,10 @@ HW-free unless noted; multiroom phases gate on the two-Pi smoke test
   (leader→follower `/grouping/set` succeeds with the credential, 403s without) —
   pending.
 - **Phase D — autonomous re-grouping uses the credential (resilience).** The
-  peering / leader path presents the household secret when re-asserting a bond
-  with no browser. *Files:* `jasper/peering/*` and/or
-  `jasper/control/grouping_supervisor.py`, `jasper/multiroom/*`. *Verify:*
+  grouping leader path presents the household secret when re-asserting a bond
+  with no browser. *Files:* `jasper/control/grouping_supervisor.py`,
+  `jasper/multiroom/*` (not `jasper/peering/`, which owns wake arbitration).
+  *Verify:*
   two-Pi reboot smoke — follower reboots, leader re-bonds it automatically.
 - **Phase E — per-device keys / mTLS over mkcert CA (DEFERRED, Option 2).** Only
   if the posture is being upgraded; documented here so it is not lost.
@@ -469,4 +470,4 @@ household credential does not apply to it. Tracked separately.
   summary.
 - Prior-art sources: §4.
 
-Last verified: 2026-06-16
+Last verified: 2026-06-17

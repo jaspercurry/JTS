@@ -1002,9 +1002,13 @@ widen_control_secret_env_modes() {
     # It is owned jasper-voice (StateDirectory chown), so 0640 group read is the
     # only way the non-root jasper-control can read its own token.
     #
-    # Two file classes, both read off disk by jasper-control's /state +
-    # /system/diagnostics and so needing GROUP read (0640):
+    # Three file classes needing GROUP read (0640):
     #   - env/control: voice_provider.env (now keyless) + control_token.
+    #   - device-to-device auth: household_secret, minted by jasper-web and
+    #     verified/adopted/cleared by jasper-control. Older Phase-C deploys could
+    #     have created it owner-only before the non-root reality was accounted
+    #     for, and ensure()/adopt() deliberately never overwrite an existing
+    #     secret, so the migration must fix the upgrade path.
     #   - non-secret state: sound_profile.json / sound_settings.json (the EQ
     #     config the /state sound card reads). These carry no secret.
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
@@ -1017,12 +1021,17 @@ widen_control_secret_env_modes() {
     # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).
-    local f
-    for f in voice_provider.env control_token \
+    local f path
+    for f in voice_provider.env control_token household_secret \
              sound_profile.json sound_settings.json; do
-        if [[ -f "${STATE_DIR}/${f}" ]]; then
-            chgrp jasper "${STATE_DIR}/${f}" 2>/dev/null || true
-            chmod 0640 "${STATE_DIR}/${f}" 2>/dev/null || true
+        path="${STATE_DIR}/${f}"
+        if [[ -L "${path}" ]]; then
+            echo "  widen_control_secret_env_modes: skipping symlink ${path}"
+            continue
+        fi
+        if [[ -f "${path}" ]]; then
+            chgrp jasper "${path}" 2>/dev/null || true
+            chmod 0640 "${path}" 2>/dev/null || true
         fi
     done
     echo "  widen_control_secret_env_modes: config jasper-control reads is group-jasper readable (0640)"

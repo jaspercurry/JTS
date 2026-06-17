@@ -121,9 +121,10 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/transport/toggle",
 })
 
-# The high-impact mutations the opt-in control token gates (SECURITY.md).
-# Default-off: with no /var/lib/jasper/control_token file these behave
-# exactly as today; with one, each requires a matching X-JTS-Token header.
+# The high-impact mutations the control token gates (SECURITY.md).
+# The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
+# exists, but jasper-control ensures one at startup so production installs are
+# gated automatically.
 # Deliberately NOT including /volume*, /transport*, /source* — the dial's
 # bread-and-butter low-impact controls stay open (the dial never calls
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
@@ -2376,9 +2377,9 @@ def main(argv: list[str] | None = None) -> int:
         airplay_health_sampler=airplay_health_sampler,
     )
     # WS1 Phase 2: arm the control-token gate before serving. ensure_token()
-    # auto-generates the token (0600) if absent, so the destructive routes are
-    # always gated with no operator action; canonical_page auto-delivers it to
-    # the dashboard (invisible to the household). Idempotent — never rotates an
+    # auto-generates the token (0640 group jasper) if absent, so the destructive
+    # routes are always gated with no operator action; canonical_page
+    # auto-delivers it to the dashboard (invisible to the household). Idempotent — never rotates an
     # existing token. Failure is non-fatal (the gate fail-safes to off) so a
     # transient write error can't keep the recovery surface from starting.
     try:

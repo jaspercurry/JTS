@@ -1,25 +1,26 @@
-"""jasper-control-token — manage the opt-in jasper-control mutation token.
+"""jasper-control-token — manage jasper-control's mutation token.
 
 JTS is a trusted-LAN appliance: ``jasper-control`` (``0.0.0.0:8780``) has
 no auth, so any LAN device can ``curl`` the high-impact mutations
 (``/system/poweroff``, ``/system/reboot``, ``/mic/mute``,
-``/grouping/set``). This CLI lets a security-conscious operator opt into
-requiring a shared ``X-JTS-Token`` on exactly those routes. See
-SECURITY.md for the threat model and the four gated routes.
+``/grouping/set``). ``jasper-control`` auto-generates this token at startup so
+those routes are gated with no operator action; this CLI lets an operator
+inspect, rotate, or temporarily remove that ``X-JTS-Token``. See SECURITY.md for
+the threat model and the gated routes.
 
 Usage::
 
     jasper-control-token --show      # print the current token (or "disabled")
     jasper-control-token --enable    # generate + write a token (refuses to clobber)
     jasper-control-token --enable --force   # overwrite an existing token
-    jasper-control-token --disable   # remove the token file -> back to default-off
+    jasper-control-token --disable   # remove it until jasper-control starts again
 
 The token lives at :data:`jasper.control.control_token.TOKEN_FILE`
 (default ``/var/lib/jasper/control_token``, overridable via
-``JASPER_CONTROL_TOKEN_FILE``), mode ``0600``, root-owned — the same
-posture as the other secrets under ``/var/lib/jasper``. ``jasper-control``
-reads the file fresh on every request, so an enable/disable takes effect
-without a daemon restart.
+``JASPER_CONTROL_TOKEN_FILE``), mode ``0640`` group ``jasper`` so the non-root
+``jasper-control`` and ``jasper-web`` daemons can read it. ``jasper-control``
+reads the file fresh on every request, so a rotate/remove takes effect without a
+daemon restart; startup will recreate the token if it is absent.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ from ..control import control_token
 
 
 def _write_token(token: str) -> None:
-    """Atomically write the token file at mode 0600.
+    """Atomically write the token file at mode 0640.
 
     tmp + chmod + os.replace so a reader never sees a half-written file
     and the secret is never briefly world-readable. The directory is
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-control-token",
         description=(
-            "Manage the opt-in jasper-control mutation token "
+            "Manage the jasper-control mutation token "
             "(gates /system/poweroff, /system/reboot, /mic/mute, "
             "/grouping/set). See SECURITY.md."
         ),
@@ -152,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     group.add_argument(
         "--disable", action="store_true",
-        help="Remove the token file — back to default-off (open on trusted LAN).",
+        help="Remove the token file until jasper-control starts and recreates it.",
     )
     parser.add_argument(
         "--force", action="store_true",

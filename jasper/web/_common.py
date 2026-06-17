@@ -1142,7 +1142,7 @@ def proxy_post(
     parameterless action endpoints); pass JSON bytes for endpoints that
     take parameters. Same `(status, body)` contract as `proxy_get`.
     `headers` forwards extra request headers — the system wizard passes a
-    browser-supplied X-JTS-Token through so the opt-in control-token gate
+    browser-supplied X-JTS-Token through so the control-token gate
     sees it (the wizard proxies server-side, so the header can't ride the
     original browser fetch)."""
     try:
@@ -1163,10 +1163,10 @@ def forward_control_token_headers(
     """Extract a browser-supplied ``X-JTS-Token`` to forward to control.
 
     A wizard proxies the high-impact control mutations server-side, so the
-    browser's ``X-JTS-Token`` (the opt-in control-token gate) would be lost
+    browser's ``X-JTS-Token`` (the control-token gate) would be lost
     unless the wizard explicitly forwards it. Returns ``{"X-JTS-Token": …}``
-    when the header is present, else ``None`` (so a default-off install adds
-    no header). The wizard never injects the token from disk — it only
+    when the header is present, else ``None``. The wizard never injects the token
+    from disk — it only
     relays what the operator's browser sent — so the gate stays real (the
     secret lives in the browser, not auto-supplied on the Pi)."""
     token = handler.headers.get("X-JTS-Token")

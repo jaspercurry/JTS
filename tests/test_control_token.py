@@ -1,12 +1,12 @@
-"""Unit tests for the opt-in control-token core + CLI.
+"""Unit tests for the control-token core + CLI.
 
-The token gates jasper-control's four high-impact mutations behind an
-X-JTS-Token header — but only when a non-empty token file exists
-(default-off). These tests pin: enforced detection (absent / empty /
-present), constant-time verify semantics, and the enable/show/disable
-CLI (including the 0640 group-jasper mode and the refuse-to-clobber guard). The
-route-level HTTP behaviour is covered separately in
-test_control_server.py against the real ThreadingHTTPServer.
+The token gates jasper-control's high-impact mutations behind an X-JTS-Token
+header. The primitive still fails open when no non-empty token file exists, while
+production startup ensures one automatically. These tests pin: enforced detection
+(absent / empty / present), constant-time verify semantics, and the
+enable/show/disable CLI (including the 0640 group-jasper mode and the
+refuse-to-clobber guard). The route-level HTTP behaviour is covered separately
+in test_control_server.py against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 

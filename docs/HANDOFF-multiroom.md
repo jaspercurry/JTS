@@ -1340,8 +1340,9 @@ own speaker**; it is a CSRF token and carries no caller identity, so it
 cannot do the **device-to-device** (leader → follower) leg. That leg
 authenticates with a separate **household credential** — a shared secret
 minted at the human pairing moment (`POST /bond`), distributed over the
-trusted LAN, persisted `0600` per member (mirroring `control_token`), and
-presented on the cross-device grouping path in an `X-JTS-Household` header.
+trusted LAN, persisted `0640` group `jasper` per member (mirroring
+`control_token`), and presented on the cross-device grouping path in an
+`X-JTS-Household` header.
 The full threat model, prior art, and design live in
 [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md), which is the
 single source of truth for cross-device control auth; this subsection is the

@@ -57,7 +57,7 @@ from jasper.atomic_io import atomic_write_text
 
 # The token file. Seeded from the env var at import; callers read the
 # module attribute (not the env var) so tests can monkeypatch this single
-# constant. /var/lib/jasper is the wizard/secret directory (0750, root),
+# constant. /var/lib/jasper is the shared state directory (root:jasper 0770),
 # the same home as voice_provider.env and the Wi-Fi guardian stash.
 TOKEN_FILE = os.environ.get(
     "JASPER_CONTROL_TOKEN_FILE", "/var/lib/jasper/control_token"
