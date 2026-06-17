@@ -216,7 +216,7 @@ full picture. The bits that matter for this proposal:
 | `analysis.py` | 1/48-octave power-mean smoothing, log-spaced 480-point resampling, multi-position power-mean spatial averaging. |
 | `peq.py` | Greedy peak-fit: residual = measured − target → find max peak → estimate Q from -3 dB bandwidth → add peaking biquad → repeat. Cuts-only by default, 20–350 Hz, ≤5 filters, Q ∈ [1.0, 8.0], max -10 dB. |
 | `target.py` | Named targets: `flat` / `neutral` / `warm` / `bright` (interpolations over a Harman-shaped base). |
-| `camilla_yaml.py` | YAML emission by string concatenation (no pyyaml dep, keeps output reviewable). Preserves `master_gain` mixer; inserts `peq_1 … peq_N` biquads in front of the existing `flat` filter. |
+| `sound/camilla_yaml.py` | Live generated-DSP emitter shared by room correction and sound preferences. Preserves `master_gain`; emits room PEQs as `room_peq_*` / `room_peq_r*` before sound-curve and preference-EQ filters. Historical `peq_*` correction configs remain parser-compatible for old bundles/configs. |
 | `coordinator.py` | `measurement_window()` async context manager — preconditions (no active voice session), pauses renderers via `systemctl stop`, sends UDS `MEASURE_PAUSE` to `jasper-voice`, restores in `finally`. |
 | `session.py` / `artifacts.py` | `MeasurementSession` + state enums own orchestration; `SessionArtifacts` owns per-session bundle writes and manifests. |
 
@@ -1179,4 +1179,4 @@ Codebase:
 
 ---
 
-Last verified: 2026-05-31
+Last verified: 2026-06-17 (DSP pipeline table rechecked against the live `jasper.sound.camilla_yaml.emit_sound_config` apply path; prior 2026-05-31 pass covered advisor model-call adapter and sound-audition executor.)

@@ -15,9 +15,7 @@ Public surface (everything else is implementation detail):
   - peq.design_peq(measured_db, target_db, freqs, **constraints) → list[PEQ]
   - apply path: jasper.sound.camilla_yaml.emit_sound_config(profile,
     room_peqs=..., out_path=..., profile_id=...) — what session.py
-    actually emits before reloading CamillaDSP. (camilla_yaml.
-    emit_correction_config(peqs, *, ...) is legacy and not on the
-    live apply path.)
+    actually emits before reloading CamillaDSP.
   - coordinator.measurement_window() — async context manager
   - session.MeasurementSession — state machine for the multi-step flow
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from jasper.camilla_config_contract import PeqFilter
-from jasper.correction.camilla_yaml import emit_correction_config
-from jasper.correction.peq import PEQ
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config_text,
@@ -78,16 +76,66 @@ def test_output_trim_is_ignored_when_profile_has_no_filters():
     assert "sound_preamp" not in yaml
 
 
+def _legacy_correction_config_text(
+    peqs: list[PeqFilter],
+    *,
+    peqs_right: list[PeqFilter] | None = None,
+) -> str:
+    """Minimal historical correction-emitter shape for parser compatibility.
+
+    The production legacy emitter is gone; this fixture keeps the extractor's
+    old ``peq_*`` / ``peq_r*`` compatibility contract pinned without keeping a
+    dead generator import alive.
+    """
+    lines = ["---", "filters:"]
+    for prefix, filters in (("peq_", peqs), ("peq_r", peqs_right or [])):
+        for i, peq in enumerate(filters, start=1):
+            lines.extend([
+                f"  {prefix}{i}:",
+                "    type: Biquad",
+                "    parameters:",
+                "      type: Peaking",
+                f"      freq: {peq.freq:.4f}",
+                f"      q: {peq.q:.4f}",
+                f"      gain: {peq.gain:.4f}",
+            ])
+    lines.append("mixers:")
+    return "\n".join(lines)
+
+
 def test_extract_room_peqs_from_legacy_correction_config():
-    old_yaml = emit_correction_config([
-        PEQ(freq=80.0, q=4.0, gain=-3.0),
-        PEQ(freq=140.0, q=2.0, gain=-1.5),
+    old_yaml = _legacy_correction_config_text([
+        PeqFilter(freq=80.0, q=4.0, gain=-3.0),
+        PeqFilter(freq=140.0, q=2.0, gain=-1.5),
     ])
 
     assert extract_room_peqs_from_config_text(old_yaml) == [
         PeqFilter(freq=80.0, q=4.0, gain=-3.0),
         PeqFilter(freq=140.0, q=2.0, gain=-1.5),
     ]
+
+
+def test_extract_room_peqs_from_legacy_right_channel_config_warns(caplog):
+    """Historical standalone correction configs used peq_r* for the
+    leader-bake right channel. Keep that compatibility loud: extraction
+    returns the solo/left chain only and warns that right-channel filters
+    were intentionally ignored."""
+    import logging
+
+    old_yaml = _legacy_correction_config_text(
+        [PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        peqs_right=[PeqFilter(freq=120.0, q=3.0, gain=-2.0)],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        extracted = extract_room_peqs_from_config_text(old_yaml)
+
+    assert extracted == [PeqFilter(freq=80.0, q=4.0, gain=-3.0)]
+    assert any(
+        "event=sound.extract_room_peqs" in record.message
+        and "result=right_channel_ignored" in record.message
+        for record in caplog.records
+    )
 
 
 def test_extract_room_peqs_ignores_sound_peaking_filters():
@@ -274,9 +322,10 @@ def test_extract_room_peqs_skips_right_channel_filters_and_warns(caplog):
     no-silent-failure rule)."""
     import logging
 
-    yaml = emit_correction_config(
-        [PEQ(freq=80.0, q=4.0, gain=-3.0)],
-        peqs_right=[PEQ(freq=120.0, q=3.0, gain=-2.0)],
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        room_peqs_right=[PeqFilter(freq=120.0, q=3.0, gain=-2.0)],
     )
     with caplog.at_level(logging.WARNING):
         extracted = extract_room_peqs_from_config_text(yaml)
@@ -294,7 +343,10 @@ def test_extract_room_peqs_stays_quiet_on_solo_configs(caplog):
     acquire log noise (solo-impact contract)."""
     import logging
 
-    yaml = emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)])
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+    )
     with caplog.at_level(logging.WARNING):
         extract_room_peqs_from_config_text(yaml)
     assert not any(

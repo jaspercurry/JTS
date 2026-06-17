@@ -254,6 +254,8 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
         label = "JTS active-speaker startup candidate"
     elif source in {
         "jasper.sound.camilla_yaml.emit_sound_config",
+        # Historical correction configs used this source marker before the
+        # live apply path moved to jasper.sound.camilla_yaml.
         "jasper.correction.camilla_yaml.emit_correction_config",
     }:
         classification = "jts_generated_stereo"

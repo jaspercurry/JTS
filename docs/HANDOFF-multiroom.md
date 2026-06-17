@@ -641,8 +641,8 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   the foundation. *Repurposed* — its music-only signal feeds the leader's pre-stream
   CamillaDSP, not snapserver directly.
 - **Increment 2 — per-channel correction axis — ✅ BUILT (2026-06-11; pure Python,
-  zero audio-path activation).** `emit_correction_config(peqs_right=…)` +
-  `emit_sound_config(room_peqs_right=…)`: ONE config, channel 0 corrected for the
+  zero audio-path activation).** `emit_sound_config(room_peqs_right=…)`: ONE
+  config, channel 0 corrected for the
   leader's seat, channel 1 for the follower's (only the ROOM segment is per-channel;
   preference EQ stays shared taste). Solo contract held by construction: `None`
   (default) is **byte-identical** to the pre-axis output (regression-locked,
@@ -1114,7 +1114,7 @@ receivers are dumb channel-droppers.**
   own seat and the right for the follower's seat, then streams the result; each
   speaker drops the channel it doesn't play (ALSA `ttable`). No post-snapclient
   DSP on any receiver. **The per-side axis is BUILT** (Increment 2, PR #587):
-  `emit_correction_config(peqs_right=…)` / `emit_sound_config(room_peqs_right=…)`
+  `emit_sound_config(room_peqs_right=…)`
   bake a different room correction per channel in ONE config (`None` = solo
   byte-identical mono-duplicate; `[]` = FLAT right channel — an uncalibrated
   follower never gets the wrong-room curve). The earlier "`target_channels`"

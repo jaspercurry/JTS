@@ -795,7 +795,6 @@ jasper/
 │   ├── analysis.py                      smoothing, spatial avg, deviation metrics
 │   ├── peq.py                           greedy PEQ design (≤5 filters, cuts)
 │   ├── target.py                        Harman / flat / house-curve interpolant
-│   ├── camilla_yaml.py                  PyYAML emit; preserves master_gain placeholder
 │   ├── calibration.py                   calibration parser + Dayton/miniDSP providers
 │   ├── quality.py                       capture quality gates + issue schema
 │   ├── bundles.py                       debug-bundle listing / validation helpers
@@ -836,7 +835,7 @@ docs/
 tests/
 ├── test_correction_sweep_deconv.py      sweep + deconvolution fixtures
 ├── test_correction_peq.py               PEQ design on known curves
-├── test_correction_camilla_yaml.py      YAML round-trip with master_gain preserved
+├── test_sound_camilla_yaml.py           live DSP YAML emit; preserves room PEQs
 ├── test_correction_coordinator.py       pause/resume contract
 ├── test_correction_session.py           session bundle + measurement flow
 ├── test_correction_setup.py             correction web handler
@@ -924,14 +923,10 @@ Concrete changes:
   vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB.
 - YAML emit (live apply path): `jasper/correction/session.py` calls
   `jasper.sound.camilla_yaml.emit_sound_config(profile, room_peqs=...,
-  out_path=..., profile_id=...)`, which builds a new pipeline that
-  inserts the PEQ filter chain BEFORE the existing `master_gain`
-  mixer. Preserves the master_gain placeholder so future revisions
-  don't conflict. Writes to
+  out_path=..., profile_id=...)`, which preserves the existing
+  `master_gain` mixer and places room PEQs before sound-curve /
+  preference-EQ filters in the per-channel filter chain. Writes to
   `/var/lib/camilladsp/configs/correction_<ts>.yml`.
-  (`jasper/correction/camilla_yaml.py:emit_correction_config(peqs, *,
-  ...)` is the legacy standalone emitter and is **not** on the live
-  apply path.)
 - Extend `jasper/camilla.py` `CamillaController` with:
   - `set_config_path(path: str) -> bool` — calls
     `c.config.set_file_path(path)` then `c.general.reload()`.
@@ -1187,7 +1182,7 @@ What can actually go wrong, ordered by likelihood × impact.
    sweep_capture.ts.
 3. **CamillaDSP YAML emit corrupts the master_gain placeholder
    and breaks ducking.** Mitigation: round-trip test
-   ([tests/test_correction_camilla_yaml.py](../tests/test_correction_camilla_yaml.py))
+   ([tests/test_sound_camilla_yaml.py](../tests/test_sound_camilla_yaml.py))
    that loads our emitted YAML, runs the existing
    [test_camilla_ducker.py](../tests/test_camilla_ducker.py) tests
    against it.

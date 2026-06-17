@@ -363,7 +363,7 @@ sudo grep -nE 'enable_rate_adjust|resampler|AsyncSinc' \
 
 If a correction profile contains both `enable_rate_adjust: true` and
 `AsyncSinc`, reset to `/etc/camilladsp/outputd-cutover.yml` or
-regenerate after the generator fix in `jasper/correction/camilla_yaml.py`.
+regenerate after the generator fix in `jasper/sound/camilla_yaml.py`.
 
 ### Verify the fix
 After restarting `jasper-camilla`, the 5-min log scan should show **zero**
@@ -479,7 +479,7 @@ outputd's direct-DAC queue.
 
 Required places:
 - `deploy/camilladsp/outputd-cutover.yml`
-- `jasper/correction/camilla_yaml.py` generated configs
+- `jasper/sound/camilla_yaml.py` generated configs
 - Any already-active correction profile under `/var/lib/camilladsp/configs/`
 - `deploy/shairport-sync.conf.template` +
   `deploy/bin/jasper-apply-airplay-mode` for the derived fixed latency
