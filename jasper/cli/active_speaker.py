@@ -32,6 +32,13 @@ from jasper.active_speaker.commission_ramp import (
     ramp_audible_step,
     record_ramp_operator_ack,
 )
+from jasper.active_speaker.commission_wiring import (
+    commission_load_config,
+    commission_seams,
+    read_current_config_path,
+    resolve_commission_inputs,
+    write_commission_path_safety,
+)
 from jasper.active_speaker.safe_playback import (
     FLOOR_OPERATOR_OUTCOMES,
     load_safe_playback_state,
@@ -237,79 +244,23 @@ def _camilla_controller() -> Any:
     return CamillaController(host, port)
 
 
-def _commission_load_config(cam: Any) -> Any:
-    """The INLINE loader seam: read the candidate file and apply it as the
-    running graph WITHOUT repointing the persisted statefile.
-
-    ``CamillaController.set_active_config_raw`` is CamillaDSP's ``SetConfig``;
-    it leaves ``config_file_path`` (the outputd statefile boot anchor) untouched,
-    which is what makes crash-recovery-MUTED structural — a reboot still comes up
-    on the all-muted staged boot config. Loading via ``set_config_file_path``
-    instead would repoint the statefile and break that invariant.
-    """
-
-    async def _load(path: str) -> bool:
-        text = Path(path).read_text(encoding="utf-8")
-        return await cam.set_active_config_raw(text, best_effort=False)
-
-    return _load
-
-
-async def _current_config_path(cam: Any) -> tuple[str | None, str | None]:
-    try:
-        return (await cam.get_config_file_path(best_effort=False)), None
-    except Exception as exc:  # noqa: BLE001
-        return None, type(exc).__name__
-
-
 def _resolve_commission_inputs(
     args: argparse.Namespace,
 ) -> tuple[ActiveSpeakerPreset | None, dict[str, Any] | None]:
-    """Resolve (preset, crossover_preview) so the per-driver commissioning config
-    matches what protected staging emitted.
+    """Resolve (preset, crossover_preview) for a commission command.
 
-    The `/sound/` staging flow compiles from the saved crossover preview; the
-    per-driver load must use the SAME source or its mask/crossover would not
-    match the active all-muted graph. Default: load that saved preview and use it
-    only when it is ready for staging (otherwise fall back to the bundled preset,
-    which is exactly what staging does when no ready preview exists). ``--preset``
-    is an explicit override for bench/preset-fallback work.
+    Loads the optional ``--preset`` file (CLI-specific), then delegates to the
+    shared :func:`resolve_commission_inputs` so the preview/fallback choice
+    matches what protected staging and the web card do.
     """
-    if args.preset:
-        preset = ActiveSpeakerPreset.from_mapping(
+    preset = (
+        ActiveSpeakerPreset.from_mapping(
             _load_json_object(Path(args.preset), label="preset")
         )
-        return preset, None
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    preview = load_crossover_preview(current_design_draft=load_design_draft())
-    if preview.get("status") == "ready_for_protected_staging":
-        return None, preview
-    return None, None
-
-
-def _write_commission_path_safety(
-    topology: Any,
-    staged: dict[str, Any],
-    current_config_path: str | None,
-    current_config_error: str | None,
-) -> Path:
-    """Build + persist fresh no-audio startup-load path-safety evidence.
-
-    Mirrors the startup-load flow (`path-probe` / the `/sound/` check): the
-    per-driver commissioning preflight reuses :func:`build_startup_load_preflight`,
-    which binds to this evidence to prove the speaker is ready for an active load
-    and the all-muted staged config is a valid rollback anchor.
-    """
-    evidence = build_startup_load_path_safety_evidence(
-        topology,
-        staged_config=staged,
-        calibration_level=load_calibration_level_state(),
-        current_config_path=current_config_path,
-        current_config_error=current_config_error,
+        if args.preset
+        else None
     )
-    return write_path_safety_evidence(evidence)
+    return resolve_commission_inputs(preset)
 
 
 def _print_commission_load_summary(payload: dict[str, Any], *, dry_run: bool) -> None:
@@ -399,8 +350,8 @@ def _cmd_commission_load(args: argparse.Namespace) -> int:
     cam = _camilla_controller()
 
     async def _run() -> dict[str, Any]:
-        current_config_path, current_config_error = await _current_config_path(cam)
-        evidence_path = _write_commission_path_safety(
+        current_config_path, current_config_error = await read_current_config_path(cam)
+        evidence_path = write_commission_path_safety(
             topology, staged, current_config_path, current_config_error
         )
         if args.dry_run:
@@ -417,13 +368,14 @@ def _cmd_commission_load(args: argparse.Namespace) -> int:
                 ),
                 "load": {},
             }
+        load_config, read_running_config, get_current_config_path = commission_seams(cam)
         return await load_driver_commissioning_config(
             topology,
             speaker_group_id=args.group,
             role=args.role,
-            load_config=_commission_load_config(cam),
-            read_running_config=lambda: cam.get_active_config_raw(best_effort=False),
-            get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+            load_config=load_config,
+            read_running_config=read_running_config,
+            get_current_config_path=get_current_config_path,
             preset=preset,
             crossover_preview=crossover_preview,
             staged_config=staged,
@@ -442,7 +394,7 @@ def _cmd_commission_rollback(args: argparse.Namespace) -> int:
     cam = _camilla_controller()
     payload = asyncio.run(
         rollback_driver_commissioning_config(
-            load_config=_commission_load_config(cam),
+            load_config=commission_load_config(cam),
         )
     )
     rollback = payload.get("rollback") or {}
@@ -494,17 +446,18 @@ def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
     cam = _camilla_controller()
 
     async def _run() -> dict[str, Any]:
-        current_config_path, current_config_error = await _current_config_path(cam)
-        evidence_path = _write_commission_path_safety(
+        current_config_path, current_config_error = await read_current_config_path(cam)
+        evidence_path = write_commission_path_safety(
             topology, staged, current_config_path, current_config_error
         )
+        load_config, read_running_config, get_current_config_path = commission_seams(cam)
         return await ramp_audible_step(
             topology,
             speaker_group_id=args.group,
             role=args.role,
-            load_config=_commission_load_config(cam),
-            read_running_config=lambda: cam.get_active_config_raw(best_effort=False),
-            get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+            load_config=load_config,
+            read_running_config=read_running_config,
+            get_current_config_path=get_current_config_path,
             preset=preset,
             crossover_preview=crossover_preview,
             path_safety_evidence_path=evidence_path,
@@ -526,7 +479,7 @@ def _cmd_commission_ramp_ack(args: argparse.Namespace) -> int:
     payload = asyncio.run(
         record_ramp_operator_ack(
             outcome=args.outcome,
-            load_config=_commission_load_config(cam),
+            load_config=commission_load_config(cam),
         )
     )
     if args.json:
@@ -570,7 +523,7 @@ def _cmd_commission_ramp_status(args: argparse.Namespace) -> int:
 
 def _cmd_commission_ramp_abort(args: argparse.Namespace) -> int:
     cam = _camilla_controller()
-    payload = asyncio.run(abort_ramp(load_config=_commission_load_config(cam)))
+    payload = asyncio.run(abort_ramp(load_config=commission_load_config(cam)))
     rollback = payload.get("rollback") or {}
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))

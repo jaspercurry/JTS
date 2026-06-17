@@ -86,6 +86,12 @@ from jasper.output_topology import (
     set_channel_protection_status,
 )
 from jasper.output_hardware import load_state as load_output_hardware_state
+from jasper.active_speaker.commission_wiring import (
+    commission_seams,
+    read_current_config_path,
+    resolve_commission_inputs,
+    write_commission_path_safety,
+)
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
     CUT_MAX_Q,
@@ -2037,71 +2043,12 @@ async def _active_speaker_rollback_startup_config_payload(
 # emits the candidate YAML, so the load/step that run it are POST-only.
 
 
-def _active_speaker_commission_seams(cam: Any) -> tuple[Any, Any, Any]:
-    """The inline transport seams: (load_config, read_running_config,
-    get_current_config_path). ``load_config`` reads the candidate file and
-    applies it with ``set_active_config_raw`` (CamillaDSP ``SetConfig``), which
-    leaves the persisted statefile pointed at the all-muted staged boot config."""
-
-    async def load_config(path: str) -> bool:
-        return await cam.set_active_config_raw(
-            Path(path).read_text(encoding="utf-8"), best_effort=False
-        )
-
-    return (
-        load_config,
-        lambda: cam.get_active_config_raw(best_effort=False),
-        lambda: cam.get_config_file_path(best_effort=False),
-    )
-
-
-async def _active_speaker_commission_current_config(
-    cam: Any,
-) -> tuple[str | None, str | None]:
-    try:
-        return (await cam.get_config_file_path(best_effort=False)), None
-    except Exception as exc:  # noqa: BLE001
-        return None, type(exc).__name__
-
-
-def _active_speaker_resolve_commission_inputs() -> tuple[Any, dict[str, Any] | None]:
-    """Resolve (preset, crossover_preview) so the per-driver config matches what
-    protected staging emitted — the saved crossover preview when it is ready,
-    else the bundled-preset fallback (exactly as staging does)."""
-
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    preview = load_crossover_preview(current_design_draft=load_design_draft())
-    if preview.get("status") == "ready_for_protected_staging":
-        return None, preview
-    return None, None
-
-
-def _active_speaker_commission_path_safety(
-    topology: Any,
-    staged: dict[str, Any],
-    current_config_path: str | None,
-    current_config_error: str | None,
-) -> str:
-    """Build + persist fresh no-audio startup-load path-safety evidence, bound to
-    the current config, and return its path (the commissioning preflight reuses
-    the startup-load gate against it)."""
-
-    from jasper.active_speaker.calibration_level import load_calibration_level_state
-    from jasper.active_speaker.path_safety import (
-        build_startup_load_path_safety_evidence,
-        write_path_safety_evidence,
-    )
-
-    evidence = build_startup_load_path_safety_evidence(
-        topology,
-        staged_config=staged,
-        calibration_level=load_calibration_level_state(),
-        current_config_path=current_config_path,
-        current_config_error=current_config_error,
-    )
-    return str(write_path_safety_evidence(evidence))
+# The inline seams, saved-preview resolution, current-config read, and fresh
+# path-safety evidence are shared with the `jasper-active-speaker` CLI via
+# `jasper.active_speaker.commission_wiring` (commission_seams /
+# read_current_config_path / resolve_commission_inputs /
+# write_commission_path_safety) — imported lazily in each payload below so the
+# socket-activated wizard process stays light.
 
 
 async def _active_speaker_commission_load_payload(
@@ -2134,16 +2081,16 @@ async def _active_speaker_commission_load_payload(
 
     topology = load_output_topology()
     staged = load_staged_startup_config()
-    preset, crossover_preview = _active_speaker_resolve_commission_inputs()
+    preset, crossover_preview = resolve_commission_inputs()
     cam = camilla_factory()
     current_config_path, current_config_error = (
-        await _active_speaker_commission_current_config(cam)
+        await read_current_config_path(cam)
     )
-    evidence_path = _active_speaker_commission_path_safety(
+    evidence_path = write_commission_path_safety(
         topology, staged, current_config_path, current_config_error
     )
     load_config, read_running_config, get_current_config_path = (
-        _active_speaker_commission_seams(cam)
+        commission_seams(cam)
     )
     payload = await load_driver_commissioning_config(
         topology,
@@ -2175,7 +2122,7 @@ async def _active_speaker_commission_rollback_payload(
     from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
 
     cam = camilla_factory()
-    load_config, _, _ = _active_speaker_commission_seams(cam)
+    load_config, _, _ = commission_seams(cam)
     payload = await rollback_driver_commissioning_config(load_config=load_config)
     logger.info(
         "event=sound.active_speaker_commission action=rollback status=%s",
@@ -2198,16 +2145,16 @@ async def _active_speaker_commission_ramp_step_payload(
     role = str(raw.get("role") or "").strip().lower()
     topology = load_output_topology()
     staged = load_staged_startup_config()
-    preset, crossover_preview = _active_speaker_resolve_commission_inputs()
+    preset, crossover_preview = resolve_commission_inputs()
     cam = camilla_factory()
     current_config_path, current_config_error = (
-        await _active_speaker_commission_current_config(cam)
+        await read_current_config_path(cam)
     )
-    evidence_path = _active_speaker_commission_path_safety(
+    evidence_path = write_commission_path_safety(
         topology, staged, current_config_path, current_config_error
     )
     load_config, read_running_config, get_current_config_path = (
-        _active_speaker_commission_seams(cam)
+        commission_seams(cam)
     )
     payload = await ramp_audible_step(
         topology,
@@ -2244,7 +2191,7 @@ async def _active_speaker_commission_ramp_ack_payload(
     outcome = str(raw.get("outcome") or "").strip().lower()
     cam = camilla_factory()
     # load_config is only used for the abort outcomes (too_loud / heard_wrong).
-    load_config, _, _ = _active_speaker_commission_seams(cam)
+    load_config, _, _ = commission_seams(cam)
     payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
     logger.info(
         "event=sound.active_speaker_commission action=ramp_ack outcome=%s status=%s",
@@ -2263,7 +2210,7 @@ async def _active_speaker_commission_ramp_abort_payload(
     from jasper.active_speaker.commission_ramp import abort_ramp
 
     cam = camilla_factory()
-    load_config, _, _ = _active_speaker_commission_seams(cam)
+    load_config, _, _ = commission_seams(cam)
     payload = await abort_ramp(load_config=load_config)
     logger.info(
         "event=sound.active_speaker_commission action=ramp_abort status=%s",
