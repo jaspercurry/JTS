@@ -572,6 +572,43 @@ async def test_select_source_gates_fanin_without_pausing_other_sources(
 
 
 @pytest.mark.asyncio
+async def test_test_fanin_label_overrides_manual_reassert_without_persisting(
+    mux, patched_probes,
+):
+    mux._manual_source = Source.AIRPLAY
+    mux._winner = Source.AIRPLAY
+    mux._fanin_select_label = AsyncMock(return_value={})
+    _stub_probes(patched_probes, airplay=False)
+
+    status = await mux.select_test_fanin_label("correction")
+    await mux._tick()
+
+    assert status["mode"] == "manual"
+    assert status["selected_source"] == "airplay"
+    assert status["test_source"] == "correction"
+    assert status["active_source"] == "correction"
+    mux._fanin_select_label.assert_awaited_with("correction")
+    assert mux._manual_source is Source.AIRPLAY
+
+
+@pytest.mark.asyncio
+async def test_test_fanin_release_restores_manual_source(mux):
+    mux._manual_source = Source.AIRPLAY
+    mux._winner = Source.AIRPLAY
+    mux._test_fanin_label = "correction"
+    mux._fanin_select = AsyncMock(return_value={})
+    mux._fanin_none = AsyncMock(return_value={})
+
+    status = await mux.release_test_fanin_label()
+
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
+    mux._fanin_none.assert_not_awaited()
+    assert status["test_source"] is None
+    assert status["selected_source"] == "airplay"
+    assert status["active_source"] == "airplay"
+
+
+@pytest.mark.asyncio
 async def test_select_source_prepares_volume_before_fanin_gate(
     mux, patched_probes,
 ):

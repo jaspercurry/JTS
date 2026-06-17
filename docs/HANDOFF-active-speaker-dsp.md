@@ -634,11 +634,20 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   −120 dB, mute off — silent). The browser does not expose this as a separate
   operator step; pressing **Start tone** first ensures/re-opens that silent load
   if needed, then `commission_ramp.ramp_audible_step` raises that per-output gain
-  (the threaded `audible_gain_db`) one bounded, gated step at a time toward a low
-  audible level (`MIN_TEST_LEVEL_DBFS` → `MAX_TEST_LEVEL_DBFS`, ≤
-  `AUDIBLE_RAMP_STEP_DB`/step). The `/sound/` commission ramp pairs that graph
-  load with a short bounded sine
-  into `correction_substream`, so the tone enters fan-in and then the protected
+  (the threaded `audible_gain_db`) one bounded, gated step at a time toward the
+  Stop-controlled ramp ceiling (`MIN_TEST_LEVEL_DBFS` →
+  `COMMISSION_RAMP_MAX_LEVEL_DBFS`, ≤ `AUDIBLE_RAMP_STEP_DB`/step). The transient
+  per-driver graph uses
+  `COMMISSIONING_HEADROOM_DB=0` so that this bounded ramp is the actual audible
+  test envelope; the all-muted staged boot/rollback graph keeps the separate
+  `STARTUP_HEADROOM_DB=40` crash-recovery headroom. The `/sound/` commission
+  ramp pairs that graph load with one bounded continuous sine into
+  `correction_substream` (currently a 35 s `aplay` session, reused across the
+  browser's ~30 s ramp). The sine frequency is planned by
+  `active_speaker.test_signal_plan` from the same compiled preset/crossover
+  edges and tweeter-protection policy that emitted the active CamillaDSP graph;
+  if no margin-bounded in-band tone exists, the planner blocks before WAV
+  generation or fan-in selection. The tone enters fan-in and then the protected
   active CamillaDSP graph; if the tone backend fails, the endpoint rolls back to
   the all-muted staged config and does not leave a pending by-ear confirmation.
   The gate (`build_stage5_ramp_gate`, fails closed) **re-asserts the protective
@@ -648,14 +657,16 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   Each step lands the safe_playback floor tri-state at `floor_pending_operator`;
   the operator confirms by ear (`commission-ramp ack`) → `floor_confirmed`
   and, in the web flow, the transient graph is re-muted while the role remains
-  confirmed for woofer-before-tweeter ordering (`silent` retries louder;
-  `too_loud`/`heard_wrong_driver` re-mute). The swept
+  confirmed for woofer-before-tweeter ordering (`silent` advances the protected
+  gain while the same tone keeps playing; `too_loud`/`heard_wrong_driver` stop
+  the tone and re-mute). The swept
   measurement is Stage 6. **"Subsonic/DC protection present" is satisfied by the
-  protections already in the graph** — the 0 dB ceiling, the per-driver limiter,
-  and the startup headroom — **not a dedicated woofer high-pass** (a deliberate
-  deferral; see "Resolved decisions"). *Red:* HP not confirmed live, or any
-  sibling audible → abort, re-mute. **On-device ch1 woofer ramp is bench-gated
-  on jts3 (amps off until confirmed); validation plan in the gap-1 increment.**
+  protections already in the graph** — the bounded commissioning gain envelope,
+  the 0 dB ceiling, and the per-driver limiter — **not a dedicated woofer
+  high-pass** (a deliberate deferral; see "Resolved decisions"). *Red:* HP not
+  confirmed live, or any sibling audible → abort, re-mute. **On-device ch1
+  woofer ramp is bench-gated on jts3 (amps off until confirmed); validation plan
+  in the gap-1 increment.**
 - **Stage 6 — sweep + AEC-reference validation (gate that can fail the feature).**
   Per-driver `driver_acoustics`. **Pre-gate (check before Stage 6, not during):**
   confirm there is **no sub latency outside CamillaDSP's alignment** — a plate-amp
@@ -1195,7 +1206,12 @@ but the preset-era public routes (`/sound/active-speaker/tone-targets` and
 `/sound/active-speaker/tone-plan`) have been removed. Product playback goes
 through saved-topology targets only: `prepare-driver-test` selects and gates the
 driver, and `/sound/active-speaker/play-tone` builds the final bounded plan at
-the execution boundary.
+the execution boundary. The reusable driver-test signal policy lives in
+`jasper.active_speaker.test_signal_plan`: the production adapter consumes a
+compiled `ActiveSpeakerPreset` for active 2/3-way main speakers, while the
+edge-level helper already covers a future subwoofer low-pass plus subsonic floor
+once the subwoofer compiler/staging slice exists. Until then, optional subwoofer
+groups still fail closed before active startup staging or baseline compile.
 
 `jasper.active_speaker.playback` is the first backend seam for executing that
 intent. The default backend is still no-audio: it writes a bounded
@@ -1247,10 +1263,10 @@ reset, or hold. The browser cannot supply its own auto-level cap or target
 protection verdict. Tone-plan, readiness, and artifact routes read the accepted
 persisted level rather than trusting request-local `level_dbfs`. No current
 code raises listening volume, writes live CamillaDSP volume, emits samples, or
-treats a mic observation as permission to play. The current `aplay` lab backend
-is still a synchronous one-shot tone backend; a true 5-15 second continuous
-ramp must wait for a cancellable playback backend that owns the running process
-and can stop immediately. This is still not real microphone capture or
+treats a mic observation as permission to play. The active-speaker commission
+path now has a cancellable continuous `aplay` tone session for the browser's
+driver-identification ramp; the remaining direct-DAC diagnostic tone paths are
+still short bounded tests. This is still not real microphone capture or
 calibrated SPL; it is the operator-observed feedback loop the first audible
 slice can consume.
 

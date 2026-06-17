@@ -90,14 +90,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     running: false,
     token: 0,
     targetKey: '',
-    pulseCount: 0,
+    stepCount: 0,
     levelDbfs: null,
     message: ''
   };
   var OUTPUT_RAMP_LISTEN_MS = 1200;
   var OUTPUT_RAMP_NEXT_PULSE_MS = 350;
-  var COMMISSION_RAMP_LISTEN_MS = 5000;
-  var COMMISSION_RAMP_NEXT_PULSE_MS = 350;
+  var COMMISSION_RAMP_LISTEN_MS = 2300;
+  var COMMISSION_RAMP_NEXT_PULSE_MS = 120;
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
@@ -588,10 +588,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var c = commissionCardState(activeSpeaker.commission, group);
     if (!c.available) return '';
     var busy = activeSpeaker.commissionBusy;
-    var dis = busy ? ' disabled' : '';
     var roleLabel = function(r) { return escapeHtml(humanRole(r)); };
     var toneRole = c.pendingRole || c.armedRole || c.startRole || '';
     var toneActive = !!(commissionAutoRamp.running || c.canAck);
+    var dis = busy && !toneActive ? ' disabled' : '';
     var statusRows =
       '<div class="commission-status">' +
       '<div><span class="commission-status__k">Armed driver</span>' +
@@ -614,12 +614,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var buttons = [];
     if (c.armed && toneActive) {
       buttons.push('<button type="button" class="btn btn--danger" ' +
-        'data-act="commission-abort"' + dis + '>Stop tone</button>');
+        'data-act="commission-abort">Stop tone</button>');
       buttons.push('<button type="button" class="btn btn--primary" ' +
-        'data-act="commission-ack" data-outcome="heard_correct_driver"' + dis +
+        'data-act="commission-ack" data-outcome="heard_correct_driver"' +
         '>I hear the tone</button>');
       buttons.push('<button type="button" class="btn btn--ghost" ' +
-        'data-act="commission-ack" data-outcome="heard_wrong_driver"' + dis +
+        'data-act="commission-ack" data-outcome="heard_wrong_driver"' +
         '>Wrong driver</button>');
     } else if (c.canStep) {
       buttons.push('<button type="button" class="btn btn--primary" ' +
@@ -627,14 +627,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         dis + '>Start tone</button>');
     }
 
-    var autoNote = '<p class="setting-row__hint commission-card__message">' +
-      (commissionAutoRamp.running && commissionAutoRamp.message ?
-        escapeHtml(commissionAutoRamp.message) : '&#160;') + '</p>';
     var note = activeSpeaker.commissionError ?
       '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' :
       (toneActive ?
         '<p class="setting-row__hint">Tone is playing for ' + roleLabel(toneRole) +
-          '. It starts very quiet and repeats a little louder until you hear it or stop it.</p>' :
+          '. Press Stop if anything sounds wrong.</p>' :
         (c.stale ?
         '<p class="setting-row__hint">The previous tone session expired safely. Start tone will reopen it quietly.</p>' :
         (c.armed ?
@@ -642,11 +639,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           roleLabel(c.armedRole) + '.</p>' :
         '<p class="setting-row__hint">Start a quiet tone for ' +
           roleLabel(c.startRole || 'driver') +
-          '. It starts very quiet and repeats a little louder until you hear it.</p>')));
+          '. It will stay continuous and get louder gradually.</p>')));
+    var busyNote = busy && !toneActive ?
+      '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '';
 
     return '<div class="commission-card">' +
-      statusRows + note + autoNote +
-      (busy ? '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '') +
+      statusRows + note + busyNote +
       '<div class="active-speaker-actions commission-card__actions">' +
         buttons.join('') + '</div>' +
       '<p class="setting-row__hint commission-card__followup">Confirming a driver ' +
@@ -2063,6 +2061,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function commissionTargetKey(groupId, role) {
     return [groupId || '', role || ''].join(':');
   }
+  function commissionLoadedTargetKey(fallbackGroupId) {
+    var commission = activeSpeaker.commission || {};
+    var load = commission.commission_load || {};
+    var target = load.target || {};
+    if (load.status !== 'loaded' || !target.role) return '';
+    return commissionTargetKey(target.speaker_group_id || fallbackGroupId || '', target.role || '');
+  }
+  function commissionAutoRampCurrent(groupId, role, token) {
+    var targetKey = commissionTargetKey(groupId, role);
+    if (!commissionAutoRamp.running || token !== commissionAutoRamp.token ||
+        commissionAutoRamp.targetKey !== targetKey) return false;
+    var loadedKey = commissionLoadedTargetKey(groupId);
+    if (loadedKey && loadedKey !== targetKey) return false;
+    var pending = commissionPendingStep();
+    return !(pending && (pending.role || '') !== role);
+  }
   function stopCommissionAutoRamp(message) {
     commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
       running: false,
@@ -3360,8 +3374,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   }
   async function postCommission(url, body, busyLabel) {
-    patchActiveSpeaker({commissionBusy: busyLabel, commissionError: ''});
-    render();
+    var showBusy = !!busyLabel;
+    if (showBusy) {
+      patchActiveSpeaker({commissionBusy: busyLabel, commissionError: ''});
+      render();
+    } else if (activeSpeaker.commissionError) {
+      patchActiveSpeaker({commissionError: ''});
+      render();
+    }
     try {
       var resp = await fetch(url, {
         method: 'POST', headers: jsonHeaders(),
@@ -3386,7 +3406,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return {ok: false, error: String(e.message || e)};
     }
     await refreshCommissionState();
-    patchActiveSpeaker({commissionBusy: ''});
+    if (showBusy) patchActiveSpeaker({commissionBusy: ''});
     render();
     return {ok: true, payload: payload};
   }
@@ -3424,18 +3444,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         {danger: true});
       if (!ok) return;
     }
+    var busyLabel = Object.prototype.hasOwnProperty.call(options, 'busyLabel') ?
+      options.busyLabel : 'Stepping ' + humanRole(role);
     return await postCommission('./active-speaker/commission-ramp-step',
-      {group: group.id, role: role}, options.busyLabel || 'Stepping ' + humanRole(role));
+      {group: group.id, role: role}, busyLabel);
   }
   async function commissionAck(outcome, options) {
     options = options || {};
     if (!outcome) return;
+    if (options.silentAutoRetry && options.targetKey &&
+        commissionAutoRamp.targetKey !== options.targetKey) {
+      return {ok: false, error: 'Stopped because the active driver test changed.'};
+    }
     if (outcome !== 'silent' || !options.silentAutoRetry) {
       stopCommissionAutoRamp('');
     }
     var result = await postCommission('./active-speaker/commission-ramp-ack',
-      {outcome: outcome}, 'Recording');
-    if (outcome !== 'silent' || !result || !result.ok || options.silentAutoRetry) return;
+      {outcome: outcome}, options.silentAutoRetry ? '' : 'Recording');
+    if (outcome !== 'silent' || !result || !result.ok || options.silentAutoRetry) {
+      return result;
+    }
     var group = activeCommissionGroup(currentOutputTopology());
     var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
     var target = load.target || {};
@@ -3443,48 +3471,62 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!group || !role) return;
     startCommissionAutoRamp(role, {
       confirm: false,
-      message: 'Trying a louder ' + humanRole(role) + ' tone.'
+      message: 'Tone is playing for ' + humanRole(role) + '.'
     });
+    return result;
   }
   async function commissionAbort() {
     stopCommissionAutoRamp('Stopped. No test tone is playing.');
     await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
   }
-  async function runCommissionAutoRamp(role, token) {
-    while (commissionAutoRamp.running && token === commissionAutoRamp.token) {
-      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-        message: commissionAutoRamp.pulseCount ?
-          'Trying another short ' + humanRole(role) + ' tone a little louder.' :
-          'Starting with the quietest short ' + humanRole(role) + ' tone.'
-      });
-      render();
+  async function stopAndAbortCommissionAutoRamp(message) {
+    stopCommissionAutoRamp(message);
+    await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
+    patchActiveSpeaker({commissionBusy: '', commissionError: message});
+    status(message, true);
+    render();
+  }
+  async function runCommissionAutoRamp(groupId, role, token) {
+    var targetKey = commissionTargetKey(groupId, role);
+    while (commissionAutoRampCurrent(groupId, role, token)) {
       var result = await commissionStep(role, {
         confirm: false,
-        busyLabel: commissionAutoRamp.pulseCount ?
-          'Trying louder ' + humanRole(role) :
-          'Starting ' + humanRole(role) + ' tone'
+        busyLabel: ''
       });
-      if (!commissionAutoRamp.running || token !== commissionAutoRamp.token) return;
+      if (!commissionAutoRampCurrent(groupId, role, token)) return;
       if (!result || !result.ok) {
-        stopCommissionAutoRamp('Stopped. JTS could not play the driver test.');
-        render();
+        var stopMessage = result && result.error ?
+          result.error : 'Stopped. JTS could not play the driver test.';
+        await stopAndAbortCommissionAutoRamp(stopMessage);
+        return;
+      }
+      if (!commissionAutoRampCurrent(groupId, role, token)) {
+        await stopAndAbortCommissionAutoRamp('Stopped because the active driver test changed.');
         return;
       }
       var payload = result.payload || {};
       var level = Number(payload.next_gain_db);
       commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-        pulseCount: commissionAutoRamp.pulseCount + 1,
+        stepCount: commissionAutoRamp.stepCount + 1,
         levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
-        message: 'Listen for the ' + humanRole(role) + '. Press “I hear ' +
-          humanRole(role) + '” as soon as you hear it.'
+        message: 'Tone is playing for ' + humanRole(role) + '.'
       });
       render();
       await sleepMs(COMMISSION_RAMP_LISTEN_MS);
-      if (!commissionAutoRamp.running || token !== commissionAutoRamp.token) return;
+      if (!commissionAutoRampCurrent(groupId, role, token)) return;
       if (commissionPendingStep()) {
-        await commissionAck('silent', {silentAutoRetry: true});
+        var ackResult = await commissionAck('silent', {
+          silentAutoRetry: true,
+          targetKey: targetKey
+        });
+        if (!ackResult || !ackResult.ok) {
+          var ackMessage = ackResult && ackResult.error ?
+            ackResult.error : 'Stopped. JTS could not record the driver test result.';
+          await stopAndAbortCommissionAutoRamp(ackMessage);
+          return;
+        }
       }
-      if (!commissionAutoRamp.running || token !== commissionAutoRamp.token) return;
+      if (!commissionAutoRampCurrent(groupId, role, token)) return;
       await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
     }
   }
@@ -3494,7 +3536,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!group || !role) return;
     if (options.confirm !== false) {
       var ok = await jtsConfirm('Start the ' + humanRole(role) + ' quiet ramp? Amps should be ' +
-        'on at LOW gain — JTS will play short tones that slowly get louder.',
+        'on at LOW gain — JTS will play one continuous tone that gets louder over about 30 seconds.',
         {danger: true});
       if (!ok) return;
     }
@@ -3505,13 +3547,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       running: true,
       token: token,
       targetKey: commissionTargetKey(group.id, role),
-      pulseCount: 0,
+      stepCount: 0,
       levelDbfs: null,
-      message: options.message || 'Starting quiet ' + humanRole(role) + ' test.'
+      message: options.message || 'Starting quiet continuous ' + humanRole(role) + ' test.'
     };
-    status('Starting quiet ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
+    status('Starting quiet continuous ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
     render();
-    runCommissionAutoRamp(role, token);
+    runCommissionAutoRamp(group.id, role, token);
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;

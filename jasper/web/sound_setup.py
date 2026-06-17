@@ -65,6 +65,9 @@ import html
 import json
 import logging
 import os
+import socket
+import subprocess
+import threading
 import time
 import urllib.parse
 from http import HTTPStatus
@@ -2053,19 +2056,290 @@ async def _active_speaker_rollback_startup_config_payload(
 # socket-activated wizard process stays light.
 
 COMMISSION_TONE_ALSA_DEVICE = "correction_substream"
-COMMISSION_TONE_DURATION_S = 0.9
+COMMISSION_TONE_DURATION_S = 35.0
+COMMISSION_TONE_RESTART_MARGIN_S = 3.0
+COMMISSION_TONE_STARTUP_CHECK_S = 0.08
+COMMISSION_TONE_SAMPLE_RATE = 48000
 COMMISSION_TONE_SOURCE_DBFS = 0.0
+COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
+COMMISSION_TONE_MUX_SOCKET = os.environ.get(
+    "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
+)
+COMMISSION_TONE_FANIN_LABEL = "correction"
+_COMMISSION_TONE_LOCK = threading.Lock()
+_COMMISSION_TONE_SESSION: dict[str, Any] | None = None
 
 
-def _commission_tone_frequency_hz(role: str) -> float:
-    role = str(role or "").strip().lower()
-    if role == "tweeter":
-        return 5000.0
-    if role == "mid":
-        return 800.0
-    if role in {"woofer", "subwoofer"}:
-        return 120.0 if role == "woofer" else 50.0
-    return 500.0
+def _commission_tone_target_key(
+    *,
+    role: str,
+    group_id: str | None,
+    target: dict[str, Any] | None,
+) -> str:
+    target = target or {}
+    output_index = target.get("output_index")
+    if output_index is None:
+        output_index = target.get("physical_output_index")
+    return ":".join(
+        [
+            str(target.get("speaker_group_id") or group_id or ""),
+            str(target.get("role") or target.get("driver_role") or role or ""),
+            "" if output_index is None else str(output_index),
+        ]
+    )
+
+
+def _commission_tone_wav_path(*, frequency_hz: float) -> Path:
+    from jasper.correction.playback import _ensure_tone_wav
+
+    return _ensure_tone_wav(
+        freq_hz=frequency_hz,
+        duration_s=COMMISSION_TONE_DURATION_S,
+        dbfs=COMMISSION_TONE_SOURCE_DBFS,
+        sample_rate=COMMISSION_TONE_SAMPLE_RATE,
+    )
+
+
+def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
+    data = b""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(2.0)
+        sock.connect(COMMISSION_TONE_MUX_SOCKET)
+        sock.sendall((cmd + "\n").encode("ascii"))
+        while b"\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    if not data:
+        raise RuntimeError("jasper-mux returned no response")
+    payload = json.loads(data.decode("utf-8", "replace"))
+    if isinstance(payload, dict) and "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    if not isinstance(payload, dict):
+        raise RuntimeError("jasper-mux returned a non-object response")
+    return payload
+
+
+def _commission_tone_select_fanin_lane() -> dict[str, Any]:
+    return _commission_tone_mux_command(
+        f"TEST_SELECT {COMMISSION_TONE_FANIN_LABEL}",
+    )
+
+
+def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
+    try:
+        payload = _commission_tone_mux_command("TEST_RELEASE")
+    except Exception as exc:  # noqa: BLE001 - stop still needs to continue.
+        payload = {
+            "status": "failed",
+            "reason": reason,
+            "error": str(exc),
+        }
+        logger.warning(
+            "event=sound.active_speaker_commission_tone action=fanin_release "
+            "reason=%s status=failed error=%s",
+            reason,
+            exc,
+        )
+        return payload
+    logger.info(
+        "event=sound.active_speaker_commission_tone action=fanin_release "
+        "reason=%s status=ok active_source=%s",
+        reason,
+        payload.get("active_source"),
+    )
+    return payload
+
+
+def _commission_tone_issue(exc: BaseException) -> dict[str, str]:
+    return {
+        "severity": "blocker",
+        "code": "commission_tone_backend_failed",
+        "message": f"could not play commissioning tone: {exc}",
+    }
+
+
+def _commission_tone_driver_style(
+    *,
+    topology: Any,
+    group_id: str | None,
+    role: str,
+) -> str | None:
+    for group in getattr(topology, "speaker_groups", ()):
+        if group_id and getattr(group, "id", None) != group_id:
+            continue
+        for channel in getattr(group, "channels", ()):
+            if getattr(channel, "role", None) == role:
+                return getattr(channel, "driver_style", None)
+    return None
+
+
+def _commission_tone_signal_plan(
+    *,
+    role: str,
+    group_id: str | None,
+    topology: Any = None,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from jasper.active_speaker import (
+        DRIVER_TEST_SIGNAL_PLAN_KIND,
+        driver_test_signal_plan,
+        load_active_speaker_preset,
+    )
+
+    role_id = str(role or "").strip().lower()
+    source = "explicit_preset" if preset is not None else "preset_fallback"
+    bound_preset = preset
+    if bound_preset is None and crossover_preview is not None:
+        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+
+        source = "crossover_preview"
+        topology = topology or load_output_topology()
+        bound_preset, preview_issues, _ = compile_preset_from_crossover_preview(
+            topology,
+            crossover_preview,
+        )
+        if bound_preset is None:
+            issues = [
+                issue for issue in preview_issues if isinstance(issue, dict)
+            ] or [
+                {
+                    "severity": "blocker",
+                    "code": "commission_tone_preset_unresolved",
+                    "message": (
+                        "could not compile the saved crossover preview into a "
+                        "driver test preset"
+                    ),
+                }
+            ]
+            return {
+                "artifact_schema_version": 1,
+                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
+                "status": "blocked",
+                "role": role_id,
+                "frequency_hz": None,
+                "preset_source": source,
+                "issues": issues,
+            }
+    if bound_preset is None:
+        try:
+            bound_preset = load_active_speaker_preset()
+        except Exception as exc:  # noqa: BLE001 - fail closed before playback.
+            return {
+                "artifact_schema_version": 1,
+                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
+                "status": "blocked",
+                "role": role_id,
+                "frequency_hz": None,
+                "preset_source": source,
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "commission_tone_preset_unreadable",
+                    "message": f"could not load active-speaker preset: {exc}",
+                }],
+            }
+
+    driver_style = (
+        _commission_tone_driver_style(
+            topology=topology,
+            group_id=group_id,
+            role=role_id,
+        )
+        if topology is not None
+        else None
+    )
+    plan = driver_test_signal_plan(
+        bound_preset,
+        role_id,
+        driver_style=driver_style,
+    )
+    plan["preset_source"] = source
+    plan["preset_id"] = getattr(bound_preset, "preset_id", None)
+    plan["preset_name"] = getattr(bound_preset, "name", None)
+    return plan
+
+
+def _commission_tone_payload(
+    *,
+    status: str,
+    playback_id: str,
+    role: str,
+    level_dbfs: float,
+    frequency_hz: float | None,
+    target: dict[str, Any] | None,
+    group_id: str | None,
+    audio_emitted: bool,
+    issues: list[dict[str, str]],
+    session_reused: bool = False,
+    fanin_gate: dict[str, Any] | None = None,
+    signal_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "status": status,
+        "backend": COMMISSION_TONE_BACKEND,
+        "playback_id": playback_id,
+        "audio_emitted": audio_emitted,
+        "confirmable": audio_emitted and not issues,
+        "continuous": True,
+        "session_reused": session_reused,
+        "target": target or {"speaker_group_id": group_id, "driver_role": role},
+        "tone": {
+            "frequency_hz": frequency_hz,
+            "source_level_dbfs": COMMISSION_TONE_SOURCE_DBFS,
+            "commission_gain_db": level_dbfs,
+            "duration_ms": int(round(COMMISSION_TONE_DURATION_S * 1000)),
+        },
+        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+        "issues": issues,
+    }
+    if fanin_gate is not None:
+        payload["fanin_gate"] = fanin_gate
+    if signal_plan is not None:
+        payload["signal_plan"] = signal_plan
+    return payload
+
+
+def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
+    global _COMMISSION_TONE_SESSION
+
+    session = _COMMISSION_TONE_SESSION
+    _COMMISSION_TONE_SESSION = None
+    if not session:
+        return {"status": "idle", "reason": reason}
+    proc = session.get("process")
+    was_running = bool(proc is not None and proc.poll() is None)
+    if was_running:
+        try:
+            proc.terminate()
+            proc.wait(timeout=0.75)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=0.75)
+            except Exception:  # noqa: BLE001 - best-effort cleanup only.
+                pass
+        except ProcessLookupError:
+            pass
+    return {
+        "status": "stopped" if was_running else "expired",
+        "reason": reason,
+        "playback_id": session.get("playback_id"),
+        "target_key": session.get("target_key"),
+    }
+
+
+def _active_speaker_stop_commission_tone(*, reason: str) -> dict[str, Any]:
+    with _COMMISSION_TONE_LOCK:
+        payload = _stop_commission_tone_locked(reason=reason)
+    payload["fanin_gate"] = _commission_tone_release_fanin_lane(reason=reason)
+    logger.info(
+        "event=sound.active_speaker_commission_tone action=stop reason=%s status=%s",
+        reason,
+        payload.get("status"),
+    )
+    return payload
 
 
 async def _active_speaker_play_commission_tone(
@@ -2075,55 +2349,200 @@ async def _active_speaker_play_commission_tone(
     playback_id: str,
     group_id: str | None = None,
     target: dict[str, Any] | None = None,
+    topology: Any = None,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Play one bounded commissioning tone through the protected active graph."""
+    """Ensure one bounded continuous commissioning tone is playing."""
 
-    from jasper.correction.playback import SweepPlaybackError, play_test_tone
+    global _COMMISSION_TONE_SESSION
 
-    frequency_hz = _commission_tone_frequency_hz(role)
-    try:
-        await play_test_tone(
-            freq_hz=frequency_hz,
-            duration_s=COMMISSION_TONE_DURATION_S,
-            dbfs=COMMISSION_TONE_SOURCE_DBFS,
-            alsa_device=COMMISSION_TONE_ALSA_DEVICE,
+    role = str(role or "").strip().lower()
+    signal_plan = _commission_tone_signal_plan(
+        role=role,
+        group_id=group_id,
+        topology=topology,
+        preset=preset,
+        crossover_preview=crossover_preview,
+    )
+    frequency_hz = signal_plan.get("frequency_hz")
+    if signal_plan.get("status") != "ready" or frequency_hz is None:
+        logger.warning(
+            "event=sound.active_speaker_commission_tone action=plan status=blocked "
+            "group=%s role=%s issues=%s",
+            group_id,
+            role,
+            ",".join(
+                str(issue.get("code"))
+                for issue in signal_plan.get("issues", [])
+                if isinstance(issue, dict)
+            ),
         )
-    except (OSError, SweepPlaybackError, RuntimeError) as exc:
-        return {
-            "status": "failed",
-            "backend": "correction_substream_tone",
-            "playback_id": playback_id,
-            "audio_emitted": False,
-            "target": target or {"speaker_group_id": group_id, "driver_role": role},
-            "tone": {
+        return _commission_tone_payload(
+            status="blocked",
+            playback_id=playback_id,
+            role=role,
+            level_dbfs=level_dbfs,
+            frequency_hz=None,
+            target=target,
+            group_id=group_id,
+            audio_emitted=False,
+            issues=[
+                issue for issue in signal_plan.get("issues", [])
+                if isinstance(issue, dict)
+            ],
+            signal_plan=signal_plan,
+        )
+    target_key = _commission_tone_target_key(role=role, group_id=group_id, target=target)
+    try:
+        wav_path = _commission_tone_wav_path(frequency_hz=frequency_hz)
+    except Exception as exc:  # noqa: BLE001 - fail closed; the ramp will re-mute.
+        return _commission_tone_payload(
+            status="failed",
+            playback_id=playback_id,
+            role=role,
+            level_dbfs=level_dbfs,
+            frequency_hz=frequency_hz,
+            target=target,
+            group_id=group_id,
+            audio_emitted=False,
+            issues=[_commission_tone_issue(exc)],
+            signal_plan=signal_plan,
+        )
+
+    try:
+        fanin_gate = _commission_tone_select_fanin_lane()
+    except Exception as exc:  # noqa: BLE001 - fail closed; the ramp will re-mute.
+        return _commission_tone_payload(
+            status="failed",
+            playback_id=playback_id,
+            role=role,
+            level_dbfs=level_dbfs,
+            frequency_hz=frequency_hz,
+            target=target,
+            group_id=group_id,
+            audio_emitted=False,
+            issues=[_commission_tone_issue(exc)],
+            signal_plan=signal_plan,
+        )
+
+    started_proc = None
+    try:
+        with _COMMISSION_TONE_LOCK:
+            session = _COMMISSION_TONE_SESSION
+            if session and session.get("process") is not None:
+                proc = session["process"]
+                elapsed = time.monotonic() - float(session.get("started_monotonic", 0.0))
+                remaining = COMMISSION_TONE_DURATION_S - elapsed
+                if (
+                    session.get("target_key") == target_key
+                    and (
+                        abs(float(session.get("frequency_hz", 0.0)) - frequency_hz)
+                        < 0.01
+                    )
+                    and proc.poll() is None
+                    and remaining > COMMISSION_TONE_RESTART_MARGIN_S
+                ):
+                    session["playback_id"] = playback_id
+                    return _commission_tone_payload(
+                        status="completed",
+                        playback_id=playback_id,
+                        role=role,
+                        level_dbfs=level_dbfs,
+                        frequency_hz=frequency_hz,
+                        target=target,
+                        group_id=group_id,
+                        audio_emitted=True,
+                        issues=[],
+                        session_reused=True,
+                        fanin_gate=fanin_gate,
+                        signal_plan=signal_plan,
+                    )
+                _stop_commission_tone_locked(reason="replace")
+
+            proc = subprocess.Popen(
+                ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if proc.poll() is not None:
+                raise RuntimeError(f"aplay exited immediately with rc={proc.returncode}")
+            started_proc = proc
+            _COMMISSION_TONE_SESSION = {
+                "process": proc,
+                "playback_id": playback_id,
+                "target_key": target_key,
                 "frequency_hz": frequency_hz,
-                "source_level_dbfs": COMMISSION_TONE_SOURCE_DBFS,
-                "commission_gain_db": level_dbfs,
-                "duration_ms": int(round(COMMISSION_TONE_DURATION_S * 1000)),
-            },
-            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-            "issues": [{
-                "severity": "blocker",
-                "code": "commission_tone_backend_failed",
-                "message": f"could not play commissioning tone: {exc}",
-            }],
-        }
-    return {
-        "status": "completed",
-        "backend": "correction_substream_tone",
-        "playback_id": playback_id,
-        "audio_emitted": True,
-        "confirmable": True,
-        "target": target or {"speaker_group_id": group_id, "driver_role": role},
-        "tone": {
-            "frequency_hz": frequency_hz,
-            "source_level_dbfs": COMMISSION_TONE_SOURCE_DBFS,
-            "commission_gain_db": level_dbfs,
-            "duration_ms": int(round(COMMISSION_TONE_DURATION_S * 1000)),
-        },
-        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-        "issues": [],
-    }
+                "started_monotonic": time.monotonic(),
+            }
+    except (OSError, RuntimeError) as exc:
+        _commission_tone_release_fanin_lane(reason="start_failed")
+        return _commission_tone_payload(
+            status="failed",
+            playback_id=playback_id,
+            role=role,
+            level_dbfs=level_dbfs,
+            frequency_hz=frequency_hz,
+            target=target,
+            group_id=group_id,
+            audio_emitted=False,
+            issues=[_commission_tone_issue(exc)],
+            fanin_gate=fanin_gate,
+            signal_plan=signal_plan,
+        )
+    if started_proc is not None:
+        await asyncio.sleep(COMMISSION_TONE_STARTUP_CHECK_S)
+        if started_proc.poll() is not None:
+            with _COMMISSION_TONE_LOCK:
+                if (
+                    _COMMISSION_TONE_SESSION
+                    and _COMMISSION_TONE_SESSION.get("process") is started_proc
+                ):
+                    _COMMISSION_TONE_SESSION = None
+            _commission_tone_release_fanin_lane(reason="startup_exit")
+            return _commission_tone_payload(
+                status="failed",
+                playback_id=playback_id,
+                role=role,
+                level_dbfs=level_dbfs,
+                frequency_hz=frequency_hz,
+                target=target,
+                group_id=group_id,
+                audio_emitted=False,
+                issues=[
+                    _commission_tone_issue(
+                        RuntimeError(
+                            f"aplay exited during startup with rc={started_proc.returncode}"
+                        )
+                    )
+                ],
+                fanin_gate=fanin_gate,
+                signal_plan=signal_plan,
+            )
+
+    logger.info(
+        "event=sound.active_speaker_commission_tone action=start group=%s role=%s "
+        "frequency_hz=%.1f duration_s=%.1f highpass_hz=%s lowpass_hz=%s",
+        group_id,
+        role,
+        frequency_hz,
+        COMMISSION_TONE_DURATION_S,
+        (signal_plan.get("allowed_band") or {}).get("highpass_hz"),
+        (signal_plan.get("allowed_band") or {}).get("lowpass_hz"),
+    )
+    return _commission_tone_payload(
+        status="completed",
+        playback_id=playback_id,
+        role=role,
+        level_dbfs=level_dbfs,
+        frequency_hz=frequency_hz,
+        target=target,
+        group_id=group_id,
+        audio_emitted=True,
+        issues=[],
+        fanin_gate=fanin_gate,
+        signal_plan=signal_plan,
+    )
 
 
 def _commission_setup_issue(code: str, message: str) -> dict[str, str]:
@@ -2257,6 +2676,8 @@ async def _active_speaker_commission_load_payload(
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     force = bool(raw.get("force"))
+    if force:
+        _active_speaker_stop_commission_tone(reason="commission_load_force")
     existing = load_commission_load_state()
     cam = camilla_factory()
     if existing.get("status") == "loaded" and not force:
@@ -2373,9 +2794,11 @@ async def _active_speaker_commission_rollback_payload(
 
     from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
 
+    tone_stop = _active_speaker_stop_commission_tone(reason="commission_rollback")
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     payload = await rollback_driver_commissioning_config(load_config=load_config)
+    payload["tone_stop"] = tone_stop
     logger.info(
         "event=sound.active_speaker_commission action=rollback status=%s",
         (payload.get("rollback") or {}).get("status"),
@@ -2408,6 +2831,15 @@ async def _active_speaker_commission_ramp_step_payload(
     load_config, read_running_config, get_current_config_path = (
         commission_seams(cam)
     )
+
+    async def _play_commission_tone(**kwargs: Any) -> dict[str, Any]:
+        return await _active_speaker_play_commission_tone(
+            **kwargs,
+            topology=topology,
+            preset=preset,
+            crossover_preview=crossover_preview,
+        )
+
     payload = await ramp_audible_step(
         topology,
         speaker_group_id=group,
@@ -2419,7 +2851,7 @@ async def _active_speaker_commission_ramp_step_payload(
         crossover_preview=crossover_preview,
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
-        play_tone=_active_speaker_play_commission_tone,
+        play_tone=_play_commission_tone,
     )
     logger.info(
         "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
@@ -2442,10 +2874,15 @@ async def _active_speaker_commission_ramp_ack_payload(
     from jasper.active_speaker.commission_ramp import record_ramp_operator_ack
 
     outcome = str(raw.get("outcome") or "").strip().lower()
+    tone_stop = None
+    if outcome != "silent":
+        tone_stop = _active_speaker_stop_commission_tone(reason=f"ack_{outcome}")
     cam = camilla_factory()
     # load_config lets any terminal by-ear outcome re-mute the transient graph.
     load_config, _, _ = commission_seams(cam)
     payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
+    if tone_stop is not None:
+        payload["tone_stop"] = tone_stop
     logger.info(
         "event=sound.active_speaker_commission action=ramp_ack outcome=%s status=%s",
         outcome,
@@ -2462,9 +2899,11 @@ async def _active_speaker_commission_ramp_abort_payload(
 
     from jasper.active_speaker.commission_ramp import abort_ramp
 
+    tone_stop = _active_speaker_stop_commission_tone(reason="commission_abort")
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     payload = await abort_ramp(load_config=load_config)
+    payload["tone_stop"] = tone_stop
     logger.info(
         "event=sound.active_speaker_commission action=ramp_abort status=%s",
         payload.get("status"),

@@ -28,7 +28,7 @@ from jasper.dsp_apply import (
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import gate as _gate, issue as _issue
-from .camilla_yaml import STARTUP_MUTE_GAIN_DB
+from .camilla_yaml import COMMISSIONING_HEADROOM_DB, STARTUP_MUTE_GAIN_DB
 from .calibration_level import (
     MIN_TEST_LEVEL_DBFS,
     load_calibration_level_state,
@@ -173,7 +173,7 @@ def _record_state(
     _atomic_write_json(path, payload)
 
 
-def _trigger_audio_hardware_reconcile(*, source: str) -> None:
+def _trigger_audio_hardware_reconcile(*, source: str) -> bool:
     """Ask PID 1 to reconcile outputd after Camilla graph transitions.
 
     Active outputd activation is gated on both hardware presence and the
@@ -197,12 +197,13 @@ def _trigger_audio_hardware_reconcile(*, source: str) -> None:
             AUDIO_HARDWARE_RECONCILE_UNIT,
             result.get("error") or f"rc={result.get('rc')}",
         )
-        return
+        return False
     logger.info(
         "event=active_speaker.audio_hardware_reconcile_triggered source=%s unit=%s",
         source,
         AUDIO_HARDWARE_RECONCILE_UNIT,
     )
+    return True
 
 
 def _level_value(calibration_level: dict[str, Any], key: str, default: float) -> float:
@@ -1242,6 +1243,7 @@ def commission_load_runtime_status(
             muted_outputs=mask["muted_outputs"],
             tweeter_outputs=mask["tweeter_outputs"],
             protective_hp_hz=mask["protective_highpass_hz"],
+            expected_headroom_db=COMMISSIONING_HEADROOM_DB,
         )
         checks["live_mask_and_highpass"] = bool(live.get("passed"))
     else:
@@ -1515,8 +1517,9 @@ async def load_driver_commissioning_config(
     graph.
 
     Precondition: the active graph (the staged all-muted config) is already live
-    via :func:`load_protected_startup_config` — commissioning swaps the running
-    graph at the same width; it does not bring outputd into active mode.
+    via :func:`load_protected_startup_config`. Commissioning swaps the running
+    graph at the same width, then waits for the output-hardware reconciler so
+    outputd is reading the active lane before the audible ramp can start.
     """
 
     try:
@@ -1701,6 +1704,7 @@ async def load_driver_commissioning_config(
             muted_outputs=live_evidence.get("muted_outputs", []),
             tweeter_outputs=live_evidence.get("tweeter_outputs", []),
             protective_hp_hz=live_evidence.get("protective_highpass_hz"),
+            expected_headroom_db=COMMISSIONING_HEADROOM_DB,
         )
         captured["live"] = live
         if not live["passed"]:
@@ -1796,6 +1800,39 @@ async def load_driver_commissioning_config(
         issues=[],
     )
     _record_commission_state(payload, state_path=state_path)
+    if not _trigger_audio_hardware_reconcile(
+        source="active_speaker_driver_commission_load"
+    ):
+        payload = _commission_state_payload(
+            status="failed",
+            candidate_config_path=str(candidate_path),
+            active_config_path=apply_state.active_config_path or str(candidate_path),
+            previous_config_path=str(staged_path),
+            last_action="output_reconcile_failed",
+            target=target,
+            audible_evidence=evidence,
+            live_evidence=captured.get("live"),
+            durable_statefile_target=captured.get("durable_target"),
+            durable_statefile_intact=captured.get("durable_intact"),
+            preflight=preflight,
+            dsp_apply=apply_state.to_dict(),
+            issues=[
+                _issue(
+                    "blocker",
+                    "commission_output_hardware_reconcile_failed",
+                    "could not switch outputd to the active driver lane before tone playback",
+                )
+            ],
+        )
+        _record_commission_state(payload, state_path=state_path)
+        logger.warning(
+            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
+            "reason=output_hardware_reconcile_failed op_id=%s",
+            candidate_path,
+            staged_path,
+            apply_state.op_id,
+        )
+        return {"preflight": preflight, "load": payload}
     logger.info(
         "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
         "durable_intact=%s op_id=%s",

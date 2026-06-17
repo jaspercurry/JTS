@@ -228,19 +228,23 @@ product-level issue and confirms no sound played. The UI never asks users to
 click separate arm/stage/path controls. Stop remains a normal-sized,
 idempotent control.
 
-A prepared driver exposes **Start quiet test** rather than a manual volume
-slider. The browser plays short pulses and asks the operator to press **I hear
-this driver** as soon as the selected driver is audible; **Wrong driver** and
-**Stop** remain visible beside it. The level state is still backed by
-`jasper.active_speaker.calibration_level`: it starts at `-80 dBFS`, persists at
-`/var/lib/jasper/active_speaker_calibration_level.json`, is clamped by
-backend-owned bounds, and is separate from normal listening volume. The browser
-uses `/sound/active-speaker/calibration-level` with `action=auto_step` to raise
-only in bounded steps during that short ramp, and the tone plan consumes the
-accepted persisted level rather than a caller-supplied `level_dbfs`. The route
-still accepts mic observations when available, but a correct-driver operator
-result can prove physical routing identity without pretending the acoustic
-response is fully measured.
+A prepared driver exposes **Start tone** rather than a manual volume slider.
+For outputd-owned active-lane commissioning, the browser starts one continuous
+quiet tone and asks the operator to press **I hear the tone** as soon as the
+selected driver is audible; **Wrong driver** and **Stop tone** remain visible
+beside it. Internally, `/sound/active-speaker/commission-ramp-step` still raises
+the per-driver active graph only in bounded, guarded steps over about 30 seconds,
+while the same cancellable `correction_substream` tone keeps playing. The tone
+frequency is not role-hardcoded: it is planned from the same compiled
+active-speaker preset/crossover edges and tweeter-protection policy as the graph,
+and a missing/narrow safe band blocks playback before fan-in is selected. If the
+safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
+operator to check amp gain, wiring, and DAC output mapping. The level state is
+separate from normal listening volume; the older direct-DAC diagnostic route for
+coherent single-DAC passive/full-range topologies still uses short bounded tests.
+The route still accepts mic observations when available, but a correct-driver
+operator result can prove physical routing identity without pretending the
+acoustic response is fully measured.
 
 When the operator records a correct-driver result for that same target,
 `/sound/active-speaker/driver-measurement` persists target-specific
@@ -700,5 +704,5 @@ can be diagnosed without scraping journal logs.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
 Last verified: 2026-06-17 (`/sound/` active-speaker UI rechecked after the
-commission ramp tone injection, automatic quiet-ramp controls, direct-DAC
+continuous commission ramp tone, automatic quiet-ramp controls, direct-DAC
 diagnostic route, and removal of unused legacy public test routes.)

@@ -101,6 +101,14 @@ EOF
 }
 
 jasper_asound_outputd_dac_pcm_block() {
+    if [[ "${OUTPUTD_ACTIVE_MODE:-0}" == "1" ]]; then
+        if [[ -n "${OUTPUT_DAC_ROUTE:-}" ]]; then
+            jasper_asound_route_ignored "active_outputd_direct" "$OUTPUT_DAC_ROUTE"
+        fi
+        jasper_asound_direct_outputd_dac_pcm_block
+        return
+    fi
+
     case "${OUTPUT_DAC_ROUTE:-}" in
         ""|direct|passthrough)
             jasper_asound_direct_outputd_dac_pcm_block

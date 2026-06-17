@@ -1399,6 +1399,15 @@ async function testCommissionCardArmsAndSteps() {
   for (const expected of ["Stop tone", "I hear the tone", "Wrong driver"]) {
     if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
   }
+  if (cardHtml.includes("commission-card__message")) {
+    fail("automatic ramp should not render a changing progress line", { cardHtml });
+  }
+  if (cardHtml.includes('data-act="commission-abort" disabled')) {
+    fail("Stop tone must stay enabled while the automatic ramp is active", { cardHtml });
+  }
+  for (const flappy of ["Raising", "Starting Woofer tone", "Recording…"]) {
+    if (cardHtml.includes(flappy)) fail("automatic ramp should not surface transient busy copy", { flappy, cardHtml });
+  }
   for (const hidden of ["Too quiet", "Too loud"]) {
     if (cardHtml.includes(hidden)) fail("automatic ramp should not expose legacy manual loudness buttons", { hidden, cardHtml });
   }
@@ -1536,6 +1545,41 @@ async function testCommissionActiveGraphBlockSurfacesReason() {
   return { commissionActiveGraphBlockSurfacesReason: true };
 }
 
+async function testCommissionOutputReconcileFailureSurfacesReason() {
+  const commissionState = {
+    commission_load: { status: "idle", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-load": () => Promise.resolve(response({
+      load: {
+        status: "failed",
+        issues: [{
+          code: "commission_output_hardware_reconcile_failed",
+          message: "could not switch outputd to the active driver lane before tone playback",
+        }],
+      },
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("could not switch the speaker output path")) {
+    fail("output reconcile failure should surface specific output-path copy", { html });
+  }
+  for (const leak of ["commission_output_hardware_reconcile_failed", "outputd"]) {
+    if (html.includes(leak)) fail("output reconcile failure must not leak raw backend detail", { leak, html });
+  }
+  return { commissionOutputReconcileFailureSurfacesReason: true };
+}
+
 async function testCommissionToneFailureStopsAutoRamp() {
   let commissionState = {
     commission_load: {
@@ -1573,6 +1617,10 @@ async function testCommissionToneFailureStopsAutoRamp() {
         }],
       }));
     },
+    "./active-speaker/commission-ramp-abort": (p, o) => {
+      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
+      return Promise.resolve(response({ status: "aborted" }));
+    },
   });
   const harness = setupHarness(fetchHandler);
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
@@ -1585,6 +1633,9 @@ async function testCommissionToneFailureStopsAutoRamp() {
   if (rampSteps.length !== 1) {
     fail("tone_failed must stop the automatic ramp instead of retrying after rollback", { posts });
   }
+  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
+    fail("automatic ramp failure should also call hard Stop to close any continuous tone", { posts });
+  }
   const html = harness.elements.get("view-body").innerHTML;
   if (!html.includes("could not play the test tone")) {
     fail("tone failure should surface the real playback failure", { html });
@@ -1593,6 +1644,71 @@ async function testCommissionToneFailureStopsAutoRamp() {
     fail("tone failure should not be overwritten by the follow-up not-armed copy", { html });
   }
   return { commissionToneFailureStopsAutoRamp: true };
+}
+
+async function testCommissionRampLimitStopsAutoRamp() {
+  let commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { role: "woofer", audible_gain_db: -30 },
+      rollback_available: true,
+    },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-ramp-step": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      if (body.role === "tweeter") {
+        fail("safe-limit stop must not advance into the tweeter", { posts });
+      }
+      return Promise.resolve(response({
+        status: "blocked",
+        role: "woofer",
+        speaker_group_id: "main",
+        current_gain_db: -30,
+        next_gain_db: -30,
+        max_gain_db: -30,
+        issues: [{
+          severity: "blocker",
+          code: "commission_ramp_at_limit",
+          message: "the driver test is already at the maximum bounded level",
+        }],
+      }));
+    },
+    "./active-speaker/commission-ramp-abort": (p, o) => {
+      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
+      commissionState = {
+        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "aborted" }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const rampSteps = posts.filter((x) => x.path === "./active-speaker/commission-ramp-step");
+  if (rampSteps.length !== 1) {
+    fail("safe-limit response must stop the automatic ramp after one blocked step", { posts });
+  }
+  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
+    fail("safe-limit response should hard Stop the continuous tone", { posts });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Reached the safe test limit")) {
+    fail("safe-limit response should surface the room-facing action", { html });
+  }
+  return { commissionRampLimitStopsAutoRamp: true };
 }
 
 const results = [];
@@ -1613,6 +1729,8 @@ results.push(await testCommissionCardArmsAndSteps());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());
+results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
+results.push(await testCommissionRampLimitStopsAutoRamp());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

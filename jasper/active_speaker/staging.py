@@ -25,7 +25,7 @@ from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import gate as _gate, issue as _issue
 from .camilla_yaml import (
-    PROTECTIVE_TWEETER_HP_MULTIPLIER,
+    COMMISSIONING_HEADROOM_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
@@ -51,6 +51,7 @@ from .playback_route import (
     resolve_diagnostic_playback_device,
 )
 from .tone_plan import load_active_speaker_preset
+from .test_signal_plan import protective_tweeter_highpass_frequency_hz
 
 logger = logging.getLogger(__name__)
 
@@ -362,14 +363,7 @@ def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
 
 
 def _protective_hp_hz(preset: ActiveSpeakerPreset) -> float | None:
-    fc_values = [
-        region.fc_hz
-        for region in preset.crossover_regions
-        if region.upper_driver == "tweeter"
-    ]
-    if not fc_values:
-        return None
-    return max(fc_values) * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    return protective_tweeter_highpass_frequency_hz(preset, "tweeter")
 
 
 def _parse_scalar(value: str) -> Any:
@@ -664,6 +658,7 @@ def driver_commission_audible_evidence(
     *,
     preset: ActiveSpeakerPreset,
     audible_outputs: frozenset[int] | set[int],
+    expected_headroom_db: float = STARTUP_HEADROOM_DB,
 ) -> dict[str, Any]:
     """Per-driver commissioning safety: ONLY the target is audible, and an
     audible tweeter still carries its protective high-pass + limiter.
@@ -759,7 +754,7 @@ def driver_commission_audible_evidence(
         filters,
         "active_startup_headroom",
         filter_type="Gain",
-        params={"gain": -STARTUP_HEADROOM_DB},
+        params={"gain": -expected_headroom_db},
     )
     checks = {
         "audible_mask_correct": mask_correct,
@@ -772,7 +767,7 @@ def driver_commission_audible_evidence(
         "tweeter_outputs": sorted(int(i) for i in tweeter_outputs),
         "audible_tweeter_outputs": sorted(audible_tweeter),
         "protective_highpass_hz": protective_hp_hz,
-        "startup_headroom_db": STARTUP_HEADROOM_DB,
+        "startup_headroom_db": expected_headroom_db,
         "limiter_clip_limit_db": STARTUP_LIMITER_CLIP_LIMIT_DB,
         "checks": checks,
         "passed": all(checks.values()),
@@ -865,6 +860,7 @@ def running_commission_evidence(
     muted_outputs: Iterable[int],
     tweeter_outputs: Iterable[int],
     protective_hp_hz: float | None,
+    expected_headroom_db: float = STARTUP_HEADROOM_DB,
 ) -> dict[str, Any]:
     """Per-driver commissioning safety, asserted on the RUNNING CamillaDSP graph.
 
@@ -954,7 +950,7 @@ def running_commission_evidence(
         config,
         "active_startup_headroom",
         filter_type="Gain",
-        params={"gain": -STARTUP_HEADROOM_DB},
+        params={"gain": -expected_headroom_db},
     )
     checks = {
         "running_config_parsed": parse_ok,
@@ -967,6 +963,7 @@ def running_commission_evidence(
         "muted_outputs": sorted(muted),
         "audible_tweeter_outputs": sorted(audible_tweeter),
         "protective_highpass_hz": protective_hp_hz,
+        "startup_headroom_db": expected_headroom_db,
         "checks": checks,
         "passed": all(checks.values()),
     }
@@ -1988,6 +1985,7 @@ def prepare_driver_commissioning_config(
                 playback_device=resolved_playback_device,
                 audible_outputs=audible_outputs,
                 audible_gain_db=audible_gain_db,
+                startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
                 baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",
             )
@@ -2020,7 +2018,10 @@ def prepare_driver_commissioning_config(
             # The per-driver protection-while-audible gate (the config-level
             # form of the Stage-5 "HP present before the tweeter is unmuted").
             audible_evidence = driver_commission_audible_evidence(
-                yaml, preset=bound_preset, audible_outputs=audible_outputs
+                yaml,
+                preset=bound_preset,
+                audible_outputs=audible_outputs,
+                expected_headroom_db=COMMISSIONING_HEADROOM_DB,
             )
             gates.append(_gate(
                 "driver_protection_while_audible",

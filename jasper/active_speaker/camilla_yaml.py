@@ -37,16 +37,19 @@ from .profile import (
     CrossoverRegion,
     required_driver_roles,
 )
+from .test_signal_plan import (
+    protective_tweeter_highpass_frequency_hz,
+)
 
 logger = logging.getLogger(__name__)
 
 ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
 STARTUP_HEADROOM_DB = 40.0
+COMMISSIONING_HEADROOM_DB = 0.0
 STARTUP_MUTE_GAIN_DB = -120.0
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
 BASELINE_HEADROOM_DB = 12.0
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
-PROTECTIVE_TWEETER_HP_MULTIPLIER = 2.0
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     "jasper_out",
@@ -244,16 +247,7 @@ def _protective_tweeter_hp_frequency(
     preset: ActiveSpeakerPreset,
     role: str,
 ) -> float | None:
-    if role != "tweeter":
-        return None
-    fc_values = [
-        region.fc_hz
-        for region in preset.crossover_regions
-        if region.upper_driver == "tweeter"
-    ]
-    if not fc_values:
-        return None
-    return max(fc_values) * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    return protective_tweeter_highpass_frequency_hz(preset, role)
 
 
 def _driver_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:

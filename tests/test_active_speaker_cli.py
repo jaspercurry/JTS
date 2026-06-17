@@ -1,9 +1,12 @@
 from __future__ import annotations
-import yaml
 
 import json
 from pathlib import Path
 
+import pytest
+import yaml
+
+import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker import (
     HARDWARE_PROBE_EVIDENCE_SOURCE,
     OPERATOR_EVIDENCE_SOURCE,
@@ -11,6 +14,14 @@ from jasper.active_speaker import (
     requirements_payload,
 )
 from jasper.cli.active_speaker import main
+
+
+@pytest.fixture(autouse=True)
+def _stub_audio_hardware_reconcile(monkeypatch):
+    def fake_manage_units(*units: str, **kwargs):
+        return {"ok": True, "rc": 0}
+
+    monkeypatch.setattr(startup_load_mod, "manage_units", fake_manage_units)
 
 
 def _preset() -> dict:

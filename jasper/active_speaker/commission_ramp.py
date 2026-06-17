@@ -15,19 +15,20 @@ The model (the design-of-record, HANDOFF-active-speaker-dsp.md "Stage 5"):
     -> first audible step == the audible floor (MIN_TEST_LEVEL_DBFS, -80 dB)
        -> safe_playback ``floor_pending_operator`` (driver unmuted, awaiting ACK)
        -> operator ACK "heard_correct_driver" -> ``floor_confirmed``
-    -> bounded ramp: +AUDIBLE_RAMP_STEP_DB per step toward MAX_TEST_LEVEL_DBFS
-       (each louder step requires the driver to be floor-confirmed first)
+    -> bounded ramp: +AUDIBLE_RAMP_STEP_DB per step toward
+       COMMISSION_RAMP_MAX_LEVEL_DBFS (each louder step requires the driver to
+       be floor-confirmed first)
   woofer before tweeter (a driver is ramped only after its lower-frequency
   siblings are floor-confirmed), and before ANY tweeter step the protective
   high-pass is re-asserted against the RUNNING graph, not just the file.
 
 The gate's "subsonic/DC protection present" requirement is satisfied by the
-protections that already exist in the active graph — the 0 dB volume ceiling,
-the per-driver limiter, and the startup headroom (AGENTS.md "Assert existing
-protections only"; a dedicated woofer subsonic high-pass is a deliberate
-deferral). The gate does NOT widen ``running_commission_evidence`` with gain
-bounds — that live gate checks ``mute: off`` at the floor; the gain envelope
-and per-step limit live here.
+protections that already exist in the active graph — the bounded commissioning
+gain envelope, the 0 dB volume ceiling, and the per-driver limiter (AGENTS.md
+"Assert existing protections only"; a dedicated woofer subsonic high-pass is a
+deliberate deferral). The gate does NOT widen ``running_commission_evidence``
+with gain bounds — that live gate checks ``mute: off`` at the floor; the gain
+envelope and per-step limit live here.
 """
 
 from __future__ import annotations
@@ -44,10 +45,10 @@ from jasper.log_event import log_event
 from ._common import issue as _issue
 from .calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
-    MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
 )
 from .camilla_yaml import (
+    COMMISSIONING_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
 )
@@ -75,6 +76,7 @@ RAMP_STATE_KIND = "jts_active_speaker_commission_ramp"
 DEFAULT_RAMP_STATE_PATH = Path("/var/lib/jasper/active_speaker_commission_ramp.json")
 RAMP_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE"
 RAMP_BACKEND = "commission_gain_ramp"
+COMMISSION_RAMP_MAX_LEVEL_DBFS = -12.0
 
 # Low-frequency first: a driver is ramped audible only after its lower siblings
 # are floor-confirmed. The protective tweeter high-pass is re-asserted live
@@ -95,13 +97,13 @@ def next_ramp_gain_db(current_gain_db: float) -> float:
     From the silent/armed floor (anything below the audible floor), the first
     audible step is exactly the audible floor (``MIN_TEST_LEVEL_DBFS``). Once
     audible, each step rises by ``AUDIBLE_RAMP_STEP_DB`` and is clamped to the
-    commissioning ceiling (``MAX_TEST_LEVEL_DBFS``). The bound is enforced again
-    by the gate; this is the proposer.
+    Stop-controlled commissioning ramp ceiling. The bound is enforced again by
+    the gate; this is the proposer.
     """
     current = float(current_gain_db)
     if current < MIN_TEST_LEVEL_DBFS:
         return MIN_TEST_LEVEL_DBFS
-    return min(current + AUDIBLE_RAMP_STEP_DB, MAX_TEST_LEVEL_DBFS)
+    return min(current + AUDIBLE_RAMP_STEP_DB, COMMISSION_RAMP_MAX_LEVEL_DBFS)
 
 
 # --- ramp progress state -----------------------------------------------------
@@ -198,10 +200,11 @@ def clear_pending_ramp_step(
 # --- live running-graph protection checks (the gate's extra assertions) ------
 #
 # running_commission_evidence covers the audible mask, the live tweeter
-# high-pass, and the startup headroom. The Stage-5 gate adds the two remaining
-# "existing protections" the AGENTS.md decision names: the 0 dB volume ceiling
-# and the audible driver's per-driver limiter. Kept self-contained (a small
-# YAML parse) rather than reaching into staging's private helpers.
+# high-pass, and the transient commissioning headroom. The Stage-5 gate adds the
+# two remaining "existing protections" the AGENTS.md decision names: the 0 dB
+# volume ceiling and the audible driver's per-driver limiter. Kept
+# self-contained (a small YAML parse) rather than reaching into staging's private
+# helpers.
 
 
 def _safe_load_running(running_config_raw: str | None) -> dict[str, Any]:
@@ -296,12 +299,12 @@ def build_stage5_ramp_gate(
     """Decide whether one audible gain step is safe. Pure; fails closed.
 
     Owns level/gain bounds (the slice-2b-ii live gate deliberately does not):
-    the gain envelope ``[MIN_TEST_LEVEL_DBFS, MAX_TEST_LEVEL_DBFS]`` and the
-    per-step limit. Defers the live mask + tweeter high-pass + headroom to
-    :func:`running_commission_evidence`, and adds the 0 dB ceiling + the audible
-    driver's limiter (the "existing protections" reading of subsonic/DC). Also
-    enforces woofer-before-tweeter ordering and that a louder step only follows
-    an operator-handled prior step.
+    the gain envelope ``[MIN_TEST_LEVEL_DBFS, COMMISSION_RAMP_MAX_LEVEL_DBFS]``
+    and the per-step limit. Defers the live mask + tweeter high-pass + transient
+    commissioning headroom to :func:`running_commission_evidence`, and adds the
+    0 dB ceiling + the audible driver's limiter (the "existing protections"
+    reading of subsonic/DC). Also enforces woofer-before-tweeter ordering and
+    that a louder step only follows an operator-handled prior step.
 
     ``prior_step_cleared`` means the previous audible step was acknowledged in a
     way that permits going louder — either the operator confirmed it
@@ -317,7 +320,9 @@ def build_stage5_ramp_gate(
 
     # (1) gain envelope: the audible test range, never beyond the ceiling.
     gain_in_envelope = (
-        MIN_TEST_LEVEL_DBFS - _EPS <= next_gain_db <= MAX_TEST_LEVEL_DBFS + _EPS
+        MIN_TEST_LEVEL_DBFS - _EPS
+        <= next_gain_db
+        <= COMMISSION_RAMP_MAX_LEVEL_DBFS + _EPS
     )
     # (2) step bound: the first audible step is exactly the audible floor; a
     #     subsequent step rises by at most AUDIBLE_RAMP_STEP_DB (lowering is
@@ -328,14 +333,15 @@ def build_stage5_ramp_gate(
         step_bounded = (next_gain_db - current_gain_db) <= AUDIBLE_RAMP_STEP_DB + _EPS
 
     # (3) live mask + tweeter high-pass (re-asserted on the RUNNING graph) +
-    #     headroom. The protective-HP-present-before-tweeter rule is exactly the
-    #     tweeter_protected_while_audible check here.
+    #     transient commissioning headroom. The protective-HP-present-before-
+    #     tweeter rule is exactly the tweeter_protected_while_audible check here.
     live = running_commission_evidence(
         running_config_raw,
         audible_outputs=audible,
         muted_outputs=muted_outputs,
         tweeter_outputs=tweeter_outputs,
         protective_hp_hz=protective_hp_hz,
+        expected_headroom_db=COMMISSIONING_HEADROOM_DB,
     )
     live_mask_and_highpass = bool(live.get("passed"))
 
@@ -472,7 +478,10 @@ async def ramp_audible_step(
     except (TypeError, ValueError):
         current_gain_db = STARTUP_MUTE_GAIN_DB
     next_gain_db = next_ramp_gain_db(current_gain_db)
-    if current_gain_db >= MAX_TEST_LEVEL_DBFS - _EPS and next_gain_db <= current_gain_db + _EPS:
+    if (
+        current_gain_db >= COMMISSION_RAMP_MAX_LEVEL_DBFS - _EPS
+        and next_gain_db <= current_gain_db + _EPS
+    ):
         return _blocked(
             "commission_ramp_at_limit",
             "the driver test is already at the maximum bounded level",
@@ -481,7 +490,7 @@ async def ramp_audible_step(
             extra={
                 "current_gain_db": current_gain_db,
                 "next_gain_db": next_gain_db,
-                "max_gain_db": MAX_TEST_LEVEL_DBFS,
+                "max_gain_db": COMMISSION_RAMP_MAX_LEVEL_DBFS,
             },
         )
 
