@@ -86,8 +86,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     levelDbfs: null,
     message: ''
   };
+  var commissionAutoRamp = {
+    running: false,
+    token: 0,
+    targetKey: '',
+    pulseCount: 0,
+    levelDbfs: null,
+    message: ''
+  };
   var OUTPUT_RAMP_LISTEN_MS = 1200;
   var OUTPUT_RAMP_NEXT_PULSE_MS = 350;
+  var COMMISSION_RAMP_LISTEN_MS = 5000;
+  var COMMISSION_RAMP_NEXT_PULSE_MS = 350;
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
@@ -580,6 +590,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var busy = activeSpeaker.commissionBusy;
     var dis = busy ? ' disabled' : '';
     var roleLabel = function(r) { return escapeHtml(humanRole(r)); };
+    var toneRole = c.pendingRole || c.armedRole || c.startRole || '';
+    var toneActive = !!(commissionAutoRamp.running || c.canAck);
     var statusRows =
       '<div class="commission-status">' +
       '<div><span class="commission-status__k">Armed driver</span>' +
@@ -588,7 +600,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           (c.armedGainDb == null ? '—'
             : (Number(c.armedGainDb) <= -120 ? 'silent floor'
               : escapeHtml(String(c.armedGainDb)) + ' dB')) + ')'
-          : 'none — silent') + '</span></div>' +
+          : (c.startRole ? 'next: ' + roleLabel(c.startRole) : 'none — silent')) +
+        '</span></div>' +
       '<div><span class="commission-status__k">By-ear</span>' +
         '<span class="commission-status__v">' +
         escapeHtml(commissionFloorLabel(c.floorStatus)) + '</span></div>' +
@@ -599,49 +612,45 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
 
     var buttons = [];
-    if (c.canArm) {
-      var roles = activeCommissionRoles(group);
-      buttons = roles.map(function(role) {
-        return '<button type="button" class="btn btn--ghost" data-act="commission-arm" ' +
-          'data-role="' + escapeHtml(role) + '"' + dis + '>Arm ' + roleLabel(role) +
-          ' (silent)</button>';
-      });
-    }
-    if (c.canStep) {
-      buttons.push('<button type="button" class="btn btn--primary" ' +
-        'data-act="commission-step" data-role="' + escapeHtml(c.armedRole || '') + '"' +
-        dis + '>Make audible (step)</button>');
-    }
-    if (c.canAck) {
+    if (c.armed && toneActive) {
+      buttons.push('<button type="button" class="btn btn--danger" ' +
+        'data-act="commission-abort"' + dis + '>Stop tone</button>');
       buttons.push('<button type="button" class="btn btn--primary" ' +
         'data-act="commission-ack" data-outcome="heard_correct_driver"' + dis +
-        '>I hear ' + roleLabel(c.pendingRole) + '</button>');
-      buttons.push('<button type="button" class="btn btn--ghost" ' +
-        'data-act="commission-ack" data-outcome="silent"' + dis + '>Too quiet — louder</button>');
-      buttons.push('<button type="button" class="btn btn--ghost" ' +
-        'data-act="commission-ack" data-outcome="too_loud"' + dis + '>Too loud</button>');
+        '>I hear the tone</button>');
       buttons.push('<button type="button" class="btn btn--ghost" ' +
         'data-act="commission-ack" data-outcome="heard_wrong_driver"' + dis +
         '>Wrong driver</button>');
-    }
-    if (c.canRemute) {
-      buttons.push('<button type="button" class="btn btn--danger" ' +
-        'data-act="commission-abort"' + dis + '>Stop / re-mute</button>');
+    } else if (c.canStep) {
+      buttons.push('<button type="button" class="btn btn--primary" ' +
+        'data-act="commission-step" data-role="' + escapeHtml(c.startRole || c.armedRole || '') + '"' +
+        dis + '>Start tone</button>');
     }
 
+    var autoNote = '<p class="setting-row__hint commission-card__message">' +
+      (commissionAutoRamp.running && commissionAutoRamp.message ?
+        escapeHtml(commissionAutoRamp.message) : '&#160;') + '</p>';
     var note = activeSpeaker.commissionError ?
       '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' :
-      (c.armed ?
-        '<p class="setting-row__hint">Amps on at low gain only. Each step is very quiet; confirm by ear before going louder.</p>' :
-        '<p class="setting-row__hint">Keep amps OFF until a driver is armed and you are ready to listen. Arming is silent.</p>');
+      (toneActive ?
+        '<p class="setting-row__hint">Tone is playing for ' + roleLabel(toneRole) +
+          '. It starts very quiet and repeats a little louder until you hear it or stop it.</p>' :
+        (c.stale ?
+        '<p class="setting-row__hint">The previous tone session expired safely. Start tone will reopen it quietly.</p>' :
+        (c.armed ?
+        '<p class="setting-row__hint">Ready to play a quiet tone for ' +
+          roleLabel(c.armedRole) + '.</p>' :
+        '<p class="setting-row__hint">Start a quiet tone for ' +
+          roleLabel(c.startRole || 'driver') +
+          '. It starts very quiet and repeats a little louder until you hear it.</p>')));
 
     return '<div class="commission-card">' +
-      statusRows + note +
+      statusRows + note + autoNote +
       (busy ? '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '') +
       '<div class="active-speaker-actions commission-card__actions">' +
         buttons.join('') + '</div>' +
       '<p class="setting-row__hint commission-card__followup">Confirming a driver ' +
-        'here proves it is wired and audible through the protected graph. Recording ' +
+        'here proves it is wired and audible through the crossover and limiter. Recording ' +
         'each driver’s measurement for “Validate and apply” is a later step (not ' +
         'yet wired).</p>' +
     '</div>';
@@ -1129,7 +1138,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return 'Confirm this wire before testing the driver.';
     }
     if (!outputChannelGuardReady(channel)) {
-      return 'Confirmed. Continue to Test each driver; JTS will start it very quiet.';
+      return 'Confirmed. JTS will add the tweeter guard before any sound starts.';
     }
     if (channel.protection_required) {
       return channel.protection_status === 'present' ?
@@ -1800,8 +1809,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'safety',
         'Test each driver',
         safetyActive
-          ? 'Arm one driver at a time and make it audible through the real ' +
-              'crossover/limiter graph — woofer first, then tweeter.'
+          ? 'Start one driver at a time through the real crossover and limiter — ' +
+              'woofer first, then tweeter.'
           : 'Choose one driver at a time, start very quiet, and record what happened.',
         topology,
         safetyActive ? renderCommissionCard() : renderOutputReadinessCard(),
@@ -2050,6 +2059,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       message: message || ''
     });
     outputTopology.readinessPlaybackChecking = '';
+  }
+  function commissionTargetKey(groupId, role) {
+    return [groupId || '', role || ''].join(':');
+  }
+  function stopCommissionAutoRamp(message) {
+    commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+      running: false,
+      token: commissionAutoRamp.token + 1,
+      message: message || ''
+    });
+  }
+  function commissionPendingStep() {
+    var commission = activeSpeaker.commission || {};
+    var ramp = commission.ramp || {};
+    return ramp.pending || null;
   }
   function outputRampProgressPct(level) {
     var cfg = activeSpeakerLevelConfig();
@@ -2524,7 +2548,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var step = Number(raw.step_db);
     var def = Number(raw.default_level_dbfs);
     if (!isFinite(min)) min = -80;
-    if (!isFinite(max)) max = -45;
+    if (!isFinite(max)) max = -30;
     if (!isFinite(step) || step <= 0) step = 1;
     if (!isFinite(def)) def = min;
     var value = Number(activeSpeaker.levelDbfs);
@@ -2997,8 +3021,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'compile-baseline-profile') { compileBaselineProfile(); }
     else if (act === 'apply-baseline-profile') { applyBaselineProfile(); }
     else if (act === 'stop-active-speaker') { stopActiveSpeakerTest(); }
-    else if (act === 'commission-arm') { commissionArm(t.getAttribute('data-role') || ''); }
-    else if (act === 'commission-step') { commissionStep(t.getAttribute('data-role') || ''); }
+    else if (act === 'commission-step') {
+      startCommissionAutoRamp(t.getAttribute('data-role') || '', {confirm: false});
+    }
     else if (act === 'commission-ack') { commissionAck(t.getAttribute('data-outcome') || ''); }
     else if (act === 'commission-abort') { commissionAbort(); }
   });
@@ -3353,40 +3378,140 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         await refreshCommissionState();
         patchActiveSpeaker({commissionBusy: '', commissionError: failure});
         render();
-        return;
+        return {ok: false, payload: payload, error: failure};
       }
     } catch (e) {
       patchActiveSpeaker({commissionBusy: '', commissionError: String(e.message || e)});
       render();
-      return;
+      return {ok: false, error: String(e.message || e)};
     }
     await refreshCommissionState();
     patchActiveSpeaker({commissionBusy: ''});
     render();
+    return {ok: true, payload: payload};
   }
   async function commissionArm(role) {
     var group = activeCommissionGroup(currentOutputTopology());
     if (!group || !role) return;
-    await postCommission('./active-speaker/commission-load',
-      {group: group.id, role: role}, 'Arming ' + humanRole(role));
+    var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
+    var target = load.target || {};
+    var targetGroup = target.speaker_group_id || group.id;
+    var force = load.status === 'loaded' &&
+      (targetGroup !== group.id || (target.role || '') !== role);
+    return await postCommission('./active-speaker/commission-load',
+      {group: group.id, role: role, force: force}, 'Getting ' + humanRole(role) + ' ready');
   }
-  async function commissionStep(role) {
+  async function ensureCommissionArmed(role) {
+    var group = activeCommissionGroup(currentOutputTopology());
+    if (!group || !role) return {ok: false, error: 'Choose a driver first.'};
+    var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
+    var target = load.target || {};
+    var targetGroup = target.speaker_group_id || group.id;
+    if (load.status === 'loaded' &&
+        targetGroup === group.id &&
+        (target.role || '') === role) {
+      return {ok: true, payload: {status: 'loaded', load: load}};
+    }
+    return await commissionArm(role);
+  }
+  async function commissionStep(role, options) {
+    options = options || {};
     var group = activeCommissionGroup(currentOutputTopology());
     if (!group || !role) return;
-    var ok = await jtsConfirm('Make the ' + humanRole(role) + ' audible? Amps should be ' +
-      'on at LOW gain — JTS will play it very quietly through the crossover.',
-      {danger: true});
-    if (!ok) return;
-    await postCommission('./active-speaker/commission-ramp-step',
-      {group: group.id, role: role}, 'Stepping ' + humanRole(role));
+    if (options.confirm !== false) {
+      var ok = await jtsConfirm('Make the ' + humanRole(role) + ' audible? Amps should be ' +
+        'on at LOW gain — JTS will play it very quietly through the crossover.',
+        {danger: true});
+      if (!ok) return;
+    }
+    return await postCommission('./active-speaker/commission-ramp-step',
+      {group: group.id, role: role}, options.busyLabel || 'Stepping ' + humanRole(role));
   }
-  async function commissionAck(outcome) {
+  async function commissionAck(outcome, options) {
+    options = options || {};
     if (!outcome) return;
-    await postCommission('./active-speaker/commission-ramp-ack',
+    if (outcome !== 'silent' || !options.silentAutoRetry) {
+      stopCommissionAutoRamp('');
+    }
+    var result = await postCommission('./active-speaker/commission-ramp-ack',
       {outcome: outcome}, 'Recording');
+    if (outcome !== 'silent' || !result || !result.ok || options.silentAutoRetry) return;
+    var group = activeCommissionGroup(currentOutputTopology());
+    var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
+    var target = load.target || {};
+    var role = target.role || '';
+    if (!group || !role) return;
+    startCommissionAutoRamp(role, {
+      confirm: false,
+      message: 'Trying a louder ' + humanRole(role) + ' tone.'
+    });
   }
   async function commissionAbort() {
+    stopCommissionAutoRamp('Stopped. No test tone is playing.');
     await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
+  }
+  async function runCommissionAutoRamp(role, token) {
+    while (commissionAutoRamp.running && token === commissionAutoRamp.token) {
+      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+        message: commissionAutoRamp.pulseCount ?
+          'Trying another short ' + humanRole(role) + ' tone a little louder.' :
+          'Starting with the quietest short ' + humanRole(role) + ' tone.'
+      });
+      render();
+      var result = await commissionStep(role, {
+        confirm: false,
+        busyLabel: commissionAutoRamp.pulseCount ?
+          'Trying louder ' + humanRole(role) :
+          'Starting ' + humanRole(role) + ' tone'
+      });
+      if (!commissionAutoRamp.running || token !== commissionAutoRamp.token) return;
+      if (!result || !result.ok) {
+        stopCommissionAutoRamp('Stopped. JTS could not play the driver test.');
+        render();
+        return;
+      }
+      var payload = result.payload || {};
+      var level = Number(payload.next_gain_db);
+      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+        pulseCount: commissionAutoRamp.pulseCount + 1,
+        levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
+        message: 'Listen for the ' + humanRole(role) + '. Press “I hear ' +
+          humanRole(role) + '” as soon as you hear it.'
+      });
+      render();
+      await sleepMs(COMMISSION_RAMP_LISTEN_MS);
+      if (!commissionAutoRamp.running || token !== commissionAutoRamp.token) return;
+      if (commissionPendingStep()) {
+        await commissionAck('silent', {silentAutoRetry: true});
+      }
+      if (!commissionAutoRamp.running || token !== commissionAutoRamp.token) return;
+      await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
+    }
+  }
+  async function startCommissionAutoRamp(role, options) {
+    options = options || {};
+    var group = activeCommissionGroup(currentOutputTopology());
+    if (!group || !role) return;
+    if (options.confirm !== false) {
+      var ok = await jtsConfirm('Start the ' + humanRole(role) + ' quiet ramp? Amps should be ' +
+        'on at LOW gain — JTS will play short tones that slowly get louder.',
+        {danger: true});
+      if (!ok) return;
+    }
+    var armed = await ensureCommissionArmed(role);
+    if (!armed || !armed.ok) return;
+    var token = commissionAutoRamp.token + 1;
+    commissionAutoRamp = {
+      running: true,
+      token: token,
+      targetKey: commissionTargetKey(group.id, role),
+      pulseCount: 0,
+      levelDbfs: null,
+      message: options.message || 'Starting quiet ' + humanRole(role) + ' test.'
+    };
+    status('Starting quiet ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
+    render();
+    runCommissionAutoRamp(role, token);
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;

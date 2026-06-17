@@ -55,6 +55,7 @@ polkit.addRule(function(action, subject) {
         "jasper-aec-bridge.service",
         "jasper-aec-init.service",
         "jasper-aec-reconcile.service",
+        "jasper-audio-hardware-reconcile.service",
         "jasper-grouping-reconcile.service",
         "jasper-camilla.service",
         "jasper-outputd.service",

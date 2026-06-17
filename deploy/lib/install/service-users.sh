@@ -71,11 +71,13 @@ create_jasper_service_users() {
     # WS1 Phase 3b-3 — jasper-web (the wizard HTTP server) drops to non-root too.
     # The /wifi/ page drives NetworkManager: its privileged restarts/reboots are
     # NOT needed, but its NM writes are granted by polkit
-    # (deploy/polkit/49-jasper-web.rules), keyed on User=jasper-web. The two
-    # supplementary groups are `bluetooth` (BlueZ Adapter1 Alias for the /speaker
-    # rename — a D-Bus policy grant) and `systemd-journal` (journalctl -k for
-    # Wi-Fi scan-suppression diagnostics). No netdev (polkit is authoritative on
-    # modern NM), no CAP_NET_ADMIN (scan-repair degrades fail-soft).
+    # (deploy/polkit/49-jasper-web.rules), keyed on User=jasper-web. Its
+    # supplementary groups are `audio` (active-speaker commissioning tones write
+    # the same-path correction_substream), `bluetooth` (BlueZ Adapter1 Alias for
+    # the /speaker rename — a D-Bus policy grant), and `systemd-journal`
+    # (journalctl -k for Wi-Fi scan-suppression diagnostics). No netdev (polkit
+    # is authoritative on modern NM), no CAP_NET_ADMIN (scan-repair degrades
+    # fail-soft).
     # systemd-journal is always present (systemd owns it), so it is safe in the
     # useradd -G. bluetooth is NOT: it is created by the bluez package, which
     # install_deps apt-installs AFTER create_jasper_service_users runs — so a
@@ -88,8 +90,9 @@ create_jasper_service_users() {
     # then. Add both groups idempotently (also the upgrade path: useradd is
     # skipped when the user already exists).
     if ! getent passwd jasper-web >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-secrets,jasper-intsecrets jasper-web
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio,systemd-journal,jasper-secrets,jasper-intsecrets jasper-web
     fi
+    usermod -aG audio jasper-web 2>/dev/null || true
     usermod -aG systemd-journal jasper-web 2>/dev/null || true
     if getent group bluetooth >/dev/null 2>&1; then
         usermod -aG bluetooth jasper-web 2>/dev/null || true

@@ -22,11 +22,6 @@ from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
-class CompletedCommand:
-    def __init__(self, returncode: int) -> None:
-        self.returncode = returncode
-
-
 class FakeCamilla:
     def __init__(self, current_path: str) -> None:
         self.current_path = current_path
@@ -44,6 +39,17 @@ class FakeCamilla:
 class SnapshotFailingCamilla(FakeCamilla):
     async def get_config_file_path(self) -> str:
         raise RuntimeError("camilla unavailable")
+
+
+def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
+    calls: list[dict] = []
+
+    def fake_manage_units(*units: str, **kwargs):
+        calls.append({"units": units, **kwargs})
+        return {"ok": ok, "rc": 0 if ok else 3}
+
+    monkeypatch.setattr(startup_load_mod, "manage_units", fake_manage_units)
+    return calls
 
 
 def _topology() -> OutputTopology:
@@ -280,6 +286,7 @@ def test_startup_load_records_normal_rollback_state(monkeypatch, tmp_path: Path)
     prior = _normal_prior(tmp_path)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
+    reconcile_calls = _record_reconcile_triggers(monkeypatch)
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
         str(tmp_path / "active_staged.json"),
@@ -308,6 +315,13 @@ def test_startup_load_records_normal_rollback_state(monkeypatch, tmp_path: Path)
     assert state["rollback_available"] is True
     assert state["previous_config_path"] == str(prior)
     assert state["candidate_config_path"] == stage["config"]["path"]
+    assert reconcile_calls == [{
+        "units": (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
+        "verb": "start",
+        "reason": "active_speaker_startup_load",
+        "no_block": False,
+        "timeout": 15.0,
+    }]
 
 
 def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) -> None:
@@ -315,6 +329,7 @@ def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) ->
     prior = _protected_prior(tmp_path, staged)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
+    reconcile_calls = _record_reconcile_triggers(monkeypatch)
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
         str(tmp_path / "active_staged.json"),
@@ -350,22 +365,43 @@ def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) ->
     assert fake.loaded_paths[-1] == str(prior)
     assert state["status"] == "rolled_back"
     assert state["rollback_available"] is False
+    assert [
+        (call["units"], call["verb"], call["reason"], call["no_block"])
+        for call in reconcile_calls
+    ] == [
+        (
+            (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
+            "start",
+            "active_speaker_startup_load",
+            False,
+        ),
+        (
+            (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
+            "start",
+            "active_speaker_startup_rollback",
+            False,
+        ),
+    ]
 
 
-def test_startup_load_reconcile_trigger_warns_on_nonzero_systemctl(
+def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(
     monkeypatch,
     caplog,
 ) -> None:
-    def fake_run(*_args, **_kwargs):
-        return CompletedCommand(3)
-
-    monkeypatch.setattr(startup_load_mod.subprocess, "run", fake_run)
+    calls = _record_reconcile_triggers(monkeypatch, ok=False)
     caplog.set_level(logging.INFO, logger=startup_load_mod.logger.name)
 
     startup_load_mod._trigger_audio_hardware_reconcile(source="unit_test")
 
+    assert calls == [{
+        "units": (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
+        "verb": "start",
+        "reason": "unit_test",
+        "no_block": False,
+        "timeout": 15.0,
+    }]
     assert "event=active_speaker.audio_hardware_reconcile_trigger_failed" in caplog.text
-    assert "returncode=3" in caplog.text
+    assert "error=rc=3" in caplog.text
     assert "event=active_speaker.audio_hardware_reconcile_triggered" not in caplog.text
 
 
@@ -377,6 +413,7 @@ def test_startup_rollback_reports_snapshot_failure(
     prior = _protected_prior(tmp_path, staged)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
+    _record_reconcile_triggers(monkeypatch)
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
         str(tmp_path / "active_staged.json"),

@@ -867,4 +867,8 @@
   .commission-card__error {
     margin: 0; font-size: 12px; color: var(--status-danger, #c0392b);
   }
-  .commission-card__actions { flex-wrap: wrap; gap: 8px; }
+  .commission-card__message { min-height: 18px; }
+  .commission-card__actions {
+    flex-wrap: wrap; gap: 8px; min-height: 42px; align-items: stretch;
+  }
+  .commission-card__actions .btn { min-height: 40px; }

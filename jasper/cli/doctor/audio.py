@@ -20,6 +20,7 @@ from ...audio_hardware.dac import (
 )
 from ...camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
+from ...env_load import parse_env_file
 from ...output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -606,7 +607,26 @@ _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
+_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
+
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+
+
+def _outputd_reconciled_env() -> dict[str, str]:
+    return parse_env_file(
+        os.environ.get("JASPER_OUTPUTD_ENV_FILE") or _OUTPUTD_ENV_PATH
+    )
+
+
+def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
+    raw = str(env.get("JASPER_OUTPUTD_ACTIVE_CHANNELS") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 2 <= value <= 8 else None
 
 @doctor_check(order=50, group="audio")
 def check_fanin_asound_wiring() -> CheckResult:
@@ -1137,9 +1157,12 @@ def check_outputd_service() -> CheckResult:
             f"active but backend={data.get('backend')!r}; expected 'alsa'",
         )
     sink_mode = data.get("sink_mode") or "single_alsa"
+    outputd_env = _outputd_reconciled_env()
+    active_channels = _outputd_active_channels_from_env(outputd_env)
+    active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
     expected_content_pcm = (
         _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM
-        if sink_mode == "dual_apple"
+        if sink_mode == "dual_apple" or active_single_alsa
         else _OUTPUTD_EXPECTED_CONTENT_PCM
     )
     expected_dac_pcm = (
@@ -1154,14 +1177,15 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"content.pcm={content.get('pcm')!r}; expected "
-            f"{expected_content_pcm!r} for sink_mode={sink_mode!r}",
+            f"{expected_content_pcm!r} for sink_mode={sink_mode!r}, "
+            f"active_channels={active_channels!r}",
         )
     if dac.get("pcm") != expected_dac_pcm:
         return CheckResult(
             "jasper-outputd",
             "fail",
             f"dac.pcm={dac.get('pcm')!r}; expected {expected_dac_pcm!r} "
-            f"for sink_mode={sink_mode!r}",
+            f"for sink_mode={sink_mode!r}, active_channels={active_channels!r}",
         )
     reference_outputs = data.get("reference_outputs")
     if not isinstance(reference_outputs, dict):
@@ -1189,6 +1213,10 @@ def check_outputd_service() -> CheckResult:
     )
     dual_detail = ""
     dual_warning: str | None = None
+    active_detail = (
+        f", active_channels={active_channels}"
+        if active_single_alsa else ""
+    )
     if sink_mode == "dual_apple":
         dual = data.get("dual_apple")
         if not isinstance(dual, dict):
@@ -1418,6 +1446,7 @@ def check_outputd_service() -> CheckResult:
         f"{reference_detail}, "
         f"{loudness_detail}, "
         f"progress_age_ms={progress_age}"
+        f"{active_detail}"
         f"{dual_detail}",
     )
 

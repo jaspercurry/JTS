@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import ActiveSpeakerPreset, build_safe_tone_plan
+from jasper.active_speaker.calibration_level import MAX_TEST_LEVEL_DBFS
 from jasper.active_speaker.playback import (
     AplayTonePlaybackBackend,
     DirectDacTonePlaybackBackend,
@@ -297,9 +298,9 @@ def test_wav_artifact_backend_enforces_writer_caps_for_direct_use(
     assert artifact["sample_rate_hz"] == 48_000
     assert artifact["duration_ms"] == 500
     assert artifact["frame_count"] == 24_000
-    assert artifact["peak_dbfs"] <= -44.0
+    assert artifact["peak_dbfs"] <= MAX_TEST_LEVEL_DBFS + 0.5
     metadata = json.loads(Path(artifact["metadata_path"]).read_text())
-    assert metadata["tone"]["level_dbfs"] == -45.0
+    assert metadata["tone"]["level_dbfs"] == MAX_TEST_LEVEL_DBFS
     assert metadata["tone"]["duration_ms"] == 500
 
 
@@ -377,7 +378,7 @@ def test_start_tone_playback_passes_bounded_tone_to_backend() -> None:
     expected_tone = {
         "waveform": "sine",
         "frequency_hz": 20.0,
-        "level_dbfs": -45.0,
+        "level_dbfs": MAX_TEST_LEVEL_DBFS,
         "duration_ms": 500,
         "ramp_ms": 250,
     }

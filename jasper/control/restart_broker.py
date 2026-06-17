@@ -92,10 +92,11 @@ MANAGED_UNITS = frozenset({
     "jasper-mux.service",
     "jasper-input.service",
     # Audio chain + reconcilers (control endpoints / supervisors /
-    # wake-corpus bridge-output enable flow)
+    # wake-corpus bridge-output enable flow / active-speaker graph transitions)
     "jasper-aec-bridge.service",
     "jasper-aec-init.service",
     "jasper-aec-reconcile.service",
+    "jasper-audio-hardware-reconcile.service",
     "jasper-grouping-reconcile.service",
     "jasper-camilla.service",
     "jasper-outputd.service",

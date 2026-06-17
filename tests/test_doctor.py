@@ -2488,6 +2488,42 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
 
 
+def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_ACTIVE_CHANNELS=2\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(
+            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
+            dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM,
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "ok"
+    assert "active_channels=2" in r.detail
+
+
+def test_outputd_service_fails_when_active_env_has_legacy_content_pcm(
+    monkeypatch,
+    tmp_path,
+):
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_ACTIVE_CHANNELS=2\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "outputd_active_content_capture" in r.detail
+    assert "active_channels=2" in r.detail
+
+
 def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload.pop("assistant_loudness", None)

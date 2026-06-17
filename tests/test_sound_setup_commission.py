@@ -11,6 +11,7 @@ shape as tests/test_sound_setup.py.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import yaml
@@ -32,6 +33,10 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda path=None: _topology())
     monkeypatch.setattr(
         "jasper.active_speaker.staging.load_staged_startup_config", lambda: staged
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.startup_load.load_staged_startup_config",
+        lambda: staged,
     )
     monkeypatch.setattr(
         "jasper.active_speaker.staging.commissioning_config_path",
@@ -56,6 +61,10 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
         "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
         str(tmp_path / "commission_load.json"),
     )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
+        str(tmp_path / "startup_load.json"),
+    )
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE", str(tmp_path / "ramp.json")
@@ -63,7 +72,51 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", str(tmp_path / "safe.json")
     )
-    return {"staged": staged, "staged_path": staged_path}
+    tone_calls: list[dict] = []
+
+    async def _fake_commission_tone(**kwargs):
+        tone_calls.append(dict(kwargs))
+        return {
+            "status": "completed",
+            "backend": "fake_commission_tone",
+            "playback_id": kwargs.get("playback_id"),
+            "audio_emitted": True,
+            "confirmable": True,
+            "tone": {
+                "frequency_hz": 120.0,
+                "source_level_dbfs": 0.0,
+                "commission_gain_db": kwargs.get("level_dbfs"),
+            },
+            "issues": [],
+        }
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_play_commission_tone",
+        _fake_commission_tone,
+    )
+    return {
+        "staged": staged,
+        "staged_path": staged_path,
+        "statefile": statefile,
+        "tone_calls": tone_calls,
+    }
+
+
+class _FakeWebController(_FakeController):
+    def __init__(self, persisted_path: str, statefile: Path) -> None:
+        super().__init__(persisted_path)
+        self.statefile = statefile
+        self.path_loads: list[str] = []
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False
+    ) -> bool:
+        self.path_loads.append(str(path))
+        self.persisted_path = str(path)
+        self.statefile.write_text(f"config_path: {path}\nmute: false\n", encoding="utf-8")
+        self.running_raw = Path(path).read_text(encoding="utf-8")
+        return True
 
 
 def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
@@ -82,7 +135,13 @@ def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
         "jasper.active_speaker.startup_load.build_driver_commission_load_preflight",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("preflight on a read")),
     )
-    payload = sound_setup._active_speaker_commission_state_payload()
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_state_payload(
+            camilla_factory=lambda: (_ for _ in ()).throw(
+                AssertionError("camilla should not be read while idle")
+            )
+        )
+    )
     assert payload["commission_load"]["status"] == "idle"
     assert payload["ramp"]["confirmed_roles"] == []
     assert payload["ramp"]["pending"] is None
@@ -106,6 +165,84 @@ def test_commission_load_payload_arms_woofer_at_floor(monkeypatch, tmp_path):
     assert load_commission_load_state()["status"] == "loaded"
 
 
+def test_commission_load_payload_loads_silent_startup_anchor(
+    monkeypatch, tmp_path
+):
+    controller = _FakeWebController("placeholder", tmp_path / "outputd-statefile.yml")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    controller.statefile = env["statefile"]
+
+    normal = tmp_path / "outputd-cutover.yml"
+    normal.write_text(Path(env["staged_path"]).read_text(encoding="utf-8"), encoding="utf-8")
+    controller.persisted_path = str(normal)
+    env["statefile"].write_text(f"config_path: {normal}\nmute: false\n", encoding="utf-8")
+
+    setup_order: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stage_config_payload",
+        lambda raw: setup_order.append("stage") or env["staged"],
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_crossover_preview_save_payload",
+        lambda: setup_order.append("preview") or {
+            "status": "ready_for_protected_staging",
+            "permissions": {"may_prepare_protected_startup_config": True},
+        },
+    )
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+
+    assert setup_order == ["preview", "stage"]
+    assert controller.path_loads == [env["staged_path"]]
+    assert payload["startup_setup"]["status"] == "loaded"
+    assert payload["startup_setup"]["preview_status"] == "ready_for_protected_staging"
+    assert payload["load"]["status"] == "loaded"
+    assert load_commission_load_state()["status"] == "loaded"
+
+
+def test_commission_load_payload_clears_stale_pending_ramp(
+    monkeypatch, tmp_path
+):
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    ramp_path = tmp_path / "ramp.json"
+    ramp_path.write_text(
+        json.dumps({
+            "artifact_schema_version": 1,
+            "kind": "jts_active_speaker_commission_ramp",
+            "speaker_group_id": "mono",
+            "confirmed_roles": ["woofer"],
+            "pending": {
+                "role": "woofer",
+                "gain_db": -30.0,
+                "playback_id": "old-step",
+                "is_floor_step": False,
+            },
+            "last_action": "step",
+        }),
+        encoding="utf-8",
+    )
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "tweeter"}, camilla_factory=lambda: controller
+        )
+    )
+
+    assert payload["load"]["status"] == "loaded"
+    ramp = load_ramp_state()
+    assert ramp["pending"] is None
+    assert ramp["confirmed_roles"] == ["woofer"]
+    assert ramp["speaker_group_id"] == "mono"
+    assert ramp["last_action"] == "clear_pending"
+
+
 def test_commission_load_payload_single_flight_refuses(monkeypatch, tmp_path):
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
@@ -125,9 +262,75 @@ def test_commission_load_payload_single_flight_refuses(monkeypatch, tmp_path):
     assert len(controller.applied_texts) == 1  # nothing new applied
 
 
-def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
+def test_commission_load_payload_same_target_is_idempotent(monkeypatch, tmp_path):
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
+    assert asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )["load"]["status"] == "loaded"
+
+    again = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert again["status"] == "loaded"
+    assert again["load"]["status"] == "loaded"
+    assert len(controller.applied_texts) == 1  # no re-load needed
+
+
+def test_commission_load_payload_rearms_stale_persisted_state(monkeypatch, tmp_path):
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    assert asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )["load"]["status"] == "loaded"
+
+    # Simulate a later Camilla/web restart: the JSON still says loaded, but the
+    # live graph is back at the all-muted startup anchor.
+    controller.running_raw = Path(env["staged_path"]).read_text(encoding="utf-8")
+
+    again = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert again["load"]["status"] == "loaded"
+    assert len(controller.applied_texts) == 2
+    assert load_commission_load_state()["status"] == "loaded"
+
+
+def test_commission_state_payload_marks_stale_live_graph_read_only(
+    monkeypatch, tmp_path
+):
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    assert asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )["load"]["status"] == "loaded"
+    controller.running_raw = Path(env["staged_path"]).read_text(encoding="utf-8")
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_state_payload(
+            camilla_factory=lambda: controller
+        )
+    )
+
+    assert payload["commission_load"]["status"] == "stale"
+    assert payload["commission_load"]["runtime_status"]["status"] == "stale"
+    # GET/status is read-only; the next POST performs the self-heal/re-arm.
+    assert load_commission_load_state()["status"] == "loaded"
+
+
+def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
     asyncio.run(
         sound_setup._active_speaker_commission_load_payload(
             {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
@@ -140,6 +343,9 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
         )
     )
     assert step["status"] == "stepped"
+    assert step["tone_playback"]["audio_emitted"] is True
+    assert env["tone_calls"][0]["role"] == "woofer"
+    assert env["tone_calls"][0]["level_dbfs"] == -80.0
     assert step["safe_playback"]["floor_status"] == "floor_pending_operator"
     # The running graph now carries the woofer un-muted at the audible floor.
     assert yaml.safe_load(controller.running_raw)["filters"]["as_out0_commission_mute"][
@@ -152,7 +358,9 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
         )
     )
     assert ack["status"] == "confirmed"
+    assert ack["rollback"]["status"] == "rolled_back"
     assert load_ramp_state()["confirmed_roles"] == ["woofer"]
+    assert load_commission_load_state()["status"] == "rolled_back"
 
 
 def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):

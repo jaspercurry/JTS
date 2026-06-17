@@ -78,26 +78,54 @@ export function commissionCardState(commission, group) {
   var floor = commission.floor || {};
   var target = load.target || {};
   var pending = ramp.pending && typeof ramp.pending === 'object' ? ramp.pending : null;
+  var roles = activeCommissionRolesForGroup(group);
   var armed = load.status === 'loaded';
+  var stale = load.status === 'stale' ||
+    (load.runtime_status && load.runtime_status.status === 'stale');
   var floorStatus = floor.status || 'floor_required';
-  var awaitingAck = armed && !!pending && floorStatus === 'floor_pending_operator';
+  var awaitingAck = armed && !!pending;
   var confirmed = Array.isArray(ramp.confirmed_roles) ? ramp.confirmed_roles : [];
+  var loadedRole = target.role || null;
+  var loadedRoleConfirmed = armed && loadedRole && confirmed.indexOf(loadedRole) >= 0 && !pending;
+  var nextRole = armed && !loadedRoleConfirmed ?
+    loadedRole :
+    nextCommissionRole(roles, confirmed);
   return {
     available: !!group,
     groupId: group ? (group.id || '') : '',
     armed: armed,
+    stale: stale,
     armedRole: armed ? (target.role || null) : null,
     armedGainDb: armed ? target.audible_gain_db : null,
+    startRole: nextRole,
     floorStatus: floorStatus,
     awaitingAck: awaitingAck,
     pendingRole: pending ? pending.role : null,
     pendingGainDb: pending ? pending.gain_db : null,
     confirmedRoles: confirmed,
-    canArm: !!group && !armed,
-    canStep: armed && !awaitingAck,
+    canArm: false,
+    canStep: !!group && !!nextRole && !awaitingAck,
     canAck: awaitingAck,
     canRemute: armed
   };
+}
+
+function activeCommissionRolesForGroup(group) {
+  var seen = {};
+  var order = ['woofer', 'mid', 'tweeter'];
+  (group && Array.isArray(group.channels) ? group.channels : []).forEach(function(ch) {
+    if (ch && ch.role) seen[ch.role] = true;
+  });
+  return order.filter(function(role) { return seen[role]; });
+}
+
+function nextCommissionRole(roles, confirmed) {
+  roles = Array.isArray(roles) ? roles : [];
+  confirmed = Array.isArray(confirmed) ? confirmed : [];
+  for (var i = 0; i < roles.length; i += 1) {
+    if (confirmed.indexOf(roles[i]) < 0) return roles[i];
+  }
+  return roles[0] || null;
 }
 
 export function commissionFloorLabel(floorStatus) {
@@ -129,10 +157,17 @@ export function commissionPayloadFailure(payload) {
   if (payload.status === 'refused') {
     return 'Another driver is already being tested. Stop it first, then try again.';
   }
+  if (payload.status === 'no_pending_step') {
+    return 'There is no active tone to confirm. Start a quiet step first.';
+  }
   var load = payload.load && typeof payload.load === 'object' ? payload.load : null;
   var blocked = payload.status === 'blocked' || payload.status === 'failed' ||
+    payload.status === 'gate_blocked' || payload.status === 'load_failed' ||
+    payload.status === 'tone_failed' ||
     (load && load.status && load.status !== 'loaded');
   if (!blocked) return '';
+  var issueReason = commissionIssueReason(commissionIssueCodes(payload));
+  if (issueReason) return issueReason;
   var preflight = payload.preflight ||
     (load && typeof load.preflight === 'object' ? load.preflight : null) || {};
   var gates = Array.isArray(preflight.required_gates) ? preflight.required_gates : [];
@@ -140,6 +175,66 @@ export function commissionPayloadFailure(payload) {
     if (gates[i] && gates[i].passed === false) return commissionGateReason(gates[i].id);
   }
   return 'This driver can’t be tested yet — finish the earlier setup steps first.';
+}
+
+function commissionIssueCodes(payload) {
+  var codes = [];
+  [
+    payload && payload.issues,
+    payload && payload.load && payload.load.issues,
+    payload && payload.startup_setup && payload.startup_setup.issues,
+    payload && payload.startup_setup && payload.startup_setup.load &&
+      payload.startup_setup.load.issues,
+    payload && payload.tone_playback && payload.tone_playback.issues,
+    payload && payload.startup_setup && payload.startup_setup.startup_load &&
+      payload.startup_setup.startup_load.load &&
+      payload.startup_setup.startup_load.load.issues
+  ].forEach(function(issues) {
+    if (!Array.isArray(issues)) return;
+    issues.forEach(function(issue) {
+      if (issue && issue.code) codes.push(String(issue.code));
+    });
+  });
+  return codes;
+}
+
+function commissionIssueReason(codes) {
+  if (codes.indexOf('commission_live_state_stale') >= 0) {
+    return 'The previous tone session expired safely. Start the tone again so JTS can reopen it quietly.';
+  }
+  if (codes.indexOf('stage5_ramp_gate_blocked') >= 0) {
+    return 'JTS did not start the tone because the speaker test was no longer open for that driver. Start the tone again to reopen it quietly.';
+  }
+  if (codes.indexOf('commission_not_loaded') >= 0) {
+    return 'Start the tone again so JTS can open the quiet driver test first.';
+  }
+  if (codes.indexOf('commission_ramp_at_limit') >= 0) {
+    return 'Reached the safe test limit. If you still hear nothing, stop and check amp gain, wiring, and the DAC output mapping before trying again.';
+  }
+  if (
+    codes.indexOf('commission_tone_playback_failed') >= 0 ||
+    codes.indexOf('commission_tone_backend_failed') >= 0
+  ) {
+    return 'JTS loaded the quiet driver setup but could not play the test tone, so it re-muted the driver. Try again after checking the speaker audio path.';
+  }
+  if (
+    codes.indexOf('tweeter_protection_unverified') >= 0 ||
+    codes.indexOf('tweeter_protection_required') >= 0 ||
+    codes.indexOf('high_frequency_protection_missing') >= 0
+  ) {
+    return 'The tweeter guard still needs to be set up before driver tests can start.';
+  }
+  if (codes.indexOf('commission_active_graph_not_staged') >= 0) {
+    return 'JTS needs to load the silent active-speaker setup before this driver ' +
+      'can be tested. Start the tone again; no sound will play until the test opens.';
+  }
+  for (var i = 0; i < codes.length; i += 1) {
+    if (String(codes[i]).indexOf('commission_startup_anchor_') === 0) {
+      return 'JTS could not load the silent active-speaker setup. No driver sound ' +
+        'played — re-check the setup above, then start the tone again.';
+    }
+  }
+  return '';
 }
 
 // The per-driver commissioning gates are a closed set; map each to consumer copy.

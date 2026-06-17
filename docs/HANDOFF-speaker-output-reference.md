@@ -296,13 +296,13 @@ What exists:
   physical channel identity for assigned topology channels. It is evidence
   about wiring only: it does not make the active path safe, does not satisfy
   tweeter protection, and does not allow any endpoint to emit sound.
-  `/sound/active-speaker/playback-readiness` now composes that topology
+  `/sound/active-speaker/prepare-driver-test` now composes that topology
   evidence with active-speaker environment, safe-session, calibration-level,
   clock-domain, Stop-control, and tone-backend evidence for one selected
-  target. The topology itself still grants no playback authority; the separate
-  active-speaker lab backend can emit only when readiness passes, explicit
-  `aplay` env enablement is present, and the target is not a tweeter/
-  compression driver.
+  passive/full-range target. The topology itself still grants no playback
+  authority; the separate active-speaker lab backend can emit only when route
+  readiness passes, explicit `aplay` env enablement is present, and the target
+  is not a tweeter/compression driver.
   `/sound/active-speaker/channel-protection` records the separate human
   evidence that a compression-driver protection path is physically present or
   that software-guarded bring-up has been explicitly requested. Software guard

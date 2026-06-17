@@ -480,11 +480,12 @@ steps by hand. Coherent single-DAC layouts can use the bounded direct-DAC
 diagnostic backend for one selected driver: outputd is paused, one generated
 multi-channel test WAV is played directly to the hardware PCM, and outputd is
 restarted. Outputd-owned active-lane layouts continue through protected startup
-staging/load/arm before playback. `/sound/active-speaker/playback-readiness`
-combines that target evidence with the relevant route, calibration-level,
-Stop-control, and tone-backend checks. The topology itself still grants no
-playback authority; the active-speaker tone backend can emit only after route
-readiness and the driver-protection policy pass for the selected target.
+staging/load/commission-ramp before playback. `prepare-driver-test` combines
+that target evidence with the relevant route, calibration-level, Stop-control,
+and tone-backend checks for passive/full-range tests. The topology itself still
+grants no playback authority; the active-speaker tone backend can emit only
+after route readiness and the driver-protection policy pass for the selected
+target.
 `/sound/active-speaker/driver-measurement`,
 `/sound/active-speaker/summed-test`, and
 `/sound/active-speaker/summed-validation` persist commissioning evidence only;
