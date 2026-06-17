@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from jasper.accounts import (
     Account,
     Registry,
+    SPOTIFY_CACHE_FILE_MODE,
+    build_cache_handler,
     default_cache_path_for,
     maybe_migrate_legacy,
 )
@@ -225,3 +230,29 @@ def test_add_or_update_preserves_existing_playlists():
     a = r.get("jasper")
     assert a.cache_path == "/new/path.json"
     assert a.playlists == {"spotify:playlist:abc": "Discover Weekly"}
+
+
+def test_build_cache_handler_writes_group_readable_cache():
+    """WS1 Phase 3b: the Spotify token cache must be group-`jasper`-readable
+    (0640) so the now-non-root jasper-control (/transport router) and jasper-web
+    (/spotify wizard) can read the token jasper-voice persists. spotipy's stock
+    CacheFileHandler writes it 0600 owner-only (the dropped readers then log
+    "Couldn't read cache" on every poll); build_cache_handler re-chmods 0640
+    after every save. Pinned so a future edit can't silently drop the chmod and
+    re-break the readers."""
+    pytest.importorskip("spotipy")
+    with tempfile.TemporaryDirectory() as d:
+        cache_path = os.path.join(d, "jasper.json")
+        handler = build_cache_handler(cache_path)
+        # spotipy CacheFileHandler.save_token_to_cache json-dumps the dict; the
+        # subclass chmods 0640 afterward regardless of the writer's umask.
+        handler.save_token_to_cache({
+            "access_token": "x", "refresh_token": "y",
+            "token_type": "Bearer", "expires_at": 0, "scope": "",
+        })
+        assert os.path.isfile(cache_path)
+        mode = stat.S_IMODE(os.stat(cache_path).st_mode)
+        assert mode == 0o640 == SPOTIFY_CACHE_FILE_MODE, (
+            f"spotify cache mode {oct(mode)} != 0640 (group jasper read) — the "
+            "non-root readers would log 'Couldn't read cache'"
+        )

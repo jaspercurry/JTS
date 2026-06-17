@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .accounts import Account, Registry
+from .accounts import Account, Registry, build_cache_handler
 from .spotify_routing import _normalise as _normalise_title
 
 logger = logging.getLogger(__name__)
@@ -181,7 +181,10 @@ def build_clients(
                 client_id=client_id,
                 redirect_uri=redirect_uri,
                 scope=SPOTIFY_SCOPE,
-                cache_path=cache_path,
+                # cache_handler (not cache_path) so a refresh-on-read rewrites
+                # the token cache group-`jasper`-readable (0640) — the non-root
+                # jasper-control reader needs it; see accounts.build_cache_handler.
+                cache_handler=build_cache_handler(cache_path),
                 open_browser=False,
             )
             # Trigger a token-cache read to surface OAuth issues at
