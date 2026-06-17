@@ -1709,6 +1709,11 @@ def prepare_driver_commissioning_config(
     :func:`stage_protected_startup_config` via
     :func:`_build_active_commissioning_context`.
 
+    Requires exactly ONE active speaker group and unmutes the target's whole
+    role (a mono cabinet's woofer is one output; a stereo group's woofer is both
+    sides). A multi-group topology fails closed; per-SIDE isolation is a future
+    selector.
+
     Per-driver unmute is a TRANSIENT runtime load: this config is never the
     durable boot config (which ``stage_protected_startup_config`` keeps all-muted
     for crash recovery), so it is written to its own commissioning path. The
@@ -1731,15 +1736,24 @@ def prepare_driver_commissioning_config(
     gates = ctx["gates"]
     issues = ctx["issues"]
 
-    # Resolve the target's audible outputs from the bound preset / topology.
+    # Resolve the target's audible outputs. `_build_active_commissioning_context`
+    # -> `_bind_preset_to_topology` already enforces a SINGLE active speaker group
+    # (one bound preset == one speaker; a multi-group topology fails closed there
+    # with `mono_active_group_required`), so the bound preset's role outputs ARE
+    # the target group's outputs -- there is no cross-group mis-scope to guard
+    # against here. `speaker_group_id` is load-bearing: it must name that one
+    # active group. The audible set is the whole role -- a mono cabinet's woofer
+    # is one output, a stereo group's woofer is both sides; per-SIDE isolation
+    # (driving L or R alone) is a future selector, not this.
     audible_outputs: frozenset[int] = frozenset()
-    if group_id and group_id not in {group.id for group in active_groups}:
+    active_group_id = active_groups[0].id if active_groups else None
+    if group_id and group_id != active_group_id:
         issues.append(_issue(
             "blocker",
             "commissioning_target_group_unknown",
-            "driver commissioning target group is not an active speaker group",
+            "driver commissioning target group is not the active speaker group",
         ))
-    if bound_preset is not None and role:
+    if active_group_id is not None and bound_preset is not None and role:
         audible_outputs = audible_outputs_for_role(bound_preset, role)
     if not audible_outputs:
         issues.append(_issue(

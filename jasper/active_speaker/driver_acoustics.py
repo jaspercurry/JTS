@@ -64,17 +64,25 @@ DEFAULT_NULL_THRESHOLD_DB = 6.0  # crossover suckout that flags polarity/delay
 DRIVER_ACOUSTIC_KIND = "jts_active_speaker_driver_acoustics"
 SUMMED_ACOUSTIC_KIND = "jts_active_speaker_summed_acoustics"
 
-# The complete verdict vocabulary each analyzer can return. Exported as the
-# single source so callers that MAP verdicts (commissioning_capture's
-# verdict->outcome maps) can guard-test that they cover the full set: a renamed
-# or added verdict then fails a test loudly instead of silently skipping a
-# capture (`.get()` -> None -> not recorded). Keep these in lockstep with the
-# verdict literals returned by analyze_driver_capture / analyze_summed_crossover.
+# The verdict vocabulary, named so the analyzers below and the frozensets are
+# ONE source: a renamed or added verdict touches a single constant rather than
+# drifting between the analyzer's literal and the declared set. Exported so
+# callers that MAP verdicts (commissioning_capture's verdict->outcome maps) can
+# guard-test that they cover the full set: a verdict missing from a map fails a
+# test loudly instead of silently skipping a capture (`.get()` -> None -> not
+# recorded).
+VERDICT_PRESENT = "present"
+VERDICT_OUT_OF_BAND = "out_of_band"
+VERDICT_SILENT = "silent"
+VERDICT_UNUSABLE_CAPTURE = "unusable_capture"
+SUMMED_BLEND_OK = "blend_ok"
+SUMMED_POLARITY_OR_DELAY_PROBLEM = "polarity_or_delay_problem"
+
 DRIVER_VERDICTS = frozenset(
-    {"present", "out_of_band", "silent", "unusable_capture"}
+    {VERDICT_PRESENT, VERDICT_OUT_OF_BAND, VERDICT_SILENT, VERDICT_UNUSABLE_CAPTURE}
 )
 SUMMED_VERDICTS = frozenset(
-    {"blend_ok", "polarity_or_delay_problem", "unusable_capture"}
+    {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM, VERDICT_UNUSABLE_CAPTURE}
 )
 
 
@@ -304,7 +312,7 @@ def analyze_driver_capture(
 
     if freqs is None:
         return DriverAcousticResult(
-            verdict="unusable_capture",
+            verdict=VERDICT_UNUSABLE_CAPTURE,
             present=False,
             observed_mic_dbfs=report.rms_dbfs,
             peak_dbfs=report.peak_dbfs,
@@ -337,15 +345,15 @@ def analyze_driver_capture(
     separation = in_band - out_of_band
 
     if report.peak_dbfs <= SILENT_PEAK_DBFS:
-        verdict, present = "silent", False
+        verdict, present = VERDICT_SILENT, False
     elif separation < OUT_OF_BAND_SEPARATION_DB:
-        verdict, present = "out_of_band", False
+        verdict, present = VERDICT_OUT_OF_BAND, False
     elif separation >= PRESENT_MIN_SEPARATION_DB:
-        verdict, present = "present", True
+        verdict, present = VERDICT_PRESENT, True
     else:
         # Slightly negative separation but audible: weak/marginal, not clearly
         # wrong. Treat as present so a real-but-quiet driver isn't rejected.
-        verdict, present = "present", True
+        verdict, present = VERDICT_PRESENT, True
 
     return DriverAcousticResult(
         verdict=verdict,
@@ -392,7 +400,7 @@ def analyze_summed_crossover(
 
     if freqs is None:
         return SummedAcousticResult(
-            verdict="unusable_capture",
+            verdict=VERDICT_UNUSABLE_CAPTURE,
             null_depth_db=float("nan"),
             crossover_fc_hz=crossover_fc_hz,
             observed_mic_dbfs=report.rms_dbfs,
@@ -407,9 +415,9 @@ def analyze_summed_crossover(
     null_depth = shoulder_mean - at_fc
 
     verdict = (
-        "polarity_or_delay_problem"
+        SUMMED_POLARITY_OR_DELAY_PROBLEM
         if null_depth >= null_threshold_db
-        else "blend_ok"
+        else SUMMED_BLEND_OK
     )
     return SummedAcousticResult(
         verdict=verdict,

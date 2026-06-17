@@ -37,6 +37,11 @@ from .driver_acoustics import (
     ANALYSIS_HI_HZ,
     ANALYSIS_LO_HZ,
     DEFAULT_NULL_THRESHOLD_DB,
+    SUMMED_BLEND_OK,
+    SUMMED_POLARITY_OR_DELAY_PROBLEM,
+    VERDICT_OUT_OF_BAND,
+    VERDICT_PRESENT,
+    VERDICT_SILENT,
     DriverAcousticResult,
     SummedAcousticResult,
     analyze_driver_capture,
@@ -45,18 +50,19 @@ from .driver_acoustics import (
 from .measurement import record_driver_measurement, record_summed_validation
 from .profile import ActiveSpeakerPreset, crossover_edges_for_role
 
-# Acoustic verdict -> measurement outcome. ``unusable_capture`` has no entry:
-# DRIVER_OUTCOMES / SUMMED_OUTCOMES have no "unusable" member, and recording a
-# pass/fail from a capture we could not trust would fabricate evidence, so an
-# unusable capture is reported back NOT recorded and the caller re-captures.
+# Acoustic verdict -> measurement outcome, keyed on driver_acoustics' verdict
+# constants (one source). ``unusable_capture`` has no entry: DRIVER_OUTCOMES /
+# SUMMED_OUTCOMES have no "unusable" member, and recording a pass/fail from a
+# capture we could not trust would fabricate evidence, so an unusable capture is
+# reported back NOT recorded and the caller re-captures.
 DRIVER_VERDICT_TO_OUTCOME = {
-    "present": "heard_correct_driver",
-    "out_of_band": "heard_wrong_driver",
-    "silent": "silent",
+    VERDICT_PRESENT: "heard_correct_driver",
+    VERDICT_OUT_OF_BAND: "heard_wrong_driver",
+    VERDICT_SILENT: "silent",
 }
 SUMMED_VERDICT_TO_OUTCOME = {
-    "blend_ok": "blend_ok",
-    "polarity_or_delay_problem": "polarity_or_delay_problem",
+    SUMMED_BLEND_OK: "blend_ok",
+    SUMMED_POLARITY_OR_DELAY_PROBLEM: "polarity_or_delay_problem",
 }
 
 

@@ -95,3 +95,61 @@ def test_commissioning_config_path_is_not_the_boot_config_path():
 
     assert DEFAULT_COMMISSIONING_CONFIG_NAME != DEFAULT_STAGED_CONFIG_NAME
     assert commissioning_config_path() != staged_config_path()
+
+
+def _two_active_group_topology():
+    """A topology with two active groups — invalid for the single-speaker model."""
+    from jasper.output_topology import OutputTopology
+
+    raw = _topology().to_dict()
+    raw["speaker_groups"].append({
+        "id": "mono_b",
+        "label": "Second cabinet",
+        "kind": "mono",
+        "mode": "active_2_way",
+        "channels": [
+            {"role": "woofer", "physical_output_index": 2, "identity_verified": True},
+            {
+                "role": "tweeter",
+                "physical_output_index": 3,
+                "identity_verified": True,
+                "startup_muted": True,
+                "protection_required": True,
+                "protection_status": "present",
+            },
+        ],
+    })
+    return OutputTopology.from_mapping(raw)
+
+
+def test_multi_group_topology_fails_closed(tmp_path: Path):
+    # prepare unmutes the bound preset's whole role; that is only correctly
+    # scoped because _bind_preset_to_topology enforces a SINGLE active speaker
+    # group. Pin that contract: a multi-group topology must fail closed (never
+    # resolve a role across groups and unmute another speaker's drivers).
+    payload = prepare_driver_commissioning_config(
+        _two_active_group_topology(),
+        speaker_group_id="mono",
+        role="woofer",
+        config_path=tmp_path / "commission.yml",
+        validate=_valid_config,
+        created_at="2026-06-16T12:00:00Z",
+    )
+    assert payload["status"] == "blocked"
+    assert payload["audible_evidence"] == {}
+
+
+def test_build_active_commissioning_context_resolves_single_group():
+    # N1: direct coverage of the helper both staging entry points share.
+    from jasper.active_speaker.staging import _build_active_commissioning_context
+    from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+
+    ctx = _build_active_commissioning_context(
+        _topology(), preset=None, crossover_preview=None, playback_device=None
+    )
+    assert ctx["bound_preset"] is not None
+    assert [group.id for group in ctx["active_groups"]] == ["mono"]
+    assert ctx["resolved_playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert ctx["issues"] == []
+    gate_ids = {gate["id"] for gate in ctx["gates"]}
+    assert "explicit_active_playback_device" in gate_ids
