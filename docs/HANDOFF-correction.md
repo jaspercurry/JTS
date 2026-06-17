@@ -434,6 +434,15 @@ What has shipped:
   `awaiting_*_capture` timeout states, timeout cancellation on upload,
   the log event fields, reset-busy rejection, and failed-measurement
   autolevel restore.
+- ✅ **Status/snapshot serializer extraction.** The 2026-06-17
+  follow-up moved current-config descriptors plus live `/status`,
+  `info.json`, and `result.json` payload construction into
+  [`jasper/correction/status.py`](../jasper/correction/status.py).
+  `MeasurementSession.snapshot()` remains the public wrapper for the web
+  handler, and `SessionArtifacts` still owns filesystem writes and
+  manifests, but payload shape now has one owner. Tests pin the
+  populated snapshot/info/result keys so future decomposition does not
+  silently change report or bundle consumers.
 
 Do not disturb these guardrails while decomposing:
 
@@ -465,11 +474,7 @@ Do not disturb these guardrails while decomposing:
 
 Good next slices:
 
-1. **Status/snapshot serialization.** Lowest risk. Move the JSON-ish
-   status payload helpers out of `MeasurementSession` while preserving
-   `/status`, bundle summaries, and report consumers. This should be a
-   small PR with before/after snapshot tests.
-2. **Capture analysis orchestration.** Higher value, higher risk. The
+1. **Capture analysis orchestration.** Higher value, higher risk. The
    repeated "capture arrived -> set ANALYZING -> smooth -> record
    artifacts -> refresh confidence/acoustic evidence -> transition"
    paths for measurement, repeat, and verify could become a typed
@@ -477,7 +482,7 @@ Good next slices:
    terminal-state restore. Tests need to cover normal measurement,
    repeat capture, verify capture, capture-quality failure, and runtime
    evidence writes.
-3. **Camilla apply/reset orchestration.** Useful but audio-safety
+2. **Camilla apply/reset orchestration.** Useful but audio-safety
    sensitive. If extracted, the collaborator must preserve flat reset,
    generated-config apply, failed apply behavior, and autolevel restore
    exactly. This slice needs the tightest review.
@@ -511,13 +516,14 @@ Current Task C status:
 - PR #788 merged 2026-06-17: extracted `jasper.correction.autolevel`.
 - PR #790 merged 2026-06-17: extracted
   `jasper.correction.state_guard.SessionStateGuard`.
+- 2026-06-17 follow-up: extracted `jasper.correction.status` serializers.
 - Do not rework those slices unless tests or review find a concrete issue.
 - Do not touch `_bell_response_db` or `_estimate_q`.
 - Do not treat confidence/evidence/FIR/calibration-agent surfaces as dead code.
 
 Mission:
 - Continue decomposing `jasper/correction/session.py` in one small PR.
-- Prefer the next lowest-risk slice: status/snapshot serialization.
+- Prefer the next lowest-risk slice from the updated handoff.
 - Preserve the safety stack verbatim:
   - autolevel ceiling and restore behavior
   - stranded-capture watchdog
@@ -952,12 +958,14 @@ jasper/
 │   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
 │   ├── artifacts.py                     per-session bundle writer / manifest owner
+│   ├── status.py                        current-config + status/bundle payload serializers
 │   ├── autolevel.py                     auto-level ramp controller + volume restore
 │   ├── state_guard.py                   capture watchdog + reset-busy guard
 │   ├── fir_runtime.py                   FIR coefficient inspect/stage substrate
 │   ├── evidence.py                      deterministic human/agent evidence packet
 │   └── session.py                       measurement state machine + DSP orchestration
-│                                        (delegates auto-level ramping and state guards)
+│                                        (delegates auto-level ramping, state guards,
+│                                        and status serialization)
 │
 ├── cli/
 │   └── doctor.py                        correction socket / bundle / config checks
@@ -1795,6 +1803,9 @@ still apply.)
 Last verified: 2026-06-17 (auto-level controller ownership rechecked against
 `jasper/correction/autolevel.py` and `jasper/correction/session.py`; stranded
 capture watchdog / reset-busy guard ownership rechecked against
-`jasper/correction/state_guard.py` and `jasper/correction/session.py`.
-Task C decomposition status and pickup prompt refreshed after PR #790.
-Behavior, routes, and safety invariants remain unchanged.)
+`jasper/correction/state_guard.py` and `jasper/correction/session.py`;
+status/current-config and bundle-payload ownership rechecked against
+`jasper/correction/status.py`, `jasper/correction/artifacts.py`, and
+`jasper/correction/session.py`. Task C decomposition status and pickup
+prompt refreshed after the status serializer extraction. Behavior, routes,
+and safety invariants remain unchanged.)

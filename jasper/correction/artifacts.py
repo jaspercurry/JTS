@@ -22,7 +22,7 @@ from . import (
     replay_artifacts,
     runtime_integrity,
     spatial,
-    strategy,
+    status,
 )
 from ..log_event import log_event
 
@@ -392,72 +392,7 @@ class SessionArtifacts:
         bundle = self.ensure_bundle_dir()
         if bundle is None:
             return
-        info = {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": s.session_id,
-            "state": s.state.value,
-            "started_at": s.started_at,
-            "updated_at": s.updated_at,
-            "error": s.error,
-            "total_positions": s.total_positions,
-            "current_position": s.current_position,
-            "repeat_main_position": s.repeat_main_position,
-            "target_choice": s.target_choice,
-            "target_profile": strategy.resolve_target_profile(
-                s.target_choice,
-            ).to_dict(),
-            "strategy_choice": s.strategy_choice,
-            "correction_strategy": strategy.resolve_correction_strategy(
-                s.strategy_choice,
-            ).to_dict(),
-            "noise_floor_db": s.noise_floor_db,
-            "input_device": s.input_device,
-            "mic_calibration": (
-                s.mic_calibration.public_metadata()
-                if s.mic_calibration
-                else None
-            ),
-            "browser_audio_report": s.browser_audio_report,
-            "capture_quality": s.capture_quality,
-            "noise_reports": s.noise_reports,
-            "repeat_quality": s.repeat_quality,
-            "repeatability_report": s.repeatability_report,
-            "verify_quality": s.verify_quality,
-            "confidence_report": s.confidence_report,
-            "acoustic_quality": (
-                (s.acoustic_quality or {}).get("summary")
-                if s.acoustic_quality
-                else None
-            ),
-            "runtime_integrity": s.runtime_integrity.summary(),
-            "position_analysis": s.position_analysis,
-            "current_correction_at_start": s.current_correction_at_start,
-            "autolevel": s.autolevel.snapshot(),
-            "sweep_meta": (
-                s.sweep_meta.to_dict() if s.sweep_meta else None
-            ),
-            "peqs": [p.__dict__ for p in s.peqs],
-            "design_report": s.design_report,
-            "config_path": (
-                str(s.config_path) if s.config_path else None
-            ),
-            "verify_metrics": s.verify_metrics,
-            "config": {
-                "f1_hz": s.cfg.f1_hz,
-                "f2_hz": s.cfg.f2_hz,
-                "duration_s": s.cfg.duration_s,
-                "sample_rate": s.cfg.sample_rate,
-                "amplitude_dbfs": s.cfg.amplitude_dbfs,
-                "peq_f_low": s.cfg.peq_f_low,
-                "peq_f_high": s.cfg.peq_f_high,
-                "peq_max_filters": s.cfg.peq_max_filters,
-                "peq_max_cut_db": s.cfg.peq_max_cut_db,
-                "peq_max_boost_db": s.cfg.peq_max_boost_db,
-                "peq_cuts_only": s.cfg.peq_cuts_only,
-                "peq_flatness_target_db": s.cfg.peq_flatness_target_db,
-                "correction_strategy": s.cfg.correction_strategy,
-            },
-        }
+        info = status.info_json_payload(s)
         bundles.write_json_artifact(
             bundle,
             "info.json",
@@ -475,48 +410,7 @@ class SessionArtifacts:
         bundle = self.ensure_bundle_dir()
         if bundle is None:
             return
-        result = {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": s.session_id,
-            "input_device": s.input_device,
-            "mic_calibration": (
-                s.mic_calibration.public_metadata()
-                if s.mic_calibration
-                else None
-            ),
-            "browser_audio_report": s.browser_audio_report,
-            "measured": (
-                s.measured_curve.__dict__ if s.measured_curve else None
-            ),
-            "target": (
-                s.target_curve.__dict__ if s.target_curve else None
-            ),
-            "predicted": (
-                s.predicted_curve.__dict__ if s.predicted_curve else None
-            ),
-            "verify": (
-                s.verify_curve.__dict__ if s.verify_curve else None
-            ),
-            "verify_metrics": s.verify_metrics,
-            "capture_quality": s.capture_quality,
-            "noise_reports": s.noise_reports,
-            "repeat": (
-                s.repeat_curve.__dict__ if s.repeat_curve else None
-            ),
-            "repeat_quality": s.repeat_quality,
-            "repeatability_report": s.repeatability_report,
-            "verify_quality": s.verify_quality,
-            "confidence_report": s.confidence_report,
-            "acoustic_quality": (
-                (s.acoustic_quality or {}).get("summary")
-                if s.acoustic_quality
-                else None
-            ),
-            "runtime_integrity": s.runtime_integrity.summary(),
-            "position_analysis": s.position_analysis,
-            "peqs": [p.__dict__ for p in s.peqs],
-            "design_report": s.design_report,
-        }
+        result = status.result_json_payload(s)
         bundles.write_json_artifact(
             bundle,
             "result.json",

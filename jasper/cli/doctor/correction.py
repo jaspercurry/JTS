@@ -168,7 +168,7 @@ def _active_camilla_config_path() -> tuple[Path, str | None]:
 
 @doctor_check(order=29, group="correction")
 def check_correction_current_config() -> CheckResult:
-    from jasper.correction.session import describe_current_config
+    from jasper.correction.status import describe_current_config
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:

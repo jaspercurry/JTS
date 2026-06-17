@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.correction import bundles, evidence
+from jasper.correction import bundles, evidence, status as correction_status
 from jasper.correction.session import (
     MeasurementSession,
     SessionConfig,
@@ -194,6 +194,173 @@ def _make_session(tmp_path: Path, **kwargs) -> MeasurementSession:
     cfg.base_config_path.write_text("# stub base v1.yml for tests\n")
     cfg.config_dir.mkdir(exist_ok=True)
     return MeasurementSession(cfg, **kwargs)
+
+
+# ---------- Status / bundle payload serialization --------------------------
+
+
+def test_status_serializers_pin_snapshot_info_and_result_shapes(
+    tmp_path: Path,
+):
+    """The extracted serializer owns payload shape; the session/artifact
+    wrappers should keep exposing the same status and bundle dictionaries."""
+    from jasper.correction.session import CurveJSON, PEQJSON
+    from jasper.correction.sweep import SweepMeta
+
+    sess = _make_session(
+        tmp_path,
+        input_device={
+            "label": "USB measurement mic",
+            "device_id_hash": "abc123",
+            "sample_rate": 48000,
+        },
+        repeat_main_position=True,
+    )
+    sess.state = SessionState.READY
+    sess.error = "kept for serializer test"
+    sess.noise_floor_db = -58.0
+    sess.capture_quality = [{"capture_kind": "measurement", "position_index": 0}]
+    sess.noise_reports = [{"capture_kind": "noise", "position_index": 0}]
+    sess.repeat_quality = {"capture_kind": "repeat", "level": "ok"}
+    sess.repeatability_report = {"available": True, "level": "high"}
+    sess.verify_quality = {"capture_kind": "verify", "level": "ok"}
+    sess.confidence_report = {"level": "medium", "score": 72}
+    sess.acoustic_quality = {"summary": {"level": "ok", "snr_level": "high"}}
+    sess.position_analysis = {"artifact_path": "position_analysis.json"}
+    sess.current_correction_at_start = {"kind": "correction"}
+    sess.sweep_meta = SweepMeta(
+        f1=20.0,
+        f2=20000.0,
+        L=0.5,
+        duration_s=1.0,
+        n_samples=48000,
+        sample_rate=48000,
+        amplitude_dbfs=-12.0,
+    )
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0)]
+    sess.design_report = {"correction_strategy": {"strategy_id": "balanced"}}
+    sess.config_path = tmp_path / "configs" / "correction_abc_1700000000.yml"
+    sess.verify_metrics = {"max_abs_db": 1.25}
+    sess.measured_curve = CurveJSON([20.0, 80.0], [1.0, 6.0])
+    sess.target_curve = CurveJSON([20.0, 80.0], [0.0, 0.0])
+    sess.predicted_curve = CurveJSON([20.0, 80.0], [0.5, 1.0])
+    sess.verify_curve = CurveJSON([20.0, 80.0], [0.25, 1.2])
+    sess.repeat_curve = CurveJSON([20.0, 80.0], [1.1, 5.8])
+
+    snapshot = correction_status.session_snapshot(sess)
+    assert sess.snapshot() == snapshot
+    assert set(snapshot) == {
+        "session_id",
+        "state",
+        "started_at",
+        "updated_at",
+        "error",
+        "total_positions",
+        "current_position",
+        "repeat_main_position",
+        "target_choice",
+        "target_profile",
+        "strategy_choice",
+        "correction_strategy",
+        "input_device",
+        "mic_calibration",
+        "browser_audio_report",
+        "capture_quality",
+        "noise_reports",
+        "repeat_quality",
+        "repeatability_report",
+        "verify_quality",
+        "confidence_report",
+        "acoustic_quality",
+        "runtime_integrity",
+        "position_analysis",
+        "sweep",
+        "peqs",
+        "design_report",
+        "config_path",
+        "verify_metrics",
+        "autolevel",
+    }
+    assert snapshot["sweep"] == sess.sweep_meta.to_dict()
+    assert snapshot["peqs"] == [{"freq_hz": 80.0, "q": 4.0, "gain_db": -3.0}]
+    assert snapshot["config_path"] == str(sess.config_path)
+
+    info = correction_status.info_json_payload(sess)
+    assert set(info) == {
+        "bundle_schema_version",
+        "session_id",
+        "state",
+        "started_at",
+        "updated_at",
+        "error",
+        "total_positions",
+        "current_position",
+        "repeat_main_position",
+        "target_choice",
+        "target_profile",
+        "strategy_choice",
+        "correction_strategy",
+        "noise_floor_db",
+        "input_device",
+        "mic_calibration",
+        "browser_audio_report",
+        "capture_quality",
+        "noise_reports",
+        "repeat_quality",
+        "repeatability_report",
+        "verify_quality",
+        "confidence_report",
+        "acoustic_quality",
+        "runtime_integrity",
+        "position_analysis",
+        "current_correction_at_start",
+        "autolevel",
+        "sweep_meta",
+        "peqs",
+        "design_report",
+        "config_path",
+        "verify_metrics",
+        "config",
+    }
+    assert info["bundle_schema_version"] == bundles.CURRENT_BUNDLE_SCHEMA_VERSION
+    assert info["sweep_meta"] == snapshot["sweep"]
+    assert info["current_correction_at_start"] == {"kind": "correction"}
+    assert info["config"]["sample_rate"] == 48000
+
+    result = correction_status.result_json_payload(sess)
+    assert set(result) == {
+        "bundle_schema_version",
+        "session_id",
+        "input_device",
+        "mic_calibration",
+        "browser_audio_report",
+        "measured",
+        "target",
+        "predicted",
+        "verify",
+        "verify_metrics",
+        "capture_quality",
+        "noise_reports",
+        "repeat",
+        "repeat_quality",
+        "repeatability_report",
+        "verify_quality",
+        "confidence_report",
+        "acoustic_quality",
+        "runtime_integrity",
+        "position_analysis",
+        "peqs",
+        "design_report",
+    }
+    assert result["measured"] == {
+        "freqs_hz": [20.0, 80.0],
+        "magnitude_db": [1.0, 6.0],
+    }
+    assert result["repeat"] == {
+        "freqs_hz": [20.0, 80.0],
+        "magnitude_db": [1.1, 5.8],
+    }
+    assert result["verify_metrics"] == {"max_abs_db": 1.25}
 
 
 def test_bundle_info_json_written_on_state_transition(tmp_path: Path):
