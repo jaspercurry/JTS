@@ -341,7 +341,20 @@ class _FileLock:
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = self.path.open("a+")
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o660)
+        try:
+            # The generated-config directory is root:jasper setgid; the lock has
+            # to be writable by whichever process reaches the apply path first
+            # (root CLI, jasper-web, future jasper group writers). O_CREAT still
+            # respects umask, so publish the intended mode explicitly.
+            try:
+                os.fchmod(fd, 0o660)
+            except OSError:
+                pass
+            self._fh = os.fdopen(fd, "a+", encoding="utf-8")
+        except Exception:
+            os.close(fd)
+            raise
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
 
     def release(self) -> None:

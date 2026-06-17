@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import stat
 from pathlib import Path
 
 from jasper.dsp_apply import (
@@ -12,6 +14,7 @@ from jasper.dsp_apply import (
     dsp_apply_lock_path,
     dsp_write_epoch,
     dsp_write_epoch_from_state,
+    dsp_writer_lock,
     last_dsp_apply_state,
     record_dsp_apply_state,
     validate_camilla_config,
@@ -69,6 +72,20 @@ def test_dsp_write_epoch_tracks_latest_apply_state(tmp_path: Path):
 
     assert dsp_write_epoch(state_path=state_path) == "op-123"
     assert dsp_apply_lock_path(tmp_path) == tmp_path / ".dsp_apply.lock"
+
+
+async def test_dsp_writer_lock_file_is_group_writable_under_restrictive_umask(
+    tmp_path: Path,
+):
+    old_umask = os.umask(0o077)
+    try:
+        async with dsp_writer_lock(tmp_path):
+            pass
+    finally:
+        os.umask(old_umask)
+
+    mode = stat.S_IMODE((tmp_path / ".dsp_apply.lock").stat().st_mode)
+    assert mode == 0o660
 
 
 def test_validate_camilla_config_classifies_invalid_config(

@@ -109,6 +109,15 @@ def test_install_sh_repairs_active_speaker_config_modes_for_web_commissioning():
     assert "-exec chmod 0640 {} +" in body
 
 
+def test_install_sh_repairs_dsp_apply_lock_for_web_commissioning():
+    """A stale root-created lock must not block jasper-web DSP apply paths."""
+
+    body = INSTALL_SH.read_text()
+    assert "/var/lib/camilladsp/configs/.dsp_apply.lock" in body
+    assert "chgrp jasper /var/lib/camilladsp/configs/.dsp_apply.lock" in body
+    assert "chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock" in body
+
+
 def test_install_sh_seeds_statefile_when_missing():
     """Because the unit's ExecStart has no positional CONFIGFILE,
     a fresh install with no statefile would leave CamillaDSP with
