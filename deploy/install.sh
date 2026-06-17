@@ -28,6 +28,7 @@ STATE_DIR="/var/lib/jasper"
 # STATE_DIR (not under it): STATE_DIR is jasper-voice/-mux's StateDirectory,
 # whose recursive chown would force this tree's group back to `jasper`.
 SECRETS_DIR="/var/lib/jasper-secrets"
+INTSECRETS_DIR="/var/lib/jasper-intsecrets"
 SYSTEMD_DIR="/etc/systemd/system"
 INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
@@ -285,13 +286,17 @@ Run for real from a Pi-local checkout:
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
-     /opt/camilladsp, /etc/camilladsp, /var/lib/camilladsp,
-     /usr/share/jasper-web, and feature-specific state directories.
+     /var/lib/jasper-intsecrets, /opt/camilladsp, /etc/camilladsp,
+     /var/lib/camilladsp, /usr/share/jasper-web, and feature-specific
+     state directories.
    - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
    - Copy the jasper Python package, pyproject.toml, landing pages,
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+   - Move HA/Spotify integration secrets into
+     /var/lib/jasper-intsecrets (streambox keeps only the Spotify side
+     active, but shares the same migration/forward path).
 
 5. Services and live actions
    - Enable/start jasper-control, jasper-camilla, jasper-fanin,
@@ -431,10 +436,10 @@ Profile guard:
      site files) superseded by the GitHub Pages OAuth bounce page.
 
 5. Services and live actions
-   - Create the \`jasper\` group and the non-root service users
-     (jasper-voice / jasper-mux / jasper-input / jasper-control) the Tier-A
-     daemons drop to, and group-share /var/lib/jasper for them
-     (WS1 Phase 3b-1 + 3b-2).
+   - Create the `jasper` group and the non-root service users
+     (jasper-voice / jasper-mux / jasper-input / jasper-control /
+     jasper-web) the Tier-A daemons drop to, plus the Phase 4
+     secret-compartment groups.
    - Install /etc/polkit-1/rules.d/49-jasper-control.rules granting the
      non-root jasper-control its scoped systemctl (MANAGED_UNITS allowlist)
      + reboot/power-off — its restart broker + supervisors run as that uid
@@ -446,10 +451,10 @@ Profile guard:
    - Widen /etc/bluetooth + /var/lib/camilladsp/configs to group-jasper 2775
      so the non-root jasper-web can atomically replace the BlueZ name and the
      generated sound profiles (WS1 Phase 3b-3).
-   - Widen the config/secret env files jasper-control reads off disk
-     (jasper.env + voice_provider/spotify/google/home_assistant/control_token)
+   - Widen the config/state files jasper-control reads off disk
+     (jasper.env + voice_provider/control_token + non-secret sound state)
      to 0640 group jasper so the jasper-doctor it spawns + /state can read
-     them (WS1 Phase 3b-2; per-daemon isolation is Phase 4).
+     them. Secret compartments stay isolated by WS1 Phase 4.
    - Reload udev and systemd.
    - Enable socket-activated setup wizards and always-on audio/control
      services.
@@ -1846,6 +1851,7 @@ main() {
         set_usb_gadget_mode
         tune_wifi_for_airplay
         install_streambox_jasper
+        migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_streambox_systemd_units

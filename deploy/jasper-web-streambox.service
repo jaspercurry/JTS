@@ -13,19 +13,21 @@ EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Optional file written by the Spotify setup wizard when the user pastes their
 # Spotify Developer App credentials. Sourced after jasper.env so wizard-written
-# values win. Streambox does not source voice/Google/wake/transit/weather envs.
-EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+# values win. WS1 Phase 4b keeps it in the shared integration-secret
+# compartment. Streambox does not source voice/Google/wake/transit/weather envs.
+EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure
 RestartSec=2
 
-# Needs /var/lib/jasper for wizard state, generated CamillaDSP configs for
+# Needs /var/lib/jasper for wizard state, /var/lib/jasper-intsecrets for
+# Spotify wizard credentials/token cache, generated CamillaDSP configs for
 # /sound/, BlueZ's local name for Bluetooth, and systemd-passed loopback fds.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth
 
 [Install]
 # WantedBy left out intentionally — enabling the .socket pulls in the service

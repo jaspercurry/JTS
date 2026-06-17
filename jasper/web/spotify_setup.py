@@ -129,7 +129,7 @@ logger = logging.getLogger(__name__)
 # ProtectSystem=full keeps /etc read-only). jasper-web reads it in
 # process; jasper-voice, jasper-control, and jasper-mux source it via
 # optional EnvironmentFile so a restart picks up the values written here.
-CREDS_FILE = "/var/lib/jasper/spotify_credentials.env"
+CREDS_FILE = "/var/lib/jasper-intsecrets/spotify_credentials.env"
 
 # Spotify Developer App ID format: 32 lowercase hex characters.
 _CLIENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -213,8 +213,7 @@ def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
 
 
 def _write_creds_file(client_id: str, mode: str, path: str = CREDS_FILE) -> None:
-    # WS1 Phase 3b-2: 0640 group jasper (the doctor jasper-control spawns
-    # fresh-reads this via env_load.ENV_FILES). `mode` here is the OAuth mode.
+    # WS1 Phase 4b: 0640 group jasper-intsecrets. `mode` here is the OAuth mode.
     write_env_file(path, {
         "SPOTIFY_CLIENT_ID": client_id,
         "SPOTIFY_OAUTH_MODE": mode,
@@ -934,8 +933,8 @@ def _spotify_client_for_account(cfg: dict[str, Any], account_name: str):
             client_id=cfg["client_id"],
             redirect_uri=_redirect_uri_for_mode(cfg["mode"], cfg),
             scope=SPOTIFY_SCOPE,
-            # group-`jasper`-readable cache (0640) so the non-root readers can
-            # read it; see accounts.build_cache_handler (WS1 Phase 3b).
+            # group-readable cache (0640) in the jasper-intsecrets compartment
+            # so the non-root readers can read it; see accounts.build_cache_handler.
             cache_handler=build_cache_handler(account.cache_path),
             open_browser=False,
         )
@@ -1198,8 +1197,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 client_id=cfg["client_id"],
                 redirect_uri=redirect_uri,
                 scope=SPOTIFY_SCOPE,
-                # group-`jasper`-readable cache (0640); see
-                # accounts.build_cache_handler (WS1 Phase 3b).
+                # group-readable cache (0640) in the jasper-intsecrets compartment;
+                # see accounts.build_cache_handler.
                 cache_handler=build_cache_handler(cache_path),
                 state=nonce,
                 open_browser=False,
@@ -1411,8 +1410,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 client_id=cfg["client_id"],
                 redirect_uri=_redirect_uri_for_mode(cfg["mode"], cfg),
                 scope=SPOTIFY_SCOPE,
-                # group-`jasper`-readable cache (0640); see
-                # accounts.build_cache_handler (WS1 Phase 3b).
+                # group-readable cache (0640) in the jasper-intsecrets compartment;
+                # see accounts.build_cache_handler.
                 cache_handler=build_cache_handler(account.cache_path),
                 open_browser=False,
             )

@@ -380,8 +380,8 @@ async def _get_state(
     async def _ha_status() -> dict:
         """Probe the configured HA instance for /state. Fails soft —
         unconfigured returns {configured: false}; unreachable returns
-        {connected: false, error: ...}. Reads /var/lib/jasper/home_assistant.env
-        directly (not os.environ) so wizard saves are reflected
+        {connected: false, error: ...}. Reads the jasper-intsecrets
+        home_assistant.env directly (not os.environ) so wizard saves are reflected
         immediately rather than waiting for jasper-control to restart —
         the wizard only restarts jasper-voice. See
         `jasper.home_assistant.probe_status_from_env`."""

@@ -915,12 +915,12 @@ def _local_audio_config_from_env() -> SimpleNamespace:
         ),
         spotify_cache_path=os.environ.get(
             "SPOTIFY_CACHE_PATH",
-            "/var/lib/jasper/.spotify-cache",
+            "/var/lib/jasper-intsecrets/.spotify-cache",
         ),
         spotify_device_name=_speaker_runtime_name(),
         spotify_accounts_path=os.environ.get(
             "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            "/var/lib/jasper/spotify/accounts.json",
+            "/var/lib/jasper-intsecrets/spotify/accounts.json",
         ),
         spotify_setup_url=os.environ.get(
             "JASPER_SPOTIFY_SETUP_URL",

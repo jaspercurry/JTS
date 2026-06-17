@@ -991,11 +991,14 @@ class Mux:
             from .spotify_router import Router, build_clients
             registry = Registry.load(os.environ.get(
                 "JASPER_SPOTIFY_ACCOUNTS_PATH",
-                "/var/lib/jasper/spotify/accounts.json",
+                "/var/lib/jasper-intsecrets/spotify/accounts.json",
             ))
             maybe_migrate_legacy(
                 registry,
-                os.environ.get("SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"),
+                os.environ.get(
+                    "SPOTIFY_CACHE_PATH",
+                    "/var/lib/jasper-intsecrets/.spotify-cache",
+                ),
                 default_name="default",
             )
             hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")

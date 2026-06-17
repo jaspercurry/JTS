@@ -26,7 +26,9 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # jasper.env so wizard-written values win. Leading `-` makes it
 # optional — fresh installs boot fine without it (and land on the
 # wizard).
-EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+# WS1 Phase 4b — moved into the group-`jasper-intsecrets` dir alongside
+# the Spotify OAuth token cache.
+EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Optional file written by the voice-provider wizard at
 # /voice/. Same override pattern: wizard values beat operator
 # defaults. Sourced here so the wizard's process can render the
@@ -115,9 +117,11 @@ User=jasper-web
 Group=jasper
 # WS1 Phase 4a — `jasper-secrets` (supplementary) lets the wizards write
 # + read the split-out LLM keys, Google client secret, and Google OAuth
-# token tree in /var/lib/jasper-secrets. `bluetooth` (BlueZ Alias),
-# `systemd-journal` (journalctl -k). docs/HANDOFF-privilege-separation.md.
-SupplementaryGroups=bluetooth systemd-journal jasper-secrets
+# token tree in /var/lib/jasper-secrets. WS1 Phase 4b — `jasper-intsecrets`
+# lets the wizards write/read HA + Spotify credentials and token caches.
+# `bluetooth` (BlueZ Alias), `systemd-journal` (journalctl -k).
+# docs/HANDOFF-privilege-separation.md.
+SupplementaryGroups=bluetooth systemd-journal jasper-secrets jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 
@@ -139,7 +143,10 @@ NoNewPrivileges=true
 # /var/lib/jasper-secrets (WS1 Phase 4a) is writable so the /voice +
 # /google wizards can atomically replace the secret files + write OAuth
 # tokens there (setgid dir → group `jasper-secrets`).
-ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
+# /var/lib/jasper-intsecrets (WS1 Phase 4b) is writable so the /spotify +
+# /ha wizards can atomically replace integration secret files and Spotify
+# OAuth tokens there.
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
 # WS1 phase-1 hardening (docs/HANDOFF-privilege-separation.md): jasper-web gets
 # the full phase-1 stanza. ProtectKernelLogs is OMITTED — the wizards shell to
 # nmcli / journalctl -k for Wi-Fi diagnostics and must not be starved of kernel-

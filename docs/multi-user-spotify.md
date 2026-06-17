@@ -40,12 +40,12 @@ no fragile name-matching.
                     account's spotipy client
 ```
 
-State lives at:
+Secret state lives in the WS1 Phase 4b integration-secret compartment:
 ```
-/var/lib/jasper/spotify/
+/var/lib/jasper-intsecrets/spotify/
     accounts.json              registry index
     caches/<name>.json         per-user OAuth refresh tokens (PKCE)
-/var/lib/jasper/spotify_credentials.env
+/var/lib/jasper-intsecrets/spotify_credentials.env
                                SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE
                                (written by the wizard)
 ```
@@ -417,9 +417,9 @@ The wizard restarts `jasper-voice` automatically after each change.
 /etc/nginx/sites-enabled/jasper.conf         nginx /spotify/ + /voice/ + /dial/
 /etc/systemd/system/jasper-web.service       setup web server (port 8765)
 /etc/systemd/system/jasper-voice.service     voice daemon
-/var/lib/jasper/spotify_credentials.env      SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE
-/var/lib/jasper/spotify/accounts.json        registry index
-/var/lib/jasper/spotify/caches/<name>.json   per-user OAuth refresh tokens
+/var/lib/jasper-intsecrets/spotify_credentials.env      SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE
+/var/lib/jasper-intsecrets/spotify/accounts.json        registry index
+/var/lib/jasper-intsecrets/spotify/caches/<name>.json   per-user OAuth refresh tokens
 ```
 
 Code:

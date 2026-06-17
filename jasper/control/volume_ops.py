@@ -61,12 +61,12 @@ def _build_spotify_router_or_none():
         from ..spotify_router import Router, build_clients
         registry = Registry.load(os.environ.get(
             "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            "/var/lib/jasper/spotify/accounts.json",
+            "/var/lib/jasper-intsecrets/spotify/accounts.json",
         ))
         maybe_migrate_legacy(
             registry,
             os.environ.get(
-                "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache",
+                "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache",
             ),
             default_name="default",
         )

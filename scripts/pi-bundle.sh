@@ -40,7 +40,8 @@ dmesg -T --since "$since" 2>/dev/null | redact_jasper_diagnostics \
         /var/lib/jasper/voice_provider.env \
         /var/lib/jasper-secrets/voice_keys.env \
         /var/lib/jasper-secrets/google_credentials.env \
-        /var/lib/jasper/home_assistant.env \
+        /var/lib/jasper-intsecrets/spotify_credentials.env \
+        /var/lib/jasper-intsecrets/home_assistant.env \
         /var/lib/jasper/transit.env \
         /var/lib/jasper/wifi_guardian.env; do
         [[ -r "$f" ]] || continue

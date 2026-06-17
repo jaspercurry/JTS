@@ -48,12 +48,14 @@ WatchdogSec=30s
 TimeoutStopSec=5s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
-# Spotify CLIENT_ID/SECRET written by the setup wizard at
+# Spotify CLIENT_ID/OAUTH_MODE written by the setup wizard at
 # https://jts.local/spotify. Optional — leading `-` lets the
 # daemon boot fine when this file doesn't exist yet (the
 # spotify_play tool then short-circuits to a "visit
 # JASPER_SPOTIFY_SETUP_URL" error which Gemini speaks).
-EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+# WS1 Phase 4b — moved into the group-`jasper-intsecrets` dir alongside
+# the Spotify OAuth token cache.
+EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Voice provider SELECTION (JASPER_VOICE_PROVIDER + per-provider model /
 # voice) written by the wizard at https://jts.local/voice. Sourced AFTER
 # /etc/jasper/jasper.env so wizard-written values override operator
@@ -98,7 +100,7 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 # the home_assistant tool is gated on both URL and token being set,
 # so a missing file just leaves smart-home control disabled.
 # See docs/HANDOFF-homeassistant.md.
-EnvironmentFile=-/var/lib/jasper/home_assistant.env
+EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env
 # Tools the household DISABLED via the /tools/ wizard
 # (JASPER_DISABLED_TOOLS). Wizard-owned SSOT at
 # /var/lib/jasper/tool_state.env. The daemon reads this set fail-safe
@@ -172,9 +174,11 @@ User=jasper-voice
 Group=jasper
 # WS1 Phase 4a — `jasper-secrets` (supplementary) grants read of the
 # split-out LLM API keys + Google client secret/token tree in
-# /var/lib/jasper-secrets (which mux/control/input are NOT in). `audio`
-# covers ALSA. docs/HANDOFF-privilege-separation.md "Phase 4".
-SupplementaryGroups=audio jasper-secrets
+# /var/lib/jasper-secrets (which mux/control/input are NOT in). WS1 Phase
+# 4b — `jasper-intsecrets` grants read/write of HA + Spotify integration
+# secrets/caches (input is NOT in it). `audio` covers ALSA.
+# docs/HANDOFF-privilege-separation.md "Phase 4".
+SupplementaryGroups=audio jasper-secrets jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 StateDirectory=jasper
@@ -213,7 +217,10 @@ NoNewPrivileges=true
 # the operator CLI, not the daemon. ProtectSystem=strict still allows reads, so
 # the dir is deliberately NOT in ReadWritePaths: least privilege, and no hard
 # dependency on a non-StateDirectory path for the most critical daemon.
-ReadWritePaths=/var/lib/jasper
+# WS1 Phase 4b — Spotify is different: spotipy can refresh and persist OAuth
+# tokens from the voice runtime, so the integration-secret compartment is a
+# deliberate write path.
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

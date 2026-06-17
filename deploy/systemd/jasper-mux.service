@@ -10,7 +10,9 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify credentials are wizard-owned and live outside jasper.env.
 # Mux needs them for guarded Spotify handoff: without the Web API router,
 # Spotify starts in degraded_safe mode and Camilla stays attenuated.
-EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+# WS1 Phase 4b — moved into the group-`jasper-intsecrets` dir alongside
+# the Spotify OAuth token cache.
+EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Optional fan-in overrides. Loading the same file here keeps
 # JASPER_FANIN_CONTROL_SOCKET aligned if an operator moves fan-in's
 # UDS out of /run/jasper-fanin/control.sock.
@@ -26,6 +28,9 @@ RestartSec=2
 # docs/HANDOFF-privilege-separation.md.
 User=jasper-mux
 Group=jasper
+# WS1 Phase 4b — mux builds a Spotify Web API router for guarded handoff; spotipy
+# can refresh and persist OAuth tokens, so it joins the integration-secret group.
+SupplementaryGroups=jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 # 1 Hz polling of three sources is light; stay under typical
@@ -59,13 +64,15 @@ OOMScoreAdjust=-300
 
 # WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
 # mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
-# the phase-1 directives. Writes are covered by StateDirectory=jasper +
-# RuntimeDirectory=jasper-mux above, so ProtectSystem=strict needs no extra
-# ReadWritePaths. The capability/syscall filters and the non-root user drop
-# (mux is now a broker client for its librespot-stall restart) are in the
-# Phase-3b block above.
+# the phase-1 directives. Most writes are covered by StateDirectory=jasper +
+# RuntimeDirectory=jasper-mux; WS1 Phase 4b adds the Spotify token-cache write
+# path below. The capability/syscall filters and the non-root user drop (mux is
+# now a broker client for its librespot-stall restart) are in the Phase-3b block
+# above.
 NoNewPrivileges=true
 ProtectSystem=strict
+# WS1 Phase 4b — Spotify token refreshes are legitimate runtime writes.
+ReadWritePaths=/var/lib/jasper-intsecrets
 ProtectHome=tmpfs
 PrivateTmp=true
 ProtectKernelTunables=true

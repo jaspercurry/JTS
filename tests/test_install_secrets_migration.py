@@ -1,8 +1,9 @@
-"""Tests for the WS1 Phase 4a secret-compartment migration in
+"""Tests for the WS1 Phase 4 secret-compartment migrations in
 deploy/lib/install/env-migrations.sh — `migrate_secrets_phase4a` (moves the
 Google token tree + rewrites accounts.json) and `migrate_voice_keys_split`
 (splits the LLM API keys out of voice_provider.env / jasper.env into
-voice_keys.env).
+voice_keys.env), plus `migrate_secrets_phase4b` (moves HA + Spotify into the
+integration-secret compartment and rewrites Spotify cache paths).
 
 These are the most data-sensitive bash in the PR (they move live OAuth tokens),
 so the safety properties get pinned here: the accounts.json token_path rewrite
@@ -46,7 +47,9 @@ install() {
 
 _FUNCS = (
     "ensure_secrets_dir",
+    "ensure_intsecrets_dir",
     "migrate_secrets_phase4a",
+    "migrate_secrets_phase4b",
     "migrate_voice_keys_split",
     "_strip_key_from_broad",
 )
@@ -73,6 +76,7 @@ def _prep(tmp_path: Path) -> tuple[Path, Path, Path]:
     dirs = tuple(tmp_path / d for d in ("etc", "state", "secrets"))
     for d in dirs:
         d.mkdir(exist_ok=True)
+    (tmp_path / "intsecrets").mkdir(exist_ok=True)
     return dirs  # type: ignore[return-value]
 
 
@@ -84,6 +88,7 @@ def _run(tmp_path: Path, fn: str) -> subprocess.CompletedProcess[str]:
         "ENV_DIR": str(tmp_path / "etc"),
         "STATE_DIR": str(tmp_path / "state"),
         "SECRETS_DIR": str(tmp_path / "secrets"),
+        "INTSECRETS_DIR": str(tmp_path / "intsecrets"),
     }
     return subprocess.run(
         ["/bin/bash", "-c", f"{_helpers()}\n{fn}"],
@@ -234,3 +239,66 @@ def test_secrets_migration_is_idempotent(tmp_path: Path):
     # `! -e new` move never re-fires), and the token stays put.
     assert (secrets / "google" / "accounts.json").read_text() == moved
     assert (secrets / "google" / "tokens" / "J.json").exists()
+
+
+# --- migrate_secrets_phase4b (HA + Spotify move/cache_path rewrite) ----------
+
+def test_phase4b_moves_ha_spotify_and_rewrites_accounts_cache_path(tmp_path: Path):
+    _etc, state, _secrets = _prep(tmp_path)
+    intsecrets = tmp_path / "intsecrets"
+
+    spotify = state / "spotify"
+    (spotify / "caches").mkdir(parents=True)
+    (spotify / "accounts.json").write_text(
+        '{"version": 1, "default": "jasper", "accounts": [{"name": "jasper", '
+        f'"cache_path": "{spotify}/caches/jasper.json"}}]}}\n'
+    )
+    (spotify / "caches" / "jasper.json").write_text('{"refresh_token": "rt"}\n')
+    (state / "home_assistant.env").write_text(
+        "JASPER_HA_URL=http://ha.local:8123\nJASPER_HA_TOKEN=ha-token\n"
+    )
+    (state / "spotify_credentials.env").write_text(
+        "SPOTIFY_CLIENT_ID=0123456789abcdef0123456789abcdef\n"
+        "SPOTIFY_OAUTH_MODE=bounce\n"
+    )
+    (state / ".spotify-cache").write_text('{"legacy": true}\n')
+
+    proc = _run(tmp_path, "migrate_secrets_phase4b")
+    assert proc.returncode == 0, proc.stderr
+
+    assert not (state / "home_assistant.env").exists()
+    assert not (state / "spotify_credentials.env").exists()
+    assert not (state / ".spotify-cache").exists()
+    assert not spotify.exists(), "old /state/spotify must be gone after the move"
+
+    assert (intsecrets / "home_assistant.env").read_text().startswith(
+        "JASPER_HA_URL=http://ha.local:8123\n"
+    )
+    assert (intsecrets / "spotify_credentials.env").exists()
+    assert (intsecrets / ".spotify-cache").read_text() == '{"legacy": true}\n'
+    moved_accounts = intsecrets / "spotify" / "accounts.json"
+    text = moved_accounts.read_text()
+    assert f"{intsecrets}/spotify/caches/jasper.json" in text
+    assert f"{state}/spotify/caches/jasper.json" not in text
+    assert (intsecrets / "spotify" / "caches" / "jasper.json").exists()
+    assert not (intsecrets / "spotify" / "accounts.json.bak").exists()
+
+
+def test_phase4b_migration_is_idempotent(tmp_path: Path):
+    _etc, state, _secrets = _prep(tmp_path)
+    intsecrets = tmp_path / "intsecrets"
+    spotify = state / "spotify"
+    (spotify / "caches").mkdir(parents=True)
+    (spotify / "accounts.json").write_text(
+        f'{{"accounts": [{{"cache_path": "{spotify}/caches/j.json"}}]}}\n'
+    )
+    (spotify / "caches" / "j.json").write_text('{"refresh_token": "rt"}\n')
+
+    first = _run(tmp_path, "migrate_secrets_phase4b")
+    assert first.returncode == 0, first.stderr
+    moved = (intsecrets / "spotify" / "accounts.json").read_text()
+    second = _run(tmp_path, "migrate_secrets_phase4b")
+    assert second.returncode == 0, second.stderr
+
+    assert (intsecrets / "spotify" / "accounts.json").read_text() == moved
+    assert (intsecrets / "spotify" / "caches" / "j.json").exists()
