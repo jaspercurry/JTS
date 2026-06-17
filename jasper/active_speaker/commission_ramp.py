@@ -391,7 +391,6 @@ async def ramp_audible_step(
     environment_report: dict[str, Any] | None = None,
     ramp_state_path_override: str | Path | None = None,
     safe_playback_state_path: str | Path | None = None,
-    commission_state_path: str | Path | None = None,
     commission_load_state_path: str | Path | None = None,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
