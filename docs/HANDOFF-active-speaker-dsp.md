@@ -616,7 +616,9 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   any audible output → fail closed, do not unmute.
 - **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed
   (built; runnable via `jasper-active-speaker commission-ramp` **or** the
-  `/sound/` Advanced-speaker-setup "Protected driver commissioning" card —
+  `/sound/` Advanced-speaker-setup → "Test each driver" step, which renders the
+  protected arm/step/ack commission card for an active 2/3-way group — passive
+  full-range groups keep the simpler direct-DAC tone test in that same step —
   POST `/active-speaker/commission-{load,ramp-step,ramp-ack,ramp-abort}` +
   read-only GET `/active-speaker/commission-state`).** A commission
   load arms a driver at the protected floor (gain −120 dB, mute off — silent);

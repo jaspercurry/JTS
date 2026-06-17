@@ -563,13 +563,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<details class="advanced" data-active-speaker-setup' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
         renderOutputTopologySetup() +
-        renderCommissionCard() +
       '</details>' +
     '</section>';
   }
-  // Protected single-audio-path driver commissioning (the Stage-5 ramp). Shown
-  // only when an active 2/3-way speaker group exists. Arming is silent; a step
-  // makes ONE driver audible at a low level through the production crossover.
+  // The "Test each driver" body for active 2/3-way groups: protected
+  // single-audio-path commissioning (the Stage-5 ramp). Arming is silent; a step
+  // makes ONE driver audible at a low level through the production
+  // crossover/limiter graph. Only the safety step calls this, and only when an
+  // active group exists — passive/full-range groups use renderOutputReadinessCard
+  // (the direct-DAC tone test) instead. The no-group return is defensive.
   function renderCommissionCard() {
     var group = activeCommissionGroup(currentOutputTopology());
     var c = commissionCardState(activeSpeaker.commission, group);
@@ -633,13 +635,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">Keep amps OFF until a driver is armed and you are ready to listen. Arming is silent.</p>');
 
     return '<div class="commission-card">' +
-      '<h4 class="commission-card__title">Protected driver commissioning</h4>' +
-      '<p class="commission-card__lead">Test one driver at a time through the real ' +
-        'crossover/limiter graph — woofer first, then tweeter.</p>' +
       statusRows + note +
       (busy ? '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '') +
       '<div class="active-speaker-actions commission-card__actions">' +
         buttons.join('') + '</div>' +
+      '<p class="setting-row__hint commission-card__followup">Confirming a driver ' +
+        'here proves it is wired and audible through the protected graph. Recording ' +
+        'each driver’s measurement for “Validate and apply” is a later step (not ' +
+        'yet wired).</p>' +
     '</div>';
   }
   function activeCommissionRoles(group) {
@@ -1755,6 +1758,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     var evaluation = outputEvaluation(topology);
     var layoutStatusValue = outputTopology.dirty ? 'draft' : 'saved draft';
+    // Active 2/3-way groups commission through the protected crossover/limiter
+    // graph (the Stage-5 ramp); passive/full-range groups keep the simpler
+    // direct-DAC "is this driver audible" tone test.
+    var safetyActive = !!activeCommissionGroup(topology);
     return '<div class="output-layout">' +
       renderOutputStepCard(
         'layout',
@@ -1791,9 +1798,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       renderOutputStepCard(
         'safety',
         'Test each driver',
-        'Choose one driver at a time, start very quiet, and record what happened.',
+        safetyActive
+          ? 'Arm one driver at a time and make it audible through the real ' +
+              'crossover/limiter graph — woofer first, then tweeter.'
+          : 'Choose one driver at a time, start very quiet, and record what happened.',
         topology,
-        renderOutputReadinessCard() +
+        (safetyActive ? renderCommissionCard() : renderOutputReadinessCard()) +
         renderDriverMeasurementProgressCard(topology),
         ''
       ) +
