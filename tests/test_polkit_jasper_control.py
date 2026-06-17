@@ -11,10 +11,10 @@ These tests pin the invariants that, if broken, silently disable a
 resilience-critical path (a unit the broker accepts gets polkit-denied, or the
 recovery reboot stops firing):
 
-* the rule's MANAGED_UNITS allowlist is **set-equal** to
-  jasper.control.restart_broker.MANAGED_UNITS (the broker docstring promises
-  these never drift — restart_broker.py "derives the polkit rule ... from the
-  same constant");
+* the rule's MANAGED_UNITS and START_ONLY_UNITS allowlists are **set-equal** to
+  the matching jasper.control.restart_broker constants (the broker docstring
+  promises these never drift — restart_broker.py "derives the polkit rule ...
+  from the same constants");
 * it grants manage-units, manage-unit-files, and the login1 reboot/power-off
   actions (incl. the -multiple-sessions variants that fire when an operator is
   SSH'd in — verified on hardware);
@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jasper.control.restart_broker import MANAGED_UNITS
+from jasper.control.restart_broker import MANAGED_UNITS, POLKIT_MANAGE_UNITS, START_ONLY_UNITS
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "deploy/polkit/49-jasper-control.rules"
@@ -50,23 +50,36 @@ def _code_only(text: str) -> str:
     return "\n".join(out)
 
 
-def _managed_units_in_rule(text: str) -> set[str]:
-    """Extract the units from the JS `var MANAGED_UNITS = [ ... ];` array."""
-    m = re.search(r"var MANAGED_UNITS = \[(.*?)\];", text, re.DOTALL)
-    assert m, "rule must declare a `var MANAGED_UNITS = [...]` array"
+def _units_in_rule_array(text: str, name: str) -> set[str]:
+    """Extract the units from a JS `var NAME = [ ... ];` array."""
+    m = re.search(rf"var {name} = \[(.*?)\];", text, re.DOTALL)
+    assert m, f"rule must declare a `var {name} = [...]` array"
     return set(re.findall(r'"([^"]+)"', m.group(1)))
 
 
-def test_rule_unit_allowlist_equals_broker_managed_units():
-    """The polkit allowlist and the broker allowlist are one source of truth —
-    drift means a unit the broker accepts could be polkit-denied (silent
+def test_rule_unit_allowlists_equal_broker_constants():
+    """The polkit allowlists and the broker allowlists are one source of truth
+    — drift means a unit the broker accepts could be polkit-denied (silent
     restart failure) or vice-versa."""
-    in_rule = _managed_units_in_rule(_rule_text())
-    assert in_rule == set(MANAGED_UNITS), (
+    text = _rule_text()
+    managed_in_rule = _units_in_rule_array(text, "MANAGED_UNITS")
+    start_only_in_rule = _units_in_rule_array(text, "START_ONLY_UNITS")
+
+    assert managed_in_rule == set(MANAGED_UNITS), (
         "deploy/polkit/49-jasper-control.rules MANAGED_UNITS drifted from "
         "jasper.control.restart_broker.MANAGED_UNITS.\n"
-        f"  only in rule:   {sorted(in_rule - set(MANAGED_UNITS))}\n"
-        f"  only in broker: {sorted(set(MANAGED_UNITS) - in_rule)}"
+        f"  only in rule:   {sorted(managed_in_rule - set(MANAGED_UNITS))}\n"
+        f"  only in broker: {sorted(set(MANAGED_UNITS) - managed_in_rule)}"
+    )
+    assert start_only_in_rule == set(START_ONLY_UNITS), (
+        "deploy/polkit/49-jasper-control.rules START_ONLY_UNITS drifted from "
+        "jasper.control.restart_broker.START_ONLY_UNITS.\n"
+        f"  only in rule:   {sorted(start_only_in_rule - set(START_ONLY_UNITS))}\n"
+        f"  only in broker: {sorted(set(START_ONLY_UNITS) - start_only_in_rule)}"
+    )
+    assert managed_in_rule | start_only_in_rule == set(POLKIT_MANAGE_UNITS), (
+        "deploy/polkit/49-jasper-control.rules union drifted from "
+        "jasper.control.restart_broker.POLKIT_MANAGE_UNITS"
     )
 
 
