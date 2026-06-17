@@ -13,9 +13,12 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
+
+import yaml
 
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
@@ -771,6 +774,198 @@ def driver_commission_audible_evidence(
         "protective_highpass_hz": protective_hp_hz,
         "startup_headroom_db": STARTUP_HEADROOM_DB,
         "limiter_clip_limit_db": STARTUP_LIMITER_CLIP_LIMIT_DB,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
+# --- live (running-graph) read-back evidence ---------------------------------
+#
+# `driver_commission_audible_evidence` (above) proves a config is safe BEFORE it
+# loads, parsing the emitted YAML *text*. The guarded commissioning load
+# (`startup_load.load_driver_commissioning_config`) needs the same proof AFTER
+# the load, against the config CamillaDSP is ACTUALLY running — read back over
+# the websocket (`CamillaController.get_active_config_raw`), not the file on
+# disk. CamillaDSP re-serializes the running graph in its own YAML dialect
+# (block-style lists, defaults filled, keys reordered), which the text parsers
+# above do NOT handle (`_parse_generated_pipeline_filters` only reads inline
+# `channels: [..]`). So the live check parses the read-back with a real YAML
+# loader and asserts the same safety invariants structurally on the dict.
+
+
+def _running_config_filter(config: dict[str, Any], name: str) -> dict[str, Any]:
+    filters = config.get("filters")
+    entry = filters.get(name) if isinstance(filters, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def _running_filter_matches(
+    config: dict[str, Any],
+    name: str,
+    *,
+    filter_type: str,
+    params: dict[str, Any],
+) -> bool:
+    entry = _running_config_filter(config, name)
+    if entry.get("type") != filter_type:
+        return False
+    actual = entry.get("parameters")
+    if not isinstance(actual, dict):
+        return False
+    for key, expected in params.items():
+        value = actual.get(key)
+        if isinstance(expected, float):
+            if not _float_matches(value, expected):
+                return False
+        elif value != expected:
+            return False
+    return True
+
+
+def _running_step_channels(step: dict[str, Any]) -> set[int]:
+    # CamillaDSP Filter pipeline steps carry the target channels as either a
+    # `channels: [..]` list (the JTS emitter form) or a scalar `channel: N`
+    # (CamillaDSP's single-channel sugar). Accept both; bools are not channels.
+    chans = step.get("channels")
+    if isinstance(chans, list):
+        return {
+            int(c) for c in chans if isinstance(c, int) and not isinstance(c, bool)
+        }
+    ch = step.get("channel")
+    if isinstance(ch, int) and not isinstance(ch, bool):
+        return {int(ch)}
+    return set()
+
+
+def _running_pipeline_contains_chain(
+    config: dict[str, Any],
+    *,
+    channels: set[int],
+    required_names: tuple[str, ...],
+) -> bool:
+    pipeline = config.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    for step in pipeline:
+        if not isinstance(step, dict) or step.get("type") != "Filter":
+            continue
+        if _running_step_channels(step) != channels:
+            continue
+        names = step.get("names")
+        names = [str(n) for n in names] if isinstance(names, list) else []
+        if all(req in names for req in required_names):
+            return True
+    return False
+
+
+def running_commission_evidence(
+    running_config_raw: str | None,
+    *,
+    audible_outputs: Iterable[int],
+    muted_outputs: Iterable[int],
+    tweeter_outputs: Iterable[int],
+    protective_hp_hz: float | None,
+) -> dict[str, Any]:
+    """Per-driver commissioning safety, asserted on the RUNNING CamillaDSP graph.
+
+    The live counterpart of :func:`driver_commission_audible_evidence`: given the
+    config CamillaDSP is actually running (``CamillaController.get_active_config_raw``)
+    and the INTENDED mask the off-device gate already validated, prove the live
+    graph still matches — exactly ``audible_outputs`` un-muted (every other
+    output a -120 dB hard mute, all wired) and every audible tweeter still wrapped
+    by its protective high-pass + startup limiter. This is the "assert the
+    high-pass is present in the RUNNING pipeline, not just the config file" gate
+    that guards the per-driver tweeter unmute (HANDOFF-active-speaker-dsp.md
+    Stage 5). Fails closed: an unparseable read-back, a missing filter, or a mask
+    that drifted from intent all return ``passed=False``.
+    """
+    audible = {int(i) for i in audible_outputs}
+    muted = {int(i) for i in muted_outputs}
+    tweeters = {int(i) for i in tweeter_outputs}
+    declared = audible | muted
+    audible_tweeter = audible & tweeters
+
+    config: Any = None
+    if isinstance(running_config_raw, str) and running_config_raw.strip():
+        try:
+            config = yaml.safe_load(running_config_raw)
+        except yaml.YAMLError:
+            config = None
+    parse_ok = isinstance(config, dict)
+    if not parse_ok:
+        config = {}
+
+    # (1) Audible mask: each declared output un-muted iff in `audible`, every
+    # other declared output -120 dB hard-muted, and each mute wired to its own
+    # channel. Fail closed on an empty declared set or any drift.
+    mask_correct = parse_ok and bool(declared) and audible <= declared
+    for index in sorted(declared):
+        name = output_commission_mute_name(index)
+        if index in audible:
+            mute_ok = _running_filter_matches(
+                config, name, filter_type="Gain", params={"mute": False}
+            )
+        else:
+            mute_ok = _running_filter_matches(
+                config,
+                name,
+                filter_type="Gain",
+                params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+            )
+        wired = _running_pipeline_contains_chain(
+            config, channels={index}, required_names=(name,)
+        )
+        if not (mute_ok and wired):
+            mask_correct = False
+
+    # (2) Protection-while-audible: an audible tweeter keeps its protective HP +
+    # limiter, wired. A muted tweeter is vacuously safe.
+    if not audible_tweeter:
+        tweeter_protected = parse_ok
+    else:
+        hp_defined = protective_hp_hz is not None and _running_filter_matches(
+            config,
+            "as_tweeter_protective_hp",
+            filter_type="BiquadCombo",
+            params={
+                "type": "LinkwitzRileyHighpass",
+                "freq": protective_hp_hz,
+                "order": 4,
+            },
+        )
+        limiter_defined = _running_filter_matches(
+            config,
+            "as_tweeter_startup_limiter",
+            filter_type="Limiter",
+            params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
+        )
+        hp_limiter_wired = _running_pipeline_contains_chain(
+            config,
+            channels=audible_tweeter,
+            required_names=(
+                "as_tweeter_protective_hp",
+                "as_tweeter_startup_limiter",
+            ),
+        )
+        tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
+
+    headroom = _running_filter_matches(
+        config,
+        "active_startup_headroom",
+        filter_type="Gain",
+        params={"gain": -STARTUP_HEADROOM_DB},
+    )
+    checks = {
+        "running_config_parsed": parse_ok,
+        "audible_mask_correct": mask_correct,
+        "tweeter_protected_while_audible": tweeter_protected,
+        "startup_headroom": headroom,
+    }
+    return {
+        "audible_outputs": sorted(audible),
+        "muted_outputs": sorted(muted),
+        "audible_tweeter_outputs": sorted(audible_tweeter),
+        "protective_highpass_hz": protective_hp_hz,
         "checks": checks,
         "passed": all(checks.values()),
     }
