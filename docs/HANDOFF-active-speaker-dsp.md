@@ -691,10 +691,15 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   Stage 5: a process that deliberately unmutes drivers one at a time needs
   "not-yet-operator-confirmed" to be **distinct from both "muted" and "confirmed
   safe."** Consolidate ownership, preserve the state space. *Landed:*
-  `commission_ramp.ramp_audible_step` drives exactly this tri-state per driver
-  (each audible step → `floor_pending_operator`; `commission-ramp ack
-  heard_correct_driver` → `floor_confirmed`); `silent` retries louder via
-  `floor_audio_retry_allowed_for_target`. It is not replaced by a bool.
+  `commission_ramp.ramp_audible_step` drives this tri-state for the per-DRIVER
+  floor confirmation — the floor step (or a `silent`-retry step) →
+  `floor_pending_operator`; `commission-ramp ack heard_correct_driver` →
+  `floor_confirmed`. The per-STEP gate is a separate thing (`ramp.pending`): a
+  louder step on an already-confirmed driver releases `ramp.pending` while the
+  driver stays `floor_confirmed` — conflating the two wedged the second step up,
+  now fixed. The session is **armed as a precondition** (on a static ready
+  report; the Stage-5 gate, not `probe_active_speaker_environment`, is the
+  authority) and **fails closed** if it cannot arm. It is not replaced by a bool.
 - **"Subsonic/DC protection present" (Stage-5 gate) = assert the EXISTING
   protections, no dedicated woofer high-pass (decided 2026-06-17).** The active
   graph has a protective high-pass only on the tweeter; the woofer/low path has
