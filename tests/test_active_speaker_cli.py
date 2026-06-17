@@ -285,6 +285,182 @@ def test_path_probe_cli_writes_probe_backed_evidence(
     )
 
 
+# --- commission-load / commission-rollback (the operator trigger) ------------
+#
+# These wire the dormant guarded per-driver load (exhaustively tested in
+# tests/test_active_speaker_commission_load.py) to the CLI. The focus here is the
+# OPERATOR SURFACE: the CamillaController seam wiring (inline set_active_config_raw,
+# get_active_config_raw read-back, get_config_file_path anchor), single-flight,
+# the dry-run preflight, and exit codes — not re-testing the load transaction.
+
+from tests.test_active_speaker_commission_load import _block  # noqa: E402
+from tests.test_active_speaker_startup_load import (  # noqa: E402
+    _staged,
+    _topology,
+)
+
+
+class _FakeController:
+    """Mimics the CamillaController seams the commission-load CLI uses.
+
+    Inline transport: ``set_active_config_raw`` swaps the running graph (and
+    block-style re-serializes it like real CamillaDSP active_raw()); the
+    persisted ``config_file_path`` (the statefile anchor) never moves.
+    """
+
+    def __init__(self, persisted_path: str) -> None:
+        self.persisted_path = str(persisted_path)
+        self.running_raw: str | None = None
+        self.applied_texts: list[str] = []
+
+    async def get_config_file_path(self, *, best_effort: bool = False) -> str:
+        return self.persisted_path
+
+    async def set_active_config_raw(
+        self, text: str, *, best_effort: bool = False
+    ) -> bool:
+        self.applied_texts.append(text)
+        self.running_raw = _block(text)
+        return True
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
+        return self.running_raw
+
+
+def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) -> dict:
+    staged = _staged(tmp_path)
+    staged_path = staged["config"]["path"]
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {staged_path}\nmute: false\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.load_output_topology", lambda path=None: _topology()
+    )
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.load_staged_startup_config", lambda: staged
+    )
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker._camilla_controller", lambda: controller
+    )
+    # The transient commissioning config writes to /var/lib/camilladsp/configs by
+    # default (correct on the Pi, unwritable in CI) — redirect it to tmp.
+    monkeypatch.setattr(
+        "jasper.active_speaker.staging.commissioning_config_path",
+        lambda **kwargs: tmp_path / "commission.yml",
+    )
+    # Preset-fallback path (matches _staged, which stages from the bundled preset).
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft", lambda path=None: {}
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda path=None, current_design_draft=None: {"status": "not_prepared"},
+    )
+    # The startup-load gate requires a real camilladsp --check VALID (not the
+    # "binary missing" skip). Point validation at a stub binary that exits 0 so
+    # the load is deterministic without the real CamillaDSP toolchain.
+    fake_camilla = tmp_path / "camilladsp"
+    fake_camilla.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_camilla.chmod(0o755)
+    monkeypatch.setenv("JASPER_CAMILLADSP_BIN", str(fake_camilla))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE", str(tmp_path / "path_safety.json")
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
+        str(tmp_path / "commission_load.json"),
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    return {"staged": staged, "staged_path": staged_path, "statefile": statefile}
+
+
+def test_commission_load_cli_arms_woofer_at_floor(monkeypatch, tmp_path: Path, capsys):
+    from jasper.active_speaker import load_commission_load_state
+
+    controller = _FakeController("placeholder")
+    env = _commission_env(monkeypatch, tmp_path, controller)
+    controller.persisted_path = env["staged_path"]  # active graph IS the staged config
+
+    code = main(["commission-load", "--group", "mono", "--role", "woofer", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["load"]["status"] == "loaded"
+    assert payload["load"]["target"]["role"] == "woofer"
+    assert payload["load"]["target"]["audible_outputs"] == [0]
+    assert payload["load"]["live_evidence"]["passed"] is True
+    # The inline seam applied exactly the woofer commissioning config (not the
+    # boot config) into the running graph, woofer (index 0) un-muted.
+    assert len(controller.applied_texts) == 1
+    assert "audible_outputs=[0]" in controller.applied_texts[0]
+    # Crash-recovery-MUTED: the persisted statefile still points at the staged
+    # boot config.
+    assert payload["load"]["durable_statefile_intact"] is True
+
+    state = load_commission_load_state()
+    assert state["status"] == "loaded"
+    assert state["rollback_available"] is True
+
+
+def test_commission_load_cli_single_flight_refuses_second_load(
+    monkeypatch, tmp_path: Path, capsys
+):
+    controller = _FakeController("placeholder")
+    env = _commission_env(monkeypatch, tmp_path, controller)
+    controller.persisted_path = env["staged_path"]
+
+    assert main(["commission-load", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+    assert len(controller.applied_texts) == 1
+
+    # A second arm while one is already loaded must refuse and load nothing.
+    code = main(["commission-load", "--group", "mono", "--role", "tweeter"])
+    printed = capsys.readouterr().out
+    assert code == 1
+    assert "refused" in printed.lower()
+    assert len(controller.applied_texts) == 1  # nothing new applied
+
+
+def test_commission_load_cli_dry_run_loads_nothing(monkeypatch, tmp_path: Path, capsys):
+    controller = _FakeController("placeholder")
+    env = _commission_env(monkeypatch, tmp_path, controller)
+    controller.persisted_path = env["staged_path"]
+
+    code = main([
+        "commission-load", "--group", "mono", "--role", "woofer", "--dry-run", "--json"
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["preflight"]["load_allowed"] is True
+    # Dry-run preflight emits the candidate config but loads NOTHING.
+    assert controller.applied_texts == []
+
+
+def test_commission_rollback_cli_reloads_staged_all_muted(
+    monkeypatch, tmp_path: Path, capsys
+):
+    from jasper.active_speaker import load_commission_load_state
+
+    controller = _FakeController("placeholder")
+    env = _commission_env(monkeypatch, tmp_path, controller)
+    controller.persisted_path = env["staged_path"]
+
+    assert main(["commission-load", "--group", "mono", "--role", "woofer"]) == 0
+    capsys.readouterr()
+
+    code = main(["commission-rollback", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["rollback"]["status"] == "rolled_back"
+    # The last thing applied to the running graph is the all-muted staged config.
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert load_commission_load_state()["status"] == "rolled_back"
+
+
 def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
     monkeypatch.setattr(
         "jasper.cli.active_speaker.probe_active_speaker_environment",
