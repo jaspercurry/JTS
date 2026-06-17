@@ -93,6 +93,7 @@ def test_managed_units_excludes_tier_b_reconcilers():
         "jasper-wifi-guardian.service",
         "jasper-audio-hardware-reconcile.service",
         "jasper-dac-init.service",
+        "jasper-headphone-monitor.service",
         "jasper-dongle-recover.service",
     }
     assert tier_b.isdisjoint(restart_broker.MANAGED_UNITS), (

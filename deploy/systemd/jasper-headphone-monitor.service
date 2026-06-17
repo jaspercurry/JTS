@@ -17,6 +17,14 @@ ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__ Headphon
 Restart=always
 RestartSec=2
 Nice=10
+# WS1 Tier-B DAC mixer slice: same Apple-DAC amixer permission contract as
+# jasper-dac-init, but kept as a daemon so drift is still observed and repaired.
+User=jasper-recon
+Group=jasper
+SupplementaryGroups=audio
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+NoNewPrivileges=true
 StandardOutput=journal
 StandardError=journal
 

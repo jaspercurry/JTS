@@ -1,9 +1,11 @@
 # shellcheck shell=bash
-# WS1 Phase 3b — dedicated non-root service users + the shared `jasper` group for
-# the Tier-A daemons dropped from root: jasper-voice / jasper-mux / jasper-input
-# (3b-1), jasper-control (3b-2, polkit-mediated restarts/reboots), and jasper-web
-# (3b-3, polkit-mediated NetworkManager + bluetooth/systemd-journal groups). All
-# share primary group `jasper` so the cross-daemon /run sockets (the broker) and
+# WS1 Phase 3b/first Tier-B slice — dedicated non-root service users + the
+# shared `jasper` group. Tier-A daemons dropped from root: jasper-voice /
+# jasper-mux / jasper-input (3b-1), jasper-control (3b-2, polkit-mediated
+# restarts/reboots), and jasper-web (3b-3, polkit-mediated NetworkManager +
+# bluetooth/systemd-journal groups). The first Tier-B DAC mixer slice adds
+# jasper-recon for non-root amixer access via the `audio` group. All share
+# primary group `jasper` so the cross-daemon /run sockets (the broker) and
 # /var/lib/jasper state are reachable. Mirrors the existing shairport-sync
 # user-creation pattern in renderers.sh. All operations are idempotent and safe
 # to re-run (useradd only when absent; supplementary-group adds via usermod -aG
@@ -94,6 +96,15 @@ create_jasper_service_users() {
     if getent group bluetooth >/dev/null 2>&1; then
         usermod -aG bluetooth jasper-web 2>/dev/null || true
     fi
+    # WS1 Tier-B DAC mixer slice — jasper-recon is the non-root service user
+    # for hardware reconcilers that only need ALSA mixer access. The first use
+    # is Apple dongle Headphone control pinning (`jasper-dac-init` and
+    # `jasper-headphone-monitor`): primary group `jasper`, supplementary `audio`
+    # for /dev/snd/controlC* access. No sudo/polkit grant is attached here.
+    if ! getent passwd jasper-recon >/dev/null 2>&1; then
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio jasper-recon
+    fi
+    usermod -aG audio jasper-recon 2>/dev/null || true
     # WS1 Phase 4a — ensure jasper-secrets membership on UPGRADE too (the
     # useradd -G above is skipped when the user already exists, e.g. a Pi from a
     # pre-4a build). Idempotent; takes effect on the daemon's next start (the
@@ -112,7 +123,7 @@ create_jasper_service_users() {
         usermod -aG jasper-intsecrets jasper-mux 2>/dev/null || true
         usermod -aG jasper-intsecrets jasper-web 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every
