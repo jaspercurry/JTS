@@ -774,3 +774,26 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_systemd_hardening.py",
 ]
+
+[[subsystem]]
+id = "control-plane-auth"
+title = "Control-plane authentication (device-to-device / household)"
+safety = "connectivity-risk"
+# The per-DEVICE CSRF control token stays owned by the privilege-separation
+# stanza above. THIS doc owns the cross-device / machine-to-machine path — the
+# grouping fan-out and the (proposed) household credential. Currently a PROPOSAL
+# (see the doc's status banner); the household_credential module + gate change
+# join `code` when Phase C lands. Coarse on purpose.
+code = [
+  "jasper/web/rooms_setup.py",
+  "tests/test_control_server.py",
+]
+docs = [
+  "docs/HANDOFF-control-plane-auth.md",
+]
+requires_docs_when = [
+  "The authentication posture of the cross-device grouping path (the /grouping/set bond/unbond fan-out, who may set another speaker's grouping, or the household-credential mint/distribute/verify) changes, or a token-gated-route client's token delivery changes.",
+]
+verification = [
+  "pytest tests/test_control_server.py",
+]
