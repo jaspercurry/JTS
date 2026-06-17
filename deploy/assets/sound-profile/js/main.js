@@ -22,6 +22,7 @@ import {
   activeSpeakerStepState,
   commissionCardState,
   commissionFloorLabel,
+  commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanMode,
   humanRole,
@@ -1803,8 +1804,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               'crossover/limiter graph — woofer first, then tweeter.'
           : 'Choose one driver at a time, start very quiet, and record what happened.',
         topology,
-        (safetyActive ? renderCommissionCard() : renderOutputReadinessCard()) +
-        renderDriverMeasurementProgressCard(topology),
+        safetyActive ? renderCommissionCard() : renderOutputReadinessCard(),
         ''
       ) +
       renderOutputStepCard(
@@ -2067,17 +2067,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       pendingId && playbackId && pendingId === playbackId &&
       playbackConfirmable(playback);
   }
-  function outputResultLabel(outcome) {
-    outcome = String(outcome || '').trim().toLowerCase();
-    if (outcome === 'heard_correct_driver') return 'heard selected driver';
-    if (outcome === 'silent') return 'not heard';
-    if (outcome === 'heard_wrong_driver') return 'wrong driver';
-    if (outcome === 'too_loud') return 'too loud';
-    if (outcome === 'blend_ok') return 'blend sounds right';
-    if (outcome === 'needs_adjustment') return 'needs adjustment';
-    if (outcome === 'polarity_or_delay_problem') return 'sounds hollow or thin';
-    return 'not recorded';
-  }
   function measurementTargetId(groupId, role) {
     return String(groupId || '') + ':' + String(role || '').trim().toLowerCase();
   }
@@ -2103,48 +2092,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function latestSummedTest(groupId) {
     var latest = measurementSummary().latest_summed_tests || {};
     return latest[String(groupId || '')] || null;
-  }
-  function driverTargetLabel(group, channel) {
-    var output = channel && channel.human_output_label ||
-      (channel && channel.physical_output_index != null ?
-        'DAC output ' + (Number(channel.physical_output_index) + 1) : 'unassigned output');
-    return (group.label || group.id || 'Speaker') + ' · ' +
-      humanRole(channel && channel.role) + ' · ' + output;
-  }
-  function renderDriverMeasurementProgressCard(topology) {
-    var targets = [];
-    activeOutputGroups(topology).forEach(function(group) {
-      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
-        targets.push({group: group, channel: channel});
-      });
-    });
-    if (!targets.length) return '';
-    var summary = measurementSummary();
-    var captured = Number(summary.captured_driver_count || 0);
-    var required = Number(summary.required_driver_count || targets.length);
-    var rows = targets.map(function(target) {
-      var group = target.group;
-      var channel = target.channel;
-      var latest = latestDriverMeasurement(group.id, channel.role);
-      var measured = latest && latest.captured === true;
-      var note = measured ? 'Measured' :
-        (latest && latest.outcome ?
-          'Last check: ' + outputResultLabel(latest.outcome) :
-          'Needs one successful driver test');
-      return '<div class="active-speaker-progress__row">' +
-        '<div><strong>' + escapeHtml(driverTargetLabel(group, channel)) + '</strong>' +
-          '<span>' + escapeHtml(note) + '</span></div>' +
-        '<span class="status-pill' + (measured ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(measured ? 'measured' : 'remaining') + '</span>' +
-      '</div>';
-    }).join('');
-    return '<div class="output-card output-card--measurements">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Driver checks</p>' +
-        '<p class="setting-row__hint">Each active driver needs one successful quiet test before the combined-speaker check.</p></div>' +
-        '<span class="status-pill' + (captured >= required && required > 0 ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(captured + '/' + required) + '</span></div>' +
-      '<div class="active-speaker-progress">' + rows + '</div>' +
-    '</div>';
   }
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
@@ -3397,6 +3344,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error((payload && payload.error) || 'request failed');
+      var failure = commissionPayloadFailure(payload);
+      if (failure) {
+        // The request was accepted (HTTP 200) but a guard refused/blocked it.
+        // Show why instead of silently re-rendering the unchanged state — the
+        // "flicker then nothing" bug. Refresh first so the card reflects the
+        // persisted (still-unarmed) state alongside the reason.
+        await refreshCommissionState();
+        patchActiveSpeaker({commissionBusy: '', commissionError: failure});
+        render();
+        return;
+      }
     } catch (e) {
       patchActiveSpeaker({commissionBusy: '', commissionError: String(e.message || e)});
       render();
