@@ -66,6 +66,7 @@ from .autolevel import (
 )
 from .calibration import CalibrationRecord
 from .peq import PEQ
+from .state_guard import SessionStateGuard
 from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -481,12 +482,21 @@ class MeasurementSession:
             session_id=self.session_id,
         )
 
-        # Single-slot watchdog that abandons a session stranded waiting for a
-        # capture upload (see AWAITING_CAPTURE_TIMEOUT_SEC). Armed/cancelled
-        # centrally from _set_state; capture_timeout_sec is overridable in
-        # tests (and disabled when <= 0).
-        self._capture_timeout_task: asyncio.Task[None] | None = None
-        self.capture_timeout_sec: float = AWAITING_CAPTURE_TIMEOUT_SEC
+        # Single-slot guard that abandons stranded browser-capture states and
+        # refuses reset while a fire-and-forget sweep/analysis task is active.
+        # Armed/cancelled centrally from _set_state; capture_timeout_sec remains
+        # an overridable session property for tests (and disables when <= 0).
+        self._state_guard = SessionStateGuard(
+            session_id=self.session_id,
+            capture_timeout_states=_CAPTURE_TIMEOUT_STATES,
+            reset_busy_states=_RESET_BUSY_STATES,
+            capture_timeout_sec=AWAITING_CAPTURE_TIMEOUT_SEC,
+            get_state=lambda: self.state,
+            lock_factory=lambda: self._lock,
+            fail=self._fail,
+            state_label=lambda state: state.value,
+            logger=logger,
+        )
 
         # Optional client-reported room noise floor (the autolevel
         # preflight measures this in the browser before the tone
@@ -548,6 +558,14 @@ class MeasurementSession:
     ) -> None:
         self._autolevel_controller.main_volume_setter = setter
 
+    @property
+    def capture_timeout_sec(self) -> float:
+        return self._state_guard.capture_timeout_sec
+
+    @capture_timeout_sec.setter
+    def capture_timeout_sec(self, timeout_sec: float) -> None:
+        self._state_guard.capture_timeout_sec = float(timeout_sec)
+
     # ------------------------------------------------------------------
     # Internal helpers.
     # ------------------------------------------------------------------
@@ -564,53 +582,7 @@ class MeasurementSession:
         self.updated_at = ev.timestamp
 
     def _cancel_capture_timeout(self) -> None:
-        task = self._capture_timeout_task
-        self._capture_timeout_task = None
-        if task is not None and not task.done():
-            task.cancel()
-
-    def _arm_capture_timeout(self, state: SessionState) -> None:
-        if self.capture_timeout_sec <= 0:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._capture_timeout_task = loop.create_task(
-            self._capture_timeout_guard(state, self.capture_timeout_sec)
-        )
-
-    async def _capture_timeout_guard(
-        self, expected_state: SessionState, timeout_sec: float,
-    ) -> None:
-        try:
-            await asyncio.sleep(timeout_sec)
-        except asyncio.CancelledError:
-            return
-        # Self-contained: this runs as a detached task, so any error here would
-        # surface only as an "exception never retrieved" warning. Swallow +
-        # log instead of letting that leak.
-        try:
-            async with self._lock:
-                # Own the slot first so _fail()'s cancel doesn't cancel us.
-                self._capture_timeout_task = None
-                if self.state != expected_state:
-                    return
-                log_event(
-                    logger,
-                    "correction_capture_timeout",
-                    session=self.session_id,
-                    state=expected_state.value,
-                    after_sec=f"{timeout_sec:.0f}",
-                    level=logging.WARNING,
-                )
-                await self._fail(
-                    "capture never arrived — tap Start to measure again"
-                )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "capture-timeout guard failed (session=%s)", self.session_id,
-            )
+        self._state_guard.cancel_capture_timeout()
 
     async def _set_state(self, state: SessionState, **extra: Any) -> None:
         prev = self.state
@@ -619,9 +591,7 @@ class MeasurementSession:
         # pending timer, then start a fresh one only when entering a state that
         # waits on an automatic browser upload. An upload (or any other
         # transition) cancels it for free.
-        self._cancel_capture_timeout()
-        if state in _CAPTURE_TIMEOUT_STATES:
-            self._arm_capture_timeout(state)
+        self._state_guard.on_transition(state)
         payload = {"state": state.value, "prev": prev.value, **extra}
         self._emit("state", payload)
         logger.info(
@@ -1905,7 +1875,7 @@ class MeasurementSession:
         camilla_set_config: Callable[[str], Awaitable[bool]],
     ) -> None:
         async with self._lock:
-            if self.state in _RESET_BUSY_STATES:
+            if self._state_guard.is_reset_busy(self.state):
                 raise SessionBusyError(
                     f"cannot reset while {self.state.value} — a sweep or "
                     "analysis is in progress; wait for it to finish"

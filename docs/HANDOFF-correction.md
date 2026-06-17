@@ -804,10 +804,11 @@ jasper/
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
 │   ├── artifacts.py                     per-session bundle writer / manifest owner
 │   ├── autolevel.py                     auto-level ramp controller + volume restore
+│   ├── state_guard.py                   capture watchdog + reset-busy guard
 │   ├── fir_runtime.py                   FIR coefficient inspect/stage substrate
 │   ├── evidence.py                      deterministic human/agent evidence packet
 │   └── session.py                       measurement state machine + DSP orchestration
-│                                        (delegates auto-level ramping)
+│                                        (delegates auto-level ramping and state guards)
 │
 ├── cli/
 │   └── doctor.py                        correction socket / bundle / config checks
@@ -1643,5 +1644,7 @@ RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
 still apply.)
 
 Last verified: 2026-06-17 (auto-level controller ownership rechecked against
-`jasper/correction/autolevel.py` and `jasper/correction/session.py`; behavior,
-routes, and safety invariants remain unchanged.)
+`jasper/correction/autolevel.py` and `jasper/correction/session.py`; stranded
+capture watchdog / reset-busy guard ownership rechecked against
+`jasper/correction/state_guard.py` and `jasper/correction/session.py`.
+Behavior, routes, and safety invariants remain unchanged.)
