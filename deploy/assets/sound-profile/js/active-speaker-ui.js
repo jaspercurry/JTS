@@ -119,6 +119,47 @@ export function activeCommissionGroup(topology) {
   return null;
 }
 
+// Map a commission-load/ramp POST result to ONE calm, actionable sentence when
+// the guard refused or blocked it. Returns '' on success (the card then shows the
+// new armed/stepped/confirmed state). This is what prevents the "flicker then
+// nothing" silent failure: the endpoints answer HTTP 200 even when a guard blocks
+// the load, so the card must read the body's status — not only the HTTP code.
+export function commissionPayloadFailure(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (payload.status === 'refused') {
+    return 'Another driver is already being tested. Stop it first, then try again.';
+  }
+  var load = payload.load && typeof payload.load === 'object' ? payload.load : null;
+  var blocked = payload.status === 'blocked' || payload.status === 'failed' ||
+    (load && load.status && load.status !== 'loaded');
+  if (!blocked) return '';
+  var preflight = payload.preflight ||
+    (load && typeof load.preflight === 'object' ? load.preflight : null) || {};
+  var gates = Array.isArray(preflight.required_gates) ? preflight.required_gates : [];
+  for (var i = 0; i < gates.length; i += 1) {
+    if (gates[i] && gates[i].passed === false) return commissionGateReason(gates[i].id);
+  }
+  return 'This driver can’t be tested yet — finish the earlier setup steps first.';
+}
+
+// The per-driver commissioning gates are a closed set; map each to consumer copy.
+// Never surface the raw gate.message / issue codes — they carry snake_case tokens
+// (e.g. route_verified) that don’t belong in a household-facing wizard.
+export function commissionGateReason(gateId) {
+  return {
+    speaker_ready_for_active_load:
+      'The speaker isn’t fully set up for driver tests yet — finish the earlier steps ' +
+      '(confirm the DAC outputs, then run the setup step above) before testing a driver.',
+    commissioning_candidate_prepared:
+      'JTS couldn’t prepare this driver’s quiet test — re-check the crossover settings ' +
+      'and DAC outputs above, then try again.',
+    commissioning_protection_while_audible:
+      'This driver isn’t ready to test yet — confirm the tweeter’s protection above first.',
+    commissioning_candidate_present:
+      'JTS couldn’t build this driver’s test setup — refresh the page and try again.'
+  }[gateId] || 'A setup step still needs finishing before this driver can be tested.';
+}
+
 export function playbackResultMessage(playback, fallback, normalizeMessage) {
   playback = playback || {};
   var issues = Array.isArray(playback.issues) ? playback.issues : [];

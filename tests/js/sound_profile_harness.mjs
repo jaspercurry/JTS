@@ -1373,6 +1373,52 @@ async function testCommissionCardArmsAndSteps() {
   return { commissionCardArmsAndSteps: true };
 }
 
+async function testCommissionArmBlockedSurfacesReason() {
+  // The gate can refuse an arm with HTTP 200 + a blocked body (e.g. the speaker
+  // isn't staged). The card must surface a calm reason — not the "flicker then
+  // nothing" silent failure, and never a raw snake_case code.
+  const commissionState = {
+    commission_load: { status: "idle", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-load": () => Promise.resolve(response({
+      preflight: {
+        required_gates: [
+          {
+            id: "speaker_ready_for_active_load",
+            passed: false,
+            message: "Resolve protected startup-load blockers before commissioning",
+          },
+        ],
+      },
+      load: {
+        status: "blocked",
+        issues: [
+          { code: "route_verified_not_verified", message: "Music renderers: route_verified is not verified" },
+        ],
+      },
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "commission-arm", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("fully set up for driver tests yet")) {
+    fail("blocked arm must surface a calm reason, not flicker silently", { html });
+  }
+  for (const leak of ["route_verified", "speaker_ready_for_active_load", "Music renderers:"]) {
+    if (html.includes(leak)) fail("blocked arm reason must not leak backend codes", { leak, html });
+  }
+  return { commissionArmBlockedSurfacesReason: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -1388,5 +1434,6 @@ results.push(await testBlockedAudibleDriverTestDoesNotClaimSoundPlayed());
 results.push(await testAudibleRampRecordsSilenceAndAsksBackendForNextStep());
 results.push(await testUnavailableAudioBackendDoesNotPostAudibleTone());
 results.push(await testCommissionCardArmsAndSteps());
+results.push(await testCommissionArmBlockedSurfacesReason());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

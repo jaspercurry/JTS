@@ -533,6 +533,14 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    `=="dual_apple"` branches) or CI goes red. This deletion is coupled to step 1:
    removing the bypass before the active lane exists leaves driver testing with
    no backend, so it lands only once the production path works on hardware.
+   **Passive carve-out (since the #780 fold):** the `/sound/` "Test each driver"
+   step routes only *active* 2/3-way groups to the commission flow; *passive /
+   full-range* groups still use the direct-DAC tone (`renderOutputReadinessCard`).
+   The active-lane replacement above does not cover them, so this step must
+   explicitly decide passive — give passive full-range a graph-routed driver
+   check, or accept (and state) that passive speakers lose the per-driver tone
+   test — rather than deleting the direct-DAC path out from under the one
+   surface that still depends on it.
 
 ### Staged, hardware-verified build sequence (each independently green; deletion last)
 
