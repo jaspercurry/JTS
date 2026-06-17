@@ -120,10 +120,11 @@ DROPPED = {
     "jasper-voice": ("jasper-voice", {"audio"}),
     "jasper-mux": ("jasper-mux", set()),
     "jasper-input": ("jasper-input", {"input"}),
-    # 3b-2: control needs NO supplementary group — its privileged restarts/
-    # reboots are granted by polkit (deploy/polkit/49-jasper-control.rules), and
-    # it opens no ALSA/input device (TCP + localhost WebSocket only).
-    "jasper-control": ("jasper-control", set()),
+    # 3b-2: control's privileged restarts/reboots are granted by polkit
+    # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
+    # ALSA/input device. The one supplementary group is `systemd-journal` —
+    # several /state cards (airplay_health, dial, wifi_guardian) read the journal.
+    "jasper-control": ("jasper-control", {"systemd-journal"}),
 }
 
 # Still root (drop deferred). Moving jasper-web here to DROPPED is exactly what

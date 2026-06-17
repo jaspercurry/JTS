@@ -806,28 +806,51 @@ def render(results: list[CheckResult]) -> int:
     print(f"{GREEN}all checks passed.{RESET}")
     return 0
 
-def render_json(results: list[CheckResult]) -> int:
-    """Machine-readable output for the /system dashboard.
-
-    The web UI fetches this via /system/diagnostics → jasper-control →
-    sudo jasper-doctor --json. Returns the same exit-code semantics as
-    text render (0 = ok or warnings only; 1 = at least one fail).
-
-    Schema is intentionally flat — one row per check — so the
-    dashboard can render a table without complex per-check logic."""
-    import json as _json
-    fails = sum(1 for r in results if r.status == "fail")
-    warns = sum(1 for r in results if r.status == "warn")
-    payload = {
-        "fails": fails,
-        "warns": warns,
+def _json_payload(results: list[CheckResult]) -> dict:
+    """The flat /system-dashboard schema — one row per check."""
+    return {
+        "fails": sum(1 for r in results if r.status == "fail"),
+        "warns": sum(1 for r in results if r.status == "warn"),
         "results": [
             {"name": r.name, "status": r.status, "detail": r.detail}
             for r in results
         ],
     }
-    print(_json.dumps(payload))
-    return 1 if fails else 0
+
+
+def _emit_json(payload: dict, out_path: str | None) -> None:
+    """Emit the JSON report to stdout, or atomically to ``out_path``.
+
+    ``--out`` is how the non-root jasper-control gets a ROOT-fidelity report
+    (WS1 Phase 3b-2): a root ``jasper-doctor-json.service`` oneshot writes here
+    and jasper-control serves the file at /system/diagnostics. 0640 so the
+    `jasper` group (jasper-control's primary group; the oneshot runs root:jasper)
+    can read it without it being world-readable."""
+    import json as _json
+    text = _json.dumps(payload)
+    if out_path is None:
+        print(text)
+        return
+    from jasper.atomic_io import atomic_write_text
+    atomic_write_text(out_path, text + "\n", mode=0o640)
+
+
+def render_json(results: list[CheckResult], out_path: str | None = None) -> int:
+    """Machine-readable output for the /system dashboard.
+
+    The web UI fetches this via /system/diagnostics → jasper-control. Returns
+    text-render exit semantics (0 = ok/warn only; 1 = a fail) on the stdout
+    path. With ``out_path`` (the dashboard-capture oneshot), the report lands
+    in the file and we return 0 — the file carries the pass/fail, and a
+    non-zero exit would needlessly flip the oneshot to ``failed``.
+
+    Schema is intentionally flat — one row per check — so the dashboard can
+    render a table without complex per-check logic."""
+    payload = _json_payload(results)
+    _emit_json(payload, out_path)
+    if out_path is not None:
+        return 0
+    return 1 if payload["fails"] else 0
 
 def _watch_line(results: list[CheckResult]) -> str:
     """One-line summary for --watch mode. Counts + first non-ok name so
@@ -945,6 +968,13 @@ def main() -> None:
              "the /system dashboard's diagnostics disclosure.",
     )
     parser.add_argument(
+        "--out", metavar="PATH", default=None,
+        help="With --json, write the report atomically to PATH (0640) instead "
+             "of stdout, then exit 0. The root jasper-doctor-json.service "
+             "oneshot uses this so the non-root jasper-control can serve a "
+             "root-fidelity report at /system/diagnostics (WS1 Phase 3b-2).",
+    )
+    parser.add_argument(
         "--probe-aec", action="store_true",
         help="Active probe — play a brief sine into correction_substream "
              "and verify the AEC bridge's `ref` rises in its rms log. "
@@ -952,23 +982,27 @@ def main() -> None:
              "Refuses if a renderer is currently playing.",
     )
     args = parser.parse_args()
+    # --out is a JSON-to-file capture; it implies --json so the oneshot can
+    # pass `--json --out PATH` (or just `--out PATH`) and always get a report.
+    if args.out:
+        args.json = True
     _load_env_files()
     try:
         install_profile = read_install_profile()
         cfg = _doctor_config_from_env(install_profile)
     except (RuntimeError, ValueError) as e:
         if args.json:
-            import json as _json
-            print(_json.dumps({
-                "error": f"config: {e}", "fails": 1, "warns": 0, "results": [],
-            }))
-            sys.exit(1)
+            _emit_json(
+                {"error": f"config: {e}", "fails": 1, "warns": 0, "results": []},
+                args.out,
+            )
+            sys.exit(0 if args.out else 1)
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
     if args.probe_aec:
         results = probe_aec_ref_path()
         if args.json:
-            sys.exit(render_json(results))
+            sys.exit(render_json(results, out_path=args.out))
         sys.exit(render(results))
     if args.watch:
         sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
@@ -976,22 +1010,24 @@ def main() -> None:
         results = asyncio.run(run_async(cfg))
     except Exception as e:  # noqa: BLE001
         if args.json:
-            import json as _json
             detail = _exception_detail(e)
-            print(_json.dumps({
-                "error": f"doctor crashed: {detail}",
-                "fails": 1,
-                "warns": 0,
-                "results": [{
-                    "name": "jasper-doctor",
-                    "status": "fail",
-                    "detail": detail,
-                }],
-            }))
-            sys.exit(1)
+            _emit_json(
+                {
+                    "error": f"doctor crashed: {detail}",
+                    "fails": 1,
+                    "warns": 0,
+                    "results": [{
+                        "name": "jasper-doctor",
+                        "status": "fail",
+                        "detail": detail,
+                    }],
+                },
+                args.out,
+            )
+            sys.exit(0 if args.out else 1)
         raise
     if args.json:
-        sys.exit(render_json(results))
+        sys.exit(render_json(results, out_path=args.out))
     sys.exit(render(results))
 
 if __name__ == "__main__":

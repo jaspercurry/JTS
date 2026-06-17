@@ -99,6 +99,10 @@ MANAGED_UNITS = frozenset({
     "jasper-grouping-reconcile.service",
     "jasper-camilla.service",
     "jasper-outputd.service",
+    # Root oneshot that captures `jasper-doctor --json` at full fidelity for the
+    # /system/diagnostics card — the non-root jasper-control `systemctl start`s
+    # it via its polkit manage-units grant (WS1 Phase 3b-2).
+    "jasper-doctor-json.service",
     # AirPlay / Spotify / USB renderers (/sources, /airplay, mux, correction)
     "shairport-sync.service",
     "nqptp.service",

@@ -443,34 +443,58 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
     assert calls == []
 
 
-def test_diagnostics_uses_fresh_env_for_doctor(
-    server_with_coordinator, monkeypatch,
+def test_diagnostics_starts_root_oneshot_and_serves_result(
+    server_with_coordinator, monkeypatch, tmp_path,
 ):
+    """WS1 Phase 3b-2: /system/diagnostics must START the root
+    jasper-doctor-json.service oneshot (via the non-root jasper-control's polkit
+    grant) and serve the JSON it wrote — NOT spawn the doctor in-process (which
+    would run non-root and report false hardware failures)."""
     import jasper.control.server as srv_mod
 
-    seen_envs: list[dict] = []
+    result = tmp_path / "doctor-result.json"
+    result.write_text('{"fails":0,"warns":1,"results":[{"name":"x","status":"warn","detail":"d"}]}')
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
 
-    def fake_env():
-        return {"PATH": "/bin", "JASPER_VOICE_PROVIDER": "openai"}
+    started: list[list[str]] = []
 
     class FakeProc:
         returncode = 0
-        stdout = '{"fails":0,"results":[],"warns":0}'
+        stdout = ""
         stderr = ""
 
-    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
-        seen_envs.append(kwargs["env"])
+    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
+        started.append(cmd)
         return FakeProc()
 
-    monkeypatch.setattr(srv_mod, "subprocess_env_with_fresh_files", fake_env)
     monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
 
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/system/diagnostics")
 
     assert status == 200
-    assert body["fails"] == 0
-    assert seen_envs == [{"PATH": "/bin", "JASPER_VOICE_PROVIDER": "openai"}]
+    assert body["warns"] == 1
+    assert started == [["systemctl", "start", "jasper-doctor-json.service"]]
+
+
+def test_diagnostics_502_when_oneshot_start_fails(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """A polkit denial / hard start failure (non-zero systemctl) must surface as
+    an honest 502, never a silent/garbled report."""
+    import jasper.control.server as srv_mod
+
+    class FakeProc:
+        returncode = 1
+        stdout = ""
+        stderr = "Interactive authentication required."
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *a, **k: FakeProc())
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/diagnostics")
+    assert status == 502
+    assert "unavailable" in body["error"]
 
 
 def test_system_audio_quality_applies_and_try_restarts_renderers(

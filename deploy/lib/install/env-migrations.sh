@@ -789,13 +789,26 @@ widen_control_secret_env_modes() {
     # gate-OFF on EACCES, so an unreadable token would SILENTLY DISABLE the gate.
     # It is owned jasper-voice (StateDirectory chown), so 0640 group read is the
     # only way the non-root jasper-control can read its own token.
+    #
+    # Two file classes, both read off disk by jasper-control's /state +
+    # /system/diagnostics and so needing GROUP read (0640):
+    #   - secret env: voice_provider / spotify / google / home_assistant /
+    #     control_token (the deliberate group-secret exposure).
+    #   - non-secret state: sound_profile.json / sound_settings.json (the EQ
+    #     config the /state sound card reads). These carry no secret.
+    # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
+    # holds the WiFi password, which jasper-control does not need the value of
+    # (only the SSID, which it derives from nmcli/the journal), so it stays
+    # owner-only 0600. Least privilege over blanket widening. See
+    # docs/HANDOFF-privilege-separation.md.
     local f
     for f in voice_provider.env spotify_credentials.env google_credentials.env \
-             home_assistant.env control_token; do
+             home_assistant.env control_token \
+             sound_profile.json sound_settings.json; do
         if [[ -f "${STATE_DIR}/${f}" ]]; then
             chgrp jasper "${STATE_DIR}/${f}" 2>/dev/null || true
             chmod 0640 "${STATE_DIR}/${f}" 2>/dev/null || true
         fi
     done
-    echo "  widen_control_secret_env_modes: secret env files group-jasper readable (0640)"
+    echo "  widen_control_secret_env_modes: config jasper-control reads is group-jasper readable (0640)"
 }

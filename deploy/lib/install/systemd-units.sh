@@ -42,6 +42,12 @@ install_local_audio_graph_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
+    # WS1 Phase 3b-2: root oneshot that captures jasper-doctor --json at full
+    # fidelity for /system/diagnostics (the non-root jasper-control triggers it
+    # via polkit). On-demand only — not enabled.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
+        "${SYSTEMD_DIR}/jasper-doctor-json.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
@@ -414,6 +420,10 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
+    # WS1 Phase 3b-2: root oneshot for /system/diagnostics (see full-path note).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
+        "${SYSTEMD_DIR}/jasper-doctor-json.service"
     # jasper-input: third-party HID accessory bridge (Anticater VK-01
     # volume knob today; future macro pads / foot pedals). Reads
     # /dev/input/event* via python-evdev, translates known devices'

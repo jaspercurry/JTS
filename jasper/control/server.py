@@ -61,7 +61,6 @@ from ..transit.state import read_state as read_transit_state
 from ..audio_profile_state import (
     normalize_audio_input_profile,
 )
-from ..env_load import subprocess_env_with_fresh_files
 from ..install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_role_for_profile,
@@ -1237,34 +1236,51 @@ def _make_handler(
             }
             self._send_json(payload)
 
+        # WS1 Phase 3b-2: jasper-doctor is a ROOT tool (audio/mixer/journal/
+        # renderer probes + `sudo -u <renderer> aplay`), and jasper-control is
+        # now non-root — running the doctor in-process here would make ~7
+        # hardware checks fail on permissions (false red on the dashboard). So
+        # the report is produced by the root jasper-doctor-json.service oneshot,
+        # which jasper-control starts via its polkit manage-units grant (the
+        # unit is in MANAGED_UNITS). `systemctl start` of a Type=oneshot blocks
+        # until the doctor finishes and writes the group-readable result file.
         def _get_system_diagnostics(self) -> None:
-            # Run jasper-doctor --json and proxy its output. ~3-5 s
-            # on a Pi 5; the dashboard surfaces a spinner during
-            # the call. Single-flight semantics not enforced here
-            # (the dashboard disables the button while in flight).
+            # ~3-5 s on a Pi 5; the dashboard shows a spinner and single-flights
+            # the button. A root caller (pre-drop / rollback) authorizes the
+            # start directly; the non-root jasper-control via the polkit rule.
+            # The result path matches jasper-doctor-json.service's --out target;
+            # env-overridable for tests (never set in production).
+            result_path = os.environ.get(
+                "JASPER_DIAGNOSTICS_RESULT_PATH",
+                "/run/jasper-control/doctor-result.json",
+            )
             try:
                 proc = subprocess.run(
-                    ["/opt/jasper/.venv/bin/jasper-doctor", "--json"],
+                    ["systemctl", "start", "jasper-doctor-json.service"],
                     capture_output=True, text=True, timeout=30,
-                    env=subprocess_env_with_fresh_files(),
                 )
             except (subprocess.SubprocessError, FileNotFoundError) as e:
                 self._send_json(
-                    {"error": f"jasper-doctor invocation failed: {e}"},
+                    {"error": f"diagnostics capture failed: {e}"}, status=502,
+                )
+                return
+            if proc.returncode != 0:
+                # The oneshot couldn't run — polkit denial (rule missing) or a
+                # hard start failure. The doctor itself exits 0 via --out even
+                # when checks fail, so a non-zero here is never "report has
+                # failures"; it's a genuine capture failure.
+                self._send_json(
+                    {"error": "diagnostics capture unavailable",
+                     "detail": (proc.stderr or "").strip()[:300]},
                     status=502,
                 )
                 return
-            # jasper-doctor exits 1 when any check failed; that's
-            # a normal "report has failures" outcome, not an HTTP
-            # error. Parse stdout regardless.
             try:
-                body = json.loads(proc.stdout)
-            except json.JSONDecodeError:
+                with open(result_path, encoding="utf-8") as f:
+                    body = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
                 self._send_json(
-                    {"error": "doctor output not JSON",
-                     "stdout": proc.stdout[:500],
-                     "stderr": proc.stderr[:500]},
-                    status=502,
+                    {"error": f"diagnostics result unreadable: {e}"}, status=502,
                 )
                 return
             self._send_json(body)

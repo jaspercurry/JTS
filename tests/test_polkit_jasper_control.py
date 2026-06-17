@@ -108,18 +108,21 @@ def test_rule_does_not_grant_manage_unit_files():
     )
 
 
-def test_rule_grants_reboot_and_poweroff_with_multiple_sessions_variants():
+def test_rule_grants_reboot_and_poweroff_with_all_variants():
+    """logind picks the base action when idle, -multiple-sessions when an
+    operator is SSH'd in (verified on hardware), and -ignore-inhibit when a
+    block inhibitor is held — so the recovery reboot must be granted all three
+    pairs to stay bulletproof."""
     text = _rule_text()
     for action in (
         "org.freedesktop.login1.reboot",
         "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.reboot-ignore-inhibit",
         "org.freedesktop.login1.power-off",
         "org.freedesktop.login1.power-off-multiple-sessions",
+        "org.freedesktop.login1.power-off-ignore-inhibit",
     ):
-        assert action in text, (
-            f"rule must grant {action} (the -multiple-sessions variant fires "
-            "when an operator is SSH'd in — verified on hardware)"
-        )
+        assert action in text, f"rule must grant {action}"
 
 
 def test_rule_fallthrough_is_not_handled_not_deny():

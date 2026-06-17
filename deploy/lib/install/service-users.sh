@@ -31,14 +31,23 @@ create_jasper_service_users() {
     if ! getent passwd jasper-input >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G input jasper-input
     fi
-    # WS1 Phase 3b-2 — jasper-control drops to non-root too. No supplementary
-    # group: it binds TCP (0.0.0.0:8780), opens a localhost WebSocket to
-    # CamillaDSP, and writes /var/lib/jasper + /etc/avahi/services — no /dev/snd
-    # or /dev/input. Its privileged restarts/reboots are granted by polkit
-    # (deploy/polkit/49-jasper-control.rules), not a group. The unit's
-    # User=jasper-control matches this exact name (the polkit rule keys on it).
+    # WS1 Phase 3b-2 — jasper-control drops to non-root too. It binds TCP
+    # (0.0.0.0:8780), opens a localhost WebSocket to CamillaDSP, and writes
+    # /var/lib/jasper + /etc/avahi/services — no /dev/snd or /dev/input. Its
+    # privileged restarts/reboots are granted by polkit
+    # (deploy/polkit/49-jasper-control.rules), not a group. The one supplementary
+    # group is `systemd-journal`: several /state cards (airplay_health, dial,
+    # wifi_guardian last-action) read the journal. The unit's User=jasper-control
+    # matches this exact name (the polkit rule keys on it).
     if ! getent passwd jasper-control >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper jasper-control
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal jasper-control
+    fi
+    # Ensure the systemd-journal membership on UPGRADE too — the useradd above is
+    # skipped when the user already exists (e.g. a Pi from an earlier 3b-2 build
+    # before the journal-reading /state cards needed it). Idempotent; takes
+    # effect on jasper-control's next restart (the deploy restarts it).
+    if getent group systemd-journal >/dev/null 2>&1; then
+        usermod -aG systemd-journal jasper-control 2>/dev/null || true
     fi
     echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control (group: jasper)"
 

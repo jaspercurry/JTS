@@ -46,6 +46,56 @@ def test_snapshot_disabled_when_no_stash_and_no_active(monkeypatch, stash_path):
     assert snap["stash_matches_active"] is None
 
 
+def test_snapshot_enabled_via_stat_when_psk_unreadable(monkeypatch, stash_path, caplog):
+    """WS1 Phase 3b-2: the non-root jasper-control cannot read the 0600
+    PSK-bearing stash. `enabled` must still be True (derived from a stat, not a
+    read), the SSID gracefully omitted, and the read NEVER attempted (so
+    read_stash can't log a permission WARNING on every /state poll) —
+    active_ssid still populated so the card degrades honestly."""
+    import os
+
+    wifi_guardian_persistence.write_stash(stash_path, "Home", "p", "wpa-psk")
+
+    # Simulate the unreadable 0600 PSK file deterministically (regardless of the
+    # test-runner uid): os.access(R_OK) is False for the stash only.
+    real_access = os.access
+    monkeypatch.setattr(
+        wifi_guardian_state.os, "access",
+        lambda p, mode: (
+            False if str(p) == str(stash_path) else real_access(p, mode)
+        ),
+    )
+    # The read must not even be attempted when the file is unreadable.
+    attempted: list = []
+    monkeypatch.setattr(
+        wifi_guardian_state, "read_stash",
+        lambda p: attempted.append(p),  # noqa: ARG005
+    )
+
+    nmcli_responses = iter([
+        _proc(stdout="Home:802-11-wireless\n"),
+        _proc(stdout="802-11-wireless.ssid:Home\n"),
+    ])
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "nmcli":
+            try:
+                return next(nmcli_responses)
+            except StopIteration:
+                return _proc()
+        return _proc()
+
+    with patch.object(subprocess, "run", side_effect=fake_run):
+        snap = wifi_guardian_state.snapshot()
+
+    assert snap["enabled"] is True               # from stat, not a read
+    assert snap["stash_ssid"] is None            # PSK file unreadable → omitted
+    assert snap["stash_matches_active"] is None
+    assert snap["active_ssid"] == "Home"         # nmcli still works
+    assert attempted == []                       # read never attempted
+    assert "stash_read_failed" not in caplog.text
+
+
 def test_snapshot_steady_state(monkeypatch, stash_path):
     """Stash + active match → enabled, fields populated, matches=True."""
     wifi_guardian_persistence.write_stash(

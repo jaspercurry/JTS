@@ -74,10 +74,14 @@ def test_install_widens_secret_env_on_upgrade():
     """The upgrade path: install must group-widen the secret files (an older
     build wrote them 0600) AND chgrp jasper.env — else the drop breaks /state +
     the doctor on existing Pis that never re-save a wizard."""
-    mig = (ROOT / "deploy/lib/install/env-migrations.sh").read_text(encoding="utf-8")
-    assert "widen_control_secret_env_modes" in mig, (
+    full = (ROOT / "deploy/lib/install/env-migrations.sh").read_text(encoding="utf-8")
+    assert "widen_control_secret_env_modes() {" in full, (
         "env-migrations.sh must define widen_control_secret_env_modes"
     )
+    # Scope the checks to the widen function's body (it's the last function in
+    # the file), so an unrelated reference (migrate_wifi_guardian writes the
+    # stash) doesn't false-match.
+    mig = full.split("widen_control_secret_env_modes() {", 1)[1]
     for fname in (
         "voice_provider.env",
         "spotify_credentials.env",
@@ -85,10 +89,19 @@ def test_install_widens_secret_env_on_upgrade():
         "home_assistant.env",
         "control_token",
         "jasper.env",
+        # Non-secret state jasper-control also reads off disk for /state:
+        "sound_profile.json",
+        "sound_settings.json",
     ):
         assert fname in mig, f"widening must cover {fname}"
     assert "chgrp jasper" in mig and "chmod 0640" in mig, (
-        "widening must chgrp jasper + chmod 0640 the secret files"
+        "widening must chgrp jasper + chmod 0640 the files"
+    )
+    # The WiFi PSK stash is DELIBERATELY excluded — jasper-control needs only the
+    # SSID (not the PSK value), so the PSK stays owner-only 0600 (least privilege).
+    assert "wifi_guardian.env" not in mig, (
+        "wifi_guardian.env (PSK) must NOT be group-widened — jasper-control "
+        "derives the SSID without the PSK"
     )
 
     sh = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")

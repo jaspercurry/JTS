@@ -1,0 +1,30 @@
+[Unit]
+Description=Capture jasper-doctor --json for the /system dashboard (root fidelity)
+# WS1 Phase 3b-2 — docs/HANDOFF-privilege-separation.md.
+#
+# jasper-control dropped to a non-root user, but jasper-doctor is a root tool
+# (it runs aplay/amixer probes, reads the journal, and `sudo -u <renderer>
+# aplay`). Running it AS the non-root jasper-control makes ~7 hardware checks
+# fail on permissions — the dashboard's Diagnostics card would show false red.
+# So the on-demand /system/diagnostics report is produced by THIS root oneshot
+# instead: the non-root jasper-control triggers it via its polkit manage-units
+# grant (this unit is in jasper.control.restart_broker.MANAGED_UNITS), the
+# doctor runs at full root fidelity, and the result lands group-`jasper`
+# readable for jasper-control to serve. This is started on demand, never
+# enabled — hence no [Install] section.
+After=jasper-control.service
+
+[Service]
+Type=oneshot
+# root (no User=) so the full hardware/mixer/journal/renderer checks are
+# accurate. Group=jasper so the result file — written into jasper-control's
+# /run dir — is group-readable by the non-root jasper-control without being
+# world-readable (the doctor JSON can name configured subsystems).
+Group=jasper
+# `systemctl start` of a Type=oneshot blocks until ExecStart finishes (~3-5 s
+# on a Pi 5); the /system/diagnostics handler does exactly that, then reads the
+# file. `--out` makes the doctor exit 0 even when checks fail (the failures are
+# in the JSON), so a "report with failures" never flips this unit to `failed`.
+ExecStart=/opt/jasper/.venv/bin/jasper-doctor --json --out /run/jasper-control/doctor-result.json
+StandardOutput=journal
+StandardError=journal

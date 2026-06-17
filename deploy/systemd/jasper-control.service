@@ -80,11 +80,17 @@ RestartSec=2
 # CapabilityBoundingSet= drops ALL caps (control needs none — the privileged
 # restarts go through polkit, not a capability). SystemCallFilter=@system-service
 # blocks the dangerous syscall classes; it permits fork/execve, so the
-# jasper-doctor / systemctl / busctl / dmesg children it spawns exec cleanly
-# (each with its own syscall policy). ProtectKernelLogs stays OMITTED and
-# ProtectHome stays read-only (below) for those same diagnostic subprocesses.
+# systemctl / busctl children it spawns exec cleanly (each with its own syscall
+# policy). ProtectKernelLogs stays OMITTED and ProtectHome stays read-only
+# (below) for those same diagnostic subprocesses.
+#
+# SupplementaryGroups=systemd-journal: several /state cards read the journal
+# (airplay_health, dial, and wifi_guardian's last-action) — a non-root reader
+# needs the systemd-journal group. (The full jasper-doctor runs as ROOT via the
+# jasper-doctor-json.service oneshot, so it does NOT depend on this group.)
 User=jasper-control
 Group=jasper
+SupplementaryGroups=systemd-journal
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 

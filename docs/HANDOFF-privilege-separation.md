@@ -207,7 +207,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-voice | `jasper-voice` | `audio` | **3b-1 (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection |
 | jasper-mux | `jasper-mux` | — | **3b-1 (LANDED)** | broker client (librespot recovery); only shared file is `speaker_volume.json` |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
-| jasper-control | `jasper-control` | — | **3b-2 (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot) **and** group-readable secret env (the `jasper-doctor` it spawns fresh-reads every env file) — a deliberate secret-exposure change |
+| jasper-control | `jasper-control` | `systemd-journal` | **3b-2 (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), group-readable config it reads off disk, and `systemd-journal` for the journal-based /state cards |
 | jasper-web | `jasper-web` | `netdev`?/`bluetooth`? | **3b-3 (designed)** | the big one: NetworkManager polkit, BlueZ, `CAP_NET_ADMIN` scan-repair, `/etc/{bluetooth,avahi}` writes — and **wifi-lockout** is the worst-case brick for a headless speaker |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
@@ -297,8 +297,37 @@ coupled artifacts make the drop work:
   (`LoadCredential`). `/etc/avahi/services` becomes group-`jasper` writable
   (setgid) so the non-root daemon can still render the opt-in peering advert.
 
-Measured on hardware (jts.local, `systemd-analyze security`, after a real
-`system_supervisor`-path reboot): **jasper-control 6.6 → 2.5 OK**. Validated:
+- **The full off-disk-read surface (the completeness the secret-env bullet
+  alone missed).** `jasper-control` reads more than the secret env off disk for
+  `/state` + `/system/diagnostics`, and the drop degrades each unless handled:
+  - **`/system/diagnostics` runs the doctor as ROOT.** `jasper-doctor` is a
+    root tool (audio/mixer/journal probes, `sudo -u <renderer> aplay`) — running
+    it in-process from the non-root jasper-control made ~7 checks fail on
+    permissions (false red). So the report is produced by a root
+    `jasper-doctor-json.service` oneshot that jasper-control `systemctl start`s
+    via its polkit manage-units grant (the unit is in `MANAGED_UNITS`); the
+    doctor's `--json --out PATH` writes the report `0640` and exits 0 so a
+    "report with failures" never flips the oneshot to `failed`. Full fidelity,
+    no new privilege primitive.
+  - **`systemd-journal` supplementary group.** Three `/state` cards
+    (`airplay_health`, `dial`, `wifi_guardian`'s last-action) read the journal;
+    a non-root reader needs the group.
+  - **Non-secret state widened to `0640`:** `sound_profile.json` /
+    `sound_settings.json` (the EQ config the sound card reads).
+  - **The WiFi PSK stash stays `0600` — deliberately NOT widened.** Unlike the
+    secrets above (whose *values* jasper-control needs), it needs only the SSID,
+    so exposing the PSK to the group would be gratuitous. `enabled` derives from
+    a `stat`; the SSID fails-soft to `None` (gated on `os.access` so the read
+    isn't even attempted, no WARNING spam); `active_ssid` (nmcli) + `last_action`
+    (journal) carry the resilience story.
+
+Measured on hardware (jts.local, `systemd-analyze security`): **jasper-control
+6.6 → 2.6 OK** (2.6, not 2.5, for the `systemd-journal` supplementary group).
+Validated, including the self-review fixes: `/system/diagnostics` returns the
+root-fidelity report (0 fails / 93 checks, matching `sudo jasper-doctor`); the
+`/state` wifi-guardian / sound cards populate with **zero** permission-denied
+WARNINGs; the non-root peering-advert write into the setgid `/etc/avahi/services`
+succeeds. And the original matrix:
 non-root with `NRestarts=0` under `@system-service` (no SIGSYS); manage-units
 **scoping confirmed** (allowlisted units restart, `cron`/`nginx`/`sshd` denied);
 the `shairport_supervisor` `reset-failed`+restart path works under polkit; a
