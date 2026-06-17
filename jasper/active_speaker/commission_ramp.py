@@ -451,7 +451,12 @@ async def ramp_audible_step(
 
     # Mask params for the gate: re-emit the per-driver config at the next gain
     # (stateless, no syntax check — the load re-validates) and read the off-device
-    # evidence's mask. present_roles comes from the same preset binding.
+    # evidence's mask. present_roles comes from the same preset binding. This is a
+    # deliberately separate emit from the load's two (its preflight gate + its
+    # TOCTOU-safe in-lock re-emit): the ramp gate must see the mask BEFORE the load
+    # decides to apply. The emit is cheap and the operator steps are seconds apart,
+    # so the redundancy is intentional — do not collapse it by trusting the file
+    # the load will overwrite.
     prepare = prepare_driver_commissioning_config(
         topology,
         speaker_group_id=group_id,
