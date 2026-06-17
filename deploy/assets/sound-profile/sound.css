@@ -871,3 +871,26 @@
   @media (prefers-reduced-motion: reduce) {
     .toggle .track, .toggle .track::before { transition: none; }
   }
+
+  /* Protected single-audio-path driver commissioning card (Stage-5 ramp). */
+  .commission-card {
+    margin-top: 16px; padding: 14px; border-radius: 12px;
+    box-shadow: inset 0 0 0 1px var(--border);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .commission-card__title { margin: 0; font-size: 14px; }
+  .commission-card__lead { margin: 0; font-size: 12px; color: var(--muted-foreground); }
+  .commission-status {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px; margin: 4px 0;
+  }
+  .commission-status > div { display: flex; flex-direction: column; gap: 2px; }
+  .commission-status__k {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em;
+    color: var(--muted-foreground);
+  }
+  .commission-status__v { font-size: 13px; color: var(--foreground); }
+  .commission-card__error {
+    margin: 0; font-size: 12px; color: var(--status-danger, #c0392b);
+  }
+  .commission-card__actions { flex-wrap: wrap; gap: 8px; }

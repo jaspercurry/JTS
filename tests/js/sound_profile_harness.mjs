@@ -246,6 +246,11 @@ function activePayloads() {
       config: {},
       issues: [],
     },
+    "./active-speaker/commission-state": {
+      commission_load: { status: "idle", target: {}, rollback_available: false },
+      ramp: { confirmed_roles: [], pending: null },
+      floor: { status: "floor_required", floor_audio_confirmed: false },
+    },
   };
 }
 
@@ -1720,6 +1725,63 @@ async function testUnavailableAudioBackendDoesNotPostAudibleTone() {
   return { unavailableAudioBackendDoesNotPostAudibleTone: true };
 }
 
+async function testCommissionCardArmsAndSteps() {
+  let commissionState = {
+    commission_load: { status: "idle", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-load": (p, o) => {
+      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
+      commissionState = {
+        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -120 }, rollback_available: true },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ load: { status: "loaded", target: { role: "woofer" } } }));
+    },
+    "./active-speaker/commission-ramp-step": (p, o) => {
+      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
+      commissionState = {
+        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -80 }, rollback_available: true },
+        ramp: { confirmed_roles: [], pending: { role: "woofer", gain_db: -80 } },
+        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  let html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Protected driver commissioning")) fail("commission card not rendered", { html });
+  if (!html.includes('data-act="commission-arm"')) fail("arm button missing", { html });
+
+  // Arming is silent -> posts commission-load, then the card offers a step.
+  harness.dispatchClick({ "data-act": "commission-arm", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (!posts.some((x) => x.path === "./active-speaker/commission-load" && x.body.role === "woofer")) {
+    fail("commission-load not posted on arm", { posts });
+  }
+  html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="commission-step"')) fail("step button missing after arm", { html });
+
+  // The step is gated by a confirm (auto-true in the harness) -> posts ramp-step,
+  // then the card asks for the operator's by-ear verdict.
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
+    fail("commission-ramp-step not posted on step", { posts });
+  }
+  html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="commission-ack"')) fail("ack buttons missing after step", { html });
+  return { commissionCardArmsAndSteps: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -1737,5 +1799,6 @@ results.push(await testBlockedAudibleDriverTestDoesNotClaimSoundPlayed());
 results.push(await testAudibleRampRecordsSilenceAndAsksBackendForNextStep());
 results.push(await testHeardCorrectDriverAdvancesToNextDriver());
 results.push(await testUnavailableAudioBackendDoesNotPostAudibleTone());
+results.push(await testCommissionCardArmsAndSteps());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

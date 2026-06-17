@@ -11,6 +11,7 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/calibration-level backend-owned level guard
   GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
   GET  /active-speaker/startup-load guarded startup-load/rollback state
+  GET  /active-speaker/commission-state per-driver commission + Stage-5 ramp state
   GET  /active-speaker/design-draft saved speaker design/research evidence
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/measurements saved driver and summed validation evidence
@@ -28,6 +29,11 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/check-path-safety inspect and persist no-audio path evidence
   POST /active-speaker/load-startup-config load protected startup config, no sound
   POST /active-speaker/rollback-startup-config restore pre-load config, no sound
+  POST /active-speaker/commission-load arm a driver at the protected floor (silent)
+  POST /active-speaker/commission-rollback re-mute: reload the all-muted staged config
+  POST /active-speaker/commission-ramp-step one gated audible Stage-5 gain step
+  POST /active-speaker/commission-ramp-ack record the operator's verdict for the step
+  POST /active-speaker/commission-ramp-abort hard Stop: re-mute + reset the ramp
   POST /active-speaker/design-draft persist speaker design/research evidence
   POST /active-speaker/crossover-preview persist no-audio crossover preview
   POST /active-speaker/driver-measurement record one measured driver result
@@ -2020,6 +2026,285 @@ async def _active_speaker_rollback_startup_config_payload(
     return payload
 
 
+# --- single-audio-path per-driver commissioning + Stage-5 ramp ----------------
+#
+# The browser surface over the same guarded machinery the `jasper-active-speaker`
+# CLI drives. Every loader uses the INLINE CamillaController seams
+# (set_active_config_raw) so the persisted boot statefile is never repointed
+# (crash-recovery-MUTED stays structural). A commission load arms a driver at the
+# protected floor (silent); the Stage-5 ramp raises it one gated, operator-ACK'd
+# step at a time. The GET state endpoint is read-only on purpose — the preflight
+# emits the candidate YAML, so the load/step that run it are POST-only.
+
+
+def _active_speaker_commission_seams(cam: Any) -> tuple[Any, Any, Any]:
+    """The inline transport seams: (load_config, read_running_config,
+    get_current_config_path). ``load_config`` reads the candidate file and
+    applies it with ``set_active_config_raw`` (CamillaDSP ``SetConfig``), which
+    leaves the persisted statefile pointed at the all-muted staged boot config."""
+
+    async def load_config(path: str) -> bool:
+        return await cam.set_active_config_raw(
+            Path(path).read_text(encoding="utf-8"), best_effort=False
+        )
+
+    return (
+        load_config,
+        lambda: cam.get_active_config_raw(best_effort=False),
+        lambda: cam.get_config_file_path(best_effort=False),
+    )
+
+
+async def _active_speaker_commission_current_config(
+    cam: Any,
+) -> tuple[str | None, str | None]:
+    try:
+        return (await cam.get_config_file_path(best_effort=False)), None
+    except Exception as exc:  # noqa: BLE001
+        return None, type(exc).__name__
+
+
+def _active_speaker_resolve_commission_inputs() -> tuple[Any, dict[str, Any] | None]:
+    """Resolve (preset, crossover_preview) so the per-driver config matches what
+    protected staging emitted — the saved crossover preview when it is ready,
+    else the bundled-preset fallback (exactly as staging does)."""
+
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    preview = load_crossover_preview(current_design_draft=load_design_draft())
+    if preview.get("status") == "ready_for_protected_staging":
+        return None, preview
+    return None, None
+
+
+def _active_speaker_commission_path_safety(
+    topology: Any,
+    staged: dict[str, Any],
+    current_config_path: str | None,
+    current_config_error: str | None,
+) -> str:
+    """Build + persist fresh no-audio startup-load path-safety evidence, bound to
+    the current config, and return its path (the commissioning preflight reuses
+    the startup-load gate against it)."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.path_safety import (
+        build_startup_load_path_safety_evidence,
+        write_path_safety_evidence,
+    )
+
+    evidence = build_startup_load_path_safety_evidence(
+        topology,
+        staged_config=staged,
+        calibration_level=load_calibration_level_state(),
+        current_config_path=current_config_path,
+        current_config_error=current_config_error,
+    )
+    return str(write_path_safety_evidence(evidence))
+
+
+async def _active_speaker_commission_load_payload(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Arm a driver: load its per-driver commissioning config into the RUNNING
+    graph at the protected floor (silent). Operator-only, single-flight."""
+
+    from jasper.active_speaker.staging import load_staged_startup_config
+    from jasper.active_speaker.startup_load import (
+        load_commission_load_state,
+        load_driver_commissioning_config,
+    )
+
+    group = str(raw.get("group") or "").strip()
+    role = str(raw.get("role") or "").strip().lower()
+    force = bool(raw.get("force"))
+    existing = load_commission_load_state()
+    if existing.get("status") == "loaded" and not force:
+        return {
+            "status": "refused",
+            "reason": "commission_load_already_active",
+            "active_target": existing.get("target"),
+            "next_step": (
+                "A driver is already armed. Roll back first, or pass force=true."
+            ),
+        }
+
+    topology = load_output_topology()
+    staged = load_staged_startup_config()
+    preset, crossover_preview = _active_speaker_resolve_commission_inputs()
+    cam = camilla_factory()
+    current_config_path, current_config_error = (
+        await _active_speaker_commission_current_config(cam)
+    )
+    evidence_path = _active_speaker_commission_path_safety(
+        topology, staged, current_config_path, current_config_error
+    )
+    load_config, read_running_config, get_current_config_path = (
+        _active_speaker_commission_seams(cam)
+    )
+    payload = await load_driver_commissioning_config(
+        topology,
+        speaker_group_id=group,
+        role=role,
+        load_config=load_config,
+        read_running_config=read_running_config,
+        get_current_config_path=get_current_config_path,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        staged_config=staged,
+        path_safety_evidence_path=evidence_path,
+    )
+    logger.info(
+        "event=sound.active_speaker_commission action=load group=%s role=%s status=%s",
+        group,
+        role,
+        (payload.get("load") or {}).get("status"),
+    )
+    return payload
+
+
+async def _active_speaker_commission_rollback_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Roll the running graph back to the all-muted staged config (re-mute)."""
+
+    from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
+
+    cam = camilla_factory()
+    load_config, _, _ = _active_speaker_commission_seams(cam)
+    payload = await rollback_driver_commissioning_config(load_config=load_config)
+    logger.info(
+        "event=sound.active_speaker_commission action=rollback status=%s",
+        (payload.get("rollback") or {}).get("status"),
+    )
+    return payload
+
+
+async def _active_speaker_commission_ramp_step_payload(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Take one gated audible gain step on the armed driver (Stage 5)."""
+
+    from jasper.active_speaker.commission_ramp import ramp_audible_step
+    from jasper.active_speaker.staging import load_staged_startup_config
+
+    group = str(raw.get("group") or "").strip()
+    role = str(raw.get("role") or "").strip().lower()
+    topology = load_output_topology()
+    staged = load_staged_startup_config()
+    preset, crossover_preview = _active_speaker_resolve_commission_inputs()
+    cam = camilla_factory()
+    current_config_path, current_config_error = (
+        await _active_speaker_commission_current_config(cam)
+    )
+    evidence_path = _active_speaker_commission_path_safety(
+        topology, staged, current_config_path, current_config_error
+    )
+    load_config, read_running_config, get_current_config_path = (
+        _active_speaker_commission_seams(cam)
+    )
+    payload = await ramp_audible_step(
+        topology,
+        speaker_group_id=group,
+        role=role,
+        load_config=load_config,
+        read_running_config=read_running_config,
+        get_current_config_path=get_current_config_path,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        staged_config=staged,
+        path_safety_evidence_path=evidence_path,
+    )
+    logger.info(
+        "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
+        "status=%s next_db=%s",
+        group,
+        role,
+        payload.get("status"),
+        payload.get("next_gain_db"),
+    )
+    return payload
+
+
+async def _active_speaker_commission_ramp_ack_payload(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Record the operator's verdict for the pending audible step."""
+
+    from jasper.active_speaker.commission_ramp import record_ramp_operator_ack
+
+    outcome = str(raw.get("outcome") or "").strip().lower()
+    cam = camilla_factory()
+    # load_config is only used for the abort outcomes (too_loud / heard_wrong).
+    load_config, _, _ = _active_speaker_commission_seams(cam)
+    payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
+    logger.info(
+        "event=sound.active_speaker_commission action=ramp_ack outcome=%s status=%s",
+        outcome,
+        payload.get("status"),
+    )
+    return payload
+
+
+async def _active_speaker_commission_ramp_abort_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Hard Stop: roll back to the all-muted staged config and reset the ramp."""
+
+    from jasper.active_speaker.commission_ramp import abort_ramp
+
+    cam = camilla_factory()
+    load_config, _, _ = _active_speaker_commission_seams(cam)
+    payload = await abort_ramp(load_config=load_config)
+    logger.info(
+        "event=sound.active_speaker_commission action=ramp_abort status=%s",
+        payload.get("status"),
+    )
+    return payload
+
+
+def _active_speaker_commission_state_payload() -> dict[str, Any]:
+    """Read-only commission-load + ramp + per-driver floor state for the card.
+
+    Deliberately calls NO preflight (which would emit the candidate YAML) — a
+    pure read. The arm/step that run the preflight are POST-only.
+    """
+
+    from jasper.active_speaker.commission_ramp import load_ramp_state
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+    from jasper.active_speaker.startup_load import load_commission_load_state
+
+    commission = load_commission_load_state()
+    ramp = load_ramp_state()
+    quiet = load_safe_playback_state().get("quiet_start") or {}
+    return {
+        "kind": "jts_active_speaker_commission_state",
+        "commission_load": {
+            "status": commission.get("status"),
+            "target": commission.get("target") or {},
+            "rollback_available": bool(commission.get("rollback_available")),
+        },
+        "ramp": {
+            "confirmed_roles": ramp.get("confirmed_roles") or [],
+            "pending": ramp.get("pending"),
+        },
+        "floor": {
+            "status": quiet.get("status"),
+            "floor_audio_confirmed": bool(quiet.get("floor_audio_confirmed")),
+            "last_level_dbfs": quiet.get("last_level_dbfs"),
+        },
+    }
+
+
 def _active_speaker_tone_plan_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Return a bounded no-audio tone plan for the requested target."""
 
@@ -2619,6 +2904,7 @@ def _make_handler(
                 "/active-speaker/calibration-level",
                 "/active-speaker/bringup-preflight",
                 "/active-speaker/startup-load",
+                "/active-speaker/commission-state",
                 "/active-speaker/commissioning-rehearsal",
                 "/active-speaker/staged-config",
                 "/active-speaker/channel-identity",
@@ -2729,6 +3015,15 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/commission-state":
+                try:
+                    self._send_json(_active_speaker_commission_state_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_commission result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             if path == "/active-speaker/commissioning-rehearsal":
                 try:
                     self._send_json(_active_speaker_commissioning_rehearsal_payload())
@@ -2789,6 +3084,11 @@ def _make_handler(
                 "/active-speaker/check-path-safety",
                 "/active-speaker/load-startup-config",
                 "/active-speaker/rollback-startup-config",
+                "/active-speaker/commission-load",
+                "/active-speaker/commission-rollback",
+                "/active-speaker/commission-ramp-step",
+                "/active-speaker/commission-ramp-ack",
+                "/active-speaker/commission-ramp-abort",
                 "/active-speaker/driver-measurement",
                 "/active-speaker/summed-test",
                 "/active-speaker/summed-validation",
@@ -2983,6 +3283,51 @@ def _make_handler(
                         asyncio.run(
                             _active_speaker_rollback_startup_config_payload(
                                 camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/commission-load":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_commission_load_payload(
+                                raw, camilla_factory=camilla_factory
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/commission-rollback":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_commission_rollback_payload(
+                                camilla_factory=camilla_factory
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/commission-ramp-step":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_commission_ramp_step_payload(
+                                raw, camilla_factory=camilla_factory
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/commission-ramp-ack":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_commission_ramp_ack_payload(
+                                raw, camilla_factory=camilla_factory
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/commission-ramp-abort":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_commission_ramp_abort_payload(
+                                camilla_factory=camilla_factory
                             )
                         )
                     )
