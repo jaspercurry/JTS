@@ -57,7 +57,7 @@ from jasper.atomic_io import atomic_write_text
 
 # The token file. Seeded from the env var at import; callers read the
 # module attribute (not the env var) so tests can monkeypatch this single
-# constant. /var/lib/jasper is the wizard/secret directory (0750, root),
+# constant. /var/lib/jasper is the shared state directory (root:jasper 0770),
 # the same home as voice_provider.env and the Wi-Fi guardian stash.
 TOKEN_FILE = os.environ.get(
     "JASPER_CONTROL_TOKEN_FILE", "/var/lib/jasper/control_token"
@@ -132,9 +132,11 @@ def ensure_token() -> str:
     token = secrets.token_urlsafe(32)
     # Canonical atomic writer (chmod-before-rename, same-FS replace) at 0640 so
     # the secret is never even briefly world-readable, while staying group-`jasper`
-    # readable for the non-root jasper-control/jasper-web (see docstring). Raises
-    # OSError on failure; the single caller (ensure_token at startup) fails open.
-    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640)
+    # readable for the non-root jasper-control/jasper-web (see docstring). Use
+    # the parent directory group too, because install.sh may mint this as root
+    # before the daemon starts. Raises OSError on failure; the single caller
+    # (ensure_token at startup) fails open.
+    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640, group_from_parent=True)
     return token
 
 

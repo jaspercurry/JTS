@@ -30,6 +30,40 @@ def test_mode_is_applied(tmp_path):
     assert (os.stat(path).st_mode & 0o777) == 0o600
 
 
+def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
+    path = tmp_path / "secret.env"
+    calls: list[tuple[str, int, int]] = []
+
+    def fake_chown(target: str, uid: int, gid: int) -> None:
+        calls.append((target, uid, gid))
+
+    monkeypatch.setattr(os, "chown", fake_chown)
+    atomic_write_text(path, "JASPER_X=1\n", mode=0o640, group_from_parent=True)
+
+    assert path.read_text(encoding="utf-8") == "JASPER_X=1\n"
+    assert calls, "group_from_parent must set the temp file group"
+    target, uid, gid = calls[-1]
+    assert os.path.dirname(target) == str(tmp_path)
+    assert os.path.basename(target).startswith(".secret.env.")
+    assert uid == -1
+    assert gid == os.stat(tmp_path).st_gid
+
+
+def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
+    path = tmp_path / "secret.env"
+
+    def boom(*_args, **_kwargs):
+        raise PermissionError("simulated group assignment failure")
+
+    monkeypatch.setattr(os, "chown", boom)
+
+    with pytest.raises(PermissionError, match="simulated group assignment failure"):
+        atomic_write_text(path, "doomed", mode=0o640, group_from_parent=True)
+
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_default_mode_is_0644(tmp_path):
     path = tmp_path / "plain.env"
     atomic_write_text(path, "x")

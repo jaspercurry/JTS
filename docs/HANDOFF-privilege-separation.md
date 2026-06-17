@@ -128,10 +128,11 @@ stanza is drift-guarded by [`tests/test_systemd_hardening.py`](../tests/test_sys
 
 - **Auto-generated on startup.** `control_token.ensure_token()` (called once in
   `jasper-control`'s `main()`) writes a `secrets.token_urlsafe(32)` to
-  `/var/lib/jasper/control_token` (0600, atomic) if absent, so the gate is
-  mandatory with no operator action. It is **idempotent and never rotates** an
-  existing token (a household's stored copy stays valid). Failure is non-fatal —
-  the gate fail-safes to off rather than blocking the recovery surface.
+  `/var/lib/jasper/control_token` (0640 group `jasper`, atomic) if absent, so
+  the gate is mandatory with no operator action. It is **idempotent and never
+  rotates** an existing token (a household's stored copy stays valid). Failure is
+  non-fatal — the gate fail-safes to off rather than blocking the recovery
+  surface.
 - **Invisible delivery.** `canonical_page()` embeds the token in a
   `<meta name="jts-control-token">` tag — emitted on every wizard page, which is
   served only behind the management-host / Fetch-Metadata **read guard**.
@@ -159,7 +160,7 @@ stanza is drift-guarded by [`tests/test_systemd_hardening.py`](../tests/test_sys
 > [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md), which owns the
 > device-to-device control-plane auth question.
 
-Pinned by `tests/test_control_token.py` (ensure/current/idempotence/0600/meta),
+Pinned by `tests/test_control_token.py` (ensure/current/idempotence/0640/meta),
 `tests/test_http_js_control_token.py` (meta-first delivery), and the
 server-frozenset-derived gating tests in `tests/test_control_server.py`.
 
@@ -307,13 +308,18 @@ coupled artifacts make the drop work:
   `google_credentials.env`, and `home_assistant.env` to become `0640` group
   `jasper`. After Phase 4, the broad upgrade helper owns only the non-secret
   files that remain in `/var/lib/jasper`: `voice_provider.env` (keyless),
-  `control_token`, and sound profile/settings state. The actual secrets moved
-  to `jasper-secrets` / `jasper-intsecrets`, and those compartment migrations
-  own their permissions. `/etc/jasper/jasper.env` still needs `chgrp jasper`
-  because it is created `0640 root:root`, and `control_token` must stay
-  group-readable or `_stored_token()` fails safe to gate-OFF on `EACCES`,
-  **silently disabling the mandatory gate**. `/etc/avahi/services` becomes
-  group-`jasper` writable
+  `control_token`, `household_secret`, and sound profile/settings state. The
+  actual provider/integration secrets moved to `jasper-secrets` /
+  `jasper-intsecrets`, and those compartment migrations own their permissions.
+  `household_secret` stays on the broad state path because jasper-web mints the
+  device-to-device credential while jasper-control verifies/adopts/clears it; an
+  existing owner-only copy would degrade grouping auth to fail-safe open.
+  `/etc/jasper/jasper.env` still needs `chgrp jasper` because it is created
+  `0640 root:root`, and `control_token` must stay group-readable or
+  `_stored_token()` fails safe to gate-OFF on `EACCES`, **silently disabling the
+  mandatory gate**. The broad migration refuses symlinks before running root
+  `chgrp`/`chmod` in the group-writable state directory. `/etc/avahi/services`
+  becomes group-`jasper` writable
   (setgid) so the non-root daemon can still render the opt-in peering advert.
 
 - **The full off-disk-read surface (the completeness the secret-env bullet

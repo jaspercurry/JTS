@@ -1,7 +1,7 @@
 """Unit tests for jasper-doctor's control-token posture check.
 
-check_control_token reports whether the opt-in gate is enabled — a
-posture line, ok either way — and must NEVER echo the token value.
+check_control_token reports whether the gate has a readable token — a posture
+line, ok either way — and must NEVER echo the token value.
 """
 from __future__ import annotations
 

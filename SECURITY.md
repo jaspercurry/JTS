@@ -68,7 +68,8 @@ microphone capture. Do setup from a trusted network. A guest VLAN,
 rogue access point, or hostile device on the same Wi-Fi can observe or
 send LAN traffic unless the network itself isolates it. Server-side,
 secrets are kept in root-owned files where possible, usually mode
-`0600`.
+`0600` or group-readable `0640` when sibling non-root daemons must share
+them.
 
 Bluetooth pairing uses Just Works auto-accept, but only inside an
 explicit 300-second pairing window opened from `/bluetooth/`. This is
@@ -93,8 +94,9 @@ secret.
 The highest-impact `jasper-control` mutations require a shared **control
 token**, and it is **on by default and invisible** to the household:
 `jasper-control` auto-generates the token at startup
-(`/var/lib/jasper/control_token`, mode `0600`, a `secrets.token_urlsafe(32)`
-value, never logged), and the management UI delivers it to the dashboard
+(`/var/lib/jasper/control_token`, mode `0640` group `jasper`, a
+`secrets.token_urlsafe(32)` value, never logged), and the management UI
+delivers it to the dashboard
 automatically (embedded in each page behind the read guard, read by
 `http.js`) — nobody sees or types anything. The gated routes:
 
@@ -128,7 +130,8 @@ not by this token.
 
 Operators can inspect or rotate the value with `sudo jasper-control-token
 --show` / `--disable` (disabling reverts to the unauthenticated trusted-LAN
-posture); curl / Home Assistant / scripts pass `-H "X-JTS-Token: <token>"`.
+posture until `jasper-control` starts and recreates it); curl, Home Assistant,
+and scripts pass `-H "X-JTS-Token: <token>"`.
 `jasper-doctor` reports the gate posture, never the secret.
 
 Diagnostic scripts redact environment-style secret assignments in their

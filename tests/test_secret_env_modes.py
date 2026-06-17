@@ -9,7 +9,9 @@ Phase 4 hardening/migration tests instead of this broad-widening guard.
 from __future__ import annotations
 
 import os
+import re
 import stat
+import subprocess
 from pathlib import Path
 
 from jasper.web import _common
@@ -77,6 +79,9 @@ def test_install_widens_secret_env_on_upgrade():
     # the file), so an unrelated reference (migrate_wifi_guardian writes the
     # stash) doesn't false-match.
     mig = full.split("widen_control_secret_env_modes() {", 1)[1]
+    loop_match = re.search(r"for f in (?P<items>.*?); do", mig, flags=re.S)
+    assert loop_match is not None, "widening must iterate an explicit file list"
+    widened_files = set(loop_match.group("items").replace("\\", " ").split())
     for fname in (
         "voice_provider.env",
         # NOTE: google_credentials.env is NOT in this list anymore — WS1 Phase 4a
@@ -88,14 +93,29 @@ def test_install_widens_secret_env_on_upgrade():
         # home_assistant.env to the group-`jasper-intsecrets` compartment
         # (voice/control/mux/web only), pinned by test_secrets_compartment_phase4b.
         "control_token",
-        "jasper.env",
+        "household_secret",
         # Non-secret state jasper-control also reads off disk for /state:
         "sound_profile.json",
         "sound_settings.json",
     ):
-        assert fname in mig, f"widening must cover {fname}"
+        assert fname in widened_files, f"widening loop must cover {fname}"
+    for fname in (
+        "google_credentials.env",
+        "spotify_credentials.env",
+        "home_assistant.env",
+    ):
+        assert fname not in widened_files, (
+            f"{fname} moved to a Phase 4 compartment and must not be "
+            "re-widened to the broad jasper group"
+        )
+    assert "jasper_env" in mig and "chgrp jasper" in mig, (
+        "widening must still chgrp /etc/jasper/jasper.env"
+    )
     assert "chgrp jasper" in mig and "chmod 0640" in mig, (
         "widening must chgrp jasper + chmod 0640 the files"
+    )
+    assert '[[ -L "${path}" ]]' in mig, (
+        "widening must refuse symlinks in the group-writable state directory"
     )
     # The WiFi PSK stash is DELIBERATELY excluded — jasper-control needs only the
     # SSID (not the PSK value), so the PSK stays owner-only 0600 (least privilege).
@@ -109,3 +129,49 @@ def test_install_widens_secret_env_on_upgrade():
     assert sh.count("widen_control_secret_env_modes") >= 2, (
         "widen_control_secret_env_modes must be called in both main() paths"
     )
+
+
+def test_widen_control_secret_env_modes_skips_symlinks(tmp_path: Path):
+    """Behavioural guard for the root migration in a group-writable state dir."""
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    regular = state_dir / "control_token"
+    regular.write_text("token\n")
+    outside = tmp_path / "outside_secret"
+    outside.write_text("do-not-touch\n")
+    link = state_dir / "household_secret"
+    link.symlink_to(outside)
+    ops_log = tmp_path / "ops.log"
+
+    lib = ROOT / "deploy/lib/install/env-migrations.sh"
+    helper = subprocess.run(
+        ["bash", "-c", rf"sed -n '/^widen_control_secret_env_modes()/,/^}}/p' '{lib}'"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "widen_control_secret_env_modes()" in helper
+    stubs = r"""
+getent() { return 0; }
+chgrp() { printf 'chgrp:%s\n' "${@: -1}" >> "${OPS_LOG}"; }
+chmod() { printf 'chmod:%s\n' "${@: -1}" >> "${OPS_LOG}"; }
+"""
+    proc = subprocess.run(
+        ["/bin/bash", "-c", f"{stubs}\n{helper}\nwiden_control_secret_env_modes"],
+        env={
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "ENV_DIR": str(env_dir),
+            "STATE_DIR": str(state_dir),
+            "OPS_LOG": str(ops_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    ops = ops_log.read_text()
+    assert str(regular) in ops
+    assert str(link) not in ops
+    assert str(outside) not in ops
+    assert f"skipping symlink {link}" in proc.stdout

@@ -113,8 +113,8 @@ def test_ensure_is_0640_group_readable(monkeypatch, tmp_path):
     # 0640, NOT 0600: two non-root daemons in the shared `jasper` group read it
     # (jasper-web mints, jasper-control verifies/adopts/clears). 0600 would make
     # one daemon's file unreadable by the other — mirrors WS1's control_token
-    # widening. (Group ownership comes from the setgid /var/lib/jasper dir on the
-    # Pi; the mode bits are what we can assert hermetically here.)
+    # widening. (Group ownership comes from the service users' primary `jasper`
+    # group on the Pi; the mode bits are what we can assert hermetically here.)
     path = tmp_path / "household_secret"
     monkeypatch.setattr(hc, "SECRET_FILE", str(path))
     hc.ensure()

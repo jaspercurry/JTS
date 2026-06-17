@@ -8,10 +8,12 @@ gpt-realtime-2). At the top: a radio group picks which provider the
 voice loop should USE — disabled for any provider that doesn't have a
 key yet, so the user can't accidentally activate a broken backend.
 
-Persistence: writes to /var/lib/jasper/voice_provider.env at mode 0600.
-The systemd unit for jasper-voice sources this file AFTER
-/etc/jasper/jasper.env, so wizard-written values win over operator-
-managed defaults — same pattern as /spotify and its
+Persistence: non-secret provider selectors stay in
+/var/lib/jasper/voice_provider.env; provider API keys live in
+/var/lib/jasper-secrets/voice_keys.env. Both are written at mode 0640 for the
+daemon groups that need them. The systemd unit for jasper-voice sources these
+files AFTER /etc/jasper/jasper.env, so wizard-written values win over
+operator-managed defaults — same pattern as /spotify and its
 spotify_credentials.env.
 
 Restart: every successful save kicks `systemctl restart jasper-voice`.
@@ -1004,8 +1006,8 @@ def _index_html(
   <section class="section">
     <h2 class="section__title">Provider keys</h2>
     <p class="form-hint">Pasted keys are stored on this speaker only, written
-    to <code>/var/lib/jasper/voice_provider.env</code> at mode 0600. They are
-    never sent anywhere except the relevant provider's API.</p>
+    to <code>/var/lib/jasper-secrets/voice_keys.env</code> at mode 0640. They
+    are never sent anywhere except the relevant provider's API.</p>
     {cards}
   </section>
 

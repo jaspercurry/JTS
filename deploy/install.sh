@@ -1363,8 +1363,8 @@ install_management_static_assets() {
     # than ship a page with an unreplaced placeholder. Also bakes the WS1
     # control token into <meta name="jts-control-token"> so the landing page's
     # mic-mute button can ride it on POST /mic/mute (the token-gated route);
-    # ensure_token() generates-if-absent at 0600, the same value the wizards
-    # deliver. The token stays inside Python (never a shell arg / process
+    # ensure_token() generates-if-absent at 0640 group jasper, the same value
+    # the wizards deliver. The token stays inside Python (never a shell arg / process
     # table); the base64url alphabet is HTML-safe, but escape defensively.
     if ! PYTHONPATH="${REPO_DIR}" python3 - /usr/share/jasper-web/index.html <<'PYBAKE'
 import json

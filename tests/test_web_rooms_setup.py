@@ -950,8 +950,7 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
 def test_bond_forwards_browser_control_token_to_members(monkeypatch):
     """The /rooms/ grouping fan-out runs SERVER-side, so the leader must
     forward the browser-supplied X-JTS-Token to each member's /grouping/set
-    (the opt-in control-token gate). Captures the token each member call
-    received."""
+    for the control-token gate. Captures the token each member call received."""
     seen_tokens: list[str | None] = []
 
     def capture(addr, member_body, known=None, *, token=None, household=None):

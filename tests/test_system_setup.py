@@ -175,7 +175,7 @@ def upstream_control():
         def do_POST(self) -> None:  # noqa: N802
             received.append(("POST", self.path))
             # Record any forwarded control token so a test can assert the
-            # wizard relays the browser's X-JTS-Token (the opt-in gate).
+            # wizard relays the browser's X-JTS-Token.
             token = self.headers.get("X-JTS-Token")
             if token is not None:
                 received.append(("X-JTS-Token", token))
@@ -346,8 +346,8 @@ def _http_post_with_token(url: str, token: str) -> tuple[int, bytes]:
 
 def test_reboot_forwards_control_token_to_upstream(dashboard_server) -> None:
     """The /system/ wizard proxies server-side, so a browser-supplied
-    X-JTS-Token (the opt-in control-token gate) must be forwarded to
-    jasper-control or the enabled gate would 403 the dashboard."""
+    X-JTS-Token must be forwarded to jasper-control or the control-token gate
+    would 403 the dashboard."""
     base, received, _ = dashboard_server
     status, _ = _http_post_with_token(f"{base}/reboot", "household-secret")
     assert status == 200

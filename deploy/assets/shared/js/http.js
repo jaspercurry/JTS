@@ -59,8 +59,8 @@ export function isControlTokenRequired(err) {
 
 // Add the X-CSRF-Token header (when a token is present) to an existing
 // headers object, returning it. Pass nothing to start from a bare object.
-// Also attaches X-JTS-Token from localStorage when the operator has stored
-// one (the opt-in control-token gate); absent storage adds nothing.
+// Also attaches X-JTS-Token from localStorage when the browser has stored
+// one for the control-token gate; absent storage adds nothing.
 export function csrfHeaders(headers) {
   const out = headers || {};
   const token = csrfToken();
@@ -122,10 +122,10 @@ async function promptForControlToken() {
 // rolled_back flags). Without this, every carefully built failure payload
 // dies unread at the browser.
 //
-// Control-token gate (opt-in, default-off): if the first attempt comes back
-// 403 control_token_required, prompt ONCE for the token, store it, and retry
-// exactly once. A second 403 (wrong token) throws normally so the caller
-// surfaces it — we never loop.
+// Control-token gate: if the first attempt comes back 403
+// control_token_required, prompt ONCE for the token, store it, and retry exactly
+// once. A second 403 (wrong token) throws normally so the caller surfaces it —
+// we never loop.
 export async function postJSON(path, body) {
   const payload = JSON.stringify(body === undefined ? {} : body);
   const send = () => fetch(path, {
@@ -144,7 +144,7 @@ export async function postJSON(path, body) {
 // POST a parameterless control action (no JSON body), returning a flat
 // {ok, status, body} so callers that reflect raw status into a button label
 // (the /system/ restart / reboot / power-off buttons) don't each re-implement
-// the fetch + JSON-parse + control-token plumbing. Same opt-in token gate as
+// the fetch + JSON-parse + control-token plumbing. Same token-gate flow as
 // postJSON: a first 403 control_token_required prompts ONCE, stores, and
 // retries exactly once; a second 403 (wrong token) is returned for the caller
 // to surface. `body` is the parsed JSON response (or {} when non-JSON).

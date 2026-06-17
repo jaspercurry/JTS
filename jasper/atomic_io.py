@@ -18,6 +18,11 @@ Two properties are load-bearing and easy to get subtly wrong by hand:
     BEFORE the rename, so the file is never visible at the final path with a
     broader mode than requested (``mkstemp`` creates 0600, then we widen to
     ``mode`` only after, and the published name appears already-correct).
+  - **Optional parent-group publishing.** Some shared state files are written by
+    root during install and by non-root daemons at runtime. When requested, the
+    tempfile is chowned to the parent directory's group before chmod+rename, so a
+    root-run atomic replace does not publish ``root:root 0640`` into a
+    group-readable state directory.
 
 This module RAISES on failure (``OSError``) and cleans up the tempfile on any
 exception. Callers that want fail-soft behaviour (log-and-continue, as several
@@ -37,7 +42,11 @@ __all__ = ["atomic_write_text", "locked_update_env_file"]
 
 
 def atomic_write_text(
-    path: str | os.PathLike, text: str, *, mode: int = 0o644,
+    path: str | os.PathLike,
+    text: str,
+    *,
+    mode: int = 0o644,
+    group_from_parent: bool = False,
 ) -> None:
     """Atomically write ``text`` to ``path`` as UTF-8, then ``chmod`` to ``mode``.
 
@@ -46,6 +55,9 @@ def atomic_write_text(
     complete new one — never a partial write. The parent directory is created
     if missing. ``mode`` is applied to the tempfile BEFORE the rename, so the
     published file never appears with a wider permission window than requested.
+    When ``group_from_parent`` is true, the tempfile's group is set to the
+    parent directory's group before chmod+rename; this keeps root-run writers
+    from publishing group-readable files under the wrong group.
 
     Raises ``OSError`` on any I/O failure; the tempfile is unlinked
     (best-effort) before the error propagates. Does NOT swallow errors — a
@@ -54,6 +66,7 @@ def atomic_write_text(
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
+    parent_gid = os.stat(parent).st_gid if group_from_parent else None
     # Tempfile in the SAME directory => os.replace is an atomic same-FS rename.
     # Prefix with "." + basename so a directory listing groups it with the
     # target and a stray temp (e.g. on a crash mid-write) is recognisable.
@@ -62,6 +75,8 @@ def atomic_write_text(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        if parent_gid is not None:
+            os.chown(tmp, -1, parent_gid)
         os.chmod(tmp, mode)  # before the rename: no wider-permission window
         os.replace(tmp, fspath)
     except Exception:

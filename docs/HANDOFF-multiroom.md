@@ -1339,9 +1339,11 @@ other destructive routes), so a tokenless caller gets
 own speaker**; it is a CSRF token and carries no caller identity, so it
 cannot do the **device-to-device** (leader → follower) leg. That leg
 authenticates with a separate **household credential** — a shared secret
-minted at the human pairing moment (`POST /bond`), distributed over the
-trusted LAN, persisted `0600` per member (mirroring `control_token`), and
-presented on the cross-device grouping path in an `X-JTS-Household` header.
+minted at the human pairing moment (the `/rooms/` wizard's `POST /bond`),
+distributed over the
+trusted LAN, persisted `0640` group `jasper` per member (mirroring
+`control_token`), and presented on the cross-device grouping path in an
+`X-JTS-Household` header.
 The full threat model, prior art, and design live in
 [HANDOFF-control-plane-auth.md](HANDOFF-control-plane-auth.md), which is the
 single source of truth for cross-device control auth; this subsection is the
@@ -1364,10 +1366,10 @@ What the fan-out adds — and how each piece is now covered:
   household is bonded, every subsequent `/grouping/set` requires the shared
   secret, so a casual / cross-site / curl actor can no longer flip the
   group. **Residual:** a malicious LAN device could still *initiate* its own
-  `POST /bond` to mint a secret — the same residual the whole LAN-trust
-  posture accepts, closed only by a future pairing code at bond time
-  (HANDOFF-control-plane-auth.md §5 Option 2 / §9 decision 2). State it
-  honestly; do not over-claim.
+  `/rooms/` wizard `POST /bond` to mint a secret — the same residual the whole
+  LAN-trust posture accepts, closed only by a future pairing code at bond time
+  (HANDOFF-control-plane-auth.md §5 Option 2 / §9 decision 2). State it honestly;
+  do not over-claim.
 
 This subsection covers the *grouping control plane*; the *audio* threat
 surface (Snapcast's 1704/1705 ports, the post-clamp tap, the dumb-endpoint
@@ -1562,9 +1564,10 @@ while **preserving** `JASPER_PEER_ROOM` (owned by `/speaker/`) and operator
 tuning knobs — then restarts voice + `jasper-control` and returns `{ok,
 peering:{enabled, primary}}`. **Bond/unbond now ships (stereo pair):** the
 bond card lets the household pick a sibling for the right channel and Save;
-`POST /bond` mints a `bond_id` and fans the grouping config out SERVER-side
-to each member's `jasper-control /grouping/set` (this speaker → leader/left,
-the picked one → follower/right), the follower's `leader_addr` set to the
+the `/rooms/` wizard's `POST /bond` mints a `bond_id` and fans the grouping
+config out SERVER-side to each member's `jasper-control /grouping/set` (this
+speaker → leader/left, the picked one → follower/right), the follower's
+`leader_addr` set to the
 leader's **stable mDNS `.local` handle** so the bond survives the leader's
 DHCP IP churn (see §0 reconcile bullet). `POST /unbond` **dissolves** the
 bond: the server discovers membership by reading each member's `GET
@@ -2381,8 +2384,8 @@ immediately followed by `jts3.local` (56 reconcile tests, ruff clean).
 the audio half is still not fully validated. Earlier 2026-06-09
 (bond-forming UI — the Sonos-style one-flow
 stereo-pair setup landed on `/rooms`: a bond card (pick a sibling for the
-right channel, Save) + `POST /bond` that mints a `bond_id` and fans the
-grouping config out SERVER-side to each member's `jasper-control
+right channel, Save) + the wizard's `POST /bond` that mints a `bond_id` and
+fans the grouping config out SERVER-side to each member's `jasper-control
 /grouping/set` (leader/left = this speaker, follower/right = the picked
 one), SSRF-guarded to private/loopback IPv4. Builds on the prior `POST
 /grouping/set` control endpoint + shared `validate_grouping` (read/write

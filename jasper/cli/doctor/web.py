@@ -146,17 +146,15 @@ def check_management_surface() -> CheckResult:
 
 @doctor_check(order=24.6, group="web")
 def check_control_token() -> CheckResult:
-    """Report the opt-in control-token gate posture (never the secret).
+    """Report the control-token gate posture (never the secret).
 
     The control token (SECURITY.md) gates jasper-control's high-impact
     mutations (/system/poweroff, /system/reboot, /mic/mute,
-    /grouping/set) behind an X-JTS-Token header. It is OFF by default —
-    the trusted-LAN posture the dial / Home Assistant / Shortcuts rely
-    on. This is a *posture* line, not a health failure: ok either way.
-    Disabled is a deliberate, documented choice, not a problem; enabled
-    means the operator opted in. Strictly secret-free — it reports only
-    whether a non-empty token file exists, never reads or echoes the
-    value."""
+    /grouping/set) behind an X-JTS-Token header. Production startup normally
+    auto-generates it; disabled means the token file is currently absent or
+    unreadable. This is a *posture* line, not a health failure: ok either way.
+    Strictly secret-free — it reports only whether a non-empty token file exists,
+    never reads or echoes the value."""
     if control_token.token_enforced():
         return CheckResult(
             "control token gate", "ok",
@@ -164,8 +162,8 @@ def check_control_token() -> CheckResult:
         )
     return CheckResult(
         "control token gate", "ok",
-        "disabled (LAN-trust; enable with jasper-control-token --enable; "
-        "see SECURITY.md)",
+        "disabled (token absent/unreadable; jasper-control startup normally "
+        "recreates it; see SECURITY.md)",
     )
 
 
