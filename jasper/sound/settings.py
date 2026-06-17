@@ -106,10 +106,9 @@ def save_sound_settings(
 ) -> None:
     settings_path = _settings_path(path)
     data = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
-    # mode=0o600 preserves the mode the previous hand-rolled
-    # NamedTemporaryFile writer published (tempfiles are created 0600
-    # and the old writer never chmod'd before the rename).
-    atomic_write_text(settings_path, data, mode=0o600)
+    # WS1 Phase 3b-2: 0640 group jasper (was 0600) so the now-non-root
+    # jasper-control can read these (non-secret) sound settings for /state.
+    atomic_write_text(settings_path, data, mode=0o640)
 
 
 def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:

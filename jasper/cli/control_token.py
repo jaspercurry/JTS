@@ -53,7 +53,11 @@ def _write_token(token: str) -> None:
         except OSError:
             pass
         raise
-    os.chmod(tmp, 0o600)
+    # WS1 Phase 3b-2: publish 0640 group jasper (chmod-before-rename) so the
+    # non-root jasper-control/jasper-web can read the gate token — the file is
+    # created 0600 above so it's never group/world-readable mid-write. Matches
+    # control_token.ensure_token's mode; see docs/HANDOFF-privilege-separation.md.
+    os.chmod(tmp, 0o640)
     os.replace(tmp, path)
 
 

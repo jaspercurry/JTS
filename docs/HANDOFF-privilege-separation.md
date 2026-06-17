@@ -207,7 +207,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-voice | `jasper-voice` | `audio` | **3b-1 (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection |
 | jasper-mux | `jasper-mux` | — | **3b-1 (LANDED)** | broker client (librespot recovery); only shared file is `speaker_volume.json` |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
-| jasper-control | `jasper-control` | — | **3b-2 (designed)** | needs a **polkit rule** (broker `systemctl`/reboot) **and** group-readable secret env (the `jasper-doctor` it spawns fresh-reads every env file) — a deliberate secret-exposure change |
+| jasper-control | `jasper-control` | `systemd-journal` | **3b-2 (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), group-readable config it reads off disk, and `systemd-journal` for the journal-based /state cards |
 | jasper-web | `jasper-web` | `netdev`?/`bluetooth`? | **3b-3 (designed)** | the big one: NetworkManager polkit, BlueZ, `CAP_NET_ADMIN` scan-repair, `/etc/{bluetooth,avahi}` writes — and **wifi-lockout** is the worst-case brick for a headless speaker |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
@@ -244,28 +244,121 @@ control token) keep owner-only modes. Pinned by `tests/test_systemd_hardening.py
 (User/Group/caps/syscall-filter per dropped unit; the deferred daemons stay
 root; the install↔unit user contract).
 
-**3b-2 / 3b-3 (designed).** control pulls in the polkit rule (one rule granting
-`jasper-control` the `MANAGED_UNITS` allowlist via `org.freedesktop.systemd1.
-manage-units` + `manage-unit-files`, plus `org.freedesktop.login1.reboot`/
-`power-off`) and the group-readable env-file modes its spawned `jasper-doctor`
-needs. web pulls in NetworkManager access (a polkit rule or `netdev` membership
-— verify on the Pi), BlueZ (`bluetooth` group or polkit), the `/etc/bluetooth`
-+ `/etc/avahi/services` writes (chown to `jasper` or move behind a broker verb),
-and a decision on the `CAP_NET_ADMIN` scan-repair (grant the cap, or accept its
-graceful degradation to manual "Join by name"). Both stay hardened-root until
-then.
+**3b-2 (LANDED) — control.** `jasper-control` drops to a non-root
+`jasper-control` user (primary group `jasper`, no supplementary groups —
+no ALSA/input, just TCP + a localhost CamillaDSP WebSocket) with
+`CapabilityBoundingSet=` (empty) + `SystemCallFilter=@system-service`. Two
+coupled artifacts make the drop work:
+
+- **The polkit rule** ([`deploy/polkit/49-jasper-control.rules`](../deploy/polkit/49-jasper-control.rules),
+  installed to `/etc/polkit-1/rules.d/` by `install.sh`; polkitd auto-reloads).
+  It grants the `jasper-control` user `org.freedesktop.systemd1.manage-units`
+  **scoped per-unit** to the `MANAGED_UNITS` allowlist via `action.lookup("unit")`,
+  plus `org.freedesktop.login1.reboot`/`power-off` and their `-multiple-sessions`/
+  `-ignore-inhibit` variants. It keys on `subject.user` **only** — a sessionless
+  system daemon has `subject.active == false`, so the desktop `subject.active`
+  idiom would never fire. The allowlist is pinned set-equal to
+  `restart_broker.MANAGED_UNITS` by `tests/test_polkit_jasper_control.py` so the
+  broker authz and the polkit grant can't drift.
+
+  **`manage-unit-files` is deliberately NOT granted — this corrects the
+  original design above.** Hardware testing (Pi 5, systemd 257, polkit 126)
+  found that `manage-unit-files` (1) is invoked by systemd with **NULL details**,
+  so `action.lookup("unit")` is undefined and it **cannot be unit-scoped**, and
+  (2) is **consulted by `systemctl restart`** (the SysV-compat / unit-file path),
+  so an unconditional `manage-unit-files` YES **silently re-opens
+  restart-of-ANY-unit** (cron, nginx, sshd…) — defeating the per-unit
+  `manage-units` allowlist that is the whole point. The only `enable`/`disable`
+  `jasper-control` ever needed was a redundant defensive `enable jasper-voice`;
+  voice's authoritative enable/disable is owned by the **root**
+  `jasper-aec-reconcile` (Tier B), so that `_enable_systemd_unit` call was
+  removed. The broker keeps `enable`/`disable-now` in its verb *vocabulary* (for
+  a future root client / Phase-4 grant), but they fail-soft for the non-root
+  broker.
+
+- **Group-readable secret env (`0640` group `jasper`).** `jasper-control` does
+  two off-disk fresh reads a non-root user must keep doing: its `/state` +
+  `/system/snapshot` read `home_assistant.env` (the HA bearer token), and
+  `/system/diagnostics` spawns `jasper-doctor`, which fresh-reads **every**
+  `env_load.ENV_FILES` path and (full profile) `Config.from_env` — the provider
+  API keys + `GOOGLE_CLIENT_SECRET` + `JASPER_HA_TOKEN`. So `jasper.env`
+  (`chgrp jasper` — it was `0640 root:root`, group `root`) plus the wizard
+  secrets `voice_provider.env` / `spotify_credentials.env` /
+  `google_credentials.env` / `home_assistant.env` become `0640` group `jasper`,
+  and so does `control_token` — the Phase-2 gate token, which `_stored_token()`
+  fails safe to gate-OFF on `EACCES`, so an unreadable token would **silently
+  disable the mandatory gate** (the `StateDirectory` chown can make its owner
+  `jasper-voice`, hence group-read, not owner-read, is required). Wizards write
+  these at the new `SECRET_ENV_MODE` (`0640`); an install migration
+  (`widen_control_secret_env_modes`) widens existing files on upgrade so a Pi
+  that never re-saves a wizard doesn't break `/state` + the doctor. This widens
+  the secrets to all `jasper`-group daemons — the same documented group-exposure
+  accept as the 3b-1 Google tree; per-daemon isolation is Phase 4
+  (`LoadCredential`). `/etc/avahi/services` becomes group-`jasper` writable
+  (setgid) so the non-root daemon can still render the opt-in peering advert.
+
+- **The full off-disk-read surface (the completeness the secret-env bullet
+  alone missed).** `jasper-control` reads more than the secret env off disk for
+  `/state` + `/system/diagnostics`, and the drop degrades each unless handled:
+  - **`/system/diagnostics` runs the doctor as ROOT.** `jasper-doctor` is a
+    root tool (audio/mixer/journal probes, `sudo -u <renderer> aplay`) — running
+    it in-process from the non-root jasper-control made ~7 checks fail on
+    permissions (false red). So the report is produced by a root
+    `jasper-doctor-json.service` oneshot that jasper-control `systemctl start`s
+    via its polkit manage-units grant (the unit is in `MANAGED_UNITS`); the
+    doctor's `--json --out PATH` writes the report `0640` and exits 0 so a
+    "report with failures" never flips the oneshot to `failed`. Full fidelity,
+    no new privilege primitive.
+  - **`systemd-journal` supplementary group.** Three `/state` cards
+    (`airplay_health`, `dial`, `wifi_guardian`'s last-action) read the journal;
+    a non-root reader needs the group.
+  - **Non-secret state widened to `0640`:** `sound_profile.json` /
+    `sound_settings.json` (the EQ config the sound card reads).
+  - **The WiFi PSK stash stays `0600` — deliberately NOT widened.** Unlike the
+    secrets above (whose *values* jasper-control needs), it needs only the SSID,
+    so exposing the PSK to the group would be gratuitous. `enabled` derives from
+    a `stat`; the SSID fails-soft to `None` (gated on `os.access` so the read
+    isn't even attempted, no WARNING spam); `active_ssid` (nmcli) + `last_action`
+    (journal) carry the resilience story.
+
+Measured on hardware (jts.local, `systemd-analyze security`): **jasper-control
+6.6 → 2.6 OK** (2.6, not 2.5, for the `systemd-journal` supplementary group).
+Validated, including the self-review fixes: `/system/diagnostics` returns the
+root-fidelity report (0 fails / 93 checks, matching `sudo jasper-doctor`); the
+`/state` wifi-guardian / sound cards populate with **zero** permission-denied
+WARNINGs; the non-root peering-advert write into the setgid `/etc/avahi/services`
+succeeds. And the original matrix:
+non-root with `NRestarts=0` under `@system-service` (no SIGSYS); manage-units
+**scoping confirmed** (allowlisted units restart, `cron`/`nginx`/`sshd` denied);
+the `shairport_supervisor` `reset-failed`+restart path works under polkit; a
+**real `systemctl --no-block reboot` run as `jasper-control` fired** and the Pi
+recovered with `jasper-control` back non-root + healthy; secrets readable; the
+token gate still 403s an unauthenticated POST.
+
+**3b-3 (designed) — web.** web pulls in NetworkManager access (the
+investigation found upstream NM defaults deny a sessionless caller —
+`settings.modify.system` is `auth_admin` in all columns — so a JS polkit rule
+returning `YES` is **required**; `netdev` membership alone does not suffice),
+BlueZ adapter-Alias (the `bluetooth` group works — adapter properties are gated
+by D-Bus policy, not polkit), the `/etc/bluetooth` + `/etc/avahi/services`
+writes (chown to `jasper` or move behind a broker verb — the `/speaker` rename's
+avahi re-render already silently no-ops under the strict-root unit today), and a
+decision on the `CAP_NET_ADMIN` scan-repair (grant the cap, or accept its
+graceful degradation to manual "Join by name"). **wifi-lockout is the worst-case
+brick for a headless speaker**, so it stays hardened-root until the NM-polkit +
+failed-connect-rollback path is validated under the dropped user on hardware.
 
 **The drop is gated on recovery-path validation, not happy-path** (validate
 recovery under the dropped user, or ship hardened-root and don't pretend the
-drop is done). The 3b-1 increment validates the mux→broker path now; the
-control-as-non-root paths validate with 3b-2:
+drop is done). The 3b-1 increment validated the mux→broker path; the
+control-as-non-root paths were validated with the 3b-2 drop (✅ below):
 
-| Recovery path (changed by the drop) | Now runs as | Induced-failure test |
+| Recovery path (changed by the drop) | Now runs as | Validation result |
 |---|---|---|
-| `system_supervisor` reboot | control (polkit) | hang `/healthz` / drop sshd banner → 3 ticks → confirm `systemctl reboot` fires |
-| `shairport_supervisor` restart | control (polkit) | wedge RTSP `:7000` → confirm `reset-failed`+restart fires |
-| `jasper-web` config-save restarts | web → broker | save a voice/source change → confirm broker restart lands |
-| `jasper-mux` librespot recovery | mux → broker | force double-grab timeout → confirm librespot restart via broker |
+| `system_supervisor` reboot | control (polkit) | ✅ ran the exact `systemctl --no-block reboot` as `jasper-control` → authorized, Pi rebooted + recovered non-root |
+| `shairport_supervisor` restart | control (polkit) | ✅ `reset-failed`+restart of `shairport-sync`/`nqptp` authorized as `jasper-control`; non-allowlisted units denied |
+| `jasper-web` config-save restarts | web → broker | ✅ broker proxies `restart jasper-voice` (allowlisted) as `jasper-control` |
+| `jasper-mux` librespot recovery | mux → broker | ✅ (3b-1) mux→broker; `librespot` is in the allowlist |
 
 Class-2 (unchanged — still root — regression smoke only): `jasper-wifi-guardian`
 (kill `wpa_supplicant`), `jasper-aec-reconcile` (remove `/proc/asound/Array`),
@@ -281,11 +374,11 @@ own warning fires, the config still persisted) rather than falling back to a
 direct `systemctl`. This is the deliberate cost of one auditable privileged
 boundary, and it is bounded: `jasper-control` is the most heavily supervised
 daemon (Tier-1 watchdog + `StartLimitAction=reboot`), its own restart stays
-systemd's job, and the failure is observable, not silent. When 3b lands, note
-this in the `HANDOFF-resilience.md` Tier-3 row and `HANDOFF-observability.md`
-debug-restart note — both of `jasper-control`'s *own* supervisor/debug
-restarts become polkit-authorized (they call `systemctl` directly, not the
-broker), which is a doc change those subsystems' canonical files will need.
+systemd's job, and the failure is observable, not silent. With 3b-2 landed,
+`jasper-control`'s *own* supervisor/debug restarts (they call `systemctl`
+directly, not the broker) are now polkit-authorized — noted in the
+`HANDOFF-resilience.md` Tier-3 / system-supervisor sections and the
+`HANDOFF-observability.md` debug-restart note.
 
 ## Phase 4 — secret credentialization (DESIGNED)
 

@@ -108,6 +108,7 @@ from ._common import (
     guard_mutating_request,
     write_env_file,
     write_json_file,
+    SECRET_ENV_MODE,
 )
 
 logger = logging.getLogger(__name__)
@@ -1314,7 +1315,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # the success path (errors guarded above), and it survives the
                 # blank-value filter — so `new` is never empty: always write,
                 # never delete.
-                write_env_file(cfg["state_path"], new)
+                write_env_file(cfg["state_path"], new, mode=SECRET_ENV_MODE)
             except OSError as e:
                 logger.exception("could not write voice provider env file")
                 return None, f"Could not save: {e}"
@@ -1424,7 +1425,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if new:
-                    write_env_file(cfg["state_path"], new)
+                    write_env_file(cfg["state_path"], new, mode=SECRET_ENV_MODE)
                 else:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
@@ -1509,7 +1510,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=err)
                 return
             try:
-                write_env_file(cfg["state_path"], new)
+                write_env_file(cfg["state_path"], new, mode=SECRET_ENV_MODE)
             except OSError as e:
                 logger.exception("could not write spend-cap env settings")
                 send_see_other(self, "./", flash=f"Could not save spend cap: {e}")

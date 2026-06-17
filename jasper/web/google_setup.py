@@ -72,6 +72,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
     write_env_file,
+    SECRET_ENV_MODE,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,8 +86,9 @@ _PAGE_CSS_HREF = "/assets/google/google.css"
 
 
 # Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
-# the systemd unit picks both up via `EnvironmentFile=`. Mode 0600 by
-# write_env_file's default.
+# the systemd unit picks both up via `EnvironmentFile=`. Written at
+# SECRET_ENV_MODE (0640 group jasper) so the non-root jasper-control's
+# spawned jasper-doctor can read GOOGLE_CLIENT_SECRET (WS1 Phase 3b-2).
 CREDS_FILE = "/var/lib/jasper/google_credentials.env"
 
 # Google OAuth client IDs end in `.apps.googleusercontent.com`.
@@ -128,10 +130,12 @@ def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
 
 
 def _write_creds_file(client_id: str, client_secret: str, *, path: str = CREDS_FILE) -> None:
+    # WS1 Phase 3b-2: 0640 group jasper so the jasper-doctor jasper-control spawns
+    # (which reads GOOGLE_CLIENT_SECRET via Config.from_env) can read it.
     write_env_file(path, {
         "GOOGLE_CLIENT_ID": client_id,
         "GOOGLE_CLIENT_SECRET": client_secret,
-    })
+    }, mode=SECRET_ENV_MODE)
 
 
 def _delete_creds_file(path: str = CREDS_FILE) -> None:

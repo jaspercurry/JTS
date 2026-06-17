@@ -982,4 +982,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
     ) as f:
         f.write(text)
         tmp_name = f.name
+    # WS1 Phase 3b-2: 0640 group jasper (NamedTemporaryFile creates 0600) so the
+    # now-non-root jasper-control can read the (non-secret) sound profile/library
+    # for /state. chmod before the atomic rename so a reader never sees 0600.
+    os.chmod(tmp_name, 0o640)
     os.replace(tmp_name, path)

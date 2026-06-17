@@ -439,10 +439,24 @@ def read_env_file(path: str) -> dict[str, str]:
     return out
 
 
+# WS1 Phase 3b-2 — the mode for secret env files that the now-non-root
+# jasper-control (and the jasper-doctor it spawns) must read OFF DISK:
+# voice_provider.env, spotify_credentials.env, google_credentials.env,
+# home_assistant.env. 0o640 group-`jasper` read (vs the 0o600 default) so a
+# sibling jasper-group daemon can read them. This is the deliberate, documented
+# group-level secret-exposure that the jasper-control user drop requires;
+# per-daemon isolation is Phase 4 (LoadCredential). The files land group
+# `jasper` via the /var/lib/jasper StateDirectory recursive-chown (and the
+# install-side widen_control_secret_env_modes upgrade path). Files only one
+# daemon reads keep the 0o600 default. See docs/HANDOFF-privilege-separation.md.
+SECRET_ENV_MODE = 0o640
+
+
 def write_env_file(path: str, values: dict[str, str], *, mode: int = 0o600) -> None:
     """Atomically write a systemd EnvironmentFile-shaped key=value file
     with the given mode (default 0o600 — these files contain API keys
-    and OAuth secrets).
+    and OAuth secrets; pass ``SECRET_ENV_MODE`` for the ones a non-root
+    jasper-control reads off disk — see that constant).
 
     Atomicity matters: a half-written env file at restart time could
     leave jasper-voice with a partial config and a real-world impact
@@ -601,18 +615,15 @@ def restart_voice_daemon() -> None:
             "saved config applies on unbond",
         )
         return
-    _enable_systemd_unit("jasper-voice")
+    # No explicit `systemctl enable` here. jasper-voice is enabled at install,
+    # and the root jasper-aec-reconcile (Tier B) is the authoritative owner of
+    # voice's enable/disable (it disables on bonded-follower park and re-enables
+    # on unpark). The web side only needs the runtime restart. (WS1 Phase 3b-2:
+    # the non-root jasper-control is deliberately NOT granted polkit
+    # manage-unit-files — it can't be unit-scoped and `systemctl restart`
+    # consults it, which would re-open restart-of-any-unit; see
+    # deploy/polkit/49-jasper-control.rules and docs/HANDOFF-privilege-separation.md.)
     restart_systemd_units("jasper-voice")
-
-
-def _enable_systemd_unit(unit: str) -> None:
-    # WS1 Phase 3: enable (persist across reboots) via the restart broker.
-    # `enable` does not start the unit — restart_voice_daemon calls
-    # restart_systemd_units right after for the actual (re)start.
-    manage_units(
-        f"{unit}.service", verb="enable", reason="enable for boot",
-        no_block=False, timeout=5.0,
-    )
 
 
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:

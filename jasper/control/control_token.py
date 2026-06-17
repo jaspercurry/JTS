@@ -15,7 +15,8 @@ fail-safe default-off — with no token file, :func:`verify` returns True and a
 process can never accidentally lock out the household by appearing
 half-configured. WS1 Phase 2 makes the gate **mandatory but invisible**:
 jasper-control calls :func:`ensure_token` at startup, so the file always
-exists (auto-generated, 0600), and ``canonical_page`` auto-delivers the value
+exists (auto-generated, 0640 group jasper — see :func:`ensure_token`), and
+``canonical_page`` auto-delivers the value
 to the same-origin dashboard as a meta tag behind the read guard — the
 household never sees or types it. This is defense-in-depth against drive-by /
 CSRF / casual curl on the annoyance-class routes, not a boundary against a
@@ -105,21 +106,35 @@ def current_token() -> str:
 def ensure_token() -> str:
     """Generate + persist a token if none exists; return the active token.
 
-    Idempotent and atomic (tempfile + ``os.replace`` at mode 0600). jasper-control
-    calls this once at startup, which makes the gate *always armed* — the
-    destructive routes require a token with no operator action. Auto-generation
-    is what turns #712's opt-in floor into the Phase-2 mandatory-but-invisible
-    gate. Returns an already-present token unchanged, so a household's stored
-    token (or a hand-set one) is never rotated out from under it.
+    Idempotent and atomic (tempfile + ``os.replace`` at mode 0640 group jasper).
+    jasper-control calls this once at startup, which makes the gate *always
+    armed* — the destructive routes require a token with no operator action.
+    Auto-generation is what turns #712's opt-in floor into the Phase-2
+    mandatory-but-invisible gate. Returns an already-present token unchanged, so
+    a household's stored token (or a hand-set one) is never rotated out from
+    under it.
+
+    **WS1 Phase 3b-2 — 0640, not 0600.** The token file lives under
+    ``/var/lib/jasper``, whose ``StateDirectory=jasper`` recursive-chown can make
+    its owner ``jasper-voice`` (not jasper-control). It is also read cross-user:
+    jasper-web embeds it via ``canonical_page()``. After the jasper-control user
+    drop, an owner-only 0600 token would be UNREADABLE by the non-root
+    jasper-control (different owner) and the non-root jasper-web — and because
+    :func:`_stored_token` fails safe to "" (gate OFF) on EACCES, an unreadable
+    token would SILENTLY DISABLE the mandatory gate. So the file is group-`jasper`
+    readable. The token is CSRF-grade defense-in-depth (not a hard boundary), and
+    the readers are sibling daemons already in the trust domain; per-daemon
+    isolation is Phase 4 (LoadCredential). See docs/HANDOFF-privilege-separation.md.
     """
     existing = _stored_token()
     if existing:
         return existing
     token = secrets.token_urlsafe(32)
-    # Canonical atomic writer (chmod-before-rename, same-FS replace) at 0600 so
-    # the secret is never even briefly world-readable. Raises OSError on failure;
-    # the single caller (ensure_token at startup) treats that as fail-open.
-    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o600)
+    # Canonical atomic writer (chmod-before-rename, same-FS replace) at 0640 so
+    # the secret is never even briefly world-readable, while staying group-`jasper`
+    # readable for the non-root jasper-control/jasper-web (see docstring). Raises
+    # OSError on failure; the single caller (ensure_token at startup) fails open.
+    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640)
     return token
 
 

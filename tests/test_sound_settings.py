@@ -36,6 +36,16 @@ def test_round_trip(tmp_path: Path):
     assert loaded.match_loudness is True
 
 
+def test_saved_file_is_group_readable_0640(tmp_path: Path):
+    """WS1 Phase 3b-2: the non-root jasper-control reads sound settings for
+    /state; 0640 group jasper (these are non-secret EQ config), not 0600."""
+    import os
+    import stat
+    p = tmp_path / "sound_settings.json"
+    save_sound_settings(SoundSettings(), p)
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o640
+
+
 def test_headroom_trim_is_clamped_nonnegative_and_safe():
     assert (
         SoundSettings.from_mapping({"headroom_trim_db": 99}).headroom_trim_db

@@ -15,7 +15,10 @@ can distinguish "feature off / no stash yet" from "feature on, here's
 the latest state."
 
 The PSK is never read from the stash by this module. Only SSID +
-key_mgmt + last-action metadata.
+key_mgmt + last-action metadata. WS1 Phase 3b-2: jasper-control runs non-root
+and the PSK-bearing stash stays 0600, so the SSID read fails-soft to None for
+the non-root caller — ``enabled`` (from a stat) + ``active_ssid`` (nmcli) +
+``last_action`` (journal) still carry the resilience story without the PSK.
 
 Cost: ~30 ms typical (one stat() + one nmcli + one journalctl call).
 Called from the `/state` aggregator which already runs ~200 ms parallel
@@ -184,19 +187,33 @@ def snapshot() -> dict[str, Any]:
         "last_run_at": None,
     }
 
-    try:
-        stash = read_stash(_stash_path())
-    except Exception as e:  # noqa: BLE001
-        log_event(
-            logger,
-            "wifi_guardian_state.stash_read_failed",
-            err=repr(e),
-            level=logging.WARNING,
-        )
-        stash = None
+    stash_path = _stash_path()
+    # `enabled` = the guardian is armed. Derive it from the stash file's
+    # EXISTENCE (a stat — which the non-root jasper-control can do via the
+    # group-traversable dir), NOT from reading it: the stash holds the WiFi PSK
+    # and stays owner-only 0600. WS1 Phase 3b-2 keeps the PSK out of the `jasper`
+    # group — jasper-control needs only the SSID, never the PSK value.
+    out["enabled"] = os.path.exists(stash_path)
+    # Only attempt the read when we can actually read the file. The non-root
+    # jasper-control cannot read the 0600 PSK stash — gate on os.access so
+    # read_stash (which logs a permission WARNING on EACCES) is never even called
+    # on the expected-denied path, instead of spamming /state polls. When the
+    # SSID is unavailable, active_ssid (nmcli) + last_action (journal) carry the
+    # drift story without the PSK.
+    stash = None
+    if os.access(stash_path, os.R_OK):
+        try:
+            stash = read_stash(stash_path)
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                logger,
+                "wifi_guardian_state.stash_read_failed",
+                err=repr(e),
+                level=logging.WARNING,
+            )
+            stash = None
 
     if stash is not None:
-        out["enabled"] = True
         out["stash_ssid"] = stash.ssid
         out["stash_key_mgmt"] = stash.key_mgmt
 
