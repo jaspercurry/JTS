@@ -466,8 +466,8 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
     """Extract generated room-correction PEQs from a CamillaDSP YAML.
 
     We intentionally avoid a YAML runtime dependency here. The parser is
-    scoped to the deterministic config shapes emitted by
-    jasper.correction.camilla_yaml and this module.
+    scoped to historical correction configs and the deterministic shapes
+    emitted by this module.
 
     SCOPE: extracts the SOLO/left chain only (``peq_*`` / ``room_peq_*``);
     right-channel leader-bake filters (``peq_r*`` / ``room_peq_r*``) are

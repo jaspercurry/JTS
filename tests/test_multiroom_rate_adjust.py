@@ -127,15 +127,7 @@ def test_member_camilla_kwargs_invalid_member_unchanged():
     assert kw["playback_pipe_path"] is None
 
 
-# ---------- the generators emit the param ----------
-
-
-def test_correction_generator_honors_rate_adjust_param():
-    from jasper.correction.camilla_yaml import emit_correction_config
-    assert "enable_rate_adjust: true" in emit_correction_config([])  # default
-    assert "enable_rate_adjust: false" in emit_correction_config(
-        [], enable_rate_adjust=False,
-    )
+# ---------- generated sound configs emit the param ----------
 
 
 def test_sound_generator_honors_rate_adjust_param():

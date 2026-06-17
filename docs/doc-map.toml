@@ -353,7 +353,6 @@ code = [
   "jasper/sound/**",
   "jasper/web/sound_setup.py",
   "jasper/dsp_apply.py",
-  "jasper/correction/camilla_yaml.py",
 ]
 docs = [
   "docs/HANDOFF-volume.md",

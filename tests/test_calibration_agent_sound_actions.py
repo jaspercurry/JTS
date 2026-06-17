@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from jasper.calibration_agent import actions, response, sound_actions, tools
-from jasper.correction.camilla_yaml import emit_correction_config
-from jasper.correction.peq import PEQ
+from jasper.camilla_config_contract import PeqFilter
+from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, load_profile, save_profile
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
@@ -68,7 +68,12 @@ def test_sound_audition_executor_loads_ephemeral_sound_config(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    current.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        )
+    )
     profile_path = tmp_path / "sound_profile.json"
     save_profile(
         SoundProfile(curve_id="flat", simple_eq=SimpleEq(mid_db=0.0)),

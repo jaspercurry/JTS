@@ -3,11 +3,11 @@ the leaf helpers that turn a value into a line of CamillaDSP config.
 
 Why this module exists
 ----------------------
-Four subsystems generate CamillaDSP configs — room correction
-(`jasper.correction.camilla_yaml`), sound-preference EQ
-(`jasper.sound.camilla_yaml`), active-speaker crossovers
-(`jasper.active_speaker.camilla_yaml`), and multi-room channel-split
-(`jasper.multiroom.channel_split`). Before this module each had its own
+Three subsystems generate CamillaDSP configs — sound-preference EQ
+(`jasper.sound.camilla_yaml`, which also composes live room correction),
+active-speaker crossovers (`jasper.active_speaker.camilla_yaml`), and
+multi-room channel-split (`jasper.multiroom.channel_split`). Before this
+module each had its own
 copy of `_fmt` and its own hand-rolled `Gain` / `Biquad` / `Mixer`
 emitters, so the CamillaDSP *format* (decimal places, field order,
 inline-flow style, the `BiquadCombo` Linkwitz-Riley spelling) was
@@ -99,8 +99,8 @@ def emit_delay_filter(name: str, *, delay_ms: float) -> list[str]:
 def emit_peaking_biquad(name: str, *, freq: float, q: float, gain: float) -> list[str]:
     """A CamillaDSP ``Biquad`` / ``Peaking`` filter (parametric EQ band).
 
-    Reproduces `sound._emit_peq_filter` and the room-correction PEQ
-    emitter byte-for-byte (both used ``:.4f`` on freq/q/gain).
+    Reproduces the sound room-PEQ/preference-PEQ spelling byte-for-byte
+    (``:.4f`` on freq/q/gain).
     """
     return [
         f"  {name}:",
@@ -203,14 +203,12 @@ def emit_master_gain_pipeline(
     CamillaDSP's built-in ``main_volume`` fader, **not** this mixer;
     ``master_gain`` is the stable identity anchor that downstream weaves
     position against (multiroom's ``channel_select`` splices immediately
-    after it) and the reserved hook for future mixer ops. See
-    ``test_master_gain_mixer_unchanged_with_peqs`` in
-    tests/test_correction_camilla_yaml.py — the byte-level contract.
+    after it) and the reserved hook for future mixer ops. See the
+    sound-emitter tests for the byte-level contract.
 
     ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
-    reproduces `correction._emit_pipeline` and `sound._emit_pipeline`
-    byte-for-byte (the solo-impact contract; both consumers carry exact
-    pipeline-bytes regression tests). A distinct ``right_names`` is the
+    reproduces the sound emitter's solo pipeline byte-for-byte (the
+    solo-impact contract). A distinct ``right_names`` is the
     multi-room leader-bake (per-seat correction per channel,
     docs/HANDOFF-multiroom.md §2). Deliberately a 2-channel shape: the
     config contract is stereo-pinned today; 2.1's 3-channel stream

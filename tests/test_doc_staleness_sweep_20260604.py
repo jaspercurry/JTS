@@ -110,13 +110,12 @@ def test_wake_telemetry_doc_uses_1gb_not_500mb(monkeypatch):
 
 def test_correction_init_points_at_real_apply_path():
     """correction/__init__.py item 6: the public-surface comment names
-    the real apply path (emit_sound_config), not the legacy emitter."""
+    the real apply path (emit_sound_config), not the removed legacy emitter."""
     import jasper.correction as corr
 
     doc = corr.__doc__ or ""
     assert "emit_sound_config" in doc
-    # emit_correction_config must be flagged legacy, not advertised as apply.
-    assert "legacy" in doc.lower()
+    assert "emit_correction_config" not in doc
 
 
 def test_security_doc_scopes_dns_rebinding_to_control_api():

@@ -10,8 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.correction.camilla_yaml import emit_correction_config
-from jasper.correction.peq import PEQ
+from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
@@ -24,6 +23,7 @@ from jasper.output_hardware import (
     classify_output_cards,
     write_state as write_output_hardware_state,
 )
+from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import (
     ParametricBand,
     SimpleEq,
@@ -36,6 +36,13 @@ from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.web import sound_setup
 
 from ._web_test_helpers import json_post_with_csrf, request_with_csrf
+
+
+def _room_config(peqs: list[PeqFilter] | None = None) -> str:
+    return emit_sound_config(
+        SoundProfile(enabled=False),
+        room_peqs=peqs or [],
+    )
 
 
 def _record_dsp_epoch(path: Path, op_id: str) -> None:
@@ -3388,7 +3395,7 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
 
@@ -3416,7 +3423,7 @@ async def test_apply_profile_no_trim_by_default_so_boosts_boost(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([]))
+    current.write_text(_room_config())
     fake = FakeCamilla(str(current))
 
     payload = await sound_setup._apply_profile(
@@ -3442,7 +3449,7 @@ async def test_apply_profile_emits_output_trim_when_match_loudness_on(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([]))
+    current.write_text(_room_config())
     fake = FakeCamilla(str(current))
 
     payload = await sound_setup._apply_profile(
@@ -3466,7 +3473,7 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([]))
+    current.write_text(_room_config())
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     # An applied profile with a boost, stamped at a fixed time.
@@ -3503,7 +3510,7 @@ async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current), fail_set=True)  # reload fails
 
     payload = await sound_setup._apply_settings(
@@ -3530,7 +3537,7 @@ async def test_audition_profile_loads_draft_without_persisting(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     # match-loudness on -> the audition gets a loudness-weighted output trim.
@@ -3571,7 +3578,7 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "sound_current.yml"
-    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     draft = SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0))
@@ -3611,7 +3618,7 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "sound_current.yml"
-    current.write_text(emit_correction_config([]))
+    current.write_text(_room_config())
     fake = FakeCamilla(str(current))
     draft = SoundProfile(curve_id="bk", simple_eq=SimpleEq(treble_db=1.0))
 
@@ -3640,7 +3647,7 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "sound_current.yml"
-    current.write_text(emit_correction_config([]))
+    current.write_text(_room_config())
     fake = FakeCamillaWithoutLiveRaw(str(current))
     draft = SoundProfile(curve_id="bk", simple_eq=SimpleEq(treble_db=1.0))
 
@@ -3687,7 +3694,7 @@ async def test_apply_profile_rolls_back_when_reload_fails(
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
-    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current), fail_set=True)
 
     try:

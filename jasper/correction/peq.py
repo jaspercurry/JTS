@@ -21,9 +21,9 @@ Algorithm — greedy peak-fit:
      flatness_target_db.
 
 Each peaking-EQ maps directly to a CamillaDSP `Biquad { type:
-Peaking, freq, q, gain }` filter — see jasper.correction.camilla_yaml
-for the YAML emitter. We don't generate biquad coefficients here;
-CamillaDSP does that at config-load time.
+Peaking, freq, q, gain }` filter; the live apply path emits those
+through jasper.sound.camilla_yaml. We don't generate biquad
+coefficients here; CamillaDSP does that at config-load time.
 """
 from __future__ import annotations
 
