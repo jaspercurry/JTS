@@ -1618,7 +1618,8 @@ Wizard at `http://jts.local/ha/`. Three states (mirrors
    `<HA URL>/profile/security`
 3. Connected → status card + test button + agent picker + disconnect
 
-Persists to `/var/lib/jasper/home_assistant.env`:
+Persists to `/var/lib/jasper-intsecrets/home_assistant.env`
+(mode 0640, group `jasper-intsecrets`):
 
 ```sh
 JASPER_HA_URL=http://homeassistant.local:8123
@@ -1708,7 +1709,7 @@ paths for now:
 ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep "Home Assistant"
 
 # Disable (preserves recent URLs for one-tap reconnect):
-ssh pi@jts.local 'sudo rm -f /var/lib/jasper/home_assistant.env \
+ssh pi@jts.local 'sudo rm -f /var/lib/jasper-intsecrets/home_assistant.env \
   && sudo systemctl restart jasper-voice'
 ```
 

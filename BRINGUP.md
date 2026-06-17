@@ -442,13 +442,13 @@ scripts, scenes, areas, aliases, and any LLM-backed conversation
 agent the user has configured inside HA. JTS is a relay through
 HA's own conversation pipeline.
 
-Configuration lives in `/var/lib/jasper/home_assistant.env`
-(wizard-owned, mode 0600 — token is a secret). The systemd unit's
-`EnvironmentFile=` sources it. Headless installs (CI / imaging
-pipelines) can write the file directly:
+Configuration lives in `/var/lib/jasper-intsecrets/home_assistant.env`
+(wizard-owned, mode 0640 group `jasper-intsecrets` — token is a secret).
+The systemd unit's `EnvironmentFile=` sources it. Headless installs
+(CI / imaging pipelines) can write the file directly:
 
 ```sh
-sudo install -m 0600 /dev/stdin /var/lib/jasper/home_assistant.env <<EOF
+sudo install -D -m 0640 -g jasper-intsecrets /dev/stdin /var/lib/jasper-intsecrets/home_assistant.env <<EOF
 JASPER_HA_URL=http://homeassistant.local:8123
 JASPER_HA_TOKEN=eyJ0eXAi...
 EOF

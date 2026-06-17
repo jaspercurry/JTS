@@ -1,15 +1,10 @@
-"""WS1 Phase 3b-2 — pin the group-`jasper` widening of the secret env files a
-non-root jasper-control (and the jasper-doctor it spawns) reads off disk.
+"""WS1 — pin env-file modes for cross-user daemon reads.
 
-jasper-control drops to a non-root user; its /system/diagnostics spawns
-`jasper-doctor`, which fresh-reads EVERY env_load.ENV_FILES path (incl. the
-provider API keys + Google secret + HA token via Config.from_env), and its
-/state handler fresh-reads home_assistant.env (the HA bearer token) directly.
-For those reads to keep working, the wizard-written secret files must be 0640
-group `jasper` (not the 0600 owner-only default). If a future edit reverts a
-writer to 0600, the drop silently breaks /state + the doctor (they degrade to
-"not configured"), so this test guards the contract — see the repo's
-"pin promises with tests" rule and docs/HANDOFF-privilege-separation.md.
+The broad `/var/lib/jasper` state files that jasper-control still fresh-reads
+must be 0640 for the shared `jasper` group. Phase 4a/4b moved the real secrets
+into sibling compartments (`jasper-secrets`, `jasper-intsecrets`); those files
+still use mode 0640, but their group membership and relocation are pinned by the
+Phase 4 hardening/migration tests instead of this broad-widening guard.
 """
 from __future__ import annotations
 
@@ -24,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_secret_env_mode_is_group_readable_0640():
     assert _common.SECRET_ENV_MODE == 0o640, (
-        "secret env files must be 0640 (group `jasper` read) so the non-root "
-        "jasper-control + spawned jasper-doctor can read them."
+        "cross-daemon secret env files must be 0640; the owning group is set "
+        "by the broad state dir or the Phase 4 compartment."
     )
 
 
@@ -61,7 +56,7 @@ def test_secret_wizards_use_secret_env_mode():
     for rel, fname in SECRET_WIZARDS.items():
         src = (ROOT / rel).read_text(encoding="utf-8")
         assert "SECRET_ENV_MODE" in src, (
-            f"{rel} must write {fname} with SECRET_ENV_MODE (0640 group jasper)"
+            f"{rel} must write {fname} with SECRET_ENV_MODE (0640 group-readable)"
         )
         # No secret wizard should still pass mode=0o600 to write_env_file.
         assert "mode=0o600" not in src, (
@@ -71,9 +66,9 @@ def test_secret_wizards_use_secret_env_mode():
 
 
 def test_install_widens_secret_env_on_upgrade():
-    """The upgrade path: install must group-widen the secret files (an older
-    build wrote them 0600) AND chgrp jasper.env — else the drop breaks /state +
-    the doctor on existing Pis that never re-save a wizard."""
+    """The upgrade path: install must still group-widen the broad files
+    jasper-control reads directly. Phase 4 compartment files are handled by
+    their migration helpers instead."""
     full = (ROOT / "deploy/lib/install/env-migrations.sh").read_text(encoding="utf-8")
     assert "widen_control_secret_env_modes() {" in full, (
         "env-migrations.sh must define widen_control_secret_env_modes"
@@ -84,13 +79,14 @@ def test_install_widens_secret_env_on_upgrade():
     mig = full.split("widen_control_secret_env_modes() {", 1)[1]
     for fname in (
         "voice_provider.env",
-        "spotify_credentials.env",
         # NOTE: google_credentials.env is NOT in this list anymore — WS1 Phase 4a
         # moved it to the group-`jasper-secrets` compartment (voice+web only),
         # so it is deliberately NOT widened to the broad `jasper` group. Its
         # relocation/perms are pinned by test_systemd_hardening's
         # test_secrets_compartment_phase4a + test_install_creates_google_dir_setgid.
-        "home_assistant.env",
+        # WS1 Phase 4b likewise moved spotify_credentials.env +
+        # home_assistant.env to the group-`jasper-intsecrets` compartment
+        # (voice/control/mux/web only), pinned by test_secrets_compartment_phase4b.
         "control_token",
         "jasper.env",
         # Non-secret state jasper-control also reads off disk for /state:

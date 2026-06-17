@@ -420,7 +420,7 @@ def read_env_file(path: str) -> dict[str, str]:
     """Parse a systemd-style EnvironmentFile (KEY=VALUE per line, no
     quoting). Returns {} if the file is missing or unreadable.
 
-    Same shape used by `/var/lib/jasper/spotify_credentials.env` and
+    Same shape used by `/var/lib/jasper-intsecrets/spotify_credentials.env` and
     `/var/lib/jasper/voice_provider.env` — both are sourced into
     jasper-voice's environment via systemd's `EnvironmentFile=`."""
     out: dict[str, str] = {}
@@ -444,11 +444,14 @@ def read_env_file(path: str) -> dict[str, str]:
 # WHICH group depends on WHERE the file lives:
 #   - Files under /var/lib/jasper (the shared StateDirectory) land group
 #     `jasper` via systemd's recursive StateDirectory chown — voice_provider.env
-#     (now keyless), spotify_credentials.env, home_assistant.env, etc.
+#     (now keyless), control_token, etc.
 #   - WS1 Phase 4a moved the high-value {jasper-voice, jasper-web}-only
 #     secrets into the setgid /var/lib/jasper-secrets dir, so a file written
 #     there inherits group `jasper-secrets` instead: voice_keys.env (the LLM
 #     API keys split out of voice_provider.env) and google_credentials.env.
+#   - WS1 Phase 4b moved integration secrets into the setgid
+#     /var/lib/jasper-intsecrets dir, so Spotify/HA files inherit group
+#     `jasper-intsecrets`.
 #     The mode is the same 0o640; only the inherited group differs, which is
 #     what narrows those secrets away from jasper-mux/-control/-input.
 # Files only one daemon reads keep the 0o600 default. See

@@ -120,9 +120,11 @@ def test_tmpfs_home_where_no_home_needed(unit):
 DROPPED = {
     # 4a: `jasper-secrets` grants read of the split-out LLM API keys + Google
     # client secret/token tree in /var/lib/jasper-secrets (mux/control/input are
-    # NOT in it — exact-set assertion below is the exclusion guard). `audio` = ALSA.
-    "jasper-voice": ("jasper-voice", {"audio", "jasper-secrets"}),
-    "jasper-mux": ("jasper-mux", set()),
+    # NOT in it — exact-set assertion below is the exclusion guard). 4b:
+    # `jasper-intsecrets` grants HA + Spotify integration secrets to
+    # voice/control/mux/web (input excluded). `audio` = ALSA.
+    "jasper-voice": ("jasper-voice", {"audio", "jasper-secrets", "jasper-intsecrets"}),
+    "jasper-mux": ("jasper-mux", {"jasper-intsecrets"}),
     "jasper-input": ("jasper-input", {"input"}),
     # 3b-2: control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
@@ -130,14 +132,17 @@ DROPPED = {
     # several /state cards (airplay_health, dial, wifi_guardian) read the journal.
     # Deliberately NOT in jasper-secrets: it reads the active provider NAME from
     # the (now keyless) voice_provider.env, never the keys (Phase 4a).
-    "jasper-control": ("jasper-control", {"systemd-journal"}),
+    "jasper-control": ("jasper-control", {"systemd-journal", "jasper-intsecrets"}),
     # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
     # are `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus
     # policy grant) and `systemd-journal` (journalctl -k Wi-Fi diagnostics) and,
     # since 4a, `jasper-secrets` (the wizards write + render the secret files). No
     # CAP_NET_ADMIN — the NL80211 scan-repair degrades fail-soft.
-    "jasper-web": ("jasper-web", {"bluetooth", "systemd-journal", "jasper-secrets"}),
+    "jasper-web": (
+        "jasper-web",
+        {"bluetooth", "systemd-journal", "jasper-secrets", "jasper-intsecrets"},
+    ),
 }
 
 
@@ -283,6 +288,80 @@ def test_secrets_compartment_phase4a():
         assert secret_keys not in envfiles, (
             f"{unit} must NOT source {secret_keys} (Phase 4a compartmentalization)"
         )
+
+
+def test_secrets_compartment_phase4b():
+    """WS1 Phase 4b — integration secrets (Home Assistant token + Spotify
+    credentials/cache tree) live in the group-`jasper-intsecrets` compartment.
+    Pin: (1) the group is created; (2) Spotify creds are sourced from the
+    relocated file by every Spotify consumer; (3) the old broad env paths are
+    gone; (4) voice/control/mux/web all have the write grant because spotipy can
+    persist refreshed tokens from each; (5) jasper-input is excluded."""
+    int_spotify = "/var/lib/jasper-intsecrets/spotify_credentials.env"
+    int_ha = "/var/lib/jasper-intsecrets/home_assistant.env"
+    int_dir = "/var/lib/jasper-intsecrets"
+
+    sh = SERVICE_USERS_SH.read_text()
+    assert "groupadd -r jasper-intsecrets" in sh, (
+        "service-users.sh must create the jasper-intsecrets group"
+    )
+
+    for unit in ("jasper-voice", "jasper-control", "jasper-mux", "jasper-web"):
+        pairs = list(_directives(TIER_A[unit]))
+        envfiles = " ".join(v for k, v in pairs if k == "EnvironmentFile")
+        assert int_spotify in envfiles, f"{unit} must source {int_spotify}"
+        assert "/var/lib/jasper/spotify_credentials.env" not in envfiles, (
+            f"{unit} still sources the pre-4b broad spotify_credentials.env path"
+        )
+        rwpaths = " ".join(v for k, v in pairs if k == "ReadWritePaths")
+        assert int_dir in rwpaths, (
+            f"{unit} must be able to write {int_dir}; Spotify token refreshes "
+            "persist through spotipy cache handlers in voice/control/mux/web."
+        )
+
+    voice_envfiles = " ".join(
+        v for k, v in _directives(TIER_A["jasper-voice"]) if k == "EnvironmentFile"
+    )
+    assert int_ha in voice_envfiles, "jasper-voice must source relocated HA env"
+    assert "/var/lib/jasper/home_assistant.env" not in voice_envfiles, (
+        "jasper-voice still sources the pre-4b broad home_assistant.env path"
+    )
+
+    input_pairs = list(_directives(TIER_A["jasper-input"]))
+    input_envfiles = " ".join(v for k, v in input_pairs if k == "EnvironmentFile")
+    input_rwpaths = " ".join(v for k, v in input_pairs if k == "ReadWritePaths")
+    assert int_spotify not in input_envfiles
+    assert int_ha not in input_envfiles
+    assert int_dir not in input_rwpaths
+
+
+def test_streambox_spotify_uses_intsecrets_compartment():
+    """The streambox profile serves /spotify/ too, so its web unit and install
+    path must use the same Phase 4b compartment as the full profile. This guards
+    against split-brain saves where the shared wizard writes
+    /var/lib/jasper-intsecrets but the profile-specific unit still sources the
+    retired /var/lib/jasper path."""
+    int_spotify = "/var/lib/jasper-intsecrets/spotify_credentials.env"
+    int_dir = "/var/lib/jasper-intsecrets"
+    old_spotify = "/var/lib/jasper/spotify_credentials.env"
+
+    streambox = ROOT / "deploy/jasper-web-streambox.service"
+    directives = list(_directives(streambox))
+    envfiles = " ".join(v for k, v in directives if k == "EnvironmentFile")
+    rwpaths = " ".join(v for k, v in directives if k == "ReadWritePaths")
+
+    assert int_spotify in envfiles
+    assert old_spotify not in envfiles
+    assert int_dir in rwpaths
+
+    install_sh = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
+    streambox_branch = install_sh.split(
+        'if [[ "${install_profile}" == "streambox" ]]; then', 1,
+    )[1].split("return 0", 1)[0]
+    assert "migrate_secrets_phase4b" in streambox_branch, (
+        "streambox installs must create/migrate the Phase 4b compartment before "
+        "installing the profile-scoped jasper-web unit"
+    )
 
 
 def test_streambox_web_unit_stays_root_until_validated():

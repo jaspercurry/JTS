@@ -45,12 +45,12 @@ ENV_FILES = (
     "/etc/jasper/jasper.env",
     # jasper-voice.service order (the most config-consuming daemon):
     "/var/lib/jasper/speaker_name.env",
-    "/var/lib/jasper/spotify_credentials.env",
+    "/var/lib/jasper-intsecrets/spotify_credentials.env",
     "/var/lib/jasper/voice_provider.env",
-    # WS1 Phase 4a — the provider API keys split out of voice_provider.env
-    # and the Google client secret moved into the group-`jasper-secrets`
-    # dir (jasper-voice + jasper-web only). A non-member CLI/daemon that
-    # runs env_load (e.g. jasper-control) simply reads {} for these
+    # WS1 Phase 4 — high-value provider/Google secrets live in
+    # jasper-secrets (voice+web), while HA + Spotify integration secrets live
+    # in jasper-intsecrets (voice+control+mux+web). A non-member CLI/daemon
+    # that runs env_load simply reads {} for an unreadable compartment file
     # (parse_env_file is fail-soft on EACCES); the root jasper-doctor reads
     # them fine. See docs/HANDOFF-privilege-separation.md "Phase 4".
     "/var/lib/jasper-secrets/voice_keys.env",
@@ -58,7 +58,7 @@ ENV_FILES = (
     "/var/lib/jasper/wake_model.env",
     "/var/lib/jasper/weather.env",
     "/var/lib/jasper/transit.env",
-    "/var/lib/jasper/home_assistant.env",
+    "/var/lib/jasper-intsecrets/home_assistant.env",
     "/var/lib/jasper/tool_state.env",
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):
     "/var/lib/jasper/aec_mode.env",

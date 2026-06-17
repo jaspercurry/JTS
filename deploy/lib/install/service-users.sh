@@ -27,6 +27,14 @@ create_jasper_service_users() {
     if ! getent group jasper-secrets >/dev/null 2>&1; then
         groupadd -r jasper-secrets
     fi
+    # WS1 Phase 4b — `jasper-intsecrets` narrows integration secrets (Home
+    # Assistant token + Spotify credentials/OAuth token cache) to the daemons
+    # that use them: voice, control, mux, and web. jasper-input is deliberately
+    # excluded. Created before useradd -G references it, mirroring
+    # jasper-secrets above.
+    if ! getent group jasper-intsecrets >/dev/null 2>&1; then
+        groupadd -r jasper-intsecrets
+    fi
     # Primary group `jasper` for every dropped daemon. Supplementary groups
     # match each unit's SupplementaryGroups=: audio (ALSA) for voice, input
     # (/dev/input/event*) for input. -r = system account, -M = no home,
@@ -34,10 +42,10 @@ create_jasper_service_users() {
     # runtime authority; keeping the passwd entry consistent avoids surprises
     # for tools that read /etc/passwd.
     if ! getent passwd jasper-voice >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio,jasper-secrets jasper-voice
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G audio,jasper-secrets,jasper-intsecrets jasper-voice
     fi
     if ! getent passwd jasper-mux >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper jasper-mux
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G jasper-intsecrets jasper-mux
     fi
     if ! getent passwd jasper-input >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G input jasper-input
@@ -51,7 +59,7 @@ create_jasper_service_users() {
     # wifi_guardian last-action) read the journal. The unit's User=jasper-control
     # matches this exact name (the polkit rule keys on it).
     if ! getent passwd jasper-control >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal jasper-control
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets jasper-control
     fi
     # Ensure the systemd-journal membership on UPGRADE too — the useradd above is
     # skipped when the user already exists (e.g. a Pi from an earlier 3b-2 build
@@ -80,7 +88,7 @@ create_jasper_service_users() {
     # then. Add both groups idempotently (also the upgrade path: useradd is
     # skipped when the user already exists).
     if ! getent passwd jasper-web >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-secrets jasper-web
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-secrets,jasper-intsecrets jasper-web
     fi
     usermod -aG systemd-journal jasper-web 2>/dev/null || true
     if getent group bluetooth >/dev/null 2>&1; then
@@ -95,7 +103,16 @@ create_jasper_service_users() {
         usermod -aG jasper-secrets jasper-voice 2>/dev/null || true
         usermod -aG jasper-secrets jasper-web 2>/dev/null || true
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper; secrets: jasper-secrets = voice+web)"
+    # WS1 Phase 4b — ensure jasper-intsecrets membership on UPGRADE too (the
+    # useradd -G above is skipped when the user already exists). Idempotent;
+    # takes effect on daemon restart/socket activation.
+    if getent group jasper-intsecrets >/dev/null 2>&1; then
+        usermod -aG jasper-intsecrets jasper-voice 2>/dev/null || true
+        usermod -aG jasper-intsecrets jasper-control 2>/dev/null || true
+        usermod -aG jasper-intsecrets jasper-mux 2>/dev/null || true
+        usermod -aG jasper-intsecrets jasper-web 2>/dev/null || true
+    fi
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-control, jasper-web (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

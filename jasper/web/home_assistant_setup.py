@@ -17,11 +17,10 @@ Walks the household through three states:
      conversation agent (optional override), "Test connection"
      affordance, and a "Disconnect" danger button.
 
-Persistence: /var/lib/jasper/home_assistant.env (mode 0640 group jasper —
-WS1 Phase 3b-2, so the non-root jasper-control's /state HA probe + the
-jasper-doctor it spawns can read JASPER_HA_TOKEN off disk), sourced
-into jasper-voice via the EnvironmentFile= chain in
-deploy/systemd/jasper-voice.service. Keys:
+Persistence: /var/lib/jasper-intsecrets/home_assistant.env (mode 0640 group
+jasper-intsecrets — WS1 Phase 4b, so jasper-voice/jasper-control/jasper-web can
+read it and jasper-input cannot), sourced into jasper-voice via the
+EnvironmentFile= chain in deploy/systemd/jasper-voice.service. Keys:
 
   JASPER_HA_URL          base URL, e.g. http://homeassistant.local:8123
   JASPER_HA_TOKEN        Long-Lived Access Token (JWT, ~180-220 chars)

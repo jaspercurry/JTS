@@ -297,7 +297,7 @@ def test_mux_service_loads_spotify_credentials_env():
         if line.strip().startswith("EnvironmentFile=")
     ]
 
-    assert "-/var/lib/jasper/spotify_credentials.env" in env_files
+    assert "-/var/lib/jasper-intsecrets/spotify_credentials.env" in env_files
 
 
 def test_mux_service_can_write_state_dir():

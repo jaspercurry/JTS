@@ -132,12 +132,13 @@ def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
 def test_default_env_files_include_spotify_credentials_in_systemd_order():
     from jasper.env_load import ENV_FILES
 
+    spotify_creds = "/var/lib/jasper-intsecrets/spotify_credentials.env"
     assert "/etc/jasper/jasper.env" in ENV_FILES
-    assert "/var/lib/jasper/spotify_credentials.env" in ENV_FILES
+    assert spotify_creds in ENV_FILES
     assert ENV_FILES.index("/etc/jasper/jasper.env") < ENV_FILES.index(
-        "/var/lib/jasper/spotify_credentials.env",
+        spotify_creds,
     )
-    assert ENV_FILES.index("/var/lib/jasper/spotify_credentials.env") < ENV_FILES.index(
+    assert ENV_FILES.index(spotify_creds) < ENV_FILES.index(
         "/var/lib/jasper/voice_provider.env",
     )
 

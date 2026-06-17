@@ -10,7 +10,7 @@ Spotify track (see `jasper.spotify_router`).
 
 State layout on disk:
 
-    /var/lib/jasper/spotify/
+    /var/lib/jasper-intsecrets/spotify/
         accounts.json              — registry index (this file)
         caches/<name>.json         — spotipy OAuth cache (one per user)
 
@@ -22,7 +22,7 @@ State layout on disk:
       "accounts": [
         {
           "name": "jasper",
-          "cache_path": "/var/lib/jasper/spotify/caches/jasper.json"
+          "cache_path": "/var/lib/jasper-intsecrets/spotify/caches/jasper.json"
         },
         ...
       ]
@@ -58,20 +58,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REGISTRY_PATH = "/var/lib/jasper/spotify/accounts.json"
-DEFAULT_CACHE_DIR = "/var/lib/jasper/spotify/caches"
+DEFAULT_REGISTRY_PATH = "/var/lib/jasper-intsecrets/spotify/accounts.json"
+DEFAULT_CACHE_DIR = "/var/lib/jasper-intsecrets/spotify/caches"
 
 # Legacy single-account cache from the pre-multi-user era. Migrated
 # into the registry as the default account on first startup if found.
-LEGACY_CACHE_PATH = "/var/lib/jasper/.spotify-cache"
+LEGACY_CACHE_PATH = "/var/lib/jasper-intsecrets/.spotify-cache"
 
-# WS1 Phase 3b: the OAuth token cache jasper-voice persists must be READABLE by
-# the now-non-root jasper-control (the /transport title-match Spotify router) and
-# jasper-web (the /spotify wizard status), which share the `jasper` group.
+# WS1 Phase 4b: the OAuth token cache jasper-voice persists must be READABLE by
+# the now-non-root jasper-control (the /transport title-match Spotify router),
+# jasper-mux, and jasper-web (the /spotify wizard status), which share the
+# `jasper-intsecrets` group.
 # spotipy's stock CacheFileHandler writes the cache umask-restricted (0600,
 # owner-only), so those dropped readers logged "Couldn't read cache" on every
-# poll and reported linked accounts as needs-relink. 0640 (group `jasper` read)
-# mirrors the Google OAuth token tree. See docs/HANDOFF-privilege-separation.md.
+# poll and reported linked accounts as needs-relink. 0640 group-read is now
+# granted via the WS1 Phase 4b jasper-intsecrets compartment. See
+# docs/HANDOFF-privilege-separation.md.
 SPOTIFY_CACHE_FILE_MODE = 0o640
 
 _CACHE_HANDLER_CLS = None
@@ -79,7 +81,7 @@ _CACHE_HANDLER_CLS = None
 
 def build_cache_handler(cache_path: str):
     """Return a spotipy ``CacheFileHandler`` that re-chmods the token cache to
-    0640 (group ``jasper``-readable) after every write, so the dropped non-root
+    0640 (group-readable) after every write, so the dropped non-root
     Spotify readers can read the token jasper-voice persisted. Pass it to
     ``SpotifyPKCE(cache_handler=...)`` in place of ``cache_path=...``.
 

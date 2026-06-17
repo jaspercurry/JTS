@@ -5,8 +5,9 @@
 > 3b-3 web) have landed and are validated on hardware — **all five Tier-A
 > daemons now run non-root.** Phase 4a (secret compartmentalization, Group A:
 > the LLM API keys + Google moved to a `jasper-secrets` compartment readable
-> only by voice+web) has landed; Phase 4b (Group B: HA + Spotify) and the
-> Tier-B reconciler drop remain designed, not yet built. The Phase 4 mechanism
+> only by voice+web) and Phase 4b (Group B: HA + Spotify moved to
+> `jasper-intsecrets` readable/writable by voice+control+mux+web) have landed;
+> the Tier-B reconciler drop remains designed, not yet built. The Phase 4 mechanism
 > was revised from the original `LoadCredential`/`systemd-creds` sketch to
 > group compartments after a hardware probe (see Phase 4). This doc is the
 > threat-model + ADR for the work; update it as each phase lands.
@@ -219,33 +220,28 @@ wifi-lockout-risk change you could only happy-path test:
 
 | Unit | User | Groups | Increment | Why this increment |
 |---|---|---|---|---|
-| jasper-voice | `jasper-voice` | `audio` | **3b-1 (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection |
-| jasper-mux | `jasper-mux` | — | **3b-1 (LANDED)** | broker client (librespot recovery); only shared file is `speaker_volume.json` |
+| jasper-voice | `jasper-voice` | `audio`, `jasper-secrets`, `jasper-intsecrets` | **3b-1 + 4a/4b (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection; 4a/4b groups grant only the secret compartments it must read/write |
+| jasper-mux | `jasper-mux` | `jasper-intsecrets` | **3b-1 + 4b (LANDED)** | broker client (librespot recovery); shared broad file is `speaker_volume.json`; Spotify token refresh writes the 4b compartment |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
-| jasper-control | `jasper-control` | `systemd-journal` | **3b-2 (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), group-readable config it reads off disk, and `systemd-journal` for the journal-based /state cards |
-| jasper-web | `jasper-web` | `bluetooth`, `systemd-journal` | **3b-3 (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` scan-repair withheld (degrades fail-soft) — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
+| jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
+| jasper-web | `jasper-web` | `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` scan-repair withheld (degrades fail-soft) — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
 `/var/lib/jasper` becomes `root:jasper 0770` (group-aware `ensure_state_dir`,
 owner stays root → rollback-safe) and `speaker_volume.json` becomes group-rw
 (`0660`, the one file all three of voice/mux/control read+write fresh). The one
-secret-exposure 3b-1 needs is the **Google OAuth token tree** (`/var/lib/jasper/
-google/`): jasper-voice reads it *off disk* (not via env injection), so it
-becomes group-`jasper` readable (`0750` dirs, `0640` files). That widens the
-linked-member Gmail addresses + refresh tokens to the other jasper daemons
-(mux/input — low attack surface); per-daemon isolation is Phase 4
-(`LoadCredential`). No polkit. The **Spotify OAuth token cache**
-(`/var/lib/jasper/spotify/caches/`) is the same off-disk-read class — jasper-voice
-writes it, and the now-non-root jasper-control (`/transport` title-match router)
-+ jasper-web (`/spotify` wizard) read it — so it is likewise group-`jasper`
-readable (`0640`, dir `2750` setgid). spotipy writes the cache `0600` by default,
-so [`jasper.accounts.build_cache_handler`](../jasper/accounts.py) re-chmods each
-write and an `install_jasper` migration widens any pre-existing cache. This was a
-regression caught by the 3b-3 review's all-surfaces off-disk-read audit and fixed
-in the follow-up: before the fix the dropped readers logged "Couldn't read cache"
-on every poll (22k+/day on jasper-control) and reported linked accounts as
-needs-relink. Cross-user `/run` sockets work via the shared
-`jasper` group: a UNIX socket needs **write** permission to `connect()`, so
+secret-exposure 3b-1 needed at the time was off-disk token access: Google OAuth
+tokens and Spotify OAuth cache files were temporarily group-`jasper` readable so
+the dropped readers would not lose access. Phase 4a/4b later narrowed those
+again: Google moved to `jasper-secrets`; Spotify moved to `jasper-intsecrets`
+because voice/control/mux/web can all refresh tokens. The regression that led to
+the cache-mode guard is still relevant: before
+[`jasper.accounts.build_cache_handler`](../jasper/accounts.py) re-chmodded
+spotipy's `0600` writes, dropped readers logged "Couldn't read cache" on every
+poll (22k+/day on jasper-control) and reported linked accounts as needs-relink.
+Cross-user `/run` sockets work via the shared
+`jasper` group. A UNIX socket
+needs **write** permission to `connect()`, so
 `jasper-control` joins the group (stays root) and `jasper-fanin`/`jasper-outputd`
 join it with `UMask=0007` — their TTS/control sockets become `root:jasper 0770`
 (the prior umask-derived `0755` only let root connect). `jasper-mux`'s control
@@ -301,25 +297,21 @@ coupled artifacts make the drop work:
   a future root client / Phase-4 grant), but they fail-soft for the non-root
   broker.
 
-- **Group-readable secret env (`0640` group `jasper`).** `jasper-control` does
-  two off-disk fresh reads a non-root user must keep doing: its `/state` +
-  `/system/snapshot` read `home_assistant.env` (the HA bearer token), and
-  `/system/diagnostics` spawns `jasper-doctor`, which fresh-reads **every**
-  `env_load.ENV_FILES` path and (full profile) `Config.from_env` — the provider
-  API keys + `GOOGLE_CLIENT_SECRET` + `JASPER_HA_TOKEN`. So `jasper.env`
-  (`chgrp jasper` — it was `0640 root:root`, group `root`) plus the wizard
-  secrets `voice_provider.env` / `spotify_credentials.env` /
-  `google_credentials.env` / `home_assistant.env` become `0640` group `jasper`,
-  and so does `control_token` — the Phase-2 gate token, which `_stored_token()`
-  fails safe to gate-OFF on `EACCES`, so an unreadable token would **silently
-  disable the mandatory gate** (the `StateDirectory` chown can make its owner
-  `jasper-voice`, hence group-read, not owner-read, is required). Wizards write
-  these at the new `SECRET_ENV_MODE` (`0640`); an install migration
-  (`widen_control_secret_env_modes`) widens existing files on upgrade so a Pi
-  that never re-saves a wizard doesn't break `/state` + the doctor. This widens
-  the secrets to all `jasper`-group daemons — the same documented group-exposure
-  accept as the 3b-1 Google tree; per-daemon isolation is Phase 4
-  (`LoadCredential`). `/etc/avahi/services` becomes group-`jasper` writable
+- **Group-readable config/env on the broad state path (`0640` group `jasper`).**
+  `jasper-control` does off-disk fresh reads a non-root user must keep doing:
+  `/system/diagnostics` spawns `jasper-doctor`, which fresh-reads
+  `env_load.ENV_FILES`, while `/state` reads selected state/config directly.
+  Before Phase 4, that forced `spotify_credentials.env`,
+  `google_credentials.env`, and `home_assistant.env` to become `0640` group
+  `jasper`. After Phase 4, the broad upgrade helper owns only the non-secret
+  files that remain in `/var/lib/jasper`: `voice_provider.env` (keyless),
+  `control_token`, and sound profile/settings state. The actual secrets moved
+  to `jasper-secrets` / `jasper-intsecrets`, and those compartment migrations
+  own their permissions. `/etc/jasper/jasper.env` still needs `chgrp jasper`
+  because it is created `0640 root:root`, and `control_token` must stay
+  group-readable or `_stored_token()` fails safe to gate-OFF on `EACCES`,
+  **silently disabling the mandatory gate**. `/etc/avahi/services` becomes
+  group-`jasper` writable
   (setgid) so the non-root daemon can still render the opt-in peering advert.
 
 - **The full off-disk-read surface (the completeness the secret-env bullet
@@ -453,7 +445,7 @@ directly, not the broker) are now polkit-authorized — noted in the
 `HANDOFF-resilience.md` Tier-3 / system-supervisor sections and the
 `HANDOFF-observability.md` debug-restart note.
 
-## Phase 4 — secret compartmentalization (4a LANDED; 4b designed)
+## Phase 4 — secret compartmentalization (4a + 4b LANDED)
 
 Closes the documented group-secret-exposure ACCEPT carried by 3b: the secret env
 files + the Google/Spotify token trees were `0640` group `jasper`, readable by
@@ -507,7 +499,7 @@ group reverted to `jasper` on the next mux start). The secrets must live in
 | Dir (group; mode 2770 setgid) | Members | Holds |
 |---|---|---|
 | `/var/lib/jasper-secrets/` (`jasper-secrets`) | voice, web | `voice_keys.env` (the 3 LLM API keys, split out of `voice_provider.env`), `google_credentials.env`, the `google/` OAuth token tree |
-| `/var/lib/jasper-intsecrets/` (`jasper-intsecrets`) — **Phase 4b** | voice, control, mux, web | `home_assistant.env`, `spotify_credentials.env`, the Spotify token cache |
+| `/var/lib/jasper-intsecrets/` (`jasper-intsecrets`) | voice, control, mux, web | `home_assistant.env`, `spotify_credentials.env`, the Spotify token cache |
 
 `2770` setgid: members rwx (read/write/traverse), non-members get nothing
 (stronger than the old group-read — they can't even traverse); setgid → token
@@ -565,22 +557,26 @@ jasper-mux/-control/-input each get `Permission denied`; all-surfaces journal
 audit **zero permission-denied**. A **second deploy** (the idempotent re-run,
 `moved=0`) completed cleanly — confirming the migration's `set -e` safety.
 
-### Phase 4b — Group B (designed): HA + Spotify
+### Phase 4b — Group B (LANDED): HA + Spotify
 
-Relocate the remaining secrets into a second compartment,
+The remaining integration secrets live in a second sibling compartment,
 `/var/lib/jasper-intsecrets/` (`2770` setgid, group `jasper-intsecrets`), members
-{jasper-voice, jasper-control, jasper-mux, jasper-web}. **Mirror Phase 4a's
-machinery** — group in [`service-users.sh`](../deploy/lib/install/service-users.sh),
-the sibling dir via `ensure_secrets_dir`-style creation + a second
-`tmpfiles.d` stanza, a guarded `migrate_secrets_phase4b` in
-[`env-migrations.sh`](../deploy/lib/install/env-migrations.sh), unit
-`SupplementaryGroups=` + `ReadWritePaths=` — the 4a code is the template.
+{jasper-voice, jasper-control, jasper-mux, jasper-web}; jasper-input is excluded.
+Machinery mirrors Phase 4a: group creation in
+[`service-users.sh`](../deploy/lib/install/service-users.sh), direct install +
+boot self-heal via
+[`deploy/tmpfiles/jts-intsecrets.conf`](../deploy/tmpfiles/jts-intsecrets.conf),
+a guarded `migrate_secrets_phase4b` in
+[`env-migrations.sh`](../deploy/lib/install/env-migrations.sh), and unit
+`SupplementaryGroups=` + `ReadWritePaths=` on voice/control/mux/web.
 
-**Files to relocate out of `/var/lib/jasper`:** `home_assistant.env` (the
+**Files relocated out of `/var/lib/jasper`:** `home_assistant.env` (the
 `JASPER_HA_TOKEN`); `spotify_credentials.env` (`SPOTIFY_CLIENT_ID` — PKCE,
 semi-public, moved with the rest so the compartment is whole); the Spotify token
 cache — both the legacy `.spotify-cache` and the multi-account `spotify/` tree
-(`accounts.json` + `caches/<name>.json`).
+(`accounts.json` + `caches/<name>.json`). Runtime defaults now point at
+`/var/lib/jasper-intsecrets/.spotify-cache` and
+`/var/lib/jasper-intsecrets/spotify/accounts.json`.
 
 **Reader/writer matrix (verify against the units before editing):** the HA token
 is read by {voice (the HA tool), control (`/state` HA card, fresh off-disk read),
@@ -594,29 +590,43 @@ spotipy persists refreshed tokens via `accounts.build_cache_handler` (the
 `_GroupReadableCacheFileHandler` in [`jasper/accounts.py`](../jasper/accounts.py),
 which re-chmods `0640` after every `save_token_to_cache`). voice, control
 (`volume_ops`), and mux all build routers that refresh → **all WRITE the cache**.
-So unlike 4a (voice read-only, no write grant), **4b needs
+So unlike 4a (voice read-only, no write grant), **4b has
 `/var/lib/jasper-intsecrets` in `ReadWritePaths` on voice + control + mux + web**.
-Confirm by checking which daemons construct a Spotify router with the cache
-handler.
 
 **`accounts.json` bakes absolute paths** — like google's `token_path`, spotify's
 `accounts.json` stores absolute `cache_path` values
-(`/var/lib/jasper/spotify/caches/<name>.json`); `migrate_secrets_phase4b` MUST
-rewrite that prefix on move (parallel to 4a's google rewrite) or the per-account
-caches orphan. Update the new-location defaults in
+(`/var/lib/jasper/spotify/caches/<name>.json` on pre-4b installs);
+`migrate_secrets_phase4b` rewrites that prefix on move (parallel to 4a's google
+rewrite) so the per-account caches do not orphan. The new-location defaults live
+in
 [`jasper/config.py`](../jasper/config.py) (`spotify_cache_path`,
 `spotify_accounts_path`) + [`jasper/accounts.py`](../jasper/accounts.py)
 (`default_cache_path_for`).
 
-**Reuse the 4a lessons** (all pinned by
+Pinned by `tests/test_systemd_hardening.py` (`test_secrets_compartment_phase4b`
+— group created, the four member daemons source/write the relocated Spotify
+file/dir, old broad paths gone, input excluded), and
 [`tests/test_install_secrets_migration.py`](../tests/test_install_secrets_migration.py)
-— mirror it for 4b): end every bash migration helper on a CLEAN exit status
-(`if/then/fi`, never a trailing `[[ ... ]] && echo` — that returns the test's
-exit code and aborts the installer under `set -e`, the Blocker the 4a self-review
-caught); `mv` preserves the old group so `chown -R root:jasper-intsecrets` after
-the move; never strip a secret from the broad files until it is confirmed written
-to the new location. control reads `home_assistant.env` FRESH for `/state`, so it
-stays group-readable (the group handles it; no LoadCredential). `transit.env`'s
-MTA key stays group `jasper` (low value, control reads `/state.transit` fresh).
+(HA/Spotify move, `accounts.json` `cache_path` rewrite, legacy cache move,
+idempotent re-run). The 4a migration lessons still apply: helpers end cleanly
+under `set -e`, `mv` is followed by `chown -R root:jasper-intsecrets`, and
+control reads `home_assistant.env` fresh for `/state` through group access (no
+LoadCredential). `transit.env`'s MTA key stays group `jasper` (low value,
+control reads `/state.transit` fresh).
+
+**Validated on hardware (jts.local, build 470c3750-dirty):** first deploy moved
+`spotify_credentials.env` + the live Spotify tree into
+`/var/lib/jasper-intsecrets/`, rewrote `accounts.json` to the new cache prefix,
+and left the old broad Spotify paths absent; no HA file existed to move
+(`jasper-doctor` reports Home Assistant not configured). Compartment is
+`2770 root:jasper-intsecrets`, files `0640`; voice/control/mux/web can read +
+write there, while `sudo -u jasper-input` gets `Permission denied`. Runtime:
+`systemd-analyze security` stayed OK (voice 2.3, control 2.6, mux 2.3, web 2.5),
+`/spotify/`, `/ha/`, and `/system/data.json` returned 200, all checked daemons had
+`NRestarts=0` (web idle-exited via socket activation), and the all-surfaces
+journal audit had zero permission-denied lines. A **second deploy** completed
+cleanly with no move lines, proving the idempotent re-run path. The Spotify
+`invalid_grant` warning is pre-existing revoked-token state, not a migration
+failure.
 
 Last verified: 2026-06-17

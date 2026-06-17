@@ -46,6 +46,22 @@ ensure_secrets_dir() {
     install -d -m 2770 -g jasper-secrets "${SECRETS_DIR}"
 }
 
+# WS1 Phase 4b — the group-`jasper-intsecrets` integration-secret compartment
+# (Home Assistant token + Spotify credentials/OAuth token cache), narrowed to
+# jasper-voice + jasper-control + jasper-mux + jasper-web. Also a sibling of
+# STATE_DIR for the same StateDirectory recursive-chown reason as
+# ensure_secrets_dir above. Idempotent; no-op before the group exists.
+ensure_intsecrets_dir() {
+    getent group jasper-intsecrets >/dev/null 2>&1 || return 0
+    if [[ -f "${REPO_DIR}/deploy/tmpfiles/jts-intsecrets.conf" ]]; then
+        install -m 0644 "${REPO_DIR}/deploy/tmpfiles/jts-intsecrets.conf" \
+            /etc/tmpfiles.d/ 2>/dev/null || true
+    fi
+    # 2770 setgid: voice/control/mux/web (group jasper-intsecrets) rwx; input
+    # none; setgid -> refreshed OAuth token files inherit jasper-intsecrets.
+    install -d -m 2770 -g jasper-intsecrets "${INTSECRETS_DIR}"
+}
+
 # WS1 Phase 4a — move the high-value secrets OUT of the broad /var/lib/jasper
 # StateDirectory into the jasper-secrets compartment. Guarded + idempotent: each
 # move runs only when the old path exists and the new one does not, so a re-run
@@ -93,6 +109,71 @@ migrate_secrets_phase4a() {
 
     # Reconcile against the tmpfiles spec (also surfaces a syntax error early).
     systemd-tmpfiles --create --prefix="${SECRETS_DIR}" 2>/dev/null || true
+}
+
+# WS1 Phase 4b — move Home Assistant + Spotify secrets OUT of the broad
+# /var/lib/jasper StateDirectory into the jasper-intsecrets compartment.
+# Spotify is read-write: voice, control, mux, and web can all refresh/persist
+# spotipy token caches, so the compartment is writable by all four service
+# users via systemd ReadWritePaths=. See docs/HANDOFF-privilege-separation.md.
+migrate_secrets_phase4b() {
+    getent group jasper-intsecrets >/dev/null 2>&1 || return 0
+    ensure_intsecrets_dir
+
+    local old_ha="${STATE_DIR}/home_assistant.env"
+    local new_ha="${INTSECRETS_DIR}/home_assistant.env"
+    if [[ -f "${old_ha}" && ! -e "${new_ha}" ]]; then
+        mv "${old_ha}" "${new_ha}"
+        echo "  migrate_secrets_phase4b: moved home_assistant.env -> ${INTSECRETS_DIR}"
+    fi
+
+    local old_spotify_creds="${STATE_DIR}/spotify_credentials.env"
+    local new_spotify_creds="${INTSECRETS_DIR}/spotify_credentials.env"
+    if [[ -f "${old_spotify_creds}" && ! -e "${new_spotify_creds}" ]]; then
+        mv "${old_spotify_creds}" "${new_spotify_creds}"
+        echo "  migrate_secrets_phase4b: moved spotify_credentials.env -> ${INTSECRETS_DIR}"
+    fi
+
+    local old_legacy_cache="${STATE_DIR}/.spotify-cache"
+    local new_legacy_cache="${INTSECRETS_DIR}/.spotify-cache"
+    if [[ -f "${old_legacy_cache}" && ! -e "${new_legacy_cache}" ]]; then
+        mv "${old_legacy_cache}" "${new_legacy_cache}"
+        echo "  migrate_secrets_phase4b: moved legacy Spotify cache -> ${new_legacy_cache}"
+    fi
+
+    local old_spotify="${STATE_DIR}/spotify"
+    local new_spotify="${INTSECRETS_DIR}/spotify"
+    if [[ -d "${old_spotify}" && ! -e "${new_spotify}" ]]; then
+        mv "${old_spotify}" "${new_spotify}"
+        echo "  migrate_secrets_phase4b: moved Spotify token tree -> ${new_spotify}"
+    fi
+
+    # accounts.json bakes ABSOLUTE cache_path values; rewrite the prefix so all
+    # per-account caches remain reachable after the tree move. Run this
+    # unconditionally when the moved registry exists so partial/re-run states
+    # converge too.
+    if [[ -f "${new_spotify}/accounts.json" ]]; then
+        sed -i.bak "s#${STATE_DIR}/spotify/#${INTSECRETS_DIR}/spotify/#g" \
+            "${new_spotify}/accounts.json"
+        rm -f "${new_spotify}/accounts.json.bak"
+    fi
+
+    # (Re-)assert the tree layout + perms at the new location. mv preserves the
+    # old StateDirectory owner:group; explicit recursive chown moves everything
+    # to root:jasper-intsecrets. install -d is idempotent and also creates the
+    # forward path on fresh installs.
+    install -d -m 2770 -g jasper-intsecrets \
+        "${new_spotify}" "${new_spotify}/caches"
+    chown -R root:jasper-intsecrets "${INTSECRETS_DIR}" 2>/dev/null || true
+    chmod 0640 "${new_ha}" 2>/dev/null || true
+    chmod 0640 "${new_spotify_creds}" 2>/dev/null || true
+    chmod 0640 "${new_legacy_cache}" 2>/dev/null || true
+    chmod 0640 "${new_spotify}/accounts.json" 2>/dev/null || true
+    find "${new_spotify}/caches" -type f -name '*.json' \
+        -exec chmod 0640 {} + 2>/dev/null || true
+
+    # Reconcile against the tmpfiles spec (also surfaces a syntax error early).
+    systemd-tmpfiles --create --prefix="${INTSECRETS_DIR}" 2>/dev/null || true
 }
 
 # WS1 Phase 4a — split the three provider API keys out of the broad
@@ -879,10 +960,11 @@ migrate_control_host_bind_seed() {
 # Two distinct surfaces fresh-read these as the jasper-control uid:
 #   - /system/diagnostics spawns `jasper-doctor --json`, which loads EVERY
 #     env_load.ENV_FILES path and (full profile) Config.from_env → reads the
-#     provider API keys + Google secret + HA token.
+#     provider API keys + integration secrets it is allowed to see.
 #   - /state + /system/snapshot fresh-read home_assistant.env (the HA bearer
-#     token) and voice_provider.env directly (jasper-control is not restarted on
-#     a wizard save, so it can't rely on systemd EnvironmentFile injection).
+#     token) from the jasper-intsecrets compartment and voice_provider.env
+#     directly (jasper-control is not restarted on a wizard save, so it can't
+#     rely on systemd EnvironmentFile injection).
 #
 # The wizards themselves now WRITE these at 0640 group jasper (the forward fix);
 # this migration is the UPGRADE PATH — it widens files an older build wrote at
@@ -922,8 +1004,7 @@ widen_control_secret_env_modes() {
     #
     # Two file classes, both read off disk by jasper-control's /state +
     # /system/diagnostics and so needing GROUP read (0640):
-    #   - secret env: voice_provider / spotify / google / home_assistant /
-    #     control_token (the deliberate group-secret exposure).
+    #   - env/control: voice_provider.env (now keyless) + control_token.
     #   - non-secret state: sound_profile.json / sound_settings.json (the EQ
     #     config the /state sound card reads). These carry no secret.
     # NOTE: the WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
@@ -932,14 +1013,12 @@ widen_control_secret_env_modes() {
     # owner-only 0600. Least privilege over blanket widening. See
     # docs/HANDOFF-privilege-separation.md.
     #
-    # WS1 Phase 4a — google_credentials.env is NO LONGER widened here: it moved
-    # to the group-`jasper-secrets` compartment (voice+web only). jasper-control
-    # does not read it (the root /system/diagnostics jasper-doctor does, as
-    # root). migrate_secrets_phase4a owns its perms now. voice_provider.env stays
-    # (now keyless; control reads the provider name for /system/).
+    # WS1 Phase 4a/4b — google_credentials.env moved to jasper-secrets, while
+    # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.
+    # Those compartment migrations own their perms now. voice_provider.env stays
+    # here (now keyless; control reads the provider name for /system/).
     local f
-    for f in voice_provider.env spotify_credentials.env \
-             home_assistant.env control_token \
+    for f in voice_provider.env control_token \
              sound_profile.json sound_settings.json; do
         if [[ -f "${STATE_DIR}/${f}" ]]; then
             chgrp jasper "${STATE_DIR}/${f}" 2>/dev/null || true

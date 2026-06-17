@@ -306,7 +306,7 @@ class Config:
     # here. The doctor + voice-eval read the same env keys directly.
 
     # Home Assistant integration. The /ha wizard (PR 2) writes
-    # /var/lib/jasper/home_assistant.env with these values; daemon picks
+    # /var/lib/jasper-intsecrets/home_assistant.env with these values; daemon picks
     # them up via systemd EnvironmentFile. URL is the base of the HA
     # install (e.g. "http://homeassistant.local:8123"); token is a
     # Long-Lived Access Token from HA's profile page; agent_id is an
@@ -721,7 +721,7 @@ class Config:
             # (see jasper.accounts.maybe_migrate_legacy); after the
             # migration runs once, this path is no longer touched.
             spotify_cache_path=_env(
-                "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"
+                "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache"
             ),
             # Substring (case-insensitive) matched against
             # `sp.devices()[].name` to find the Pi's librespot endpoint.
@@ -733,7 +733,7 @@ class Config:
             # caches. See jasper.accounts module-doc for shape.
             spotify_accounts_path=_env(
                 "JASPER_SPOTIFY_ACCOUNTS_PATH",
-                "/var/lib/jasper/spotify/accounts.json",
+                "/var/lib/jasper-intsecrets/spotify/accounts.json",
             ),
             # Public URL household members visit to add their Spotify
             # account. Surfaced in error messages so the voice
@@ -811,7 +811,7 @@ class Config:
             # JASPER_BUS_* / JASPER_CITIBIKE_* keys in build_client(env).)
             # Home Assistant. Empty url OR empty token disables the tool
             # (cfg.ha_enabled gates registration). The /ha
-            # wizard (PR 2) writes these to /var/lib/jasper/home_assistant.env;
+            # wizard writes these to /var/lib/jasper-intsecrets/home_assistant.env;
             # operators can also set them directly in /etc/jasper/jasper.env
             # for headless / CI imaging. agent_id is optional — empty
             # means "let HA pick the default" (its UI-configured choice).

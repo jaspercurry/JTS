@@ -25,22 +25,11 @@ install_jasper() {
     # tree to jasper-secrets, and splits the LLM API keys into voice_keys.env.
     ensure_secrets_dir
 
-    # WS1 Phase 3b: the Spotify OAuth token cache (one JSON per linked account,
-    # written by jasper-voice via spotipy) must be group-`jasper` READABLE so the
-    # now-non-root jasper-control (/transport title-match router) + jasper-web
-    # (/spotify wizard status) can read it — otherwise they log "Couldn't read
-    # cache" on every poll and report linked accounts as needs-relink. spotipy
-    # writes 0600 owner-only; jasper.accounts.build_cache_handler now re-chmods
-    # NEW writes to 0640, but widen any PRE-EXISTING cache here so already-linked
-    # households converge on this deploy rather than on the next token refresh.
-    # 2750 setgid mirrors the Google tree above (filenames are PII-adjacent —
-    # they name which household members linked). Per-daemon isolation is Phase 4.
-    if getent group jasper >/dev/null 2>&1; then
-        install -d -m 2750 -g jasper "${STATE_DIR}/spotify" "${STATE_DIR}/spotify/caches"
-        chmod 0640 "${STATE_DIR}/spotify/accounts.json" 2>/dev/null || true
-        find "${STATE_DIR}/spotify/caches" -type f -name '*.json' \
-            -exec chmod 0640 {} + 2>/dev/null || true
-    fi
+    # WS1 Phase 4b — Home Assistant + Spotify integration secrets live in the
+    # sibling group-`jasper-intsecrets` compartment (voice/control/mux/web).
+    # ensure_intsecrets_dir creates the forward path; migrate_secrets_phase4b
+    # below moves any existing broad-state files into it.
+    ensure_intsecrets_dir
 
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
@@ -274,6 +263,10 @@ install_jasper() {
     # secret into the jasper-secrets compartment and splits the LLM API keys out
     # of voice_provider.env (+ any jasper.env seed) into voice_keys.env.
     migrate_secrets_phase4a
+    # WS1 Phase 4b — runs after the 4a migration. Moves Home Assistant +
+    # Spotify credentials/caches into jasper-intsecrets and rewrites Spotify's
+    # absolute cache_path values baked into accounts.json.
+    migrate_secrets_phase4b
     migrate_openai_noise_reduction_default
     migrate_tts_outputd_socket_default
     render_voice_provider_ids_manifest

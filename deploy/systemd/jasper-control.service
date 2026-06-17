@@ -32,7 +32,7 @@ Type=notify
 WatchdogSec=30s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
-# Spotify creds live in /var/lib/jasper/spotify_credentials.env (written
+# Spotify creds live in /var/lib/jasper-intsecrets/spotify_credentials.env (written
 # by the web wizard at f1c7dee). jasper-voice / jasper-web already
 # load it; jasper-control needs it too so /transport/toggle's
 # title-match path can build a Spotify Web API router. Without these
@@ -40,7 +40,7 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # to the DACP precheck — which on iOS 17+ AirPlay 2 returns false,
 # producing a 502 "doesn't accept remote control" on every dial click.
 # Leading `-` makes systemd skip if the file's missing (fresh install).
-EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Voice provider selection written by the wizard at https://jts.local/voice/.
 # Same precedence rule as jasper-voice's unit file: later EnvironmentFile=
 # wins, so the wizard-written file overrides any JASPER_VOICE_PROVIDER
@@ -71,11 +71,11 @@ RestartSec=2
 #       recovery paths (system_supervisor reboot, shairport_supervisor restart)
 #       and the in-process restart broker call systemctl/reboot DIRECTLY as this
 #       uid, which polkit now mediates instead of a uid-0 bypass; and
-#   (b) group-readable secret env (the jasper-doctor it spawns at
+#   (b) group-readable config/secret env (the jasper-doctor it spawns at
 #       /system/diagnostics fresh-reads every env_load.ENV_FILES file, and
-#       /state fresh-reads home_assistant.env) — a deliberate, documented
-#       group-`jasper` secret-exposure widening (Phase 4 / LoadCredential closes
-#       it). jasper.env + the wizard secret files become 0640 group jasper.
+#       /state fresh-reads home_assistant.env). The broad file it still reads
+#       (voice_provider.env) is 0640 group jasper; HA + Spotify now come from
+#       the narrower group-`jasper-intsecrets` compartment.
 #
 # CapabilityBoundingSet= drops ALL caps (control needs none — the privileged
 # restarts go through polkit, not a capability). SystemCallFilter=@system-service
@@ -86,11 +86,12 @@ RestartSec=2
 #
 # SupplementaryGroups=systemd-journal: several /state cards read the journal
 # (airplay_health, dial, and wifi_guardian's last-action) — a non-root reader
-# needs the systemd-journal group. (The full jasper-doctor runs as ROOT via the
-# jasper-doctor-json.service oneshot, so it does NOT depend on this group.)
+# needs the systemd-journal group. `jasper-intsecrets` grants fresh HA reads +
+# Spotify token-cache writes. (The full jasper-doctor runs as ROOT via the
+# jasper-doctor-json.service oneshot, so it does NOT depend on systemd-journal.)
 User=jasper-control
 Group=jasper
-SupplementaryGroups=systemd-journal
+SupplementaryGroups=systemd-journal jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 
@@ -120,13 +121,15 @@ NoNewPrivileges=true
 #     wake_model.env, debug.env), speaker_volume.json, and the T5.2
 #     supervisor's reboot rate-limit at
 #     /var/lib/jasper/system_supervisor_reboot.json.
+#   - /var/lib/jasper-intsecrets: Spotify token refreshes from the transport /
+#     volume path and fresh HA status reads from /state.
 #   - /etc/avahi/services/jasper-peer.service when wake-response peering
 #     is enabled so siblings can discover this speaker.
 # Today /var writes work only because ProtectSystem=full leaves /var
 # writable; /etc is read-only under that same hardening. Pin both write
 # contracts explicitly so future hardening and current peering advert
 # rendering cannot silently regress.
-ReadWritePaths=/var/lib/jasper /etc/avahi/services
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /etc/avahi/services
 # WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
 # ProtectKernelLogs is intentionally OMITTED: jasper-control spawns
 # jasper-doctor, whose watchdog-reset fingerprint check reads dmesg (/dev/kmsg).

@@ -73,7 +73,7 @@ ENV_RECENT_URLS = "JASPER_HA_RECENT_URLS"
 
 # State-file path the wizard writes and the daemons source via systemd
 # EnvironmentFile=. Used directly by read_ha_env_file() + the wizard.
-HA_ENV_FILE = "/var/lib/jasper/home_assistant.env"
+HA_ENV_FILE = "/var/lib/jasper-intsecrets/home_assistant.env"
 
 # Endpoint paths. Joined with the configured base URL.
 CONVERSATION_PATH = "/api/conversation/process"
@@ -727,8 +727,8 @@ def read_ha_env_file(path: str = HA_ENV_FILE) -> dict[str, str]:
     """Parse the wizard-written env file into a dict. Returns {} if the
     file is missing or unreadable.
 
-    The wizard writes this file (mode 0640 group jasper — WS1 Phase 3b-2)
-    on every save/disconnect.
+    The wizard writes this file (mode 0640 group jasper-intsecrets — WS1
+    Phase 4b) on every save/disconnect.
     Systemd-managed daemons that source it via `EnvironmentFile=` only
     see updates across process restarts — so any consumer that needs
     to reflect wizard changes immediately (jasper-control's /state

@@ -62,7 +62,7 @@ def test_registry_load_tolerates_legacy_pattern_field():
             "accounts": [{
                 "name": "jasper",
                 "client_name_patterns": ["Jasper's iPhone"],
-                "cache_path": "/var/lib/jasper/spotify/caches/jasper.json",
+                "cache_path": "/var/lib/jasper-intsecrets/spotify/caches/jasper.json",
             }],
         }))
         r = Registry.load(path)
@@ -90,7 +90,7 @@ def test_default_cache_path_blocks_traversal():
     so a malicious account name can't escape the cache dir."""
     p = default_cache_path_for("alice/../etc/passwd")
     assert "/etc/passwd" not in p
-    assert p.startswith("/var/lib/jasper/spotify/caches/")
+    assert p.startswith("/var/lib/jasper-intsecrets/spotify/caches/")
     assert p.endswith(".json")
 
 
@@ -233,13 +233,12 @@ def test_add_or_update_preserves_existing_playlists():
 
 
 def test_build_cache_handler_writes_group_readable_cache():
-    """WS1 Phase 3b: the Spotify token cache must be group-`jasper`-readable
-    (0640) so the now-non-root jasper-control (/transport router) and jasper-web
-    (/spotify wizard) can read the token jasper-voice persists. spotipy's stock
-    CacheFileHandler writes it 0600 owner-only (the dropped readers then log
-    "Couldn't read cache" on every poll); build_cache_handler re-chmods 0640
-    after every save. Pinned so a future edit can't silently drop the chmod and
-    re-break the readers."""
+    """The Spotify token cache must stay group-readable (0640) so every
+    jasper-intsecrets member that builds a Spotify router can read refreshed
+    tokens. spotipy's stock CacheFileHandler writes it 0600 owner-only (the
+    dropped readers then log "Couldn't read cache" on every poll);
+    build_cache_handler re-chmods 0640 after every save. Pinned so a future edit
+    can't silently drop the chmod and re-break the readers."""
     pytest.importorskip("spotipy")
     with tempfile.TemporaryDirectory() as d:
         cache_path = os.path.join(d, "jasper.json")
@@ -253,6 +252,6 @@ def test_build_cache_handler_writes_group_readable_cache():
         assert os.path.isfile(cache_path)
         mode = stat.S_IMODE(os.stat(cache_path).st_mode)
         assert mode == 0o640 == SPOTIFY_CACHE_FILE_MODE, (
-            f"spotify cache mode {oct(mode)} != 0640 (group jasper read) — the "
+            f"spotify cache mode {oct(mode)} != 0640 (group read) — the "
             "non-root readers would log 'Couldn't read cache'"
         )

@@ -34,7 +34,7 @@ ssh pi@jts.local 'journalctl -u jasper-voice -f' | grep "event=ha\."
 ```
 
 When `JASPER_HA_URL` and `JASPER_HA_TOKEN` are both set in
-[`/var/lib/jasper/home_assistant.env`](../deploy/systemd/jasper-voice.service),
+[`/var/lib/jasper-intsecrets/home_assistant.env`](../deploy/systemd/jasper-voice.service),
 the `home_assistant` voice tool is registered and the model can call it.
 Env keys (defined as constants in
 [`jasper/home_assistant.py`](../jasper/home_assistant.py), imported
@@ -245,7 +245,7 @@ jasper/control/server.py            /state.home_assistant + /system/snapshot sec
 jasper/web/system_setup.py          /system/ dashboard card
 jasper/cli/doctor.py                check_home_assistant() (skip-if-not-configured)
 
-deploy/systemd/jasper-voice.service EnvironmentFile=-/var/lib/jasper/home_assistant.env
+deploy/systemd/jasper-voice.service EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env
 deploy/jasper-web.socket            ListenStream=127.0.0.1:8778
 deploy/nginx-jasper.conf            location /ha/ → 127.0.0.1:8778
 deploy/index.html                   Integrations section has the HA row
@@ -265,7 +265,7 @@ requests; first request takes ~500 ms to cold-start), so it costs
 zero RAM when nobody's using it.
 
 The page is a three-state form driven by what's in
-`/var/lib/jasper/home_assistant.env`:
+`/var/lib/jasper-intsecrets/home_assistant.env`:
 
 ### State 1: nothing configured
 
@@ -817,11 +817,11 @@ Most likely: the saved URL is malformed (rare; `_normalize_url`
 should reject) or the token is corrupt. Check:
 
 ```sh
-ssh pi@jts.local 'sudo cat /var/lib/jasper/home_assistant.env'
+ssh pi@jts.local 'sudo cat /var/lib/jasper-intsecrets/home_assistant.env'
 ```
 
-Then either re-save via the wizard or `sudo rm /var/lib/jasper/home_assistant.env`
-to fully reset.
+Then either re-save via the wizard or
+`sudo rm /var/lib/jasper-intsecrets/home_assistant.env` to fully reset.
 
 ## Sources
 
@@ -841,5 +841,6 @@ Primary sources informing this work (cite in PRs / future ADRs):
 - LLAT-too-long thread: [community.home-assistant.io/t/543626](https://community.home-assistant.io/t/long-lived-access-token-too-long/543626)
 - "WTH are all new entities exposed" thread: [community.home-assistant.io/t/803889](https://community.home-assistant.io/t/wth-are-all-new-entities-exposed-to-assist-by-default/803889)
 
-Last verified: 2026-05-27 (footer/status check; Home Assistant code
-paths not changed in this PR)
+Last verified: 2026-06-17 (HA env path rechecked against
+`jasper/home_assistant.py`, `jasper/web/home_assistant_setup.py`, and
+`deploy/systemd/jasper-voice.service`)
