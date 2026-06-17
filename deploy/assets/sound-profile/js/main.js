@@ -18,7 +18,10 @@
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import {
+  activeCommissionGroup,
   activeSpeakerStepState,
+  commissionCardState,
+  commissionFloorLabel,
   defaultActiveSpeakerStep,
   humanMode,
   humanRole,
@@ -70,7 +73,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     loading: false, action: '', session: null,
     stagedConfig: null, calibrationLevel: null,
     startupLoad: null, measurements: null,
-    baselineProfile: null, error: '', levelDbfs: null
+    baselineProfile: null, error: '', levelDbfs: null,
+    commission: null, commissionBusy: '', commissionError: ''
   };
   var outputAudibleRamp = {
     running: false,
@@ -559,8 +563,90 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<details class="advanced" data-active-speaker-setup' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
         renderOutputTopologySetup() +
+        renderCommissionCard() +
       '</details>' +
     '</section>';
+  }
+  // Protected single-audio-path driver commissioning (the Stage-5 ramp). Shown
+  // only when an active 2/3-way speaker group exists. Arming is silent; a step
+  // makes ONE driver audible at a low level through the production crossover.
+  function renderCommissionCard() {
+    var group = activeCommissionGroup(currentOutputTopology());
+    var c = commissionCardState(activeSpeaker.commission, group);
+    if (!c.available) return '';
+    var busy = activeSpeaker.commissionBusy;
+    var dis = busy ? ' disabled' : '';
+    var roleLabel = function(r) { return escapeHtml(humanRole(r)); };
+    var statusRows =
+      '<div class="commission-status">' +
+      '<div><span class="commission-status__k">Armed driver</span>' +
+        '<span class="commission-status__v">' +
+        (c.armed ? roleLabel(c.armedRole) + ' (' +
+          (c.armedGainDb == null ? '—' : escapeHtml(String(c.armedGainDb)) + ' dB') + ')'
+          : 'none — silent') + '</span></div>' +
+      '<div><span class="commission-status__k">By-ear</span>' +
+        '<span class="commission-status__v">' +
+        escapeHtml(commissionFloorLabel(c.floorStatus)) + '</span></div>' +
+      '<div><span class="commission-status__k">Confirmed</span>' +
+        '<span class="commission-status__v">' +
+        (c.confirmedRoles.length ? c.confirmedRoles.map(roleLabel).join(', ') : 'none') +
+        '</span></div>' +
+      '</div>';
+
+    var buttons = [];
+    if (c.canArm) {
+      var roles = activeCommissionRoles(group);
+      buttons = roles.map(function(role) {
+        return '<button type="button" class="btn btn--ghost" data-act="commission-arm" ' +
+          'data-role="' + escapeHtml(role) + '"' + dis + '>Arm ' + roleLabel(role) +
+          ' (silent)</button>';
+      });
+    }
+    if (c.canStep) {
+      buttons.push('<button type="button" class="btn btn--primary" ' +
+        'data-act="commission-step" data-role="' + escapeHtml(c.armedRole || '') + '"' +
+        dis + '>Make audible (step)</button>');
+    }
+    if (c.canAck) {
+      buttons.push('<button type="button" class="btn btn--primary" ' +
+        'data-act="commission-ack" data-outcome="heard_correct_driver"' + dis +
+        '>I hear ' + roleLabel(c.pendingRole) + '</button>');
+      buttons.push('<button type="button" class="btn btn--ghost" ' +
+        'data-act="commission-ack" data-outcome="silent"' + dis + '>Too quiet — louder</button>');
+      buttons.push('<button type="button" class="btn btn--ghost" ' +
+        'data-act="commission-ack" data-outcome="too_loud"' + dis + '>Too loud</button>');
+      buttons.push('<button type="button" class="btn btn--ghost" ' +
+        'data-act="commission-ack" data-outcome="heard_wrong_driver"' + dis +
+        '>Wrong driver</button>');
+    }
+    if (c.canRemute) {
+      buttons.push('<button type="button" class="btn btn--danger" ' +
+        'data-act="commission-abort"' + dis + '>Stop / re-mute</button>');
+    }
+
+    var note = activeSpeaker.commissionError ?
+      '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' :
+      (c.armed ?
+        '<p class="setting-row__hint">Amps on at low gain only. Each step is very quiet; confirm by ear before going louder.</p>' :
+        '<p class="setting-row__hint">Keep amps OFF until a driver is armed and you are ready to listen. Arming is silent.</p>');
+
+    return '<div class="commission-card">' +
+      '<h4 class="commission-card__title">Protected driver commissioning</h4>' +
+      '<p class="commission-card__lead">Test one driver at a time through the real ' +
+        'crossover/limiter graph — woofer first, then tweeter.</p>' +
+      statusRows + note +
+      (busy ? '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '') +
+      '<div class="active-speaker-actions commission-card__actions">' +
+        buttons.join('') + '</div>' +
+    '</div>';
+  }
+  function activeCommissionRoles(group) {
+    var seen = {};
+    var order = ['woofer', 'mid', 'tweeter'];
+    (group && Array.isArray(group.channels) ? group.channels : []).forEach(function(ch) {
+      if (ch && ch.role) seen[ch.role] = true;
+    });
+    return order.filter(function(r) { return seen[r]; });
   }
   function currentOutputTopology() {
     return outputTopology.draft || outputTopology.payload || null;
@@ -2952,6 +3038,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'compile-baseline-profile') { compileBaselineProfile(); }
     else if (act === 'apply-baseline-profile') { applyBaselineProfile(); }
     else if (act === 'stop-active-speaker') { stopActiveSpeakerTest(); }
+    else if (act === 'commission-arm') { commissionArm(t.getAttribute('data-role') || ''); }
+    else if (act === 'commission-step') { commissionStep(t.getAttribute('data-role') || ''); }
+    else if (act === 'commission-ack') { commissionAck(t.getAttribute('data-outcome') || ''); }
+    else if (act === 'commission-abort') { commissionAbort(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -3270,11 +3360,63 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       } catch (profileError) {
         patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile || null});
       }
+      await refreshCommissionState();
     } catch (e) {
       outputTopology.loading = false;
       outputTopology.error = e.message;
     }
     render();
+  }
+  async function refreshCommissionState() {
+    try {
+      var resp = await fetch('./active-speaker/commission-state', {cache: 'no-store'});
+      if (resp.ok) patchActiveSpeaker({commission: await resp.json()});
+    } catch (commissionError) {
+      patchActiveSpeaker({commission: activeSpeaker.commission || null});
+    }
+  }
+  async function postCommission(url, body, busyLabel) {
+    patchActiveSpeaker({commissionBusy: busyLabel, commissionError: ''});
+    render();
+    try {
+      var resp = await fetch(url, {
+        method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify(body || {})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error((payload && payload.error) || 'request failed');
+    } catch (e) {
+      patchActiveSpeaker({commissionBusy: '', commissionError: String(e.message || e)});
+      render();
+      return;
+    }
+    await refreshCommissionState();
+    patchActiveSpeaker({commissionBusy: ''});
+    render();
+  }
+  async function commissionArm(role) {
+    var group = activeCommissionGroup(currentOutputTopology());
+    if (!group || !role) return;
+    await postCommission('./active-speaker/commission-load',
+      {group: group.id, role: role}, 'Arming ' + humanRole(role));
+  }
+  async function commissionStep(role) {
+    var group = activeCommissionGroup(currentOutputTopology());
+    if (!group || !role) return;
+    var ok = await jtsConfirm('Make the ' + humanRole(role) + ' audible? Amps should be ' +
+      'on at LOW gain — JTS will play it very quietly through the crossover.',
+      {danger: true});
+    if (!ok) return;
+    await postCommission('./active-speaker/commission-ramp-step',
+      {group: group.id, role: role}, 'Stepping ' + humanRole(role));
+  }
+  async function commissionAck(outcome) {
+    if (!outcome) return;
+    await postCommission('./active-speaker/commission-ramp-ack',
+      {outcome: outcome}, 'Recording');
+  }
+  async function commissionAbort() {
+    await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;
