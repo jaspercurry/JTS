@@ -20,8 +20,10 @@ import asyncio
 import pytest
 import yaml
 
+import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
+    COMMISSION_RAMP_MAX_LEVEL_DBFS,
     abort_ramp,
     audible_outputs_for_role,
     build_stage5_ramp_gate,
@@ -36,10 +38,12 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
-    MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
 )
-from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+from jasper.active_speaker.camilla_yaml import (
+    COMMISSIONING_HEADROOM_DB,
+    STARTUP_MUTE_GAIN_DB,
+)
 from jasper.active_speaker import ActiveSpeakerConfigError
 
 from tests.test_active_speaker_commission_load import _load
@@ -47,16 +51,34 @@ from tests.test_active_speaker_startup_load import _topology, _valid_config
 from tests.test_active_speaker_profile import _two_way_preset
 
 
+@pytest.fixture(autouse=True)
+def _stub_audio_hardware_reconcile(monkeypatch):
+    def fake_manage_units(*units: str, **kwargs):
+        return {"ok": True, "rc": 0}
+
+    monkeypatch.setattr(startup_load_mod, "manage_units", fake_manage_units)
+
+
 def _two_way() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
 
 
-def _emit(preset: ActiveSpeakerPreset, audible: set[int], gain: float) -> str:
+def _emit(
+    preset: ActiveSpeakerPreset,
+    audible: set[int],
+    gain: float,
+    *,
+    headroom_db: float | None = None,
+) -> str:
+    kwargs = {}
+    if headroom_db is not None:
+        kwargs["startup_headroom_db"] = headroom_db
     return emit_active_speaker_commissioning_config(
         preset,
         playback_device="hw:CARD=DAC8x,DEV=0",
         audible_outputs=audible,
         audible_gain_db=gain,
+        **kwargs,
     )
 
 
@@ -90,7 +112,7 @@ def test_evidence_gates_unaffected_by_audible_gain():
     # so a louder audible gain must NOT change their verdict.
     preset = _two_way()
     woofer = set(audible_outputs_for_role(preset, "woofer"))
-    for gain in (STARTUP_MUTE_GAIN_DB, -80.0, MAX_TEST_LEVEL_DBFS):
+    for gain in (STARTUP_MUTE_GAIN_DB, -80.0, COMMISSION_RAMP_MAX_LEVEL_DBFS):
         yaml_text = _emit(preset, woofer, gain=gain)
         off = driver_commission_audible_evidence(
             yaml_text, preset=preset, audible_outputs=woofer
@@ -107,18 +129,23 @@ def test_emitter_rejects_out_of_bound_audible_gain():
         _emit(preset, woofer, gain=-200.0)  # below the mute floor
 
 
-def test_prepare_records_audible_gain_and_way_count():
+def test_prepare_records_audible_gain_way_count_and_commissioning_headroom(tmp_path):
+    config_path = tmp_path / "commission.yml"
     prepared = prepare_driver_commissioning_config(
         _topology(),
         speaker_group_id="mono",
         role="woofer",
         audible_gain_db=-80.0,
         run_config_check=False,
-        config_path="/tmp/jts-test-commission.yml",
+        config_path=config_path,
     )
     assert prepared["status"] == "prepared"
     assert prepared["target"]["audible_gain_db"] == -80.0
     assert prepared["way_count"] == 2
+    parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert parsed["filters"]["active_startup_headroom"]["parameters"]["gain"] == (
+        -COMMISSIONING_HEADROOM_DB
+    )
 
 
 # --- next_ramp_gain_db -------------------------------------------------------
@@ -130,7 +157,9 @@ def test_next_ramp_gain_progression():
     assert next_ramp_gain_db(-200.0) == MIN_TEST_LEVEL_DBFS
     # Audible -> one bounded step, clamped to the ceiling.
     assert next_ramp_gain_db(MIN_TEST_LEVEL_DBFS) == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
-    assert next_ramp_gain_db(MAX_TEST_LEVEL_DBFS) == MAX_TEST_LEVEL_DBFS
+    assert next_ramp_gain_db(COMMISSION_RAMP_MAX_LEVEL_DBFS) == (
+        COMMISSION_RAMP_MAX_LEVEL_DBFS
+    )
 
 
 # --- build_stage5_ramp_gate (pure) -------------------------------------------
@@ -150,10 +179,16 @@ def _gate(
     bad_ceiling=False,
 ):
     audible = set(audible_outputs_for_role(preset, role))
+    headroom_db = COMMISSIONING_HEADROOM_DB
     ev = driver_commission_audible_evidence(
-        _emit(preset, audible, gain=next_gain_db), preset=preset, audible_outputs=audible
+        _emit(preset, audible, gain=next_gain_db, headroom_db=headroom_db),
+        preset=preset,
+        audible_outputs=audible,
+        expected_headroom_db=headroom_db,
     )
-    running = yaml.safe_load(_emit(preset, audible, gain=running_gain))
+    running = yaml.safe_load(
+        _emit(preset, audible, gain=running_gain, headroom_db=headroom_db)
+    )
     if corrupt_hp:
         running["filters"]["as_tweeter_protective_hp"]["parameters"]["freq"] = 200.0
     if bad_ceiling:
@@ -190,9 +225,9 @@ def test_gate_rejects_gain_above_ceiling_envelope():
     g = _gate(
         _two_way(),
         role="woofer",
-        running_gain=MAX_TEST_LEVEL_DBFS,
-        current_gain_db=MAX_TEST_LEVEL_DBFS,
-        next_gain_db=MAX_TEST_LEVEL_DBFS + 10,
+        running_gain=COMMISSION_RAMP_MAX_LEVEL_DBFS,
+        current_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS,
+        next_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS + 10,
     )
     assert g["checks"]["gain_within_envelope"] is False
     assert g["passed"] is False
@@ -515,12 +550,12 @@ def test_ramp_step_at_ceiling_blocks_noop_louder_retry(monkeypatch, tmp_path):
             )
         )
 
-    while step["next_gain_db"] < MAX_TEST_LEVEL_DBFS:
+    while step["next_gain_db"] < COMMISSION_RAMP_MAX_LEVEL_DBFS:
         assert _ack_silent()["status"] == "retry"
         step = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))
         assert step["status"] == "stepped"
 
-    assert step["next_gain_db"] == MAX_TEST_LEVEL_DBFS
+    assert step["next_gain_db"] == COMMISSION_RAMP_MAX_LEVEL_DBFS
     assert _ack_silent()["status"] == "retry"
     loads_at_ceiling = len(cam.loaded_paths)
     blocked = asyncio.run(ramp_audible_step(_topology(), role="woofer", **common))

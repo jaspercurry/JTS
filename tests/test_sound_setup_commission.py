@@ -14,13 +14,23 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
+import jasper.active_speaker.startup_load as startup_load_mod
 import jasper.web.sound_setup as sound_setup
 from jasper.active_speaker import load_commission_load_state, load_ramp_state
 
 from tests.test_active_speaker_cli import _FakeController
 from tests.test_active_speaker_startup_load import _staged, _topology
+
+
+@pytest.fixture(autouse=True)
+def _stub_audio_hardware_reconcile(monkeypatch):
+    def fake_manage_units(*units: str, **kwargs):
+        return {"ok": True, "rc": 0}
+
+    monkeypatch.setattr(startup_load_mod, "manage_units", fake_manage_units)
 
 
 def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> dict:
@@ -117,6 +127,97 @@ class _FakeWebController(_FakeController):
         self.statefile.write_text(f"config_path: {path}\nmute: false\n", encoding="utf-8")
         self.running_raw = Path(path).read_text(encoding="utf-8")
         return True
+
+
+class _FakeToneProcess:
+    def __init__(self, args: list[str]) -> None:
+        self.args = args
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        return self.returncode
+
+
+def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path):
+    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    wav_path = tmp_path / "tone.wav"
+    wav_path.write_bytes(b"not a real wav; Popen is faked")
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_wav_path",
+        lambda *, frequency_hz: wav_path,
+    )
+    mux_actions: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: mux_actions.append("select") or {
+            "active_source": "correction",
+            "test_source": "correction",
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: mux_actions.append(f"release:{reason}") or {
+            "active_source": "airplay",
+            "test_source": None,
+        },
+    )
+    processes: list[_FakeToneProcess] = []
+
+    def _fake_popen(args, stdout=None, stderr=None):
+        proc = _FakeToneProcess(list(args))
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    try:
+        first = asyncio.run(
+            sound_setup._active_speaker_play_commission_tone(
+                group_id="mono",
+                role="woofer",
+                level_dbfs=-80.0,
+                playback_id="step-1",
+                target={"speaker_group_id": "mono", "role": "woofer"},
+            )
+        )
+        second = asyncio.run(
+            sound_setup._active_speaker_play_commission_tone(
+                group_id="mono",
+                role="woofer",
+                level_dbfs=-74.0,
+                playback_id="step-2",
+                target={"speaker_group_id": "mono", "role": "woofer"},
+            )
+        )
+    finally:
+        stop = sound_setup._active_speaker_stop_commission_tone(reason="test_cleanup")
+
+    assert first["status"] == "completed"
+    assert first["continuous"] is True
+    assert second["session_reused"] is True
+    assert second["tone"]["duration_ms"] == 35000
+    assert len(processes) == 1
+    assert processes[0].args[:4] == ["aplay", "-D", "correction_substream", "-q"]
+    assert stop["status"] == "stopped"
+    assert first["fanin_gate"]["active_source"] == "correction"
+    assert stop["fanin_gate"]["active_source"] == "airplay"
+    assert mux_actions == ["select", "select", "release:test_cleanup"]
+    assert processes[0].terminated is True
 
 
 def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
@@ -331,6 +432,13 @@ def test_commission_state_payload_marks_stale_live_graph_read_only(
 def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     controller = _FakeController("placeholder")
     env = _web_commission_env(monkeypatch, tmp_path, controller)
+    tone_stops: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: tone_stops.append(reason)
+        or {"status": "stopped", "reason": reason},
+    )
     asyncio.run(
         sound_setup._active_speaker_commission_load_payload(
             {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
@@ -359,6 +467,11 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     )
     assert ack["status"] == "confirmed"
     assert ack["rollback"]["status"] == "rolled_back"
+    assert ack["tone_stop"] == {
+        "status": "stopped",
+        "reason": "ack_heard_correct_driver",
+    }
+    assert tone_stops == ["ack_heard_correct_driver"]
     assert load_ramp_state()["confirmed_roles"] == ["woofer"]
     assert load_commission_load_state()["status"] == "rolled_back"
 

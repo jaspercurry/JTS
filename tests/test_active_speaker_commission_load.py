@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 import yaml
 
+import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
     audible_outputs_for_role,
@@ -43,6 +45,18 @@ from tests.test_active_speaker_startup_load import (
     _write_path_safety,
 )
 from tests.test_active_speaker_profile import _two_way_preset
+
+
+@pytest.fixture(autouse=True)
+def reconcile_triggers(monkeypatch) -> list[dict]:
+    calls: list[dict] = []
+
+    def fake_manage_units(*units: str, **kwargs):
+        calls.append({"units": units, **kwargs})
+        return {"ok": True, "rc": 0}
+
+    monkeypatch.setattr(startup_load_mod, "manage_units", fake_manage_units)
+    return calls
 
 
 def _block(text: str) -> str:
@@ -237,7 +251,7 @@ def _load(
     return result, cam, staged, staged_path, statefile, state_path
 
 
-def test_woofer_commissioning_load_happy_path(monkeypatch, tmp_path):
+def test_woofer_commissioning_load_happy_path(monkeypatch, tmp_path, reconcile_triggers):
     result, cam, staged, staged_path, statefile, state_path = _load(
         tmp_path, monkeypatch, role="woofer"
     )
@@ -251,12 +265,40 @@ def test_woofer_commissioning_load_happy_path(monkeypatch, tmp_path):
     # The running graph carries the woofer-only mask.
     assert result["load"]["target"]["role"] == "woofer"
     assert result["load"]["target"]["audible_outputs"] == [0]
+    assert reconcile_triggers == [{
+        "units": (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
+        "verb": "start",
+        "reason": "active_speaker_driver_commission_load",
+        "no_block": False,
+        "timeout": 15.0,
+    }]
 
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "loaded"
     assert state["rollback_available"] is True
     assert state["previous_config_path"] == staged_path
     assert state["candidate_config_path"] == commission_path
+
+
+def test_commissioning_load_fails_closed_when_reconcile_trigger_fails(
+    monkeypatch, tmp_path
+):
+    def fail_manage_units(*units: str, **kwargs):
+        return {"ok": False, "rc": 3, "error": "systemd unavailable"}
+
+    monkeypatch.setattr(startup_load_mod, "manage_units", fail_manage_units)
+    result, _cam, _staged, _staged_path, _statefile, state_path = _load(
+        tmp_path, monkeypatch, role="woofer"
+    )
+
+    assert result["load"]["status"] == "failed"
+    assert result["load"]["last_action"] == "output_reconcile_failed"
+    assert {
+        issue["code"] for issue in result["load"]["issues"]
+    } == {"commission_output_hardware_reconcile_failed"}
+    state = load_commission_load_state(state_path=state_path)
+    assert state["status"] == "failed"
+    assert state["loaded"] is False
 
 
 def test_tweeter_commissioning_load_confirms_live_high_pass(monkeypatch, tmp_path):
