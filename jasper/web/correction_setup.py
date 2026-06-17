@@ -788,7 +788,8 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     filters from that would compound the corrections. Resetting first
     guarantees every measurement starts from the same flat baseline.
     """
-    from jasper.correction.session import SessionState, describe_current_config
+    from jasper.correction.session import SessionState
+    from jasper.correction.status import describe_current_config
 
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
@@ -1204,7 +1205,7 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     CamillaDSP config descriptor. `current_correction` is best-effort
     (returns None if CamillaDSP is unreachable) so the page still
     renders something useful when the daemon is restarting."""
-    from jasper.correction.session import describe_current_config
+    from jasper.correction.status import describe_current_config
     from jasper.dsp_apply import last_dsp_apply_state
 
     sess = _get_or_create_session()

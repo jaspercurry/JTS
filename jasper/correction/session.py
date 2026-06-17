@@ -35,7 +35,6 @@ import asyncio
 import logging
 import math
 import os
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -67,168 +66,14 @@ from .autolevel import (
 from .calibration import CalibrationRecord
 from .peq import PEQ
 from .state_guard import SessionStateGuard
+from .status import (
+    describe_current_config as describe_current_config,
+    parse_current_correction as parse_current_correction,
+    session_snapshot,
+)
 from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
-
-
-_CORRECTION_FILENAME_RE = re.compile(
-    r"^correction_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
-)
-_SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
-_PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
-
-
-def parse_current_correction(
-    path: str | None,
-    *,
-    config_dir: Path = Path("/var/lib/camilladsp/configs"),
-) -> dict[str, Any] | None:
-    """Describe whatever correction (if any) the given CamillaDSP
-    config path represents. Returns None for the base outputd
-    config or any path we don't recognise as a correction emission.
-
-    The filename shape is fixed by `MeasurementSession.apply`:
-    ``correction_<session_id>_<unixtime>.yml`` under
-    ``/var/lib/camilladsp/configs/``. Anything else returns None for
-    backwards compatibility. Use `describe_current_config()` when the
-    caller needs to distinguish the flat outputd baseline,
-    JTS-managed sound configs, and custom CamillaDSP configs.
-    """
-    descriptor = describe_current_config(path, config_dir=config_dir)
-    correction = descriptor.get("current_correction")
-    return correction if isinstance(correction, dict) else None
-
-
-def describe_current_config(
-    path: str | None,
-    *,
-    config_dir: Path = Path("/var/lib/camilladsp/configs"),
-    base_config_path: Path = Path("/etc/camilladsp/outputd-cutover.yml"),
-) -> dict[str, Any]:
-    """Describe the active CamillaDSP config without overclaiming.
-
-    `parse_current_correction()` intentionally remains the backwards-
-    compatible "is there a JTS room correction?" helper. This richer
-    descriptor lets UI/doctor/agent surfaces distinguish the flat
-    outputd baseline, JTS-generated sound/correction configs,
-    and arbitrary CamillaGUI/custom configs that JTS should not
-    silently preserve.
-    """
-    if not path:
-        return {
-            "kind": "unknown",
-            "managed": False,
-            "path": None,
-            "label": "Unknown active config",
-            "message": "CamillaDSP did not report an active config path.",
-            "current_correction": None,
-        }
-    p = Path(path)
-    if p == base_config_path:
-        return {
-            "kind": "base",
-            "managed": True,
-            "path": str(p),
-            "label": "JTS flat baseline",
-            "message": "No JTS room correction is applied.",
-            "current_correction": None,
-        }
-    if p.parent != Path(config_dir):
-        return {
-            "kind": "custom",
-            "managed": False,
-            "path": str(p),
-            "label": "Advanced DSP config",
-            "message": (
-                "CamillaDSP is running a config outside the JTS generated "
-                "config directory. JTS cannot safely preserve it."
-            ),
-            "current_correction": None,
-        }
-
-    m = _CORRECTION_FILENAME_RE.match(p.name)
-    if not m:
-        if not _SOUND_FILENAME_RE.match(p.name):
-            return {
-                "kind": "custom",
-                "managed": False,
-                "path": str(p),
-                "label": "Advanced DSP config",
-                "message": (
-                    "CamillaDSP is running a config that JTS did not "
-                    "generate. JTS cannot safely preserve it."
-                ),
-                "current_correction": None,
-            }
-        try:
-            text = p.read_text()
-            peq_count = len(_PEQ_KEY_RE.findall(text))
-            applied_at_epoch = int(p.stat().st_mtime)
-        except OSError:
-            return {
-                "kind": "unknown",
-                "managed": False,
-                "path": str(p),
-                "label": "Unreadable JTS sound config",
-                "message": "JTS could not read the active sound config file.",
-                "current_correction": None,
-            }
-        if peq_count == 0:
-            return {
-                "kind": "sound_preference",
-                "managed": True,
-                "path": str(p),
-                "label": "JTS sound preference",
-                "message": "Preference EQ is active; no room correction PEQs were found.",
-                "current_correction": None,
-            }
-        correction = {
-            "path": str(p),
-            "session_id": "sound",
-            "applied_at_epoch": applied_at_epoch,
-            "peq_count": peq_count,
-        }
-        return {
-            "kind": "sound_with_correction",
-            "managed": True,
-            "path": str(p),
-            "label": "JTS sound preference with room correction",
-            "message": "A JTS sound config is active and includes room correction PEQs.",
-            "current_correction": correction,
-        }
-    try:
-        ts = int(m.group("ts"))
-    except ValueError:
-        return {
-            "kind": "custom",
-            "managed": False,
-            "path": str(p),
-            "label": "Advanced DSP config",
-            "message": "Correction-shaped config has an invalid timestamp.",
-            "current_correction": None,
-        }
-    peq_count = 0
-    try:
-        text = p.read_text()
-    except OSError:
-        text = ""
-    if text:
-        peq_count = len(_PEQ_KEY_RE.findall(text))
-    correction = {
-        "path": str(p),
-        "session_id": m.group("id"),
-        "applied_at_epoch": ts,
-        "peq_count": peq_count,
-    }
-    return {
-        "kind": "correction",
-        "managed": True,
-        "path": str(p),
-        "label": "JTS room correction",
-        "message": "A JTS room correction config is active.",
-        "current_correction": correction,
-    }
 
 
 def _bundles_enabled() -> bool:
@@ -2191,59 +2036,4 @@ class MeasurementSession:
     # ------------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
-        return {
-            "session_id": self.session_id,
-            "state": self.state.value,
-            "started_at": self.started_at,
-            "updated_at": self.updated_at,
-            "error": self.error,
-            "total_positions": self.total_positions,
-            "current_position": self.current_position,
-            "repeat_main_position": self.repeat_main_position,
-            "target_choice": self.target_choice,
-            "target_profile": strategy.resolve_target_profile(
-                self.target_choice,
-            ).to_dict(),
-            "strategy_choice": self.strategy_choice,
-            "correction_strategy": strategy.resolve_correction_strategy(
-                self.strategy_choice,
-            ).to_dict(),
-            "input_device": self.input_device,
-            "mic_calibration": (
-                self.mic_calibration.public_metadata()
-                if self.mic_calibration
-                else None
-            ),
-            "browser_audio_report": self.browser_audio_report,
-            # Point-in-time copies: these are appended to (and design_report
-            # gets a key set) from the loop/worker threads, while /status
-            # serializes the snapshot on its own handler thread. Copying
-            # here means a concurrent mutation can't tear the serialized view.
-            "capture_quality": list(self.capture_quality),
-            "noise_reports": list(self.noise_reports),
-            "repeat_quality": self.repeat_quality,
-            "repeatability_report": self.repeatability_report,
-            "verify_quality": self.verify_quality,
-            "confidence_report": self.confidence_report,
-            "acoustic_quality": (
-                (self.acoustic_quality or {}).get("summary")
-                if self.acoustic_quality
-                else None
-            ),
-            "runtime_integrity": self.runtime_integrity.summary(),
-            "position_analysis": self.position_analysis,
-            "sweep": (
-                self.sweep_meta.to_dict() if self.sweep_meta else None
-            ),
-            "peqs": [p.__dict__ for p in self.peqs],
-            "design_report": (
-                dict(self.design_report)
-                if self.design_report is not None
-                else None
-            ),
-            "config_path": (
-                str(self.config_path) if self.config_path else None
-            ),
-            "verify_metrics": self.verify_metrics,
-            "autolevel": self.autolevel.snapshot(),
-        }
+        return session_snapshot(self)
