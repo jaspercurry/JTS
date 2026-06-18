@@ -1327,8 +1327,9 @@ Realistic bring-up sequence:
 2. Use the smallest stable ALSA period (~5–10 ms) on the USB-in
    stream — caps host-side latency tightly. Target end-to-end
    host→chip-USB→mic < 16 ms (256 samples).
-3. Re-measure ref→mic with chirp cross-correlation
-   (`scripts/aec-probe-latency.sh`). If total is 10–15 ms, set
+3. Re-measure outputd-reference-to-mic timing with chirp
+   cross-correlation (`scripts/aec-probe-latency.sh`). If total is
+   10–15 ms, set
    `AUDIO_MGR_SYS_DELAY` to compensate (positive value, 62.5 µs
    per sample) until the impulse-response peak lands at taps 5–30.
 4. Do not assume coefficient-dump tooling exists in the local helper:
@@ -2248,8 +2249,11 @@ Files involved in the AEC subsystem:
   `JASPER_AEC_MIC_DEVICE`, `JASPER_MIC_DEVICE_CANDIDATES`, UDP
   transport settings, and tuning gains
 - `scripts/aec-probe-latency.sh` — chirp + cross-correlation
-  measurement of end-to-end ref-to-mic delay (used to set the AEC3
-  binding's `stream_delay_ms` default)
+  measurement between outputd's final speaker-reference UDP stream and
+  a selected XVF3800 capture channel. It is the current timing
+  diagnostic for outputd/chip-AEC reference alignment; the historical
+  software-AEC3 measurements below used the older `jasper_capture`
+  reference tap.
 - `scripts/aec-probe-pinknoise.sh` — runs the bridge against
   stationary pink noise to measure the AEC engine's plateau
   attenuation (the upper bound for this setup, since music is
