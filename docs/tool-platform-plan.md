@@ -313,8 +313,9 @@ grows.
    budget check keeps the convention honest as tools are added.
 3. **Derived manifest.** `Tool.to_manifest()` and
    `ToolRegistry.to_manifest()` emit a provider-neutral record in
-   registration order. Today it is derived from code; tomorrow it is the
-   review/scaffold seam for contributor packs.
+   registration order, including labels, timeout, compatibility, and risk
+   flags. Today it is derived from code; tomorrow it is the review/scaffold
+   seam for contributor packs.
 4. **Labels and risk flags.** `labels`, `untrusted_output`, and
    `consequential` are declarative metadata that catalog/store/policy
    layers can consume without sending extra text to the model.
@@ -386,11 +387,14 @@ grows.
    explicit reference, and `weather` is the API-backed explicit reference.
 
 **Next boundary slice**
-1. **Keep migrating examples across the complexity ladder.** With `time` and
-   `weather` now covering the simple and API-backed references, the next
-   candidates are `spotify` / `playback` as source-backed references,
-   `transit` as the deep wizard/config/provider-registry reference, and
-   `home_assistant` as the high-risk consequential-action reference.
+1. **Keep migrating examples across the complexity ladder.** The
+   non-production starter at
+   [`docs/examples/tool_pack_starter.py`](examples/tool_pack_starter.py)
+   is the minimal postcard shape. With `time` and `weather` now covering
+   the simple and API-backed production references, the next candidates are
+   `spotify` / `playback` as source-backed references, `transit` as the deep
+   wizard/config/provider-registry reference, and `home_assistant` as the
+   high-risk consequential-action reference.
 2. **Gate every refactor on byte-identical behavior.** Existing 29-tool
    provider schemas, manifest entries, catalog payloads, dispatch behavior,
    and registration order must stay identical unless a change is explicitly

@@ -1129,15 +1129,14 @@ The rules most often violated without it:
 - **Preamble suppression is a conditional skip-list, never a
   ban.** Live version in the `Tools — preambles` section of
   `SYSTEM_INSTRUCTION`; mirrors OpenAI's documented pattern.
-- **Per-tool conditional rules belong in the tool's docstring,
+- **Per-tool conditional rules belong in the tool's description,
   not `SYSTEM_INSTRUCTION`.** `build_tool()` at
-  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends
-  the full cleaned docstring to the LLM (unless a tool sets a
-  shorter `@tool(llm_description=...)` override — none do today).
-  When-to-call,
-  voice-answer style, and response-shape handling live in each
-  tool's docstring. `SYSTEM_INSTRUCTION` keeps only cross-tool
-  meta-rules (`error` / `confirm` field handling, preamble
+  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends the
+  tool's model-facing description to the LLM: user override first,
+  then `llm_description` when set, else the full cleaned docstring.
+  When-to-call, voice-answer style, and response-shape handling live in
+  each tool's code-owned description. `SYSTEM_INSTRUCTION` keeps only
+  cross-tool meta-rules (`error` / `confirm` field handling, preamble
   policy, verbosity, unclear-audio handling, the small set of
   cross-tool routing rules where two similar tools need
   disambiguation).

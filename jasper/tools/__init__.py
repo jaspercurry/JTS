@@ -197,7 +197,7 @@ DEFAULT_TOOL_TIMEOUT_SEC = 12.0
 # detect a breaking change. The manifest is a stable, provider-neutral
 # description built straight from existing Tool fields — additive, with
 # no effect on dispatch or the provider serializers.
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -299,6 +299,10 @@ class ToolDefinition:
             },
             "labels": list(self.labels),
             "timeout": self.timeout,
+            "risk_flags": {
+                "untrusted_output": self.untrusted_output,
+                "consequential": self.consequential,
+            },
         }
 
 
@@ -435,16 +439,26 @@ class ToolRegistry:
 
     def register(
         self,
-        fn: Callable[..., Any],
+        fn: Callable[..., Any] | Tool,
         *,
         name: str | None = None,
         providers: Iterable[str] | None = None,
     ) -> Tool:
-        """Register `fn` as a tool. `providers` overrides any allowlist
-        the `@tool(...)` decorator set on the function — useful when a
-        wiring point needs to gate a generic tool to one backend without
-        editing the tool itself."""
-        tool = build_tool(fn, name=name)
+        """Register a decorated callable or explicit Tool.
+
+        `@tool(...)` callables remain the ergonomic first-party path.
+        Explicit Tool objects are the copyable ToolDefinition +
+        ToolExecutor boundary for richer packs and future non-Python
+        executors. `providers` overrides any allowlist the callable or
+        Tool definition set — useful when a wiring point needs to gate a
+        generic tool to one backend without editing the tool itself.
+        """
+        if isinstance(fn, Tool):
+            tool = fn
+            if name is not None:
+                tool = replace(tool, definition=replace(tool.definition, name=name))
+        else:
+            tool = build_tool(fn, name=name)
         if providers is not None:
             tool = replace(
                 tool,

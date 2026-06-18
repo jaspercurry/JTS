@@ -165,8 +165,8 @@ def _full_catalog_registry(
         wake_event_store=object(),
     )
     reg = ToolRegistry()
-    # Pass disabled=frozenset() so the FULL catalog ignores the user's
-    # disabled-set (status is computed separately below).
+    # Pass explicit empty disabled state so the FULL catalog ignores staged
+    # user choices; status is computed separately by build_catalog().
     register_packs(
         reg,
         deps,
