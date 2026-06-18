@@ -17,6 +17,8 @@ import pytest
 
 from jasper.tools import (
     DEFAULT_TOOL_TIMEOUT_SEC,
+    Tool,
+    ToolDefinition,
     ToolRegistry,
     build_tool,
     dispatch_tool,
@@ -39,6 +41,36 @@ async def test_dict_result_passes_through():
 
     reg = _registry(echo)
     assert await dispatch_tool(reg, "echo", {"x": "hi"}) == {"got": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_runs_tool_executor_boundary():
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, args):
+            self.calls.append(dict(args))
+            return {"got": args["x"]}
+
+    executor = RecordingExecutor()
+    reg = ToolRegistry()
+    built = Tool(
+        definition=ToolDefinition(
+            name="echo",
+            description="echo back the argument.",
+            parameters={
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"],
+            },
+        ),
+        executor=executor,
+    )
+    reg.register_tool(built)
+
+    assert await dispatch_tool(reg, "echo", {"x": "hi"}) == {"got": "hi"}
+    assert executor.calls == [{"x": "hi"}]
 
 
 @pytest.mark.asyncio
