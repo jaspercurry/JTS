@@ -591,7 +591,6 @@ def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe()
 
 def test_outputd_stability_profile_passes_without_chip_aec_or_voice():
     inputs = _outputd_stability_inputs()
-    inputs["system_env"]["JASPER_OUTPUT_DAC_ROUTE"] = "mono:5"
     artifact = audio_validation.build_outputd_stability_hardware_validation_artifact(
         **inputs,
         outputd_status_samples=[
@@ -608,7 +607,7 @@ def test_outputd_stability_profile_passes_without_chip_aec_or_voice():
     assert artifact.checks["service_state"]["status"] == "pass"
     assert artifact.checks["dac_identity"]["status"] == "pass"
     assert artifact.checks["dac_identity"]["observed"]["card"] == "sndrpihifiberry"
-    assert artifact.checks["dac_identity"]["observed"]["route"] == "mono:5"
+    assert "route" not in artifact.checks["dac_identity"]["observed"]
     assert artifact.checks["dac_output"]["status"] == "pass"
     assert artifact.checks["outputd_reference_health"]["status"] == "pass"
     assert "runtime_profile" not in artifact.checks

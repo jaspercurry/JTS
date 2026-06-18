@@ -420,6 +420,20 @@ migrate_tts_outputd_socket_default() {
     fi
 }
 
+# Remove the deleted DAC8x final-output route knob from long-lived installs.
+# The renderer no longer reads it, but leaving the stale line in jasper.env makes
+# operators think a lab/direct-output alias still exists.
+migrate_removed_output_dac_route() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    [[ -f "${jasper_env}" ]] || return 0
+    if grep -qE '^JASPER_OUTPUT_DAC_ROUTE=' "${jasper_env}"; then
+        sed -i.bak '/^JASPER_OUTPUT_DAC_ROUTE=/d' "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+        chmod 0640 "${jasper_env}"
+        echo "  migrate_removed_output_dac_route: removed stale JASPER_OUTPUT_DAC_ROUTE"
+    fi
+}
+
 # Migrate stale transit env vars from /etc/jasper/jasper.env into the
 # wizard-owned /var/lib/jasper/transit.env. The wizard at /transit
 # owns every transit env variable; operators who paste those into

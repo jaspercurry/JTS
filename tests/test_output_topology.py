@@ -141,7 +141,6 @@ def test_hardware_from_env_reports_known_output_counts() -> None:
     dac8x = hardware_from_env({
         "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
         "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
-        "JASPER_OUTPUT_DAC_ROUTE": "stereo:5,6",
     })
     apple = hardware_from_env({
         "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
@@ -158,7 +157,6 @@ def test_hardware_from_env_reports_known_output_counts() -> None:
 
     assert dac8x.physical_output_count == 8
     assert dac8x.outputs[4].human_label == "DAC output 5"
-    assert dac8x.route == "stereo:5,6"
     assert dac8x.clock_domain_id == "alsa:sndrpihifiberry"
     assert apple.physical_output_count == 2
     assert apple.clock_domain_label == "Single Apple USB audio device clock"

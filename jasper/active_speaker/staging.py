@@ -48,7 +48,7 @@ from .profile import (
 from .playback_route import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     active_playback_route_capability,
-    resolve_diagnostic_playback_device,
+    resolve_active_playback_device,
 )
 from .tone_plan import load_active_speaker_preset
 from .test_signal_plan import protective_tweeter_highpass_frequency_hz
@@ -1565,7 +1565,7 @@ def _build_active_commissioning_context(
             ),
         ))
 
-    resolved_playback_device, playback_device_source = resolve_diagnostic_playback_device(
+    resolved_playback_device, playback_device_source = resolve_active_playback_device(
         topology,
         playback_device=playback_device,
     )

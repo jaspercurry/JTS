@@ -1000,11 +1000,8 @@ select_audio_hardware_roles() {
     fi
     echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
     echo "  Output DAC id: ${OUTPUT_DAC_ID}"
-    if [[ -n "${OUTPUT_DAC_ROUTE:-}" ]]; then
-        echo "  Output DAC route: $(jasper_asound_log_token "${OUTPUT_DAC_ROUTE}")"
-    fi
     export DONGLE_CARD APPLE_DONGLE_PRESENT APPLE_DONGLE_SERVICE_CARD
-    export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED OUTPUT_DAC_ROUTE
+    export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
 install_alsa() {

@@ -1080,13 +1080,13 @@ For anyone touching the resilience code:
   selected final-output DAC, updates JTS-owned DAC identity/asound
   state for recognized roles, writes
   `/run/jasper-output-hardware/output_hardware.json` with observed-vs-active hardware
-  facts, applies the explicit DAC8x-only `JASPER_OUTPUT_DAC_ROUTE`
-  render path when configured, and enables Apple mixer helpers only for
-  the Apple output role. A recognized role must render the managed ALSA
-  template before the reconciler publishes new active env values; if
-  rendering fails, the previous runtime env remains in place. If no
-  recognized output DAC is present, it parks `jasper-voice` and
-  `jasper-outputd` instead of leaving stale direct-DAC state active;
+  facts, renders the direct final-output `outputd_dac` path for recognized
+  hardware, and enables Apple mixer helpers only for the Apple output role.
+  A recognized role must render the managed ALSA template before the
+  reconciler publishes new active env values; if rendering fails, the
+  previous runtime env remains in place. If no recognized output DAC is
+  present, it parks `jasper-voice` and `jasper-outputd` instead of leaving
+  stale final-output state active;
   recognized DAC arrival restarts outputd when state changed and
   reset-failed+starts outputd when the arrival is value-neutral, so a
   condition-parked final-output owner recovers without a full deploy.

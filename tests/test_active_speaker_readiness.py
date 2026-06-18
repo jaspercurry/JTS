@@ -267,9 +267,8 @@ def test_playback_readiness_allows_non_tweeter_when_audio_backend_enabled() -> N
         calibration_level=calibration_level_payload(),
         startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
 
@@ -299,9 +298,8 @@ def test_playback_readiness_allows_tweeter_floor_audio_with_protection_profile()
         calibration_level=calibration_level_payload(),
         startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
 
@@ -377,9 +375,8 @@ def test_playback_readiness_reports_high_frequency_guided_readiness() -> None:
         calibration_level=calibration_level_payload(observed_mic_dbfs=-32),
         startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
 
@@ -463,9 +460,8 @@ def test_playback_readiness_requires_loaded_protected_startup_config() -> None:
         calibration_level=calibration_level_payload(),
         startup_load_state=_startup_load(loaded=False),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
     gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
@@ -489,9 +485,8 @@ def test_playback_readiness_blocks_when_camilla_config_no_longer_matches_loaded_
         calibration_level=calibration_level_payload(),
         startup_load_state=_startup_load(active_path="/tmp/active.yml"),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
 
@@ -513,9 +508,8 @@ def test_playback_readiness_blocks_when_current_camilla_path_is_unknown() -> Non
         calibration_level=calibration_level_payload(),
         startup_load_state=_startup_load(active_path="/tmp/active.yml"),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
     gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}

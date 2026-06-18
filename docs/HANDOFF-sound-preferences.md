@@ -213,38 +213,22 @@ is a small utility inside the layout step.
 The **Test each driver** card owns the guarded driver-check controls.
 The primary UI no longer refreshes the old backend checklist/grid or asks the
 user to understand environment, path-safety, staging, startup-load, or
-safe-session probes as separate steps. Instead it presents one user action at a
-time: choose the driver to test, let JTS prepare the route internally, start a
-bounded quiet tone, and say whether that named driver was heard. Driver-choice
-buttons appear after outputs are confirmed; clicking one records the normal
-software guard for any missing high-frequency outputs in the saved active graph
-and refreshes a stale no-audio crossover preview when the saved crossover
-settings can produce one. Coherent single-DAC topologies can then use a
-bounded direct-DAC diagnostic route: outputd is paused for the short test,
-the generated multi-channel WAV has only the selected output populated, and
-outputd is restarted afterwards. Outputd-owned active-lane topologies keep the
-protected staging/load/arm path. If setup fails, the card reports one
-product-level issue and confirms no sound played. The UI never asks users to
-click separate arm/stage/path controls. Stop remains a normal-sized,
-idempotent control.
-
-A prepared driver exposes **Start tone** rather than a manual volume slider.
-For outputd-owned active-lane commissioning, the browser starts one continuous
-quiet tone and asks the operator to press **I hear the tone** as soon as the
-selected driver is audible; **Wrong driver** and **Stop tone** remain visible
-beside it. Internally, `/sound/active-speaker/commission-ramp-step` still raises
-the per-driver active graph only in bounded, guarded steps over about 30 seconds,
-while the same cancellable `correction_substream` tone keeps playing. The tone
-frequency is not role-hardcoded: it is planned from the same compiled
-active-speaker preset/crossover edges and tweeter-protection policy as the graph,
-and a missing/narrow safe band blocks playback before fan-in is selected. If the
+safe-session probes as separate steps. Active 2/3-way groups present one
+commission action at a time: start a continuous quiet tone, keep **Stop tone**
+visible, and ask whether the named driver was heard. Internally,
+`/sound/active-speaker/commission-load` repairs missing software guards and
+loads the protected active graph, then
+`/sound/active-speaker/commission-ramp-step` raises only the selected driver in
+bounded guarded steps over about 30 seconds while the same cancellable tone keeps
+playing. **I hear the tone** and **Wrong driver** remain visible beside Stop;
+transient "raising" progress copy is not shown, so the card does not flap while
+audio is playing. Passive/full-range layouts render **No active driver test** and
+use the normal listening path; there is no separate direct-DAC driver test in
+the product UI. The tone frequency is planned from the compiled active-speaker
+preset/crossover edges and tweeter-protection policy, not role-hardcoded. If the
 safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
 operator to check amp gain, wiring, and DAC output mapping. The level state is
-separate from normal listening volume; the older direct-DAC diagnostic route for
-coherent single-DAC passive/full-range topologies still uses short bounded tests.
-The route still accepts mic observations when available, but a correct-driver
-operator result can prove physical routing identity without pretending the
-acoustic response is fully measured.
+separate from normal listening volume.
 
 When the operator records a correct-driver result for that same target,
 `/sound/active-speaker/driver-measurement` persists target-specific
@@ -280,14 +264,11 @@ duplicated template family: the UI offers it as an optional add-on that composes
 with the current mono/stereo draft when an unused physical output is available,
 adds a `subwoofer` group, and records it in `routing.subwoofer_group_ids`.
 The route capability in `/sound/output-topology` deliberately separates
-physical DAC outputs from the active-speaker diagnostic/apply route. A DAC8x
-topology can describe eight physical outputs, and a short direct-DAC diagnostic
-test may use that physical width for one selected driver. Durable active-profile
-apply is narrower: it is enabled only for a DAC profile that declares an
-outputd-owned active lane. Today that product apply handoff is the measured
-dual-Apple USB-C 4-channel profile, not HiFiBerry DAC8x or a single Apple USB-C
-dongle. Subwoofer add-ons count as real assigned DAC outputs; a layout that
-uses the next free output needs one more lane, and a sparse assignment needs
+physical DAC outputs from the active-speaker runtime route. A DAC8x topology can
+describe eight physical outputs, but active commissioning/apply is enabled only
+for a DAC profile that declares an outputd-owned active lane wide enough for the
+assigned outputs. Subwoofer add-ons count as real assigned DAC outputs; a layout
+that uses the next free output needs one more lane, and a sparse assignment needs
 lanes up to the highest assigned output.
 Saving a speaker-layout draft is a complete topology JSON
 replacement and only runs backend validation; it does not play sound or change
@@ -314,25 +295,14 @@ visible manual settings as first-class draft input and may also preserve the
 bounded research JSON as evidence. Hidden imported values never override
 user-edited visible settings, and the draft still does not apply filters,
 reload CamillaDSP, or authorize sound.
-Choosing a confirmed driver in **Test each driver** calls the product-level
-`/sound/active-speaker/prepare-driver-test` endpoint. That endpoint first saves
-any needed software quiet guard and prepares a fresh crossover preview. If the
-diagnostic route resolves to a coherent single DAC, the selected test can use
-the direct-DAC backend: outputd is paused, one bounded test WAV is sent to the
-physical DAC with only the selected output populated, and outputd is restarted.
-If the topology resolves to a registered outputd active-speaker lane, the
-endpoint uses the protected staging/load/arm path instead. The browser does not
-expose those implementation steps as separate buttons or status grids.
-
-The audible boundary is still `/sound/active-speaker/play-tone`. It recomputes
-the driver-protection policy, requires the selected saved topology target,
-confirmed DAC output identity, calibration-level bounds, and an audible backend.
-For protected-outputd routes it also requires the safe-session/startup-load
-evidence. For direct-DAC diagnostics it still records a short safe session and
-never treats a failed stop/restart as a confirmable driver result. The saved
-topology does not make `outputd_active_content_playback` an audible test
-writer: that PCM is a daemon-owned CamillaDSP/outputd lane. Tweeter/high-
-frequency targets are not horn-specific: the backend auto-records a
+Choosing a confirmed active driver in **Test each driver** calls the commission
+route family: `commission-load`, `commission-ramp-step`,
+`commission-ramp-ack`, and `commission-ramp-abort`. The browser does not expose
+the protected staging/load/arm implementation steps as separate buttons or
+status grids. The saved topology does not make
+`outputd_active_content_playback` an audible test writer: that PCM is a
+daemon-owned CamillaDSP/outputd lane. Tweeter/high-frequency targets are not
+horn-specific: the backend auto-records a
 software-guarded bring-up request when no physical protection evidence is
 present, and the tone plan still enforces role-specific caps and high-pass
 guards.
@@ -704,5 +674,5 @@ can be diagnosed without scraping journal logs.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
 Last verified: 2026-06-17 (`/sound/` active-speaker UI rechecked after the
-continuous commission ramp tone, automatic quiet-ramp controls, direct-DAC
-diagnostic route, and removal of unused legacy public test routes.)
+continuous commission ramp tone, automatic quiet-ramp controls, and removal of
+the product direct-DAC driver-test flow.)

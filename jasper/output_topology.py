@@ -3,8 +3,7 @@
 This module is the product-grade boundary between physical DAC lanes and the
 speaker/driver roles JTS will eventually feed through CamillaDSP. It is not an
 ALSA route renderer and it has no audio side effects: no playback, no CamillaDSP
-reload, and no hardware mutation. The current DAC8x ``JASPER_OUTPUT_DAC_ROUTE``
-knob remains a narrow final-output alias; this model is where speaker groups,
+reload, and no hardware mutation. This model is where speaker groups,
 active/passive modes, subwoofers, and verified physical output ownership live.
 """
 
@@ -58,7 +57,6 @@ OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
 OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
 EXPLICIT_SOURCE = "explicit"
-DIRECT_DAC_SOURCE = "topology_direct_dac"
 MISSING_SOURCE = "missing"
 
 # The transport dispatches on clock-domain SHAPE, never a per-DAC branch:
@@ -488,7 +486,6 @@ class OutputHardware:
     device_label: str
     physical_output_count: int
     card_id: str | None = None
-    route: str | None = None
     clock_domain_id: str = "unknown"
     clock_domain_label: str = "Single output device clock"
     outputs: tuple[PhysicalOutput, ...] = field(default_factory=tuple)
@@ -544,7 +541,6 @@ class OutputHardware:
             ),
             physical_output_count=count,
             card_id=card_id,
-            route=raw.get("route") if isinstance(raw.get("route"), str) else None,
             clock_domain_id=clock_domain_id,
             clock_domain_label=_text(
                 raw.get("clock_domain_label"),
@@ -608,8 +604,6 @@ class OutputHardware:
         }
         if self.card_id:
             out["card_id"] = self.card_id
-        if self.route:
-            out["route"] = self.route
         if self.child_devices:
             out["child_devices"] = [child.to_dict() for child in self.child_devices]
         if self.clock_domain_evidence:
@@ -879,7 +873,6 @@ class OutputTopology:
         self,
         *,
         playback_device: str | None = None,
-        allow_direct_dac: bool = False,
         env: Mapping[str, str] | None = None,
     ) -> "OutputLayout":
         """Resolve the active-output route for this topology (stable identity)."""
@@ -887,7 +880,6 @@ class OutputTopology:
         return resolve_output_layout(
             self,
             playback_device=playback_device,
-            allow_direct_dac=allow_direct_dac,
             env=env,
         )
 
@@ -926,7 +918,6 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
     env = env or os.environ
     device_id = normalize_output_device_id(env.get("JASPER_AUDIO_DAC_ID"))
     card_id = env.get("JASPER_AUDIO_DAC_CARD") or None
-    route = env.get("JASPER_OUTPUT_DAC_ROUTE") or None
     output_count = _dac_physical_output_count_for(device_id) or 0
     if output_count <= 0:
         output_count = 2 if card_id else 0
@@ -938,7 +929,6 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
         device_label=device_label,
         physical_output_count=output_count,
         card_id=card_id,
-        route=route,
         clock_domain_id=default_clock_domain_id(device_id, card_id),
         clock_domain_label=default_clock_domain_label(device_id),
         outputs=default_physical_outputs(output_count),
@@ -1706,9 +1696,8 @@ class OutputLayout:
     ``OutputTopology`` on every call (never cached against a numeric card index),
     so a boot/udev topology recompute flows straight through to the resolved
     route. ``playback_device`` is where the active path hands audio off (the
-    outputd content lane, an explicit lab PCM, or a bounded direct-DAC route);
-    ``transport_plan`` is present only when a production outputd active lane
-    exists.
+    production outputd active lane or an explicit lab PCM); ``transport_plan``
+    is present only when a production outputd active lane exists.
     """
 
     device_id: str
@@ -1739,7 +1728,6 @@ def resolve_output_layout(
     topology: OutputTopology,
     *,
     playback_device: str | None = None,
-    allow_direct_dac: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> OutputLayout:
     """Resolve the active-output route for ``topology`` with stable card identity.
@@ -1751,11 +1739,7 @@ def resolve_output_layout(
     2. The production outputd active lane, when the resolved ``DacProfile``
        declares one. This is the durable path and the only one carrying an
        ``OutputTransportPlan``.
-    3. A bounded direct-DAC diagnostic route (``allow_direct_dac=True`` only),
-       keyed on stable ``hw:CARD=`` identity. This is the bypass deleted last,
-       once the production lane is hardware-verified; durable apply/staging pass
-       ``allow_direct_dac=False`` and never reach it.
-    4. Otherwise the route is missing (no width, no subwoofer support).
+    3. Otherwise the route is missing (no width, no subwoofer support).
     """
 
     env = env if env is not None else os.environ
@@ -1788,17 +1772,6 @@ def resolve_output_layout(
             transport_channel_count=profile.active_outputd_lane_channels,
             subwoofer_supported=True,
             transport_plan=_build_outputd_transport_plan(hardware, profile),
-        )
-
-    if allow_direct_dac and hardware.card_id:
-        return OutputLayout(
-            device_id=hardware.device_id,
-            card_id=hardware.card_id,
-            playback_device=stable_card_pcm(hardware.card_id),
-            playback_device_source=DIRECT_DAC_SOURCE,
-            transport_channel_count=physical_width,
-            subwoofer_supported=True,
-            transport_plan=None,
         )
 
     return OutputLayout(
