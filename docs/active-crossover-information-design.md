@@ -62,6 +62,12 @@ no-audio crossover preview. It should not hide the plan inside an AI import.
 Users can type the values directly, or they can open the optional AI helper to
 fill the same visible fields for review.
 
+Product-wise, this card is one current **working setup**, not a document
+manager. JTS may persist an internal design draft so the form survives crashes
+or page reloads, but the UI should not present "saved drivers" or "saved
+crossover settings" as user-facing records. Reserve "saved" for production
+artifacts such as the active speaker profile that can later be applied.
+
 Visible settings should include the practical starting values:
 
 - driver name/model for each role
@@ -80,15 +86,21 @@ The important distinction:
 
 The preview is a thinking artifact. It may show a useful crossover candidate
 even while the system still refuses to stage or play sound.
+Preparing a preview can update/overwrite the internal working setup first; the
+user should not have to learn a separate "save settings" step before they can
+see the no-audio plan.
 
 Good language:
 
+- "Working setup"
 - "Crossover settings"
-- "Save crossover settings"
+- "Update working setup"
 - "Use AI to fill these settings"
 - "Review notes"
-- "No filters are applied"
+- "No filters are active yet"
 - "Prepare no-audio preview"
+- "Ready to preview"
+- "Needs crossover info"
 
 Avoid:
 
@@ -96,6 +108,8 @@ Avoid:
 - making the AI JSON the only way to set crossover values
 - saving hidden imported values over user-edited visible fields
 - making the user wonder whether imported JSON filled the visible settings
+- "N saved drivers" / "N saved crossover settings"
+- "Saved crossover settings" for the working form
 
 ### 3. Confirm Outputs
 
@@ -168,7 +182,7 @@ The user does not need to understand "quiet test mode" as a separate setup
 task. Once outputs are confirmed, driver choices should be visible. Clicking
 one should record the normal software guard for any missing high-frequency
 outputs in the saved active graph, refresh any stale no-audio crossover preview
-when saved settings can produce one, then run the backend setup sequence; if
+when the working setup can produce one, then run the backend setup sequence; if
 JTS cannot get the safe audio path ready, the card should explain the
 product-level problem and confirm that no sound played. A user should not be
 asked to click "set up test mode," "prepare preview," or interpret backend
@@ -218,7 +232,7 @@ user is choosing whether to make it active. The card owns three separate user
 actions:
 
 - **Play combined test** runs a short, quiet combined-driver test from the
-  saved crossover setup.
+  prepared crossover setup.
 - **Blend sounds right** records the user's combined crossover validation; it
   must be tied to the latest audible combined test.
 - **Save active profile** writes the candidate CamillaDSP YAML and durable
@@ -249,7 +263,7 @@ Avoid:
 - The driver-info card has historically conflated LLM warnings with
   errors. Warnings should be visually amber/review-oriented; only real safety
   blockers should read as dangerous.
-- A saved design draft can be blocked because safety evidence is incomplete,
+- The internal design draft can be blocked because safety evidence is incomplete,
   even when the driver research is accepted. The UI should still allow a
   no-audio crossover preview so the user can see what JTS is thinking.
 - The copy should prefer human tasks over backend nouns:
@@ -305,4 +319,4 @@ Avoid:
   compiled for inspection, but should not be applied until the outputd handoff
   exists.
 
-Last verified: 2026-06-14
+Last verified: 2026-06-18

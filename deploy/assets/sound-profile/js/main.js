@@ -823,6 +823,195 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var value = Number(raw);
     return isFinite(value) ? value : null;
   }
+  function activeRoleLabel(role) {
+    return {
+      full_range: 'full range',
+      woofer: 'woofer',
+      mid: 'midrange',
+      tweeter: 'tweeter',
+      subwoofer: 'subwoofer'
+    }[role] || String(role || 'driver').replace(/_/g, ' ');
+  }
+  function uniqueRoleLabels(roles) {
+    var seen = {};
+    return (roles || []).map(activeRoleLabel).filter(function(label) {
+      if (!label || seen[label]) return false;
+      seen[label] = true;
+      return true;
+    });
+  }
+  function roleListText(roles, options) {
+    options = options || {};
+    var labels = uniqueRoleLabels(roles);
+    if (!labels.length) return 'drivers';
+    if (labels.length === 1) return labels[0];
+    if (labels.length === 2) return labels[0] + (options.two || ' + ') + labels[1];
+    return labels.slice(0, -1).join(', ') + (options.final || ', ') +
+      labels[labels.length - 1];
+  }
+  function roleSentenceText(roles) {
+    return roleListText(roles, {two: ' and ', final: ', and '});
+  }
+  function pairRoleKey(pair) {
+    return (pair || []).map(String).sort().join(':');
+  }
+  function candidateMatchesPair(candidate, pair) {
+    return candidate && Array.isArray(candidate.between_roles) &&
+      candidate.between_roles.length === 2 &&
+      pairRoleKey(candidate.between_roles) === pairRoleKey(pair);
+  }
+  function candidateFrequency(candidate) {
+    var frequency = manualNumberValue(candidate && candidate.frequency_hz);
+    return frequency != null && frequency > 0 ? frequency : null;
+  }
+  function designDraftCandidates() {
+    var draftPayload = driverResearch.designDraft || {};
+    var manual = draftPayload.manual_settings || {};
+    var research = draftPayload.driver_research || {};
+    return []
+      .concat(Array.isArray(manual.crossover_candidates) ? manual.crossover_candidates : [])
+      .concat(Array.isArray(research.crossover_candidates) ? research.crossover_candidates : []);
+  }
+  function designDraftDrivers() {
+    var draftPayload = driverResearch.designDraft || {};
+    var manual = draftPayload.manual_settings || {};
+    var research = draftPayload.driver_research || {};
+    return []
+      .concat(Array.isArray(manual.drivers) ? manual.drivers : [])
+      .concat(Array.isArray(research.drivers) ? research.drivers : []);
+  }
+  function draftCrossoverFrequency(pair) {
+    var candidates = designDraftCandidates();
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (candidateMatchesPair(candidates[i], pair)) {
+        var frequency = candidateFrequency(candidates[i]);
+        if (frequency != null) return frequency;
+      }
+    }
+    return null;
+  }
+  function currentCrossoverFrequency(pair) {
+    var crossovers = driverResearch.settings && driverResearch.settings.crossovers || {};
+    var key = crossoverSettingKey(pair);
+    var setting = crossovers[key] || {};
+    if (Object.prototype.hasOwnProperty.call(setting, 'frequency_hz')) {
+      return candidateFrequency(setting);
+    }
+    return draftCrossoverFrequency(pair);
+  }
+  function driverForRole(role) {
+    var setting = driverResearch.settings && driverResearch.settings.drivers &&
+      driverResearch.settings.drivers[role] || {};
+    var drivers = designDraftDrivers();
+    var draftDriver = {};
+    for (var i = 0; i < drivers.length; i += 1) {
+      if (drivers[i] && String(drivers[i].role || '') === String(role)) {
+        draftDriver = drivers[i];
+        break;
+      }
+    }
+    return Object.assign({}, draftDriver, setting, {
+      model: String(driverResearch.inputs[role] || setting.model || draftDriver.model || '').trim()
+    });
+  }
+  function driverHasInfo(role) {
+    var driver = driverForRole(role);
+    return !!(driver.model ||
+      driver.sensitivity_db_2v83_1m != null ||
+      driver.nominal_impedance_ohm != null ||
+      driver.recommended_highpass_hz != null ||
+      driver.recommended_lowpass_hz != null ||
+      driver.do_not_test_below_hz != null ||
+      driver.gain_offset_db != null ||
+      driver.notes);
+  }
+  function driverHasSafetyNotes(role) {
+    var driver = driverForRole(role);
+    return !!(driver.recommended_highpass_hz != null ||
+      driver.recommended_lowpass_hz != null ||
+      driver.do_not_test_below_hz != null ||
+      driver.gain_offset_db != null ||
+      driver.notes);
+  }
+  function driverSafetyNoteRoles(topology) {
+    return outputRoleSummary(topology).filter(driverHasSafetyNotes);
+  }
+  function workingCrossoverSummary(topology) {
+    var pairs = activeCrossoverPairs(topology);
+    if (!pairs.length) {
+      return {
+        ready: true,
+        text: 'no active crossover point is needed for this layout'
+      };
+    }
+    var entries = [];
+    var missing = [];
+    pairs.forEach(function(pair) {
+      var frequency = currentCrossoverFrequency(pair);
+      if (frequency == null) {
+        missing.push(pair);
+        return;
+      }
+      entries.push({
+        pair: pair,
+        label: activeRoleLabel(pair[0]) + '/' + activeRoleLabel(pair[1]),
+        frequency: frequency
+      });
+    });
+    if (!entries.length) {
+      return {
+        ready: false,
+        text: 'Add crossover points before previewing the active crossover.'
+      };
+    }
+    var text = entries.length === 1 && pairs.length === 1
+      ? 'crossover ' + fmtFreq(entries[0].frequency)
+      : 'Crossovers: ' + entries.map(function(entry) {
+        return entry.label + ' ' + fmtFreq(entry.frequency);
+      }).join(', ');
+    if (missing.length) {
+      text += '. Add the remaining crossover point before previewing the active crossover.';
+    }
+    return {ready: !missing.length, text: text};
+  }
+  function workingSetupSummary(topology) {
+    if (!topology || !outputGroups(topology).length) {
+      return 'Choose a speaker layout to start the working setup. No filters are active yet.';
+    }
+    var roles = outputRoleSummary(topology);
+    var crossover = workingCrossoverSummary(topology);
+    var text = 'Working setup: ' + roleListText(roles);
+    if (crossover.text.indexOf('Crossovers:') === 0 ||
+        crossover.text.charAt(crossover.text.length - 1) === '.') {
+      text += '. ' + crossover.text;
+    } else {
+      text += ', ' + crossover.text + '.';
+    }
+    if (crossover.ready) text += ' No filters are active yet.';
+    return text;
+  }
+  function driverResearchHasPreviewInputs(topology) {
+    if (!topology || !outputGroups(topology).length) return false;
+    var rolesReady = outputRoleSummary(topology).every(driverHasInfo);
+    var pairs = activeCrossoverPairs(topology);
+    var crossoversReady = pairs.length > 0 && pairs.every(function(pair) {
+      return currentCrossoverFrequency(pair) != null;
+    });
+    return rolesReady && crossoversReady;
+  }
+  function driverResearchMissingPreviewMessage(topology) {
+    if (!topology || !outputGroups(topology).length) {
+      return 'Choose and save a speaker layout before previewing the active crossover.';
+    }
+    var missingDrivers = outputRoleSummary(topology).filter(function(role) {
+      return !driverHasInfo(role);
+    });
+    if (missingDrivers.length) {
+      return 'Add driver info for ' + roleSentenceText(missingDrivers) +
+        ' before previewing the active crossover.';
+    }
+    return 'Add crossover points before previewing the active crossover.';
+  }
   function setManualDriverField(role, field, value) {
     driverSetting(role)[field] = value;
     driverResearch.error = '';
@@ -1003,12 +1192,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function driverResearchCanPreparePreview() {
     var draftPayload = driverResearch.designDraft || {};
     var savedStatus = draftPayload.status || '';
-    var summary = draftPayload.summary || {};
     return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
-      (Number(summary.driver_count || 0) + Number(summary.manual_driver_count || 0)) > 0 &&
-      (Number(summary.crossover_candidate_count || 0) +
-        Number(summary.manual_crossover_candidate_count || 0)) > 0 &&
-      !driverResearch.dirty;
+      !driverResearch.dirty && driverResearchHasPreviewInputs(currentOutputTopology());
   }
   function crossoverPreviewReadyForProtectedStaging(payload) {
     payload = payload || {};
@@ -1023,16 +1208,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
       !driverResearch.dirty;
   }
-  function driverResearchSavedStatusLabel(status, summary) {
-    summary = summary || {};
-    if (status === 'ready_for_review') return 'saved settings';
-    if (status === 'needs_research') return 'saved partial settings';
-    if (status === 'blocked' && Number(summary.driver_count || 0) > 0) {
-      return 'saved driver info';
+  function driverResearchWorkingStatusLabel(status) {
+    if (driverResearch.dirty) return 'editing';
+    if (driverResearchHasPreviewInputs(currentOutputTopology())) return 'ready to preview';
+    if (status === 'blocked') return 'needs speaker layout';
+    if (status === 'unreadable') return 'needs review';
+    if (status === 'needs_research') return 'needs crossover info';
+    return 'working setup';
+  }
+  function driverResearchWorkingStatusClass(status) {
+    if (!driverResearch.dirty && driverResearchHasPreviewInputs(currentOutputTopology())) {
+      return ' status-pill--ready';
     }
-    if (status === 'blocked') return 'saved: needs layout';
-    if (status === 'unreadable') return 'saved draft unreadable';
-    return 'saved draft';
+    if (status === 'blocked' || status === 'unreadable') return ' status-pill--blocked';
+    return '';
   }
   function ingestDesignDraft(payload, options) {
     options = options || {};
@@ -1447,26 +1636,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     options = options || {};
     var saved = driverResearch.designDraft || {};
     var savedStatus = saved.status || '';
-    var savedSummary = saved.summary || {};
-    var savedHtml = savedStatus && savedStatus !== 'not_saved' ? (
+    var topology = currentOutputTopology();
+    var safetyRoles = driverSafetyNoteRoles(topology);
+    var savedHtml =
       '<div class="driver-research__summary driver-research__summary--saved">' +
-        '<span class="status-pill' + (savedStatus === 'ready_for_review' ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(driverResearchSavedStatusLabel(savedStatus, savedSummary)) + '</span>' +
-        '<p class="setting-row__hint">' + escapeHtml(
-          String(Number(savedSummary.driver_count || 0) + Number(savedSummary.manual_driver_count || 0)) +
-          ' saved driver' +
-          ((Number(savedSummary.driver_count || 0) + Number(savedSummary.manual_driver_count || 0)) === 1 ? '' : 's') +
-          ', ' + String(
-            Number(savedSummary.crossover_candidate_count || 0) +
-            Number(savedSummary.manual_crossover_candidate_count || 0)
-          ) +
-          ' crossover setting' +
-          ((Number(savedSummary.crossover_candidate_count || 0) +
-            Number(savedSummary.manual_crossover_candidate_count || 0)) === 1 ? '' : 's') +
-          '. No filters are applied.'
-        ) + '</p>' +
-      '</div>'
-    ) : '';
+        '<span class="status-pill' + driverResearchWorkingStatusClass(savedStatus) + '">' +
+          escapeHtml(driverResearchWorkingStatusLabel(savedStatus)) + '</span>' +
+        '<p class="setting-row__hint">' + escapeHtml(workingSetupSummary(topology)) + '</p>' +
+        (safetyRoles.length ? '<p class="setting-row__hint">' + escapeHtml(
+          'Driver safety notes captured for ' + roleSentenceText(safetyRoles) + '.'
+        ) + '</p>' : '') +
+      '</div>';
     if (driverResearch.error) {
       return savedHtml +
         '<p class="setting-row__hint driver-research__error">' +
@@ -1479,11 +1659,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     var summary = driverResearch.parsed;
     return savedHtml + '<div class="driver-research__summary">' +
-      '<span class="status-pill status-pill--ready">import parsed</span>' +
+      '<span class="status-pill status-pill--ready">import ready</span>' +
       '<p class="setting-row__hint">' + escapeHtml(
-        summary.driverCount + ' driver' + (summary.driverCount === 1 ? '' : 's') +
-        ', ' + summary.candidateCount + ' crossover candidate' + (summary.candidateCount === 1 ? '' : 's') +
-        '. Roles: ' + summary.roles.join(', ')
+        'Imported driver notes for ' + roleSentenceText(summary.roles) +
+        '. Review them before updating the working setup.'
       ) + '</p>' +
       (summary.warnings.length ? '<div class="driver-research__notes">' +
         '<p class="setting-row__title">Review notes</p>' +
@@ -1598,7 +1777,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var saveDisabled = driverResearch.saving || outputTopology.dirty ||
       !currentOutputTopology();
     return '<div class="output-card output-card--driver-research">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Crossover settings</p>' +
+      '<div class="output-card__head"><div><p class="output-card__title">Working setup</p>' +
         '<p class="setting-row__hint">Enter the values JTS should use for the no-audio crossover preview. The AI helper below can fill these in for review.</p></div></div>' +
       '<div class="driver-research__section">' +
         '<p class="setting-row__title">Drivers</p>' +
@@ -1616,7 +1795,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="driver-research__actions driver-research__actions--save">' +
         '<button type="button" class="btn btn--primary" data-act="save-driver-design"' +
           (saveDisabled ? ' disabled' : '') + '>' +
-          escapeHtml(driverResearch.saving ? 'Saving' : 'Save crossover settings') +
+          escapeHtml(driverResearch.saving ? 'Updating' : 'Update working setup') +
         '</button>' +
       '</div>' +
       '<div class="driver-research__saved-summary">' + renderDriverResearchSummary({savedOnly: true}) + '</div>' +
@@ -1698,16 +1877,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var readyCount = crossoverPreviewReadyCount(payload);
     var warningIssues = crossoverPreviewReviewIssues(payload.issues);
     var laterSafetyCount = Math.max(0, Number(summary.blocker_count || 0));
-    var hasSavedResearch = driverResearchCanPreparePreview();
-    var canPrepare = hasSavedResearch && !outputTopology.dirty;
+    var topology = currentOutputTopology();
+    var hasPreviewInputs = driverResearchHasPreviewInputs(topology);
+    var canPrepare = hasPreviewInputs && !outputTopology.dirty && !driverResearch.saving;
     var disabled = crossoverPreview.preparing || !canPrepare;
     var hint = canPrepare ?
-      'Builds the crossover plan from your saved settings. No sound plays.' :
-      (outputTopology.dirty
+      'Updates the working setup, then builds a no-audio crossover preview.' :
+      (driverResearch.saving
+        ? 'Working setup is updating before the preview.'
+        : (outputTopology.dirty
         ? 'Save the speaker layout before preparing a crossover preview.'
-        : (hasSavedResearch
-          ? 'Save the latest crossover setting edits before preparing a preview.'
-          : 'Save crossover settings before preparing a preview.'));
+        : driverResearchMissingPreviewMessage(topology)));
     if (crossoverPreview.error) hint = crossoverPreview.error;
     return '<div class="output-card output-card--crossover-preview">' +
       '<div class="output-card__head"><div><p class="output-card__title">Crossover preview</p>' +
@@ -1715,9 +1895,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="status-pill' + previewStatusClass(label) + '">' + escapeHtml(label) + '</span></div>' +
       renderCrossoverPreviewRows(payload) +
       '<p class="setting-row__hint">' + escapeHtml(
-        String(readyCount) + ' crossover candidate' + (readyCount === 1 ? '' : 's') +
-        ', ' + String(warningIssues.length) + ' review note' +
-        (warningIssues.length === 1 ? '' : 's') + '. No filters are applied.' +
+        (readyCount > 0 ? 'Ready to preview ' + String(readyCount) +
+        ' crossover split' + (readyCount === 1 ? '' : 's') + '. ' :
+        'Needs crossover info. ') +
+        String(warningIssues.length) + ' review note' +
+        (warningIssues.length === 1 ? '' : 's') + '. No filters are active yet.' +
         (laterSafetyCount ? ' JTS still checks the setup before any sound.' : '')
       ) + '</p>' +
       renderPreviewIssues(warningIssues) +
@@ -1746,7 +1928,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }
     var evaluation = outputEvaluation(topology);
-    var layoutStatusValue = outputTopology.dirty ? 'draft' : 'saved draft';
+    var layoutStatusValue = outputTopology.dirty ? 'draft' : 'layout ready';
     // Active 2/3-way groups commission through the protected crossover/limiter
     // graph; passive/full-range groups use the normal listening path.
     var safetyActive = !!activeCommissionGroup(topology);
@@ -1767,7 +1949,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       renderOutputStepCard(
         'research',
         'Add driver and crossover info',
-        'Enter the starting crossover settings. The AI helper is optional.',
+        'Enter the driver info and starting crossover points. The AI helper is optional.',
         topology,
         renderDriverResearchCard(topology) +
           renderCrossoverPreviewCard(),
@@ -2080,7 +2262,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var hint = hasAudibleTest ?
         'After the combined test, record whether the drivers blend.' :
         (canRecord ?
-          'Run the combined speaker test first. It uses the saved crossover setup and starts at the quiet test level.' :
+          'Run the combined speaker test first. It uses the prepared crossover setup and starts at the quiet test level.' :
           'Measure each driver first, then test the combined speaker.');
       return '<div class="active-speaker-validation__group">' +
         '<div class="row-between">' +
@@ -2155,7 +2337,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
-        '<p class="setting-row__hint">Your active speaker profile, built from the saved crossover and driver checks.</p></div>' +
+        '<p class="setting-row__hint">Your active speaker profile, built from the measured crossover and driver checks.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
       body +
@@ -3377,7 +3559,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       applyDriverResearchToManualSettings(payload);
       driverResearch.error = '';
       driverResearch.dirty = true;
-      status('Imported driver research. Review the visible crossover settings before saving.');
+      status('Imported driver research. Review the visible values before updating the working setup.');
     } catch (e) {
       driverResearch.parsed = null;
       driverResearch.error = e.message;
@@ -3390,17 +3572,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
       outputStepOverride = options.nextStep;
       status(driverResearchCanPreparePreview() ?
-        'Crossover settings are already saved. Continue with output mapping.' :
+        'Working setup is already current. Continue with output mapping.' :
         'Driver details are optional for now. Continue with output mapping.');
       render();
       return true;
     }
     if (outputTopology.dirty) {
-      status('Save the speaker layout before saving crossover settings.', true);
+      status('Save the speaker layout before updating the working setup.', true);
       return false;
     }
     if (!currentOutputTopology()) {
-      status('Load output hardware before saving a speaker design draft.', true);
+      status('Load output hardware before updating the working setup.', true);
       return false;
     }
     var manualPayload = manualSettingsPayload(currentOutputTopology());
@@ -3444,26 +3626,39 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
-      status(importWarning
-        ? 'Saved visible crossover settings. Imported JSON was not saved.'
-        : 'Saved crossover settings. No filters were applied and no sound was played.');
+      if (!options.forPreview) {
+        status(importWarning
+          ? 'Working setup updated from visible fields. Imported JSON was not saved.'
+          : 'Working setup updated. No filters are active and no sound was played.');
+      }
       render();
       return true;
     } catch (e) {
       driverResearch.saving = false;
       driverResearch.error = e.message;
-      status('Could not save speaker design draft: ' + e.message, true);
+      status('Could not update working setup: ' + e.message, true);
       render();
       return false;
     }
   }
   async function prepareCrossoverPreview() {
+    if (driverResearch.saving) {
+      status('Working setup is still updating. Try the preview again in a moment.');
+      return false;
+    }
     if (outputTopology.dirty) {
       status('Save the speaker layout before preparing the crossover preview.', true);
       return false;
     }
+    if (!driverResearchHasPreviewInputs(currentOutputTopology())) {
+      status(driverResearchMissingPreviewMessage(currentOutputTopology()), true);
+      return false;
+    }
+    if (driverResearch.dirty || !driverResearchStepSatisfied()) {
+      if (!await saveDriverResearchDraft({forPreview: true})) return false;
+    }
     if (!driverResearchCanPreparePreview()) {
-      status('Save crossover settings before preparing the preview.', true);
+      status(driverResearchMissingPreviewMessage(currentOutputTopology()), true);
       return false;
     }
     crossoverPreview.preparing = true;
@@ -3478,7 +3673,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
       ingestCrossoverPreview(payload);
-      status('Crossover preview ready. No filters were applied and no sound was played.');
+      status('Crossover preview ready. No filters are active and no sound was played.');
       render();
       return true;
     } catch (e) {
@@ -3632,7 +3827,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (!await jtsConfirm(
       'Play a short quiet combined test for "' + label +
-        '"? JTS uses the saved crossover and the same bounded test level.',
+        '"? JTS uses the prepared crossover and the same bounded test level.',
       {danger: true}
     )) {
       return;

@@ -287,7 +287,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"refresh-active-speaker\"" not in js
     assert "data-act=\"save-driver-design\"" in js
     assert "data-act=\"prepare-crossover-preview\"" in js
-    assert "Save crossover settings" in js
+    assert "Update working setup" in js
     assert "Prepare crossover preview" in js
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "function driverResearchCanPreparePreview()" in js
@@ -297,8 +297,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
         _ACTIVE_SPEAKER_UI_MODULE.read_text()
     )
     assert "Driver details are optional for now. Continue with output mapping." in js
-    assert "saved driver info" in js
-    assert "Builds the crossover plan from your saved settings. No sound plays." in js
+    assert "Working setup updated. No filters are active and no sound was played." in js
+    assert "Updates the working setup, then builds a no-audio crossover preview." in js
     assert "data-act=\"arm-active-speaker\"" not in js
     assert "data-act=\"stage-active-config\"" not in js
     assert "data-act=\"check-active-path-safety\"" not in js
@@ -488,11 +488,21 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
     assert "This driver can’t be tested yet — finish the earlier setup steps first." in helper_js
 
     # The new consumer copy is present and stable.
-    assert "Builds the crossover plan from your saved settings. No sound plays." in js
+    assert "Updates the working setup, then builds a no-audio crossover preview." in js
     assert "Save the measured crossover as your active speaker profile. No sound plays." in js
-    assert "Your active speaker profile, built from the saved crossover and driver checks." in js
+    assert "Your active speaker profile, built from the measured crossover and driver checks." in js
     assert "Your active speaker profile is saved. Apply it to start using it." in js
     assert "Sounds hollow or thin" in js
+    for confusing_copy in (
+        "saved drivers",
+        "saved crossover settings",
+        "Save crossover settings",
+        "Saved crossover settings",
+        "saved driver info",
+        "saved partial settings",
+        "Builds the crossover plan from your saved settings",
+    ):
+        assert confusing_copy not in js
 
     # The pure vocabulary module owns the no-sound fallbacks and stays actionable.
     assert "Choose the driver again to try." in helper_js
