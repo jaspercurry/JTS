@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+event_name="${GITHUB_EVENT_NAME:-}"
+base_ref="${GITHUB_BASE_REF:-main}"
+output_file="${GITHUB_OUTPUT:-}"
+
+run="true"
+reason="non-PR event runs the full Rust gate"
+changed_file_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-rust-ci-files.XXXXXX")"
+cleanup() {
+  rm -f "${changed_file_tmp}"
+}
+trap cleanup EXIT
+
+if [[ "${event_name}" == "pull_request" ]]; then
+  diff_known="false"
+  git fetch --no-tags --depth=1 origin \
+    "${base_ref}:refs/remotes/origin/${base_ref}" >/dev/null 2>&1 || true
+  if git rev-parse --verify "origin/${base_ref}" >/dev/null 2>&1; then
+    git diff --name-only --diff-filter=ACMR "origin/${base_ref}" HEAD \
+      > "${changed_file_tmp}"
+    diff_known="true"
+  elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+    git diff --name-only --diff-filter=ACMR HEAD^ HEAD > "${changed_file_tmp}"
+    diff_known="true"
+  else
+    run="true"
+    reason="could not compute PR diff; running full Rust gate conservatively"
+    : > "${changed_file_tmp}"
+  fi
+
+  if [[ "${diff_known}" == "true" ]]; then
+    run="false"
+    reason="PR does not touch Rust or Rust deploy/CI surfaces"
+  fi
+
+  while IFS= read -r path; do
+    case "${path}" in
+      rust/*|deploy/install.sh|deploy/systemd/jasper-fanin.service|\
+      deploy/systemd/jasper-outputd.service|.github/workflows/tests.yml|\
+      scripts/rust-ci-needed)
+        run="true"
+        reason="PR touches ${path}"
+        break
+        ;;
+    esac
+  done < "${changed_file_tmp}"
+fi
+
+echo "run=${run}"
+echo "reason=${reason}"
+
+if [[ -n "${output_file}" ]]; then
+  {
+    echo "run=${run}"
+    echo "reason=${reason}"
+  } >> "${output_file}"
+fi

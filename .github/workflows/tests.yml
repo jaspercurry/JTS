@@ -129,7 +129,7 @@ jobs:
         # for a serial 6k-test run. Keep the worker count explicit; `-n auto`
         # can over-fan-out on larger machines and make socket/subprocess-heavy
         # tests noisier than the fixed 4-worker gate we validated locally.
-        run: pytest -q --tb=short --ignore=tests/voice_eval -n 4
+        run: scripts/test-merge
 
   js:
     runs-on: ubuntu-latest
@@ -157,14 +157,15 @@ jobs:
 
   rust:
     # CI compiles AND tests the Rust audio daemons — the pytest job above
-    # does not. Without this, a dependency bump (e.g. the `alsa` crate used
-    # by jasper-fanin/jasper-outputd) that breaks the build passes CI green
-    # and only fails at deploy-time `cargo build` on the Pi, and a logic
-    # regression in the output/loudness path goes uncaught. Mirrors
-    # install.sh's build (`cargo build --release --locked`) and runs each
-    # crate's hardware-free unit tests. Uses the runner's preinstalled
-    # stable cargo (Trixie ships rustc 1.85; ubuntu-latest is well above
-    # that). This is a required check on main alongside `pytest`.
+    # does not. The job name is required by branch protection, so PRs that
+    # do not touch Rust-relevant surfaces still run this job and exit green
+    # quickly after scripts/rust-ci-needed. Rust-relevant PRs and every
+    # push to main run the full Cargo gate. Without this, a dependency bump
+    # (e.g. the `alsa` crate used by jasper-fanin/jasper-outputd) that
+    # breaks the build passes CI green and only fails at deploy-time
+    # `cargo build` on the Pi, and a logic regression in the output/
+    # loudness path goes uncaught. Mirrors install.sh's release build
+    # profile and runs each crate's hardware-free unit tests.
     #
     # History: enabling this gate first surfaced 3 stale jasper-outputd
     # tests (assistant-gain clamp + loudness) that had been red since the
@@ -177,12 +178,22 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      - name: Decide whether Rust gate is needed
+        id: rust-needed
+        run: scripts/rust-ci-needed
+
+      - name: Skip Rust gate when unrelated
+        if: steps.rust-needed.outputs.run != 'true'
+        run: echo "${{ steps.rust-needed.outputs.reason }}"
+
       - name: System deps for the ALSA crate
+        if: steps.rust-needed.outputs.run == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        if: steps.rust-needed.outputs.run == 'true'
         with:
           workspaces: |
             rust/jasper-fanin
@@ -191,18 +202,22 @@ jobs:
             rust/jasper-tts-protocol
 
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
+        if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-tts-protocol
         run: cargo test --release --locked
 
       - name: jasper-fanin — build + test (release, locked; mirrors install.sh)
+        if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-fanin
         run: cargo test --release --locked
 
       - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
+        if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
         run: cargo test --release --locked
 
       - name: jasper-dual-dac-lab — build + test (release, locked)
+        if: steps.rust-needed.outputs.run == 'true'
         # Lab-only crate: install.sh does NOT build it, so this step is
         # its only rot gate. Without it, a shared-dependency bump (the
         # same `alsa` crate the production daemons pin) can silently
