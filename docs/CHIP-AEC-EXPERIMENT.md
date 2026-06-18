@@ -1053,9 +1053,10 @@ drift with the same direct-fanout harness that produced the ~1 ppm
 Apple-DAC figure. Also watch for the *delay-stability* failure mode
 (Step 2.2), not just rate:
 ```sh
-journalctl -u jasper-outputd | grep -E 'chip_ref.(queue_full|xrun|write_failed)'
+curl -s http://jts.local:8780/state | jq '.outputd.reference_outputs.chip_ref_writer'
+journalctl -u jasper-outputd | grep -E 'chip_ref.(queue_full|write_failed)'
 ```
-- **≤~1 ppm + clean chip-ref log** ⇒ the domains are effectively
+- **≤~1 ppm + clean chip-ref state/log** ⇒ the domains are effectively
   coherent; chip-AEC is viable as-is. (Given the shared crystal, this
   is the *expected* outcome — but confirm it.)
 - **tens of ppm, or steady drops/underruns, or a slowly-wandering

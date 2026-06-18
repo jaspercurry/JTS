@@ -353,7 +353,7 @@ def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     # The wide path folds; the 2ch path stays byte-identical (publishes content).
     assert "fold_reference(&content_buf, content_channels, &mut reference_buf);" in main_rs
     assert "fold_reference_pairwise_composite(&content_buf, &mut reference_buf);" in main_rs
-    assert "ref_outputs.publish(&content_buf);" in main_rs
+    assert "ref_outputs.publish(&content_buf, next_reference_sequence);" in main_rs
 
 
 def test_outputd_dual_apple_zero_frame_active_read_silences_period():
@@ -442,7 +442,9 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     # Width-2 (byte-identical) branch publishes the content directly; the wide
     # sink folds to a stereo reference first. Either way the publish follows the
     # DAC write (inv-A) and precedes the period mark.
-    publish = run_alsa.index("ref_outputs.publish(&content_buf);")
+    publish = run_alsa.index(
+        "ref_outputs.publish(&content_buf, next_reference_sequence);"
+    )
     composite_fold = run_alsa.index(
         "fold_reference_pairwise_composite(&content_buf, &mut reference_buf);"
     )
@@ -464,12 +466,34 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     prepare = run_alsa.index("core.prepare_period_with_content(&content_buf);")
     tts_write = run_alsa.index("sink.write_period(core.output_period())?;")
     commit = run_alsa.index("core.commit_prepared_period_with_dac_delay(")
-    tts_publish = run_alsa.index("ref_outputs.publish(core.output_period());")
+    tts_publish = run_alsa.index(
+        "ref_outputs.publish(core.output_period(), reference_sequence);"
+    )
     tts_state = run_alsa.index(
         "state.mark_period(sink.counters(), reference_sequence, report.clipped_samples);"
     )
     assert content_read < duck < prepare < tts_write < commit < tts_publish
     assert tts_publish < tts_state
+
+
+def test_outputd_chip_ref_tee_is_diagnostic_only_and_env_gated():
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
+    state_rs = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
+    run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
+    writer = main_rs.split("fn run_chip_ref_writer(", 1)[1].split(
+        "fn write_playback_period(",
+        1,
+    )[0]
+
+    assert "JASPER_OUTPUTD_CHIP_REF_TEE_PATH" in config_rs
+    assert "chip_ref_tee_path: env_optional(" in config_rs
+    assert "write_chip_ref_tee(&mut tee, &packet.samples, state);" in writer
+    assert "write_chip_ref_tee" not in run_alsa
+    assert "diagnostic_tee_path" in state_rs
+    assert "diagnostic_tee_active" in state_rs
+    assert "diagnostic_tee_open_error_count" in state_rs
+    assert "mark_chip_ref_tee_open_error" in main_rs
 
 
 def test_outputd_ready_is_after_alsa_output_is_primed_and_started():

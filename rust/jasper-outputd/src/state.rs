@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const NEVER_MS: u64 = u64::MAX;
+const OPTIONAL_U64_NONE: u64 = u64::MAX;
 
 pub struct OutputdState {
     started_at: Instant,
@@ -39,6 +40,7 @@ pub struct OutputdState {
     dual_delay_delta_error_frames: AtomicI64,
     dual_max_delay_delta_frames: AtomicI64,
     chip_ref_pcm: Option<String>,
+    chip_ref_diagnostic_tee_path: Option<String>,
     reference_udp_target: Option<String>,
     sample_rate: AtomicU64,
     content_period_frames: AtomicU64,
@@ -78,6 +80,25 @@ pub struct OutputdState {
     chip_ref_sample_rate: AtomicU64,
     chip_ref_period_frames: AtomicU64,
     chip_ref_buffer_frames: AtomicU64,
+    dac_snd_pcm_delay_frames: AtomicU64,
+    dac_snd_pcm_delay_sample_ms: AtomicU64,
+    chip_ref_queue_depth_periods: AtomicU64,
+    chip_ref_queued_frames: AtomicU64,
+    chip_ref_frames_written: AtomicU64,
+    chip_ref_snd_pcm_delay_frames: AtomicU64,
+    chip_ref_snd_pcm_delay_sample_ms: AtomicU64,
+    chip_ref_write_underrun_count: AtomicU64,
+    chip_ref_write_xrun_count: AtomicU64,
+    chip_ref_write_recovery_count: AtomicU64,
+    chip_ref_write_error_count: AtomicU64,
+    chip_ref_dropped_full_periods: AtomicU64,
+    chip_ref_dropped_disconnected_periods: AtomicU64,
+    chip_ref_last_write_ms: AtomicU64,
+    chip_ref_last_enqueued_reference_sequence: AtomicU64,
+    chip_ref_last_written_reference_sequence: AtomicU64,
+    chip_ref_tee_active: AtomicBool,
+    chip_ref_tee_open_error_count: AtomicU64,
+    chip_ref_tee_write_error_count: AtomicU64,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
     content_partial_period_count: AtomicU64,
@@ -114,6 +135,7 @@ impl OutputdState {
             dual_delay_delta_error_frames: AtomicI64::new(pack_optional_i64(None)),
             dual_max_delay_delta_frames: AtomicI64::new(config.dual_max_delay_delta_frames),
             chip_ref_pcm: config.chip_ref_pcm.clone(),
+            chip_ref_diagnostic_tee_path: config.chip_ref_tee_path.clone(),
             reference_udp_target: config.reference_udp_target.clone(),
             sample_rate: AtomicU64::new(config.sample_rate as u64),
             content_period_frames: AtomicU64::new(config.period_frames as u64),
@@ -155,6 +177,25 @@ impl OutputdState {
             chip_ref_sample_rate: AtomicU64::new(config.chip_ref_sample_rate as u64),
             chip_ref_period_frames: AtomicU64::new(config.chip_ref_period_frames as u64),
             chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
+            dac_snd_pcm_delay_frames: AtomicU64::new(OPTIONAL_U64_NONE),
+            dac_snd_pcm_delay_sample_ms: AtomicU64::new(NEVER_MS),
+            chip_ref_queue_depth_periods: AtomicU64::new(0),
+            chip_ref_queued_frames: AtomicU64::new(0),
+            chip_ref_frames_written: AtomicU64::new(0),
+            chip_ref_snd_pcm_delay_frames: AtomicU64::new(OPTIONAL_U64_NONE),
+            chip_ref_snd_pcm_delay_sample_ms: AtomicU64::new(NEVER_MS),
+            chip_ref_write_underrun_count: AtomicU64::new(0),
+            chip_ref_write_xrun_count: AtomicU64::new(0),
+            chip_ref_write_recovery_count: AtomicU64::new(0),
+            chip_ref_write_error_count: AtomicU64::new(0),
+            chip_ref_dropped_full_periods: AtomicU64::new(0),
+            chip_ref_dropped_disconnected_periods: AtomicU64::new(0),
+            chip_ref_last_write_ms: AtomicU64::new(NEVER_MS),
+            chip_ref_last_enqueued_reference_sequence: AtomicU64::new(OPTIONAL_U64_NONE),
+            chip_ref_last_written_reference_sequence: AtomicU64::new(OPTIONAL_U64_NONE),
+            chip_ref_tee_active: AtomicBool::new(false),
+            chip_ref_tee_open_error_count: AtomicU64::new(0),
+            chip_ref_tee_write_error_count: AtomicU64::new(0),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
             content_partial_period_count: AtomicU64::new(0),
@@ -246,6 +287,101 @@ impl OutputdState {
             .store(status.max_delay_delta_frames, Ordering::Relaxed);
     }
 
+    pub fn mark_dac_delay(&self, delay_frames: u64) {
+        self.dac_snd_pcm_delay_frames
+            .store(delay_frames, Ordering::Relaxed);
+        self.dac_snd_pcm_delay_sample_ms
+            .store(self.uptime_ms(), Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_queue_admitted(&self, frames: u64) {
+        self.chip_ref_queue_depth_periods
+            .fetch_add(1, Ordering::Relaxed);
+        self.chip_ref_queued_frames
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_enqueued(&self, reference_sequence: u64) {
+        self.chip_ref_last_enqueued_reference_sequence
+            .store(reference_sequence, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_dequeued(&self, frames: u64) {
+        subtract_saturating(&self.chip_ref_queue_depth_periods, 1);
+        subtract_saturating(&self.chip_ref_queued_frames, frames);
+    }
+
+    pub fn mark_chip_ref_dropped_full(&self) {
+        self.chip_ref_dropped_full_periods
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_dropped_disconnected(&self) {
+        self.chip_ref_dropped_disconnected_periods
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_write(
+        &self,
+        frames_written: u64,
+        delay_frames: Option<u64>,
+        reference_sequence: Option<u64>,
+        underruns: u64,
+        xruns: u64,
+        recoveries: u64,
+        write_failed: bool,
+    ) {
+        if frames_written > 0 {
+            let uptime_ms = self.uptime_ms();
+            self.chip_ref_frames_written
+                .fetch_add(frames_written, Ordering::Relaxed);
+            self.chip_ref_last_write_ms
+                .store(uptime_ms, Ordering::Relaxed);
+            if let Some(sequence) = reference_sequence {
+                self.chip_ref_last_written_reference_sequence
+                    .store(sequence, Ordering::Relaxed);
+            }
+            if let Some(delay_frames) = delay_frames {
+                self.chip_ref_snd_pcm_delay_frames
+                    .store(delay_frames, Ordering::Relaxed);
+                self.chip_ref_snd_pcm_delay_sample_ms
+                    .store(uptime_ms, Ordering::Relaxed);
+            }
+        }
+        if underruns > 0 {
+            self.chip_ref_write_underrun_count
+                .fetch_add(underruns, Ordering::Relaxed);
+        }
+        if xruns > 0 {
+            self.chip_ref_write_xrun_count
+                .fetch_add(xruns, Ordering::Relaxed);
+        }
+        if recoveries > 0 {
+            self.chip_ref_write_recovery_count
+                .fetch_add(recoveries, Ordering::Relaxed);
+        }
+        if write_failed {
+            self.chip_ref_write_error_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn mark_chip_ref_tee_opened(&self) {
+        self.chip_ref_tee_active.store(true, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_tee_open_error(&self) {
+        self.chip_ref_tee_active.store(false, Ordering::Relaxed);
+        self.chip_ref_tee_open_error_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_tee_write_error(&self) {
+        self.chip_ref_tee_active.store(false, Ordering::Relaxed);
+        self.chip_ref_tee_write_error_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn mark_dac_content(&self, metrics: DacContentMetrics) {
         self.dac_content_serving_fifo
             .store(metrics.serving_fifo, Ordering::Relaxed);
@@ -309,6 +445,7 @@ impl OutputdState {
     pub fn snapshot_json(&self) -> String {
         let mut buf = String::with_capacity(1024);
         let uptime_ms = self.uptime_ms();
+        let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
         let dac_xrun_count = self.dac_xrun_count.load(Ordering::Relaxed);
         buf.push('{');
@@ -623,11 +760,7 @@ impl OutputdState {
         buf.push_str(r#""dac":{"#);
         push_kv_str(&mut buf, "pcm", &self.dac_pcm);
         buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "sample_rate",
-            self.sample_rate.load(Ordering::Relaxed),
-        );
+        push_kv_u64(&mut buf, "sample_rate", sample_rate);
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -645,6 +778,26 @@ impl OutputdState {
             &mut buf,
             "frames_written",
             self.dac_frames_written.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        let dac_delay_frames =
+            unpack_optional_u64(self.dac_snd_pcm_delay_frames.load(Ordering::Relaxed));
+        push_kv_u64_opt(&mut buf, "snd_pcm_delay_frames", dac_delay_frames);
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "snd_pcm_delay_ms",
+            frames_to_ms_opt(dac_delay_frames, sample_rate),
+            3,
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            &mut buf,
+            "snd_pcm_delay_sample_age_ms",
+            event_age_ms(
+                uptime_ms,
+                self.dac_snd_pcm_delay_sample_ms.load(Ordering::Relaxed),
+            ),
         );
         buf.push(',');
         push_kv_u64(&mut buf, "xrun_count", dac_xrun_count);
@@ -738,11 +891,7 @@ impl OutputdState {
             self.chip_ref_pcm.is_some() || self.reference_udp_target.is_some(),
         );
         buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "speaker_reference_sample_rate",
-            self.sample_rate.load(Ordering::Relaxed),
-        );
+        push_kv_u64(&mut buf, "speaker_reference_sample_rate", sample_rate);
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -769,6 +918,145 @@ impl OutputdState {
             "chip_ref_buffer_frames",
             self.chip_ref_buffer_frames.load(Ordering::Relaxed),
         );
+        buf.push(',');
+        let chip_ref_sample_rate = self.chip_ref_sample_rate.load(Ordering::Relaxed);
+        let chip_ref_delay_frames =
+            unpack_optional_u64(self.chip_ref_snd_pcm_delay_frames.load(Ordering::Relaxed));
+        let chip_ref_last_written_sequence = unpack_optional_u64(
+            self.chip_ref_last_written_reference_sequence
+                .load(Ordering::Relaxed),
+        );
+        let chip_ref_last_enqueued_sequence = unpack_optional_u64(
+            self.chip_ref_last_enqueued_reference_sequence
+                .load(Ordering::Relaxed),
+        );
+        let reference_sequence = self.reference_sequence.load(Ordering::Relaxed);
+        let chip_ref_sequence_lag = chip_ref_last_written_sequence
+            .map(|written| reference_sequence.saturating_sub(written));
+        buf.push_str(r#""chip_ref_writer":{"#);
+        push_kv_bool(&mut buf, "enabled", self.chip_ref_pcm.is_some());
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "queue_depth_periods",
+            self.chip_ref_queue_depth_periods.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "queued_frames",
+            self.chip_ref_queued_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "frames_written",
+            self.chip_ref_frames_written.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64_opt(&mut buf, "snd_pcm_delay_frames", chip_ref_delay_frames);
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "snd_pcm_delay_ms",
+            frames_to_ms_opt(chip_ref_delay_frames, chip_ref_sample_rate),
+            3,
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            &mut buf,
+            "snd_pcm_delay_sample_age_ms",
+            event_age_ms(
+                uptime_ms,
+                self.chip_ref_snd_pcm_delay_sample_ms
+                    .load(Ordering::Relaxed),
+            ),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "write_underrun_count",
+            self.chip_ref_write_underrun_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "write_xrun_count",
+            self.chip_ref_write_xrun_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "write_recovery_count",
+            self.chip_ref_write_recovery_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "write_error_count",
+            self.chip_ref_write_error_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "dropped_periods_due_to_full_queue",
+            self.chip_ref_dropped_full_periods.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "dropped_periods_due_to_disconnected_writer",
+            self.chip_ref_dropped_disconnected_periods
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            &mut buf,
+            "last_write_age_ms",
+            event_age_ms(
+                uptime_ms,
+                self.chip_ref_last_write_ms.load(Ordering::Relaxed),
+            ),
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            &mut buf,
+            "last_enqueued_reference_sequence",
+            chip_ref_last_enqueued_sequence,
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            &mut buf,
+            "last_written_reference_sequence",
+            chip_ref_last_written_sequence,
+        );
+        buf.push(',');
+        push_kv_u64_opt(&mut buf, "reference_sequence_lag", chip_ref_sequence_lag);
+        buf.push(',');
+        push_kv_str_opt(
+            &mut buf,
+            "diagnostic_tee_path",
+            self.chip_ref_diagnostic_tee_path.as_deref(),
+        );
+        buf.push(',');
+        push_kv_bool(
+            &mut buf,
+            "diagnostic_tee_active",
+            self.chip_ref_tee_active.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "diagnostic_tee_open_error_count",
+            self.chip_ref_tee_open_error_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "diagnostic_tee_write_error_count",
+            self.chip_ref_tee_write_error_count.load(Ordering::Relaxed),
+        );
+        buf.push('}');
         buf.push(',');
         push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
         buf.push('}');
@@ -945,6 +1233,16 @@ fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     buf.push_str(&format!("{:.*}", decimals, value));
 }
 
+fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
+        None => buf.push_str("null"),
+    }
+}
+
 const PACKED_I64_NONE: i64 = i64::MIN;
 
 fn pack_optional_i64(value: Option<i64>) -> i64 {
@@ -957,6 +1255,27 @@ fn unpack_optional_i64(value: i64) -> Option<i64> {
     } else {
         Some(value)
     }
+}
+
+fn unpack_optional_u64(value: u64) -> Option<u64> {
+    if value == OPTIONAL_U64_NONE {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn frames_to_ms_opt(frames: Option<u64>, sample_rate: u64) -> Option<f64> {
+    if sample_rate == 0 {
+        return None;
+    }
+    frames.map(|frames| (frames as f64) * 1000.0 / (sample_rate as f64))
+}
+
+fn subtract_saturating(value: &AtomicU64, delta: u64) {
+    let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_sub(delta))
+    });
 }
 
 fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
@@ -1026,6 +1345,7 @@ mod tests {
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,
             chip_ref_buffer_frames: 4096,
+            chip_ref_tee_path: None,
             reference_udp_target: None,
             stream_id: 1,
             control_socket_path: None,
@@ -1082,10 +1402,29 @@ mod tests {
             r#""last_xrun_age_ms":"#,
             r#""xrun_rate_per_hour":"#,
             r#""frames_written":1024"#,
+            r#""snd_pcm_delay_frames":null"#,
+            r#""snd_pcm_delay_ms":null"#,
+            r#""snd_pcm_delay_sample_age_ms":null"#,
             r#""reference_sequence":42"#,
             r#""last_period_clipped_samples":3"#,
             r#""clipped_samples":3"#,
-            r#""reference_outputs":{"speaker_reference_source":"outputd_final_electrical","speaker_reference_is_fallback":false,"speaker_reference_active":false,"speaker_reference_sample_rate":48000,"speaker_reference_channels":2,"chip_ref_pcm":null,"chip_ref_sample_rate":16000,"chip_ref_period_frames":320,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
+            r#""reference_outputs":{"speaker_reference_source":"outputd_final_electrical""#,
+            r#""chip_ref_pcm":null"#,
+            r#""chip_ref_sample_rate":16000"#,
+            r#""chip_ref_period_frames":320"#,
+            r#""chip_ref_buffer_frames":4096"#,
+            r#""chip_ref_writer":{"enabled":false"#,
+            r#""queue_depth_periods":0"#,
+            r#""queued_frames":0"#,
+            r#""dropped_periods_due_to_full_queue":0"#,
+            r#""last_enqueued_reference_sequence":null"#,
+            r#""last_written_reference_sequence":null"#,
+            r#""reference_sequence_lag":null"#,
+            r#""diagnostic_tee_path":null"#,
+            r#""diagnostic_tee_active":false"#,
+            r#""diagnostic_tee_open_error_count":0"#,
+            r#""diagnostic_tee_write_error_count":0"#,
+            r#""udp_target":null"#,
             r#""watchdog""#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
@@ -1215,6 +1554,55 @@ mod tests {
         let j = state.snapshot_json();
         assert!(j.contains(r#""last_period_clipped_samples":5"#));
         assert!(j.contains(r#""clipped_samples":7"#));
+    }
+
+    #[test]
+    fn snapshot_json_reports_dac_delay_and_chip_ref_writer_counters() {
+        let cfg = Config {
+            chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
+            chip_ref_tee_path: Some("/tmp/outputd-chip-ref.s16le".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_period(IoCounters::default(), 12, 0);
+        state.mark_dac_delay(240);
+        state.mark_chip_ref_queue_admitted(320);
+        state.mark_chip_ref_enqueued(10);
+        state.mark_chip_ref_dequeued(320);
+        state.mark_chip_ref_write(320, Some(640), Some(10), 1, 1, 1, false);
+        state.mark_chip_ref_dropped_full();
+        state.mark_chip_ref_dropped_disconnected();
+        state.mark_chip_ref_tee_open_error();
+        state.mark_chip_ref_tee_opened();
+        state.mark_chip_ref_tee_write_error();
+
+        let j = state.snapshot_json();
+        for needle in [
+            r#""snd_pcm_delay_frames":240"#,
+            r#""snd_pcm_delay_ms":5.000"#,
+            r#""chip_ref_writer":{"enabled":true"#,
+            r#""queue_depth_periods":0"#,
+            r#""queued_frames":0"#,
+            r#""frames_written":320"#,
+            r#""snd_pcm_delay_frames":640"#,
+            r#""snd_pcm_delay_ms":40.000"#,
+            r#""write_underrun_count":1"#,
+            r#""write_xrun_count":1"#,
+            r#""write_recovery_count":1"#,
+            r#""write_error_count":0"#,
+            r#""dropped_periods_due_to_full_queue":1"#,
+            r#""dropped_periods_due_to_disconnected_writer":1"#,
+            r#""last_enqueued_reference_sequence":10"#,
+            r#""last_written_reference_sequence":10"#,
+            r#""reference_sequence_lag":2"#,
+            r#""diagnostic_tee_path":"/tmp/outputd-chip-ref.s16le""#,
+            r#""diagnostic_tee_active":false"#,
+            r#""diagnostic_tee_open_error_count":1"#,
+            r#""diagnostic_tee_write_error_count":1"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+        assert!(!j.contains(r#""last_write_age_ms":null"#), "{j}");
     }
 
     #[test]

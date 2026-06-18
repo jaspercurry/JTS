@@ -152,6 +152,34 @@ def test_outputd_status_keys_match_python_consumers():
     _assert_status_contract(OUTPUTD_STATE_RS, OUTPUTD_STATUS_CONSUMERS)
 
 
+def test_outputd_status_exposes_aec_timing_observability_keys():
+    emitted = _rust_emitted_json_keys(OUTPUTD_STATE_RS)
+    for key in {
+        "snd_pcm_delay_frames",
+        "snd_pcm_delay_ms",
+        "snd_pcm_delay_sample_age_ms",
+        "chip_ref_writer",
+        "queue_depth_periods",
+        "queued_frames",
+        "frames_written",
+        "write_underrun_count",
+        "write_xrun_count",
+        "write_recovery_count",
+        "write_error_count",
+        "dropped_periods_due_to_full_queue",
+        "dropped_periods_due_to_disconnected_writer",
+        "last_write_age_ms",
+        "last_enqueued_reference_sequence",
+        "last_written_reference_sequence",
+        "reference_sequence_lag",
+        "diagnostic_tee_path",
+        "diagnostic_tee_active",
+        "diagnostic_tee_open_error_count",
+        "diagnostic_tee_write_error_count",
+    }:
+        assert key in emitted, f"outputd STATUS no longer emits {key!r}"
+
+
 def test_fanin_control_command_vocabulary_matches_mux():
     """mux drives fan-in's source gate over the UDS with a one-line text
     command. Pin the verbs on both sides, plus the error-shape key mux
