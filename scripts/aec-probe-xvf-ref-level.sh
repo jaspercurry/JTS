@@ -13,6 +13,10 @@
 # Usage:
 #   bash scripts/aec-probe-xvf-ref-level.sh
 #   PI_HOST=192.168.1.74 CHIRP_GAIN=0.18 bash scripts/aec-probe-xvf-ref-level.sh
+#
+# Tunables:
+#   CAPTURE_SECONDS=2.2
+#   PROBE_TIMEOUT_SECONDS=15
 
 set -euo pipefail
 
@@ -25,11 +29,13 @@ SEARCH_MS="${SEARCH_MS:-120}"
 CHIRP_GAIN="${CHIRP_GAIN:-0.18}"
 REF_UDP_HOST="${REF_UDP_HOST:-127.0.0.1}"
 REF_UDP_PORT="${REF_UDP_PORT:-9891}"
+PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-15}"
 
 remote_cmd=$(
-  printf 'bash -s -- %q %q %q %q %q %q %q' \
+  printf 'bash -s -- %q %q %q %q %q %q %q %q' \
     "${MIC_DEVICE}" "${MIC_CHANNELS}" "${CAPTURE_SECONDS}" \
-    "${SEARCH_MS}" "${CHIRP_GAIN}" "${REF_UDP_HOST}" "${REF_UDP_PORT}"
+    "${SEARCH_MS}" "${CHIRP_GAIN}" "${REF_UDP_HOST}" "${REF_UDP_PORT}" \
+    "${PROBE_TIMEOUT_SECONDS}"
 )
 
 ssh "${PI_USER}@${PI_HOST}" "${remote_cmd}" <<'REMOTE'
@@ -42,6 +48,7 @@ SEARCH_MS="$4"
 CHIRP_GAIN="$5"
 REF_UDP_HOST="$6"
 REF_UDP_PORT="$7"
+PROBE_TIMEOUT_SECONDS="$8"
 
 shairport_was_active=0
 nqptp_was_active=0
@@ -107,6 +114,8 @@ sudo env \
   AEC_PROBE_CHIRP_GAIN="${CHIRP_GAIN}" \
   AEC_PROBE_REF_UDP_HOST="${REF_UDP_HOST}" \
   AEC_PROBE_REF_UDP_PORT="${REF_UDP_PORT}" \
+  AEC_PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS}" \
+  timeout --kill-after=2s "${PROBE_TIMEOUT_SECONDS}s" \
   /opt/jasper/.venv/bin/python <<'PY'
 import math
 import os
@@ -128,6 +137,7 @@ search_ms = float(os.environ["AEC_PROBE_SEARCH_MS"])
 chirp_gain = float(os.environ["AEC_PROBE_CHIRP_GAIN"])
 ref_udp_host = os.environ["AEC_PROBE_REF_UDP_HOST"]
 ref_udp_port = int(os.environ["AEC_PROBE_REF_UDP_PORT"])
+probe_timeout = float(os.environ["AEC_PROBE_TIMEOUT_SECONDS"])
 
 if mic_channels <= 0:
     raise SystemExit("MIC_CHANNELS must be positive")
@@ -137,6 +147,8 @@ if search_ms <= 0:
     raise SystemExit("SEARCH_MS must be positive")
 if not (0 < chirp_gain <= 1):
     raise SystemExit("CHIRP_GAIN must be in (0, 1]")
+if probe_timeout <= cap_dur + 2.0:
+    raise SystemExit("PROBE_TIMEOUT_SECONDS must be at least CAPTURE_SECONDS + 2")
 
 def rms(arr):
     if arr.size == 0:
@@ -263,6 +275,7 @@ subprocess.run(
     ["aplay", "-D", "correction_substream", "/tmp/aec-xvf-ref-level.wav"],
     check=True,
     capture_output=True,
+    timeout=max(cap_dur + 3.0, 5.0),
 )
 mt.join()
 rt.join()
