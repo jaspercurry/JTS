@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 
-from ..tools import ToolRegistry
+from ..tools import ToolExecutor, ToolRegistry
 
 
 @dataclass
@@ -183,84 +183,65 @@ def emit(kind: str, payload: dict[str, Any] | None = None) -> None:
     trace.append(kind, payload or {})
 
 
+@dataclass(frozen=True)
+class _TracingExecutor:
+    """ToolExecutor wrapper that records calls without changing execution."""
+
+    name: str
+    executor: ToolExecutor
+
+    @property
+    def fn(self) -> Callable[..., Any]:
+        """Expose Python-callable compatibility when the wrapped executor has it."""
+        fn = getattr(self.executor, "fn", None)
+        if fn is None:
+            raise AttributeError("tool executor has no Python function")
+        return fn
+
+    async def execute(self, args: dict[str, Any]) -> Any:
+        started = time.monotonic()
+        emit("tool_call", {"name": self.name, "args": dict(args)})
+        try:
+            result = await self.executor.execute(args)
+        except Exception as e:  # noqa: BLE001
+            emit("tool_return", {
+                "name": self.name,
+                "result": None,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "error": repr(e),
+            })
+            raise
+        emit("tool_return", {
+            "name": self.name,
+            "result": result,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        })
+        return result
+
+
 def traced_registry(registry: ToolRegistry) -> ToolRegistry:
-    """Return a new `ToolRegistry` with every tool's `fn` wrapped to
-    emit `tool_call` and `tool_return` events on the active trace.
+    """Return a new `ToolRegistry` with every tool executor wrapped
+    to emit `tool_call` and `tool_return` events on the active trace.
 
     The original registry is unchanged. Production code receives the
     original; the harness receives the wrapped version. Adapter-side
-    dispatch (`tool.fn(**args)`) is unchanged — the wrapping happens
-    transparently inside the same call.
+    dispatch (`tool.executor.execute(args)`) is unchanged — the wrapping
+    happens transparently inside the same call.
 
     Safe to call when no trace is active — the wrapper's emit calls
     are no-ops in that case. So the wrapped registry can be used in
     contexts where tracing is sometimes on and sometimes off."""
-    import inspect
-
-    new = ToolRegistry()
+    new = ToolRegistry(
+        tool_packs=dict(registry.tool_packs),
+        pack_outcomes=list(registry.pack_outcomes),
+    )
     for name, tool in registry.tools.items():
-        original_fn = tool.fn
-        is_coro = inspect.iscoroutinefunction(original_fn)
-
-        def _make_wrapper(orig, coro: bool):
-            if coro:
-                async def _async_wrapper(**kwargs):
-                    started = time.monotonic()
-                    emit("tool_call", {"name": orig.__name__, "args": dict(kwargs)})
-                    try:
-                        result = await orig(**kwargs)
-                    except Exception as e:  # noqa: BLE001
-                        emit("tool_return", {
-                            "name": orig.__name__,
-                            "result": None,
-                            "elapsed_ms": int((time.monotonic() - started) * 1000),
-                            "error": repr(e),
-                        })
-                        raise
-                    emit("tool_return", {
-                        "name": orig.__name__,
-                        "result": result,
-                        "elapsed_ms": int((time.monotonic() - started) * 1000),
-                    })
-                    return result
-                _async_wrapper.__name__ = orig.__name__
-                _async_wrapper.__doc__ = orig.__doc__
-                # Preserve tool decorator markers so build_tool re-reads them.
-                for attr in ("__jasper_tool_name__", "__jasper_tool_providers__"):
-                    if hasattr(orig, attr):
-                        setattr(_async_wrapper, attr, getattr(orig, attr))
-                return _async_wrapper
-
-            def _sync_wrapper(**kwargs):
-                started = time.monotonic()
-                emit("tool_call", {"name": orig.__name__, "args": dict(kwargs)})
-                try:
-                    result = orig(**kwargs)
-                except Exception as e:  # noqa: BLE001
-                    emit("tool_return", {
-                        "name": orig.__name__,
-                        "result": None,
-                        "elapsed_ms": int((time.monotonic() - started) * 1000),
-                        "error": repr(e),
-                    })
-                    raise
-                emit("tool_return", {
-                    "name": orig.__name__,
-                    "result": result,
-                    "elapsed_ms": int((time.monotonic() - started) * 1000),
-                })
-                return result
-            _sync_wrapper.__name__ = orig.__name__
-            _sync_wrapper.__doc__ = orig.__doc__
-            for attr in ("__jasper_tool_name__", "__jasper_tool_providers__"):
-                if hasattr(orig, attr):
-                    setattr(_sync_wrapper, attr, getattr(orig, attr))
-            return _sync_wrapper
-
-        wrapper = _make_wrapper(original_fn, is_coro)
-        # Preserve every other Tool field unchanged — parameters,
-        # description, providers — only fn is swapped for the wrapper.
-        new.tools[name] = replace(tool, fn=wrapper)
+        # Preserve the ToolDefinition unchanged — parameters, description,
+        # providers — only the executor is wrapped for trace emission.
+        new.tools[name] = replace(
+            tool,
+            executor=_TracingExecutor(tool.name, tool.executor),
+        )
     return new
 
 

@@ -416,11 +416,11 @@ landed 2026-06-15.
 | Migration from older model | — | `thinkingBudget` → `thinkingLevel`; async tools unsupported; `send_client_content` for init only | — |
 
 **Tool-schema serializers** are at
-[jasper/tools/__init__.py:67-102](../jasper/tools/__init__.py). Because
-Grok is OpenAI-Realtime-compatible by design, `openai_tools()`
-serves both. Gemini gets its own shape via
-`function_declarations()`. If you add a fourth provider, the
-schema shape is the first thing to verify.
+[`jasper/tools/__init__.py`](../jasper/tools/__init__.py):
+`ToolRegistry.openai_tools()` serves OpenAI and Grok because Grok is
+OpenAI-Realtime-compatible by design. Gemini gets its own shape via
+`ToolRegistry.function_declarations()`. If you add a fourth provider,
+the schema shape is the first thing to verify.
 
 **Asymmetries worth knowing:**
 
@@ -698,8 +698,8 @@ PR as this doc (2026-05-23). Items 5-6 remain open.
 ### 1. Decide on build_tool() behavior — ✅ DONE (2026-05-23)
 
 **Path B applied.** `build_tool()` at
-[jasper/tools/__init__.py:139](../jasper/tools/__init__.py) now
-sends the full cleaned docstring to the LLM:
+[`jasper/tools/__init__.py`](../jasper/tools/__init__.py) now sends
+the full cleaned docstring to the LLM:
 
 ```python
 desc = (inspect.getdoc(fn) or "").strip() or declared
