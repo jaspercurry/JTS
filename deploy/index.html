@@ -962,7 +962,11 @@
         var audio = (data && data.audio) || {};
         var sound = audio.sound || {};
         var runtime = sound.runtime || {};
+        var airplay = (data && data.airplay_health) || {};
+        var airplayCurrent = airplay.current || {};
+        var camilla = airplayCurrent.camilla || {};
         var activePath = String(
+          camilla.config_path ||
           audio.camilla_active_config_path ||
           sound.active_config_path ||
           runtime.active_config_path ||
@@ -1117,7 +1121,7 @@
       async function pollSafetyMuted() {
         if (document.visibilityState === 'hidden') return;
         try {
-          var resp = await fetch('/state', {cache: 'no-store'});
+          var resp = await fetch('/system/data.json', {cache: 'no-store'});
           if (resp.ok) {
             setSafetyMuted(activeSpeakerSafetyMuted(await resp.json()));
           }
