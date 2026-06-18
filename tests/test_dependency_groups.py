@@ -31,6 +31,14 @@ def test_ci_installs_full_runtime_with_dev_extra() -> None:
     assert "pip install -e '.[full,dev]'" in workflow
 
 
+def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
+    """Keep the required Python merge gate fast without running paid voice-eval."""
+
+    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "pytest -q --tb=short --ignore=tests/voice_eval -n 4" in workflow
+
+
 def test_python_resolution_artifacts_are_committed_and_documented() -> None:
     """Local dev and Pi deploys intentionally use different Python
     resolution artifacts; keep both present and keep the canonical doc
