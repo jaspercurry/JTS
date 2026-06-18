@@ -90,6 +90,22 @@ def test_volume_slider_uses_touch_friendly_pointer_target() -> None:
     assert 'type="range"' not in html
 
 
+def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
+    html = _index_html()
+    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
+    script = _volume_slider_script(html)
+
+    assert 'id="volume-safety-note" hidden' in html
+    assert "Speaker output is safety-muted during active crossover setup." in html
+    assert 'href="/sound/"' in html
+    assert ".volume-wrap.safety-muted" in style
+    assert "fetch('/state', {cache: 'no-store'})" in script
+    assert "active_speaker_staged_startup\\.yml" in script
+    assert "hit.classList.toggle('safety-muted', !!muted)" in script
+    assert "volume-safety-note" in script
+    assert "disabled = true" not in script
+
+
 def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:
@@ -102,13 +118,15 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
         const posted = [];
 
         function makeElement(id) {{
-          return {{
+          const el = {{
             id,
             style: {{}},
             textContent: '',
             attrs: {{}},
+            classes: new Set(),
             listeners: {{}},
             setAttribute(name, value) {{ this.attrs[name] = String(value); }},
+            removeAttribute(name) {{ delete this.attrs[name]; }},
             getAttribute(name) {{ return this.attrs[name] || null; }},
             addEventListener(type, fn) {{
               (this.listeners[type] ||= []).push(fn);
@@ -120,6 +138,13 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
             setPointerCapture(pointerId) {{ this.captured = pointerId; }},
             releasePointerCapture(pointerId) {{ this.released = pointerId; }},
           }};
+          el.classList = {{
+            toggle(name, force) {{
+              if (force) el.classes.add(name);
+              else el.classes.delete(name);
+            }},
+          }};
+          return el;
         }}
 
         const elements = {{

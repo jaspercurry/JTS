@@ -120,6 +120,10 @@
       user-select: none;
       -webkit-user-select: none;
     }
+    .volume-wrap.safety-muted {
+      opacity: 0.48;
+      filter: grayscale(0.55);
+    }
     .volume-fill {
       position: absolute;
       inset: 0 auto 0 0;
@@ -127,6 +131,9 @@
       background: var(--accent);
       pointer-events: none;
       transition: width 150ms ease-out;
+    }
+    .volume-wrap.safety-muted .volume-fill {
+      background: var(--muted-foreground);
     }
     .volume-ticks {
       position: absolute;
@@ -144,6 +151,17 @@
       background: var(--foreground-015);
     }
     .volume-ticks span:nth-child(odd) { height: 100%; }
+    .volume-safety-note {
+      margin: 0.55rem 0 0;
+      font-size: 0.86rem;
+      line-height: 1.35;
+      color: var(--muted-foreground);
+    }
+    .volume-safety-note a {
+      color: var(--accent-strong);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
 
     .mic-row {
       display: flex;
@@ -531,6 +549,10 @@
               <span></span>
             </div>
           </div>
+          <p class="volume-safety-note" id="volume-safety-note" hidden>
+            Speaker output is safety-muted during active crossover setup.
+            <a href="/sound/">Continue setup in Sound</a>
+          </p>
         </section>
 
         <section class="control-section" data-requires="voice_brain" hidden>
@@ -899,6 +921,7 @@
       var hit = document.getElementById('vol-control');
       var fill = document.getElementById('vol-fill');
       var percentEl = document.getElementById('vol-percent');
+      var safetyNote = document.getElementById('volume-safety-note');
       var dragging = false;
       var pending = null;
       var inFlight = false;
@@ -908,6 +931,7 @@
       var lastSentAt = 0;
       var THROTTLE_MS = 150;
       var POLL_MS = 1500;
+      var SAFETY_POLL_MS = 5000;
       var SETTLE_MS = 1500;
       // Last level the server CONFIRMED — the truth the UI falls back to
       // when a write fails, so the fill never keeps displaying a drag the
@@ -932,6 +956,29 @@
         percentEl.textContent = pct + '%';
         hit.setAttribute('aria-valuenow', String(pct));
         hit.setAttribute('aria-valuetext', pct + '%');
+      }
+
+      function activeSpeakerSafetyMuted(data) {
+        var audio = (data && data.audio) || {};
+        var sound = audio.sound || {};
+        var runtime = sound.runtime || {};
+        var activePath = String(
+          audio.camilla_active_config_path ||
+          sound.active_config_path ||
+          runtime.active_config_path ||
+          ''
+        );
+        return /(^|\/)active_speaker_staged_startup\.yml$/.test(activePath);
+      }
+
+      function setSafetyMuted(muted) {
+        hit.classList.toggle('safety-muted', !!muted);
+        if (safetyNote) safetyNote.hidden = !muted;
+        if (muted) {
+          hit.setAttribute('aria-describedby', 'volume-safety-note');
+        } else {
+          hit.removeAttribute('aria-describedby');
+        }
       }
 
       function xToPercent(clientX) {
@@ -1066,8 +1113,20 @@
         pollFails += 1;
         if (pollFails >= 3) percentEl.textContent = '\u2014';
       }
+
+      async function pollSafetyMuted() {
+        if (document.visibilityState === 'hidden') return;
+        try {
+          var resp = await fetch('/state', {cache: 'no-store'});
+          if (resp.ok) {
+            setSafetyMuted(activeSpeakerSafetyMuted(await resp.json()));
+          }
+        } catch (_) {}
+      }
       setInterval(poll, POLL_MS);
+      setInterval(pollSafetyMuted, SAFETY_POLL_MS);
       poll();
+      pollSafetyMuted();
     })();
 
     // Stereo-pair banner. While this speaker is an active bond member
