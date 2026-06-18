@@ -779,7 +779,7 @@ def test_wmo_descriptions_complete():
 def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
     """Regression for the bug where the model would answer 'when will
     it rain' with only the start time. PR #182 added the precomputed
-    next_rain_window field + tool docstring guidance, but missed
+    next_rain_window field + tool-description guidance, but missed
     updating SYSTEM_INSTRUCTION's get_weather block, which still only
     mentioned precipitation_probability + will_rain. The model
     followed the system instruction and skipped the end time.
@@ -787,16 +787,14 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
     Post-Path-B (2026-05-23 / HANDOFF-prompting.md): the system
     instruction holds only cross-tool meta-rules. Per-tool conditional
     rules (including the rain-timing routing for get_weather) live in
-    the tool's docstring and are sent to the model by build_tool() as
-    the LLM-facing description. This test pins the guidance in the
-    tool description so the regression can't slip back in."""
+    the tool's model-facing description. This test pins the guidance
+    there so the regression can't slip back in."""
     import re
     from jasper.tools.weather import make_weather_tools
-    from jasper.tools import build_tool
 
-    weather_fns = make_weather_tools(weather=object())
-    get_weather = next(fn for fn in weather_fns if fn.__name__ == "get_weather")
-    desc = build_tool(get_weather).description
+    weather_tools = make_weather_tools(weather=object())
+    get_weather = next(t for t in weather_tools if t.name == "get_weather")
+    desc = get_weather.description
     # Normalize whitespace so docstring wrapping doesn't break the
     # assertion (e.g., "BOTH\nendpoints" should still match the
     # phrase "BOTH endpoints").
