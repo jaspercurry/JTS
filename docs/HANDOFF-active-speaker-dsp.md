@@ -259,6 +259,29 @@
 > protective high-pass, startup headroom, limiter, and no-load/no-playback
 > guarantees. It does not load the config, reload CamillaDSP, emit sound, or
 > grant playback permission.
+> `jasper.active_speaker.runtime_contract` is the runtime safety boundary
+> for saved roleful topologies. `jasper.output_topology` remains the
+> declarative source of truth for which physical DAC output is a woofer,
+> midrange, tweeter, full-range driver, or subwoofer; `runtime_contract`
+> classifies that topology against candidate/running CamillaDSP YAML and is
+> the shared owner for safe fallback selection. Flat
+> `/etc/camilladsp/outputd-cutover.yml` and `/etc/camilladsp/v1.yml` are
+> normal full-range graphs only. Once the saved topology assigns any DAC
+> output to `tweeter`, any `protection_required=true` role, or a subwoofer
+> roleful output, flat full-range fallback is illegal. Deploy/install must
+> call `jasper-active-speaker runtime-safe-graph` instead of writing the
+> outputd statefile itself: unconfigured or explicit stereo full-range layouts
+> can select the flat outputd graph, while active/protected layouts must
+> preserve or select a validated all-muted active startup graph. Guarded
+> commissioning graphs may be legal for an active test session, but they are
+> not legal persisted deploy/restart fallbacks. Explicit mono full-range
+> layouts must not be driven by a wider flat stereo graph. If no legal graph
+> matches the saved topology/guard evidence, the result is fail-closed rather
+> than silently restoring flat stereo. `jasper-doctor` uses the same classifier
+> and fails when a saved tweeter/protected topology is running a flat
+> full-range graph. Correction reset/start paths ask
+> `jasper.correction.runtime_safety`, which delegates roleful graph policy back
+> to this runtime contract.
 > `jasper.active_speaker.bringup` and
 > `/sound/active-speaker/bringup-preflight` now make the product fork explicit:
 > **manual guarded bring-up** can continue without a microphone for an operator

@@ -19,6 +19,11 @@ from jasper.active_speaker.path_safety import (
 )
 from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.environment import probe_active_speaker_environment
+from jasper.active_speaker.runtime_contract import (
+    DEFAULT_FLAT_OUTPUTD_CONFIG,
+    apply_safe_graph_decision_to_statefile,
+    safe_graph_for_current_topology,
+)
 from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     build_driver_commission_load_preflight,
@@ -229,6 +234,66 @@ def _cmd_environment_probe(args: argparse.Namespace) -> int:
     else:
         _print_environment_summary(payload)
     return 0 if payload["ok_to_load_active_config"] else 1
+
+
+def _print_runtime_safe_graph_summary(
+    payload: dict[str, Any],
+    *,
+    wrote_statefile: bool,
+) -> None:
+    contract = payload["topology_contract"]
+    current = payload.get("current_graph") or {}
+    fallback = payload.get("fallback_graph") or {}
+    print(f"Runtime graph decision: {payload['status']}")
+    print(f"  reason: {payload['reason']}")
+    print(
+        "  topology: "
+        f"{contract['classification']} "
+        f"requires_roleful_graph={contract['requires_roleful_graph']}"
+    )
+    if current:
+        print(
+            "  current: "
+            f"{current.get('classification')} "
+            f"allowed={current.get('allowed')} "
+            f"path={current.get('config_path')}"
+        )
+    if fallback:
+        print(
+            "  fallback: "
+            f"{fallback.get('classification')} "
+            f"allowed={fallback.get('allowed')} "
+            f"path={fallback.get('config_path')}"
+        )
+    if payload.get("selected_config_path"):
+        print(f"  selected: {payload['selected_config_path']}")
+    print(f"  statefile written: {'yes' if wrote_statefile else 'no'}")
+    for issue in payload.get("issues") or []:
+        print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+
+
+def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
+    decision = safe_graph_for_current_topology(
+        load_output_topology(args.topology),
+        statefile_path=args.statefile,
+        current_config_path=args.current_config,
+        flat_config_path=args.flat_config,
+        staged_config=load_staged_startup_config(metadata_path=args.staged_metadata),
+    )
+    wrote = False
+    if args.write_statefile and decision.ok:
+        wrote = apply_safe_graph_decision_to_statefile(
+            decision,
+            statefile_path=args.statefile,
+        )
+    payload = decision.to_dict()
+    payload["statefile_written"] = wrote
+    payload["statefile_path"] = args.statefile
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_runtime_safe_graph_summary(payload, wrote_statefile=wrote)
+    return 0 if decision.ok else 1
 
 
 def _camilla_controller() -> Any:
@@ -655,6 +720,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     environment.add_argument("--json", action="store_true")
     environment.set_defaults(func=_cmd_environment_probe)
+
+    runtime = sub.add_parser(
+        "runtime-safe-graph",
+        help=(
+            "select the safe persisted CamillaDSP graph for the saved output "
+            "topology; optionally repair the outputd statefile"
+        ),
+    )
+    runtime.add_argument(
+        "--topology",
+        help="optional output-topology JSON path (default: JTS output topology state)",
+    )
+    runtime.add_argument(
+        "--statefile",
+        default="/var/lib/camilladsp/outputd-statefile.yml",
+        help="outputd CamillaDSP statefile to inspect/write",
+    )
+    runtime.add_argument(
+        "--current-config",
+        help="current CamillaDSP config path; when omitted, read --statefile",
+    )
+    runtime.add_argument(
+        "--flat-config",
+        default=str(DEFAULT_FLAT_OUTPUTD_CONFIG),
+        help="normal full-range outputd config path",
+    )
+    runtime.add_argument(
+        "--staged-metadata",
+        help=(
+            "active-speaker staged metadata path "
+            "(default: JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH or /var/lib/jasper)"
+        ),
+    )
+    runtime.add_argument(
+        "--write-statefile",
+        action="store_true",
+        help="write --statefile to the selected safe config path",
+    )
+    runtime.add_argument("--json", action="store_true")
+    runtime.set_defaults(func=_cmd_runtime_safe_graph)
 
     commission_load = sub.add_parser(
         "commission-load",

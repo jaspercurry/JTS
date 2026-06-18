@@ -935,7 +935,7 @@ def _locked_autolevel_session(raises_on, *, original=-20.0):
             if raises_on == "apply":
                 raise RuntimeError("CamillaDSP reload failed")
 
-        async def reset(self, set_cb):
+        async def reset(self, set_cb, **kwargs):
             if raises_on == "reset":
                 raise RuntimeError("reset reload failed")
 

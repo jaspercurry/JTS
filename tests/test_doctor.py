@@ -3504,6 +3504,89 @@ def test_check_camilla_volume_limit_registered_in_sync_checks():
     assert "check_camilla_volume_limit" in _registered_check_names()
 
 
+def test_active_speaker_runtime_graph_registered_in_sync_checks():
+    assert "check_active_speaker_runtime_graph" in _registered_check_names()
+
+
+def test_active_speaker_runtime_graph_ok_without_topology(monkeypatch, tmp_path):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_topology([]), path=topology_path)
+    config = tmp_path / "outputd-cutover.yml"
+    config.write_text(_flat_yaml(), encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "ok"
+    assert "no roleful/protected outputs" in r.detail
+
+
+def test_active_speaker_runtime_graph_fails_flat_graph_on_tweeter_topology(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _flat_yaml,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    config = tmp_path / "outputd-cutover.yml"
+    config.write_text(_flat_yaml(), encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert "DAC output 2" in r.detail
+    assert "flat full-range graph" in r.detail
+
+
+def test_active_speaker_runtime_graph_accepts_staged_active_startup(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _active_yaml,
+        _staged_metadata,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    config = tmp_path / "active_speaker_staged_startup.yml"
+    config.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text(
+        json.dumps(_staged_metadata(topology, config)),
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "ok"
+    assert "all_muted_active_startup" in r.detail
+
+
 def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
 

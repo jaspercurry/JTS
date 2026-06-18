@@ -5,6 +5,10 @@
 # jasper-outputd is the only reader of that lane and the only writer to
 # the physical DAC. The legacy/pre-outputd topology uses
 # deploy/camilladsp/v1.yml and /var/lib/camilladsp/statefile.yml.
+#
+# WARNING: This flat graph maps full-range stereo directly to DAC outputs.
+# It is illegal when saved output topology assigns any physical output to
+# tweeter/protected role.
 
 devices:
   samplerate: 48000

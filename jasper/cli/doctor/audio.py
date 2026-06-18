@@ -1503,6 +1503,61 @@ def check_camilla_volume_limit() -> CheckResult:
         f"{config_path} devices.volume_limit={limit:.1f} dB",
     )
 
+@doctor_check(order=28.5, group="audio")
+def check_active_speaker_runtime_graph() -> CheckResult:
+    """Fail closed if a roleful/protected topology is running flat stereo."""
+    from jasper.active_speaker.runtime_contract import (
+        classify_camilla_graph,
+        classify_output_contract,
+    )
+    from jasper.active_speaker.staging import load_staged_startup_config
+    from jasper.output_topology import load_output_topology
+
+    topology = load_output_topology()
+    contract = classify_output_contract(topology)
+    if not contract.requires_roleful_graph:
+        return CheckResult(
+            "active speaker runtime graph",
+            "ok",
+            f"{contract.classification}: no roleful/protected outputs configured",
+        )
+
+    statefile, config_path = _active_camilla_config_path()
+    if config_path is None:
+        return CheckResult(
+            "active speaker runtime graph",
+            "fail",
+            (
+                f"could not read config_path from {statefile}; saved topology "
+                "has roleful/protected outputs"
+            ),
+        )
+    path = Path(config_path)
+    if not path.exists():
+        return CheckResult(
+            "active speaker runtime graph",
+            "fail",
+            f"statefile points at missing config {config_path}",
+        )
+    graph = classify_camilla_graph(
+        path,
+        topology,
+        staged_config=load_staged_startup_config(),
+    )
+    if graph.allowed:
+        return CheckResult(
+            "active speaker runtime graph",
+            "ok",
+            f"{graph.classification} is legal for {contract.classification}",
+        )
+
+    detail = (
+        graph.issues[0]["message"]
+        if graph.issues
+        else "Camilla graph is unsafe for saved active speaker topology"
+    )
+    return CheckResult("active speaker runtime graph", "fail", detail)
+
 def _sound_profile_path() -> Path:
     return Path(
         os.environ.get(

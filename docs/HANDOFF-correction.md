@@ -69,9 +69,13 @@
     the top of `/correction/` reads this on load so the user knows
     what's loaded before measuring.
   - `POST /start` auto-resets CamillaDSP to
-    `/etc/camilladsp/outputd-cutover.yml` BEFORE the first sweep, so
-    every measurement traverses the raw room (not the corrected
-    pipeline).
+    `/etc/camilladsp/outputd-cutover.yml` BEFORE the first sweep only when
+    `jasper.active_speaker.runtime_contract` says that flat graph is legal
+    for the saved output topology. Ordinary full-range stereo still measures
+    the raw room (not the corrected pipeline). Saved active/protected
+    topology, or explicit mono topology that would be driven by a wider flat
+    graph, fails before sweep playback instead of loading flat stereo into an
+    unsafe physical output map.
     The prior correction descriptor is preserved in the session's
     `current_correction_at_start` for the bundle.
   - Each session writes a self-contained debug bundle at
@@ -460,9 +464,12 @@ Do not disturb these guardrails while decomposing:
   phase correction.
 - **CamillaDSP output safety.** Preserve `devices.volume_limit=0.0`
   and the outputd-safe baseline assumptions in generated configs.
-- **Flat-before-measure invariant.** `/start` must reset CamillaDSP to
-  `/etc/camilladsp/outputd-cutover.yml` before the first sweep so every
-  measurement captures the raw room through the protected baseline.
+- **Flat-before-measure invariant.** For ordinary full-range stereo,
+  `/start` must reset CamillaDSP to `/etc/camilladsp/outputd-cutover.yml`
+  before the first sweep so every measurement captures the raw room through
+  the protected baseline. For saved active/protected topology, `/start`
+  refuses flat sweeps; correction does not own roleful active-speaker
+  measurement.
 - **Task B surfaces are live.** Confidence reports, evidence packets,
   replay artifacts, FIR-runtime inspection/staging, and calibration-agent
   advisor surfaces are not dead code. Do not delete or bypass them
@@ -529,7 +536,8 @@ Mission:
   - stranded-capture watchdog
   - cuts-only correction
   - CamillaDSP `devices.volume_limit=0.0`
-  - `/start` resets to the flat outputd-safe baseline before measuring
+  - `/start` resets to the flat outputd-safe baseline before measuring only
+    when the saved topology contract permits that flat graph
   - failed/verify measurement restores `main_volume` to listening level
 
 Working rules:
@@ -729,7 +737,7 @@ POST /calibration/fetch      body: {model, serial, orientation?}; server-side
 POST /calibration/upload     body: {filename, content, model?, label?,
                              orientation?, sign_convention?}; manual fallback
 POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Reload
-POST /reset                  → SetConfig(/etc/camilladsp/outputd-cutover.yml) + Reload
+POST /reset                  → SetConfig(topology-safe reset graph) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
 POST /session/delete         delete one historical measurement bundle
 POST /test-tone              5-second 1 kHz tone through music chain
@@ -1319,12 +1327,16 @@ not before this doc lands.
    directory. The currently-loaded path is read via `CamillaController.
    get_config_file_path()` and surfaced to the UI banner via
    `parse_current_correction()`.
-7. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1):**
+7. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1; active
+   speaker safety tightened 2026-06-18):**
+   ordinary full-range stereo uses
    `set_config_file_path('/etc/camilladsp/outputd-cutover.yml')` +
-   `reload()` on current main. Also automatically invoked at the start
-   of every measurement (so sweeps capture the raw room, not the
-   corrected pipeline). Reset is also exposed from the page banner so a
-   user can clear the speaker without running a measurement.
+   `reload()` on current main. At the start of measurement this keeps
+   sweeps on the raw room, not the corrected pipeline. The reset button
+   now asks `jasper.correction.runtime_safety` for a topology-safe target:
+   flat for legal full-range layouts, all-muted active startup when a saved
+   roleful/protected topology has one, or a clear failure when no safe graph
+   exists.
 
 ## Risk register
 
@@ -1399,8 +1411,10 @@ These items can only be verified on real hardware. Deploy with
       in another shell).
 - [ ] **Audibility check**: play a familiar bass-heavy track
       before/after Apply — modal peak should audibly tighten.
-- [ ] Tap **Reset to flat** → CamillaDSP rolls back to outputd-cutover.yml
-      cleanly.
+- [ ] Tap **Reset to flat** on a normal full-range stereo topology →
+      CamillaDSP rolls back to outputd-cutover.yml cleanly. On saved
+      active/protected topology, verify the server refuses flat reset or
+      selects the staged all-muted active startup graph.
 - [ ] AEC bridge interaction (if enabled): no permanent drift after
       a measurement; bridge re-converges in ~200 ms.
 
@@ -1800,7 +1814,11 @@ pauses outputd content loudness metering instead of the retired TTS
 RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
 still apply.)
 
-Last verified: 2026-06-17 (auto-level controller ownership rechecked against
+Last verified: 2026-06-18 (topology-safe correction reset/start behavior
+rechecked against `jasper/correction/runtime_safety.py`,
+`jasper/web/correction_setup.py`, and
+`jasper.active_speaker.runtime_contract`; prior 2026-06-17 pass covered
+auto-level controller ownership rechecked against
 `jasper/correction/autolevel.py` and `jasper/correction/session.py`; stranded
 capture watchdog / reset-busy guard ownership rechecked against
 `jasper/correction/state_guard.py` and `jasper/correction/session.py`;

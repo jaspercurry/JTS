@@ -934,7 +934,9 @@ fan-in and CamillaDSP in the chain and owns "what the speaker actually
 emits." `jasper-voice` declares it as a hard `After=`/`Wants=`
 dependency; `jasper-camilla` integrates with it through a shared
 CamillaDSP statefile (`outputd-statefile.yml`, seeded from
-`outputd-cutover.yml`) rather than a systemd dependency. In solo mode,
+the active-speaker runtime contract: flat `outputd-cutover.yml` only when
+the saved output topology permits it, otherwise a matching all-muted active
+startup graph) rather than a systemd dependency. In solo mode,
 assistant TTS/cues route to fan-in's outputd-compatible local socket
 (`JASPER_TTS_TRANSPORT=outputd`,
 `JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock`,

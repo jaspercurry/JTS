@@ -26,7 +26,7 @@ Architecture (per docs/HANDOFF-correction.md):
       POST /upload-capture  body = WAV bytes, runs analysis pipeline
       POST /repeat-position optional same-seat repeat sweep
       POST /apply           write YAML, reload CamillaDSP
-      POST /reset           roll back to /etc/camilladsp/outputd-cutover.yml
+      POST /reset           roll back to the topology-safe reset graph
       POST /session/delete  delete one historical measurement bundle
 
 Why a separate service from jasper-web (Spotify + voice settings):
@@ -42,6 +42,7 @@ import asyncio
 import concurrent.futures
 import hashlib
 import html
+import inspect
 import json
 import logging
 import math
@@ -891,12 +892,18 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             sess.current_correction_at_start = None
 
         async def _reset_to_base() -> bool:
+            from jasper.correction.runtime_safety import flat_measurement_config_path
+
+            target = flat_measurement_config_path(sess.cfg.base_config_path)
             return await cam.set_config_file_path(
-                str(sess.cfg.base_config_path), best_effort=False,
+                str(target), best_effort=False,
             )
 
         try:
             reset_ok = _run_async(_reset_to_base(), timeout=5.0)
+        except RuntimeError as exc:
+            logger.exception("/start: reset to base config rejected")
+            raise RuntimeError(str(exc)) from None
         except Exception:  # noqa: BLE001
             logger.exception("/start: reset to base config failed")
             raise RuntimeError(
@@ -1540,9 +1547,24 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     }
 
 
+def _reset_accepts_target_config_path(reset_fn: Any) -> bool:
+    try:
+        params = inspect.signature(reset_fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if "target_config_path" in params:
+        return True
+    return any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in params.values()
+    )
+
+
 def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /reset: roll back to /etc/camilladsp/outputd-cutover.yml. Restores
+    """POST /reset: roll back to the topology-safe reset graph. Restores
     pre-autolevel main_volume if autolevel was used."""
+    from jasper.correction.runtime_safety import reset_config_path
+
     sess = _get_or_create_session()
     cam = _camilla()
 
@@ -1550,7 +1572,19 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.set_config_file_path(path, best_effort=False)
 
     try:
-        _run_async(sess.reset(_set), timeout=15.0)
+        cfg = getattr(sess, "cfg", None)
+        base_config_path = getattr(
+            cfg,
+            "base_config_path",
+            Path("/etc/camilladsp/outputd-cutover.yml"),
+        )
+        target = reset_config_path(base_config_path)
+        reset_kwargs = (
+            {"target_config_path": target}
+            if _reset_accepts_target_config_path(sess.reset)
+            else {}
+        )
+        _run_async(sess.reset(_set, **reset_kwargs), timeout=15.0)
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).

@@ -383,12 +383,12 @@ def test_install_uses_separate_outputd_statefile():
     install_sh = installer_text()
     camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
     assert "outputd-cutover.yml" in install_sh
-    assert "config_path: /etc/camilladsp/outputd-cutover.yml" in install_sh
     assert "config_path: /etc/camilladsp/v1.yml" in install_sh
-    assert "Preserved outputd Camilla statefile" in install_sh
-    assert "legacy playback path" in install_sh
-    assert "unsafe volume_limit" in install_sh
-    assert "camilla_config_has_safe_volume_limit" in install_sh
+    assert "runtime-safe-graph" in install_sh
+    assert "ensure_outputd_camilla_statefile" in install_sh
+    assert "--write-statefile" in install_sh
+    assert "tweeter/protected role" in install_sh
+    assert "Reset outputd Camilla statefile" not in install_sh
     assert "--statefile /var/lib/camilladsp/outputd-statefile.yml" in camilla_unit
 
 

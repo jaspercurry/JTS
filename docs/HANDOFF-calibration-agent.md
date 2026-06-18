@@ -220,15 +220,18 @@ full picture. The bits that matter for this proposal:
 | `coordinator.py` | `measurement_window()` async context manager — preconditions (no active voice session), pauses renderers via `systemctl stop`, sends UDS `MEASURE_PAUSE` to `jasper-voice`, restores in `finally`. |
 | `session.py` / `artifacts.py` | `MeasurementSession` + state enums own orchestration; `SessionArtifacts` owns per-session bundle writes and manifests. |
 
-### Critical correctness property: `/start` always resets to flat
+### Critical correctness property: `/start` resets to flat only when legal
 
-[`_handle_start()`](../jasper/web/correction_setup.py) hard-resets
-the CamillaDSP config to `/etc/camilladsp/outputd-cutover.yml` *before*
-playing the sweep. This means every measurement captures the raw room
-through the current protected outputd-safe baseline, never through a
-prior room-correction or preference-EQ profile. The agent must
-understand this — its "compare verify against measured" reasoning only
-works because both were captured against the same baseline.
+[`_handle_start()`](../jasper/web/correction_setup.py) asks
+[`jasper.correction.runtime_safety`](../jasper/correction/runtime_safety.py)
+whether `/etc/camilladsp/outputd-cutover.yml` is legal for the saved output
+topology before playing the sweep. For ordinary full-range stereo this still
+means every measurement captures the raw room through the current protected
+outputd-safe baseline, never through a prior room-correction or preference-EQ
+profile. Saved active/protected topology, or explicit mono topology that would
+be driven by a wider flat graph, fails before sweep playback. The agent must
+understand this — its "compare verify against measured" reasoning only works
+when both were captured against the same legal baseline.
 
 ### Storage layout
 
@@ -568,11 +571,12 @@ VERIFYING → VERIFIED               ← agent re-reads verify curve,
 
 Two key constraints from existing architecture:
 
-1. **`/start` always resets to flat** ([`_handle_start`](../jasper/web/correction_setup.py)).
-   The agent must never bypass this — fresh measurements always
-   capture raw room. If the agent wants to know how the *corrected*
-   pipeline measures, it goes through `/verify` (which deliberately
-   doesn't reset).
+1. **`/start` resets to flat only when the topology contract permits it**
+   ([`_handle_start`](../jasper/web/correction_setup.py)). The agent must never
+   bypass this — fresh measurements capture the raw room for legal full-range
+   layouts, and active/protected layouts are deferred to the active-speaker
+   flow. If the agent wants to know how the *corrected* pipeline measures, it
+   goes through `/verify` (which deliberately doesn't reset).
 2. **`measurement_window()` precondition: no active voice session.**
    ([`jasper/correction/coordinator.py`](../jasper/correction/coordinator.py))
    The agent cannot trigger a re-measurement while "Jarvis" is in a
@@ -1179,4 +1183,9 @@ Codebase:
 
 ---
 
-Last verified: 2026-06-17 (DSP pipeline table rechecked against the live `jasper.sound.camilla_yaml.emit_sound_config` apply path; prior 2026-05-31 pass covered advisor model-call adapter and sound-audition executor.)
+Last verified: 2026-06-18 (topology-safe correction start/reset behavior
+rechecked against `jasper.correction.runtime_safety` and
+`jasper/web/correction_setup.py`; prior 2026-06-17 pass covered DSP pipeline
+table rechecked against the live `jasper.sound.camilla_yaml.emit_sound_config`
+apply path; prior 2026-05-31 pass covered advisor model-call adapter and
+sound-audition executor.)
