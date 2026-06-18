@@ -152,10 +152,9 @@ What passed:
   accepted 48 kHz S16_LE stereo for 2 seconds.
 - Installer/outputd wiring: `/etc/asound.conf` rendered
   `pcm.outputd_dac` to the recognized DAC8x card, skipping Apple-only
-  `jasper-dac-init` and headphone-monitor units. Current 2026-06-02
-  code renders a direct alias by default; explicit lab wiring may set
-  `JASPER_OUTPUT_DAC_ROUTE=mono:N` or `stereo:L,R` to route outputd's
-  stereo surface to selected 1-indexed DAC8x physical outputs.
+  `jasper-dac-init` and headphone-monitor units. Current code renders a
+  direct final-output alias; active-speaker channel ownership lives in the
+  saved topology and protected active graph, not an outputd DAC route env.
 - outputd physical ownership: while outputd was active, `aplay -l`
   showed the DAC8x playback subdevice as `0/1`; logs showed
   `event=outputd.alsa.opened ... dac_pcm=outputd_dac` and

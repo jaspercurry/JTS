@@ -14,6 +14,7 @@ from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
+    MISSING_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
 )
 from jasper.output_hardware import (
@@ -226,7 +227,7 @@ def test_sound_module_preserves_editor_behaviour():
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
     assert "Active crossover setup" in js
     assert "/assets/sound-profile/js/active-speaker-ui.js" in js
-    assert "./active-speaker/prepare-driver-test" in js
+    assert "./active-speaker/prepare-driver-test" not in js
     assert "./active-speaker/measurements" in js
     assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
@@ -252,26 +253,31 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
 
     assert 'from "/assets/sound-profile/js/active-speaker-ui.js"' in js
     assert "function refreshActiveSpeakerStatus()" not in js
-    assert "fetch('./active-speaker/environment'" not in js
-    assert "fetch('./active-speaker/safe-playback'" not in js
-    assert "fetch('./active-speaker/staged-config'" not in js
-    assert "fetch('./active-speaker/calibration-level'" in js
-    assert "fetch('./active-speaker/bringup-preflight'" not in js
-    assert "fetch('./active-speaker/startup-load'" in js
-    assert "fetch('./active-speaker/tone-targets'" not in js
-    assert "fetch('./active-speaker/commissioning-rehearsal'" not in js
-    assert "fetch('./active-speaker/prepare-driver-test'" in js
-    assert "fetch('./active-speaker/stage-config'" not in js
-    assert "fetch('./active-speaker/check-path-safety'" not in js
-    assert "fetch('./active-speaker/load-startup-config'" not in js
-    assert "fetch('./active-speaker/rollback-startup-config'" not in js
-    assert "activeSpeakerPost('./active-speaker/arm', 'Opening test controls')" not in js
-    assert "function activeSpeakerPost(" not in js
-    assert "function stopActiveSpeakerTest()" in js
-    assert "fetch('./active-speaker/stop'" in js
-    assert "fetch('./active-speaker/play-tone'" in js
-    assert "fetch('./active-speaker/floor-audio-result'" in js
-    assert "fetch('./active-speaker/driver-measurement'" in js
+    for retired in (
+        "fetch('./active-speaker/environment'",
+        "fetch('./active-speaker/safe-playback'",
+        "fetch('./active-speaker/staged-config'",
+        "fetch('./active-speaker/prepare-driver-test'",
+        "fetch('./active-speaker/stage-config'",
+        "fetch('./active-speaker/check-path-safety'",
+        "fetch('./active-speaker/load-startup-config'",
+        "fetch('./active-speaker/rollback-startup-config'",
+        "fetch('./active-speaker/play-tone'",
+        "fetch('./active-speaker/floor-audio-result'",
+        "fetch('./active-speaker/driver-measurement'",
+        "function activeSpeakerPost(",
+        "function stopActiveSpeakerTest()",
+        "data-act=\"stop-active-speaker\"",
+        "data-act=\"active-floor-result\"",
+        "data-act=\"check-output-readiness\"",
+        "data-act=\"play-output-readiness-tone\"",
+        "action: 'auto_step'",
+    ):
+        assert retired not in js
+    assert "'./active-speaker/commission-load'" in js
+    assert "'./active-speaker/commission-ramp-step'" in js
+    assert "'./active-speaker/commission-ramp-ack'" in js
+    assert "'./active-speaker/commission-ramp-abort'" in js
     assert "fetch('./active-speaker/summed-test'" in js
     assert "fetch('./active-speaker/summed-validation'" in js
     assert "fetch('./active-speaker/design-draft'" in js
@@ -293,7 +299,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Driver details are optional for now. Continue with output mapping." in js
     assert "saved driver info" in js
     assert "Builds the crossover plan from your saved settings. No sound plays." in js
-    assert "data-act=\"stop-active-speaker\"" in js
     assert "data-act=\"arm-active-speaker\"" not in js
     assert "data-act=\"stage-active-config\"" not in js
     assert "data-act=\"check-active-path-safety\"" not in js
@@ -302,16 +307,12 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"rollback-active-startup\"" not in js
     assert "data-act=\"prepare-active-tone\"" not in js
     assert "data-act=\"verify-active-tone\"" not in js
-    assert "class=\"btn btn--danger\" data-act=\"stop-active-speaker\"" in js
     assert "activeSpeaker.playback" not in js
     assert "var activeSpeakerSetupOpen = false;" in js
     assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
     assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
-    assert "Getting ' + label + ' ready. No sound will play yet." in js
-    assert "Ready to test ' + label + '. Start at the quietest level." in js
-    assert "Test progress" in js
-    assert "activeSpeakerLevelConfig()" in js
-    assert "active-speaker-level__bar--running" in js
+    assert "No active driver test" in js
+    assert "no separate direct-DAC driver test in the product UI" in js
     assert "id=\"active-speaker-level\"" not in js
     assert "data-act=\"active-level\"" not in js
     assert "Back to quiet" not in js
@@ -320,38 +321,32 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"active-auto-level\"" not in js
     assert "activeSpeakerAutoLevelLabel(autoLevel)" not in js
     assert "action: 'observe'" not in js
-    assert "action: 'auto_step'" in js
+    assert "action: 'auto_step'" not in js
     assert "Normal listening volume is untouched" not in js
     assert "The mic reading helps JTS decide whether to hold, lower, or raise" not in js
-    assert "automatically tries a little louder" in js
     assert "Normal listening volume is untouched" not in js
     assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" not in js
     assert "level_dbfs: requestedLevel == null ? cfg.value : requestedLevel" not in js
-    assert "requested_level_dbfs" in js
-    assert "friendlySetupIssue(issue)" in js
+    assert "requested_level_dbfs" not in js
     assert "Test each driver" in js
-    assert "active-speaker/prepare-driver-test" in js
-    assert "syncPreparedOutputTopology(payload)" in js
+    assert "active-speaker/prepare-driver-test" not in js
+    assert "syncPreparedOutputTopology(payload)" not in js
     assert "fetch('./active-speaker/stage-config'" not in js
     assert "fetch('./active-speaker/check-path-safety'" not in js
     assert "fetch('./active-speaker/load-startup-config'" not in js
-    assert "Getting ' + label + ' ready. No sound will play yet." in js
-    assert "Choose first driver" in js
-    assert "Choose the driver you want to hear first. JTS will prepare the quiet test before any sound can play." in js
-    assert "Listen for this driver" in js
+    assert "Choose first driver" not in js
+    assert "Listen for this driver" not in js
     assert "Exit test setup" not in js
-    assert "No sound played. ' + e.message" in js
-    assert "Listen for this driver" in js
-    assert "active-speaker-actions--driver-test" in js
-    assert "data-act=\"active-floor-result\"" in js
+    assert "No sound played. ' + e.message" not in js
+    assert "active-speaker-actions--driver-test" not in js
     assert "data-act=\"record-summed-validation\"" in js
     assert "data-act=\"compile-baseline-profile\"" in js
     assert "data-act=\"apply-baseline-profile\"" in js
-    assert "I hear this driver" in js
+    assert "I hear the tone" in js
     assert "I did not hear anything" not in js
     assert "Wrong driver" in js
     assert "Too loud / stop" not in js
-    assert "driver-test result" in js
+    assert "driver-test result" not in js
     assert "Did this driver make the sound?" not in js
     assert "If you hear nothing, wait" not in js
     assert "active-speaker/check-path-safety" not in js
@@ -363,7 +358,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "No audio was emitted by this backend." not in js
     assert "No preset channel targets available." not in js
     assert ">Prepare channel test</button>" not in js
-    assert "No sound is playing" in js
+    assert "No sound is playing" not in js
 
 
 def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
@@ -374,15 +369,15 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function saveOutputTopology(options)" in js
     assert "function updateOutputChannelIdentity(button)" in js
     assert "function saveOutputChannelProtectionState(groupId, role, nextStatus)" not in js
-    assert "function outputReadinessFromPreparedDriver(payload, button)" in js
-    assert "function checkOutputPlaybackReadiness(button)" in js
+    assert "function outputReadinessFromPreparedDriver(payload, button)" not in js
+    assert "function checkOutputPlaybackReadiness(button)" not in js
     assert "fetch('./output-topology'" in js
     assert "fetch('./active-speaker/channel-identity'" in js
     assert "fetch('./active-speaker/channel-protection'" not in js
-    assert "fetch('./active-speaker/prepare-driver-test'" in js
+    assert "fetch('./active-speaker/prepare-driver-test'" not in js
     assert "fetch('./active-speaker/playback-readiness'" not in js
     assert 'data-act="mark-output-identity"' in js
-    assert 'data-act="check-output-readiness"' in js
+    assert 'data-act="check-output-readiness"' not in js
     assert 'data-protection-required="' not in js
     assert 'data-protection-status="' not in js
     assert "headers: jsonHeaders()" in js
@@ -393,10 +388,10 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "supported" in js
     assert "needs attention" not in js
     assert "Confirm output" in js
-    assert "'✓ ' + humanRole(channel.role) + ' confirmed'" in js
-    assert "'Test ' + humanRole(channel.role)" in js
+    assert "'✓ ' + humanRole(channel.role) + ' confirmed'" not in js
+    assert "'Test ' + humanRole(channel.role)" not in js
     assert "JTS will add the tweeter guard before any sound starts" in js
-    assert "Getting ' + label + ' ready. No sound will play yet." in js
+    assert "Getting ' + label + ' ready. No sound will play yet." not in js
     assert "Hardware protected" not in js
     assert "Use software guard" not in js
     assert "software_guard_requested" in js
@@ -409,26 +404,27 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Use quiet-start" not in js
     assert "Use for first test" not in js
     assert "protected startup DSP" not in js
-    assert "function renderOutputReadinessSummary(readiness)" in js
-    assert "function renderOutputReadinessBlockers(readiness)" in js
+    assert "function renderOutputReadinessSummary(readiness)" not in js
+    assert "function renderOutputReadinessBlockers(readiness)" not in js
     assert "function outputCurrentLevelAtFloor()" not in js
     assert "function outputFloorAudioConfirmedForReadiness(readiness)" not in js
-    assert "function quietStartTargetLabel(target)" in js
-    assert "function readinessTargetLockReason(readiness)" in js
-    assert "How to continue" in js
-    assert "This driver cannot be tested from here yet. Choose a woofer, mid, or subwoofer driver to continue." in js
-    assert "Starting with the quietest short pulse." in js
-    assert "Heard ' + targetLabel" in js
-    assert "Test progress" in js
+    assert "function quietStartTargetLabel(target)" not in js
+    assert "function readinessTargetLockReason(readiness)" not in js
+    assert "How to continue" not in js
+    assert "This driver cannot be tested from here yet. Choose a woofer, mid, or subwoofer driver to continue." not in js
+    assert "Starting with the quietest short pulse." not in js
+    assert "Heard ' + targetLabel" not in js
+    assert "Test progress" not in js
     assert "Role policy" not in js
     assert "Preconditions passed" not in js
     assert "Generate WAV (no sound)" not in js
-    assert ">Start quiet test</button>" in js
-    assert ">I hear this driver</button>" in js
-    assert "Driver tests are not available on this install yet." in js
-    assert "playbackResultMessage(playback, undefined, friendlySetupReason)" in js
+    assert ">Start quiet test</button>" not in js
+    assert ">I hear this driver</button>" not in js
+    assert "No active driver test" in js
+    assert "no separate direct-DAC driver test in the product UI" in js
+    assert "playbackResultMessage(playback, undefined, friendlySetupReason)" not in js
     assert "Playback: ' + (issue.code" not in js
-    assert "JTS could not get the test ready. No sound was played." in js
+    assert "JTS could not get the test ready. No sound was played." not in js
     assert "Save this speaker layout draft before confirming outputs." in js
     assert "Main speakers" in js
     assert "Speaker count" in js
@@ -489,7 +485,7 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
     # instead of echoing the raw identifier (the old `text.replace(/_/g,' ')`).
     assert "return raw.replace(/_/g, ' ')" not in js
     assert "return outcome.replace(/_/g, ' ')" not in js
-    assert "One setup step still needs finishing. Choose the driver again to continue." in js
+    assert "This driver can’t be tested yet — finish the earlier setup steps first." in helper_js
 
     # The new consumer copy is present and stable.
     assert "Builds the crossover plan from your saved settings. No sound plays." in js
@@ -552,7 +548,7 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
         "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
         str(tmp_path / "tone-artifacts"),
     )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", "wav_artifact")
+    monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "wav_artifact")
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_environment_payload",
@@ -577,10 +573,6 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
         "action": "set",
         "level_dbfs": -55,
     })
-    playback = sound_setup._active_speaker_tone_playback_payload({
-        "side": "mono",
-        "driver_role": "tweeter",
-    })
     status = sound_setup._active_speaker_safe_playback_payload()
     stopped = sound_setup._active_speaker_stop_payload()
     stopped_level = sound_setup._active_speaker_calibration_level_payload()
@@ -589,11 +581,6 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     assert armed["playback_allowed"] is False
     assert guarded["test_signal"]["requested_level_dbfs"] == -79.0
     assert guarded["issues"][0]["code"] == "upward_step_limited"
-    assert playback["playback"]["status"] == "blocked"
-    assert playback["playback"]["audio_emitted"] is False
-    assert "saved_topology_target_required" in {
-        issue["code"] for issue in playback["playback"]["issues"]
-    }
     assert status["status"] == "armed"
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
@@ -642,438 +629,6 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
     assert stopped["calibration_level"]["status"] == "reset_failed"
-
-
-def test_active_speaker_topology_tone_playback_payload_is_no_audio(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", "wav_artifact")
-    startup_load_state = tmp_path / "startup-load.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
-        str(startup_load_state),
-    )
-    active_config_path = tmp_path / "active-startup.yml"
-    prior_config_path = tmp_path / "prior.yml"
-    active_config_path.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
-    prior_config_path.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
-    startup_load_state.write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_startup_load_state",
-            "status": "loaded",
-            "loaded": True,
-            "candidate_config_path": str(active_config_path),
-            "active_config_path": str(active_config_path),
-            "previous_config_path": str(prior_config_path),
-            "rollback_available": True,
-            "last_action": "load",
-            "issues": [],
-        }),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_environment_payload",
-        lambda: {
-            "status": "pass",
-            "load_gate": "ready",
-            "ok_to_load_active_config": True,
-            "camilla_config": {
-                "path": str(active_config_path),
-                "classification": "active_startup_candidate",
-            },
-            "safe_playback": {
-                "status": "not_implemented",
-                "playback_allowed": False,
-            },
-            "issues": [],
-        },
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "living_room",
-        "name": "Living room",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "present",
-                    },
-                ],
-            }
-        ],
-        "routing": {"main_left_group_id": "left"},
-    })
-
-    armed = sound_setup._active_speaker_arm_payload()
-    artifact = sound_setup._active_speaker_tone_playback_payload({
-        "speaker_group_id": "left",
-        "role": "woofer",
-    })
-    blocked_audio = sound_setup._active_speaker_tone_playback_payload({
-        "speaker_group_id": "left",
-        "role": "woofer",
-        "audio": True,
-    })
-
-    assert armed["status"] == "armed"
-    assert artifact["plan"]["source"] == "output_topology"
-    assert artifact["plan"]["target"]["output_index"] == 0
-    assert artifact["playback"]["backend"] == "wav_artifact"
-    assert artifact["playback"]["audio_emitted"] is False
-    assert artifact["playback"]["artifact"]["target_output_index"] == 0
-    assert blocked_audio["playback"]["status"] == "blocked"
-    assert blocked_audio["playback"]["audio_emitted"] is False
-    assert "audio_backend_not_enabled" in {
-        issue["code"] for issue in blocked_audio["playback"]["issues"]
-    }
-
-
-def test_active_speaker_auto_level_step_uses_saved_target_and_floor_evidence(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.active_speaker.safe_playback import (
-        arm_safe_playback_session,
-        record_floor_audio_operator_result,
-        record_safe_playback_result,
-    )
-
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
-    arm_safe_playback_session({
-        "status": "pass",
-        "load_gate": "ready",
-        "ok_to_load_active_config": True,
-        "camilla_config": {
-            "path": "/var/lib/camilladsp/configs/active.yml",
-            "classification": "active_startup_candidate",
-        },
-        "safe_playback": {
-            "status": "not_implemented",
-            "playback_allowed": False,
-        },
-        "issues": [],
-    })
-    target = {
-        "speaker_group_id": "mono",
-        "role": "woofer",
-        "driver_role": "woofer",
-        "output_index": 0,
-    }
-    floor_playback = {
-        "status": "completed",
-        "playback_id": "floor-test-1",
-        "backend": "aplay",
-        "audio_emitted": True,
-        "target": target,
-        "tone": {"level_dbfs": -80.0},
-        "issues": [],
-    }
-    record_safe_playback_result(floor_playback)
-    record_floor_audio_operator_result(
-        outcome="heard_correct_driver",
-        playback_id="floor-test-1",
-    )
-    sound_setup._active_speaker_calibration_level_payload({
-        "action": "observe",
-        "observed_mic_dbfs": -58.0,
-    })
-
-    payload = sound_setup._active_speaker_calibration_level_payload({
-        "action": "auto_step",
-        "speaker_group_id": "mono",
-        "role": "woofer",
-    })
-
-    assert payload["target"]["speaker_group_id"] == "mono"
-    assert payload["target"]["output_index"] == 0
-    assert payload["auto_level"]["action"] == "raise"
-    assert payload["auto_level"]["floor_audio_confirmed"] is True
-    assert payload["auto_level_applied_action"] == "ramp"
-    assert payload["test_signal"]["requested_level_dbfs"] == -74.0
-    assert payload["applied_delta_db"] == 6.0
-
-
-def test_active_speaker_auto_level_step_holds_without_floor_evidence(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
-    sound_setup._active_speaker_calibration_level_payload({
-        "action": "set",
-        "level_dbfs": -79.0,
-        "observed_mic_dbfs": -58.0,
-    })
-
-    payload = sound_setup._active_speaker_calibration_level_payload({
-        "action": "auto_step",
-        "speaker_group_id": "mono",
-        "role": "woofer",
-    })
-
-    assert payload["target"]["speaker_group_id"] == "mono"
-    assert payload["auto_level"]["action"] == "hold_for_floor_confirmation"
-    assert payload["auto_level"]["floor_audio_confirmed"] is False
-    assert payload["auto_level_applied_action"] == "observe"
-    assert payload["test_signal"]["requested_level_dbfs"] == -79.0
-    assert payload["applied_delta_db"] == 0.0
-
-
-def test_active_speaker_floor_audio_result_requires_operator_confirmation(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.active_speaker.safe_playback import (
-        arm_safe_playback_session,
-        record_safe_playback_result,
-    )
-
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    arm_safe_playback_session({
-        "status": "pass",
-        "load_gate": "ready",
-        "ok_to_load_active_config": True,
-        "camilla_config": {"classification": "active_startup_candidate"},
-        "safe_playback": {"playback_allowed": False},
-        "issues": [],
-    })
-    playback = {
-        "status": "completed",
-        "playback_id": "floor-test-web",
-        "backend": "aplay",
-        "audio_emitted": True,
-        "target": {
-            "speaker_group_id": "mono",
-            "role": "woofer",
-            "driver_role": "woofer",
-            "output_index": 0,
-        },
-        "tone": {"level_dbfs": -80.0},
-        "issues": [],
-    }
-    pending = record_safe_playback_result(playback)
-
-    confirmed = sound_setup._active_speaker_floor_audio_result_payload({
-        "outcome": "heard_correct_driver",
-        "playback_id": "floor-test-web",
-    })
-
-    assert pending["quiet_start"]["status"] == "floor_pending_operator"
-    assert confirmed["quiet_start"]["status"] == "floor_confirmed"
-    assert confirmed["quiet_start"]["floor_audio_confirmed"] is True
-    assert confirmed["quiet_start"]["last_operator_result"]["outcome"] == (
-        "heard_correct_driver"
-    )
-
-
-def test_active_speaker_auto_level_step_does_not_bypass_tweeter_protection(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "driver_style": "compression_driver",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "required_missing",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
-    sound_setup._active_speaker_channel_protection_save_payload({
-        "speaker_group_id": "mono",
-        "role": "tweeter",
-        "protection_present": False,
-    })
-
-    payload = sound_setup._active_speaker_calibration_level_payload({
-        "action": "auto_step",
-        "speaker_group_id": "mono",
-        "role": "tweeter",
-        "observed_mic_dbfs": -58.0,
-    })
-
-    assert payload["auto_level"]["status"] == "blocked"
-    assert payload["auto_level_applied_action"] == "observe"
-    assert payload["test_signal"]["requested_level_dbfs"] == -80.0
-    assert "high_frequency_protection_missing" in {
-        issue["code"] for issue in payload["auto_level"]["issues"]
-    }
 
 
 def test_active_speaker_commissioning_rehearsal_payload_is_no_audio(
@@ -1279,441 +834,6 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
         ),
     })
     return sound_setup._active_speaker_crossover_preview_save_payload()
-
-
-def test_active_speaker_prepare_driver_test_owns_internal_setup(
-    monkeypatch,
-    tmp_path: Path,
-):
-    import jasper.active_speaker.playback as active_playback
-    from jasper.output_topology import load_output_topology
-
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", "aplay")
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO", "1")
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TEST_PCM", "hw:Active")
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="required_missing")
-    )
-    calls: list[str] = []
-
-    def fake_preview() -> dict:
-        calls.append("preview")
-        return {
-            "status": "ready_for_protected_staging",
-            "summary": {"ready_crossover_count": 1},
-            "issues": [],
-        }
-
-    def fake_stage(raw: dict) -> dict:
-        calls.append("stage")
-        return {
-            "status": "staged",
-            "config": {"path": str(tmp_path / "active-startup.yml")},
-            "issues": [],
-        }
-
-    async def fake_path_safety(*, camilla_factory) -> dict:
-        calls.append("path")
-        return {
-            "report": {"status": "ready", "load_gate": "ready", "issues": []},
-            "startup_load": {"state": {"status": "idle"}},
-        }
-
-    async def fake_load(*, camilla_factory) -> dict:
-        calls.append("load")
-        return {
-            "load": {
-                "status": "loaded",
-                "loaded": True,
-                "rollback_available": True,
-            },
-            "preflight": {"status": "ready", "issues": []},
-        }
-
-    def fake_arm() -> dict:
-        calls.append("arm")
-        return {
-            "status": "armed",
-            "session_id": "safe-1",
-            "issues": [],
-        }
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_crossover_preview_save_payload",
-        fake_preview,
-    )
-    monkeypatch.setattr(
-        active_playback,
-        "tone_backend_status",
-        lambda **kwargs: {
-            "kind": "jts_active_speaker_tone_backend_status",
-            "status": "audio_enabled",
-            "audio_enabled": True,
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stage_config_payload", fake_stage)
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_check_path_safety_payload",
-        fake_path_safety,
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_load_startup_config_payload",
-        fake_load,
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_arm_payload", fake_arm)
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_calibration_level_payload",
-        lambda raw=None: {
-            "test_signal": {
-                "requested_level_dbfs": -80.0,
-                "min_level_dbfs": -80.0,
-            }
-        },
-    )
-
-    payload = asyncio.run(
-        sound_setup._active_speaker_prepare_driver_test_payload(
-            {"speaker_group_id": "mono", "role": "tweeter"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    assert payload["status"] == "ready"
-    assert payload["ready"] is True
-    assert payload["target"]["role"] == "tweeter"
-    assert payload["tone_backend"]["kind"] == "jts_active_speaker_tone_backend_status"
-    assert calls == ["preview", "stage", "path", "load", "arm"]
-    topology = load_output_topology()
-    tweeter = topology.speaker_groups[0].channels[1]
-    assert tweeter.protection_status == "software_guard_requested"
-
-
-def test_active_speaker_prepare_driver_test_skips_startup_load_for_artifact_backend(
-    monkeypatch,
-    tmp_path: Path,
-):
-    import jasper.active_speaker.safe_playback as safe_playback
-    import jasper.active_speaker.startup_load as startup_load
-
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", "wav_artifact")
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="required_missing",
-            card_id=None,
-        )
-    )
-    calls: list[str] = []
-
-    def fake_preview() -> dict:
-        calls.append("preview")
-        return {
-            "status": "ready_for_protected_staging",
-            "summary": {"ready_crossover_count": 1},
-            "issues": [],
-        }
-
-    def fail_stage(raw: dict) -> dict:
-        raise AssertionError("artifact-only prepare must not stage CamillaDSP")
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_crossover_preview_save_payload",
-        fake_preview,
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stage_config_payload", fail_stage)
-    monkeypatch.setattr(
-        safe_playback,
-        "load_safe_playback_state",
-        lambda: {"status": "idle", "session_id": None},
-    )
-    monkeypatch.setattr(
-        startup_load,
-        "load_startup_load_state",
-        lambda: {"status": "idle", "loaded": False},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_calibration_level_payload",
-        lambda raw=None: {
-            "test_signal": {
-                "requested_level_dbfs": -80.0,
-                "min_level_dbfs": -80.0,
-            }
-        },
-    )
-
-    payload = asyncio.run(
-        sound_setup._active_speaker_prepare_driver_test_payload(
-            {"speaker_group_id": "mono", "role": "tweeter"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    assert payload["status"] == "ready"
-    assert payload["ready"] is True
-    assert payload["target"]["role"] == "tweeter"
-    assert payload["tone_backend"]["status"] == "artifact_only"
-    assert payload["tone_backend"]["audio_enabled"] is False
-    assert payload["session"]["status"] == "idle"
-    assert payload["startup_load"]["load"]["status"] == "idle"
-    assert "staged_config" not in payload
-    assert calls == ["preview"]
-
-
-def test_active_speaker_prepare_driver_test_preserves_direct_dac_retry_session(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from jasper.active_speaker.calibration_level import update_calibration_level_state
-    from jasper.active_speaker.safe_playback import (
-        arm_safe_playback_session,
-        record_floor_audio_operator_result,
-        record_safe_playback_result,
-    )
-
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    monkeypatch.delenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", raising=False)
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "mono_active",
-        "name": "Mono active 2-way output",
-        "status": "verified",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "sndrpihifiberry",
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_crossover_preview_save_payload",
-        lambda: {
-            "status": "ready_for_protected_staging",
-            "summary": {"ready_crossover_count": 1},
-            "issues": [],
-        },
-    )
-
-    arm_safe_playback_session(sound_setup._active_speaker_direct_diagnostic_environment())
-    target = {
-        "speaker_group_id": "main",
-        "role": "woofer",
-        "driver_role": "woofer",
-        "output_index": 0,
-    }
-    record_safe_playback_result({
-        "status": "completed",
-        "playback_id": "floor-1",
-        "backend": "direct_dac",
-        "audio_emitted": True,
-        "target": target,
-        "tone": {"level_dbfs": -80.0},
-        "issues": [],
-    })
-    record_floor_audio_operator_result(outcome="silent", playback_id="floor-1")
-    update_calibration_level_state(action="audible_ramp", requested_level_dbfs=-74.0)
-
-    payload = asyncio.run(
-        sound_setup._active_speaker_prepare_driver_test_payload(
-            {"speaker_group_id": "main", "role": "woofer"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    assert payload["status"] == "ready"
-    assert payload["session"]["status"] == "armed"
-    assert payload["session"]["quiet_start"]["last_operator_result"]["outcome"] == (
-        "silent"
-    )
-    assert payload["calibration_level"]["test_signal"]["requested_level_dbfs"] == -74.0
-
-
-def test_active_speaker_prepare_driver_test_resets_stale_raised_level(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from jasper.active_speaker.calibration_level import update_calibration_level_state
-    from jasper.active_speaker.safe_playback import (
-        arm_safe_playback_session,
-        stop_safe_playback_session,
-    )
-
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    monkeypatch.delenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", raising=False)
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "mono_active",
-        "name": "Mono active 2-way output",
-        "status": "verified",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "sndrpihifiberry",
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_crossover_preview_save_payload",
-        lambda: {
-            "status": "ready_for_protected_staging",
-            "summary": {"ready_crossover_count": 1},
-            "issues": [],
-        },
-    )
-
-    arm_safe_playback_session(sound_setup._active_speaker_direct_diagnostic_environment())
-    update_calibration_level_state(action="audible_ramp", requested_level_dbfs=-74.0)
-    stop_safe_playback_session()
-
-    payload = asyncio.run(
-        sound_setup._active_speaker_prepare_driver_test_payload(
-            {"speaker_group_id": "main", "role": "woofer"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    assert payload["status"] == "ready"
-    assert payload["session"]["status"] == "armed"
-    assert payload["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
-    assert payload["calibration_level"]["last_action"] == "stop"
-
-
-def test_active_speaker_prepare_driver_test_guards_sibling_tweeter(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.output_topology import load_output_topology
-
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", "wav_artifact")
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="required_missing",
-            card_id=None,
-        )
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_crossover_preview_save_payload",
-        lambda: {
-            "status": "ready_for_protected_staging",
-            "summary": {"ready_crossover_count": 1},
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_calibration_level_payload",
-        lambda raw=None: {
-            "test_signal": {
-                "requested_level_dbfs": -80.0,
-                "min_level_dbfs": -80.0,
-            }
-        },
-    )
-
-    payload = asyncio.run(
-        sound_setup._active_speaker_prepare_driver_test_payload(
-            {"speaker_group_id": "mono", "role": "woofer"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    topology = load_output_topology()
-    tweeter = topology.speaker_groups[0].channels[1]
-    assert payload["status"] == "ready"
-    assert payload["target"]["role"] == "woofer"
-    assert tweeter.protection_status == "software_guard_requested"
 
 
 def test_active_speaker_crossover_preview_refreshes_current_output_topology(
@@ -2058,9 +1178,9 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
         "jts_active_speaker_playback_route_capability"
     )
     assert envelope["active_playback_route"]["playback_device_source"] == (
-        "topology_direct_dac"
+        MISSING_SOURCE
     )
-    assert envelope["active_playback_route"]["transport_channel_count"] == 2
+    assert envelope["active_playback_route"]["transport_channel_count"] == 0
 
 
 def test_output_hardware_state_only_loaded_inside_conversion_boundary():
@@ -2397,7 +1517,7 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     assert topology["safety"]["sound_tests_allowed"] is False
 
 
-def test_active_speaker_tone_backend_defaults_to_direct_dac_from_topology(
+def test_active_speaker_tone_backend_status_is_explicit_lab_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2405,7 +1525,8 @@ def test_active_speaker_tone_backend_defaults_to_direct_dac_from_topology(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
-    monkeypatch.delenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", raising=False)
+    monkeypatch.delenv("JASPER_AUDIO_LAB_TONE_BACKEND", raising=False)
+    monkeypatch.delenv("JASPER_AUDIO_LAB_TEST_PCM", raising=False)
     sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -2446,228 +1567,32 @@ def test_active_speaker_tone_backend_defaults_to_direct_dac_from_topology(
 
     status = sound_setup._active_speaker_tone_backend_status()
 
-    assert status["status"] == "audio_enabled"
-    assert status["backend"] == "direct_dac"
-    assert status["test_pcm"] == "hw:CARD=sndrpihifiberry,DEV=0"
+    assert status["status"] == "artifact_only"
+    assert status["backend"] == "wav_artifact"
+    assert status["test_pcm"] is None
+    assert status["playback_device"] is None
+    assert status["default_pcm_source"] == "explicit_lab_pcm"
     assert status["channel_count"] == 8
-    assert status["requires_protected_startup"] is False
+    assert status["requires_protected_startup"] is True
 
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", "wav_artifact")
+    monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "direct_dac")
     stale_env_status = sound_setup._active_speaker_tone_backend_status()
-    assert stale_env_status["status"] == "audio_enabled"
+    assert stale_env_status["status"] == "blocked"
     assert stale_env_status["backend"] == "direct_dac"
-    assert stale_env_status["channel_count"] == 8
-
-
-def test_active_speaker_direct_dac_play_tone_refreshes_expired_session(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    monkeypatch.delenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", raising=False)
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "mono_active",
-        "name": "Mono active 2-way output",
-        "status": "verified",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "sndrpihifiberry",
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
-    (tmp_path / "safe-playback.json").write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_safe_playback_session",
-            "status": "expired",
-            "session_id": "old-session",
-        }),
-        encoding="utf-8",
-    )
-
-    class FakeDirectBackend:
-        backend_id = "direct_dac"
-        audio_backend = True
-        requires_protected_startup = False
-
-        def start(self, plan, *, playback_id, now_epoch):
-            return {
-                "backend": self.backend_id,
-                "status": "completed",
-                "audio_emitted": True,
-                "artifact": {"wav_basename": "test.wav"},
-            }
-
-        def stop(self, *, playback_id, reason, now_epoch):
-            return {"backend": self.backend_id, "status": "stopped"}
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_tone_backend_for_topology",
-        lambda topology: FakeDirectBackend(),
-    )
-
-    payload = sound_setup._active_speaker_tone_playback_payload({
-        "speaker_group_id": "main",
-        "role": "woofer",
-        "audio": True,
-    })
-
-    assert payload["playback"]["status"] == "completed"
-    assert payload["playback"]["audio_emitted"] is True
-    assert payload["session"]["status"] == "armed"
-    assert payload["session"]["session_id"] != "old-session"
-    assert "safe_session_not_armed" not in {
-        issue["code"] for issue in payload["playback"].get("issues", [])
+    assert stale_env_status["audio_enabled"] is False
+    assert "unknown_tone_backend" in {
+        issue["code"] for issue in stale_env_status["issues"]
     }
 
-
-def test_active_speaker_direct_dac_play_tone_preserves_silent_retry_session(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-    monkeypatch.delenv("JASPER_ACTIVE_SPEAKER_TONE_BACKEND", raising=False)
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "mono_active",
-        "name": "Mono active 2-way output",
-        "status": "verified",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "sndrpihifiberry",
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
-
-    class FakeDirectBackend:
-        backend_id = "direct_dac"
-        audio_backend = True
-        requires_protected_startup = False
-
-        def start(self, plan, *, playback_id, now_epoch):
-            return {
-                "backend": self.backend_id,
-                "status": "completed",
-                "audio_emitted": True,
-                "artifact": {"wav_basename": "test.wav"},
-            }
-
-        def stop(self, *, playback_id, reason, now_epoch):
-            return {"backend": self.backend_id, "status": "stopped"}
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_tone_backend_for_topology",
-        lambda topology: FakeDirectBackend(),
-    )
-
-    floor = sound_setup._active_speaker_tone_playback_payload({
-        "speaker_group_id": "main",
-        "role": "woofer",
-        "audio": True,
-    })
-    assert floor["playback"]["status"] == "completed"
-    assert floor["playback"]["tone"]["level_dbfs"] == -80.0
-
-    silent = sound_setup._active_speaker_floor_audio_result_payload({
-        "outcome": "silent",
-        "playback_id": floor["playback"]["playback_id"],
-    })
-    assert silent["quiet_start"]["last_operator_result"]["outcome"] == "silent"
-
-    level = sound_setup._active_speaker_calibration_level_payload({
-        "level_dbfs": -74,
-    })
-    assert level["test_signal"]["requested_level_dbfs"] == -79.0
-
-    retry = sound_setup._active_speaker_tone_playback_payload({
-        "speaker_group_id": "main",
-        "role": "woofer",
-        "audio": True,
-    })
-
-    assert retry["playback"]["status"] == "completed"
-    assert retry["playback"]["audio_emitted"] is True
-    assert retry["playback"]["tone"]["level_dbfs"] == -79.0
-    assert "floor_audio_not_confirmed" not in {
-        issue["code"] for issue in retry["playback"].get("issues", [])
-    }
+    monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "aplay")
+    monkeypatch.setenv("JASPER_AUDIO_LAB_TEST_PCM", "hw:Active")
+    lab_status = sound_setup._active_speaker_tone_backend_status()
+    assert lab_status["status"] == "audio_enabled"
+    assert lab_status["backend"] == "aplay"
+    assert lab_status["audio_backend"] == "aplay"
+    assert lab_status["playback_device"] == "hw:Active"
+    assert lab_status["channel_count"] == 8
+    assert lab_status["requires_protected_startup"] is True
 
 
 def test_sound_output_topology_save_validates_and_persists_complete_contract(

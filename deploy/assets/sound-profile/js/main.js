@@ -77,15 +77,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     baselineProfile: null, error: '', levelDbfs: null,
     commission: null, commissionBusy: '', commissionError: ''
   };
-  var outputAudibleRamp = {
-    running: false,
-    token: 0,
-    targetKey: '',
-    lastPlaybackId: '',
-    pulseCount: 0,
-    levelDbfs: null,
-    message: ''
-  };
   var commissionAutoRamp = {
     running: false,
     token: 0,
@@ -94,16 +85,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     levelDbfs: null,
     message: ''
   };
-  var OUTPUT_RAMP_LISTEN_MS = 1200;
-  var OUTPUT_RAMP_NEXT_PULSE_MS = 350;
   var COMMISSION_RAMP_LISTEN_MS = 2300;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 120;
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
     identitySaving: '', protectionSaving: '',
-    readiness: null, readinessChecking: '', readinessError: '',
-    readinessPlayback: null, readinessPlaybackChecking: '',
     error: '', dirty: false, touched: false
   };
   var outputStepOverride = '';
@@ -568,7 +555,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       activeSpeaker.session || activeSpeaker.stagedConfig ||
       activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
       outputTopology.identitySaving || outputTopology.protectionSaving || outputTopology.error ||
-      outputTopology.readinessChecking || outputTopology.readinessPlaybackChecking ||
       outputTopology.dirty || outputTopology.touched;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced" data-active-speaker-setup' + (open ? ' open' : '') + '>' +
@@ -578,11 +564,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</section>';
   }
   // The "Test each driver" body for active 2/3-way groups: protected
-  // single-audio-path commissioning (the Stage-5 ramp). Arming is silent; a step
-  // makes ONE driver audible at a low level through the production
-  // crossover/limiter graph. Only the safety step calls this, and only when an
-  // active group exists — passive/full-range groups use renderOutputReadinessCard
-  // (the direct-DAC tone test) instead. The no-group return is defensive.
+  // single-audio-path commissioning. Arming is silent; a step makes one driver
+  // audible through the production crossover/limiter graph.
   function renderCommissionCard() {
     var group = activeCommissionGroup(currentOutputTopology());
     var c = commissionCardState(activeSpeaker.commission, group);
@@ -651,6 +634,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'here proves it is wired and audible through the crossover and limiter. Recording ' +
         'each driver’s measurement for “Validate and apply” is a later step (not ' +
         'yet wired).</p>' +
+    '</div>';
+  }
+  function renderActiveCommissionOnlyCard() {
+    return '<div class="output-card output-card--commission-only">' +
+      '<div class="output-card__head"><div><p class="output-card__title">No active driver test</p>' +
+        '<p class="setting-row__hint">Per-driver audible commissioning is available only for active crossover layouts.</p></div>' +
+        '<span class="status-pill">not needed</span></div>' +
+      '<p class="setting-row__hint">Passive and full-range layouts use the normal listening path; there is no separate direct-DAC driver test in the product UI.</p>' +
     '</div>';
   }
   function activeCommissionRoles(group) {
@@ -1173,16 +1164,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var startup = activeSpeaker.startupLoad || {};
     var state = startup.state || {};
     return state.status === 'loaded';
-  }
-  function quietTestControlsOpen() {
-    var session = activeSpeaker.session || {};
-    return session.status === 'armed';
-  }
-  function activeSpeakerAudibleTestReady() {
-    var readiness = outputTopology.readiness || {};
-    return readiness.preconditions_passed === true &&
-      readiness.playback_allowed === true &&
-      !!activeSpeakerSelectedReadinessTarget();
   }
   function quietTestStartupReady(load) {
     load = load || activeSpeaker.startupLoad || {};
@@ -1767,8 +1748,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var evaluation = outputEvaluation(topology);
     var layoutStatusValue = outputTopology.dirty ? 'draft' : 'saved draft';
     // Active 2/3-way groups commission through the protected crossover/limiter
-    // graph (the Stage-5 ramp); passive/full-range groups keep the simpler
-    // direct-DAC "is this driver audible" tone test.
+    // graph; passive/full-range groups use the normal listening path.
     var safetyActive = !!activeCommissionGroup(topology);
     return '<div class="output-layout">' +
       renderOutputStepCard(
@@ -1809,9 +1789,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         safetyActive
           ? 'Start one driver at a time through the real crossover and limiter — ' +
               'woofer first, then tweeter.'
-          : 'Choose one driver at a time, start very quiet, and record what happened.',
+          : 'Per-driver audible commissioning is for active crossover layouts.',
         topology,
-        safetyActive ? renderCommissionCard() : renderOutputReadinessCard(),
+        safetyActive ? renderCommissionCard() : renderActiveCommissionOnlyCard(),
         ''
       ) +
       renderOutputStepCard(
@@ -1931,8 +1911,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         var target = identityTargetFor(group.id, channel.role) || {};
         var targetId = target.id || (group.id + ':' + channel.role);
         var busy = outputTopology.identitySaving === targetId;
-        var readinessBusy = outputTopology.readinessChecking === targetId;
-        var disabled = outputTopology.dirty || busy || readinessBusy ||
+        var disabled = outputTopology.dirty || busy ||
           channel.physical_output_index == null;
         var model = (driverResearch.inputs && driverResearch.inputs[channel.role]) || '';
         var hardwareLabel = (group.label || group.id) + ' · ' + humanRole(channel.role) +
@@ -1998,33 +1977,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ) + '</p>' +
     '</div>';
   }
-  function outputTargetSignature(raw) {
-    raw = raw || {};
-    var output = raw.output_index != null ? raw.output_index : raw.physical_output_index;
-    output = output == null ? null : Number(output);
-    return {
-      speaker_group_id: raw.speaker_group_id || raw.groupId || null,
-      role: String(raw.driver_role || raw.role || '').trim().toLowerCase() || null,
-      output_index: isFinite(output) && output >= 0 ? output : null
-    };
-  }
-  function outputTargetKey(raw) {
-    var sig = outputTargetSignature(raw);
-    return [
-      sig.speaker_group_id || '',
-      sig.role || '',
-      sig.output_index == null ? '' : String(sig.output_index)
-    ].join(':');
-  }
-  function outputSameTarget(a, b) {
-    var left = outputTargetSignature(a);
-    var right = outputTargetSignature(b);
-    return !!left && !!right &&
-      (left.speaker_group_id || null) === (right.speaker_group_id || null) &&
-      (left.role || null) === (right.role || null) &&
-      (left.output_index == null ? null : Number(left.output_index)) ===
-      (right.output_index == null ? null : Number(right.output_index));
-  }
   function playbackHasBlocker(playback) {
     var issues = Array.isArray(playback && playback.issues) ? playback.issues : [];
     return issues.some(function(issue) {
@@ -2037,26 +1989,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       playback.playback_id &&
       playback.confirmable !== false &&
       !playbackHasBlocker(playback);
-  }
-  function outputAudibleRampMatches(readiness) {
-    return outputAudibleRamp.running &&
-      outputAudibleRamp.targetKey &&
-      outputAudibleRamp.targetKey === outputTargetKey(readiness && readiness.target);
-  }
-  function outputLatestAudiblePlayback(readiness) {
-    var playback = outputTopology.readinessPlayback || null;
-    if (!playbackConfirmable(playback)) return null;
-    var target = readiness && readiness.target || null;
-    if (!target) return playback;
-    return outputSameTarget(playback.target, target) ? playback : null;
-  }
-  function stopOutputAudibleRamp(message) {
-    outputAudibleRamp = Object.assign({}, outputAudibleRamp, {
-      running: false,
-      token: outputAudibleRamp.token + 1,
-      message: message || ''
-    });
-    outputTopology.readinessPlaybackChecking = '';
   }
   function commissionTargetKey(groupId, role) {
     return [groupId || '', role || ''].join(':');
@@ -2088,22 +2020,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var commission = activeSpeaker.commission || {};
     var ramp = commission.ramp || {};
     return ramp.pending || null;
-  }
-  function outputRampProgressPct(level) {
-    var cfg = activeSpeakerLevelConfig();
-    var value = Number(level);
-    if (!isFinite(value)) value = cfg.value;
-    return clamp((value - cfg.min) / Math.max(1, cfg.max - cfg.min) * 100, 0, 100);
-  }
-  function outputFloorAudioPendingForPlayback(playback) {
-    var session = activeSpeaker.session || {};
-    var quiet = session.quiet_start || {};
-    var pendingId = quiet.pending_playback_id || null;
-    var playbackId = playback && playback.playback_id || null;
-    return session.status === 'armed' &&
-      quiet.status === 'floor_pending_operator' &&
-      pendingId && playbackId && pendingId === playbackId &&
-      playbackConfirmable(playback);
   }
   function measurementTargetId(groupId, role) {
     return String(groupId || '') + ':' + String(role || '').trim().toLowerCase();
@@ -2246,387 +2162,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +
     '</div>';
-  }
-  function quietStartTargetLabel(target) {
-    target = target || {};
-    var pieces = [];
-    if (target.speaker_group_id) pieces.push(String(target.speaker_group_id));
-    if (target.role) pieces.push(humanRole(target.role).toLowerCase());
-    if (target.output_index != null && isFinite(Number(target.output_index))) {
-      pieces.push('output ' + (Number(target.output_index) + 1));
-    }
-    return pieces.join(' ');
-  }
-  function quietStartLabel(session) {
-    var quiet = session && session.quiet_start || {};
-    if (session && session.status !== 'armed') return 'Getting ready';
-    if (quiet.status === 'floor_confirmed' && quiet.floor_audio_confirmed) {
-      var targetLabel = quietStartTargetLabel(quiet.current_target);
-      return targetLabel ? 'Heard ' + targetLabel : 'Heard at the starting level';
-    }
-    if (quiet.status === 'floor_pending_operator') {
-      var pendingTargetLabel = quietStartTargetLabel(quiet.current_target);
-      return pendingTargetLabel ? 'Waiting on what you heard for ' + pendingTargetLabel : 'Waiting on what you heard';
-    }
-    return 'Ready to start';
-  }
-  function readinessTargetLockReason(readiness) {
-    var target = readiness && readiness.target || {};
-    var audible = readiness && readiness.audible_test || {};
-    if (target.role === 'tweeter') {
-      return audible.target_role_allowed === false ?
-        'Choose this driver again so JTS can start it quiet.' : '';
-    }
-    if (audible.target_role_allowed === false) {
-      return 'This driver cannot be tested from here yet. Choose a woofer, mid, or subwoofer driver to continue.';
-    }
-    return '';
-  }
-  function friendlySetupReason(raw) {
-    var text = String(raw || '').trim();
-    if (!text) return 'One setup item needs to be finished.';
-    var lower = text.toLowerCase();
-    if (lower.indexOf('audible driver tests are not wired') >= 0 ||
-        lower.indexOf('audible driver tests are not enabled') >= 0 ||
-        lower.indexOf('require explicit') >= 0 ||
-        lower.indexOf('lab backend') >= 0 ||
-        lower.indexOf('audio_backend_not_enabled') >= 0) {
-      return 'Driver tests are not available on this install yet.';
-    }
-    if (lower.indexOf('device or resource busy') >= 0 ||
-        lower.indexOf('aplay failed') >= 0 ||
-        lower.indexOf('tone playback backend failed') >= 0) {
-      return 'The speaker audio device was busy. Stop other playback, then try the quiet driver test again.';
-    }
-    if ((lower.indexOf('safe test') >= 0 && lower.indexOf('not open') >= 0) ||
-        lower.indexOf('safe_session_not_armed') >= 0 ||
-        lower.indexOf('safe session must be armed') >= 0) {
-      return 'JTS needs to prepare this driver again. Choose the driver, then press Start.';
-    }
-    if (lower.indexOf('rollback_target_available') >= 0 ||
-        lower.indexOf('current_config_missing') >= 0 ||
-        lower.indexOf('current_config_unreadable') >= 0 ||
-        lower.indexOf('current config path') >= 0) {
-      return 'JTS could not find the current audio profile it needs to restore after testing. Refresh the page, then choose the driver again.';
-    }
-    if (lower.indexOf('rollback_target_restore_limited') >= 0 ||
-        lower.indexOf('volume_limit_missing') >= 0 ||
-        lower.indexOf('volume_limit_positive') >= 0 ||
-        lower.indexOf('unknown_custom_camilla_config') >= 0) {
-      return 'The current sound profile cannot be used for testing. Save a normal JTS sound profile, then choose the driver again.';
-    }
-    if (lower.indexOf('route_verified') >= 0 ||
-        lower.indexOf('protected_by_active_baseline') >= 0 ||
-        lower.indexOf('bypass_disabled') >= 0 ||
-        lower.indexOf('path-safety evidence was not provided') >= 0 ||
-        lower.indexOf('staged protected candidate') >= 0 ||
-        lower.indexOf('active_startup_candidate') >= 0) {
-      return 'JTS could not get the test ready. Save the speaker layout and crossover settings, then choose the driver again.';
-    }
-    if (lower.indexOf('protection') >= 0 || lower.indexOf('high_frequency') >= 0 ||
-        lower.indexOf('high-frequency') >= 0) {
-      return 'JTS needs to save the quiet limit for that high-frequency driver before any tone can play. Save the crossover settings, then choose the driver again.';
-    }
-    if (lower.indexOf('path_safety') >= 0 || lower.indexOf('safety evidence') >= 0 ||
-        lower.indexOf('evidence') >= 0 || lower.indexOf('protected path') >= 0) {
-      return 'JTS could not get this driver test ready. Choose the driver again to retry. No sound was played.';
-    }
-    if (lower.indexOf('crossover_preview') >= 0 || lower.indexOf('crossover preview') >= 0) {
-      return 'Save the crossover settings, then choose this driver again. No sound was played.';
-    }
-    if (lower.indexOf('startup') >= 0 || lower.indexOf('staged') >= 0 ||
-        lower.indexOf('camilla') >= 0) {
-      return 'JTS could not get the test ready. No sound was played.';
-    }
-    if (lower.indexOf('floor') >= 0 || lower.indexOf('calibration') >= 0) {
-      return 'Choose the driver again so JTS can restart this test from the quietest level.';
-    }
-    if (lower.indexOf('target requires speaker_group_id') >= 0 ||
-        lower.indexOf('target requires') >= 0) {
-      return 'Choose the driver you want to test first.';
-    }
-    if (lower.indexOf('physical output') >= 0 ||
-        lower.indexOf('output identity') >= 0 ||
-        lower.indexOf('unverified') >= 0) {
-      return 'Confirm which DAC output goes to each driver, then choose the driver again.';
-    }
-    // Never echo raw backend codes to the user. A snake_case identifier we did
-    // not map above collapses to one calm, actionable sentence; already-readable
-    // backend copy (a normal sentence) passes through unchanged.
-    if (text.indexOf('_') >= 0) {
-      return 'One setup step still needs finishing. Choose the driver again to continue.';
-    }
-    return text;
-  }
-  function friendlySetupIssue(issue) {
-    issue = issue || {};
-    return friendlySetupReason(issue.message || issue.label || issue.code);
-  }
-  function readinessBlockedReasons(readiness) {
-    var reasons = [];
-    var gates = Array.isArray(readiness.required_gates) ? readiness.required_gates : [];
-    var issues = Array.isArray(readiness.issues) ? readiness.issues : [];
-    gates.forEach(function(gate) {
-      if (!gate || gate.passed) return;
-      reasons.push(friendlySetupReason(gate.message || gate.label || gate.id));
-    });
-    issues.forEach(function(issue) {
-      if (!issue) return;
-      reasons.push(friendlySetupIssue(issue));
-    });
-    var lockReason = readinessTargetLockReason(readiness);
-    if (lockReason) {
-      reasons.unshift(lockReason);
-    }
-    return reasons.filter(function(reason, index, arr) {
-      return reason && arr.indexOf(reason) === index;
-    }).slice(0, 6);
-  }
-  function renderOutputReadinessSummary(readiness) {
-    var target = readiness.target || {};
-    var level = readiness.calibration_level && readiness.calibration_level.test_signal || {};
-    var rows = [
-      ['DAC output', target.physical_output_index == null ? 'unknown' : 'Output ' + (Number(target.physical_output_index) + 1)],
-      ['Test level', level.requested_level_dbfs == null ? fmtDbfs(activeSpeakerLevelConfig().value) : fmtDbfs(level.requested_level_dbfs)]
-    ];
-    return '<dl class="active-speaker-facts output-readiness-summary">' + rows.map(function(row) {
-      return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
-    }).join('') + '</dl>';
-  }
-  function renderQuietTestTargetChoices() {
-    if (outputTopology.dirty || !outputIdentityComplete()) return '';
-    var topology = currentOutputTopology();
-    var groups = outputGroups(topology);
-    var buttons = [];
-    groups.forEach(function(group) {
-      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
-        if (!channel.identity_verified || channel.physical_output_index == null) return;
-        var label = channel.human_output_label ||
-          ('Output ' + (Number(channel.physical_output_index) + 1));
-        var targetLabel = (group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label;
-        var measured = driverMeasurementCaptured(group.id, channel.role);
-        buttons.push('<button type="button" class="btn btn--ghost" data-act="check-output-readiness" ' +
-          'data-group-id="' + escapeHtml(group.id) + '" ' +
-          'data-role="' + escapeHtml(channel.role) + '" ' +
-          'data-output-index="' + escapeHtml(channel.physical_output_index == null ? '' : String(channel.physical_output_index)) + '" ' +
-          'data-speaker-label="' + escapeHtml(group.label || group.id) + '" ' +
-          'data-label="' + escapeHtml(targetLabel) + '"' +
-          (measured ? ' disabled' : '') + '>' +
-          escapeHtml(measured ? '✓ ' + humanRole(channel.role) + ' confirmed' : 'Test ' + humanRole(channel.role)) +
-          ' · ' + escapeHtml(label) + '</button>');
-      });
-    });
-    if (!buttons.length) return '';
-    return '<div class="active-speaker-actions active-speaker-actions--targets">' +
-      buttons.join('') +
-    '</div>';
-  }
-  function renderOutputReadinessBlockers(readiness) {
-    var reasons = readinessBlockedReasons(readiness);
-    if (!reasons.length) {
-      if (readiness && readiness.preconditions_passed && readiness.playback_allowed !== true) {
-        return '<p class="setting-row__hint">This install cannot play driver tests from this page yet.</p>';
-      }
-      return '<p class="setting-row__hint">Ready to start at the quietest test level. Press Stop immediately if anything sounds wrong.</p>';
-    }
-    return '<div class="output-readiness-blockers">' +
-      '<p class="setting-row__title">How to continue</p>' +
-      '<ul class="active-speaker-issues active-speaker-issues--warning">' + reasons.map(function(reason) {
-        return '<li>' + escapeHtml(reason) + '</li>';
-      }).join('') + '</ul>' +
-    '</div>';
-  }
-  function renderOutputReadinessCard() {
-    if (outputTopology.dirty) {
-      return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Choose first driver</p>' +
-        '<p class="setting-row__hint">Save the speaker layout before choosing a driver for the first test.</p></div>' +
-        '<span class="status-pill">draft</span></div>' +
-      '</div>';
-    }
-    if (outputTopology.readinessChecking) {
-      return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Getting the test ready</p>' +
-        '<p class="setting-row__hint">JTS is checking the saved setup for the selected driver. No sound is playing.</p></div>' +
-        '<span class="status-pill">preparing</span></div>' +
-      '</div>';
-    }
-    if (outputTopology.readinessError) {
-      return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Finish setup before testing</p>' +
-        '<p class="setting-row__hint">No sound played. Use the message below, then choose the driver again.</p></div>' +
-        '<span class="status-pill">not ready yet</span></div>' +
-        '<p class="setting-row__hint">' + escapeHtml(outputTopology.readinessError) + '</p>' +
-        renderQuietTestTargetChoices() +
-      '</div>';
-    }
-    var readiness = outputTopology.readiness;
-    if (!readiness) {
-      var choices = renderQuietTestTargetChoices();
-      var counts = driverMeasurementCounts();
-      var hasProgress = counts.captured > 0;
-      return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">' +
-          escapeHtml(hasProgress ? 'Choose next driver' : 'Choose first driver') + '</p>' +
-        '<p class="setting-row__hint">' + escapeHtml(choices ?
-          (hasProgress ?
-            'The completed driver is checked off. Choose the next driver to hear.' :
-            'Choose the driver you want to hear first. JTS will prepare the quiet test before any sound can play.') :
-          'Confirm outputs first, then choose one driver to test.') + '</p></div>' +
-        '<span class="status-pill">' + escapeHtml(choices ? 'next' : 'confirm outputs') + '</span></div>' +
-        choices +
-      '</div>';
-    }
-    var target = readiness.target || {};
-    var audioEnabled = readiness.playback_allowed === true;
-    var statusValue = readiness.preconditions_passed ?
-      (audioEnabled ? 'ready to test' : 'not available') :
-      'not ready yet';
-    var nextStep = readiness.preconditions_passed && !audioEnabled ?
-      'This install cannot play driver tests from this page yet.' :
-      friendlySetupReason(readiness.next_step || 'No sound was played.');
-    var showAudibleControls = activeSpeakerAudibleTestReady();
-    return '<div class="output-card output-card--readiness">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Listen for this driver</p>' +
-        '<p class="setting-row__hint">' + escapeHtml(target.label || 'Selected channel') + '</p></div>' +
-        '<span class="status-pill' + (readiness.preconditions_passed && audioEnabled ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(statusValue) + '</span></div>' +
-      renderOutputReadinessSummary(readiness) +
-      renderOutputReadinessBlockers(readiness) +
-      (showAudibleControls ? renderActiveSpeakerLevel() :
-        '<p class="setting-row__hint">' + escapeHtml(nextStep) + '</p>') +
-      renderOutputReadinessActions(readiness) +
-      renderOutputReadinessPlayback(outputTopology.readinessPlayback) +
-    '</div>';
-  }
-  function renderOutputReadinessActions(readiness) {
-    var target = readiness && readiness.target || {};
-    var lockReason = readinessTargetLockReason(readiness);
-    var baseDisabled = !readiness || !readiness.preconditions_passed || !!lockReason ||
-      outputTopology.readinessPlaybackChecking;
-    var audioEnabled = readiness && readiness.playback_allowed === true;
-    var rampRunning = outputAudibleRampMatches(readiness);
-    var pendingPlayback = outputFloorAudioPendingForPlayback(outputTopology.readinessPlayback) ?
-      outputTopology.readinessPlayback : null;
-    var latestPlayback = outputLatestAudiblePlayback(readiness);
-    var playbackId = pendingPlayback && pendingPlayback.playback_id ||
-      latestPlayback && latestPlayback.playback_id ||
-      (rampRunning ? outputAudibleRamp.lastPlaybackId : '') ||
-      '';
-    var resultMode = rampRunning || !!pendingPlayback || !!latestPlayback;
-    var audioDisabled = baseDisabled || rampRunning;
-    var primaryDisabled = resultMode ? !playbackId : audioDisabled;
-    var resultDisabled = !playbackId;
-    var stopDisabled = !rampRunning;
-    var attrs = 'data-group-id="' + escapeHtml(target.speaker_group_id || '') + '" ' +
-      'data-role="' + escapeHtml(target.role || '') + '" ' +
-      'data-label="' + escapeHtml(target.label || '') + '"';
-    var hints = [];
-    if (lockReason) hints.push(lockReason);
-    if (readiness && readiness.preconditions_passed && !audioEnabled) {
-      hints.push('Driver tests are not available on this install yet.');
-    }
-    var primaryButton = resultMode ?
-      '<button type="button" class="btn btn--primary" data-act="active-floor-result" ' +
-        'data-outcome="heard_correct_driver" data-playback-id="' + escapeHtml(playbackId) + '"' +
-        (primaryDisabled ? ' disabled' : '') + '>I hear this driver</button>' :
-      '<button type="button" class="btn btn--primary" data-act="play-output-readiness-tone" ' +
-        attrs + ' data-audio="true"' + (primaryDisabled ? ' disabled' : '') +
-        '>Start quiet test</button>';
-    return hints.map(function(hint) {
-      return '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>';
-    }).join('') +
-      '<div class="active-speaker-actions active-speaker-actions--driver-test">' +
-      (audioEnabled ? primaryButton +
-        '<button type="button" class="btn btn--ghost" data-act="active-floor-result" ' +
-        'data-outcome="heard_wrong_driver" data-playback-id="' + escapeHtml(playbackId) + '"' +
-        (resultDisabled ? ' disabled' : '') + '>Wrong driver</button>' +
-        '<button type="button" class="btn btn--danger" data-act="stop-active-speaker"' +
-        (stopDisabled ? ' disabled' : '') + '>Stop</button>' :
-        '<span class="setting-row__hint">Driver tests are not available on this install yet.</span>') +
-    '</div>';
-  }
-  function renderOutputReadinessPlayback(playback) {
-    if (!playback) return '';
-    var emitted = playbackConfirmable(playback);
-    var message = playbackResultMessage(playback, '', friendlySetupReason);
-    if (emitted) return '';
-    return message ? '<p class="setting-row__hint">No sound played. ' +
-      escapeHtml(message) + '</p>' : '';
-  }
-  function activeSpeakerLevelConfig() {
-    var contract = activeSpeaker.calibrationLevel || {};
-    var raw = contract.test_signal || {};
-    var min = Number(raw.min_level_dbfs);
-    var max = Number(raw.max_level_dbfs);
-    var step = Number(raw.step_db);
-    var def = Number(raw.default_level_dbfs);
-    if (!isFinite(min)) min = -80;
-    if (!isFinite(max)) max = -30;
-    if (!isFinite(step) || step <= 0) step = 1;
-    if (!isFinite(def)) def = min;
-    var value = Number(activeSpeaker.levelDbfs);
-    if (!isFinite(value)) value = def;
-    value = clamp(value, min, max);
-    return {min: min, max: max, step: step, def: def, value: value};
-  }
-  function activeSpeakerSelectedReadinessTarget() {
-    var target = outputTopology.readiness && outputTopology.readiness.target || null;
-    if (!target || !target.speaker_group_id || !target.role) return null;
-    return target;
-  }
-  function renderActiveSpeakerLevel() {
-    var cfg = activeSpeakerLevelConfig();
-    var contract = activeSpeaker.calibrationLevel || {};
-    var issues = Array.isArray(contract.issues) ? contract.issues : [];
-    var readiness = outputTopology.readiness || {};
-    var target = readiness.target || {};
-    var running = outputAudibleRampMatches(readiness);
-    var level = running && isFinite(Number(outputAudibleRamp.levelDbfs)) ?
-      Number(outputAudibleRamp.levelDbfs) : cfg.value;
-    var levelPct = outputRampProgressPct(level);
-    var role = humanRole(target.role || 'driver').toLowerCase();
-    var hint = running ?
-      ('Playing short ' + role + ' pulses. Press “I hear this driver” as soon as you hear it.') :
-      ('JTS starts very quiet and automatically tries a little louder until you hear it or the safe limit is reached.');
-    return '<div class="active-speaker-level">' +
-      '<div class="row-between active-speaker-level__head">' +
-        '<div class="setting-row__text">' +
-          '<p class="setting-row__title">Test progress</p>' +
-          '<p class="setting-row__hint">Listen only for ' + escapeHtml(target.label || role) + '.</p>' +
-        '</div>' +
-        '<span class="active-speaker-level__readout" id="active-speaker-level-readout">' +
-          escapeHtml(fmtDbfs(level)) + '</span>' +
-      '</div>' +
-      '<div class="active-speaker-level__bar' + (running ? ' active-speaker-level__bar--running' : '') + '">' +
-        '<span aria-hidden="true" style="width:' + clamp(levelPct, 0, 100).toFixed(1) + '%"></span>' +
-      '</div>' +
-      '<div class="active-speaker-meter">' +
-        '<span class="active-speaker-meter__label">Very quiet</span>' +
-        '<span class="active-speaker-meter__label">Ramping</span>' +
-        '<span class="active-speaker-meter__label">Safe limit</span>' +
-      '</div>' +
-      '<p class="setting-row__hint">' + escapeHtml(outputAudibleRamp.message || hint) + '</p>' +
-      (issues.length ? '<ul class="active-speaker-issues">' + issues.slice(0, 3).map(function(issue) {
-        return '<li>' + escapeHtml(activeSpeakerLevelIssueMessage(issue)) + '</li>';
-      }).join('') + '</ul>' : '') +
-    '</div>';
-  }
-  function activeSpeakerLevelIssueMessage(issue) {
-    var code = issue && issue.code || '';
-    if (code === 'upward_step_limited') {
-      return 'JTS moved to the next safe volume step. Try this level before raising it again.';
-    }
-    if (code === 'audible_ramp_step_limited') {
-      return 'JTS moved to the next safe volume step. Try this level before raising it again.';
-    }
-    if (code === 'level_clamped') {
-      return 'Volume was kept inside the safe test range.';
-    }
-    if (code === 'floor_required') {
-      return 'Start this driver at the quietest level first.';
-    }
-    return 'JTS adjusted the test volume to stay inside the safe range.';
   }
   function rangeRow(label, value, min, max, opts) {
     opts = opts || {};
@@ -3027,14 +2562,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
-    else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
-    else if (act === 'play-output-readiness-tone') { playOutputReadinessTone(t); }
-    else if (act === 'active-floor-result') { recordFloorAudioResult(t); }
     else if (act === 'prepare-summed-test') { prepareSummedTest(t); }
     else if (act === 'record-summed-validation') { recordSummedValidation(t); }
     else if (act === 'compile-baseline-profile') { compileBaselineProfile(); }
     else if (act === 'apply-baseline-profile') { applyBaselineProfile(); }
-    else if (act === 'stop-active-speaker') { stopActiveSpeakerTest(); }
     else if (act === 'commission-step') {
       startCommissionAutoRamp(t.getAttribute('data-role') || '', {confirm: false});
     }
@@ -3311,11 +2842,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.loading = false;
     outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
-    outputTopology.readiness = null;
-    outputTopology.readinessChecking = '';
-    outputTopology.readinessError = '';
-    outputTopology.readinessPlayback = null;
-    outputTopology.readinessPlaybackChecking = '';
     if (outputGroups(topology).length) outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   }
   async function refreshOutputTopology(options) {
@@ -3561,11 +3087,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.dirty = true;
     outputTopology.touched = true;
     outputTopology.error = '';
-    outputTopology.readiness = null;
-    outputTopology.readinessChecking = '';
-    outputTopology.readinessError = '';
-    outputTopology.readinessPlayback = null;
-    outputTopology.readinessPlaybackChecking = '';
     driverResearch.dirty = true;
     crossoverPreview.payload = null;
     crossoverPreview.error = '';
@@ -4071,9 +3592,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
 
     outputTopology.identitySaving = groupId + ':' + role;
     outputTopology.error = '';
-    outputTopology.readinessError = '';
-    outputTopology.readinessPlayback = null;
-    outputTopology.readinessPlaybackChecking = '';
     outputTopology.touched = true;
     render();
     try {
@@ -4097,459 +3615,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  function syncPreparedOutputTopology(payload) {
-    if (!payload || !payload.output_topology) return;
-    outputTopology.payload = clone(payload.output_topology);
-    outputTopology.draft = clone(payload.output_topology);
-    outputTopology.identity = payload.channel_identity || outputTopology.identity || null;
-    outputTopology.clockDomain = payload.clock_domain || outputTopology.clockDomain || null;
-    outputTopology.activeRoute = payload.active_playback_route || outputTopology.activeRoute || null;
-    outputTopology.error = '';
-    outputTopology.dirty = false;
-    outputTopology.saving = false;
-    outputTopology.loading = false;
-    outputTopology.identitySaving = '';
-    outputTopology.protectionSaving = '';
-  }
-  function outputReadinessFromPreparedDriver(payload, button) {
-    payload = payload || {};
-    var preparedTarget = payload.target || {};
-    var toneBackend = payload.tone_backend || {};
-    var audioEnabled = toneBackend.audio_enabled === true;
-    var groupId = button.getAttribute('data-group-id') || '';
-    var role = button.getAttribute('data-role') || '';
-    var outputIndex = Number(button.getAttribute('data-output-index'));
-    var target = {
-      speaker_group_id: preparedTarget.speaker_group_id || groupId,
-      speaker_label: preparedTarget.speaker_label || button.getAttribute('data-speaker-label') || groupId,
-      role: preparedTarget.role || preparedTarget.driver_role || role,
-      physical_output_index: preparedTarget.physical_output_index != null ?
-        preparedTarget.physical_output_index : (isFinite(outputIndex) ? outputIndex : null),
-      label: preparedTarget.label || button.getAttribute('data-label') || (groupId + ' ' + role)
-    };
-    return {
-      artifact_schema_version: 1,
-      kind: 'jts_active_speaker_playback_readiness',
-      status: 'preconditions_passed',
-      preconditions_passed: true,
-      playback_allowed: audioEnabled,
-      would_play: false,
-      tone_playback_implemented: audioEnabled,
-      target: target,
-      tone_backend: toneBackend,
-      calibration_level: payload.calibration_level || activeSpeaker.calibrationLevel || {},
-      safe_session: payload.session || activeSpeaker.session || {},
-      startup_load: (payload.startup_load && payload.startup_load.load) ||
-        (activeSpeaker.startupLoad || {}).state ||
-        activeSpeaker.startupLoad ||
-        {},
-      required_gates: [],
-      issues: [],
-      next_step: audioEnabled ?
-        (payload.message ||
-          'Start at the quietest level. Press Stop immediately if anything sounds wrong.') :
-        'This install cannot play driver tests from this page yet.'
-    };
-  }
-  function refreshSelectedOutputReadiness(nextStep) {
-    if (!outputTopology.readiness || !outputTopology.readiness.target) return;
-    outputTopology.readiness = Object.assign({}, outputTopology.readiness, {
-      calibration_level: activeSpeaker.calibrationLevel || outputTopology.readiness.calibration_level || {},
-      safe_session: activeSpeaker.session || outputTopology.readiness.safe_session || {},
-      startup_load: (activeSpeaker.startupLoad || {}).state ||
-        activeSpeaker.startupLoad ||
-        outputTopology.readiness.startup_load ||
-        {},
-      next_step: nextStep || outputTopology.readiness.next_step ||
-        'Start at the quietest level. Press Stop immediately if anything sounds wrong.'
-    });
-  }
-  function setupFailureMessage(payload, fallback) {
-    payload = payload || {};
-    var candidates = [];
-    if (payload.error) candidates.push(payload.error);
-    if (payload.message) candidates.push(payload.message);
-    var report = payload.report || {};
-    if (report.message) candidates.push(report.message);
-    if (payload.load && payload.load.message) candidates.push(payload.load.message);
-    [payload.issues, report.issues, payload.blockers].forEach(function(items) {
-      if (!Array.isArray(items)) return;
-      items.forEach(function(issue) {
-        if (!issue) return;
-        candidates.push(issue.message || issue.label || issue.code);
-      });
-    });
-    var friendly = candidates.map(friendlySetupReason).filter(Boolean);
-    return friendly[0] || fallback ||
-      'JTS could not get this driver test ready. No sound was played.';
-  }
-  async function checkOutputPlaybackReadiness(button) {
-    if (outputTopology.dirty) {
-      status('Save the speaker layout before choosing a driver to test.', true);
-      return;
-    }
-    var groupId = button.getAttribute('data-group-id') || '';
-    var role = button.getAttribute('data-role') || '';
-    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
-    var targetId = groupId + ':' + role;
-    outputTopology.readinessChecking = targetId;
-    outputTopology.protectionSaving = '';
-    outputTopology.error = '';
-    outputTopology.readinessError = '';
-    outputTopology.readiness = null;
-    outputTopology.readinessPlayback = null;
-    outputTopology.readinessPlaybackChecking = '';
-    outputTopology.touched = true;
-    activeSpeaker.stagedConfig = null;
-    status('Getting ' + label + ' ready. No sound will play yet.');
-    render();
-    try {
-      var resp = await fetch('./active-speaker/prepare-driver-test', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          speaker_group_id: groupId,
-          role: role
-        })
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(setupFailureMessage(
-        payload,
-        'JTS could not prepare this driver for testing. No sound was played.'
-      ));
-      syncPreparedOutputTopology(payload);
-      if (!payload.ready) {
-        throw new Error(setupFailureMessage(
-          payload,
-          'Finish the setup item shown here, then choose this driver again.'
-        ));
-      }
-      var nextLevel = payload.calibration_level || activeSpeaker.calibrationLevel;
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        error: '',
-        session: payload.session || activeSpeaker.session,
-        calibrationLevel: nextLevel,
-        stagedConfig: payload.staged_config || activeSpeaker.stagedConfig,
-        startupLoad: payload.startup_load || activeSpeaker.startupLoad,
-        levelDbfs: nextLevel && nextLevel.test_signal ?
-          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
-      });
-      outputTopology.readiness = outputReadinessFromPreparedDriver(payload, button);
-      outputTopology.readinessChecking = '';
-      status(outputTopology.readiness.playback_allowed === true ?
-        ('Ready to test ' + label + '. Start at the quietest level.') :
-        ('Driver tests are not available on this install yet.'));
-    } catch (e) {
-      outputTopology.protectionSaving = '';
-      outputTopology.readinessChecking = '';
-      outputTopology.readinessError = e.message;
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('No sound played. ' + e.message);
-    }
-    render();
-  }
-  function outputRampTargetFromButton(button) {
-    var groupId = button.getAttribute('data-group-id') || '';
-    var role = button.getAttribute('data-role') || '';
-    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
-    return {groupId: groupId, role: role, label: label};
-  }
   function sleepMs(ms) {
     return new Promise(function(resolve) {
       window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
     });
   }
-  async function postOutputReadinessTone(target) {
-    var resp = await fetch('./active-speaker/play-tone', {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify({
-        speaker_group_id: target.groupId,
-        role: target.role,
-        audio: true
-      })
-    });
-    var result = await resp.json();
-    if (!resp.ok) throw new Error(result.error || 'channel test failed');
-    return result;
-  }
-  function applyOutputToneResult(result, target, token) {
-    if (token !== outputAudibleRamp.token) return null;
-    outputTopology.readinessPlayback = result.playback || null;
-    outputTopology.readinessPlaybackChecking = '';
-    var playback = result.playback || {};
-    var emitted = playbackConfirmable(playback);
-    var tone = playback.tone || {};
-    var level = Number(tone.level_dbfs);
-    if (emitted && isFinite(level)) {
-      outputAudibleRamp = Object.assign({}, outputAudibleRamp, {
-        pulseCount: outputAudibleRamp.pulseCount + 1,
-        lastPlaybackId: playback.playback_id || outputAudibleRamp.lastPlaybackId,
-        levelDbfs: level,
-        message: 'Listening for ' + target.label + '. Press “I hear this driver” as soon as you hear it.'
-      });
-    }
-    var playbackMessage = playbackResultMessage(playback, undefined, friendlySetupReason);
-    patchActiveSpeaker({
-      loading: false, action: '',
-      session: result.session || activeSpeaker.session,
-      error: '',
-      levelDbfs: isFinite(level) ? level : activeSpeaker.levelDbfs
-    });
-    refreshSelectedOutputReadiness(emitted ?
-      'If you hear the selected driver, confirm it. If you hear nothing, JTS will try a little louder.' :
-      playbackMessage);
-    status(emitted ?
-      'Playing quiet test pulses. Press Stop if anything sounds wrong.' :
-      'No sound played. ' + playbackMessage,
-      !emitted);
-    return playback;
-  }
-  async function recordFloorAudioOutcome(outcome, playbackId, options) {
-    options = options || {};
-    if (!outcome || !playbackId) {
-      status('JTS lost track of that test. Choose the driver again to retry.', true);
-      return null;
-    }
-    var target = outputTopology.readiness && outputTopology.readiness.target || null;
-    if (!options.silentAutoRetry) {
-      stopOutputAudibleRamp(outcome === 'heard_wrong_driver' ?
-        'Stopped. Check the DAC output mapping before trying again.' :
-        '');
-      patchActiveSpeaker({
-        loading: false, action: 'Saving what you heard',
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      render();
-    }
-    var result = null;
-    try {
-      var resp = await fetch('./active-speaker/floor-audio-result', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          outcome: outcome,
-          playback_id: playbackId
-        })
-      });
-      result = await resp.json();
-      if (!resp.ok) throw new Error(result.error || 'driver-test result failed');
-      var measurementPayload = null;
-      var measurementWarning = '';
-      if (!options.silentAutoRetry && target && target.speaker_group_id && target.role) {
-        try {
-          measurementPayload = await postDriverMeasurement(target, outcome, playbackId);
-          patchActiveSpeaker({measurements: measurementPayload});
-        } catch (measurementErr) {
-          measurementWarning = measurementErr.message || 'driver check save failed';
-        }
-      }
-      patchActiveSpeaker({
-        loading: false, action: '',
-        session: result,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      if (!options.silentAutoRetry && target && target.speaker_group_id && target.role) {
-        refreshSelectedOutputReadiness(outcome === 'heard_correct_driver' ?
-          'That driver is confirmed. Continue with the next driver.' :
-          'No sound is playing. Check the wiring or choose the driver again when ready.');
-        outputTopology.readinessError = '';
-      }
-      if (options.silentAutoRetry) return result;
-      var latest = target && measurementPayload ?
-        (measurementPayload.summary || {}).latest_driver_measurements || {} : {};
-      var measured = target && latest[measurementTargetId(target.speaker_group_id, target.role)] &&
-        latest[measurementTargetId(target.speaker_group_id, target.role)].captured === true;
-      if (measured && driverMeasurementsComplete()) {
-        outputStepOverride = 'profile';
-        outputTopology.readiness = null;
-        outputTopology.readinessPlayback = null;
-      } else if (measured && outcome === 'heard_correct_driver') {
-        outputTopology.readiness = null;
-        outputTopology.readinessPlayback = null;
-      }
-      status(measurementWarning ?
-        'Driver result saved, but the driver check was not saved: ' + measurementWarning :
-        (measured ?
-          (driverMeasurementsComplete() ?
-            'Both drivers are confirmed. Continue with the combined crossover check.' :
-            'Driver confirmed. Choose the next driver.') :
-          (outcome === 'heard_wrong_driver' ?
-            'Stopped. Check the output mapping before trying again.' :
-            'Saved. Choose the next driver when you are ready.')),
-        outcome === 'heard_wrong_driver');
-      return result;
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not record driver-test result: ' + e.message, true);
-      if (options.silentAutoRetry) stopOutputAudibleRamp('Stopped because JTS could not record the last pulse.');
-      return null;
-    } finally {
-      if (!options.silentAutoRetry) render();
-    }
-  }
-  async function advanceOutputAudibleRampLevel(target, token) {
-    var body = {
-      action: 'auto_step',
-      speaker_group_id: target.groupId,
-      role: target.role
-    };
-    var resp = await fetch('./active-speaker/calibration-level', {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify(body)
-    });
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'calibration level update failed');
-    if (token !== outputAudibleRamp.token) return null;
-    var accepted = payload && payload.test_signal ?
-      Number(payload.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs;
-    patchActiveSpeaker({
-      loading: false,
-      action: '',
-      calibrationLevel: payload,
-      error: '',
-      levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
-    });
-    if (isFinite(accepted)) {
-      outputAudibleRamp = Object.assign({}, outputAudibleRamp, {
-        levelDbfs: accepted
-      });
-    }
-    return payload;
-  }
-  function autoLevelReachedCap(payload) {
-    var decision = payload && payload.auto_level || {};
-    var action = String(decision.action || '').toLowerCase();
-    var statusValue = String(decision.status || '').toLowerCase();
-    return action !== 'raise' ||
-      statusValue === 'maxed' ||
-      Number(payload && payload.applied_delta_db || 0) <= 0;
-  }
-  async function runOutputAudibleRamp(target, token) {
-    while (outputAudibleRamp.running && token === outputAudibleRamp.token) {
-      outputTopology.readinessPlaybackChecking = 'audio';
-      outputAudibleRamp = Object.assign({}, outputAudibleRamp, {
-        message: outputAudibleRamp.pulseCount ?
-          'Trying another short pulse a little louder.' :
-          'Starting with the quietest short pulse.'
-      });
-      render();
-      try {
-        var result = await postOutputReadinessTone(target);
-        var playback = applyOutputToneResult(result, target, token);
-        render();
-        if (!playbackConfirmable(playback)) {
-          stopOutputAudibleRamp('No sound played. JTS could not start the driver test.');
-          render();
-          return;
-        }
-        await sleepMs(OUTPUT_RAMP_LISTEN_MS);
-        if (!outputAudibleRamp.running || token !== outputAudibleRamp.token) return;
-        if (outputFloorAudioPendingForPlayback(playback)) {
-          await recordFloorAudioOutcome('silent', playback.playback_id, {
-            silentAutoRetry: true
-          });
-        }
-        if (!outputAudibleRamp.running || token !== outputAudibleRamp.token) return;
-        var levelPayload = await advanceOutputAudibleRampLevel(target, token);
-        if (!levelPayload || autoLevelReachedCap(levelPayload)) {
-          stopOutputAudibleRamp(
-            'Reached the safe test limit. If you still heard nothing, check amp power, wiring, and the DAC output mapping before trying again.'
-          );
-          status('Reached the safe test limit. Check wiring and amp power before trying again.', true);
-          render();
-          return;
-        }
-        await sleepMs(OUTPUT_RAMP_NEXT_PULSE_MS);
-      } catch (e) {
-        stopOutputAudibleRamp('Stopped. ' + e.message);
-        outputTopology.readinessPlaybackChecking = '';
-        status('Could not run the driver test: ' + e.message, true);
-        render();
-        return;
-      }
-    }
-  }
-  async function playOutputReadinessTone(button) {
-    var target = outputRampTargetFromButton(button);
-    var readiness = outputTopology.readiness || {};
-    var audio = button.getAttribute('data-audio') === 'true';
-    if (audio && readiness.playback_allowed !== true) {
-      var backend = readiness.tone_backend || {};
-      var message = playbackResultMessage(
-        {
-          status: 'blocked',
-          issues: Array.isArray(backend.issues) && backend.issues.length ?
-            backend.issues :
-            [{code: 'audio_backend_not_enabled'}]
-        },
-        'Driver tests are not available on this install yet.',
-        friendlySetupReason
-      );
-      refreshSelectedOutputReadiness(message);
-      outputTopology.readinessError = '';
-      outputTopology.touched = true;
-      status('No sound played. ' + message, true);
-      render();
-      return;
-    }
-    if (!audio) return;
-    var token = outputAudibleRamp.token + 1;
-    outputAudibleRamp = {
-      running: true,
-      token: token,
-      targetKey: outputTargetKey(readiness.target || target),
-      lastPlaybackId: '',
-      pulseCount: 0,
-      levelDbfs: activeSpeaker.levelDbfs,
-      message: 'Starting with the quietest short pulse.'
-    };
-    outputTopology.readinessPlaybackChecking = 'audio';
-    outputTopology.readinessError = '';
-    outputTopology.readinessPlayback = null;
-    outputTopology.touched = true;
-    status('Starting quiet driver test. Press Stop if anything sounds wrong.');
-    render();
-    runOutputAudibleRamp(target, token);
-  }
-  async function recordFloorAudioResult(button) {
-    var outcome = button.getAttribute('data-outcome') || '';
-    var playbackId = button.getAttribute('data-playback-id') || '';
-    await recordFloorAudioOutcome(outcome, playbackId);
-  }
   function currentMicObservationPayload() {
     return {};
-  }
-  async function postDriverMeasurement(target, outcome, playbackId) {
-    var body = Object.assign({
-      speaker_group_id: target.speaker_group_id,
-      role: target.role,
-      outcome: outcome,
-      playback_id: playbackId,
-      test_level_dbfs: activeSpeaker.levelDbfs
-    }, currentMicObservationPayload());
-    var resp = await fetch('./active-speaker/driver-measurement', {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify(body)
-    });
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'driver check save failed');
-    return payload;
   }
   async function prepareSummedTest(button) {
     var groupId = button.getAttribute('data-group-id') || '';
@@ -4765,49 +3837,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var resp = await fetch('./active-speaker/baseline-profile', {cache: 'no-store'});
     if (!resp.ok) throw new Error('active-speaker baseline profile failed');
     return await resp.json();
-  }
-  async function stopActiveSpeakerTest() {
-    stopOutputAudibleRamp('Stopped. No test tone is playing.');
-    outputTopology.readinessPlaybackChecking = '';
-    patchActiveSpeaker({
-      loading: false,
-      action: 'Stopping',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var resp = await fetch('./active-speaker/stop', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      if (!resp.ok) throw new Error('stop failed');
-      var nextSession = await resp.json();
-      var nextLevel = nextSession.calibration_level || activeSpeaker.calibrationLevel;
-      var levelResp = await fetch('./active-speaker/calibration-level', {cache: 'no-store'});
-      if (levelResp.ok) nextLevel = await levelResp.json();
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        session: nextSession,
-        calibrationLevel: nextLevel,
-        error: '',
-        levelDbfs: nextLevel && nextLevel.test_signal ?
-          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
-      });
-      refreshSelectedOutputReadiness('Stopped. Choose Start quiet test when you are ready to try again.');
-      status('Stopped. No test tone is playing.');
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not stop active speaker test: ' + e.message, true);
-    }
-    render();
   }
   async function loadState() {
     try {

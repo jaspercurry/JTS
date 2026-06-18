@@ -673,12 +673,10 @@ def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):
 def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):
     """Arming must repair a tweeter that drifted to ``required_missing``.
 
-    The old "Test each driver" card re-synced the software-guard request on every
-    driver-choice via prepare-driver-test; the #780 commission-card fold removed
-    that path, so the live topology could drift away from the staged config with
-    no UI repair and the arm blocked forever (the jts3 "speaker isn't fully set
-    up for driver tests yet" wedge). Commission-load now re-requests the missing
-    software guards, mirroring prepare-driver-test.
+    Commission-load is the target-specific arming boundary now. It must
+    re-request missing software guards itself so the live topology cannot drift
+    away from the staged config and block driver commissioning forever (the jts3
+    "speaker isn't fully set up for driver tests yet" wedge).
     """
     from jasper.output_topology import set_channel_protection_status
 

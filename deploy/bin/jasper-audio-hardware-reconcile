@@ -91,8 +91,6 @@ Detect the current final-output DAC role and reconcile owned JTS state:
   - DAC8x/DAC8x Studio present -> outputd_dac targets it; Apple mixer helpers disabled
   - Apple USB-C dongle present -> outputd_dac targets Apple; Apple helpers enabled
   - no recognized output DAC -> Apple helpers disabled; unknown/fallback id recorded
-  - optional DAC8x-family JASPER_OUTPUT_DAC_ROUTE renders a narrow ALSA
-    channel route for lab/commissioning wiring
 
 --print-env prints shell-quoted role variables for install.sh and performs no mutations.
 --no-restart updates files/service enablement but does not restart outputd/voice.
@@ -133,12 +131,6 @@ log_event() {
     local name="$1"
     shift
     echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
-}
-
-jasper_asound_route_ignored() {
-    local reason="$1" route="${2:-}"
-    log_event "route_ignored" \
-        "output_dac_id=${OUTPUT_DAC_ID} output_dac_route=$(jasper_asound_log_token "$route") reason=${reason}"
 }
 
 # Quoting is the shared lib's jasper_env_quote_value (sourced by
@@ -345,7 +337,6 @@ DONGLE_CARD="A"
 OUTPUT_DAC_CARD="A"
 OUTPUT_DAC_ID="A"
 OUTPUT_DAC_RECOGNIZED=0
-OUTPUT_DAC_ROUTE="${JASPER_OUTPUT_DAC_ROUTE:-}"
 OUTPUTD_ACTIVE_MODE=0
 OUTPUTD_ACTIVE_CHANNELS=""
 OBSERVED_OUTPUT_PROFILE_ID=""
@@ -354,13 +345,6 @@ OBSERVED_OUTPUT_PAYLOAD=""
 DUAL_APPLE_DAC_A_PCM=""
 DUAL_APPLE_DAC_B_PCM=""
 DUAL_APPLE_ORDER_SOURCE=""
-
-load_output_dac_route() {
-    if [[ -n "${OUTPUT_DAC_ROUTE}" ]]; then
-        return
-    fi
-    OUTPUT_DAC_ROUTE="$(env_file_value "JASPER_OUTPUT_DAC_ROUTE")"
-}
 
 detect_roles() {
     APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
@@ -385,7 +369,6 @@ detect_roles() {
         OUTPUT_DAC_ID="apple_usb_c_dongle"
         OUTPUT_DAC_RECOGNIZED=1
     fi
-    load_output_dac_route
 }
 
 apply_observed_composite_policy() {
@@ -597,7 +580,6 @@ print_env() {
     printf 'OUTPUT_DAC_CARD=%s\n' "$(quote_env_value "$OUTPUT_DAC_CARD")"
     printf 'OUTPUT_DAC_ID=%s\n' "$(quote_env_value "$OUTPUT_DAC_ID")"
     printf 'OUTPUT_DAC_RECOGNIZED=%s\n' "$(quote_env_value "$OUTPUT_DAC_RECOGNIZED")"
-    printf 'OUTPUT_DAC_ROUTE=%s\n' "$(quote_env_value "$OUTPUT_DAC_ROUTE")"
 }
 
 render_asound_if_needed() {
@@ -628,7 +610,7 @@ render_asound_if_needed() {
     if [[ "$changed" == "1" ]]; then
         "$RENDER_ASOUND_CONF"
         log_event "asound_rendered" \
-            "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} output_dac_route=$(jasper_asound_log_token "$OUTPUT_DAC_ROUTE") outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS")"
+            "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS")"
         return 0
     fi
     return 1
@@ -791,4 +773,4 @@ else
 fi
 
 log_event "complete" \
-    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} output_dac_route=$(jasper_asound_log_token "$OUTPUT_DAC_ROUTE") outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"
+    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"

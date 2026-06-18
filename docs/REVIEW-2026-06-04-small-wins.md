@@ -85,15 +85,12 @@ the comment marks the code default as the stale one); add a test asserting
   serially. **Fix:** `spotipy.Spotify(auth_manager=auth, requests_timeout=4)`
   + `asyncio.wait_for` around the two `to_thread` calls. Matches the timeout
   discipline already used everywhere else in the file.
-- **`active_speaker` audible test path lacks the forbidden-lane guard
-  (Medium · quick).** The generate-config path forbids the main stereo /
-  `jasper_out` lane via `FORBIDDEN_ACTIVE_PLAYBACK_TOKENS`, but the audible
-  `aplay` tone path runs `aplay -D <JASPER_ACTIVE_SPEAKER_TEST_PCM>`
-  verbatim with no such check (`playback.py:707`). An operator who's enabled
-  the aplay backend could point `TEST_PCM` at the full-range lane and send a
-  tone to an unprotected tweeter. **Fix:** reuse `_forbidden_playback_token()`
-  against `TEST_PCM` and refuse to construct the backend on a match. Closes
-  the one remaining loud-output footgun in an otherwise exemplary subsystem.
+- **Resolved 2026-06-17: `active_speaker` lab `aplay` path now has the
+  forbidden-lane guard.** The old concern was that the lab tone path could run
+  `aplay -D <test PCM>` against `jasper_out` or an outputd/CamillaDSP lane.
+  `jasper.active_speaker.playback` now rejects daemon-owned test writers in
+  both `tone_backend_status` and `AplayTonePlaybackBackend.__init__`, via the
+  shared `_forbidden_test_pcm_token` helper. No action remains for this item.
 - **`require_outputd_ready` aborts the whole install on a transient
   failure (Medium · quick).** Under `set -euo pipefail`, a bare call at
   `install.sh:2672` with only a 3 s probe deadline lets a momentary DAC

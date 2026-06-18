@@ -64,7 +64,6 @@ def _render_install_asound_template(
     *,
     output_dac_id: str,
     output_dac_card: str,
-    output_dac_route: str,
 ) -> tuple[str, str]:
     source = tmp_path / "asoundrc.jasper"
     dest = tmp_path / "asoundrc.rendered"
@@ -79,7 +78,6 @@ def _render_install_asound_template(
         "DONGLE_CARD=A && "
         f"OUTPUT_DAC_CARD={shlex.quote(output_dac_card)} && "
         f"OUTPUT_DAC_ID={shlex.quote(output_dac_id)} && "
-        f"OUTPUT_DAC_ROUTE={shlex.quote(output_dac_route)} && "
         f"jasper_asound_render_template {shlex.quote(str(source))} {shlex.quote(str(dest))}"
     )
     result = subprocess.run(
@@ -470,6 +468,30 @@ def test_migrate_tts_outputd_socket_preserves_custom_override(tmp_path):
     )
 
 
+def test_migrate_removed_output_dac_route_strips_stale_key(tmp_path):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    jasper_env = env_dir / "jasper.env"
+    jasper_env.write_text(
+        "BEFORE=1\n"
+        "JASPER_OUTPUT_DAC_ROUTE=mono:5\n"
+        "AFTER=1\n",
+        encoding="utf-8",
+    )
+
+    result = _run_install_helper(
+        "migrate_removed_output_dac_route",
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert jasper_env.read_text(encoding="utf-8") == (
+        "BEFORE=1\n"
+        "AFTER=1\n"
+    )
+    assert "removed stale JASPER_OUTPUT_DAC_ROUTE" in result.stdout
+
+
 def test_model_downloads_are_bounded_and_split_by_runtime_need():
     """Model fetches should use the shared bounded helper. Required
     openWakeWord runtime assets and the active stock fallback fail the
@@ -536,38 +558,30 @@ def test_install_help_is_clean_and_non_root():
     assert "this script must be run as root" not in result.stderr
 
 
-def test_install_asound_renderer_supports_dac8x_mono_route(tmp_path: Path):
+def test_install_asound_renderer_renders_direct_outputd_dac(tmp_path: Path):
     rendered, stderr = _render_install_asound_template(
         tmp_path,
         output_dac_id="hifiberry_dac8x",
         output_dac_card="sndrpihifiberry",
-        output_dac_route="mono:5",
     )
 
     assert stderr == ""
-    assert "type route" in rendered
-    assert 'pcm "hw:CARD=sndrpihifiberry,DEV=0"' in rendered
-    assert "channels 8" in rendered
-    assert "0.4 0.5" in rendered
-    assert "1.4 0.5" in rendered
+    assert "type hw" in rendered
+    assert "card sndrpihifiberry" in rendered
+    assert "device 0" in rendered
     assert "ctl.outputd_dac { card sndrpihifiberry }" in rendered
     assert "pcm.jasper_out { card A }" in rendered
 
 
-def test_install_asound_renderer_keeps_invalid_route_warning_out_of_config(
-    tmp_path: Path,
-):
+def test_install_asound_renderer_dual_apple_parks_outputd_dac(tmp_path: Path):
     rendered, stderr = _render_install_asound_template(
         tmp_path,
-        output_dac_id="hifiberry_dac8x",
-        output_dac_card="sndrpihifiberry",
-        output_dac_route="stereo:5,5",
+        output_dac_id="dual_apple_usb_c_dac_4ch",
+        output_dac_card="",
     )
 
-    assert "reason=duplicate_stereo_channel" in stderr
-    assert "Ignoring JASPER_OUTPUT_DAC_ROUTE" not in rendered
-    assert "type hw" in rendered
-    assert "card sndrpihifiberry" in rendered
+    assert stderr == ""
+    assert "type null" in rendered
     assert "type route" not in rendered
 
 

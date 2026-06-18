@@ -96,7 +96,6 @@ from .test_signal_plan import (
 )
 from .playback import (
     AplayTonePlaybackBackend,
-    DirectDacTonePlaybackBackend,
     TONE_BACKEND_STATUS_KIND,
     TONE_PLAYBACK_ARTIFACT_KIND,
     TONE_PLAYBACK_RESULT_KIND,
@@ -381,7 +380,6 @@ __all__ = [
     "stop_tone_playback",
     "tone_targets_payload",
     "tone_backend_status",
-    "DirectDacTonePlaybackBackend",
     "update_calibration_level_state",
     "write_path_safety_evidence",
 ]
