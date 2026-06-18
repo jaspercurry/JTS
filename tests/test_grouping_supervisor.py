@@ -13,6 +13,8 @@ policy contract:
   - Rate limit blocks a second kick in-window, allows it after
   - Binding read-repair runs on the leader only; totals accumulate;
     a binding crash never blocks the starvation watch
+  - Leader autonomous reassertion uses the persisted pair roster and
+    includes X-JTS-Household when the secret exists
   - Kick failure is swallowed (logged), never raises out of _tick
 """
 from __future__ import annotations
@@ -28,17 +30,22 @@ def _cfg(
     *,
     enabled: bool = True,
     role: str = "follower",
+    channel: str = "left",
     error: str | None = None,
+    peer_addr: str = "",
+    peer_name: str = "",
 ) -> GroupingConfig:
     return GroupingConfig(
         enabled=enabled,
         role=role,
-        channel="left",
+        channel=channel,
         bond_id="bond-1" if enabled else "",
         leader_addr="jts.local" if role == "follower" else "",
         buffer_ms=400,
         codec="flac",
         error=error,
+        peer_addr=peer_addr,
+        peer_name=peer_name,
     )
 
 
@@ -61,6 +68,10 @@ class _FakeSupervisor(GroupingSupervisor):
         self.status_results: list = []
         self.binding_results: list = []
         self.binding_calls = 0
+        self.peer_grouping_results: list = []
+        self.reassert_posts: list[tuple[str, dict, dict[str, str] | None]] = []
+        self.household_secret = ""
+        self.leader_hostname = "jts.local"
         self.kick_calls = 0
         self.kick_error: BaseException | None = None
         self.now: float = 0.0
@@ -83,6 +94,36 @@ class _FakeSupervisor(GroupingSupervisor):
             raise result
         return result
 
+    async def read_peer_grouping(self, peer_addr: str) -> dict | None:
+        if not self.peer_grouping_results:
+            return {
+                "enabled": True,
+                "role": "follower",
+                "channel": "right",
+                "bond_id": "bond-1",
+                "leader_addr": self.leader_hostname,
+                "peer_addr": "",
+                "peer_name": "",
+            }
+        result = self.peer_grouping_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def post_peer_grouping(
+        self, peer_addr: str, body: dict,
+    ) -> tuple[bool, str]:
+        self.reassert_posts.append((peer_addr, body, self.household_headers()))
+        return True, "HTTP 200"
+
+    def household_headers(self) -> dict[str, str] | None:
+        if not self.household_secret:
+            return None
+        return {"X-JTS-Household": self.household_secret}
+
+    def leader_handle(self) -> str:
+        return self.leader_hostname
+
     async def kick_reconciler(self) -> None:
         self.kick_calls += 1
         if self.kick_error is not None:
@@ -90,6 +131,10 @@ class _FakeSupervisor(GroupingSupervisor):
 
     def _now(self) -> float:
         return self.now
+
+
+class _FileBackedHouseholdSupervisor(_FakeSupervisor):
+    household_headers = GroupingSupervisor.household_headers
 
 
 # ---------- watch gating ----------
@@ -277,6 +322,105 @@ async def test_binding_crash_does_not_block_starvation_watch():
     assert sup.kick_calls == 1
 
 
+# ---------- autonomous reassertion ----------
+
+
+async def test_leader_reasserts_rostered_follower_with_household_secret(
+    monkeypatch, tmp_path,
+):
+    """Phase D: a leader repairing its roster peer presents X-JTS-Household."""
+    import jasper.control.household_credential as hc
+
+    secret_path = tmp_path / "household_secret"
+    secret_path.write_text("hh-secret\n")
+    monkeypatch.setattr(hc, "SECRET_FILE", str(secret_path))
+
+    sup = _FileBackedHouseholdSupervisor()
+    sup.cfg = _cfg(role="leader", channel="left", peer_addr="192.168.1.9")
+    sup.peer_grouping_results = [None]
+    sup.status_results = [SERVING]
+
+    await sup._tick()
+
+    assert sup.reassert_posts == [(
+        "192.168.1.9",
+        {
+            "enabled": True,
+            "role": "follower",
+            "channel": "right",
+            "bond_id": "bond-1",
+            "leader_addr": "jts.local",
+            "peer_addr": "",
+            "peer_name": "",
+        },
+        {"X-JTS-Household": "hh-secret"},
+    )]
+    assert sup.reassert_attempt_count == 1
+    assert sup.reassert_last_ok is True
+
+
+async def test_leader_reassert_omits_header_when_household_secret_absent(
+    monkeypatch, tmp_path,
+):
+    """Absent local secret stays safe: no fake header, no crash."""
+    import jasper.control.household_credential as hc
+
+    monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "missing_secret"))
+
+    sup = _FileBackedHouseholdSupervisor()
+    sup.cfg = _cfg(role="leader", channel="left", peer_addr="192.168.1.9")
+    sup.peer_grouping_results = [None]
+    sup.status_results = [SERVING]
+
+    await sup._tick()
+
+    assert sup.reassert_posts[0][2] is None
+
+
+async def test_leader_reassert_skips_already_converged_follower():
+    sup = _FakeSupervisor()
+    sup.cfg = _cfg(role="leader", channel="left", peer_addr="192.168.1.9")
+    sup.peer_grouping_results = [{
+        "enabled": True,
+        "role": "follower",
+        "channel": "right",
+        "bond_id": "bond-1",
+        "leader_addr": "jts.local",
+        "peer_addr": "",
+        "peer_name": "",
+    }]
+    sup.status_results = [SERVING]
+
+    await sup._tick()
+
+    assert sup.reassert_posts == []
+    assert sup.reassert_attempt_count == 0
+    assert sup.reassert_last_ok is True
+
+
+async def test_leader_reassert_skips_unrostered_or_non_pair_shape():
+    sup = _FakeSupervisor()
+    sup.cfg = _cfg(role="leader", channel="mono", peer_addr="192.168.1.9")
+    sup.status_results = [SERVING]
+
+    await sup._tick()
+
+    assert sup.reassert_posts == []
+
+
+async def test_reassert_read_failure_does_not_block_starvation_watch():
+    sup = _FakeSupervisor(starved_threshold=1)
+    sup.cfg = _cfg(role="leader", channel="left", peer_addr="192.168.1.9")
+    sup.status_results = [STARVED]
+    sup.peer_grouping_results = [RuntimeError("peer read boom")]
+
+    await sup._tick()
+
+    assert sup.kick_calls == 1
+    assert sup.reassert_attempt_count == 1
+    assert sup.reassert_last_ok is True
+
+
 # ---------- snapshot ----------
 
 
@@ -289,13 +433,17 @@ async def test_snapshot_keys_and_values():
     assert set(snap.keys()) == {
         "enabled", "watching", "last_poll_at", "last_poll_starved",
         "consecutive_starved", "kick_count", "last_kick_at",
-        "rate_limited_count", "binding",
+        "rate_limited_count", "binding", "reassert",
     }
     assert snap["enabled"] is True
     assert snap["watching"] is True
     assert snap["last_poll_starved"] is False
     assert set(snap["binding"].keys()) == {
         "last_reachable", "fixed_total", "failed_total", "last_repair_at",
+    }
+    assert set(snap["reassert"].keys()) == {
+        "attempt_total", "failed_total", "last_attempt_at", "last_ok",
+        "last_detail",
     }
 
 

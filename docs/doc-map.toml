@@ -556,6 +556,7 @@ safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
   "jasper/web/rooms_setup.py",
+  "jasper/control/grouping_supervisor.py",
   "jasper/control_advert.py",
   # Shared primitives the /rooms/ directory + friendly-name advert ride on:
   # the one-shot mDNS browse, the one Avahi *.service renderer, and the
@@ -787,6 +788,7 @@ safety = "connectivity-risk"
 # canonical trigger. Coarse on purpose.
 code = [
   "jasper/control/household_credential.py",
+  "jasper/control/grouping_supervisor.py",
   "jasper/web/rooms_setup.py",
   "tests/test_control_server.py",
   "tests/test_household_credential.py",
