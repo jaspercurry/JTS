@@ -439,6 +439,67 @@ def test_broken_pack_is_isolated_other_packs_still_register():
     assert "get_weather" in names       # good_b registered after the break
 
 
+def test_registration_failure_rolls_back_partial_pack_and_continues():
+    """Fault isolation covers both build and registration.
+
+    A contributor pack can return explicit Tool objects now. If one item
+    registers and a later item is malformed, the pack must not leave a
+    half-registered tool behind or erase a same-named tool from an earlier
+    pack.
+    """
+    class StaticExecutor:
+        def __init__(self, value: str):
+            self.value = value
+
+        async def execute(self, _args):
+            return {"value": self.value}
+
+    def explicit_tool(name: str, value: str) -> Tool:
+        return Tool(
+            definition=ToolDefinition(
+                name=name,
+                description=f"{value} explicit test tool.",
+                parameters={"type": "object", "properties": {}},
+            ),
+            executor=StaticExecutor(value),
+        )
+
+    packs = (
+        ToolPack("seed", lambda _d: [explicit_tool("shared_tool", "seed")]),
+        ToolPack(
+            "broken",
+            lambda _d: [
+                explicit_tool("shared_tool", "broken"),
+                object(),  # not callable and not a Tool: registration fails
+            ],
+        ),
+        ToolPack("tail", lambda _d: make_time_tools()),
+    )
+
+    reg = ToolRegistry()
+    outcomes = {
+        o.name: o
+        for o in register_packs(
+            reg,
+            _full_deps(),
+            disabled=frozenset(),
+            packs=packs,
+        )
+    }
+
+    assert outcomes["seed"].status == "registered"
+    assert outcomes["broken"].status == "failed"
+    assert outcomes["tail"].status == "registered"
+    assert "get_current_time" in reg.tools
+    assert reg.tool_packs["shared_tool"] == "seed"
+
+    import asyncio
+
+    assert asyncio.run(dispatch_tool(reg, "shared_tool", {})) == {
+        "value": "seed",
+    }
+
+
 # --------------------------------------------------------------- outcomes
 # These pin the observability record register_packs returns — the data
 # that surfaces a silently-missing tool family via /state.voice.tool_packs

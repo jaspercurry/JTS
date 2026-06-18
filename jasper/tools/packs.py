@@ -150,10 +150,11 @@ class PackOutcome:
       - "skipped": the pack's `gate` predicate returned False (timer with
         no scheduler, calendar/gmail with no linked account). Expected,
         not a fault.
-      - "failed": `build` RAISED (ImportError in a tool module, a factory
-        that throws). The tool family is silently missing from voice;
-        this is the alarm condition `check_tool_packs` fails on. `error`
-        carries the exception repr.
+      - "failed": `build` or registration RAISED (ImportError in a tool
+        module, a bad explicit ToolDefinition/ToolExecutor object, a factory
+        that throws). The tool family is silently missing from voice; this is
+        the alarm condition `check_tool_packs` fails on. `error` carries the
+        exception repr.
 
     Surfaced via jasper-voice STATUS -> /state.voice.tool_packs and
     cross-checked by jasper-doctor's check_tool_packs. Mirrors and
@@ -338,11 +339,11 @@ def register_packs(
     packs: Iterable[CapabilityPack] | None = None,
 ) -> list[PackOutcome]:
     """Walk TOOL_PACKS in order; gate, build, and register each pack's
-    tools onto `registry`. Each pack's build runs behind try/except for
-    fault isolation — a broken pack (ImportError in a tool module, a
-    factory that raises) contributes no tools and is logged, never
-    crashing the daemon. Mirrors transit.active_transit's per-provider
-    guard.
+    tools onto `registry`. Each pack's build+registration runs behind
+    try/except for fault isolation — a broken pack (ImportError in a tool
+    module, a bad explicit Tool object, a factory that raises) contributes
+    no tools and is logged, never crashing the daemon. Mirrors
+    transit.active_transit's per-provider guard.
 
     `disabled` is the wizard-owned set of tool NAMES the household turned
     off (jasper.tool_state). `disabled_packs` is the set of user-facing
@@ -375,41 +376,64 @@ def register_packs(
         if not pack.gate(deps):
             outcomes.append(PackOutcome(pack.name, "skipped"))
             continue
+        originals: dict[str, tuple[bool, Any, bool, str | None]] = {}
+
+        def remember_original(name: str) -> None:
+            if name not in originals:
+                originals[name] = (
+                    name in registry.tools,
+                    registry.tools.get(name),
+                    name in registry.tool_packs,
+                    registry.tool_packs.get(name),
+                )
+
         try:
             # Materialize inside the guard so a factory returning a lazy
             # generator that raises mid-iteration is still fault-isolated.
             fns = list(pack.build(deps))
+
+            pack_disabled = (
+                pack.catalog_pack is not None
+                and pack.catalog_pack.id in disabled_packs
+            )
+            registered = 0
+            for item in fns:
+                from . import Tool, build_tool
+                t = item if isinstance(item, Tool) else build_tool(item)
+                remember_original(t.name)
+                registry.register_tool(t)
+                registry.tool_packs[t.name] = pack.name
+                if pack_disabled or t.name in disabled:
+                    # Registered, then removed by user choice — keeps the
+                    # filter at the single registration point and works
+                    # regardless of declared @tool name vs fn.__name__.
+                    del registry.tools[t.name]
+                    registry.tool_packs.pop(t.name, None)
+                    log_event(
+                        logger, "tool.disabled", name=t.name, pack=pack.name,
+                        disabled_by_pack=pack_disabled,
+                    )
+                    continue
+                registered += 1
         except Exception as e:  # noqa: BLE001
+            # Treat build and registration as one pack transaction. A bad
+            # contributor item must not leave a half-registered pack behind.
+            for name, (had_tool, old_tool, had_pack, old_pack) in reversed(
+                list(originals.items()),
+            ):
+                if had_tool:
+                    registry.tools[name] = old_tool
+                else:
+                    registry.tools.pop(name, None)
+                if had_pack:
+                    registry.tool_packs[name] = old_pack
+                else:
+                    registry.tool_packs.pop(name, None)
             logger.exception(
                 "event=tool_pack.build_failed pack=%s", pack.name,
             )
             outcomes.append(PackOutcome(pack.name, "failed", error=repr(e)))
             continue
-        pack_disabled = (
-            pack.catalog_pack is not None
-            and pack.catalog_pack.id in disabled_packs
-        )
-        registered = 0
-        for item in fns:
-            from . import Tool
-            t = (
-                registry.register_tool(item)
-                if isinstance(item, Tool)
-                else registry.register(item)
-            )
-            registry.tool_packs[t.name] = pack.name
-            if pack_disabled or t.name in disabled:
-                # Registered, then removed by user choice — keeps the
-                # filter at the single registration point and works
-                # regardless of declared @tool name vs fn.__name__.
-                del registry.tools[t.name]
-                registry.tool_packs.pop(t.name, None)
-                log_event(
-                    logger, "tool.disabled", name=t.name, pack=pack.name,
-                    disabled_by_pack=pack_disabled,
-                )
-                continue
-            registered += 1
         outcomes.append(
             PackOutcome(pack.name, "registered", tool_count=registered),
         )
