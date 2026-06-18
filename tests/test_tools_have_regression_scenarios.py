@@ -19,9 +19,8 @@ asserts the tool's trajectory — is a human-review concern. The weak
 form still catches the real failure mode: a tool landing with no
 scenario at all.
 
-_KNOWN_UNCOVERED is the two-sided allowlist for pre-existing gaps: an
-entry whose tool gains a scenario (or stops existing) fails, so the
-list can only shrink.
+No allowlist remains: all current user-callable tools have at least one
+scenario mention.
 """
 from __future__ import annotations
 
@@ -47,20 +46,7 @@ def _decorates_with_tool(node: ast.AsyncFunctionDef) -> bool:
         for decorator in node.decorator_list
     )
 
-# Pre-existing coverage gaps surfaced when this guard first ran
-# (2026-06-10). Each violates the "no exceptions" rule and needs a
-# scenario written — adding one here is documenting debt, not paying it.
-# Two-sided: the entry fails once a scenario mentions the tool, so it
-# must be removed in the same PR that adds the scenario.
-_KNOWN_UNCOVERED = {
-    # TODO: needs a scenario in tests/voice_eval/regression/test_timer.py
-    # ("what timers are running?" → list_timers trajectory).
-    "list_timers",
-    # TODO: needs a scenario in tests/voice_eval/regression/test_spotify.py
-    # ("queue up X" → spotify_queue trajectory; playback-side-effecting,
-    # gate on JASPER_VOICE_EVAL_SKIP_PLAYBACK like its siblings).
-    "spotify_queue",
-}
+_KNOWN_UNCOVERED: set[str] = set()
 
 
 def _tool_names() -> set[str]:

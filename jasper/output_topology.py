@@ -1937,7 +1937,7 @@ def save_output_topology(
             handle.write(data)
         os.chmod(tmp_name, 0o640)
         os.replace(tmp_name, target)
-    except Exception:
+    except Exception:  # noqa: BLE001
         if tmp_name:
             try:
                 Path(tmp_name).unlink(missing_ok=True)

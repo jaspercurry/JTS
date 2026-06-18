@@ -70,7 +70,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
 
 
 def _validate(cfg: "Config") -> "Config":
@@ -820,7 +825,7 @@ class Config:
             ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
             # Default to verifying. Wizard writes "0" only when the
             # household explicitly opts into self-signed-cert mode.
-            ha_verify_ssl=_env(_ha_env.ENV_VERIFY_SSL, "1").strip() not in ("0", "false", "no"),
+            ha_verify_ssl=_env_bool(_ha_env.ENV_VERIFY_SSL, True),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_env(
@@ -868,9 +873,7 @@ class Config:
             # / "1" / "yes" / "enabled" resolves to off (fail-safe;
             # peering is off by default, and a typo in the env file
             # should never accidentally enable it).
-            peering_enabled=_env(
-                "JASPER_PEERING", "off",
-            ).strip().lower() in ("on", "true", "1", "yes", "enabled"),
+            peering_enabled=_env_bool("JASPER_PEERING", False),
             # The UDS where jasper-control's peering daemon listens.
             # Matches PEERING_UDS_PATH in jasper.peering.config —
             # duplicated here so voice_daemon doesn't have to import

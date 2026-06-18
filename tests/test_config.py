@@ -154,6 +154,42 @@ def test_server_vad_enabled_accepts_truthy_values(monkeypatch, value):
     assert Config.from_env().server_vad_enabled is True
 
 
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled"])
+def test_home_assistant_verify_ssl_accepts_explicit_false_values(
+    monkeypatch, value,
+):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_HA_VERIFY_SSL", value)
+
+    assert Config.from_env().ha_verify_ssl is False
+
+
+@pytest.mark.parametrize("value", ["", " ", "potato"])
+def test_home_assistant_verify_ssl_fails_safe_for_empty_and_junk(
+    monkeypatch, value,
+):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_HA_VERIFY_SSL", value)
+
+    assert Config.from_env().ha_verify_ssl is True
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "enabled"])
+def test_peering_enabled_accepts_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_PEERING", value)
+
+    assert Config.from_env().peering_enabled is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled", "potato"])
+def test_peering_enabled_fails_closed_for_false_and_junk(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_PEERING", value)
+
+    assert Config.from_env().peering_enabled is False
+
+
 def test_invalid_openai_noise_reduction_env_rejected(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("JASPER_OPENAI_NOISE_REDUCTION", "potato")

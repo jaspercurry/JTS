@@ -152,7 +152,7 @@ async def set_discoverable(
                 await props.call_set(
                     "org.bluez.Adapter1", "Discoverable", Variant("b", True),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 log_event(
                     logger,
                     "bluetooth_pairing_window.open_failed_rollback",

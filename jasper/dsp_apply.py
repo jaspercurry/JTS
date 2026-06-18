@@ -352,7 +352,7 @@ class _FileLock:
             except OSError:
                 pass
             self._fh = os.fdopen(fd, "a+", encoding="utf-8")
-        except Exception:
+        except Exception:  # noqa: BLE001
             os.close(fd)
             raise
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)

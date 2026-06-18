@@ -98,7 +98,7 @@ def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
             "free_gib": round(free / gib, 1),
             "total_gib": round(total / gib, 1),
         }
-    except Exception:
+    except Exception:  # noqa: BLE001
         logger.debug("disk snapshot read failed", exc_info=True)
         return None
 

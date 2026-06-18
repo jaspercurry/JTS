@@ -161,7 +161,7 @@ def pair_env(loop_thread, monkeypatch):
                 fut.result(timeout=remaining)
             except concurrent.futures.TimeoutError:
                 fut.cancel()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
     calls["schedule"] = schedule

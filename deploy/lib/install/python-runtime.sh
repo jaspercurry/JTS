@@ -225,6 +225,9 @@ install_jasper() {
         #   sudo JASPER_HOSTNAME=jts2.local bash deploy/install.sh
         local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
         echo "  hostname: ${hostname_value}"
+        # .env.example is a frozen first-install seed. Keep any literals
+        # that shadow Config defaults guarded by
+        # tests/test_env_example_matches_config_defaults.py.
         sed \
             -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
             -e "s|^JASPER_HOSTNAME=.*|JASPER_HOSTNAME=${hostname_value}|" \

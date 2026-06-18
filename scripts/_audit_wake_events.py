@@ -84,7 +84,7 @@ def main(corpus_dir: Path) -> int:
     for w in wavs:
         try:
             data, sr, n = load_wav(w)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             issues.append(f"  ✗ {w.name}: {e}")
             continue
         duration = n / sr

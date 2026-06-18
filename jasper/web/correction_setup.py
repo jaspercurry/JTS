@@ -941,7 +941,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             ),
             "current_correction_at_start": sess.current_correction_at_start,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001
         if not locals().get("reservation_transferred", False):
             _clear_start_slot()
         raise

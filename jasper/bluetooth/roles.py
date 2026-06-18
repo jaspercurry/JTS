@@ -77,7 +77,7 @@ class RoleStore:
                     f.write(body)
                 os.chmod(tmp, 0o600)
                 os.replace(tmp, self._path)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 try:
                     os.unlink(tmp)
                 except OSError:

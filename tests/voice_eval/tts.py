@@ -154,7 +154,7 @@ def _write_wav_atomic(path: Path, pcm: bytes, *, sample_rate: int) -> None:
     try:
         _write_wav(tmp_path, pcm, sample_rate=sample_rate)
         os.replace(tmp_path, path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             tmp_path.unlink()
         except OSError:
