@@ -4,18 +4,34 @@
 > truth about shipped code. Captures the vision for turning JTS's
 > integrations into an extensible foundation, the research behind it,
 > what we decided, and how we'll get there.
-> **Last updated: 2026-06-16.**
+> **Last updated: 2026-06-18.**
 
 ---
 
 ## 1. The vision
 
-Today JTS ships a fixed set of ~28 built-in tools (weather, transit,
+Today JTS ships a fixed set of 29 built-in tools (weather, transit,
 smart-home, music, calendar, email, timers, …). The vision is to turn
 that into an **extensible foundation other people can build on** — so
 that adding a new capability to the speaker is a clean, local act, and
 eventually a *store / marketplace* where households discover and add
 the tools they want, and creators publish their own.
+
+The important refinement: this is not "first-party tools now,
+user-defined tools later" as two runtime classes. The durable target is
+one **source-neutral tool boundary** that every tool crosses:
+
+- tools Jasper writes in this repo,
+- trusted contributor tools reviewed as PRs,
+- and future no-code / HTTP / MCP integrations created through an
+  interface.
+
+The runtime should not care which source produced a tool. Every source
+compiles into the same provider-neutral definition, executor, registry,
+catalog, dispatch, logging, state, and test expectations. First-party
+tools should therefore be the reference implementation of the boundary,
+not privileged exceptions to it. This is the "show by doing" path: make
+today's working tools look like the tools we want others to copy.
 
 We get there along a **trust gradient**, not in one leap. The three
 phases below are the spine of this whole plan:
@@ -104,7 +120,55 @@ The hard parts exist in embryo and should be reused, not reinvented:
   wake stack), so a future embedding-based tool retriever adds
   essentially **zero new dependencies**.
 
-### 3.2 The one real structural bottleneck
+### 3.2 The capability pack is the real boundary
+The copyable unit should be a **capability pack**, not a loose function
+and not a special "third-party tool" lane. A pack may be tiny (`time`:
+one function, no setup, no client) or deep (`transit`: wizard, saved
+config, provider registry, runtime clients, several tools). The system
+should see both through the same outer contract:
+
+| Pack facet | What it owns |
+|---|---|
+| Metadata | stable id, title, category, summary, labels, setup URL |
+| Setup | optional wizard/config state, setup gate, "needs setup" status |
+| Runtime | optional clients, source adapters, provider registries, caches |
+| Tools | provider-neutral `ToolDefinition` records |
+| Execution | one `ToolExecutor` per tool (`python` now; `http`, `mcp`, or sandbox later) |
+| Tests/observability | manifest/catalog/dispatch tests, regression scenario, doctor/state hooks |
+
+The pack boundary is what makes complexity local. A simple pack should
+stay a postcard example. A sophisticated pack should be allowed to own a
+real configuration UI and runtime client graph. What must not vary is the
+outer shape that `jasper-voice` consumes.
+
+The conceptual stack:
+
+1. `ToolDefinition` — provider-neutral schema and metadata: name,
+   model-facing prompt, input schema, output/failure contract, labels,
+   risk flags, provider visibility, timeout, examples, and pack identity.
+   OpenAI/Gemini/Grok serializers read only this.
+2. `ToolExecutor` — a small async execution protocol. Current coded tools
+   use a `PythonExecutor`; future UI-built integrations use an
+   `HttpExecutor`; later MCP/sandbox support is just another executor type.
+3. `CapabilityPack` — the contributor-facing module boundary. It owns
+   setup, runtime deps, definitions, executors, and tests.
+4. `ToolRegistry` — aggregation only: walk packs, fault-isolate pack
+   build, apply enabled/disabled state and prompt overrides, then expose
+   provider schemas and dispatch handles.
+5. `dispatch_tool()` — the single runtime gate for timeout, logging,
+   redaction, scalar wrapping, errors, tracing, and eventually async job
+   handoff.
+
+`@tool(...)` should remain a good authoring convenience, but it should be
+sugar for "make a `ToolDefinition` plus a `PythonExecutor`." The decorator
+is not the platform boundary by itself.
+
+Do not flatten rich packs into the shape of simple ones. Instead, make
+rich packs prove that complex setup and runtime state can live behind the
+same contract. `Transit` is the important reference case here, not an
+exception to hide.
+
+### 3.3 The one real structural bottleneck
 Tool assembly is **hardcoded** in `jasper/voice/daemon_main.py`
 (`_build_registry`): a fixed import block plus one register loop per
 subsystem. Transit is the only carve-out that escaped it. **Adding a
@@ -112,7 +176,7 @@ tool family means editing core.** Generalizing this one function —
 applying the transit pattern to all tools — is the actual "modularize"
 deliverable, and it's nearly free.
 
-### 3.3 One problem is live *today*, at 28 tools
+### 3.4 One problem is live *today*, at 29 tools
 Our tool **descriptions alone** total **~8,200 tokens** — already about
 half of OpenAI Realtime's hard **16,384-token** instructions+tools
 ceiling (a real builder hit that wall with just 9 verbose tools). Tool
@@ -121,7 +185,7 @@ rich. Splitting a short model-facing description from the full human
 docstring roughly **halves** that footprint and buys years of runway.
 This is the one near-term fix that isn't optional.
 
-### 3.4 "Sessions" make the re-declare wall a non-issue for us
+### 3.5 "Sessions" make the re-declare wall a non-issue for us
 JTS opens **one persistent live connection** at daemon startup; wake
 events ride *turns* on it. Tools are declared when that connection
 opens, so "changing tools mid-session" means a reconnect. But: our
@@ -135,13 +199,13 @@ state and prompt cache) is the wrong fit for us: it would hide
 parameter schemas and add a model round-trip to buy benefits we don't
 collect.
 
-### 3.5 Tool scaling has a clean ladder (when we eventually need it)
+### 3.6 Tool scaling has a clean ladder (when we eventually need it)
 - **A — declare everything** (today). Simplest; correct until token
-  pressure or mis-selection appears. The description split (3.3)
+  pressure or mis-selection appears. The description split (3.4)
   extends its runway dramatically.
 - **B — static scoping** via the existing `_visible_to` seam: declare a
   context-relevant subset at connection-open (room / recently-used /
-  enabled), reconnect-to-broaden on a miss (cheap, per 3.4).
+  enabled), reconnect-to-broaden on a miss (cheap, per 3.5).
 - **B+ — daemon-side embedding pre-filter** feeding B: a tiny local
   model (e.g. Model2Vec `potion-base-8M`, ~8 MB, numpy-only) picks the
   top-k relevant tools to declare — *full schemas kept, no model
@@ -153,7 +217,7 @@ Note: industry tool-search/deferred-loading features are **text-API
 only** — not available on the realtime voice path as of mid-2026 — so we
 can't outsource this to the provider. We own the scoping layer.
 
-### 3.6 Sandboxing, secrets, distribution — real, but Phase-3 problems
+### 3.7 Sandboxing, secrets, distribution — real, but Phase-3 problems
 - **Sandbox** (for untrusted code): `systemd-run` + a `jts-tools.slice`
   for resource caps, with **unprivileged-userns bubblewrap + seccomp**
   inside for isolation, is the primary path; WASM/Extism is a narrow
@@ -173,15 +237,15 @@ can't outsource this to the provider. We own the scoping layer.
   why a future marketplace would need fail-closed CI, description
   hash-pinning, and anti-rug-pull re-consent. All of that is Phase 3.
 
-### 3.7 Free wins that help at any scale
+### 3.8 Free wins that help at any scale
 - **Tool-use examples** raise parameter accuracy materially (Anthropic
   measured 72% → 90%) — attach 1–2 example calls to confusable tools.
 - **Clean, non-overlapping descriptions + deterministic ordering** beat
   token-count as the real scaling risk past ~100 tools. "If a human
   can't tell which tool to use, neither can the model."
 
-### 3.8 Verified codebase corrections (don't build on wrong facts)
-It's **28 tools, not 27**. `build_tool` **warns** on sync functions
+### 3.9 Verified codebase corrections (don't build on wrong facts)
+It's **29 tools today**. `build_tool` **warns** on sync functions
 rather than rejecting them (so "everything is a coroutine" is a
 convention, not an invariant). The live connection is **persistent**.
 `peer_id` is **0644**.
@@ -197,60 +261,61 @@ convention, not an invariant). The live connection is **persistent**.
    strangers' code. Building them now is building a bank vault before
    opening a lemonade stand.
 
-2. **The trust gradient defers the hard work honestly.** In Phase 1 you
-   write the tools. In Phase 2 you *review and run* each contributed
-   tool, so it's trusted the same way your own code is — you still need
-   no sandbox or permission enforcement. Only Phase 3 (running code you
-   can't personally vet, at a scale where review doesn't keep up)
-   requires the heavy machinery.
+2. **The trust gradient defers the hard work honestly, not the
+   boundary.** In Phase 1 you write the tools. In Phase 2 you *review
+   and run* each contributed pack, so it's trusted the same way your own
+   code is — you still need no sandbox or permission enforcement. Only
+   Phase 3 (running code you can't personally vet, at a scale where
+   review doesn't keep up) requires the heavy machinery. But Phase 1
+   tools should already cross the same definition/executor/pack boundary
+   that Phase 2 contributors will cross.
 
-3. **Do the cheap thing in a forward-compatible shape — but don't build
-   the future.** Generalize the registry *the transit way* (so a "pack"
-   could one day be fed by a manifest) and split descriptions (so a
-   manifest field already exists). That costs nothing extra and means
-   later phases bolt on without rework. It is *not* a license to build
-   the later phases now.
+3. **First-party tools are the conformance suite.** The current tools
+   should not be privileged runtime exceptions. They should prove that a
+   simple function tool, a source-backed music tool, a setup-backed API
+   tool, a deep transit integration, and a consequential smart-home tool
+   can all fit behind one outer pack contract.
 
-4. **It honors JTS's own bar (COAH).** Smallest durable shape that fits;
+4. **Do the cheap thing in a forward-compatible shape — but don't build
+   the future.** Generalize the registry *the transit way*, make
+   definitions/executors explicit, and split descriptions. That means
+   later contributors and no-code builders compile into the same
+   artifact, without pulling Phase-3 sandbox/store machinery forward. It
+   is *not* a license to build the later phases now.
+
+5. **It honors JTS's own bar (COAH).** Smallest durable shape that fits;
    no speculative abstraction; bounded RAM on the 1 GB core; the 1 GB
    cap applies to the *core* only — heavier or more numerous tools are
    an opt-in concern of later phases and bigger hardware.
 
 ---
 
-## 5. The initial plan (Phase 1 — "just me")
+## 5. The initial plan (Phase 1 — make current tools prove the boundary)
 
-**Goal: adding a tool is a clean, local, one-place change, and the model
-doesn't choke as the catalog grows.** That's the whole first version.
+**Goal: adding or extending a capability pack is a clean, local act, and
+every current tool works through the same layers a future contributor or
+no-code builder would use.** The model also cannot choke as the catalog
+grows.
 
-**Must-have**
-1. **Generalize `_build_registry` into a data-driven registry walk**,
-   mirroring `jasper/transit/active_transit`: each tool family becomes a
-   registry entry with its own `build(deps)` and a `gate(deps)`
-   predicate (lifting the inline gating out of the daemon), iterated
-   behind the same per-entry try/except fault isolation transit uses.
-   Verify with a **before/after registry-equality assertion** (the tool
-   set must be byte-identical) — a free, hardware-free gate; *not* a
-   paid voice-eval loop.
-2. **Split the model-facing description from the human docstring.** Add
-   a short `llm_description` (name + one-line purpose + one
-   disambiguating cue) compiled into the schema sent to the model; keep
-   the full docstring for humans. Add a CI token-budget check so the
-   convention holds as tools are added.
-
-**Cheap, optional, forward-compatible**
-3. **Derive a manifest** — `Tool.to_manifest()` + a round-trip no-loss
-   test over all 28 tools. ~40 lines, no behavior change. Worth it only
-   because it's the seam a future catalog/store and a Phase-2 PR-review
-   flow bolt onto.
-4. **Free accuracy wins** — add tool-use examples to the most confusable
-   tools; tighten any overlapping descriptions.
-5. **Tool labels** (shipped as a Phase-1.5 follow-on) — a
-   declaration-only `labels` facet on the tool/manifest contract
-   (`@tool(labels=...)`), the catalog's future sort/filter/search
-   primitive, with the transit tools tagged. Resolves the transit
-   "city as a label, not a `CityPack` toggle" question — see §6.
-6. **Built-in catalog UI** (shipped as a Phase-1.5 follow-on) — the
+**Already shipped foundation**
+1. **Data-driven pack walk.** `_build_registry` now delegates to an
+   ordered `TOOL_PACKS` registry, mirroring
+   `jasper/transit/active_transit`: each tool family has `build(deps)` and
+   optional `gate(deps)`, and pack build is fault-isolated behind
+   try/except. The before/after registry-equality assertion pins
+   byte-identical tool names, schemas, descriptions, providers, timeouts,
+   and order.
+2. **Model-facing description seam.** `llm_description` lets a tool send a
+   shorter model prompt while keeping the full human docstring. The token
+   budget check keeps the convention honest as tools are added.
+3. **Derived manifest.** `Tool.to_manifest()` and
+   `ToolRegistry.to_manifest()` emit a provider-neutral record in
+   registration order. Today it is derived from code; tomorrow it is the
+   review/scaffold seam for contributor packs.
+4. **Labels and risk flags.** `labels`, `untrusted_output`, and
+   `consequential` are declarative metadata that catalog/store/policy
+   layers can consume without sending extra text to the model.
+5. **Built-in catalog UI.** The
    `/tools/` wizard ([`jasper/web/tools_setup.py`](../jasper/web/tools_setup.py)).
    The shipped surface is a browse + on/off manager over the *first-party*
    tools — explicitly **not** the install-from-store marketplace (no install
@@ -307,6 +372,37 @@ doesn't choke as the catalog grows.** That's the whole first version.
    the model never sees it — so there is no audible cue (it's the user's
    explicit choice, not a failure).
 
+**Next boundary slice**
+1. **Promote an explicit `ToolDefinition`.** Today the provider-neutral
+   definition is spread across `Tool` fields populated by `build_tool`.
+   Make it a named object with the fields in §3.2. Provider serializers,
+   the catalog, manifests, prompt overrides, and token-budget checks should
+   read that definition, not decorator side channels.
+2. **Promote an explicit `ToolExecutor`.** Keep the current Python
+   function path by wrapping it in a `PythonExecutor`. `dispatch_tool()`
+   calls the executor and stays the single owner of timeout, logging,
+   redaction, scalar wrapping, error shaping, and trace events. The future
+   declarative HTTP path becomes an `HttpExecutor`, not a parallel runtime.
+3. **Make `@tool(...)` sugar over the boundary.** A decorated function
+   should compile to `ToolDefinition + PythonExecutor`. Existing tool
+   modules can keep their ergonomic authoring style, while the runtime
+   boundary becomes explicit and copyable.
+4. **Make capability packs copyable.** The current internal `ToolPack`
+   should evolve toward the full pack contract in §3.2: metadata, setup
+   gate, runtime deps/clients, definitions, executors, tests, and
+   observability. A contributor should be able to copy a pack folder,
+   change local code/config/tests, and avoid touching
+   `daemon_main.py`, provider adapters, or catalog internals.
+5. **Migrate examples across the complexity ladder.** Use `time` as the
+   simple reference, `weather` as the API-backed reference, `spotify` /
+   `playback` as source-backed references, `transit` as the deep
+   wizard/config/provider-registry reference, and `home_assistant` as the
+   high-risk consequential-action reference.
+6. **Gate every refactor on byte-identical behavior.** Existing 29-tool
+   provider schemas, manifest entries, catalog payloads, dispatch behavior,
+   and registration order must stay identical unless a change is explicitly
+   intentional and voice-eval/docs are updated.
+
 Everything is built with **Opus**. Every new tool still ships its
 regression scenario under `tests/voice_eval/regression/` (existing hard
 rule). Nothing here adds a daemon, a dependency, or RAM.
@@ -315,7 +411,7 @@ rule). Nothing here adds a daemon, a dependency, or RAM.
 capability enforcement, secret broker, encryption, the curated index,
 CI trust-gating, the install-from-store `/tool-store/` marketplace
 (distinct from the read-only built-in `/tools/` on/off catalog, which
-*did* ship — item 6 above), grants, anti-rug-pull, kill-lists, MCP, the
+*did* ship — item 5 above), grants, anti-rug-pull, kill-lists, MCP, the
 embedding pre-filter, and even static `_visible_to` scoping (the
 description split buys enough headroom that scoping waits until install
 counts actually grow).
@@ -329,19 +425,31 @@ never on a schedule. The deferred work is catalogued so it isn't lost,
 but it stays catalogued until a real need pulls it forward.
 
 ### Phase 2 — "trusted PRs" (build when contributors want in)
-The goal is to let other people contribute tools that *you review and
-run yourself*. Because they're maintainer-vetted and run in your repo,
-they stay trusted — no sandbox, no enforcement.
-- **Publish a `jts-tool.json` manifest format + `parse_manifest`** so a
-  contributed tool is reviewable as data (the Phase-1 derived manifest
-  is the first half of this).
-- **Write contribution guidelines** (the "clean, non-overlapping,
-  cheaply-described tool" principles; the regression-scenario
-  requirement; the manifest fields).
+The goal is to let other people contribute **capability packs** that
+*you review and run yourself*. Because they're maintainer-vetted and run
+in your repo, they stay trusted — no sandbox, no enforcement.
+
+Contributor packs should use the same boundary first-party packs use:
+
+- **A pack manifest** describing metadata, setup needs, tool definitions,
+  risk flags, examples, and executor types. The Phase-1 derived manifest
+  is the first half of this; Phase 2 makes it authorable/parseable for
+  review.
+- **A local runtime module** only when needed. A simple pack might be
+  manifest + one Python function. A deep pack can own clients, setup
+  readers, provider registries, and caches behind the same outer pack
+  contract.
 - **A light CI check** — manifest validity, no obfuscation, descriptions
-  present. This is "review a manifest + CI, not every line," but with a
-  human (you) still reading and running the code.
-- Tools still register in-process, in-repo, via the Phase-1 registry.
+  present, risk flags declared, examples parse, and every exposed tool has
+  a regression-scenario mention.
+- **Contribution guidelines** covering pack shape, when to extend an
+  existing pack vs create a new one, prompt style, failure contracts,
+  setup ownership, and the no-silent-failure rule.
+
+The runtime remains the Phase-1 runtime. Contributor packs register
+in-process and in-repo through the same `ToolRegistry`,
+`ToolDefinition`, `ToolExecutor`, catalog, and dispatch paths as Jasper's
+own tools. "Contributed" is a source/review status, not a runtime type.
 
 ### Tool labels — the catalog's facet, and retiring the transit city toggle
 
@@ -463,11 +571,11 @@ plan is full prompt override:
 
 Tool creation should also start under a parent pack, not as a global
 "random tool" button. In the near term this should be a contributor/developer
-workflow: the detail page can link to a guide and eventually scaffold a
+workflow: the detail page can link to a guide and eventually scaffold a pack
 manifest or PR checklist, while executable tool code still lands through
 reviewed repository changes. Full in-browser creation of executable tools is
-a Phase-3/untrusted-code problem unless it only creates declarative prompts
-for an already-existing safe runtime.
+a Phase-3/untrusted-code problem unless it emits a declarative
+`ToolDefinition` for an already-existing safe executor such as HTTP.
 
 ### Tool-authoring guide for jts.local
 
@@ -478,6 +586,9 @@ house style for first-party and trusted-PR tools:
 
 - What belongs in a tool vs a pack.
 - When to create a new tool, extend an existing pack, or add a label.
+- How the `ToolDefinition` / `ToolExecutor` / capability-pack boundary
+  works, including why first-party and contributed tools use the same
+  runtime path.
 - How to write model-facing prompt copy: short purpose first, concrete call
   boundaries, "do not call when..." cases, response style, and failure
   contract.
@@ -511,6 +622,9 @@ own trigger:
 | Encryption-at-rest | Multi-user or off-LAN exposure (with the Argon2id + escrow design) |
 
 ### Cross-cutting rules that apply whenever we do build later phases
+- No separate third-party runtime lane. First-party, trusted-contributor,
+  and future UI-built tools all compile into the same
+  `ToolDefinition`/`ToolExecutor`/registry/dispatch/catalog path.
 - No silent failure → audible cue (generic slugs; cues can't name a
   plugin) for any tool-layer event that blocks a response.
 - Everything is **Pattern 2** (self-contained registry), never typed
@@ -535,7 +649,8 @@ own trigger:
 ---
 
 ## 7. One-line summary
-**Build the foundation (modular tools + a derivable manifest), fix the
-one live problem (the description-token ceiling), and stop. Add trusted
-contributor PRs when people want in. Build the boundaries only if the
+**Make current tools prove the shared boundary: capability packs compile
+`ToolDefinition` + `ToolExecutor` into the existing registry, dispatch,
+provider serializers, catalog, and tests. Add trusted contributor packs
+through that same path when people want in; build the vault only if the
 champagne problem ever actually arrives.**
