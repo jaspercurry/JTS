@@ -825,7 +825,7 @@ def check_fanin_service() -> CheckResult:
             if sock is not None:
                 try:
                     sock.close()
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
             if attempt == 0:
                 time.sleep(0.1)

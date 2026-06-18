@@ -191,7 +191,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
 
     try:
         name = runtime_name()
-    except Exception:  # malformed file/env — defer to the module default
+    except Exception:  # noqa: BLE001 - malformed file/env; defer to default
         name = "JTS"
     kver = os.uname().release
     override = Path(f"{modules_root}/{kver}/updates/usb_f_uac2.ko")

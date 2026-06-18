@@ -69,7 +69,7 @@ class RingFlushHandler(logging.Handler):
             return  # don't re-buffer anything emitted during a dump
         try:
             line = self.format(record)  # store the formatted string, not the record
-        except Exception:  # pragma: no cover - defensive; never crash the caller
+        except Exception:  # noqa: BLE001  # pragma: no cover - defensive; never crash the caller
             return
         self.buffer.append(line)
         if record.levelno >= FLUSH_LEVEL:
@@ -97,7 +97,7 @@ class RingFlushHandler(logging.Handler):
                 f"flightrec event=flightrec.dump.end reason={reason} records={n}\n"
             )
             self.dump_stream.flush()
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # noqa: BLE001  # pragma: no cover - defensive
             pass
         finally:
             self._dumping = False
@@ -149,7 +149,7 @@ def install(
     # journal handler to DEBUG when this subsystem is toggled on).
     try:
         debug_mode.apply_for(subsystem)
-    except Exception:  # pragma: no cover - defensive; startup must survive
+    except Exception:  # noqa: BLE001  # pragma: no cover - defensive; startup must survive
         pass
     logger.info(
         "flight recorder: installed for %s (ring=%d records; "
@@ -166,5 +166,5 @@ def dump(reason: str = "manual") -> int:
         return 0
     try:
         return _ring.flush_buffer(reason)
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # noqa: BLE001  # pragma: no cover - defensive
         return 0

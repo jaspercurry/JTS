@@ -44,6 +44,70 @@ def _reset_scheduler(harness) -> "object":
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))
+async def test_list_existing_timers_uses_list_tool(
+    harness, trial: int,
+) -> None:
+    """Ask what timers are running after seeding two timers directly.
+    The model MUST call `list_timers`, not hallucinate from context or
+    create/cancel anything."""
+    sched = _reset_scheduler(harness)
+    sched.add(300, "pasta")
+    sched.add(1500, "laundry")
+
+    result = await harness.ask("what timers are running?")
+
+    # 1. Trajectory — the model called list_timers and nothing mutating.
+    list_call = result.tool_call("list_timers")
+    assert list_call is not None, (
+        f"[trial {trial}] model did not call list_timers. "
+        f"Tools observed: "
+        f"{[r.name for r in result.tool_call_records] or 'none'}. "
+        f"Transcript: {result.transcript_path}"
+    )
+    assert result.tool_call("set_timer") is None, (
+        f"[trial {trial}] model called set_timer while listing timers. "
+        f"Transcript: {result.transcript_path}"
+    )
+    assert result.tool_call("cancel_timer") is None, (
+        f"[trial {trial}] model called cancel_timer while listing timers. "
+        f"Transcript: {result.transcript_path}"
+    )
+    assert result.tool_call("update_timer") is None, (
+        f"[trial {trial}] model called update_timer while listing timers. "
+        f"Transcript: {result.transcript_path}"
+    )
+    if list_call.error:
+        pytest.fail(
+            f"[trial {trial}] list_timers raised: {list_call.error}. "
+            f"Transcript: {result.transcript_path}"
+        )
+
+    # 2. Outcome — the tool returned both timers.
+    payload = list_call.result or {}
+    assert payload.get("count") == 2, (
+        f"[trial {trial}] list_timers returned the wrong count: "
+        f"{payload!r}. Transcript: {result.transcript_path}"
+    )
+    labels = {t.get("label") for t in payload.get("timers", [])}
+    assert labels == {"pasta", "laundry"}, (
+        f"[trial {trial}] list_timers returned labels {labels!r}. "
+        f"Transcript: {result.transcript_path}"
+    )
+
+    # 3. Reality — listing did not mutate scheduler state.
+    active = sched.list_active()
+    assert len(active) == 2, (
+        f"[trial {trial}] expected 2 active timers after listing, got "
+        f"{len(active)}. Transcript: {result.transcript_path}"
+    )
+    assert {t.label for t in active} == {"pasta", "laundry"}, (
+        f"[trial {trial}] active timer labels changed after listing: "
+        f"{[(t.label, t.total_seconds) for t in active]!r}. "
+        f"Transcript: {result.transcript_path}"
+    )
+
+
+@pytest.mark.parametrize("trial", range(PASS_K))
 async def test_update_existing_timer_uses_update_tool(
     harness, trial: int,
 ) -> None:

@@ -22,7 +22,7 @@ Per-wake-event flow:
                               + `outcome_detail` fields.
   5. Retention sweep        — on every audio attach, total dir size is
                               checked; oldest WAVs deleted oldest-
-                              first until under the 500 MB cap.
+                              first until under the 1 GiB cap.
                               DB rows are kept forever — only the
                               audio_*_path columns get a `'rolled_off'`
                               sentinel.
@@ -75,10 +75,9 @@ CAPTURE_POST_SEC = 2.0
 
 # Retention cap — total bytes of WAV files in the directory. DB rows
 # (and their referenced sentinel paths) survive forever; only audio
-# gets pruned. At ~400 KB/event this holds ~1250 events ≈ 3-6 weeks at
-# typical use, which matches the human-review cadence the operator is
-# planning.
-DEFAULT_MAX_AUDIO_BYTES = 500 * 1024 * 1024  # 500 MB
+# gets pruned. At roughly 575 KB/event for the normal three-leg capture,
+# this holds about 1740 events ≈ 5-7 weeks at typical use.
+DEFAULT_MAX_AUDIO_BYTES = 1024 * 1024 * 1024  # 1 GiB
 
 # Sentinel written into audio_*_path when retention deletes the WAV.
 # Queries can filter `audio_on_path != 'rolled_off' AND IS NOT NULL`

@@ -254,7 +254,7 @@ def _call_executor(
 ) -> tuple[bool, dict[str, Any], dict[str, Any] | None]:
     try:
         payload = dict(executor(action) or {})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         log_event(
             logger,
             "calibration_agent.action_executor",

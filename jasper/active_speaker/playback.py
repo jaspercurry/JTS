@@ -1075,7 +1075,7 @@ def start_tone_playback(
             playback_id=playback_id,
             now_epoch=now_epoch,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         detail = _exception_summary(exc)
         message = (
             "tone playback backend failed; successful audio emission "

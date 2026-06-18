@@ -159,7 +159,7 @@ def write_stash(
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, p)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
         except OSError:
