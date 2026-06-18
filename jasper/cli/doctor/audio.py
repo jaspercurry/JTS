@@ -1511,9 +1511,16 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         classify_output_contract,
     )
     from jasper.active_speaker.staging import load_staged_startup_config
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
-    topology = load_output_topology()
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError as exc:
+        return CheckResult(
+            "active speaker runtime graph",
+            "fail",
+            f"saved output topology is unavailable or invalid: {exc}",
+        )
     contract = classify_output_contract(topology)
     if not contract.requires_roleful_graph:
         return CheckResult(

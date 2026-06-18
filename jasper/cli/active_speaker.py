@@ -49,7 +49,7 @@ from jasper.active_speaker.safe_playback import (
     load_safe_playback_state,
 )
 from jasper.dsp_apply import validate_camilla_config
-from jasper.output_topology import load_output_topology
+from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -201,7 +201,7 @@ def _cmd_path_audit(args: argparse.Namespace) -> int:
 
 def _cmd_path_probe(args: argparse.Namespace) -> int:
     evidence = build_startup_load_path_safety_evidence(
-        load_output_topology(args.topology),
+        load_output_topology_strict(args.topology),
         staged_config=load_staged_startup_config(),
         calibration_level=load_calibration_level_state(),
         current_config_path=args.current_config,
@@ -274,7 +274,7 @@ def _print_runtime_safe_graph_summary(
 
 def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     decision = safe_graph_for_current_topology(
-        load_output_topology(args.topology),
+        load_output_topology_strict(args.topology),
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         flat_config_path=args.flat_config,
@@ -409,7 +409,7 @@ def _cmd_commission_load(args: argparse.Namespace) -> int:
             print(f"  {refusal['next_step']}")
         return 1
 
-    topology = load_output_topology(args.topology)
+    topology = load_output_topology_strict(args.topology)
     staged = load_staged_startup_config()
     preset, crossover_preview = _resolve_commission_inputs(args)
     cam = _camilla_controller()
@@ -505,7 +505,7 @@ def _print_ramp_step_summary(payload: dict[str, Any]) -> None:
 
 
 def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
-    topology = load_output_topology(args.topology)
+    topology = load_output_topology_strict(args.topology)
     staged = load_staged_startup_config()
     preset, crossover_preview = _resolve_commission_inputs(args)
     cam = _camilla_controller()
@@ -871,7 +871,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ActiveSpeakerConfigError, OSError) as e:
+    except (ActiveSpeakerConfigError, OutputTopologyError, OSError) as e:
         parser.exit(2, f"{parser.prog}: error: {e}\n")
 
 

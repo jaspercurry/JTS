@@ -3527,6 +3527,21 @@ def test_active_speaker_runtime_graph_ok_without_topology(monkeypatch, tmp_path)
     assert "no roleful/protected outputs" in r.detail
 
 
+def test_active_speaker_runtime_graph_fails_corrupt_saved_topology(
+    monkeypatch,
+    tmp_path,
+):
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert "saved output topology is unavailable or invalid" in r.detail
+    assert "not valid JSON" in r.detail
+
+
 def test_active_speaker_runtime_graph_fails_flat_graph_on_tweeter_topology(
     monkeypatch,
     tmp_path,
