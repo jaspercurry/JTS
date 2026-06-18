@@ -2251,12 +2251,17 @@ Files involved in the AEC subsystem:
 - `.env.example` — mic/AEC env knobs:
   `JASPER_AEC_MIC_DEVICE`, `JASPER_MIC_DEVICE_CANDIDATES`, UDP
   transport settings, and tuning gains
-- `scripts/aec-probe-latency.sh` — chirp + cross-correlation
-  measurement between outputd's final speaker-reference UDP stream and
-  a selected XVF3800 capture channel. It is the current timing
-  diagnostic for outputd/chip-AEC reference alignment; the historical
-  software-AEC3 measurements below used the older `jasper_capture`
-  reference tap.
+- `scripts/aec-probe-timing.py` — current multi-source diagnostic timing
+  probe for outputd's final speaker-reference UDP stream, outputd's
+  chip-ref writer tee, the legacy `jasper_capture` tap, and selected
+  XVF3800 channels. It writes JSON/CSV/Markdown artifacts and can repeat
+  the standard 1024/3072, 1024/2048, and 512/1024 outputd profiles. See
+  [AEC-DIAG-03 Timing Probe](AEC-DIAG-03-timing-probe.md).
+- `scripts/aec-probe-latency.sh` — older chirp + cross-correlation
+  diagnostic. Existing historical results from this script must be read
+  with their run-era reference source in mind; early runs measured the
+  `jasper_capture` pre-DSP tap and must not be confused with production
+  outputd final-reference timing.
 - `scripts/aec-probe-pinknoise.sh` — runs the bridge against
   stationary pink noise to measure the AEC engine's plateau
   attenuation (the upper bound for this setup, since music is
