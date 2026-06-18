@@ -6,8 +6,9 @@ silently blow that ceiling — this fails first, cheaply, in CI.
 Token estimate is chars/4 (a cheap, dependency-free heuristic; no
 tiktoken). It overestimates slightly for natural-language text, which is
 the safe direction for a ceiling guard. We measure descriptions only
-(the dominant term; the 29 descriptions total ~8.2k tokens today) — JSON
-schema overhead is small and bounded.
+(the dominant term; the 29 descriptions are ~3.9k estimated tokens after
+the Phase 1.6 pass, down from ~8.5k) — JSON schema overhead is small and
+bounded.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from jasper.tools.packs import ToolDeps, register_packs
 from jasper.tools.subway import make_subway_tools
 
 # After the Phase 1.6 representative llm_description pass, the full 29-tool
-# registry should stay around ~4.1k estimated description tokens. 6k leaves
+# registry should stay around ~3.9k estimated description tokens. 6k leaves
 # room for careful additions while catching a regression to the old ~8.5k
 # footprint. chars/4 estimate, descriptions only.
 MODEL_FACING_DESCRIPTION_TOKEN_BUDGET = 6_000

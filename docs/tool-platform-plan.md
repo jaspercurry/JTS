@@ -178,14 +178,16 @@ remaining scaling rule is now local: adding a tool family should mean
 adding or extending a capability pack, not editing daemon registration,
 provider adapters, catalog internals, or central `Config`.
 
-### 3.4 One problem is live *today*, at 29 tools
-Our tool **descriptions alone** total **~8,200 tokens** — already about
-half of OpenAI Realtime's hard **16,384-token** instructions+tools
-ceiling (a real builder hit that wall with just 9 verbose tools). Tool
-descriptions are the verbatim docstrings, which we keep deliberately
-rich. Splitting a short model-facing description from the full human
-docstring roughly **halves** that footprint and buys years of runway.
-This is the one near-term fix that isn't optional.
+### 3.4 Prompt footprint was the live near-term pressure at 29 tools
+Before the Phase 1.6 representative pass, tool **descriptions alone**
+totaled **34,011 chars / ~8,502 tokens** — already about half of OpenAI
+Realtime's hard **16,384-token** instructions+tools ceiling (a real
+builder hit that wall with just 9 verbose tools). The first
+`llm_description` pass brought that to **15,634 chars / ~3,908 tokens**
+while keeping the full rich docstrings as human documentation. The
+scaling rule remains: rich maintainer docs stay in docstrings/descriptions,
+provider-visible text uses `llm_description` when shorter guidance is
+enough, and the budget guard catches regressions.
 
 ### 3.5 "Sessions" make the re-declare wall a non-issue for us
 JTS opens **one persistent live connection** at daemon startup; wake
