@@ -193,7 +193,11 @@ def test_rust_ci_router_runs_full_gate_for_non_pr_events(tmp_path: Path) -> None
     (repo / "scripts").mkdir()
     shutil.copy2(ROOT / "scripts" / "rust-ci-needed", repo / "scripts" / "rust-ci-needed")
 
-    stdout = _run(["scripts/rust-ci-needed"], cwd=repo)
+    env = {**os.environ, "GITHUB_EVENT_NAME": ""}
+    env.pop("GITHUB_BASE_REF", None)
+    env.pop("GITHUB_OUTPUT", None)
+
+    stdout = _run(["scripts/rust-ci-needed"], cwd=repo, env=env)
 
     assert dict(line.split("=", 1) for line in stdout.strip().splitlines()) == {
         "run": "true",
