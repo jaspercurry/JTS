@@ -382,14 +382,15 @@ grows.
    copyable unit: it owns metadata, setup-required state, build/gate logic,
    catalog grouping, and may return either decorated functions or already
    built `Tool` objects. The voice-eval harness now registers through the
-   same pack walk as the daemon.
+   same pack walk as the daemon. The shipped `time` pack is the simple
+   explicit reference, and `weather` is the API-backed explicit reference.
 
 **Next boundary slice**
-1. **Keep migrating examples across the complexity ladder.** Use `time` as the
-   simple reference, `weather` as the API-backed reference, `spotify` /
-   `playback` as source-backed references, `transit` as the deep
-   wizard/config/provider-registry reference, and `home_assistant` as the
-   high-risk consequential-action reference.
+1. **Keep migrating examples across the complexity ladder.** With `time` and
+   `weather` now covering the simple and API-backed references, the next
+   candidates are `spotify` / `playback` as source-backed references,
+   `transit` as the deep wizard/config/provider-registry reference, and
+   `home_assistant` as the high-risk consequential-action reference.
 2. **Gate every refactor on byte-identical behavior.** Existing 29-tool
    provider schemas, manifest entries, catalog payloads, dispatch behavior,
    and registration order must stay identical unless a change is explicitly
@@ -530,10 +531,10 @@ Pack detail pages are the real management surface. A detail page shows:
 - A reset-to-default affordance wherever user-editable text exists.
 
 Prompt editing is intentionally allowed, but framed as advanced and
-at-risk. JTS is open source, so a user can edit the tool docstrings in the
-repo anyway; the UI should make that power available without pretending it
-is harmless. Do **not** add an intermediate "custom addendum" layer. The
-plan is full prompt override:
+at-risk. JTS is open source, so a user can edit the tool descriptions in
+the repo anyway; the UI should make that power available without
+pretending it is harmless. Do **not** add an intermediate "custom addendum"
+layer. The plan is full prompt override:
 
 - The immutable default comes from code
   (`Tool.default_model_facing_description()`), and the UI displays it

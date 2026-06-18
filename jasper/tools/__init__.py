@@ -1,23 +1,24 @@
 """Voice-tool registry + per-provider schema serializers.
 
-Tool factories under ``jasper.tools.*`` keep the ergonomic
-``@tool(...)`` + ``ToolRegistry.register(fn)`` authoring style. The
-decorator compiles a callable into a provider-neutral ``ToolDefinition``
-plus a ``PythonExecutor``; the registry then serializes the definition
-to the provider-specific shape:
+Tool factories under ``jasper.tools.*`` may return either explicit
+``Tool(ToolDefinition(...), PythonExecutor(...))`` objects or decorated
+``@tool(...)`` callables. The decorator is ergonomic sugar for that same
+provider-neutral ``ToolDefinition`` plus ``PythonExecutor`` boundary; the
+registry then serializes the definition to the provider-specific shape:
 
 - ``function_declarations()`` — Gemini's ``Tool(function_declarations=[...])``
 - ``openai_tools()`` — OpenAI Realtime's flat
   ``{type: "function", name, description, parameters}``. Grok's
   voice agent inherits this shape unchanged.
 
-The LLM-facing description for each tool is the function's full
-cleaned docstring (``build_tool`` sends ``inspect.getdoc(fn).strip()``
-verbatim). Per-tool conditional rules — when to call, when NOT to
-call, response shape, voice-answer style — live in the docstring
-and are sent to the model with the tool. Engineer-only notes
-(implementation details, TODOs) belong in ``#`` comments or this
-module docstring, NOT in tool function docstrings.
+The LLM-facing description for each tool is the explicit
+``ToolDefinition.description`` or, for ``@tool`` callables, the
+function's full cleaned docstring (``build_tool`` sends
+``inspect.getdoc(fn).strip()`` verbatim). Per-tool conditional rules —
+when to call, when NOT to call, response shape, voice-answer style — live
+there and are sent to the model with the tool. Engineer-only notes
+(implementation details, TODOs) belong in ``#`` comments or this module
+docstring, NOT in model-facing tool descriptions.
 
 When adding or editing a tool, read ``docs/HANDOFF-prompting.md``
 first — it covers tool description style, where conditional rules
@@ -28,8 +29,9 @@ Prompt-injection seam (see below + docs/HANDOFF-prompting.md "Untrusted
 tool-result fencing"): ``fence_untrusted`` wraps attacker-controllable
 third-party text, ``UntrustedContentMonitor`` tracks the taint window, and
 each ``Tool`` carries declarative ``untrusted_output`` / ``consequential``
-risk flags (set via ``@tool(...)``) for the planned tool store's policy
-layer. A tool that returns third-party text declares ``untrusted_output``,
+risk flags (set via ``@tool(...)`` or ``ToolDefinition``) for the planned
+tool store's policy layer. A tool that returns third-party text declares
+``untrusted_output``,
 fences its output, and arms the taint window (gmail and calendar do all
 three). A tool that takes a real-world action declares ``consequential``.
 """

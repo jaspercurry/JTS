@@ -14,11 +14,13 @@ and per-tool conditional rules.
 **Last fetched against provider docs: 2026-05-23.** Re-check the
 linked sources every ~3 months or when a model version bumps.
 
-**Path B applied 2026-05-23.** `build_tool()` now sends the full
-cleaned docstring to the LLM; per-tool conditional rules live in
-each tool's docstring under `jasper/tools/`. Path B moved per-tool
-rules out of `SYSTEM_INSTRUCTION` into tool docstrings. **It did
-not bring the constant under Gemini's oft-cited ~500-token figure:**
+**Path B applied 2026-05-23; explicit tool definitions added
+2026-06-18.** The LLM sees each tool's model-facing description:
+explicit `ToolDefinition.description` for explicit tools, or the
+full cleaned docstring for decorated `@tool` callables. Per-tool
+conditional rules live in that tool description under `jasper/tools/`;
+Path B moved them out of `SYSTEM_INSTRUCTION`. **It did not bring the
+constant under Gemini's oft-cited ~500-token figure:**
 the static constant measures ~720 words ≈ ~1,000–1,150 tokens
 (2026-06-15), ~2× that figure — and that figure is now flagged as
 an unverified heuristic, not a hard ceiling (see
@@ -28,12 +30,14 @@ records what landed.
 
 **User prompt overrides added 2026-06-16.** Code still owns the default:
 `Tool.default_model_facing_description()` is `llm_description` when set,
-else the cleaned docstring. The `/tools/` wizard can store an advanced
-user override in `/var/lib/jasper/tool_prompt_overrides.json`; on
-`jasper-voice` restart, `ToolRegistry.apply_prompt_overrides()` makes that
-override what providers see through `Tool.model_facing_description()`.
-Reset deletes the override and returns to the code default. Missing or
-malformed override state fails safe to code defaults.
+else `ToolDefinition.description` (for decorated tools, `build_tool()`
+populates that from the cleaned docstring). The `/tools/` wizard can store
+an advanced user override in
+`/var/lib/jasper/tool_prompt_overrides.json`; on `jasper-voice` restart,
+`ToolRegistry.apply_prompt_overrides()` makes that override what providers
+see through `Tool.model_facing_description()`. Reset deletes the override
+and returns to the code default. Missing or malformed override state fails
+safe to code defaults.
 
 ## Scope
 
@@ -70,9 +74,10 @@ tool-round watchdog contract
    Gemini Live best-practices guide says *"Be sure to tell Gemini
    under what conditions a tool call should be invoked"* (inside
    the tool description). Path B (applied 2026-05-23):
-   `build_tool()` sends the full cleaned docstring; per-tool
-   conditional rules (when to call, voice-answer style,
-   response-shape handling) live in the tool's docstring. If a
+   per-tool conditional rules (when to call, voice-answer style,
+   response-shape handling) live in the tool's model-facing
+   description. Decorated tools derive that from the full cleaned
+   docstring; explicit tools set it on `ToolDefinition`. If a
    user override exists, it replaces the code default at runtime
    and carries the same responsibility.
 4. **Don't ban preambles. List when to skip.** Absolute "never
@@ -268,7 +273,7 @@ Gemini Live best practices says it directly:
 > under what conditions a tool call should be invoked."*
 
 Path B applied 2026-05-23: per-tool output rules now live in each
-tool's docstring (sent by `build_tool()` to the model). See
+tool's model-facing description. See
 [the cookbook](#tool-prompt-cookbook) for the convention.
 
 ### 4. Positive framing for tool calls
@@ -490,7 +495,7 @@ Nine labeled sections in order:
    tool routing rules where two similar tools need disambiguation
    live here (bare 'play' → resume vs. spotify_play; recency
    words → spotify_play_latest_by_artist; etc.). Per-tool "call
-   for X" guidance lives in each tool's docstring.
+   for X" guidance lives in each tool's description.
 5. **Tools — preambles** — CONDITIONAL skip-list. Mirrors
    OpenAI's documented pattern.
 6. **Unclear audio** — Single clarification request, no tools,
@@ -540,11 +545,14 @@ nice-to-have):
 
 ## Tool-prompt cookbook
 
-### How `build_tool()` works
+### How tool descriptions are built
 
-[`build_tool`](../jasper/tools/__init__.py) in
-`jasper/tools/__init__.py` captures the code default for the LLM-facing
-tool description:
+[`ToolDefinition`](../jasper/tools/__init__.py) is the explicit
+model-facing boundary. A tool authored explicitly sets
+`ToolDefinition.description` directly; a tool authored with ergonomic
+`@tool(...)` sugar goes through
+[`build_tool`](../jasper/tools/__init__.py), which captures the decorated
+function's cleaned docstring as that same default:
 
 ```python
 def build_tool(fn, *, name=None):
@@ -553,15 +561,16 @@ def build_tool(fn, *, name=None):
     ...
 ```
 
-**The full docstring is the default LLM-facing surface.** Engineer-only
-notes (dev TODOs, implementation details) belong in `#` comments
-or the module docstring, NOT in tool function docstrings.
+**The tool description is the default LLM-facing surface.** For decorated
+tools, that means the full function docstring. Engineer-only notes (dev
+TODOs, implementation details) belong in `#` comments or the module
+docstring, NOT in model-facing tool descriptions.
 
 By default, that is — a tool may override the model-facing text with a
 shorter `@tool(llm_description="...")`, and `build_tool` then uses that
 instead of the docstring for the code default. The override exists to keep a
 verbose engineer-facing docstring out of the realtime instructions+tools
-token budget (OpenAI Realtime caps that at 16,384 tokens; the 28 shipped
+token budget (OpenAI Realtime caps that at 16,384 tokens; the 29 shipped
 descriptions already total ~8.2k). No shipped tool sets it today; trimming
 verbose tools to a short `llm_description` is a later, eval-gated step.
 
@@ -570,14 +579,15 @@ overrides saved by `/tools/`. `jasper-voice` reads
 `/var/lib/jasper/tool_prompt_overrides.json` at startup, calls
 `ToolRegistry.apply_prompt_overrides()`, and then every provider serializer
 uses `Tool.model_facing_description()`. That means the provider sees:
-user override → `llm_description` → docstring, in that order. The catalog
-keeps both `description` and `default_description` so the UI can mark
-"Custom prompt" and reset by deleting the override.
+user override → `llm_description` → `ToolDefinition.description`, in that
+order. For decorated tools, `ToolDefinition.description` is the cleaned
+docstring. The catalog keeps both `description` and `default_description`
+so the UI can mark "Custom prompt" and reset by deleting the override.
 
 ### Writing a new tool
 
-Recommended structure for a tool docstring (all sent to the
-LLM):
+Recommended structure for a tool description (or a decorated tool
+docstring, which becomes the description):
 
 ```
 """<One-sentence purpose>.
@@ -635,11 +645,11 @@ isn't reachable", a confident-wrong answer with no `error` to
 speak. Fail loud, fail speakable.
 
 This is a **documented convention, not a framework-enforced
-contract.** `build_tool()` does not validate, wrap, or coerce
-return shapes — it ships the docstring and forwards whatever the
-function returns. There is deliberately no `ToolError` base class
+contract.** `dispatch_tool()` does not validate, wrap, or coerce
+return shapes beyond scalar wrapping — it forwards whatever the
+executor returns. There is deliberately no `ToolError` base class
 or result-type checker; each tool owns its own failure shape, and
-this paragraph plus the per-tool docstring (the error contract
+this paragraph plus the per-tool description (the error contract
 line in the "Writing a new tool" template above) are the only
 things keeping tools from drifting. Read it before adding a tool
 so the next author doesn't repeat the bus drift.
@@ -681,10 +691,10 @@ After Path B (2026-05-23):
 | Model preambles every tool call ("Checking that…") despite system prompt | Absolute "never preamble" rule | Conditional framing — enumerate skip-cases per OpenAI's documented pattern |
 | Gemini 3.1 ignores rules that 2.5 honored | 3.1 audio-mode conditional-rule degradation ([forum thread](https://discuss.ai.google.dev/t/gemini-3-1-flash-live-preview-not-following-system-instructions/144659)) | Document and live with it for now; A/B test absolute language for Gemini-only before adding a per-provider shim |
 | Long Gemini sessions break on resumption | Suspected: system instruction over the ~500-token figure (PLAN.md tracker) — but that figure is an unverified heuristic; see ["Length and structure"](#2-length-and-structure-are-inversely-valued) | First confirm prompt size is the cause from production reconnect logs (`journalctl -u jasper-voice \| grep "connect ok in"`). Per-tool rules already moved out of the system prompt (Path B 2026-05-23); further trimming is a paid voice-eval-validated change — don't regress tool-calling |
-| Tool docstring "Voice answer style" sections seem ignored by the LLM (pre-2026-05-23) | `build_tool()` truncated to first paragraph | Lifted 2026-05-23; full docstring now sent. See cookbook. |
-| Conditional rule violated in spoken response (e.g. ZERO-COUNT, STATUS, STALENESS) | Conflicting rule between SYSTEM_INSTRUCTION and tool docstring | After Path B, per-tool rules live ONLY in the tool docstring; system prompt has cross-tool meta-rules only |
+| Tool description "Voice answer style" sections seem ignored by the LLM (pre-2026-05-23) | `build_tool()` truncated decorated-function docstrings to the first paragraph | Lifted 2026-05-23; decorated functions now send the full docstring, and explicit tools set the same surface on `ToolDefinition.description`. See cookbook. |
+| Conditional rule violated in spoken response (e.g. ZERO-COUNT, STATUS, STALENESS) | Conflicting rule between SYSTEM_INSTRUCTION and tool description | After Path B, per-tool rules live ONLY in the tool description; system prompt has cross-tool meta-rules only |
 | Model says preamble + tool result *and* also says result verbatim with no preamble (inconsistent across turns) | Conditional preamble rule too vague; missing "the tool call is lightweight" clause | Tighten the skip-list trigger; reference the existing `Tools — preambles` block in `jasper/voice/prompt.py` |
-| Model preambles AND speaks the tool's verbose `confirm` field on every call ("talks twice" — consistent across turns) | Cross-tool SYSTEM_INSTRUCTION skip-list applies in theory but the model isn't honoring it for this tool family (~33% compliance per OpenAI community thread) | Add a per-tool "Skip the preamble" sentence in the tool's docstring (Path B). Worked first try on `spotify_play` / `spotify_play_latest_by_artist` (PR #265, 2026-05-23). Don't escalate to absolute language in SYSTEM_INSTRUCTION — that's the regression path that produced "zero tool calls across five scenarios" in May 2026. |
+| Model preambles AND speaks the tool's verbose `confirm` field on every call ("talks twice" — consistent across turns) | Cross-tool SYSTEM_INSTRUCTION skip-list applies in theory but the model isn't honoring it for this tool family (~33% compliance per OpenAI community thread) | Add a per-tool "Skip the preamble" sentence in the tool description (Path B). Worked first try on `spotify_play` / `spotify_play_latest_by_artist` (PR #265, 2026-05-23). Don't escalate to absolute language in SYSTEM_INSTRUCTION — that's the regression path that produced "zero tool calls across five scenarios" in May 2026. |
 | Mic mishear gets confidently answered as if user said something else | No Unclear Audio rule | Add one — OpenAI's documented pattern: *"If the user's audio is not clear, ask once: 'Sorry, could you repeat that?'"* |
 | A crafted email pivots the model into a real action ("unlock the front door") | Untrusted tool-result text reaching the model, plus a consequential tool the model can call from it | Two layers: fence untrusted input (`fence_untrusted`) AND gate consequential actions behind a confirmation (`needs_confirmation`). Fencing alone is a baseline. See "Untrusted tool-result fencing" |
 
@@ -698,17 +708,18 @@ PR as this doc (2026-05-23). Items 5-6 remain open.
 ### 1. Decide on build_tool() behavior — ✅ DONE (2026-05-23)
 
 **Path B applied.** `build_tool()` at
-[`jasper/tools/__init__.py`](../jasper/tools/__init__.py) now sends
-the full cleaned docstring to the LLM:
+[`jasper/tools/__init__.py`](../jasper/tools/__init__.py) now captures
+the full cleaned decorated-function docstring as the LLM-facing
+`ToolDefinition.description`:
 
 ```python
 desc = (inspect.getdoc(fn) or "").strip() or declared
 ```
 
 Per-tool conditional rules (when to call, voice-answer style,
-response-shape handling) live in each tool's docstring under
+response-shape handling) live in each tool's description under
 `jasper/tools/`. Engineer-only notes belong in `#` comments or
-the module docstring, not in tool function docstrings — the
+the module docstring, not in model-facing tool descriptions — the
 [module docstring at tools/__init__.py](../jasper/tools/__init__.py)
 codifies the convention.
 
@@ -731,7 +742,7 @@ OpenAI's documented per-task-type pattern:
 
 JTS variant: direct answers in 1-2 short sentences; clarifying
 questions one at a time; tool results defer to the tool's own
-voice-answer style (which lives in the tool's docstring).
+voice-answer style (which lives in the tool description).
 
 ### 4. Add an Unclear Audio section — ✅ DONE (2026-05-23)
 

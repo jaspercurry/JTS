@@ -15,42 +15,47 @@ no failure modes worth handling.
 from __future__ import annotations
 
 from datetime import datetime
+from textwrap import dedent
 
-from . import tool
+from . import PythonExecutor, Tool, ToolDefinition
 
 
-def make_time_tools():
+GET_CURRENT_TIME_DESCRIPTION = dedent(
+    """
+    Return the current local date, time, and day-of-week.
+
+    Call for ANY question about the current time, day, or date
+    — "what time is it", "what day is it", "what's today's
+    date", "is it morning yet". The realtime model's internal
+    clock is the session-open timestamp from the system prompt;
+    it goes stale within hours. Always prefer this tool over
+    the session-open hint.
+
+    Response shape:
+      local_time: ISO 8601 local time, minute-resolution
+                  (e.g. "2026-05-21T15:47"). Strip seconds —
+                  they aren't useful for the user and adding
+                  them invites the model to read them out.
+      timezone: IANA-style label or short name as the OS
+                reports it (e.g. "EDT", "PST", "UTC").
+      day_of_week: full name (e.g. "Thursday").
+
+    Voice answer style: speak naturally — "It's 3:47 PM" or
+    "It's Thursday, May 21" or "It's a quarter past 7" (round
+    when the user asks casually). Don't read out the timezone
+    abbreviation unless the user explicitly asked for it.
+    """,
+).strip()
+
+
+def make_time_tools() -> list[Tool]:
     """Return the time-tool list (currently one).
 
     Factory shape mirrors the other tool modules so wiring in
     `jasper.voice_daemon._build_tool_registry` looks uniform: every
     tool module has a `make_*_tools(...)` entry point."""
 
-    @tool(labels=("time", "utility"))
     async def get_current_time() -> dict:
-        """Return the current local date, time, and day-of-week.
-
-        Call for ANY question about the current time, day, or date
-        — "what time is it", "what day is it", "what's today's
-        date", "is it morning yet". The realtime model's internal
-        clock is the session-open timestamp from the system prompt;
-        it goes stale within hours. Always prefer this tool over
-        the session-open hint.
-
-        Response shape:
-          local_time: ISO 8601 local time, minute-resolution
-                      (e.g. "2026-05-21T15:47"). Strip seconds —
-                      they aren't useful for the user and adding
-                      them invites the model to read them out.
-          timezone: IANA-style label or short name as the OS
-                    reports it (e.g. "EDT", "PST", "UTC").
-          day_of_week: full name (e.g. "Thursday").
-
-        Voice answer style: speak naturally — "It's 3:47 PM" or
-        "It's Thursday, May 21" or "It's a quarter past 7" (round
-        when the user asks casually). Don't read out the timezone
-        abbreviation unless the user explicitly asked for it.
-        """
         now = datetime.now().astimezone()
         return {
             "local_time": now.strftime("%Y-%m-%dT%H:%M"),
@@ -58,4 +63,14 @@ def make_time_tools():
             "day_of_week": now.strftime("%A"),
         }
 
-    return [get_current_time]
+    return [
+        Tool(
+            definition=ToolDefinition(
+                name="get_current_time",
+                description=GET_CURRENT_TIME_DESCRIPTION,
+                parameters={"type": "object", "properties": {}},
+                labels=("time", "utility"),
+            ),
+            executor=PythonExecutor(get_current_time),
+        ),
+    ]

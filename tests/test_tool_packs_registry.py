@@ -16,9 +16,17 @@ schemas are identical regardless of dep values.
 """
 from __future__ import annotations
 
+import asyncio
 import types
 
-from jasper.tools import Tool, ToolDefinition, ToolRegistry, dispatch_tool
+from jasper.tools import (
+    PythonExecutor,
+    Tool,
+    ToolDefinition,
+    ToolRegistry,
+    dispatch_tool,
+)
+from jasper.tools.catalog import build_catalog
 from jasper.tools.audio import make_audio_tools
 from jasper.tools.bus import make_bus_tools
 from jasper.tools.calendar import make_calendar_tools
@@ -117,32 +125,39 @@ def _reference_registry(deps: ToolDeps) -> ToolRegistry:
     reproduce byte-for-byte."""
     reg = ToolRegistry()
     for fn in make_audio_tools(deps.volume_coordinator):
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     for fn in make_transport_tools(deps.renderer, deps.router):
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     for fn in make_spotify_tools(
         deps.router, deps.renderer, deps.spotify_device_name, deps.spotify_setup_url,
     ):
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     for fn in make_weather_tools(deps.weather):
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     for fn in deps.transit_tools:
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     for fn in make_home_assistant_tools(deps.ha):
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     for fn in make_time_tools():
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     if deps.timer_scheduler is not None:
         for fn in make_timer_tools(deps.timer_scheduler):
-            reg.register(fn)
+            _register_tool_or_callable(reg, fn)
     if deps.google_clients is not None and deps.google_clients.list_account_names():
         for fn in make_calendar_tools(deps.google_clients):
-            reg.register(fn)
+            _register_tool_or_callable(reg, fn)
         for fn in make_gmail_tools(deps.google_clients):
-            reg.register(fn)
+            _register_tool_or_callable(reg, fn)
     for fn in make_diagnostic_tools(deps.wake_event_store):
-        reg.register(fn)
+        _register_tool_or_callable(reg, fn)
     return reg
+
+
+def _register_tool_or_callable(reg: ToolRegistry, item) -> None:
+    if isinstance(item, Tool):
+        reg.register_tool(item)
+    else:
+        reg.register(item)
 
 
 def _serialize(reg: ToolRegistry) -> list[dict]:
@@ -150,6 +165,15 @@ def _serialize(reg: ToolRegistry) -> list[dict]:
     model-facing description + schema + providers + timeout, in
     registration order. One comparison covers every invariant at once."""
     return [t.to_manifest_entry() for t in reg.tools.values()]
+
+
+def _pack_named(name: str) -> CapabilityPack:
+    return next(p for p in TOOL_PACKS if p.name == name)
+
+
+class _ExplicitOnlyRegistry(ToolRegistry):
+    def register(self, *_args, **_kwargs):  # pragma: no cover - failure path
+        raise AssertionError("migrated pack must register explicit Tool objects")
 
 
 def test_pack_order_matches_legacy_sequence():
@@ -180,6 +204,142 @@ def test_data_driven_walk_equals_legacy_sequence():
     # Byte-identical ordered serialization (names, descriptions,
     # parameters, providers, timeouts, AND order — all at once).
     assert _serialize(walk_reg) == _serialize(ref_reg)
+
+
+def test_real_time_pack_uses_explicit_tool_boundary_end_to_end():
+    """The shipped time pack is a copyable production example of explicit
+    ToolDefinition + PythonExecutor authoring, not just a test fixture."""
+    pack = _pack_named("time")
+    reg = _ExplicitOnlyRegistry()
+
+    outcomes = register_packs(
+        reg,
+        _full_deps(),
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+        packs=(pack,),
+    )
+
+    assert outcomes == [PackOutcome("time", "registered", tool_count=1)]
+    tool = reg.get("get_current_time")
+    assert tool is not None
+    assert isinstance(tool.definition, ToolDefinition)
+    assert isinstance(tool.executor, PythonExecutor)
+    assert reg.tool_packs == {"get_current_time": "time"}
+
+    expected_parameters = {"type": "object", "properties": {}}
+    assert tool.parameters == expected_parameters
+    assert tool.labels == ("time", "utility")
+    assert tool.providers is None
+    assert tool.timeout == 12.0
+
+    assert reg.function_declarations() == [{
+        "name": "get_current_time",
+        "description": tool.model_facing_description(),
+        "parameters": expected_parameters,
+    }]
+    assert reg.openai_tools() == [{
+        "type": "function",
+        "name": "get_current_time",
+        "description": tool.model_facing_description(),
+        "parameters": expected_parameters,
+    }]
+    assert reg.to_manifest() == [tool.to_manifest_entry()]
+
+    catalog = build_catalog(reg, frozenset(), packs=(pack,))
+    row = catalog["tools"][0]
+    assert row["name"] == "get_current_time"
+    assert row["status"] == "active"
+    assert row["pack"]["id"] == "time"
+    assert row["labels"] == ["time", "utility"]
+    assert row["parameters"] == expected_parameters
+
+    out = asyncio.run(dispatch_tool(reg, "get_current_time", {}))
+    assert set(out) == {"local_time", "timezone", "day_of_week"}
+    assert len(out["local_time"]) == len("2026-05-21T15:47")
+    assert "T" in out["local_time"]
+
+
+def test_real_weather_pack_uses_explicit_tool_boundary_end_to_end():
+    """The shipped API-backed weather pack also crosses the explicit
+    boundary while preserving the WeatherClient call shape."""
+    class FakeWeather:
+        def __init__(self):
+            self.calls = []
+
+        async def get_weather(self, location: str = "") -> dict:
+            self.calls.append(location)
+            return {"location": location, "ok": True}
+
+    weather = FakeWeather()
+    pack = _pack_named("weather")
+    deps = _full_deps()
+    deps = ToolDeps(
+        volume_coordinator=deps.volume_coordinator,
+        renderer=deps.renderer,
+        router=deps.router,
+        weather=weather,
+        spotify_device_name=deps.spotify_device_name,
+        spotify_setup_url=deps.spotify_setup_url,
+        transit_tools=deps.transit_tools,
+        ha=deps.ha,
+        timer_scheduler=deps.timer_scheduler,
+        google_clients=deps.google_clients,
+        wake_event_store=deps.wake_event_store,
+    )
+    reg = _ExplicitOnlyRegistry()
+
+    outcomes = register_packs(
+        reg,
+        deps,
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+        packs=(pack,),
+    )
+
+    assert outcomes == [PackOutcome("weather", "registered", tool_count=1)]
+    tool = reg.get("get_weather")
+    assert tool is not None
+    assert isinstance(tool.definition, ToolDefinition)
+    assert isinstance(tool.executor, PythonExecutor)
+    assert reg.tool_packs == {"get_weather": "weather"}
+
+    expected_parameters = {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+    }
+    assert tool.parameters == expected_parameters
+    assert tool.labels == ("weather", "utility")
+    assert tool.providers is None
+    assert tool.timeout == 12.0
+    assert "Tampa, Florida" in tool.description
+    assert "next_rain_window" in tool.description
+
+    assert reg.function_declarations() == [{
+        "name": "get_weather",
+        "description": tool.model_facing_description(),
+        "parameters": expected_parameters,
+    }]
+    assert reg.openai_tools() == [{
+        "type": "function",
+        "name": "get_weather",
+        "description": tool.model_facing_description(),
+        "parameters": expected_parameters,
+    }]
+    assert reg.to_manifest() == [tool.to_manifest_entry()]
+
+    catalog = build_catalog(reg, frozenset(), packs=(pack,))
+    row = catalog["tools"][0]
+    assert row["name"] == "get_weather"
+    assert row["status"] == "active"
+    assert row["pack"]["id"] == "weather"
+    assert row["labels"] == ["weather", "utility"]
+    assert row["parameters"] == expected_parameters
+
+    assert asyncio.run(
+        dispatch_tool(reg, "get_weather", {"location": "Tampa, Florida"}),
+    ) == {"location": "Tampa, Florida", "ok": True}
+    assert weather.calls == ["Tampa, Florida"]
 
 
 def test_custom_capability_pack_registers_explicit_tool_boundary():
@@ -233,8 +393,6 @@ def test_custom_capability_pack_registers_explicit_tool_boundary():
     assert outcomes == [PackOutcome("contrib_echo", "registered", tool_count=1)]
     assert reg.tool_packs == {"contrib_echo": "contrib_echo"}
     assert reg.to_manifest()[0]["labels"] == ["contrib", "example"]
-
-    import asyncio
 
     assert asyncio.run(dispatch_tool(reg, "contrib_echo", {"text": "hi"})) == {
         "echo": "hi",
