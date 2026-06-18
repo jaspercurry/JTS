@@ -71,9 +71,12 @@ Repo test evidence:
   `SHF_BYPASS=0`, `AUDIO_MGR_SYS_DELAY`, `AEC_ASROUTONOFF=1`, fixed beams
   on/gated, and `OP_L/OP_R=[7,0]/[7,1]`.
 - `tests/test_aec_reconcile.py` pins `auto` and `xvf_chip_aec` on 6-channel
-  XVF firmware to `JASPER_AEC_CHIP_AEC_ENABLED=1`,
+  XVF firmware plus a supported output DAC profile to
+  `JASPER_AEC_CHIP_AEC_ENABLED=1`,
   `JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0`,
   `JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891`, and raw/DTLN cleared.
+  It also pins calibration-required DAC profiles to the software AEC3
+  fallback with chip-ref env cleared.
 - `rust/jasper-outputd/src/main.rs`
   `chip_ref_downsampler_downmixes_and_decimates_exact_ratio` pins stereo
   downmix/decimation to dual-mono output.
@@ -279,10 +282,12 @@ Observed gaps and caveats:
 
 ## 5. Recommended Production Values
 
-Carry these into production for the current supported XVF chip-AEC profile:
+Carry these into production for the current supported XVF chip-AEC profile on
+the measured Apple USB-C dongle baseline, and for any future output DAC profile
+only after its chip-AEC timing/reference calibration is codified:
 
 ```text
-JASPER_AUDIO_INPUT_PROFILE=auto       # resolves to xvf_chip_aec on 6-ch XVF
+JASPER_AUDIO_INPUT_PROFILE=auto       # xvf_chip_aec on 6-ch XVF + supported/calibrated DAC
 JASPER_AEC_CHIP_AEC_ENABLED=1
 JASPER_AEC_REF_SOURCE=outputd_udp
 JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0
@@ -325,6 +330,11 @@ This supports Apple USB-C dongle, HiFiBerry/DAC hats, DAC8x-style active
 profiles, multiple Apple dongles, and future USB DACs without making chip-AEC
 success depend on one DAC's folklore.
 
+The current executable policy is intentionally conservative: Apple USB-C dongle
+is the measured supported baseline; HiFiBerry/DAC8x-family, dual-Apple, unknown,
+and future DAC IDs fall back to software AEC3 until their calibration artifact
+and timing constraints are codified.
+
 ## 6. Tests To Guard This
 
 Existing passing tests run in this investigation:
@@ -333,9 +343,15 @@ Existing passing tests run in this investigation:
 /Users/jaspercurry/Code/JTS/.venv/bin/pytest -q \
   tests/test_aec_init.py \
   tests/test_aec_reconcile.py \
-  tests/test_outputd_wiring.py
+  tests/test_outputd_wiring.py \
+  tests/test_audio_validation.py \
+  tests/test_aec_probe_xvf_ref_level_script.py \
+  tests/test_aec_probe_latency_script.py \
+  tests/test_aec_bridge_systemd.py \
+  tests/test_aec_bridge_stall.py \
+  tests/test_control_aec_state.py
 
-68 passed
+184 passed
 ```
 
 Recommended additional guard coverage:
@@ -344,17 +360,20 @@ Recommended additional guard coverage:
    `AEC_ASROUTGAIN`, `AEC_AECEMPHASISONOFF`, beam azimuth/elevation values,
    `AEC_FAR_EXTGAIN`, and `AUDIO_MGR_REF_GAIN` read/write handling if that
    becomes init-owned.
-2. `tests/test_aec_reconcile.py`: add DAC-profile matrix expectations:
-   chip-AEC supported, calibration-required, and degraded/fallback states,
-   with outputd chip-ref env written only for supported/calibrated profiles.
+2. `tests/test_aec_reconcile.py`: keep the DAC-profile matrix expectations
+   for chip-AEC supported and calibration-required/fallback states, with
+   outputd chip-ref env written only for supported/calibrated profiles; expand
+   it when a degraded-but-still-supported state or a new calibrated DAC ships.
 3. Outputd Rust tests: keep the existing exact-ratio downsampler test and add
    a fixture that asserts chip-ref output is stereo dual-mono for unequal
    input L/R and cannot clip when outputd's folded reference is within range.
 4. Doctor/audio validation: add checks that report:
    `chip_aec_supported`, `chip_aec_needs_calibration`, or `chip_aec_degraded`
-   for the active DAC; include chip-ref writer health once the
-   `AEC-DIAG-02` fields are live.
+   for the active DAC. `jasper.audio_validation` now records a required
+   `dac_support` readiness check; add a doctor-facing summary and chip-ref
+   writer health once the `AEC-DIAG-02` fields are live.
 5. Hardware probe test/documentation: keep
-   `scripts/aec-probe-xvf-ref-level.sh` as diagnostic-only and add a static
-   convention test if needed to prevent it from calling persistent XVF commands
-   (`SAVE_CONFIGURATION`, `REBOOT`) or writing production env files.
+   `scripts/aec-probe-xvf-ref-level.sh` as diagnostic-only. Static coverage in
+   `tests/test_aec_probe_xvf_ref_level_script.py` prevents persistent XVF
+   commands (`SAVE_CONFIGURATION`, `REBOOT`), production env writes, unbounded
+   runtime, and DAC-specific shortcuts from creeping into the probe.

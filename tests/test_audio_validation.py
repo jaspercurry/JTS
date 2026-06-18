@@ -513,11 +513,30 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert artifact.checks["runtime_identity"]["required"] is False
     assert "system_hostname" in artifact.checks["runtime_identity"]["observed"]
     assert artifact.checks["runtime_profile"]["status"] == "pass"
+    assert artifact.checks["dac_support"]["status"] == "pass"
     assert artifact.checks["dac_reference"]["status"] == "pass"
     assert artifact.checks["wake_legs"]["status"] == "pass"
     assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
     assert artifact.recommendation == "run_hardware_validation"
     assert "readiness_snapshot" in artifact.notes[0]
+
+
+def test_chip_aec_readiness_requires_calibrated_output_dac():
+    inputs = _active_chip_inputs()
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+        "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
+    }
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.status == "fail"
+    assert artifact.dac_id == "hifiberry_dac8x"
+    assert artifact.checks["dac_support"]["status"] == "fail"
+    assert artifact.checks["dac_support"]["observed"]["status"] == "needs_calibration"
+    assert "needs chip-AEC calibration" in artifact.checks["dac_support"]["summary"]
+    assert artifact.recommendation == "calibrate_output_dac_before_chip_aec"
 
 
 def test_chip_aec_readiness_fails_when_outputd_reference_missing():

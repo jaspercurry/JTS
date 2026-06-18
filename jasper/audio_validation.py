@@ -45,7 +45,14 @@ DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
 CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
+APPLE_USB_C_DONGLE_DAC_ID = "apple_usb_c_dongle"
 DAC8X_DAC_ID = "hifiberry_dac8x"
+CHIP_AEC_SUPPORTED_DAC_IDS = frozenset({APPLE_USB_C_DONGLE_DAC_ID})
+CHIP_AEC_CALIBRATION_REQUIRED_DAC_IDS = frozenset({
+    DAC8X_DAC_ID,
+    "hifiberry_dac8x_studio",
+    "dual_apple_usb_c_dac_4ch",
+})
 HARDWARE_VALIDATION_PROFILES = (
     CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
@@ -691,6 +698,8 @@ def _readiness_recommendation(status: str, checks: Mapping[str, Mapping[str, Any
     failed = [name for name, check in checks.items() if check.get("status") == "fail"]
     if "mic_detected" in failed:
         return "use_software_aec3_until_xvf_6ch_available"
+    if "dac_support" in failed:
+        return "calibrate_output_dac_before_chip_aec"
     if "runtime_profile" in failed or "runtime_env" in failed:
         return "run_reconciler_or_select_chip_aec_before_validating"
     if "dac_reference" in failed:
@@ -845,6 +854,55 @@ def _dac_identity_check(
         observed=observed,
         expected=expected,
     )
+
+
+def _normalize_dac_id(value: object) -> str:
+    normalized = (
+        str(value or "unknown")
+        .strip()
+        .strip("'\"")
+        .lower()
+        .replace("-", "_")
+    )
+    return normalized or "unknown"
+
+
+def _chip_aec_dac_support_check(dac: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    dac_id = _normalize_dac_id(dac.get("id"))
+    if dac_id in CHIP_AEC_SUPPORTED_DAC_IDS:
+        status = "supported"
+        summary = f"Output DAC {dac_id} is supported for chip-AEC."
+    elif dac_id == "unknown":
+        status = "needs_calibration"
+        summary = (
+            "Output DAC profile is unknown; run audio-hardware reconcile and "
+            "calibrate chip-AEC timing before validating chip-AEC."
+        )
+    elif dac_id in CHIP_AEC_CALIBRATION_REQUIRED_DAC_IDS:
+        status = "needs_calibration"
+        summary = (
+            f"Output DAC {dac_id} has a known profile but needs chip-AEC "
+            "calibration before validation."
+        )
+    else:
+        status = "needs_calibration"
+        summary = (
+            f"Output DAC {dac_id} has no codified chip-AEC calibration; "
+            "calibrate before validation."
+        )
+    observed = {
+        "id": dac_id,
+        "status": status,
+        "card": dac.get("card"),
+        "pcm": dac.get("pcm"),
+    }
+    expected = {
+        "status": "supported",
+        "supported_dac_ids": sorted(CHIP_AEC_SUPPORTED_DAC_IDS),
+    }
+    if status == "supported":
+        return _check("pass", summary=summary, observed=observed, expected=expected)
+    return _check("fail", summary=summary, observed=observed, expected=expected)
 
 
 def _runtime_profile_check(profile_status: Mapping[str, Any], profile: str) -> dict[str, JsonValue]:
@@ -1169,6 +1227,7 @@ def _profile_runtime_ready(checks: Mapping[str, JsonValue]) -> bool:
     required = (
         "runtime_profile",
         "mic_detected",
+        "dac_support",
         "runtime_env",
         "service_state",
         "dac_reference",
@@ -1525,6 +1584,7 @@ def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]
         "runtime_identity",
         "runtime_profile",
         "mic_detected",
+        "dac_support",
         "runtime_env",
         "service_state",
         "dac_reference",
@@ -1663,6 +1723,7 @@ def build_chip_aec_readiness_artifact(
             observed=mic,
             expected={"family": "xvf3800", "capture_channels": mic_probe.recommended_channels},
         ),
+        "dac_support": _chip_aec_dac_support_check(dac),
         "runtime_env": _runtime_env_check(runtime),
         "service_state": _service_state_check(service_states),
         "dac_reference": _dac_reference_check(outputd_status),

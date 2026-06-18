@@ -42,13 +42,39 @@ pick up the work without re-doing the investigation.
 **Input selection is profile-first.** `install.sh` seeds
 `/var/lib/jasper/aec_mode.env` with `JASPER_AUDIO_INPUT_PROFILE=auto`,
 enables `jasper-aec-reconcile.service`, and runs the reconciler once.
-On the recommended 6-channel XVF3800 shape, `auto` resolves to
-`xvf_chip_aec`: `jasper-outputd` fans out the final speaker buffer to
-the XVF USB-IN reference, `jasper-aec-init` applies the volatile
-150°/210° ASR beam profile, and `jasper-aec-bridge` forwards the chip
-beam to `:9876` while exposing `:9887`/`:9888` scoring legs. Software
-AEC3 remains the fallback profile (`xvf_software_aec3`) when chip-AEC
-is unavailable or explicitly selected.
+On the recommended 6-channel XVF3800 shape plus a supported/calibrated
+output DAC profile, `auto` resolves to `xvf_chip_aec`: `jasper-outputd`
+fans out the final speaker buffer to the XVF USB-IN reference,
+`jasper-aec-init` applies the volatile 150°/210° ASR beam profile, and
+`jasper-aec-bridge` forwards the chip beam to `:9876` while exposing
+`:9887`/`:9888` scoring legs. Software AEC3 remains the fallback profile
+(`xvf_software_aec3`) when chip-AEC is unavailable, the output DAC still
+needs calibration, or software AEC3 is explicitly selected.
+
+The current `xvf_chip_aec` baseline is **not** the older
+`SHF_BYPASS=1` software-AEC profile. With chip-AEC armed,
+`jasper-aec-init` writes `SHF_BYPASS=0`, `AUDIO_MGR_SYS_DELAY=12`,
+`AUDIO_MGR_REF_GAIN=8.0`, `AEC_FAR_EXTGAIN=0.0`,
+`AEC_ASROUTONOFF=1`, fixed gated 150°/210° beams, and
+`AUDIO_MGR_OP_L/R=[7,0]/[7,1]`. When chip-AEC is unavailable or
+disabled, the software fallback restores `SHF_BYPASS=1` and
+`AUDIO_MGR_OP_L/R=[8,0]/[8,0]` so host-side AEC3 receives a
+non-silent raw-ish XVF channel.
+
+**Hardware adaptability contract:** chip-AEC support is a property of
+the resolved input/output hardware profile, not of one known DAC. The
+final architecture must support Apple USB-C dongles, HiFiBerry/DAC hats,
+DAC8x-style active profiles, multiple Apple dongles, and future USB DACs
+through the same ownership lines: reconcile/config owns profile defaults
+and fallback/degraded states; outputd owns final-output reference
+publication and timing health; audio validation reports `dac_support`
+readiness today and doctor should surface the same supported,
+needs-calibration, or degraded state for the active DAC. Prefer live
+timing/level measurement and outputd `/state` evidence over profile folklore.
+Only carry per-profile residual
+`AUDIO_MGR_SYS_DELAY` trim after dynamic timing is exhausted and the
+calibration artifact is codified with that hardware profile. Old taps such
+as `pcm.jasper_capture` remain diagnostic only.
 
 In the software-AEC3 path, the bridge consumes outputd's 48 kHz stereo
 speaker monitor over UDP and downmixes/resamples it for WebRTC AEC3. The
@@ -72,6 +98,10 @@ To return to auto mode:
 printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
 ```
+
+`JASPER_AUDIO_INPUT_PROFILE=auto` is the authoritative selector in that
+state file; the legacy wake-leg booleans are kept for rollback
+compatibility and are re-resolved by the reconciler from live hardware.
 
 The reconciler also handles stale hardware state. If the Array is
 absent after a previous AEC-enabled boot, it clears the stale
@@ -243,19 +273,20 @@ performance win measured on 2026-05-16 came from `REF_GAIN=0`
 correcting the ref-mic level match for AEC3, NOT from chip BF /
 NS / AGC. If we ever want the chip's actual post-processing, we
 need `SHF_BYPASS=0` — which puts the chip's own AEC back in the
-signal path, and that AEC is incompatible with our external-DAC
-topology. Trade-off documented in "Lessons learned" below.
+signal path. That was incompatible with our external-DAC topology
+until outputd grew the XVF USB-IN reference fanout; the current
+`xvf_chip_aec` profile is the supported way to run that path.
 
 ### Tuning values, with rationale per knob
 
-| Knob | Production value | Where | Why this value |
+| Knob | Software fallback value | Where | Why this value |
 |---|---|---|---|
-| **Mic channel** | **1 (ASR beam, post-SHF tap)** | `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX` | Canonical XVF3800 voice-assistant channel choice. With our `SHF_BYPASS=1`, ch 1 effectively carries raw-ish mic data; the chip-processing benefit usually associated with ch 0/1 is gated on SHF_BYPASS=0. Channel 2 (explicit raw mic 0, Category 1) would be functionally similar in our config — see "Caveat" above. |
-| **Chip output mux** | **OP_L=`(8,0)`, OP_R=`(8,0)`** | `jasper-aec-init` | The bridge reads channel 1. Seeed's firmware default for channel 1 is OP_R=`(0,0)` (silence), so production init must keep OP_R on a non-silent route. 2026-05-31 failure mode: restoring OP_R to the firmware default made `jasper-aec-bridge` report `mic=0` even though ALSA capture and UDP output were healthy. |
-| **Chip SHF** | **BYPASSED (`SHF_BYPASS=1`)** | `jasper-aec-init` | Chip's own AEC requires the chip to drive the speaker via its own codec; we use an external USB DAC. Chip AEC mirrors host UAC volume into AEC_FAR_EXTGAIN and sabotages the reference signal in our topology. **SHF_BYPASS=1 disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1**, not just AEC — see Caveat above. The chip-side HPF stays. |
+| **Mic channel** | **1 (ASR beam, post-SHF tap)** | `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX` | Canonical XVF3800 voice-assistant channel choice. With fallback `SHF_BYPASS=1`, ch 1 effectively carries raw-ish mic data; the chip-processing benefit usually associated with ch 0/1 is gated on SHF_BYPASS=0. Channel 2 (explicit raw mic 0, Category 1) would be functionally similar in the fallback config — see "Caveat" above. |
+| **Chip output mux** | **OP_L=`(8,0)`, OP_R=`(8,0)`** | `jasper-aec-init` | The bridge reads channel 1. Seeed's firmware default for channel 1 is OP_R=`(0,0)` (silence), so fallback init must keep OP_R on a non-silent route. 2026-05-31 failure mode: restoring OP_R to the firmware default made `jasper-aec-bridge` report `mic=0` even though ALSA capture and UDP output were healthy. |
+| **Chip SHF** | **BYPASSED (`SHF_BYPASS=1`)** | `jasper-aec-init` | The software fallback uses host-side AEC3 and intentionally keeps the chip AEC out of the near-end path. **SHF_BYPASS=1 disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1**, not just AEC — see Caveat above. The chip-side HPF stays. The recommended chip-AEC profile is separate and uses `SHF_BYPASS=0` with a live XVF USB-IN reference from outputd. |
 | **Chip HPF** | **125 Hz, 4th-order Butter (`AEC_HPFONOFF=2`)** | `jasper-aec-init` | XMOS shipping default for smart-speaker presets. Applied at mic ingress before the SHF block (so survives SHF_BYPASS). Cuts LF rumble at the source. Configurable via `JASPER_AEC_CHIP_HPF_HZ` (off/70/125/150/180). |
 | **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ref_thread` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`. |
-| **`JASPER_AEC_REF_GAIN_DB`** | **0** | `/etc/jasper/jasper.env` + `.env.example` | The single most impactful knob in the 2026-05-16 tuning. Our raw-ish mic input (ch 1 with SHF_BYPASS=1) arrives at ~-22 dBFS RMS due to chip MIC_GAIN preamp + speaker-room-mic acoustic path. Digital ref is at -10 to -25 dBFS depending on music dynamics. AEC3's design point is ref ≈ mic; +0 dB matches this. **Any positive REF_GAIN drives ref into hard clipping** — see "REF_GAIN trap" below. |
+| **`JASPER_AEC_REF_GAIN_DB`** | **0** | `/etc/jasper/jasper.env` + `.env.example` | The single most impactful knob in the 2026-05-16 tuning. The fallback raw-ish mic input (ch 1 with SHF_BYPASS=1) arrives at ~-22 dBFS RMS due to chip MIC_GAIN preamp + speaker-room-mic acoustic path. Digital ref is at -10 to -25 dBFS depending on music dynamics. AEC3's design point is ref ~= mic; +0 dB matches this. **Any positive REF_GAIN drives ref into hard clipping** — see "REF_GAIN trap" below. |
 | **`JASPER_AEC_MIC_GAIN_DB`** | **+6 dB** | `/etc/jasper/jasper.env` | Boosts AEC3 output to openWakeWord's training distribution (~-18 dBFS RMS). Static gain, doesn't reshape envelopes. Soft-clipped via tanh on the way out. With `AGC1_ENABLED=1` this stacks on top of AGC1's dynamic gain — drop to 0 if too hot. |
 | **`JASPER_AEC_AGC2`** | **0** (off) | `/etc/jasper/jasper.env` | Was investigated as a level-stabilizer; turns out our binding only sets `gain_controller2.enabled = true`, while the `adaptive_digital` sub-config defaults off in libwebrtc-audio-processing-1 v1.3-3. Net result: AGC2=on is a no-op for level control on this Trixie build. Use AGC1 instead (below). Kept env-tunable for backwards compatibility; recommended off. |
 | **`JASPER_AEC_AGC1_ENABLED`** + **`_TARGET_DBFS`** + **`_MAX_GAIN_DB`** | **1, 9, 18** | `/etc/jasper/jasper.env` | WebRTC AGC1 in `kAdaptiveDigital` mode. `TARGET_DBFS=9` → −9 dBFS target via `target_level_dbfs` (positive value = dBFS-below-zero; range 0–31). `MAX_GAIN_DB=18` → `compression_gain_db=18` (soft-knee compressor parameter, range 0–90 — *not* a "max gain ceiling" despite our env-var name; that name is misleading and retained only for compat with the shipped binding). Wake-rate sweep on 2026-05-20 showed these params have minimal observable effect on Trixie's `libwebrtc-audio-processing-1` v1.3-3 (the built-in limiter dominates); all configs converged to ~RMS 1213 output. The shipped benefit is *consistency*, not detection rate: vs static `MIC_GAIN_DB=+12` (also 5/20, RMS=2229 with audible inter-utterance level variance), AGC1 produces uniform output across utterances. **WebRTC AGC1 has no public attack-time or release-time parameter** — any earlier doc claim referencing "150 ms attack" was incorrect (audit 2026-05-21). |
@@ -501,23 +532,21 @@ and [`scripts/_offline_wake_count.py`](../scripts/_offline_wake_count.py).
 ### What's still unknown
 
 - **Does fixing the resampler make AEC a net positive again?** Open.
-- **The chip HPF is bypassed in our production config — by design.**
+- **The chip HPF was bypassed in the then-production software profile — by design.**
   We initially flagged the measured ~6 dB/oct rolloff in `mic_ch1`
   (vs the −24 dB/octave a documented 4th-order Butter at 125 Hz
   should give) as a mystery. Verified 2026-05-19 against two
   independent literature reviews of the v3.2.1 User Guide +
   Programming Guide: the chip HPF lives *inside* the SHF block.
-  `SHF_BYPASS=1` (our production setting) bypasses the entire SHF
-  block, which means the HPF is *not* applied even though
-  `AEC_HPFONOFF=2` is set. The 6 dB/oct slope we measured is the
+  `SHF_BYPASS=1` in the software fallback bypasses the entire SHF
+  block, which means the HPF is *not* applied in that fallback even
+  though `AEC_HPFONOFF=2` is set. The 6 dB/oct slope we measured is the
   **MEMS capsule's natural mechanical low-frequency rolloff** (per
   TDK InvenSense AN-1112: "the low frequency roll-off below the
   lower −3 dB point is first order"). No firmware anomaly; no bug
-  to file. If we ever want real HPF action on the chip side we'd
-  need to either (a) set SHF_BYPASS=0 — which re-engages the chip
-  AEC, broken in our external-DAC topology, separate problem; or
-  (b) add a host-side HPF to the bridge's mic stream. Option (b)
-  is the lower-risk path if speech-band bass cleanup is needed.
+  to file. The recommended chip-AEC profile now gets real chip HPF
+  action by running `SHF_BYPASS=0` with outputd feeding the XVF USB-IN
+  reference. The software fallback keeps a host-side HPF instead.
 - **Phase 2 testing methodology improvements.** Phone playback volume
   drifted between v2 and v3-v5 (the operator accidentally adjusted
   it), which produced a lot of the run-to-run variance. Future
@@ -539,36 +568,36 @@ mis-led prior thinking at some point.
   HPF is part of the licensed Philips BeClear SHF library.
 - **`AUDIO_MGR_OP_R` category 7 is dual-purpose.** Source N can
   mean either "AEC residual for mic N" (when `AEC_ASROUTGAIN=0`)
-  OR "ASR output for beam N" (when `AEC_ASROUTGAIN > 0`). Our
-  current `AEC_ASROUTGAIN=1.0` (Seeed default) means cat-7 routes
-  output the ASR variant — but our `SHF_BYPASS=1` makes both
-  interpretations moot. If we ever need to verify the HPF curve
-  in isolation, we'd set `AEC_ASROUTGAIN=0` first.
+  OR "ASR output for beam N" (when `AEC_ASROUTGAIN > 0`). The
+  chip-AEC profile's `AEC_ASROUTGAIN=1.0` (Seeed default) means cat-7
+  routes output the ASR variant; the software fallback's
+  `SHF_BYPASS=1` makes both interpretations moot. If we ever need to
+  verify the HPF curve in isolation, we'd set `AEC_ASROUTGAIN=0` first.
 - **There is no mux tap between HPF and AEC.** The chip exposes
   the input to SHF (cat 3 = amplified-with-system-delay) and the
   output of AEC (cat 7 = AEC residual or ASR), but nothing in
   between. Verifying HPF behavior in isolation requires the
   **difference of two captures** at different `AEC_HPFONOFF`
   settings, not a single direct tap.
-- **Seeed channel layouts under `SHF_BYPASS=0` (not our config).**
+- **Seeed channel layouts under `SHF_BYPASS=0` (not the software fallback config).**
   Reference for future debugging: stock 2-ch USB firmware emits
   ch 0 = conference-tuned beam, ch 1 = ASR-tuned beam (both
   fully processed). Seeed's 6-ch USB firmware (which we use)
   adds ch 2-5 = raw mics 0-3 (mux category 1, pre-amplification).
-  None of this matters in our `SHF_BYPASS=1` config — the bypass
-  means all of ch 0/1 carry raw-amplified mic data regardless of
-  mux routing — but it'll matter if anyone ever tries
-  `SHF_BYPASS=0` while debugging.
+  None of this matters in the `SHF_BYPASS=1` software fallback — the
+  bypass means all of ch 0/1 carry raw-amplified mic data regardless
+  of mux routing — but it is exactly what the `xvf_chip_aec` profile
+  relies on.
 - **The "8-hour audio watchdog" only applies to the XK-VOICE-SQ66
   dev kit**, not the Seeed ReSpeaker (which is a licensed
   production XVF3800 device). Per User Guide §2.1: "Licensed
   production XVF3800 devices do not have this restriction."
   External "Google research" sources have been seen claiming this
   is a runtime concern on Seeed boards and recommending
-  `SHF_BYPASS=1` as a workaround. That recommendation is correct
-  for our config but for the *wrong* reason — we use SHF_BYPASS=1
-  to skip the broken-in-our-topology chip AEC, not to avoid a
-  non-existent watchdog.
+  `SHF_BYPASS=1` as a workaround. That recommendation was correct
+  for the software fallback but for the *wrong* reason — the fallback
+  uses SHF_BYPASS=1 to skip chip AEC when the USB-IN reference is not
+  armed, not to avoid a non-existent watchdog.
 - **`PP_AGCTIME` (slow constant) is the right name; `PP_AGCALPHASLOW`
   is fabricated.** Some external analyses cite the latter; it
   doesn't exist in the User Guide. Confirmed on our device:
@@ -1111,8 +1140,9 @@ worst-case FP cost.
 > we proved the XVF3800's on-chip AEC can do useful cancellation in
 > JTS's external-DAC topology when JTS feeds the chip a clean USB-IN
 > reference. Fresh installs use `JASPER_AUDIO_INPUT_PROFILE=auto`, which
-> resolves to chip-AEC on 6-channel XVF3800 hardware and falls back to
-> software AEC3 when chip-AEC is unavailable. The wake-corpus recorder can
+> resolves to chip-AEC on 6-channel XVF3800 hardware with a
+> supported/calibrated output DAC profile and falls back to software AEC3
+> when chip-AEC is unavailable. The wake-corpus recorder can
 > still enter reversible chip-AEC comparison profiles that use outputd
 > direct source fanout, apply the volatile chip profile, and capture
 > explicit `chip_aec_150` / `chip_aec_210` legs for validation.
@@ -1354,10 +1384,11 @@ Realistic bring-up sequence:
 
 **Verdict for future scoping:** feasibility is confirmed in lab, and the
 production profile path now exists. Fresh installs use `auto`, which
-resolves to chip-AEC on 6-channel XVF3800 hardware and falls back when
-that path is unavailable. Continue recording and scoring wake events
-across chip AEC, WebRTC AEC3, raw, USB corpus legs, and optional DTLN
-legs. Current best chip settings:
+resolves to chip-AEC on 6-channel XVF3800 hardware with a
+supported/calibrated output DAC profile and falls back when that path is
+unavailable. Continue recording and scoring wake events across chip AEC,
+WebRTC AEC3, raw, USB corpus legs, and optional DTLN legs. Current best chip
+settings:
 `AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
 `AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 available as the explicit
 fallback profile and avoid stacking it under chip-AEC.
@@ -2607,4 +2638,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-12.
+Last verified: 2026-06-18.

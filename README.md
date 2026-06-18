@@ -294,9 +294,10 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ Hardware AEC investigation: the 2026-05-29 Option D lab pass has
   been promoted into the recommended XVF3800 input profile. Fresh
   installs seed `JASPER_AUDIO_INPUT_PROFILE=auto`: on 6-channel XVF3800
-  hardware this resolves to chip-AEC with USB-IN reference + direct
-  source fanout; otherwise it falls back to software AEC3/direct mic as
-  hardware allows. Current findings live at
+  hardware plus a supported/calibrated output DAC profile this resolves
+  to chip-AEC with USB-IN reference + direct source fanout; otherwise it
+  falls back to software AEC3/direct mic as hardware allows. Current
+  findings live at
   [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
@@ -320,9 +321,10 @@ when the configured AEC mic is present with 6-channel firmware — see
 
 Current AEC behavior is profile-driven rather than a separate
 "marginal items" list: `JASPER_AUDIO_INPUT_PROFILE=auto` uses the
-chip-AEC profile on 6-channel XVF3800 hardware, falls back to software
-AEC3/direct mic when needed, and exposes custom raw/DTLN/chip-leg
-switches from `/wake/` for corpus or nonstandard hardware. Resource
+chip-AEC profile on 6-channel XVF3800 hardware with a
+supported/calibrated output DAC profile, falls back to software AEC3/direct
+mic when needed, and exposes custom raw/DTLN/chip-leg switches from `/wake/`
+for corpus or nonstandard hardware. Resource
 costs are in the table below, and the current wake refractory lives as
 `WAKE_REFRACTORY_SEC` in `jasper/voice_daemon.py`.
 
@@ -924,12 +926,13 @@ There are three places to address this:
 ### What this project does
 
 Fresh installs default to `JASPER_AUDIO_INPUT_PROFILE=auto`. On the
-recommended 6-channel XVF3800 hardware, `auto` resolves to the chip-AEC
-profile: `jasper-outputd` fans out the final speaker buffer to the
-XVF3800 USB-IN reference, the chip emits fixed 150°/210° AEC beams, and
-the bridge forwards the selected chip beam to `jasper-voice`. If that
-hardware path is unavailable, `auto` falls back to software AEC3 or a
-direct mic path rather than stacking incompatible processing.
+recommended 6-channel XVF3800 hardware plus a supported/calibrated output
+DAC profile, `auto` resolves to the chip-AEC profile: `jasper-outputd`
+fans out the final speaker buffer to the XVF3800 USB-IN reference, the
+chip emits fixed 150°/210° AEC beams, and the bridge forwards the selected
+chip beam to `jasper-voice`. If that hardware path is unavailable or the
+active output DAC still needs calibration, `auto` falls back to software
+AEC3 or a direct mic path rather than stacking incompatible processing.
 
 The chip is still useful — its **beamforming, noise suppression,
 and AGC** all run in the XVF processing pipeline. The key rule is not
