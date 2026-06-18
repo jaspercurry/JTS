@@ -5,23 +5,17 @@ silently blow that ceiling — this fails first, cheaply, in CI.
 
 Token estimate is chars/4 (a cheap, dependency-free heuristic; no
 tiktoken). It overestimates slightly for natural-language text, which is
-the safe direction for a ceiling guard. We measure descriptions only
-(the dominant term; the 29 descriptions total ~8.2k tokens today) — JSON
-schema overhead is small and bounded.
+the safe direction for a ceiling guard. We measure model-facing descriptions
+only (the dominant term); JSON schema overhead is small and bounded.
 """
 from __future__ import annotations
 
-import types
-
 from jasper.tools import ToolRegistry
-from jasper.tools.bus import make_bus_tools
-from jasper.tools.citibike import make_citibike_tools
-from jasper.tools.packs import ToolDeps, register_packs
-from jasper.tools.subway import make_subway_tools
+from tests._tool_pack_contract import full_registry
 
-# ~8.2k tokens today; 13k leaves clear headroom under OpenAI Realtime's
-# 16,384 instructions+tools ceiling while still catching a runaway
-# addition. chars/4 estimate, descriptions only.
+# 13k leaves clear headroom under OpenAI Realtime's 16,384
+# instructions+tools ceiling while still catching a runaway addition.
+# chars/4 estimate, descriptions only.
 MODEL_FACING_DESCRIPTION_TOKEN_BUDGET = 13_000
 
 
@@ -29,26 +23,7 @@ def _full_registry() -> ToolRegistry:
     """Build the complete 29-tool registry hardware-free — every pack
     gate satisfied with lazy sentinel deps (factories capture deps in
     closures; none are invoked at build time)."""
-    transit = []
-    transit += list(make_subway_tools(object()))
-    transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
-    transit += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    deps = ToolDeps(
-        volume_coordinator=None,
-        renderer=None,
-        router=None,
-        weather=None,
-        spotify_device_name="JTS",
-        spotify_setup_url="",
-        transit_tools=transit,
-        ha=object(),
-        timer_scheduler=object(),
-        google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
-        wake_event_store=object(),
-    )
-    reg = ToolRegistry()
-    register_packs(reg, deps)
-    return reg
+    return full_registry()
 
 
 def test_model_facing_descriptions_stay_under_budget():

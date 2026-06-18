@@ -15,12 +15,13 @@ and per-tool conditional rules.
 linked sources every ~3 months or when a model version bumps.
 
 **Path B applied 2026-05-23; explicit tool definitions added
-2026-06-18.** The LLM sees each tool's model-facing description:
-explicit `ToolDefinition.description` for explicit tools, or the
-full cleaned docstring for decorated `@tool` callables. Per-tool
-conditional rules live in that tool description under `jasper/tools/`;
-Path B moved them out of `SYSTEM_INSTRUCTION`. **It did not bring the
-constant under Gemini's oft-cited ~500-token figure:**
+2026-06-18.** The LLM sees `Tool.model_facing_description()`:
+user override when present, else `llm_description` when set, else the
+code-owned `ToolDefinition.description` (decorated tools populate that
+from the full cleaned docstring). Per-tool conditional rules live in that
+model-facing description under `jasper/tools/`; Path B moved them out of
+`SYSTEM_INSTRUCTION`. **It did not bring the constant under Gemini's
+oft-cited ~500-token figure:**
 the static constant measures ~720 words ≈ ~1,000–1,150 tokens
 (2026-06-15), ~2× that figure — and that figure is now flagged as
 an unverified heuristic, not a hard ceiling (see
@@ -75,11 +76,10 @@ tool-round watchdog contract
    under what conditions a tool call should be invoked"* (inside
    the tool description). Path B (applied 2026-05-23):
    per-tool conditional rules (when to call, voice-answer style,
-   response-shape handling) live in the tool's model-facing
-   description. Decorated tools derive that from the full cleaned
-   docstring; explicit tools set it on `ToolDefinition`. If a
-   user override exists, it replaces the code default at runtime
-   and carries the same responsibility.
+   response-shape handling) live in the tool's model-facing description.
+   That description is user override → `llm_description` → code-owned
+   `ToolDefinition.description`. If a user override exists, it replaces
+   the code default at runtime and carries the same responsibility.
 4. **Don't ban preambles. List when to skip.** Absolute "never
    preamble" rules get ~33% compliance on gpt-realtime per a
    public community thread. OpenAI's documented suppression
@@ -567,12 +567,13 @@ TODOs, implementation details) belong in `#` comments or the module
 docstring, NOT in model-facing tool descriptions.
 
 By default, that is — a tool may override the model-facing text with a
-shorter `@tool(llm_description="...")`, and `build_tool` then uses that
-instead of the docstring for the code default. The override exists to keep a
-verbose engineer-facing docstring out of the realtime instructions+tools
-token budget (OpenAI Realtime caps that at 16,384 tokens; the 29 shipped
-descriptions already total ~8.2k). No shipped tool sets it today; trimming
-verbose tools to a short `llm_description` is a later, eval-gated step.
+shorter `llm_description` (through `@tool(llm_description="...")` or an
+explicit `ToolDefinition`), and the registry then uses that instead of the
+full description for the code default. The override exists to keep a verbose
+engineer-facing description out of the realtime instructions+tools token
+budget (OpenAI Realtime caps that at 16,384 tokens). Weather is the first
+shipped rich pack using this split; trimming more verbose tools remains an
+eval-gated step.
 
 There is one runtime layer above the code default: user-edited prompt
 overrides saved by `/tools/`. `jasper-voice` reads
@@ -586,8 +587,9 @@ so the UI can mark "Custom prompt" and reset by deleting the override.
 
 ### Writing a new tool
 
-Recommended structure for a tool description (or a decorated tool
-docstring, which becomes the description):
+Recommended structure for a tool's code-owned description (the docstring by
+default, or `llm_description` when the tool deliberately splits human and
+model-facing text):
 
 ```
 """<One-sentence purpose>.
