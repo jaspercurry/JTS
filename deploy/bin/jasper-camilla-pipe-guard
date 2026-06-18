@@ -45,6 +45,7 @@ set -uo pipefail
 
 STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 BASE_CONFIG="${JASPER_CAMILLA_BASE_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
+RUNTIME_SAFE_GRAPH="${JASPER_RUNTIME_SAFE_GRAPH:-/opt/jasper/.venv/bin/jasper-active-speaker}"
 SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
@@ -94,21 +95,31 @@ else
     why=fifo_absent
 fi
 
-if [ ! -r "$BASE_CONFIG" ]; then
-    log skip reason=base_config_missing "detail=$why"
+if ! command -v "$RUNTIME_SAFE_GRAPH" >/dev/null 2>&1; then
+    log skip reason=runtime_contract_unavailable "detail=$why"
     exit 0
 fi
 
-# REPAIR: point the statefile's config_path at the base config,
-# atomically (tmp + mv in the same directory).
-tmp="${STATEFILE}.guard.$$"
-if sed "s|^\([[:space:]]*config_path:\).*|\1 \"${BASE_CONFIG}\"|" \
-        "$STATEFILE" > "$tmp" 2>/dev/null \
-        && mv "$tmp" "$STATEFILE" 2>/dev/null; then
-    log repaired "reason=$why from=$config_path to=$BASE_CONFIG" \
-        "detail=camilla starts solo-safe; next grouping reconcile re-applies the bond"
+# REPAIR: ask the active-speaker runtime contract for the only legal persisted
+# graph. For ordinary full-range systems this is the packaged base config; for
+# saved roleful/protected topologies it must be a guarded active startup graph.
+# A blocked decision intentionally leaves the statefile untouched: flat stereo
+# is not a safe recovery target once a tweeter/protected role is saved.
+if output="$(
+    "$RUNTIME_SAFE_GRAPH" runtime-safe-graph \
+        --statefile "$STATEFILE" \
+        --flat-config "$BASE_CONFIG" \
+        --write-statefile \
+        --json 2>&1
+)"; then
+    repaired_to="$(
+        sed -n 's/^[[:space:]]*config_path:[[:space:]]*//p' "$STATEFILE" \
+            | head -1 | tr -d '"' | tr -d "'"
+    )"
+    log repaired "reason=$why from=$config_path to=${repaired_to:-unknown}" \
+        "detail=camilla starts on runtime-contract-safe graph; next grouping reconcile re-applies the bond"
 else
-    rm -f "$tmp" 2>/dev/null || true
-    log skip reason=statefile_write_failed "detail=$why"
+    log skip reason=runtime_contract_blocked "detail=$why" \
+        "message=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-240)"
 fi
 exit 0

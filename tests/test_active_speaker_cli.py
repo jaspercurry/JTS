@@ -584,3 +584,51 @@ def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "blocked"
     assert payload["camilla_config"]["classification"] == "jts_outputd_stereo"
+
+
+def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
+    tmp_path: Path,
+    capsys,
+):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _active_yaml,
+        _flat_yaml,
+        _staged_metadata,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    staged = tmp_path / "active_speaker_staged_startup.yml"
+    staged.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text(
+        json.dumps(_staged_metadata(topology, staged)),
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
+
+    code = main([
+        "runtime-safe-graph",
+        "--topology",
+        str(topology_path),
+        "--statefile",
+        str(statefile),
+        "--flat-config",
+        str(flat),
+        "--staged-metadata",
+        str(metadata),
+        "--write-statefile",
+        "--json",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["status"] == "select_active_startup"
+    assert payload["statefile_written"] is True
+    assert f"config_path: {staged}" in statefile.read_text(encoding="utf-8")

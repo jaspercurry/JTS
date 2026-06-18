@@ -1718,6 +1718,8 @@ class MeasurementSession:
     async def reset(
         self,
         camilla_set_config: Callable[[str], Awaitable[bool]],
+        *,
+        target_config_path: str | Path | None = None,
     ) -> None:
         async with self._lock:
             if self._state_guard.is_reset_busy(self.state):
@@ -1726,7 +1728,8 @@ class MeasurementSession:
                     "analysis is in progress; wait for it to finish"
                 )
         try:
-            ok = await camilla_set_config(str(self.cfg.base_config_path))
+            reset_path = Path(target_config_path or self.cfg.base_config_path)
+            ok = await camilla_set_config(str(reset_path))
             if not ok:
                 async with self._lock:
                     await self._fail(
@@ -1742,7 +1745,7 @@ class MeasurementSession:
         async with self._lock:
             await self._set_state(
                 SessionState.IDLE,
-                rolled_back_to=str(self.cfg.base_config_path),
+                rolled_back_to=str(reset_path),
             )
 
     async def start_verify_sweep(

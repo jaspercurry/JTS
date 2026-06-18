@@ -902,53 +902,15 @@ EOF
         "${REPO_DIR}/deploy/camilladsp/outputd-cutover.yml" \
         "${CAMILLA_CONF}/outputd-cutover.yml"
 
-    seed_outputd_statefile() {
-        cat > /var/lib/camilladsp/outputd-statefile.yml <<'EOF'
-config_path: /etc/camilladsp/outputd-cutover.yml
-mute:
-- false
-- false
-- false
-- false
-- false
-volume:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-EOF
-        chmod 0644 /var/lib/camilladsp/outputd-statefile.yml
-    }
-
-    # The outputd topology uses a separate Camilla statefile
-    # instead of overwriting /var/lib/camilladsp/statefile.yml. Preserve
-    # a valid outputd correction/sound profile across redeploys, but
-    # self-heal if the statefile is missing, points at a deleted config,
-    # points at a legacy jasper_out config that would bypass outputd, or
-    # omits the 0 dB Camilla volume ceiling.
-    if [[ ! -f /var/lib/camilladsp/outputd-statefile.yml ]]; then
-        seed_outputd_statefile
-        echo "  Seeded /var/lib/camilladsp/outputd-statefile.yml → outputd-cutover.yml"
-    else
-        local outputd_config
-        outputd_config="$(
-            awk '/^[[:space:]]*config_path:/ {print $2; exit}' \
-                /var/lib/camilladsp/outputd-statefile.yml || true
-        )"
-        if [[ -z "${outputd_config}" || ! -f "${outputd_config}" ]]; then
-            seed_outputd_statefile
-            echo "  Reset outputd Camilla statefile → outputd-cutover.yml (missing config)"
-        elif ! grep -q 'outputd_content_playback' "${outputd_config}"; then
-            seed_outputd_statefile
-            echo "  Reset outputd Camilla statefile → outputd-cutover.yml (legacy playback path)"
-        elif ! camilla_config_has_safe_volume_limit "${outputd_config}"; then
-            seed_outputd_statefile
-            echo "  Reset outputd Camilla statefile → outputd-cutover.yml (unsafe volume_limit)"
-        else
-            echo "  Preserved outputd Camilla statefile → ${outputd_config}"
-        fi
-    fi
+    # The outputd topology uses a separate Camilla statefile instead of
+    # overwriting /var/lib/camilladsp/statefile.yml. Do not repair that
+    # statefile here: the safe target depends on the saved output topology.
+    # This flat graph maps full-range stereo directly to DAC outputs. It is
+    # illegal when saved output topology assigns any physical output to
+    # tweeter/protected role. After the Python package is installed,
+    # ensure_outputd_camilla_statefile asks jasper.active_speaker's runtime
+    # contract which graph is legal and fails closed if no protected graph
+    # exists.
 
     # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
     # now a Python software AEC daemon (jasper-aec-bridge, see
@@ -959,6 +921,18 @@ EOF
     # reference. Old aec-bridge.yml is removed if present from a
     # prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
+}
+
+ensure_outputd_camilla_statefile() {
+    # Runtime graph selection belongs to jasper.active_speaker, not install.sh.
+    # This flat graph maps full-range stereo directly to DAC outputs. It is
+    # illegal when saved output topology assigns any physical output to
+    # tweeter/protected role.
+    echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
+    /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
+        --statefile /var/lib/camilladsp/outputd-statefile.yml \
+        --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
+        --write-statefile
 }
 
 find_card() {
@@ -1900,6 +1874,7 @@ main() {
         set_usb_gadget_mode
         tune_wifi_for_airplay
         install_streambox_jasper
+        ensure_outputd_camilla_statefile
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
         build_install_jasper_fanin
         build_install_jasper_outputd
@@ -1932,6 +1907,7 @@ main() {
     set_usb_gadget_mode
     tune_wifi_for_airplay
     install_jasper
+    ensure_outputd_camilla_statefile
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_systemd_units

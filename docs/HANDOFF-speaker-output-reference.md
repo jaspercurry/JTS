@@ -367,10 +367,21 @@ What exists:
   `/var/lib/camilladsp/statefile.yml`. The normal statefile, including
   any active room-correction/sound-profile path, is left intact for
   rollback by disabling outputd and deploying a pre-outputd tree. The
-  outputd statefile is preserved across redeploys when it points at an
-  outputd-safe config, and reset to the flat outputd baseline only when
-  it is missing, stale, points at a legacy `jasper_out` playback path,
-  or omits the non-positive Camilla `volume_limit` safety ceiling.
+  outputd statefile is selected by
+  `jasper.active_speaker.runtime_contract`, via
+  `jasper-active-speaker runtime-safe-graph`, after deploy copies the
+  packaged configs. That boundary reads the saved
+  `jasper.output_topology` contract before choosing a fallback: an absent
+  saved topology or explicit stereo full-range/passive topology may use the
+  flat outputd graph, but explicit mono full-range topology cannot be driven
+  by a wider flat stereo graph, and any topology with a tweeter, protected
+  output, or subwoofer roleful assignment must preserve/select a matching
+  all-muted active startup graph. Guarded commissioning graphs are active test
+  surfaces, not persisted boot/deploy fallbacks. If no legal guarded graph
+  exists, install and recovery helpers fail closed rather than repointing
+  Camilla at flat stereo. `jasper-doctor` uses the same runtime classifier and
+  reports a failure when a saved tweeter/protected topology is running
+  `outputd-cutover.yml`, `v1.yml`, or another flat full-range graph.
 - TTS transport: `JASPER_TTS_TRANSPORT=outputd` makes Python send
   resampled 48 kHz stereo PCM plus gain metadata over
   `JASPER_TTS_OUTPUTD_SOCKET`; in the packaged topology that socket is
@@ -1324,7 +1335,10 @@ datum: how much assistant audio was actually heard.
   bonded member mixes its own assistant audio in outputd after the
   snapcast round trip and before reference publication.
 
-Last verified: 2026-06-17 (Stage-7 outputd loop unification rechecked against
+Last verified: 2026-06-18 (active-speaker runtime graph boundary rechecked
+against `jasper.active_speaker.runtime_contract`, install outputd-statefile
+selection, and doctor runtime graph check; Stage-7 outputd loop unification
+previously rechecked against
 rust/jasper-outputd; solo fan-in TTS ownership and bonded-member outputd TTS
 ownership previously rechecked against rust/jasper-outputd and HANDOFF-multiroom;
 voice playback seam path rechecked after `jasper/voice/turn_playback.py`

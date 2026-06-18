@@ -133,15 +133,15 @@ def test_install_sh_seeds_statefile_when_missing():
     assert "config_path: /etc/camilladsp/v1.yml" in body
 
 
-def test_install_sh_seeds_outputd_statefile():
-    """The outputd statefile is topology-owned, seeded on first deploy,
-    and preserved when it already points at an outputd-safe config."""
+def test_install_sh_routes_outputd_statefile_through_runtime_contract():
+    """The outputd statefile is topology-owned, so install asks
+    active_speaker for the safe graph instead of hard-coding flat stereo."""
     body = INSTALL_SH.read_text()
     assert "/var/lib/camilladsp/outputd-statefile.yml" in body
-    assert "config_path: /etc/camilladsp/outputd-cutover.yml" in body
-    assert "Preserved outputd Camilla statefile" in body
-    assert "missing config" in body
-    assert "legacy playback path" in body
+    assert "runtime-safe-graph" in body
+    assert "--write-statefile" in body
+    assert "tweeter/protected role" in body
+    assert "config_path: /etc/camilladsp/outputd-cutover.yml" not in body
 
 
 def test_unit_documents_no_config_recovery_path():
