@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+pytest_bin="${PYTEST:-}"
+if [[ -z "${pytest_bin}" ]]; then
+  if [[ -x ".venv/bin/pytest" ]]; then
+    pytest_bin=".venv/bin/pytest"
+  else
+    pytest_bin="pytest"
+  fi
+fi
+
+export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
+
+exec "${pytest_bin}" -q --tb=short --ignore=tests/voice_eval -n 4 "$@"
