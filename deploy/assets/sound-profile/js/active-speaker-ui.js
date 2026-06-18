@@ -267,7 +267,6 @@ export function playbackResultMessage(playback, fallback, normalizeMessage) {
     var message = String(issue.message || issue.label || issue.code || '').trim();
     if (
       code === 'audio_backend_not_enabled' ||
-      code === 'audio_not_operator_enabled' ||
       code === 'test_pcm_required' ||
       code === 'test_pcm_forbidden_main_lane'
     ) {

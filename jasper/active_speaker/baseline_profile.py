@@ -29,8 +29,8 @@ from ._common import issue as _issue
 from .camilla_yaml import emit_active_speaker_baseline_config
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
-    durable_profile_route_capability,
-    resolve_durable_profile_playback_device,
+    active_playback_route_capability,
+    resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerPreset, required_driver_roles
 from .staging import compile_preset_from_crossover_preview
@@ -256,12 +256,12 @@ def build_baseline_profile_candidate(
     now = created_at or _utc_now()
     source = _source_payload(topology, design_draft, crossover_preview, measurements)
     resolved_playback_device, playback_device_source = (
-        resolve_durable_profile_playback_device(
+        resolve_active_playback_device(
             topology,
             playback_device=playback_device,
         )
     )
-    route_capability = durable_profile_route_capability(
+    route_capability = active_playback_route_capability(
         topology,
         playback_device=playback_device,
     )

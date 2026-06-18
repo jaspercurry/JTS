@@ -19,7 +19,11 @@ import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
 import jasper.web.sound_setup as sound_setup
-from jasper.active_speaker import load_commission_load_state, load_ramp_state
+from jasper.active_speaker import (
+    ActiveSpeakerPreset,
+    load_commission_load_state,
+    load_ramp_state,
+)
 
 from tests.test_active_speaker_cli import _FakeController
 from tests.test_active_speaker_startup_load import _staged, _topology
@@ -151,6 +155,85 @@ class _FakeToneProcess:
         return self.returncode
 
 
+def _tone_preset(
+    *,
+    way_count: int = 2,
+    woofer_tweeter_hz: float = 2000,
+    woofer_mid_hz: float = 300,
+    mid_tweeter_hz: float = 3000,
+) -> ActiveSpeakerPreset:
+    roles = ("woofer", "tweeter") if way_count == 2 else ("woofer", "mid", "tweeter")
+    outputs = [
+        {
+            "index": index,
+            "side": "mono",
+            "driver_role": role,
+            "label": f"mono {role}",
+            "startup_muted": True,
+        }
+        for index, role in enumerate(roles)
+    ]
+    regions = (
+        [{
+            "id": "woofer_tweeter",
+            "lower_driver": "woofer",
+            "upper_driver": "tweeter",
+            "fc_hz": woofer_tweeter_hz,
+            "target_type": "LinkwitzRiley",
+            "order": 4,
+            "lower_polarity": "non-inverted",
+            "upper_polarity": "non-inverted",
+            "delay_range_ms": [0.0, 0.5],
+            "null_depth_threshold_db": 25,
+        }]
+        if way_count == 2
+        else [
+            {
+                "id": "woofer_mid",
+                "lower_driver": "woofer",
+                "upper_driver": "mid",
+                "fc_hz": woofer_mid_hz,
+                "target_type": "LinkwitzRiley",
+                "order": 4,
+                "lower_polarity": "non-inverted",
+                "upper_polarity": "non-inverted",
+                "delay_range_ms": [0.0, 0.5],
+                "null_depth_threshold_db": 25,
+            },
+            {
+                "id": "mid_tweeter",
+                "lower_driver": "mid",
+                "upper_driver": "tweeter",
+                "fc_hz": mid_tweeter_hz,
+                "target_type": "LinkwitzRiley",
+                "order": 4,
+                "lower_polarity": "non-inverted",
+                "upper_polarity": "non-inverted",
+                "delay_range_ms": [0.0, 0.5],
+                "null_depth_threshold_db": 25,
+            },
+        ]
+    )
+    return ActiveSpeakerPreset.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_preset",
+        "preset_id": f"web-tone-{way_count}way",
+        "name": f"Web tone {way_count}-way preset",
+        "way_count": way_count,
+        "channel_map": {"layout": "mono", "outputs": outputs},
+        "drivers": {
+            role: {"manufacturer": "Example", "model": role.title()}
+            for role in roles
+        },
+        "crossover_regions": regions,
+        "safety": {
+            "require_physical_tweeter_protection": True,
+            "require_channel_identity_before_drivers": True,
+            "emergency_stop_required": True,
+        },
+    })
+
+
 def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path):
     monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
     wav_path = tmp_path / "tone.wav"
@@ -218,6 +301,97 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
     assert stop["fanin_gate"]["active_source"] == "airplay"
     assert mux_actions == ["select", "select", "release:test_cleanup"]
     assert processes[0].terminated is True
+
+
+def test_commission_continuous_tone_uses_planner_frequency_for_tweeter(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    wav_path = tmp_path / "tone.wav"
+    wav_path.write_bytes(b"not a real wav; Popen is faked")
+    requested_frequencies: list[float] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_wav_path",
+        lambda *, frequency_hz: requested_frequencies.append(frequency_hz) or wav_path,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: {"active_source": "correction", "test_source": "correction"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: {"active_source": "airplay", "test_source": None},
+    )
+    monkeypatch.setattr(
+        sound_setup.subprocess,
+        "Popen",
+        lambda args, stdout=None, stderr=None: _FakeToneProcess(list(args)),
+    )
+    try:
+        result = asyncio.run(
+            sound_setup._active_speaker_play_commission_tone(
+                group_id="mono",
+                role="tweeter",
+                level_dbfs=-80.0,
+                playback_id="tweeter-step",
+                target={"speaker_group_id": "mono", "role": "tweeter"},
+                preset=_tone_preset(woofer_tweeter_hz=2000),
+            )
+        )
+    finally:
+        sound_setup._active_speaker_stop_commission_tone(reason="test_cleanup")
+
+    assert result["status"] == "completed"
+    assert requested_frequencies == [6250.0]
+    assert result["tone"]["frequency_hz"] == 6250.0
+    assert result["tone"]["frequency_hz"] != 5000.0
+    assert result["signal_plan"]["allowed_band"]["highpass_hz"] == 5000.0
+    assert result["signal_plan"]["selection_reason"] == "above_strictest_highpass_edge"
+
+
+def test_commission_continuous_tone_blocks_when_planner_has_no_safe_band(
+    monkeypatch,
+):
+    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_wav_path",
+        lambda *, frequency_hz: (_ for _ in ()).throw(
+            AssertionError("wav generation should not run")
+        ),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("fanin should not be selected")
+        ),
+    )
+
+    result = asyncio.run(
+        sound_setup._active_speaker_play_commission_tone(
+            group_id="mono",
+            role="mid",
+            level_dbfs=-80.0,
+            playback_id="mid-step",
+            target={"speaker_group_id": "mono", "role": "mid"},
+            preset=_tone_preset(
+                way_count=3,
+                woofer_mid_hz=1000,
+                mid_tweeter_hz=1100,
+            ),
+        )
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert result["tone"]["frequency_hz"] is None
+    assert "driver_test_signal_no_safe_band" in {
+        issue["code"] for issue in result["issues"]
+    }
 
 
 def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
@@ -499,12 +673,10 @@ def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):
 def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):
     """Arming must repair a tweeter that drifted to ``required_missing``.
 
-    The old "Test each driver" card re-synced the software-guard request on every
-    driver-choice via prepare-driver-test; the #780 commission-card fold removed
-    that path, so the live topology could drift away from the staged config with
-    no UI repair and the arm blocked forever (the jts3 "speaker isn't fully set
-    up for driver tests yet" wedge). Commission-load now re-requests the missing
-    software guards, mirroring prepare-driver-test.
+    Commission-load is the target-specific arming boundary now. It must
+    re-request missing software guards itself so the live topology cannot drift
+    away from the staged config and block driver commissioning forever (the jts3
+    "speaker isn't fully set up for driver tests yet" wedge).
     """
     from jasper.output_topology import set_channel_protection_status
 

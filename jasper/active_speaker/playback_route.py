@@ -19,7 +19,6 @@ from typing import Any
 
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
-    DIRECT_DAC_SOURCE,
     EXPLICIT_SOURCE,
     MISSING_SOURCE,
     OUTPUTD_ACTIVE_LANE_SOURCE,
@@ -37,16 +36,12 @@ from ._common import issue as _issue
 __all__ = [
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "ACTIVE_PLAYBACK_ROUTE_KIND",
-    "DIRECT_DAC_SOURCE",
     "EXPLICIT_SOURCE",
     "MISSING_SOURCE",
     "OUTPUTD_ACTIVE_LANE_SOURCE",
     "ActivePlaybackRouteCapability",
     "active_playback_route_capability",
-    "durable_profile_route_capability",
     "resolve_active_playback_device",
-    "resolve_diagnostic_playback_device",
-    "resolve_durable_profile_playback_device",
 ]
 
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
@@ -84,64 +79,18 @@ def _highest_assigned_output(groups: list[SpeakerGroup]) -> int | None:
     return max(indexes) if indexes else None
 
 
-def resolve_durable_profile_playback_device(
-    topology: OutputTopology,
-    *,
-    playback_device: str | None = None,
-) -> tuple[str | None, str]:
-    """Return the playback PCM for durable active-speaker profiles.
-
-    Durable profile apply must hand audio to an outputd-owned active lane. A
-    temporary direct-DAC route can be safe enough for one short diagnostic tone,
-    but it must not become the speaker's normal output path, so this never falls
-    back to a direct-DAC route.
-    """
-
-    layout = resolve_output_layout(
-        topology,
-        playback_device=playback_device,
-        allow_direct_dac=False,
-    )
-    return layout.playback_device, layout.playback_device_source
-
-
-def resolve_diagnostic_playback_device(
-    topology: OutputTopology,
-    *,
-    playback_device: str | None = None,
-) -> tuple[str | None, str]:
-    """Return the playback PCM for bounded driver-test diagnostics.
-
-    Diagnostic tones may temporarily use a coherent single-DAC hardware route
-    when no outputd active lane exists. Callers that compile, stage, or apply
-    normal speaker profiles must use ``resolve_durable_profile_playback_device``
-    instead.
-    """
-
-    layout = resolve_output_layout(
-        topology,
-        playback_device=playback_device,
-        allow_direct_dac=True,
-    )
-    return layout.playback_device, layout.playback_device_source
-
-
 def resolve_active_playback_device(
     topology: OutputTopology,
     *,
     playback_device: str | None = None,
 ) -> tuple[str | None, str]:
-    """Return the diagnostic playback PCM for active-speaker tests.
+    """Return the active-speaker playback PCM."""
 
-    Kept as the compatibility name for existing test/readiness callers. New
-    durable profile/staging code should call
-    ``resolve_durable_profile_playback_device`` explicitly.
-    """
-
-    return resolve_diagnostic_playback_device(
+    layout = resolve_output_layout(
         topology,
         playback_device=playback_device,
     )
+    return layout.playback_device, layout.playback_device_source
 
 
 @dataclass(frozen=True)
@@ -189,7 +138,6 @@ def _route_capability(
     topology: OutputTopology,
     *,
     playback_device: str | None = None,
-    diagnostic: bool,
 ) -> ActivePlaybackRouteCapability:
     """Return the active-speaker runtime route capacity.
 
@@ -203,7 +151,6 @@ def _route_capability(
     layout: OutputLayout = resolve_output_layout(
         topology,
         playback_device=playback_device,
-        allow_direct_dac=diagnostic,
     )
     active_groups = _active_main_groups(topology)
     subwoofer_groups = _subwoofer_groups(topology)
@@ -254,24 +201,9 @@ def active_playback_route_capability(
     *,
     playback_device: str | None = None,
 ) -> ActivePlaybackRouteCapability:
-    """Return the route capacity for bounded diagnostic test playback."""
+    """Return the route capacity for active-speaker playback."""
 
     return _route_capability(
         topology,
         playback_device=playback_device,
-        diagnostic=True,
-    )
-
-
-def durable_profile_route_capability(
-    topology: OutputTopology,
-    *,
-    playback_device: str | None = None,
-) -> ActivePlaybackRouteCapability:
-    """Return the route capacity for durable active profile apply/staging."""
-
-    return _route_capability(
-        topology,
-        playback_device=playback_device,
-        diagnostic=False,
     )

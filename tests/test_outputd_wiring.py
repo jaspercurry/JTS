@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from jasper.audio_hardware import dac
-from tests.install_surface import installer_text
+from tests.install_surface import installer_shell_paths, installer_text
 
 from ._voice_runtime_text import voice_runtime_text
 
@@ -96,6 +96,11 @@ def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
 
 def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
+    install_without_env_migrations = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in installer_shell_paths()
+        if path.name != "env-migrations.sh"
+    )
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
@@ -112,8 +117,8 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
     assert "JASPER_AUDIO_DAC_CARD" in reconcile
-    assert "JASPER_OUTPUT_DAC_ROUTE" in reconcile
-    assert "OUTPUT_DAC_ROUTE" in install_sh
+    assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
+    assert "OUTPUT_DAC_ROUTE" not in install_without_env_migrations
     assert "APPLE_DONGLE_PRESENT=1" in reconcile
     assert "APPLE_DONGLE_PRESENT=0" in reconcile
     assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
@@ -140,20 +145,17 @@ def test_bash_output_detection_literals_track_registered_dac_profiles():
     ) < reconcile.index("DAC8X_OUTPUT_CARD=\"$(find_card")
 
 
-def test_output_dac_route_policy_is_narrow_and_dac8x_family_only():
+def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():
     route_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
-    assert 'OUTPUT_DAC_ID" != "hifiberry_dac8x"' in route_lib
-    assert 'OUTPUT_DAC_ID" != "hifiberry_dac8x_studio"' in route_lib
-    assert "mono:([1-8])" in route_lib
-    assert "stereo:([1-8]),([1-8])" in route_lib
-    assert "channels 8" in route_lib
-    assert "0.${mono_idx} 0.5" in route_lib
-    assert "1.${mono_idx} 0.5" in route_lib
-    assert "duplicate_stereo_channel" in route_lib
+    assert "JASPER_OUTPUT_DAC_ROUTE" not in route_lib
+    assert "OUTPUT_DAC_ROUTE" not in route_lib
+    assert "mono:([1-8])" not in route_lib
+    assert "stereo:([1-8]),([1-8])" not in route_lib
+    assert "type route" not in route_lib
     assert 'OUTPUT_DAC_ID:-}" == "dual_apple_usb_c_dac_4ch"' in route_lib
     assert "type null" in route_lib
-    assert "jasper_asound_route_ignored()" in reconcile
+    assert "jasper_asound_route_ignored()" not in reconcile
     assert "event=audio_hardware_reconcile.${name}" in reconcile
 
 

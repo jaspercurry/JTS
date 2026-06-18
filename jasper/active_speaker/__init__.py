@@ -88,9 +88,14 @@ from .tone_plan import (
     load_active_speaker_preset,
     tone_targets_payload,
 )
+from .test_signal_plan import (
+    DRIVER_TEST_SIGNAL_PLAN_KIND,
+    driver_test_signal_plan,
+    driver_test_signal_plan_from_edges,
+    protective_tweeter_highpass_frequency_hz,
+)
 from .playback import (
     AplayTonePlaybackBackend,
-    DirectDacTonePlaybackBackend,
     TONE_BACKEND_STATUS_KIND,
     TONE_PLAYBACK_ARTIFACT_KIND,
     TONE_PLAYBACK_RESULT_KIND,
@@ -241,6 +246,7 @@ __all__ = [
     "DESIGN_DRAFT_KIND",
     "DESIGN_DRAFT_PATH_ENV",
     "DRIVER_PROTECTION_KIND",
+    "DRIVER_TEST_SIGNAL_PLAN_KIND",
     "DRIVER_PROTECTION_POLICY_VERSION",
     "DRIVER_RESEARCH_KIND",
     "CROSSOVER_PREVIEW_KIND",
@@ -299,6 +305,8 @@ __all__ = [
     "baseline_profile_state_path",
     "driver_protection_payload",
     "driver_protection_profile",
+    "driver_test_signal_plan",
+    "driver_test_signal_plan_from_edges",
     "load_calibration_level_state",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
@@ -322,6 +330,7 @@ __all__ = [
     "compile_preset_from_crossover_preview",
     "driver_commission_audible_evidence",
     "prepare_driver_commissioning_config",
+    "protective_tweeter_highpass_frequency_hz",
     "running_commission_evidence",
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
@@ -371,7 +380,6 @@ __all__ = [
     "stop_tone_playback",
     "tone_targets_payload",
     "tone_backend_status",
-    "DirectDacTonePlaybackBackend",
     "update_calibration_level_state",
     "write_path_safety_evidence",
 ]

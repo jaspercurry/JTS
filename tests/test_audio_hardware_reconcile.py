@@ -277,7 +277,7 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert "OUTPUT_DAC_CARD=sndrpihifiberry" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
-    assert "OUTPUT_DAC_ROUTE=''" in result.stdout
+    assert "OUTPUT_DAC_ROUTE" not in result.stdout
     assert not (tmp_path / "jasper.env").exists()
     assert not (tmp_path / "output_hardware.json").exists()
 
@@ -293,44 +293,6 @@ def test_print_env_recognizes_dac8x_studio_role(tmp_path: Path):
     assert "OUTPUT_DAC_CARD=DAC8XStudio" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x_studio" in result.stdout
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
-
-
-def test_print_env_keeps_comma_values_stable_across_bash_versions(tmp_path: Path):
-    result = _run_reconcile(
-        tmp_path,
-        DAC8X_AND_APPLE_LISTING,
-        "--print-env",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,6\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "OUTPUT_DAC_ROUTE=stereo:5,6" in result.stdout
-    assert r"OUTPUT_DAC_ROUTE=stereo:5\,6" not in result.stdout
-
-
-def test_print_env_quotes_apostrophe_values_for_bash_eval(tmp_path: Path):
-    result = _run_reconcile(
-        tmp_path,
-        DAC8X_AND_APPLE_LISTING,
-        "--print-env",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=owner's:5,6\n",
-    )
-    eval_result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'eval "$1"; printf "%s\\n" "$OUTPUT_DAC_ROUTE"',
-            "_",
-            result.stdout,
-        ],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert eval_result.returncode == 0, eval_result.stderr
-    assert eval_result.stdout == "owner's:5,6\n"
 
 
 def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
@@ -663,11 +625,7 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
 
 
-def test_reconcile_active_graph_ignores_legacy_dac_route(tmp_path: Path):
-    # The legacy DAC8x route knob is for ordinary stereo playback. Once outputd
-    # is reading the active lane, its channel count already matches the active
-    # graph, so applying mono/stereo route aliases would collapse or remap
-    # driver channels below CamillaDSP.
+def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
     result = _run_reconcile(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
@@ -685,7 +643,8 @@ def test_reconcile_active_graph_ignores_legacy_dac_route(tmp_path: Path):
     assert "pcm.outputd_dac {\n    type hw\n    card sndrpihifiberry\n" in template
     assert "type route" not in template
     assert "0.4 0.5" not in template
-    assert "reason=active_outputd_direct" in result.stderr
+    assert "output_dac_route" not in result.stderr
+    assert "route_ignored" not in result.stderr
     assert "outputd_active_mode=1 outputd_active_channels=2" in result.stderr
 
 
@@ -791,93 +750,3 @@ def test_reconcile_restarts_when_only_outputd_runtime_env_changes(
     commands = _systemctl_log(tmp_path)
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
-
-
-def test_reconcile_dac8x_mono_route_renders_channel_five_sum(tmp_path: Path):
-    result = _run_reconcile(
-        tmp_path,
-        DAC8X_AND_APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=mono:5\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "type route" in template
-    assert 'pcm "hw:CARD=sndrpihifiberry,DEV=0"' in template
-    assert "channels 8" in template
-    assert "0.4 0.5" in template
-    assert "1.4 0.5" in template
-    assert "output_dac_route=mono:5" in result.stderr
-
-
-def test_reconcile_dac8x_stereo_route_renders_distinct_outputs(tmp_path: Path):
-    result = _run_reconcile(
-        tmp_path,
-        DAC8X_AND_APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,6\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "type route" in template
-    assert "0.4 1.0" in template
-    assert "1.5 1.0" in template
-
-
-def test_reconcile_dac8x_studio_route_renders_distinct_outputs(tmp_path: Path):
-    result = _run_reconcile(
-        tmp_path,
-        DAC8X_STUDIO_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,6\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x_studio" in (
-        tmp_path / "jasper.env"
-    ).read_text(encoding="utf-8")
-    assert "type route" in template
-    assert 'pcm "hw:CARD=DAC8XStudio,DEV=0"' in template
-    assert "0.4 1.0" in template
-    assert "1.5 1.0" in template
-
-
-def test_reconcile_ignores_invalid_dac8x_route_without_rerendering_route(
-    tmp_path: Path,
-):
-    result = _run_reconcile(
-        tmp_path,
-        DAC8X_AND_APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,5\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "type hw" in template
-    assert "type route" not in template
-    assert "reason=duplicate_stereo_channel" in result.stderr
-
-
-def test_reconcile_ignores_route_for_apple_output_role(tmp_path: Path):
-    result = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_OUTPUT_DAC_ROUTE=mono:5\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "type hw" in template
-    assert "card A" in template
-    assert "type route" not in template
-    assert "reason=unsupported_dac" in result.stderr

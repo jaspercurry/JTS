@@ -459,33 +459,21 @@ exists. Two Apple USB-C adapters can therefore be visible as an observed
 four-output shape without implying that outputd has switched to a dual-sink
 runtime graph.
 
-For explicit DAC8x-family lab wiring, operators may set
-`JASPER_OUTPUT_DAC_ROUTE=mono:N` or `stereo:L,R` in
-`/etc/jasper/jasper.env`; the route is applied only for recognized
-DAC8x/DAC8x Studio hardware and uses 1-indexed physical output numbers. It takes
-effect when deploy, boot/udev reconcile, or a manual
-`jasper-audio-hardware-reconcile` run re-renders `/etc/asound.conf`.
-This is a small final-output alias route for single-amp/commissioning
-cases, not an active-speaker crossover map. The product speaker-output
-topology contract lives at `/var/lib/jasper/output_topology.json` and is
-served by `/sound/output-topology`; it records physical DAC lanes,
-speaker groups, passive/active modes, subwoofers, and safety evidence
-without rewriting ALSA, loading CamillaDSP, or emitting audio.
-`/sound/active-speaker/channel-identity` records operator-confirmed
-physical channel identity on that saved topology, but still grants no
-playback authority. `/sound/active-speaker/prepare-driver-test` is the product
-setup boundary for one confirmed driver: it refreshes preview evidence and
-selects the target without asking the user to run staging/path/safe-session
-steps by hand. Coherent single-DAC layouts can use the bounded direct-DAC
-diagnostic backend for one selected driver: outputd is paused, one generated
-multi-channel test WAV is played directly to the hardware PCM, and outputd is
-restarted. Outputd-owned active-lane layouts continue through protected startup
-staging/load/commission-ramp before playback. `prepare-driver-test` combines
-that target evidence with the relevant route, calibration-level, Stop-control,
-and tone-backend checks for passive/full-range tests. The topology itself still
-grants no playback authority; the active-speaker tone backend can emit only
-after route readiness and the driver-protection policy pass for the selected
-target.
+The old DAC8x final-output alias route has been removed. `outputd_dac`
+renders directly to the recognized final-output card; active-speaker channel
+ownership lives in `/var/lib/jasper/output_topology.json` and the generated
+active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
+physical DAC lanes, speaker groups, passive/active modes, subwoofers, and
+safety evidence without rewriting ALSA, loading CamillaDSP, or emitting audio.
+`/sound/active-speaker/channel-identity` records operator-confirmed physical
+channel identity on that saved topology, but still grants no playback
+authority. Product active-driver playback uses the protected active graph via
+`/sound/active-speaker/commission-load` and
+`/sound/active-speaker/commission-ramp-*`; passive/full-range layouts have no
+separate active driver test in the product UI. Generic `aplay` tone playback is
+explicit lab mode only and must point at a dedicated non-daemon test PCM, never
+at outputd/CamillaDSP product lanes. The topology itself still grants no
+playback authority.
 `/sound/active-speaker/driver-measurement`,
 `/sound/active-speaker/summed-test`, and
 `/sound/active-speaker/summed-validation` persist commissioning evidence only;
@@ -568,7 +556,7 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-16 (active-speaker direct-DAC diagnostic route,
+Last verified: 2026-06-17 (active-speaker direct-DAC diagnostic route removed,
 dynamic route width, and outputd-only durable apply boundary rechecked against
 `playback_route.py`, `sound_setup.py`, `playback.py`, `staging.py`, and
 `baseline_profile.py`)

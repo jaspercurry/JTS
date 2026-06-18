@@ -26,7 +26,6 @@ from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 from ._common import gate as _gate, issue as _issue
 from .camilla_yaml import (
     COMMISSIONING_HEADROOM_DB,
-    PROTECTIVE_TWEETER_HP_MULTIPLIER,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
@@ -49,9 +48,10 @@ from .profile import (
 from .playback_route import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     active_playback_route_capability,
-    resolve_diagnostic_playback_device,
+    resolve_active_playback_device,
 )
 from .tone_plan import load_active_speaker_preset
+from .test_signal_plan import protective_tweeter_highpass_frequency_hz
 
 logger = logging.getLogger(__name__)
 
@@ -363,14 +363,7 @@ def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
 
 
 def _protective_hp_hz(preset: ActiveSpeakerPreset) -> float | None:
-    fc_values = [
-        region.fc_hz
-        for region in preset.crossover_regions
-        if region.upper_driver == "tweeter"
-    ]
-    if not fc_values:
-        return None
-    return max(fc_values) * PROTECTIVE_TWEETER_HP_MULTIPLIER
+    return protective_tweeter_highpass_frequency_hz(preset, "tweeter")
 
 
 def _parse_scalar(value: str) -> Any:
@@ -1572,7 +1565,7 @@ def _build_active_commissioning_context(
             ),
         ))
 
-    resolved_playback_device, playback_device_source = resolve_diagnostic_playback_device(
+    resolved_playback_device, playback_device_source = resolve_active_playback_device(
         topology,
         playback_device=playback_device,
     )

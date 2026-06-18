@@ -269,6 +269,7 @@ install_jasper() {
     migrate_secrets_phase4b
     migrate_openai_noise_reduction_default
     migrate_tts_outputd_socket_default
+    migrate_removed_output_dac_route
     render_voice_provider_ids_manifest
     migrate_transit_config
     migrate_weather_config

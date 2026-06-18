@@ -101,9 +101,8 @@ def test_topology_tone_plan_uses_saved_physical_output_map() -> None:
         calibration_level=calibration_level_payload(requested_level_dbfs=-60),
         startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
 
@@ -157,9 +156,8 @@ def test_topology_tone_plan_can_target_high_physical_output_without_active_lane(
             calibration_level=calibration_level_payload(),
             startup_load_state=_startup_load(),
             tone_backend=tone_backend_status({
-                "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-                "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-                "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+                "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+                "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
             }),
         ),
     )
@@ -427,9 +425,8 @@ def test_topology_tone_plan_uses_conservative_high_frequency_floor_tone() -> Non
         calibration_level=calibration_level_payload(),
         startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+            "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+            "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
         }),
     )
 

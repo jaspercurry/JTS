@@ -351,36 +351,6 @@ function baseFetch(overrides = {}) {
     if (path === "./active-speaker/crossover-preview") {
       return Promise.resolve(response({ status: "not_prepared", issues: [] }));
     }
-    if (path === "./active-speaker/prepare-driver-test") {
-      const body = JSON.parse(options.body || "{}");
-      const topology = topologyPayload();
-      const role = body.role || "full_range";
-      const outputIndex = role === "tweeter" ? 1 : 0;
-      return Promise.resolve(response({
-        status: "ready",
-        ready: true,
-        message: "Ready to start at the quietest test level.",
-        target: {
-          speaker_group_id: body.speaker_group_id || "main",
-          speaker_label: "Main speaker",
-          role,
-          physical_output_index: outputIndex,
-          label: "Main " + role.replace(/_/g, " ") + " on Output " + (outputIndex + 1),
-        },
-        output_topology: topology,
-        channel_identity: topology.channel_identity,
-        clock_domain: topology.clock_domain,
-        session: active["./active-speaker/safe-playback"],
-        calibration_level: active["./active-speaker/calibration-level"],
-        tone_backend: {
-          status: "audio_enabled",
-          audio_enabled: true,
-          tone_playback_implemented: true,
-        },
-        startup_load: active["./active-speaker/startup-load"],
-        staged_config: active["./active-speaker/staged-config"],
-      }));
-    }
     if (path === "./preview") return Promise.resolve(response({ preview: [] }));
     if (active[path] && !options.method) return Promise.resolve(response(active[path]));
     throw new Error(`unexpected fetch: ${path}`);
@@ -491,36 +461,25 @@ async function testQuietTestSurfaceSurvivesStartupActions() {
   return { quietTestSurfacePreserved: true };
 }
 
-async function testDriverTestUsesAutomaticRampNotSlider() {
+async function testPassiveLayoutsRenderNoActiveDriverTestCard() {
   const fetchHandler = baseFetch();
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-output-index": "0",
-    "data-speaker-label": "Main speaker",
-    "data-label": "Main full range on Output 1",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
 
   const html = harness.elements.get("view-body").innerHTML;
   for (const expected of [
-    "Listen for this driver",
-    "Test progress",
-    "Start quiet test",
-    "JTS starts very quiet and automatically tries a little louder",
-    "Wrong driver",
-    "Stop",
+    "No active driver test",
+    "no separate direct-DAC driver test in the product UI",
   ]) {
     if (!html.includes(expected)) {
-      fail("Driver test should use the automatic ramp surface", { expected, html });
+      fail("Passive layouts should render the non-active product card", { expected, html });
     }
   }
   for (const forbidden of [
+    "data-act=\"check-output-readiness\"",
+    "data-act=\"play-output-readiness-tone\"",
+    "data-act=\"active-floor-result\"",
+    "data-act=\"stop-active-speaker\"",
     "Test volume",
     "active-speaker-level\" min=",
     "I did not hear anything",
@@ -528,10 +487,10 @@ async function testDriverTestUsesAutomaticRampNotSlider() {
     "Did this driver make the sound?",
   ]) {
     if (html.includes(forbidden)) {
-      fail("Driver test should not expose the removed manual slider flow", { forbidden, html });
+      fail("Passive layouts should not expose the removed direct test flow", { forbidden, html });
     }
   }
-  return { driverTestUsesAutomaticRampNotSlider: true };
+  return { passiveLayoutsRenderNoActiveDriverTestCard: true };
 }
 
 async function testActiveCrossoverFirstStepRender() {
@@ -857,470 +816,6 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
     fail("Imported research should still be preserved as research evidence", { saved });
   }
   return { visibleCrossoverSettingsWinOverImportedJson: true };
-}
-
-async function testConfirmedOutputChoosesFirstQuietDriver() {
-  const confirmedTopology = topologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 1,
-    verified_channel_count: 1,
-    unverified_channel_count: 0,
-    next_step: "Outputs are confirmed. Continue when you are ready.",
-    targets: [{
-      id: "main:full_range",
-      speaker_group_id: "main",
-      speaker_label: "Main speaker",
-      role: "full_range",
-      assigned: true,
-      identity_verified: true,
-      physical_output_index: 0,
-    }],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  let html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    "Choose first driver",
-    "Test Full range",
-    "Output 1",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("Confirmed output should render first quiet-driver choices", { expected, html });
-    }
-  }
-  if (html.includes("Test this driver") || html.includes("Check readiness")) {
-    fail("Confirmed output choices should not expose old readiness language", { html });
-  }
-  if (html.includes("Test volume")) {
-    fail("Volume controls should wait until a test driver is selected", { html });
-  }
-  const readinessActionCount = (html.match(/data-act="check-output-readiness"/g) || []).length;
-  if (readinessActionCount !== 1) {
-    fail("First driver-test choice should appear only in the driver-test card", {
-      readinessActionCount,
-      html,
-    });
-  }
-
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-output-index": "0",
-    "data-speaker-label": "Main speaker",
-    "data-label": "Main full range on Output 1",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Listen for this driver", "Main full range on Output 1", "Start quiet test", "Test progress"]) {
-    if (!html.includes(expected)) {
-      fail("Chosen driver should render the readiness result without playing sound", { expected, html });
-    }
-  }
-  return { confirmedOutputChoosesFirstQuietDriver: true };
-}
-
-async function testBlockedAudibleDriverTestDoesNotClaimSoundPlayed() {
-  const confirmedTopology = topologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 1,
-    verified_channel_count: 1,
-    unverified_channel_count: 0,
-    targets: [{
-      id: "main:full_range",
-      speaker_group_id: "main",
-      speaker_label: "Main speaker",
-      role: "full_range",
-      assigned: true,
-      identity_verified: true,
-      physical_output_index: 0,
-    }],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/play-tone": (_path, options = {}) => {
-      if (!options.method) throw new Error("play-tone should be POST");
-      return Promise.resolve(response({
-        playback: {
-          status: "blocked",
-          audio_emitted: false,
-          backend: null,
-          target: {
-            speaker_group_id: "main",
-            role: "full_range",
-            label: "Main full range on Output 1",
-          },
-          tone: { frequency_hz: 500, level_dbfs: -80, duration_ms: 500 },
-          issues: [{
-            code: "audio_backend_not_enabled",
-            message: "audible channel tests require explicit lab backend enablement",
-          }],
-        },
-        session: activePayloads()["./active-speaker/safe-playback"],
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-output-index": "0",
-    "data-speaker-label": "Main speaker",
-    "data-label": "Main full range on Output 1",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("ready to test") ||
-      !html.includes("Start quiet test")) {
-    fail("Audio-enabled readiness should land on the audible-test action", { html });
-  }
-  if (html.includes("preview ready")) {
-    fail("Audio-enabled readiness should not be framed as preview-only", { html });
-  }
-
-  harness.dispatchClick({
-    "data-act": "play-output-readiness-tone",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-label": "Main full range on Output 1",
-    "data-audio": "true",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  const statusText = harness.elements.get("status").textContent;
-  html = harness.elements.get("view-body").innerHTML;
-  if (statusText.includes("Played quiet channel test")) {
-    fail("Blocked audible playback must not be reported as played", { statusText, html });
-  }
-  if (!statusText.includes("No sound played") ||
-      !statusText.includes("Driver tests are not available")) {
-    fail("Blocked audible playback should explain that no sound played", { statusText, html });
-  }
-  if (!html.includes("No sound played")) {
-    fail("Blocked audible playback should render no-audio evidence", { html });
-  }
-  for (const forbidden of ["Playback: audio_backend_not_enabled", "tone_plan_not_ready"]) {
-    if (html.includes(forbidden) || statusText.includes(forbidden)) {
-      fail("Blocked audible playback should not expose backend issue codes", { forbidden, statusText, html });
-    }
-  }
-  return { blockedAudibleDriverTestDoesNotClaimSoundPlayed: true };
-}
-
-async function testAudibleRampRecordsSilenceAndAsksBackendForNextStep() {
-  const confirmedTopology = topologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 1,
-    verified_channel_count: 1,
-    unverified_channel_count: 0,
-    targets: [{
-      id: "main:full_range",
-      speaker_group_id: "main",
-      speaker_label: "Main speaker",
-      role: "full_range",
-      assigned: true,
-      identity_verified: true,
-      physical_output_index: 0,
-    }],
-  };
-  const target = {
-    speaker_group_id: "main",
-    speaker_label: "Main speaker",
-    role: "full_range",
-    output_index: 0,
-    label: "Main full range on Output 1",
-  };
-  const persistedTarget = {
-    speaker_group_id: "main",
-    driver_role: "full_range",
-    physical_output_index: 0,
-  };
-  let session = activePayloads()["./active-speaker/safe-playback"];
-  let level = levelPayload(-80);
-  const playToneCalls = [];
-  const levelPosts = [];
-  const floorResults = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/prepare-driver-test": () => Promise.resolve(response({
-      status: "ready",
-      ready: true,
-      message: "Ready to start at the quietest test level.",
-      target,
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-      session,
-      calibration_level: level,
-      tone_backend: {
-        status: "audio_enabled",
-        audio_enabled: true,
-        tone_playback_implemented: true,
-      },
-      startup_load: activePayloads()["./active-speaker/startup-load"],
-      staged_config: activePayloads()["./active-speaker/staged-config"],
-    })),
-    "./active-speaker/play-tone": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      playToneCalls.push(body);
-      const playbackId = `play-${playToneCalls.length}`;
-      session = {
-        status: "armed",
-        issues: [],
-        quiet_start: {
-          status: "floor_pending_operator",
-          floor_audio_confirmed: false,
-          pending_playback_id: playbackId,
-          current_target: target,
-        },
-      };
-      return Promise.resolve(response({
-        playback: {
-          playback_id: playbackId,
-          status: "played",
-          audio_emitted: true,
-          backend: "unit-test",
-          target,
-          tone: {
-            frequency_hz: 500,
-            level_dbfs: level.test_signal.requested_level_dbfs,
-            duration_ms: 300,
-          },
-          issues: [],
-        },
-        session,
-      }));
-    },
-    "./active-speaker/floor-audio-result": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      floorResults.push(body);
-      session = {
-        status: "armed",
-        issues: [],
-        quiet_start: {
-          status: "floor_required",
-          floor_audio_confirmed: false,
-          current_target: persistedTarget,
-          last_operator_result: {
-            outcome: body.outcome,
-            playback_id: body.playback_id,
-            target: persistedTarget,
-          },
-        },
-      };
-      return Promise.resolve(response(session));
-    },
-    "./active-speaker/driver-measurement": () => Promise.resolve(response({
-      status: "needs_driver_measurements",
-      summary: {
-        required_driver_count: 1,
-        captured_driver_count: 0,
-        driver_measurements_complete: false,
-        latest_driver_measurements: {
-          "main:full_range": { captured: false, outcome: "silent" },
-        },
-      },
-      issues: [],
-    })),
-    "./active-speaker/calibration-level": (_path, options = {}) => {
-      if (!options.method) return Promise.resolve(response(level));
-      const body = JSON.parse(options.body || "{}");
-      levelPosts.push(body);
-      if (body.action === "auto_step") {
-        level = levelPayload(-80);
-        level.auto_level = { action: "hold_at_cap", status: "maxed", next_level_dbfs: -80 };
-        level.applied_delta_db = 0;
-      }
-      return Promise.resolve(response(level));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-output-index": "0",
-    "data-speaker-label": "Main speaker",
-    "data-label": "Main full range on Output 1",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-act="stop-active-speaker" disabled')) {
-    fail("Stop should be visible but inactive before a tone is playing", { html });
-  }
-
-  harness.dispatchClick({
-    "data-act": "play-output-readiness-tone",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-label": "Main full range on Output 1",
-    "data-audio": "true",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    "I hear this driver",
-    "Wrong driver",
-    "Stop",
-    "active-speaker-actions--driver-test",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("After playback, the stable driver-test row should stay visible", { expected, html });
-    }
-  }
-  if (html.includes("Did this driver make the sound?") ||
-      html.includes("If you hear nothing, wait") ||
-      html.includes("Play full range tone")) {
-    fail("After playback, the UI should not swap in the old identity block", { html });
-  }
-  await new Promise((resolve) => setTimeout(resolve, 1300));
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  html = harness.elements.get("view-body").innerHTML;
-  if (!/data-outcome="heard_correct_driver" data-playback-id="[^"]+">I hear this driver<\/button>/.test(html) ||
-      !/data-outcome="heard_wrong_driver" data-playback-id="[^"]+">Wrong driver<\/button>/.test(html)) {
-    fail("Response buttons should stay enabled after the first pulse while the ramp waits", { html });
-  }
-  if (!floorResults.some((body) => body.outcome === "silent")) {
-    fail("Automatic ramp should record an internal not-heard result before raising", { floorResults });
-  }
-  if (!levelPosts.some((body) => body.action === "auto_step" && body.speaker_group_id === "main")) {
-    fail("Automatic ramp should ask the backend for the next safe level", { levelPosts });
-  }
-  return { audibleRampRecordsSilenceAndAsksBackendForNextStep: true };
-}
-
-async function testUnavailableAudioBackendDoesNotPostAudibleTone() {
-  const confirmedTopology = topologyPayload();
-  let playToneCalls = 0;
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/prepare-driver-test": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      const topology = topologyPayload();
-      return Promise.resolve(response({
-        status: "ready",
-        ready: true,
-        message: "Ready to start at the quietest test level.",
-        target: {
-          speaker_group_id: body.speaker_group_id || "main",
-          speaker_label: "Main speaker",
-          role: body.role || "woofer",
-          physical_output_index: 0,
-          label: "Main speaker woofer (Output 1)",
-        },
-        output_topology: topology,
-        channel_identity: topology.channel_identity,
-        clock_domain: topology.clock_domain,
-        session: activePayloads()["./active-speaker/safe-playback"],
-        calibration_level: activePayloads()["./active-speaker/calibration-level"],
-        tone_backend: {
-          status: "artifact_only",
-          audio_enabled: false,
-          tone_playback_implemented: false,
-          issues: [{
-            code: "audio_backend_not_enabled",
-            message: "audible channel tests require explicit lab backend enablement",
-          }],
-        },
-        startup_load: activePayloads()["./active-speaker/startup-load"],
-        staged_config: activePayloads()["./active-speaker/staged-config"],
-      }));
-    },
-    "./active-speaker/play-tone": () => {
-      playToneCalls += 1;
-      return Promise.resolve(response({ playback: { status: "should_not_happen" } }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "woofer",
-    "data-output-index": "0",
-    "data-speaker-label": "Main speaker",
-    "data-label": "Main speaker woofer (Output 1)",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  const statusText = harness.elements.get("status").textContent;
-  const html = harness.elements.get("view-body").innerHTML;
-  if (playToneCalls !== 0) {
-    fail("Unavailable audio backend should not POST an audible tone request", { playToneCalls, statusText, html });
-  }
-  if (statusText.includes("No sound played")) {
-    fail("Unavailable audio backend should not create a failed test after preparation", { statusText, html });
-  }
-  for (const expected of ["not available", "Driver tests are not available on this install yet."]) {
-    if (!html.includes(expected)) {
-      fail("Unavailable audio backend should render a clear no-test state", { expected, html });
-    }
-  }
-  if (html.includes("Generate WAV") || html.includes("data-audio=\"false\"")) {
-    fail("Unavailable audio backend should not expose diagnostic WAV generation", { html });
-  }
-  for (const hidden of [
-    "Play woofer tone",
-    "Test volume",
-    "Return test volume",
-    "data-act=\"stop-active-speaker\"",
-  ]) {
-    if (html.includes(hidden)) {
-      fail("Preview-only driver state should not expose audible-test controls", { hidden, html });
-    }
-  }
-  for (const forbidden of ["Playback: audio_backend_not_enabled", "tone_plan_not_ready"]) {
-    if (html.includes(forbidden) || statusText.includes(forbidden)) {
-      fail("Unavailable audio backend should not leak backend issue codes", { forbidden, statusText, html });
-    }
-  }
-  return { unavailableAudioBackendDoesNotPostAudibleTone: true };
 }
 
 async function testCommissionCardArmsAndSteps() {
@@ -1715,16 +1210,12 @@ const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
-results.push(await testDriverTestUsesAutomaticRampNotSlider());
+results.push(await testPassiveLayoutsRenderNoActiveDriverTestCard());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
-results.push(await testConfirmedOutputChoosesFirstQuietDriver());
-results.push(await testBlockedAudibleDriverTestDoesNotClaimSoundPlayed());
-results.push(await testAudibleRampRecordsSilenceAndAsksBackendForNextStep());
-results.push(await testUnavailableAudioBackendDoesNotPostAudibleTone());
 results.push(await testCommissionCardArmsAndSteps());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());

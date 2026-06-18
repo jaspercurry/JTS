@@ -273,18 +273,11 @@ What exists:
   Apple-specific USB/headphone-gain checks active for one Apple dongle or
   the dual-Apple pair, checks every Apple child card in the pair, and
   skips those checks for DAC8x-family or other output roles. For
-  recognized DAC8x/DAC8x Studio hardware,
-  `JASPER_OUTPUT_DAC_ROUTE=mono:N` renders a stereo-to-mono sum onto
-  one 1-indexed physical DAC8x output, and
-  `JASPER_OUTPUT_DAC_ROUTE=stereo:L,R` maps stereo left/right to two
-  distinct 1-indexed physical outputs. Unset, `direct`, or
-  `passthrough` keeps the direct alias. Invalid routes, duplicate
-  stereo channels, or routes on non-DAC8x-family hardware are ignored with
-  structured `event=audio_hardware_reconcile.route_ignored` logs. This
-  route knob is for lab/single-amp/commissioning wiring before active
-  speaker profiles are loaded; active crossover channel ownership lives
-  in the active-speaker `channel_map`, not in this ALSA alias. The
-  product speaker-output topology substrate is separate again:
+  recognized DAC8x/DAC8x Studio hardware, `outputd_dac` renders directly to
+  the detected final-output card. The old DAC8x route env (`mono:N` /
+  `stereo:L,R`) has been removed; active crossover channel ownership lives in
+  the active-speaker `channel_map`, not in an ALSA alias. The product
+  speaker-output topology substrate is separate again:
   `jasper.output_topology` persists `/var/lib/jasper/output_topology.json`
   and `/sound/output-topology` exposes a complete replacement JSON
   contract for physical DAC lanes, speaker groups, passive/active modes,
@@ -296,13 +289,12 @@ What exists:
   physical channel identity for assigned topology channels. It is evidence
   about wiring only: it does not make the active path safe, does not satisfy
   tweeter protection, and does not allow any endpoint to emit sound.
-  `/sound/active-speaker/prepare-driver-test` now composes that topology
-  evidence with active-speaker environment, safe-session, calibration-level,
-  clock-domain, Stop-control, and tone-backend evidence for one selected
-  passive/full-range target. The topology itself still grants no playback
-  authority; the separate active-speaker lab backend can emit only when route
-  readiness passes, explicit `aplay` env enablement is present, and the target
-  is not a tweeter/compression driver.
+  Active driver commissioning composes that topology evidence with
+  active-speaker environment, safe-session, calibration-level, clock-domain,
+  Stop-control, and tone-backend evidence through the commission ramp. The
+  topology itself still grants no playback authority; the separate generic
+  `aplay` backend is lab-only and requires explicit enablement plus a dedicated
+  non-daemon test PCM.
   `/sound/active-speaker/channel-protection` records the separate human
   evidence that a compression-driver protection path is physically present or
   that software-guarded bring-up has been explicitly requested. Software guard
@@ -346,10 +338,10 @@ What exists:
   the existing udev/install triggers without adding a poller. This is not
   a generic endorsement of ALSA
   `multi`/`dmix`/`plug` or CamillaDSP multi-device output.
-  The configured route takes effect when deploy, boot/udev reconcile, or a
+  The configured output role takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
-  route in `dac_identity`. A recognized role renders the ALSA template first,
+  output identity in `dac_identity`. A recognized role renders the ALSA template first,
   then publishes the active DAC env values. If the env/template changed, the
   reconciler restarts `jasper-outputd`; if the replug is value-neutral, it
   still `reset-failed` + `start`s `jasper-outputd` so a unit parked by the
@@ -357,7 +349,7 @@ What exists:
   unknown/no-output role does **not** render `outputd_dac` to a guessed card;
   it writes `JASPER_OUTPUTD_BACKEND=fake` so outputd keeps its sockets and
   `/state` surface alive without opening ALSA, and stops `jasper-voice` plus
-  any stale outputd instance so direct-DAC ownership cannot keep running
+  any stale outputd instance so final-output ALSA ownership cannot keep running
   against removed hardware or burn the outputd reboot escalation budget.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
@@ -1261,12 +1253,10 @@ datum: how much assistant audio was actually heard.
   manual/operator starts. Added the outputd-only DAC8x validation profile
   `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
   should not fail just because chip-AEC/voice is parked.
-- 2026-06-02: Added the explicit DAC8x-family
-  `JASPER_OUTPUT_DAC_ROUTE` render path (`mono:N`, `stereo:L,R`) so
-  lab wiring like "single amp on DAC8x physical output 5" survives
-  deploy/reconcile without a hand-edited `/etc/asound.conf`. The
-  default remains direct; non-DAC8x-family or invalid routes are ignored and
-  logged.
+- 2026-06-17: Removed the explicit DAC8x-family `JASPER_OUTPUT_DAC_ROUTE`
+  render path. `outputd_dac` renders directly to the detected final-output
+  card; active-speaker per-driver ownership lives in the saved topology and
+  protected active graph.
 - 2026-06-02: Added the first product speaker-output topology contract
   (`jasper.output_topology`, `/var/lib/jasper/output_topology.json`,
   `/sound/output-topology`). It is a no-audio, no-Camilla, no-ALSA

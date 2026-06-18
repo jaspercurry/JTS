@@ -1,36 +1,31 @@
-"""ActivePlaybackRouteCapability is a thin reader of the resolved OutputLayout.
-
-The capability adds speaker-group demand accounting + route-fit issues on top of
-the route resolution that now lives on ``jasper.output_topology``. These pin that
-the route half (device, source, transport width, subwoofer support) is taken
-verbatim from the layout, and that the diagnostic vs durable split still maps to
-``allow_direct_dac``.
-"""
+"""ActivePlaybackRouteCapability is a thin reader of the resolved OutputLayout."""
 
 from __future__ import annotations
 
 from jasper.active_speaker.playback_route import (
-    DIRECT_DAC_SOURCE,
     MISSING_SOURCE,
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
-    durable_profile_route_capability,
     resolve_active_playback_device,
-    resolve_diagnostic_playback_device,
-    resolve_durable_profile_playback_device,
 )
 from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH, HIFIBERRY_DAC8X
 from jasper.output_topology import (
+    EXPLICIT_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     resolve_output_layout,
 )
 
 
-def _topology(device_id: str, count: int, *, card_id: str | None = None,
-              children: list[dict] | None = None,
-              groups: list[dict] | None = None,
-              routing: dict | None = None) -> OutputTopology:
+def _topology(
+    device_id: str,
+    count: int,
+    *,
+    card_id: str | None = None,
+    children: list[dict] | None = None,
+    groups: list[dict] | None = None,
+    routing: dict | None = None,
+) -> OutputTopology:
     hardware: dict = {
         "device_id": device_id,
         "device_label": "Test device",
@@ -52,9 +47,6 @@ def _topology(device_id: str, count: int, *, card_id: str | None = None,
     })
 
 
-# A coherent single DAC with NO DacProfile (so no active outputd lane). Used to
-# exercise the direct-DAC diagnostic / MISSING-durable split now that the
-# registered DAC8x declares an active lane.
 GENERIC_SINGLE_DAC = "generic_single_dac"
 
 
@@ -65,79 +57,93 @@ _TWO_WAY_GROUP = [{
     "mode": "active_2_way",
     "channels": [
         {"role": "woofer", "physical_output_index": 0, "identity_verified": True},
-        {"role": "tweeter", "physical_output_index": 1, "identity_verified": True,
-         "startup_muted": True, "protection_required": True,
-         "protection_status": "present"},
+        {
+            "role": "tweeter",
+            "physical_output_index": 1,
+            "identity_verified": True,
+            "startup_muted": True,
+            "protection_required": True,
+            "protection_status": "present",
+        },
     ],
 }]
 
 
-def test_diagnostic_capability_mirrors_resolved_layout() -> None:
-    topo = _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8", groups=_TWO_WAY_GROUP,
-                     routing={"mono_group_id": "mono"})
-    layout = resolve_output_layout(topo, allow_direct_dac=True)
+def test_capability_mirrors_missing_layout_without_direct_dac_fallback() -> None:
+    topo = _topology(
+        GENERIC_SINGLE_DAC,
+        8,
+        card_id="DAC8",
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+    layout = resolve_output_layout(topo)
     cap = active_playback_route_capability(topo)
 
-    assert cap.playback_device == layout.playback_device
-    assert cap.playback_device_source == layout.playback_device_source == DIRECT_DAC_SOURCE
-    assert cap.transport_channel_count == layout.transport_channel_count == 8
-    assert cap.subwoofer_supported == layout.subwoofer_supported is True
-    # Demand half is computed from the speaker groups.
+    assert layout.playback_device is None
+    assert cap.playback_device is None
+    assert cap.playback_device_source == layout.playback_device_source == MISSING_SOURCE
+    assert cap.transport_channel_count == 0
     assert cap.required_active_output_count == 2
     assert cap.active_group_count == 1
+    assert cap.fits_required_outputs is False
+    assert cap.ready is False
+    assert any(i["code"] == "active_playback_route_unavailable" for i in cap.issues)
+
+
+def test_dac8x_capability_reads_active_outputd_lane() -> None:
+    topo = _topology(
+        HIFIBERRY_DAC8X.id,
+        8,
+        card_id="DAC8",
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+    cap = active_playback_route_capability(topo)
+
+    assert cap.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
+    assert cap.transport_channel_count == 8
+    assert cap.required_active_output_count == 2
     assert cap.fits_required_outputs is True
     assert cap.ready is True
 
 
-def test_durable_capability_uses_outputd_lane_only() -> None:
-    # A single DAC with no outputd lane resolves MISSING under durable apply
-    # (no direct-DAC fallback) — unlike the diagnostic capability.
-    topo = _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8", groups=_TWO_WAY_GROUP,
-                     routing={"mono_group_id": "mono"})
-    durable = durable_profile_route_capability(topo)
-    layout = resolve_output_layout(topo, allow_direct_dac=False)
-    assert durable.playback_device is None
-    assert durable.playback_device_source == layout.playback_device_source == MISSING_SOURCE
-    assert durable.transport_channel_count == 0
-    # An active layout with no resolved route is a blocker.
-    assert any(i["code"] == "active_playback_route_unavailable" for i in durable.issues)
-
-
-def test_dac8x_capability_reads_active_outputd_lane() -> None:
-    # The registered DAC8x now declares an active lane, so its capability reads
-    # the outputd active lane (width 8) in BOTH diagnostic and durable modes —
-    # a 2-way mono speaker fits within the 8-lane transport.
-    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8", groups=_TWO_WAY_GROUP,
-                     routing={"mono_group_id": "mono"})
-    for cap in (
-        active_playback_route_capability(topo),
-        durable_profile_route_capability(topo),
-    ):
-        assert cap.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
-        assert cap.transport_channel_count == 8
-        assert cap.required_active_output_count == 2
-        assert cap.fits_required_outputs is True
-        assert cap.ready is True
-
-
 def test_dual_apple_capability_reads_outputd_lane_width() -> None:
     children = [
-        {"child_id": "apple_dac_1", "device_id": "apple_usb_c_dongle",
-         "device_label": "A", "physical_output_indexes": [0, 1], "card_id": "AppleA"},
-        {"child_id": "apple_dac_2", "device_id": "apple_usb_c_dongle",
-         "device_label": "B", "physical_output_indexes": [2, 3], "card_id": "AppleB"},
+        {
+            "child_id": "apple_dac_1",
+            "device_id": "apple_usb_c_dongle",
+            "device_label": "A",
+            "physical_output_indexes": [0, 1],
+            "card_id": "AppleA",
+        },
+        {
+            "child_id": "apple_dac_2",
+            "device_id": "apple_usb_c_dongle",
+            "device_label": "B",
+            "physical_output_indexes": [2, 3],
+            "card_id": "AppleB",
+        },
     ]
-    topo = _topology(DUAL_APPLE_USB_C_DAC_4CH.id, 4, children=children,
-                     groups=_TWO_WAY_GROUP, routing={"mono_group_id": "mono"})
+    topo = _topology(
+        DUAL_APPLE_USB_C_DAC_4CH.id,
+        4,
+        children=children,
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
     cap = active_playback_route_capability(topo)
+
     assert cap.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
     assert cap.transport_channel_count == 4
     assert cap.ready is True
 
 
-def test_compat_resolver_aliases_track_their_modes() -> None:
+def test_explicit_lab_pcm_is_the_only_non_outputd_route() -> None:
     topo = _topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8")
-    # The compat name routes to the diagnostic resolver.
-    assert resolve_active_playback_device(topo) == resolve_diagnostic_playback_device(topo)
-    assert resolve_diagnostic_playback_device(topo) == ("hw:CARD=DAC8,DEV=0", DIRECT_DAC_SOURCE)
-    assert resolve_durable_profile_playback_device(topo) == (None, MISSING_SOURCE)
+
+    assert resolve_active_playback_device(topo) == (None, MISSING_SOURCE)
+    assert resolve_active_playback_device(topo, playback_device="hw:Lab") == (
+        "hw:Lab",
+        EXPLICIT_SOURCE,
+    )
