@@ -1225,7 +1225,7 @@ class OpenAIRealtimeConnection:
             self._set_state(ConnectionState.CONNECTING)
         try:
             await self._open_session_with_retry(phase="initial-connect")
-        except Exception:
+        except Exception:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
             raise
@@ -1370,7 +1370,7 @@ class OpenAIRealtimeConnection:
         cm = connect_call(model=self._model)
         try:
             conn = await cm.__aenter__()
-        except Exception:
+        except Exception:  # noqa: BLE001
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
             raise
@@ -1389,7 +1389,7 @@ class OpenAIRealtimeConnection:
                 "type": "session.update",
                 "session": self._build_session_payload(),
             })
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # If session.update fails, the WS is already open but
             # unconfigured. Tear down so the supervisor can retry from
             # a clean slate.

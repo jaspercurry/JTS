@@ -101,7 +101,7 @@ class CamillaController:
         async with self._lock:
             try:
                 return await asyncio.to_thread(fn, self._ensure())
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # First-attempt failure is normal during a transient
                 # outage (e.g. camilla restart blip) — we always retry
                 # once. DEBUG, not WARNING: the eventual outcome is
@@ -118,7 +118,7 @@ class CamillaController:
                 self._client = None
                 try:
                     return await asyncio.to_thread(fn, self._ensure())
-                except Exception as e2:
+                except Exception as e2:  # noqa: BLE001
                     self._client = None
                     raise CamillaUnavailable(str(e2)) from e2
 

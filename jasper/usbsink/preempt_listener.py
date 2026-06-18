@@ -83,7 +83,7 @@ class _BoundedThreadingHTTPServer(HTTPServer):
         self._request_timeout_sec = request_timeout_sec
         try:
             super().__init__(*args, **kwargs)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # HTTPServer.__init__ calls server_close() if bind/activate
             # fails. Since this subclass owns an executor, make sure a
             # bind error reports the original OSError rather than being
@@ -149,7 +149,7 @@ def _persist_preempt(state_path: Path, silenced: bool) -> None:
             os.fsync(f.fileno())
         os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, state_path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp_path)
         except FileNotFoundError:

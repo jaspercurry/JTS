@@ -281,7 +281,7 @@ def _write_cache(path: str, snapshots: dict[str, DiscoverySnapshot]) -> None:
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
             f.write("\n")
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
         except OSError:

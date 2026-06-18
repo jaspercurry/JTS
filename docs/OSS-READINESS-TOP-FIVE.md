@@ -80,13 +80,11 @@ main compatibility risk is custom local hostnames; `JASPER_HOSTNAME` and
 **Status.** First provenance slice shipped: direct deploy-time
 release archives, model files, and source-build git inputs now have a
 canonical manifest, checksum/commit verification where JTS controls the
-fetch, and a local provenance check. Python determinism is partially
-started: important direct dependencies are pinned or bounded in
-`pyproject.toml`, `pycamilladsp` is pinned to a commit, and
-CONTRIBUTING recommends `uv sync` for local development. There is not
-yet a committed lock artifact that deploy or CI consume. Remaining
-work: Python lock/hash install adoption, apt snapshots, and PlatformIO
-transitive/toolchain lock depth.
+fetch, and a local provenance check. Python determinism now has a
+platform-specific split: `uv.lock` for local development and the
+Pi-generated `deploy/constraints-pi.txt` consumed by deploy-time pip
+installs. Remaining work: Python hash verification/mirroring, apt
+snapshots, and PlatformIO transitive/toolchain lock depth.
 
 **Why it matters.** Fresh installs fetch Python packages, models,
 firmware tools, `.deb` artifacts, and source repos. OSS users need to
@@ -117,19 +115,17 @@ package-resource assets are now explicit, hash-checked provenance
 artifacts staged by install.sh with bounded retries and byte caps,
 instead of hidden package-helper downloads.
 
-**Deferred deliberately.** Python lock adoption is still valuable, but
-it should wait until active `main` dependency churn calms down enough to
-avoid creating a fragmented dependency-management story. When resumed,
-choose one shared artifact (`uv.lock` or generated hash requirements)
-and make deploy/CI consume it deliberately.
+**Deferred deliberately.** Python hash-level verification is still
+valuable. The next slice should add hash-checked Python artifacts or a
+mirror path without collapsing the local-development `uv.lock` and
+arm64 Pi constraints file into one misleading cross-platform lock.
 
 ## 4. Tooling Enforcement
 
-**Status.** Deferred while `main` is moving quickly. Pytest and the
-supply-chain provenance check already run in GitHub Actions. Ruff is a
-dev dependency and documented locally, but CI lint is intentionally not
-enabled yet because `.github/workflows/tests.yml` records existing
-lint noise that would require a cleanup pass.
+**Status.** Pytest, the supply-chain provenance check, and `ruff check .`
+run in GitHub Actions. Ruff is scoped to the low-noise floor (`E4`, `E7`,
+`E9`, `F`, and `BLE`), with an explicit suppression ratchet for the existing
+`# noqa` debt.
 
 **Why it matters.** The codebase already has strong conventions:
 hardware-free tests, CSRF helpers, env-file atomics, and documentation
@@ -142,10 +138,10 @@ mechanical issues instead of behavior and design.
 
 **Definition of done.**
 - Preserve the current PR pytest and provenance checks.
-- Add lint/format enforcement only after the active feature branches can
-  absorb the change without review churn.
-- Scope ruff or equivalent rules to low-noise, codebase-compatible
-  checks before making them merge-blocking.
+- Keep Ruff scoped to low-noise, codebase-compatible checks before
+  expanding rule families.
+- Pay down existing `# noqa` / `BLE001` suppressions under the ratchet
+  before broadening lint style rules.
 - Existing doc freshness and attribution checks are easy to run locally
   and, when ready, in CI.
 - CONTRIBUTING documents the exact local commands.

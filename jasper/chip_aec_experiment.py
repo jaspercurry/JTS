@@ -161,7 +161,7 @@ def reference_feeder(stop: _Stop, source: str, chip: str, ref_delay_ms: float = 
                     delay_samples,
                 )
                 next_log = time.monotonic() + 5
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Anything outside ALSAAudioError: numpy buffer-shape mismatch,
         # MemoryError, etc. Without this the thread would die silently
         # while the main loop kept spinning forever.
@@ -174,12 +174,12 @@ def reference_feeder(stop: _Stop, source: str, chip: str, ref_delay_ms: float = 
         if src is not None:
             try:
                 src.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 LOG.exception("ref feeder: error closing src PCM")
         if dst is not None:
             try:
                 dst.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 LOG.exception("ref feeder: error closing dst PCM")
         LOG.info("ref feeder: stopped")
 
@@ -241,7 +241,7 @@ def udp_mic_pump(stop: _Stop, chip: str, mic_channel: int) -> None:
                 rms = float(np.sqrt(np.mean(mono.astype(np.float32) ** 2))) if mono.size else 0.0
                 LOG.info("mic pump: %d frames (%.0fs) ch%d RMS=%.0f", frames, frames / RATE, mic_channel, rms)
                 next_log = time.monotonic() + 5
-    except Exception:
+    except Exception:  # noqa: BLE001
         # See reference_feeder for why we catch broad Exception here.
         LOG.exception("mic pump: unhandled exception, stopping daemon")
         stop.trip()
@@ -249,12 +249,12 @@ def udp_mic_pump(stop: _Stop, chip: str, mic_channel: int) -> None:
         if cap is not None:
             try:
                 cap.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 LOG.exception("mic pump: error closing capture PCM")
         if sock is not None:
             try:
                 sock.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 LOG.exception("mic pump: error closing UDP socket")
         LOG.info("mic pump: stopped")
 

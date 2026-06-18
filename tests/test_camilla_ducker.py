@@ -260,7 +260,7 @@ async def test_cue_plays_when_camilla_unreachable():
     try:
         try:
             await d.duck()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         await fake_cue_play(slug)
     finally:

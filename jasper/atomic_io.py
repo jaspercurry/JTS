@@ -79,7 +79,7 @@ def atomic_write_text(
             os.chown(tmp, -1, parent_gid)
         os.chmod(tmp, mode)  # before the rename: no wider-permission window
         os.replace(tmp, fspath)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
         except OSError:

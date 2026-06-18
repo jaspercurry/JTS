@@ -209,7 +209,7 @@ def main() -> int:
             def _p(s):
                 if not s: return None
                 try: return datetime.fromisoformat(s.replace("Z", "+00:00"))
-                except Exception: return None
+                except Exception: return None  # noqa: BLE001
             t_wake = _p(d["ts_utc"])
             t_speech = _p(d["ts_speech_detected"])
             live_log[d["event_id"]] = {

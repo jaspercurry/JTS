@@ -279,7 +279,7 @@ def apply_for(
             _arm_self_quiet(state.remaining_sec)
         else:
             _cancel_self_quiet()
-    except Exception:  # pragma: no cover - defensive; startup must survive
+    except Exception:  # noqa: BLE001  # pragma: no cover - defensive; startup must survive
         return False
     if active:
         logging.getLogger(__name__).info(
