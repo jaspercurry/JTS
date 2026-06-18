@@ -74,6 +74,20 @@ logger = logging.getLogger(__name__)
 # stays single-sourced in home_assistant.py.
 _HA_TOOL_TIMEOUT_SEC = DEFAULT_READ_TIMEOUT_SEC + 5.0
 
+HOME_ASSISTANT_LLM_DESCRIPTION = (
+    "Send a natural-language smart-home request to Home Assistant. Call for "
+    "device control, area commands, scenes/scripts, custom household sentence "
+    "triggers, and device state queries. Pass the user's phrase close to "
+    "verbatim. Do NOT call for weather (get_weather), music (Spotify or "
+    "transport tools), time/date (get_current_time), transit, timers, "
+    "calendar/email, general conversation, or world knowledge. Consequential "
+    "actions such as unlocking, disarming, or opening a garage/gate/door may "
+    "return needs_confirmation and are NOT done in that call; ask "
+    "spoken_response and call home_assistant_confirm only after a clear yes in "
+    "a later turn. On success speak spoken_response exactly; on failure briefly "
+    "summarize error_detail. Skip the preamble."
+)
+
 # How long a pending consequential action waits for the user's spoken
 # confirmation before it expires. Long enough for "Do you want me to…?"
 # → user reply, short enough that a stale pending can't execute if the
@@ -189,6 +203,7 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
         log_args=False,
         labels=("smart-home", "home-assistant"),
         consequential=True,
+        llm_description=HOME_ASSISTANT_LLM_DESCRIPTION,
     )
     async def home_assistant(query: str) -> dict:
         """Send a natural-language smart-home request to Home Assistant.

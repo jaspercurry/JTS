@@ -111,6 +111,17 @@ GET_WEATHER_DESCRIPTION = dedent(
     """,
 ).strip()
 
+GET_WEATHER_LLM_DESCRIPTION = (
+    "Return weather for the default/home area or a named place: current "
+    "conditions, today/tomorrow, hourly 7-day forecast, daily 14-day forecast, "
+    "sunrise/sunset, and next rain window. Call for weather, temperature, "
+    "rain, sunrise, or sunset questions. Omit location for the speaker's "
+    "default area; when the user names a place, pass the full spoken place "
+    "with qualifiers. Use next_rain_window for rain timing and quote both "
+    "start and end, or say no rain is expected. If spoken_error is present, "
+    "say that briefly."
+)
+
 
 def make_weather_tools(weather) -> list[Tool]:
     """Build weather tools backed by a WeatherClient. Single tool surface
@@ -126,6 +137,7 @@ def make_weather_tools(weather) -> list[Tool]:
             definition=ToolDefinition(
                 name="get_weather",
                 description=GET_WEATHER_DESCRIPTION,
+                llm_description=GET_WEATHER_LLM_DESCRIPTION,
                 parameters={
                     "type": "object",
                     "properties": {"location": {"type": "string"}},

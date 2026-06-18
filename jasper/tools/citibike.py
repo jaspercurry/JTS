@@ -23,6 +23,18 @@ from . import tool
 logger = logging.getLogger(__name__)
 
 
+GET_CITIBIKE_STATUS_LLM_DESCRIPTION = (
+    "Return live Citi Bike availability for the speaker's saved NYC/Jersey "
+    "City/Hoboken stations. Call fresh for Citi Bike, bikeshare, available "
+    "bike, e-bike, or dock questions. station_label is optional; empty reports "
+    "all saved stations, otherwise pass the user's spoken station phrase. "
+    "Speak tight per-station counts; say 'no' instead of zero, respect "
+    "ebike_only_mode, and report offline/missing/no_match states. Mention "
+    "docks only when asked, full, or only 1-3 are open. On error, speak the "
+    "error verbatim."
+)
+
+
 def make_citibike_tools(client: CitiBikeClient | None):
     """Build the citi-bike status tool backed by a CitiBikeClient.
 
@@ -32,7 +44,10 @@ def make_citibike_tools(client: CitiBikeClient | None):
     if client is None or not client.enabled:
         return []
 
-    @tool(labels=("transit", "nyc", "bikeshare"))
+    @tool(
+        labels=("transit", "nyc", "bikeshare"),
+        llm_description=GET_CITIBIKE_STATUS_LLM_DESCRIPTION,
+    )
     async def get_citibike_status(station_label: str = "") -> dict:
         """Return live Citi Bike availability for the speaker's
         saved stations.

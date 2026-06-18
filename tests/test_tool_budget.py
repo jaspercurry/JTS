@@ -19,10 +19,22 @@ from jasper.tools.citibike import make_citibike_tools
 from jasper.tools.packs import ToolDeps, register_packs
 from jasper.tools.subway import make_subway_tools
 
-# ~8.2k tokens today; 13k leaves clear headroom under OpenAI Realtime's
-# 16,384 instructions+tools ceiling while still catching a runaway
-# addition. chars/4 estimate, descriptions only.
-MODEL_FACING_DESCRIPTION_TOKEN_BUDGET = 13_000
+# After the Phase 1.6 representative llm_description pass, the full 29-tool
+# registry should stay around ~4.1k estimated description tokens. 6k leaves
+# room for careful additions while catching a regression to the old ~8.5k
+# footprint. chars/4 estimate, descriptions only.
+MODEL_FACING_DESCRIPTION_TOKEN_BUDGET = 6_000
+
+LLM_DESCRIPTION_TOOLS = {
+    "get_current_time",
+    "get_weather",
+    "get_subway_arrivals",
+    "get_bus_arrivals",
+    "get_citibike_status",
+    "spotify_play",
+    "home_assistant",
+    "flag_recent_issue",
+}
 
 
 def _full_registry() -> ToolRegistry:
@@ -64,3 +76,37 @@ def test_model_facing_descriptions_stay_under_budget():
         f"{MODEL_FACING_DESCRIPTION_TOKEN_BUDGET}-token budget. "
         "Trim a docstring or set a shorter @tool(llm_description=...)."
     )
+
+
+def test_representative_tools_keep_rich_docs_and_short_model_text():
+    reg = _full_registry()
+
+    for name in LLM_DESCRIPTION_TOOLS:
+        t = reg.get(name)
+        assert t is not None, name
+        assert t.llm_description, name
+        assert t.description != t.model_facing_description(), name
+        assert len(t.model_facing_description()) < len(t.description), name
+
+
+def test_safety_and_routing_phrases_remain_model_facing():
+    reg = _full_registry()
+
+    ha = reg.get("home_assistant").model_facing_description()
+    assert "Do NOT call for weather (get_weather)" in ha
+    assert "Consequential actions" in ha
+    assert "are NOT done in that call" in ha
+    assert "home_assistant_confirm only after a clear yes" in ha
+
+    weather = reg.get("get_weather").model_facing_description()
+    assert "Call for weather, temperature, rain, sunrise, or sunset" in weather
+    assert "Omit location for the speaker's default area" in weather
+    assert "pass the full spoken place with qualifiers" in weather
+
+    for name in (
+        "get_subway_arrivals",
+        "get_bus_arrivals",
+        "get_citibike_status",
+    ):
+        desc = reg.get(name).model_facing_description()
+        assert "Call fresh" in desc, name

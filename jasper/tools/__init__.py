@@ -11,14 +11,15 @@ registry then serializes the definition to the provider-specific shape:
   ``{type: "function", name, description, parameters}``. Grok's
   voice agent inherits this shape unchanged.
 
-The LLM-facing description for each tool is the explicit
-``ToolDefinition.description`` or, for ``@tool`` callables, the
-function's full cleaned docstring (``build_tool`` sends
-``inspect.getdoc(fn).strip()`` verbatim). Per-tool conditional rules —
-when to call, when NOT to call, response shape, voice-answer style — live
-there and are sent to the model with the tool. Engineer-only notes
-(implementation details, TODOs) belong in ``#`` comments or this module
-docstring, NOT in model-facing tool descriptions.
+The rich ``ToolDefinition.description`` (or a decorated callable's full
+cleaned docstring) is the human source of truth. The LLM-facing
+description is ``Tool.model_facing_description()``: user override first,
+then an optional short ``llm_description``, then the rich description as
+the default. Per-tool conditional rules — when to call, when NOT to call,
+response shape, voice-answer style — must still be preserved in whichever
+text the model sees. Engineer-only notes (implementation details, TODOs)
+belong in ``#`` comments or this module docstring, NOT in tool
+descriptions.
 
 When adding or editing a tool, read ``docs/HANDOFF-prompting.md``
 first — it covers tool description style, where conditional rules
@@ -230,15 +231,12 @@ class ToolDefinition:
     # the start line still shows shape without household utterances.
     log_args: bool = True
     # Optional model-facing description override. When None (default),
-    # the serializers emit the full docstring `description` — so NO
-    # shipped tool's model-facing text changes. Set via
-    # @tool(llm_description="...") to send the model a SHORTER text than
-    # the engineer-facing docstring. The docstring stays the human
-    # source of truth; the model-facing text — this override when set,
-    # else the docstring — is what BOTH the serializers and the
-    # manifest's `description` emit (they agree until a tool sets this).
-    # Mass-migrating the 28 tools to short llm_descriptions is a later,
-    # eval-gated follow-up, NOT this change.
+    # the serializers emit the rich `description`. Set via
+    # @tool(llm_description="...") or direct ToolDefinition construction
+    # to send the model a SHORTER text than the engineer-facing description.
+    # The rich description stays the human source of truth; the
+    # model-facing text — this override when set, else the rich description
+    # — is what BOTH the serializers and the manifest's `description` emit.
     llm_description: str | None = None
     # User-edited override loaded from /var/lib/jasper/tool_prompt_overrides.json.
     # This takes precedence over the code default at runtime, but the code
@@ -550,10 +548,9 @@ def tool(
     legitimately slow (e.g. an LLM-backed Home Assistant agent).
 
     `llm_description` overrides the MODEL-FACING description only. None
-    (default) sends the model the full docstring `description` — so no
-    shipped tool's model-facing text changes. Set it to a shorter string
-    when the engineer-facing docstring is longer than the model needs;
-    the docstring stays the source of truth for humans and the manifest.
+    (default) sends the model the full docstring `description`. Set it to
+    a shorter string when the engineer-facing docstring is longer than the
+    model needs; the docstring stays the source of truth for humans.
 
     `labels` are free-form catalog tags (e.g. ("transit", "nyc",
     "subway")) for the future tools UI to sort/filter/search on. They are
@@ -596,14 +593,13 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     """Build a `Tool` from a decorated function.
 
     `@tool(...)` is sugar for a `ToolDefinition` plus a `PythonExecutor`.
-    The full cleaned
-    docstring becomes the LLM-facing description — when-to-call
-    guidance, response shape, voice-answer style, and conditional
-    output rules all live in the docstring and are sent to the
-    model verbatim (see docs/HANDOFF-prompting.md for the
-    rationale). Engineer-only notes (dev TODOs, implementation
-    details) belong in `#` comments or the module docstring, not
-    in the tool's function docstring.
+    The full cleaned docstring becomes the rich `description`; the
+    LLM-facing description is either a shorter `llm_description` override
+    or that full docstring. When-to-call guidance, response shape,
+    voice-answer style, and conditional output rules must live in the text
+    the model sees (see docs/HANDOFF-prompting.md for the rationale).
+    Engineer-only notes (dev TODOs, implementation details) belong in `#`
+    comments or the module docstring, not in the tool's function docstring.
 
     This does NOT validate or coerce the tool's return shape. The
     JTS upstream-failure contract (a tool returns

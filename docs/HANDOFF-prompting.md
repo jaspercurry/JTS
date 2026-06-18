@@ -571,8 +571,9 @@ shorter `@tool(llm_description="...")`, and `build_tool` then uses that
 instead of the docstring for the code default. The override exists to keep a
 verbose engineer-facing docstring out of the realtime instructions+tools
 token budget (OpenAI Realtime caps that at 16,384 tokens; the 29 shipped
-descriptions already total ~8.2k). No shipped tool sets it today; trimming
-verbose tools to a short `llm_description` is a later, eval-gated step.
+descriptions measured ~8.5k before the first trimming pass). A representative
+batch of shipped tools now sets it; add more only with focused tests that
+preserve routing and safety phrases.
 
 There is one runtime layer above the code default: user-edited prompt
 overrides saved by `/tools/`. `jasper-voice` reads

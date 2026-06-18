@@ -309,8 +309,12 @@ grows.
    and order. `ToolPack` remains a compatibility alias for older in-repo
    references.
 2. **Model-facing description seam.** `llm_description` lets a tool send a
-   shorter model prompt while keeping the full human docstring. The token
-   budget check keeps the convention honest as tools are added.
+   shorter model prompt while keeping the full human docstring. The first
+   representative Phase 1.6 pass (2026-06-18) covered time, weather, NYC
+   transit, `spotify_play`, `home_assistant`, and diagnostics, reducing the
+   full-registry model-facing description estimate from 8,502 to 3,908 tokens
+   (chars/4, descriptions only). The token budget check keeps the convention
+   honest as tools are added.
 3. **Derived manifest.** `Tool.to_manifest()` and
    `ToolRegistry.to_manifest()` emit a provider-neutral record in
    registration order. Today it is derived from code; tomorrow it is the

@@ -47,6 +47,13 @@ GET_CURRENT_TIME_DESCRIPTION = dedent(
     """,
 ).strip()
 
+GET_CURRENT_TIME_LLM_DESCRIPTION = (
+    "Return fresh local date, time, and weekday for the speaker. Call for "
+    "questions about the current time, day, or date; the model's session-open "
+    "clock can be stale. Takes no arguments. Speak naturally and omit the "
+    "timezone unless the user asks."
+)
+
 
 def make_time_tools() -> list[Tool]:
     """Return the time-tool list (currently one).
@@ -68,6 +75,7 @@ def make_time_tools() -> list[Tool]:
             definition=ToolDefinition(
                 name="get_current_time",
                 description=GET_CURRENT_TIME_DESCRIPTION,
+                llm_description=GET_CURRENT_TIME_LLM_DESCRIPTION,
                 parameters={"type": "object", "properties": {}},
                 labels=("time", "utility"),
             ),

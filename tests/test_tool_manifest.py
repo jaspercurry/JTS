@@ -17,6 +17,17 @@ from jasper.tools.citibike import make_citibike_tools
 from jasper.tools.packs import ToolDeps, register_packs
 from jasper.tools.subway import make_subway_tools
 
+SELECTED_LLM_DESCRIPTION_TOOLS = {
+    "get_current_time",
+    "get_weather",
+    "get_subway_arrivals",
+    "get_bus_arrivals",
+    "get_citibike_status",
+    "spotify_play",
+    "home_assistant",
+    "flag_recent_issue",
+}
+
 
 def _full_registry() -> ToolRegistry:
     transit = []
@@ -62,6 +73,18 @@ def test_manifest_entries_are_no_loss():
         assert entry["compatibility"]["providers"] == expected_providers
         assert entry["timeout"] == t.timeout
         assert entry["labels"] == list(t.labels)
+
+
+def test_manifest_uses_short_model_descriptions_for_selected_real_tools():
+    reg = _full_registry()
+    by_name = {e["name"]: e for e in reg.to_manifest()}
+
+    for name in SELECTED_LLM_DESCRIPTION_TOOLS:
+        t = reg.get(name)
+        assert t is not None
+        assert t.description != t.model_facing_description()
+        assert by_name[name]["description"] == t.model_facing_description()
+        assert by_name[name]["description"] != t.description
 
 
 def test_manifest_providers_are_sorted_deterministically():
