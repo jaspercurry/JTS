@@ -183,7 +183,7 @@ def main() -> int:
                 continue
             try:
                 m = score_wav(model, score_key, wav)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 print(f"  [err]  {cond}/{fname}: {exc}", file=sys.stderr)
                 continue
             row = {

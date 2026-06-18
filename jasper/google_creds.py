@@ -233,7 +233,7 @@ def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None 
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
         except OSError:

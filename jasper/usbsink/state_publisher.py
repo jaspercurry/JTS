@@ -244,7 +244,7 @@ class StatePublisher:
             # see it without privilege.
             os.chmod(tmp_path, 0o644)
             os.replace(tmp_path, self._state_path)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Tidy up the tempfile on any failure.
             try:
                 os.unlink(tmp_path)

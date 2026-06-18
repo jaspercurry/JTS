@@ -306,10 +306,8 @@ def test_literal_enum_rides_through_both_serializers():
 
 def test_real_spotify_play_kind_serializes_without_error():
     """Smoke check on the shipped spotify_play tool: its serialized
-    schema must always include a `kind` property. (The tool currently
-    annotates `kind` as a bare `str`, so no enum is emitted yet — this
-    test guards that enrichment stays backward-compatible and the tool
-    keeps serializing cleanly.)"""
+    schema must always include a `kind` enum, guarding the Literal
+    enrichment on the production tool's signature."""
     from jasper.tools.spotify import make_spotify_tools
 
     reg = ToolRegistry()
@@ -321,6 +319,9 @@ def test_real_spotify_play_kind_serializes_without_error():
     play = reg.get("spotify_play")
     assert play is not None
     assert "kind" in play.parameters["properties"]
+    assert play.parameters["properties"]["kind"]["enum"] == [
+        "auto", "artist", "track", "album", "playlist",
+    ]
 
 
 # ---------------------------------------------------------------------------

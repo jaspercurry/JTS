@@ -3011,14 +3011,17 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    check: `@dependabot rebase` (or re-push) to get a fresh check set,
    then merge.
 
-7. **Don't re-run the default ruff cleanup — it's done.** `main` is clean
-   under the committed `[tool.ruff]` config (default `E`/`F` rules; `E701`/
-   `E731`/`E402` intentionally ignored; dbus `F821` per-file-ignored). A
-   *broader* pass (`--select I,UP,B`, ~hundreds of mostly import-sort items
-   plus a few real `B`-rule signals) is a separate, deliberate decision — if
-   taken, it's one fast atomic autofix PR landed in a quiet `main` window,
-   never a long-lived branch. `ruff check . --select I,UP,B --statistics`
-   shows the current latent count.
+7. **Don't re-run the committed ruff cleanup — it's done.** `main` is clean
+   under the committed `[tool.ruff]` bug-catching floor: Pyflakes `F`, Ruff's
+   default pycodestyle subset (`E4`, `E7`, `E9`), and blind-except `BLE`.
+   `E701`/`E731`/`E402` remain intentionally ignored, and dbus `F821` stays
+   per-file-ignored. Existing broad-except suppressions are frozen by
+   `tests/test_lint_contracts.py`; lowering that count is welcome, raising it
+   means new suppression debt landed. A *broader* pass (`--select I,UP,B`,
+   ~hundreds of mostly import-sort items plus a few real `B`-rule signals) is
+   a separate, deliberate decision — if taken, it's one fast atomic autofix PR
+   landed in a quiet `main` window, never a long-lived branch.
+   `ruff check . --select I,UP,B --statistics` shows the current latent count.
 
 8. **Coordinate across agents.** Because Claude and Codex both touch this
    repo, two sessions can independently make the same change (it has already

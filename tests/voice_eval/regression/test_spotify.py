@@ -47,6 +47,55 @@ def _playback_skip() -> bool:
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))
+async def test_queue_track_routes_to_spotify_queue(
+    harness, trial: int,
+) -> None:
+    """Asks 'queue up No Surprises by Radiohead'. The model should call
+    `spotify_queue`, not `spotify_play`, and the tool should add a track
+    whose name matches the requested title."""
+    if _playback_skip():
+        pytest.skip(
+            "voice-eval: JASPER_VOICE_EVAL_SKIP_PLAYBACK=1 set — "
+            "skipping playback-affecting scenario",
+        )
+
+    result = await harness.ask("queue up No Surprises by Radiohead")
+
+    # 1. Trajectory — queue request maps to spotify_queue only.
+    queue_call = result.tool_call("spotify_queue")
+    play_call = result.tool_call("spotify_play")
+    assert queue_call is not None, (
+        f"[trial {trial}] model did not call spotify_queue. "
+        f"Tools observed: "
+        f"{[r.name for r in result.tool_call_records] or 'none'}. "
+        f"See transcript: {result.transcript_path}"
+    )
+    assert play_call is None, (
+        f"[trial {trial}] model called spotify_play for a queue request. "
+        f"See transcript: {result.transcript_path}"
+    )
+    if queue_call.error:
+        pytest.fail(
+            f"[trial {trial}] spotify_queue raised: {queue_call.error}. "
+            f"See transcript: {result.transcript_path}",
+        )
+
+    # 2. Outcome — tool reports successful queueing.
+    res = queue_call.result or {}
+    assert res.get("ok"), (
+        f"[trial {trial}] spotify_queue did not return ok=True. "
+        f"Result: {res!r}. See transcript: {result.transcript_path}"
+    )
+
+    # 3. Reality — queued title matches the requested track title.
+    queued = (res.get("queued") or "").lower()
+    assert "no surprises" in queued, (
+        f"[trial {trial}] spotify_queue queued {res.get('queued')!r}, "
+        f"not 'No Surprises'. See transcript: {result.transcript_path}"
+    )
+
+
+@pytest.mark.parametrize("trial", range(PASS_K))
 async def test_play_owned_playlist_covers(harness, trial: int) -> None:
     """Asks 'play my Covers playlist' — the model should call
     `spotify_play` with `kind="playlist"` and `query="Covers"`,

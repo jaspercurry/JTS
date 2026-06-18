@@ -269,7 +269,7 @@ def write_artifact(
             f.write(body)
         os.chmod(tmp_name, file_mode)
         os.replace(tmp_name, path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp_name)
         except OSError:
@@ -303,7 +303,7 @@ def write_latest_pointer(
             f.write(body)
         os.chmod(tmp_name, file_mode)
         os.replace(tmp_name, path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp_name)
         except OSError:

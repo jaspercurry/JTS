@@ -768,7 +768,7 @@ class GeminiLiveConnection:
             self._active_turn = turn
             try:
                 await self._send_activity_start()
-            except BaseException:
+            except BaseException:  # noqa: BLE001
                 # The turn never started — roll the slot back, or every
                 # later acquire_turn() gets "a turn is already active"
                 # until a reconnect happens to clear it (observed on the
@@ -1009,7 +1009,7 @@ class GeminiLiveConnection:
                 INITIAL_CONNECT_BACKOFF_SCHEDULE,
                 phase="initial-connect",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
             raise
@@ -1128,7 +1128,7 @@ class GeminiLiveConnection:
         cm = connect_call(model=self._model, config=config)
         try:
             session = await cm.__aenter__()
-        except Exception:
+        except Exception:  # noqa: BLE001
             # __aenter__ failed (e.g. 409, network error). The CM is in
             # an indeterminate state; don't leak the reference. Don't
             # set self._session_cm at all so the supervisor's next

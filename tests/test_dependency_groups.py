@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS_WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
+SUPPLY_CHAIN_DOC = ROOT / "docs" / "HANDOFF-supply-chain.md"
 
 
 def _pyproject() -> dict:
@@ -28,6 +29,21 @@ def test_ci_installs_full_runtime_with_dev_extra() -> None:
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
 
     assert "pip install -e '.[full,dev]'" in workflow
+
+
+def test_python_resolution_artifacts_are_committed_and_documented() -> None:
+    """Local dev and Pi deploys intentionally use different Python
+    resolution artifacts; keep both present and keep the canonical doc
+    from drifting back to the old "choose later" language."""
+
+    assert (ROOT / "uv.lock").is_file()
+    assert (ROOT / "deploy" / "constraints-pi.txt").is_file()
+
+    doc = SUPPLY_CHAIN_DOC.read_text(encoding="utf-8")
+    assert "uv.lock" in doc
+    assert "deploy/constraints-pi.txt" in doc
+    assert "choose one shared artifact" not in doc
+    assert "does not currently commit a shared Python lock artifact" not in doc
 
 
 def test_linux_only_c_extensions_have_platform_markers() -> None:

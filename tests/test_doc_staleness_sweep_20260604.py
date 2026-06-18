@@ -107,6 +107,11 @@ def test_wake_telemetry_doc_uses_1gb_not_500mb(monkeypatch):
     assert m, "HANDOFF-wake-telemetry.md is missing its Last verified footer"
     assert m.group(1) >= "2026-06-05"
 
+    import jasper.wake_events as we
+
+    assert we.DEFAULT_MAX_AUDIO_BYTES == 1024 * 1024 * 1024
+    assert "500 MB cap" not in (we.__doc__ or "")
+
 
 def test_correction_init_points_at_real_apply_path():
     """correction/__init__.py item 6: the public-surface comment names

@@ -1080,13 +1080,13 @@ class DirectDacTonePlaybackBackend:
             completed = self.runner(argv, duration_sec + APLAY_TIMEOUT_PAD_SEC)
             if completed.returncode != 0:
                 raise RuntimeError(f"aplay failed: {_completed_detail(completed)}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             play_error = exc
         finally:
             if stopped:
                 try:
                     self._restore_outputd_service()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     restart_issue = _issue(
                         "blocker",
                         "outputd_restart_failed_after_diagnostic_tone",
@@ -1126,7 +1126,7 @@ class DirectDacTonePlaybackBackend:
             self._restore_outputd_service()
             status = "stopped"
             issues: list[dict[str, str]] = []
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             status = "failed"
             issues = [
                 _issue(
@@ -1304,7 +1304,7 @@ def start_tone_playback(
             playback_id=playback_id,
             now_epoch=now_epoch,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         detail = _exception_summary(exc)
         message = (
             "tone playback backend failed; successful audio emission "

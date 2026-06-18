@@ -118,13 +118,26 @@ It is tracked under the Python dependency accepted gap because mirroring it
 requires a `pyproject.toml` dependency URL change, not an install.sh
 source-build URL change.
 
-Python dependency determinism is partially started but not complete.
-Several direct runtime dependencies are exact-pinned in
-`pyproject.toml`, other direct dependencies are bounded where upstream
-compatibility matters, and [CONTRIBUTING.md](../CONTRIBUTING.md)
-recommends `uv sync` for local contributor setup. The repository does
-not currently commit a shared Python lock artifact, and deploy/CI still
-install from `pyproject.toml` through pip resolution.
+Python dependency determinism is split by runtime target:
+
+- **Laptop/local development** uses the committed `uv.lock` with
+  [CONTRIBUTING.md](../CONTRIBUTING.md)'s `uv sync` flow. This pins the
+  developer environment without pretending it is a Raspberry Pi wheel
+  lock.
+- **Pi deploys** use the committed, Pi-generated
+  `deploy/constraints-pi.txt` when present. `install.sh` passes it to
+  pip via `-c` for open-range runtime installs, replaying a reviewed
+  on-device resolve while still letting exact-pinned bootstrap installs
+  (`pip`, `wheel`, `openwakeword --no-deps`) stay simple.
+- **GitHub Actions** still installs from `pyproject.toml` on Ubuntu
+  x86_64 with pip. That is intentional for the hardware-free CI slice:
+  the Pi constraints file is architecture-specific, and `uv.lock` is
+  the local-development lock rather than a deploy promise.
+
+This is one dependency-management story with two platform-specific
+resolution artifacts, not the old "choose a lock later" gap. The
+remaining Python gap is hash-level verification for PyPI artifacts and
+`jasper_aec3` build-isolation dependencies.
 
 The two PlatformIO firmware projects now pin their shared git library
 dependency by commit and use exact top-level registry versions rather
@@ -151,14 +164,13 @@ These are real and intentionally left for later slices:
   Raspberry Pi OS / Debian repositories. Apt signatures protect
   transport and repository integrity, but installs are not snapshot-
   pinned.
-- **Python runtime/build dependencies.** Deploy still uses pip
-  resolution from `pyproject.toml`, and `jasper_aec3` build isolation
-  resolves `jasper_aec3/pyproject.toml` requirements. Do not duplicate
-  the local-development `uv sync` story with an unrelated deploy-only
-  lock. Python lock adoption is deliberately deferred while `main` is
-  moving quickly; when resumed, choose one shared artifact (`uv.lock` or
-  generated hash requirements), commit it, and make install/CI consume
-  it deliberately.
+- **Python hash-level verification.** Local development has `uv.lock`
+  and Pi deploys have `deploy/constraints-pi.txt`, but pip still
+  downloads PyPI wheels/sdists without hash checking, and `jasper_aec3`
+  build isolation still resolves `jasper_aec3/pyproject.toml`
+  requirements. The next supply-chain slice should add a hash-checked
+  artifact or mirror path without collapsing the local-development and
+  Pi-runtime lock stories into one misleading file.
 - **PlatformIO transitive/toolchain resolution.** Top-level firmware
   inputs are exact, but PlatformIO still consults its package registry
   for toolchains and metadata.
@@ -205,11 +217,11 @@ The active/fallback stock model is treated as runtime-critical; inactive
 stock options are optional so a transient upstream download failure does
 not block unrelated deploys.
 
-Python install determinism remains valuable, but it is intentionally not
-the next slice while `main` is changing quickly. When it comes back, it
-needs a deliberate design choice: either promote `uv.lock` to the shared
-source of truth or generate hash requirements from it, then update
-install/CI together so there is only one dependency-management story.
+Python install determinism now has explicit artifacts for the two places
+that need them today: `uv.lock` for local contributor environments and
+`deploy/constraints-pi.txt` for Pi deploys. Future work should focus on
+hash verification/mirroring for Python artifacts, not on pretending an
+x86_64 developer lock and an arm64 appliance resolve are interchangeable.
 
 The 2026-06-01 install-productization slice removed the base install's
 direct `git` fetches for `nqptp`, `shairport-sync`,
@@ -228,4 +240,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-06-12
+Last verified: 2026-06-18

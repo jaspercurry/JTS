@@ -794,7 +794,7 @@ def test_make_server_accepts_prebound_socket(backend) -> None:
             assert server.server_address == s.getsockname()
         finally:
             server.server_close()
-    except Exception:
+    except Exception:  # noqa: BLE001
         s.close()
         raise
 

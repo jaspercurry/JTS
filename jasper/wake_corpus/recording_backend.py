@@ -237,7 +237,7 @@ class RecordingTask:
                     UdpMicCapture(port=port),
                 )
                 self._captures[leg] = cap
-        except Exception:
+        except Exception:  # noqa: BLE001
             # If any leg fails to bind, clean up the ones that succeeded
             # so the user can retry without a "port already in use"
             # cascade on the next start.
@@ -282,7 +282,7 @@ class RecordingTask:
                 await self._task
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("recording task raised on cancel: %s", e)
         self._task = None
 
@@ -297,7 +297,7 @@ class RecordingTask:
         if self._stack is not None:
             try:
                 await self._stack.__aexit__(None, None, None)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("cleanup raised: %s", e)
             self._stack = None
         self._bridge_stats_stop = read_bridge_stats_snapshot()
@@ -1115,7 +1115,7 @@ class RecordingBackend:
         # transition into the recording state.
         try:
             self._submit(task.start())
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             with self._lock:
                 self._starting_clip_id = None
             raise StateError(
@@ -1207,7 +1207,7 @@ class RecordingBackend:
     def _auto_stop_safe(self) -> None:
         try:
             self.stop_recording(auto=True)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("auto-stop failed: %s", e)
 
     def stop_recording(
