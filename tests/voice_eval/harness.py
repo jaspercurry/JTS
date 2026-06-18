@@ -82,16 +82,7 @@ from jasper.google_creds import build_google_clients
 from jasper.renderer import RendererClient
 from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry, UntrustedContentMonitor
-from jasper.tools.audio import make_audio_tools
-from jasper.tools.calendar import make_calendar_tools
-from jasper.tools.diagnostic import make_diagnostic_tools
-from jasper.tools.gmail import make_gmail_tools
-from jasper.tools.home_assistant import make_home_assistant_tools
-from jasper.tools.spotify import make_spotify_tools
-from jasper.tools.time import make_time_tools
-from jasper.tools.timer import make_timer_tools
-from jasper.tools.transport import make_transport_tools
-from jasper.tools.weather import make_weather_tools
+from jasper.tools.packs import ToolDeps, register_packs
 from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_persistence import VolumePersistence
@@ -220,8 +211,9 @@ def _build_test_registry(
     tools). On a laptop these tools register but their scenarios skip
     — collection still works everywhere.
 
-    As new tools land, extend this builder alongside the matching
-    scenario file. The model only sees what's registered."""
+    As new tools land, add them through `jasper.tools.packs.TOOL_PACKS`
+    alongside the matching scenario file. The model only sees what's
+    registered."""
     registry = ToolRegistry()
     # Shared untrusted-content monitor, exactly as the daemon wires it. The
     # gmail/calendar tools stamp it; the home_assistant consequential-action
@@ -240,22 +232,20 @@ def _build_test_registry(
     # coordinator can't read a level. Exposed via test_state so a
     # scenario can read+restore the level without a second paid call.
     volume_persistence = VolumePersistence(cfg.volume_state_path)
-    volume_renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
+    renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
     try:
         from jasper.voice_daemon import _build_router
-        volume_router = _build_router(cfg)
+        router = _build_router(cfg)
     except Exception as e:  # noqa: BLE001
-        logger.warning("voice-eval: volume spotify router build failed: %r", e)
-        volume_router = None
+        logger.warning("voice-eval: spotify router build failed: %r", e)
+        router = None
     volume_coordinator = VolumeCoordinator(
         camilla=CamillaController(cfg.camilla_host, cfg.camilla_port),
         persistence=volume_persistence,
-        backend=volume_renderer,
-        spotify_router=volume_router,
+        backend=renderer,
+        spotify_router=router,
         spotify_device_name=cfg.spotify_device_name,
     )
-    for fn in make_audio_tools(volume_coordinator):
-        registry.register(fn)
     if test_state is not None:
         test_state["volume_coordinator"] = volume_coordinator
 
@@ -267,12 +257,6 @@ def _build_test_registry(
         default_lon=cfg.weather_default_lon,
         default_name=cfg.weather_default_display_name,
     )
-    for fn in make_weather_tools(weather):
-        registry.register(fn)
-
-    # Time — pure datetime.now(). No backend, no failure modes.
-    for fn in make_time_tools():
-        registry.register(fn)
 
     # Timers — SQLite-backed scheduler in a tmp DB. No on_fire /
     # pre_render hooks; the eval suite tests CRUD shape, not the
@@ -281,8 +265,6 @@ def _build_test_registry(
     timer_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     timer_db.close()
     timer_scheduler = TimerScheduler(db_path=timer_db.name)
-    for fn in make_timer_tools(timer_scheduler):
-        registry.register(fn)
     if test_state is not None:
         test_state["timer_scheduler"] = timer_scheduler
         test_state["timer_db_path"] = timer_db.name
@@ -295,36 +277,21 @@ def _build_test_registry(
     # which is exactly the drift the hardware-free
     # `tests/test_voice_eval_registry.py` exists to catch.)
     active = transit.active_transit(os.environ)
-    for fn in active.tools:
-        registry.register(fn)
     if test_state is not None:
         # Own the lifecycle: ActiveTransit holds built clients (BusClient's
         # httpx pool today). Stash it so aclose() reclaims them — discarding
         # it here leaked the pool across every harness teardown.
         test_state["active_transit"] = active
 
-    # Spotify — has playback side-effects. We register the tools
-    # whenever the router can be built; scenarios that exercise
-    # playback gate themselves on `JASPER_VOICE_EVAL_SKIP_PLAYBACK`.
+    # Spotify — has playback side-effects. The production pack registry
+    # declares Spotify/transport tools even when the router is unavailable;
+    # scenarios that exercise playback gate themselves on
+    # `JASPER_VOICE_EVAL_SKIP_PLAYBACK`.
     # Routing through the real OAuth tokens is essential for the
     # Covers-playlist scenario to be meaningful — there's no
     # play-act mode for "did the resolver find the playlist".
-    try:
-        from jasper.voice_daemon import _build_router
-        router = _build_router(cfg)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("voice-eval: spotify router build failed: %r", e)
-        router = None
-
-    renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
-
-    if router is not None:
-        for fn in make_transport_tools(renderer, router):
-            registry.register(fn)
-        for fn in make_spotify_tools(
-            router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
-        ):
-            registry.register(fn)
+    # With router=None, calls fail with a setup/re-link prompt, matching
+    # production.
 
     # Calendar + Gmail — Google API clients, read-only. Same gate as
     # the daemon's _build_registry: requires CLIENT_ID/SECRET at the
@@ -337,11 +304,6 @@ def _build_test_registry(
     google_clients = build_google_clients(cfg)
     if test_state is not None:
         test_state["google_clients"] = google_clients
-    if google_clients is not None and google_clients.list_account_names():
-        for fn in make_calendar_tools(google_clients, monitor=untrusted_monitor):
-            registry.register(fn)
-        for fn in make_gmail_tools(google_clients, monitor=untrusted_monitor):
-            registry.register(fn)
 
     # Home Assistant — single tool surface that relays the utterance to
     # HA's conversation pipeline, so a call performs a REAL smart-home
@@ -352,9 +314,6 @@ def _build_test_registry(
     # re-deriving config. See jasper/tools/home_assistant.py.
     from jasper.home_assistant import build_ha_client
     ha = build_ha_client(cfg)
-    if ha is not None:
-        for fn in make_home_assistant_tools(ha, monitor=untrusted_monitor):
-            registry.register(fn)
     if test_state is not None:
         test_state["ha_client"] = ha
 
@@ -368,15 +327,32 @@ def _build_test_registry(
     wake_events_dir = tempfile.mkdtemp(prefix="voice-eval-wake-")
     wake_event_store = WakeEventStore(wake_events_dir)
     wake_event_store.open()
-    for fn in make_diagnostic_tools(wake_event_store):
-        registry.register(fn)
     if test_state is not None:
         test_state["wake_event_store"] = wake_event_store
         test_state["wake_events_dir"] = wake_events_dir
 
-    # Future: get_current_time tool registration goes here once the
-    # tool lands. Until then, the time scenario fails meaningfully
-    # ("model did not call get_current_time" — which IS the bug).
+    deps = ToolDeps(
+        volume_coordinator=volume_coordinator,
+        renderer=renderer,
+        router=router,
+        weather=weather,
+        spotify_device_name=cfg.spotify_device_name,
+        spotify_setup_url=cfg.spotify_setup_url,
+        transit_tools=active.tools,
+        ha=ha,
+        timer_scheduler=timer_scheduler,
+        google_clients=google_clients,
+        wake_event_store=wake_event_store,
+        untrusted_monitor=untrusted_monitor,
+    )
+    # Use the production pack walk, but pass explicit empty disabled sets so
+    # evals don't inherit the household's staged /tools/ UI toggles.
+    registry.pack_outcomes = register_packs(
+        registry,
+        deps,
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+    )
 
     return registry
 

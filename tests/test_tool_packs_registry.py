@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import types
 
-from jasper.tools import ToolRegistry
+from jasper.tools import Tool, ToolDefinition, ToolRegistry, dispatch_tool
 from jasper.tools.audio import make_audio_tools
 from jasper.tools.bus import make_bus_tools
 from jasper.tools.calendar import make_calendar_tools
@@ -28,6 +28,8 @@ from jasper.tools.gmail import make_gmail_tools
 from jasper.tools.home_assistant import make_home_assistant_tools
 from jasper.tools.packs import (
     TOOL_PACKS,
+    CapabilityPack,
+    CatalogPack,
     PackOutcome,
     ToolDeps,
     ToolPack,
@@ -156,6 +158,10 @@ def test_pack_order_matches_legacy_sequence():
     assert [p.name for p in TOOL_PACKS] == LEGACY_PACK_ORDER
 
 
+def test_toolpack_is_compatibility_alias_for_capabilitypack():
+    assert ToolPack is CapabilityPack
+
+
 def test_data_driven_walk_equals_legacy_sequence():
     """The core Slice 1 gate: the data-driven walk produces a registry
     byte-identical to the hand-written legacy sequence."""
@@ -174,6 +180,66 @@ def test_data_driven_walk_equals_legacy_sequence():
     # Byte-identical ordered serialization (names, descriptions,
     # parameters, providers, timeouts, AND order — all at once).
     assert _serialize(walk_reg) == _serialize(ref_reg)
+
+
+def test_custom_capability_pack_registers_explicit_tool_boundary():
+    """A contributor/no-code-style pack can hand the registry a built
+    ToolDefinition + ToolExecutor instead of a decorated Python function.
+
+    This pins the source-neutral boundary: the pack is the copyable unit, and
+    runtime still flows through ToolRegistry + dispatch_tool."""
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, args):
+            self.calls.append(dict(args))
+            return {"echo": args["text"]}
+
+    executor = RecordingExecutor()
+    explicit = Tool(
+        definition=ToolDefinition(
+            name="contrib_echo",
+            description="Echo contributor input.",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+            labels=("contrib", "example"),
+        ),
+        executor=executor,
+    )
+    pack = CapabilityPack(
+        "contrib_echo",
+        lambda _d: [explicit],
+        category="Utilities",
+        catalog_pack=CatalogPack(
+            "contrib-echo",
+            "Contributor Echo",
+            "Example contributor capability.",
+        ),
+    )
+
+    reg = ToolRegistry()
+    outcomes = register_packs(
+        reg,
+        _full_deps(),
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+        packs=(pack,),
+    )
+
+    assert outcomes == [PackOutcome("contrib_echo", "registered", tool_count=1)]
+    assert reg.tool_packs == {"contrib_echo": "contrib_echo"}
+    assert reg.to_manifest()[0]["labels"] == ["contrib", "example"]
+
+    import asyncio
+
+    assert asyncio.run(dispatch_tool(reg, "contrib_echo", {"text": "hi"})) == {
+        "echo": "hi",
+    }
+    assert executor.calls == [{"text": "hi"}]
 
 
 def test_register_packs_records_internal_pack_for_catalog_metadata():

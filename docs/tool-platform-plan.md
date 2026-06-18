@@ -168,13 +168,15 @@ rich packs prove that complex setup and runtime state can live behind the
 same contract. `Transit` is the important reference case here, not an
 exception to hide.
 
-### 3.3 The one real structural bottleneck
-Tool assembly is **hardcoded** in `jasper/voice/daemon_main.py`
+### 3.3 The former structural bottleneck
+Tool assembly used to be **hardcoded** in `jasper/voice/daemon_main.py`
 (`_build_registry`): a fixed import block plus one register loop per
-subsystem. Transit is the only carve-out that escaped it. **Adding a
-tool family means editing core.** Generalizing this one function —
-applying the transit pattern to all tools — is the actual "modularize"
-deliverable, and it's nearly free.
+subsystem. Transit was the only carve-out that escaped it. Phase 1.5
+replaced that with `jasper.tools.packs.TOOL_PACKS`, and the next slice
+promoted those records into the explicit `CapabilityPack` contract. The
+remaining scaling rule is now local: adding a tool family should mean
+adding or extending a capability pack, not editing daemon registration,
+provider adapters, catalog internals, or central `Config`.
 
 ### 3.4 One problem is live *today*, at 29 tools
 Our tool **descriptions alone** total **~8,200 tokens** — already about
@@ -299,12 +301,13 @@ grows.
 
 **Already shipped foundation**
 1. **Data-driven pack walk.** `_build_registry` now delegates to an
-   ordered `TOOL_PACKS` registry, mirroring
+   ordered `TOOL_PACKS` registry of `CapabilityPack` records, mirroring
    `jasper/transit/active_transit`: each tool family has `build(deps)` and
    optional `gate(deps)`, and pack build is fault-isolated behind
    try/except. The before/after registry-equality assertion pins
    byte-identical tool names, schemas, descriptions, providers, timeouts,
-   and order.
+   and order. `ToolPack` remains a compatibility alias for older in-repo
+   references.
 2. **Model-facing description seam.** `llm_description` lets a tool send a
    shorter model prompt while keeping the full human docstring. The token
    budget check keeps the convention honest as tools are added.
@@ -371,34 +374,23 @@ grows.
    cannot deafen the assistant. A disabled tool simply does not register —
    the model never sees it — so there is no audible cue (it's the user's
    explicit choice, not a failure).
+6. **Explicit definition/executor/pack boundary.** `@tool(...)` now compiles
+   to a provider-neutral `ToolDefinition` plus `PythonExecutor`, while
+   `dispatch_tool()` calls the `ToolExecutor` protocol so explicit
+   definition/executor pairs flow through the same timeout/log/error
+   contract as decorated first-party functions. `CapabilityPack` is the
+   copyable unit: it owns metadata, setup-required state, build/gate logic,
+   catalog grouping, and may return either decorated functions or already
+   built `Tool` objects. The voice-eval harness now registers through the
+   same pack walk as the daemon.
 
 **Next boundary slice**
-1. **Promote an explicit `ToolDefinition`.** Today the provider-neutral
-   definition is spread across `Tool` fields populated by `build_tool`.
-   Make it a named object with the fields in §3.2. Provider serializers,
-   the catalog, manifests, prompt overrides, and token-budget checks should
-   read that definition, not decorator side channels.
-2. **Promote an explicit `ToolExecutor`.** Keep the current Python
-   function path by wrapping it in a `PythonExecutor`. `dispatch_tool()`
-   calls the executor and stays the single owner of timeout, logging,
-   redaction, scalar wrapping, error shaping, and trace events. The future
-   declarative HTTP path becomes an `HttpExecutor`, not a parallel runtime.
-3. **Make `@tool(...)` sugar over the boundary.** A decorated function
-   should compile to `ToolDefinition + PythonExecutor`. Existing tool
-   modules can keep their ergonomic authoring style, while the runtime
-   boundary becomes explicit and copyable.
-4. **Make capability packs copyable.** The current internal `ToolPack`
-   should evolve toward the full pack contract in §3.2: metadata, setup
-   gate, runtime deps/clients, definitions, executors, tests, and
-   observability. A contributor should be able to copy a pack folder,
-   change local code/config/tests, and avoid touching
-   `daemon_main.py`, provider adapters, or catalog internals.
-5. **Migrate examples across the complexity ladder.** Use `time` as the
+1. **Keep migrating examples across the complexity ladder.** Use `time` as the
    simple reference, `weather` as the API-backed reference, `spotify` /
    `playback` as source-backed references, `transit` as the deep
    wizard/config/provider-registry reference, and `home_assistant` as the
    high-risk consequential-action reference.
-6. **Gate every refactor on byte-identical behavior.** Existing 29-tool
+2. **Gate every refactor on byte-identical behavior.** Existing 29-tool
    provider schemas, manifest entries, catalog payloads, dispatch behavior,
    and registration order must stay identical unless a change is explicitly
    intentional and voice-eval/docs are updated.

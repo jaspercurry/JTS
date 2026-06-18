@@ -243,8 +243,8 @@ def _guide_html(csrf_token: str = "") -> bytes:
     <ul>
       <li>Mark third-party text tools as untrusted output.</li>
       <li>Mark real-world action tools as consequential.</li>
-      <li>Own setup at the pack level when several tools share one account or
-        backend.</li>
+      <li>Use a CapabilityPack as the copyable unit: metadata, setup,
+        runtime dependencies, tools, and tests belong together.</li>
       <li>Ship a regression scenario under tests/voice_eval/regression/.</li>
     </ul>
   </article>

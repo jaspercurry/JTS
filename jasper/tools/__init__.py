@@ -408,7 +408,7 @@ class Tool:
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
-    # Tool name -> internal ToolPack.name for registries populated by
+    # Tool name -> internal CapabilityPack.name for registries populated by
     # jasper.tools.packs.register_packs. Manual/test registries that call
     # register() directly leave this empty. The mapping is catalog metadata
     # only; provider serializers and dispatch never read it.
