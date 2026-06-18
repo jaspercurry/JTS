@@ -155,6 +155,56 @@ function activeTwoWayTopologyPayload() {
   };
 }
 
+function activeThreeWayTopologyPayload() {
+  return {
+    status: "valid",
+    hardware: {
+      physical_output_count: 3,
+      profile_id: "test-dac",
+      outputs: [
+        { index: 0, human_label: "DAC output 1" },
+        { index: 1, human_label: "DAC output 2" },
+        { index: 2, human_label: "DAC output 3" },
+      ],
+    },
+    routing: { mono_group_id: "main", main_left_group_id: null, main_right_group_id: null, subwoofer_group_ids: [] },
+    evaluation: { status: "valid" },
+    speaker_groups: [{
+      id: "main",
+      label: "Main speaker",
+      kind: "mono",
+      mode: "active_3_way",
+      position: { x: 0, y: 0, rotation_degrees: 0 },
+      channels: [
+        {
+          role: "woofer",
+          physical_output_index: 0,
+          identity_verified: true,
+          startup_muted: true,
+          protection_required: false,
+          protection_status: "not_required",
+        },
+        {
+          role: "mid",
+          physical_output_index: 1,
+          identity_verified: true,
+          startup_muted: true,
+          protection_required: false,
+          protection_status: "not_required",
+        },
+        {
+          role: "tweeter",
+          physical_output_index: 2,
+          identity_verified: true,
+          startup_muted: true,
+          protection_required: true,
+          protection_status: "software_guard_requested",
+        },
+      ],
+    }],
+  };
+}
+
 function emptyTopologyPayload() {
   return {
     artifact_schema_version: 1,
@@ -524,7 +574,7 @@ async function testActiveCrossoverFirstStepRender() {
   includes("Active crossover setup");
   includes("Choose speaker layout");
   includes("Add driver and crossover info");
-  includes("Crossover settings");
+  includes("Working setup");
   includes("Use AI to fill these settings");
   includes("DAC output assignments");
   includes("Speaker count");
@@ -545,6 +595,9 @@ async function testActiveCrossoverFirstStepRender() {
   excludes("Use software guard");
   excludes("Use quiet-start");
   excludes("Check setup");
+  excludes("saved drivers");
+  excludes("saved crossover settings");
+  excludes("Save crossover settings");
   return { activeCrossoverFirstStepRendered: true };
 }
 
@@ -805,17 +858,270 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
   await harness.flush();
   await harness.flush();
 
-  if (designSaves.length !== 1) fail("Saving crossover settings should POST once", { designSaves });
+  if (designSaves.length !== 1) fail("Updating the working setup should POST once", { designSaves });
   const saved = designSaves[0];
   const manualCandidate = saved.manual_settings.crossover_candidates[0];
   const importedCandidate = saved.driver_research.crossover_candidates[0];
   if (manualCandidate.frequency_hz !== 2100 || manualCandidate.slope_db_per_octave !== 24) {
-    fail("Visible manual crossover fields should win when saving", { saved });
+    fail("Visible manual crossover fields should win when updating", { saved });
   }
   if (importedCandidate.frequency_hz !== 4000 || importedCandidate.slope_db_per_octave !== 12) {
     fail("Imported research should still be preserved as research evidence", { saved });
   }
   return { visibleCrossoverSettingsWinOverImportedJson: true };
+}
+
+async function testWorkingSetupSummaryAvoidsStorageCounts() {
+  const draft = {
+    status: "ready_for_review",
+    operator_inputs: {
+      woofer: "Manual Woofer",
+      tweeter: "Manual Tweeter",
+    },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Manual Woofer", recommended_lowpass_hz: 2100 },
+        { role: "tweeter", model: "Manual Tweeter", do_not_test_below_hz: 1800 },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 2100,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+        confidence: "medium",
+      }],
+    },
+    summary: {
+      manual_driver_count: 2,
+      manual_crossover_candidate_count: 1,
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      status: "not_prepared",
+      summary: {},
+      groups: [],
+      issues: [],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "ready to preview",
+    "Working setup: woofer + tweeter, crossover 2.1 kHz. No filters are active yet.",
+    "Driver safety notes captured for woofer and tweeter.",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("Working setup summary should use product language", { expected, html });
+    }
+  }
+  for (const forbidden of [
+    "saved drivers",
+    "saved driver",
+    "saved crossover settings",
+    "saved settings",
+    "Save crossover settings",
+    "No filters are applied",
+  ]) {
+    if (html.includes(forbidden)) {
+      fail("Working setup summary should not expose storage/count language", { forbidden, html });
+    }
+  }
+  return { workingSetupSummaryAvoidsStorageCounts: true };
+}
+
+async function testPreparePreviewUpdatesWorkingSetupFirst() {
+  const designSaves = [];
+  const previewSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
+          manual_settings: body.manual_settings,
+          driver_research: body.driver_research,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") {
+        previewSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({
+          status: "ready_for_protected_staging",
+          summary: { ready_crossover_count: 1, blocker_count: 0 },
+          groups: [{
+            group_id: "main",
+            label: "Main speaker",
+            crossovers: [{
+              status: "ready_for_review",
+              between_roles: ["woofer", "tweeter"],
+              proposed_frequency_hz: 2100,
+              filters: [{ filter_type: "Linkwitz-Riley", slope_db_per_octave: 24 }],
+              issues: [],
+            }],
+          }],
+          issues: [],
+          permissions: { may_prepare_protected_startup_config: true },
+        }));
+      }
+      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2100");
+  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
+  for (let i = 0; i < 8; i += 1) await harness.flush();
+
+  if (designSaves.length !== 1) {
+    fail("Preparing the preview should update the working setup first", { designSaves, previewSaves });
+  }
+  if (previewSaves.length !== 1) {
+    fail("Preparing the preview should build the preview after updating", { designSaves, previewSaves });
+  }
+  const saved = designSaves[0];
+  const manualCandidate = saved.manual_settings.crossover_candidates[0];
+  if (manualCandidate.frequency_hz !== 2100) {
+    fail("Preview auto-update should persist the visible crossover point", { saved });
+  }
+  if (!harness.elements.get("status").textContent.includes(
+    "Crossover preview ready. No filters are active and no sound was played."
+  )) {
+    fail("Preview completion should keep the no-audio safety copy", {
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  return { preparePreviewUpdatesWorkingSetupFirst: true };
+}
+
+async function testPreparePreviewWaitsForInFlightWorkingSetupUpdate() {
+  const designSaves = [];
+  const previewSaves = [];
+  const pendingSave = deferred();
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return pendingSave.promise.then(() => response({
+          status: "ready_for_review",
+          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
+          manual_settings: body.manual_settings,
+          driver_research: body.driver_research,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") {
+        previewSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({ status: "ready_for_protected_staging", issues: [] }));
+      }
+      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2100");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+
+  let html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Working setup is updating before the preview.") ||
+      !/data-act="prepare-crossover-preview" disabled/.test(html)) {
+    fail("Preview should be disabled while the working setup update is in flight", { html });
+  }
+
+  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
+  await harness.flush();
+  if (designSaves.length !== 1 || previewSaves.length !== 0) {
+    fail("Preview click during an in-flight update should not double-save or prepare", {
+      designSaves,
+      previewSaves,
+      status: harness.elements.get("status").textContent,
+    });
+  }
+
+  pendingSave.resolve();
+  await harness.flush();
+  await harness.flush();
+  return { preparePreviewWaitsForInFlightWorkingSetupUpdate: true };
+}
+
+async function testPartialThreeWayWorkingSetupSummaryReadsCleanly() {
+  const draft = {
+    status: "needs_research",
+    operator_inputs: {
+      woofer: "Manual Woofer",
+      mid: "Manual Mid",
+      tweeter: "Manual Tweeter",
+    },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Manual Woofer" },
+        { role: "mid", model: "Manual Mid" },
+        { role: "tweeter", model: "Manual Tweeter", do_not_test_below_hz: 1800 },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "mid"],
+        frequency_hz: 350,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+        confidence: "medium",
+      }],
+    },
+    summary: {
+      manual_driver_count: 3,
+      manual_crossover_candidate_count: 1,
+      missing_crossover_candidate_pairs: [["mid", "tweeter"]],
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeThreeWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      status: "not_prepared",
+      summary: {},
+      groups: [],
+      issues: [],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const expected = "Working setup: woofer, midrange, tweeter. Crossovers: woofer/midrange 350 Hz. Add the remaining crossover point before previewing the active crossover.";
+  if (!html.includes(expected)) {
+    fail("Partial 3-way working setup summary should read as polished sentences", { expected, html });
+  }
+  if (html.includes(". crossovers:") || html.includes(", Crossovers:")) {
+    fail("Partial 3-way working setup summary should not contain awkward crossover punctuation", { html });
+  }
+  return { partialThreeWayWorkingSetupSummaryReadsCleanly: true };
 }
 
 async function testCommissionCardArmsAndSteps() {
@@ -1216,6 +1522,10 @@ results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
+results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
+results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
+results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
+results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testCommissionCardArmsAndSteps());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());

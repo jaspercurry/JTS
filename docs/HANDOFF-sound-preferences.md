@@ -227,8 +227,9 @@ use the normal listening path; there is no separate direct-DAC driver test in
 the product UI. The tone frequency is planned from the compiled active-speaker
 preset/crossover edges and tweeter-protection policy, not role-hardcoded. If the
 safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
-operator to check amp gain, wiring, and DAC output mapping. The level state is
-separate from normal listening volume.
+operator to check amp gain, wiring, and DAC output mapping. Driver-choice buttons
+also refresh a stale no-audio crossover preview when the current working setup
+can produce one. The level state is separate from normal listening volume.
 
 When the operator records a correct-driver result for that same target,
 `/sound/active-speaker/driver-measurement` persists target-specific
@@ -673,6 +674,6 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-17 (`/sound/` active-speaker UI rechecked after the
-continuous commission ramp tone, automatic quiet-ramp controls, and removal of
-the product direct-DAC driver-test flow.)
+Last verified: 2026-06-18 (`/sound/` active-speaker UI rechecked after the
+working-setup copy cleanup, continuous commission ramp tone, automatic
+quiet-ramp controls, and removal of the product direct-DAC driver-test flow.)
