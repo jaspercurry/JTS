@@ -25,7 +25,7 @@ errors deep in `jasper/peering/`.)
 git clone https://github.com/jaspercurry/JTS.git
 cd JTS
 uv sync --extra full --extra streambox
-.venv/bin/pytest
+JASPER_VOICE_PROVIDER=gemini .venv/bin/pytest -q --tb=short --ignore=tests/voice_eval -n 4
 ```
 
 `uv.lock` is the canonical lockfile for contributor development
@@ -36,8 +36,10 @@ runtime packages the hardware-free suite imports (`numpy`, `httpx`,
 `dev` group, so pytest would fail collection with missing-module errors —
 the extras carry the code under test. (uv 0.11 has no `default-extras`
 setting to fold these into a bare sync, so the flags are explicit; a
-regression test pins this command.) `.venv/bin/pytest` then runs the
-whole suite.
+regression test pins this command.) The pytest command above mirrors the
+required CI gate: the hardware-free suite runs in parallel, while
+`tests/voice_eval` stays out of the default path because it can open paid
+LLM sessions when provider keys are present.
 
 If you'd rather not install a new tool, stock pip + venv works too —
 just make sure your python is 3.11+:
@@ -46,13 +48,13 @@ just make sure your python is 3.11+:
 python3.11 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
 source .venv/bin/activate
 pip install -e '.[full,dev]'
-pytest
+JASPER_VOICE_PROVIDER=gemini pytest -q --tb=short --ignore=tests/voice_eval -n 4
 ```
 
 That runs the full hardware-free suite — thousands of tests reachable
-without a Pi, mic, or speaker. The audio I/O, network calls, and
-systemd surfaces are mocked. If it passes here, the change is safe to
-deploy to hardware.
+without a Pi, mic, or speaker — in four pytest-xdist workers. The audio
+I/O, network calls, and systemd surfaces are mocked. If it passes here,
+the change is safe to deploy to hardware.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then installs
 `openwakeword==0.6.0` with `--no-deps` plus the supporting packages it
@@ -70,7 +72,8 @@ blank SD card to working speaker.
 2. **Write the change + tests.** Every new voice tool ships with a
    regression scenario under `tests/voice_eval/regression/`. Every
    new subsystem ships with hardware-free pytest coverage.
-3. **Run `pytest`** (and `ruff check .` for style).
+3. **Run the hardware-free pytest gate** (and `ruff check .` for style):
+   `JASPER_VOICE_PROVIDER=gemini pytest -q --tb=short --ignore=tests/voice_eval -n 4`.
 4. **Push and open a PR** against `main`. Fill in the template.
 5. **No direct pushes to main** — even one-line fixes go through PR.
 
@@ -106,8 +109,9 @@ Two operational notes:
 
 ## Tests
 
-- **Hardware-free pytest** (`pytest`) — required green before merge.
-  No SDK auth or network. Runs the hardware-free suite.
+- **Hardware-free pytest** (`pytest -q --tb=short --ignore=tests/voice_eval -n 4`) —
+  required green before merge. No SDK auth or network. Runs the
+  hardware-free suite in parallel.
 - **Rust audio-daemon gate** (`cargo build --release --locked` and
   `cargo test --locked`) — required green for the `rust/` crates in
   CI, including the production fan-in/outputd daemons and shared

@@ -125,7 +125,11 @@ jobs:
         # _isolate_environ fixture (landed in #256), which snapshots and
         # restores os.environ around every test. --ignore is justified
         # solely by paid-LLM cost — not by the leak, which is fixed.
-        run: pytest -q --tb=short --ignore=tests/voice_eval
+        # pytest-xdist keeps the merge gate broad without making every PR wait
+        # for a serial 6k-test run. Keep the worker count explicit; `-n auto`
+        # can over-fan-out on larger machines and make socket/subprocess-heavy
+        # tests noisier than the fixed 4-worker gate we validated locally.
+        run: pytest -q --tb=short --ignore=tests/voice_eval -n 4
 
   js:
     runs-on: ubuntu-latest

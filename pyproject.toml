@@ -115,6 +115,7 @@ full = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "pytest-xdist>=3.8",
     "ruff>=0.6",
 ]
 
@@ -122,6 +123,7 @@ dev = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "pytest-xdist>=3.8",
     "ruff>=0.6",
 ]
 
