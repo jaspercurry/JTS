@@ -25,7 +25,7 @@ from jasper.output_topology import (
     OutputTopology,
     SpeakerChannel,
     SpeakerGroup,
-    load_output_topology,
+    load_output_topology_strict,
 )
 
 from ._common import issue as _issue
@@ -810,7 +810,7 @@ def classify_camilla_graph(
 ) -> GraphSafety:
     """Return whether a CamillaDSP graph is legal for the saved topology."""
 
-    topology = topology or load_output_topology()
+    topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
     issues: list[dict[str, str]] = list(contract.issues)
     path_s = str(config_path) if config_path is not None else None
@@ -927,7 +927,7 @@ def safe_graph_for_current_topology(
 ) -> SafeGraphDecision:
     """Select the only safe persisted CamillaDSP graph for this topology."""
 
-    topology = topology or load_output_topology()
+    topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
     staged_config = (
         staged_config if isinstance(staged_config, dict) else load_staged_startup_config()

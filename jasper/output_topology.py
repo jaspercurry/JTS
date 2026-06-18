@@ -1897,20 +1897,46 @@ def topology_path(path: str | Path | None = None) -> Path:
     )
 
 
-def load_output_topology(path: str | Path | None = None) -> OutputTopology:
-    """Load persisted topology, failing soft to a detected empty draft."""
+def load_output_topology_strict(path: str | Path | None = None) -> OutputTopology:
+    """Load persisted topology for safety-authorizing paths.
 
+    A missing topology means "not configured yet" and remains an empty draft.
+    A corrupt or unreadable topology is different: callers that may authorize a
+    runtime graph must fail closed instead of silently treating it as no saved
+    roleful/protected outputs.
+    """
     target = topology_path(path)
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
         return OutputTopology.from_mapping(raw)
     except FileNotFoundError:
         return new_topology_draft()
-    except (OSError, json.JSONDecodeError, OutputTopologyError) as exc:
+    except OSError as exc:
+        raise OutputTopologyError(
+            f"could not read output topology {target}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise OutputTopologyError(
+            f"output topology {target} is not valid JSON: {exc}"
+        ) from exc
+    except OutputTopologyError as exc:
+        raise OutputTopologyError(
+            f"output topology {target} is invalid: {exc}"
+        ) from exc
+
+
+def load_output_topology(path: str | Path | None = None) -> OutputTopology:
+    """Load persisted topology, failing soft to a detected empty draft."""
+
+    target = topology_path(path)
+    try:
+        return load_output_topology_strict(target)
+    except OutputTopologyError as exc:
         logger.warning(
-            "event=output_topology.load_failed path=%s error=%s",
+            "event=output_topology.load_failed path=%s error=%s detail=%s",
             target,
             type(exc).__name__,
+            exc,
         )
         return new_topology_draft()
 

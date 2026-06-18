@@ -271,7 +271,10 @@ def test_path_probe_cli_writes_probe_backed_evidence(
             "paths": paths,
         }
 
-    monkeypatch.setattr("jasper.cli.active_speaker.load_output_topology", lambda path=None: object())
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.load_output_topology_strict",
+        lambda path=None: object(),
+    )
     monkeypatch.setattr("jasper.cli.active_speaker.load_staged_startup_config", lambda: {})
     monkeypatch.setattr("jasper.cli.active_speaker.load_calibration_level_state", lambda: {})
     monkeypatch.setattr(
@@ -346,7 +349,8 @@ def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) ->
     statefile.write_text(f"config_path: {staged_path}\nmute: false\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "jasper.cli.active_speaker.load_output_topology", lambda path=None: _topology()
+        "jasper.cli.active_speaker.load_output_topology_strict",
+        lambda path=None: _topology(),
     )
     monkeypatch.setattr(
         "jasper.cli.active_speaker.load_staged_startup_config", lambda: staged
@@ -632,3 +636,35 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     assert payload["status"] == "select_active_startup"
     assert payload["statefile_written"] is True
     assert f"config_path: {staged}" in statefile.read_text(encoding="utf-8")
+
+
+def test_runtime_safe_graph_cli_rejects_corrupt_topology_without_repair(
+    tmp_path: Path,
+    capsys,
+):
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text("config_path: /tmp/old.yml\nvolume: -20.0\n", encoding="utf-8")
+    before = statefile.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        main([
+            "runtime-safe-graph",
+            "--topology",
+            str(topology_path),
+            "--statefile",
+            str(statefile),
+            "--flat-config",
+            str(flat),
+            "--write-statefile",
+            "--json",
+        ])
+
+    assert exc.value.code == 2
+    assert "not valid JSON" in capsys.readouterr().err
+    assert statefile.read_text(encoding="utf-8") == before

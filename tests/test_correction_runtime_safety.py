@@ -52,6 +52,20 @@ def test_flat_measurement_rejects_mono_topology_wider_than_graph(
         flat_measurement_config_path(base, topology=_full_range_mono())
 
 
+def test_flat_measurement_rejects_corrupt_saved_topology(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    base = tmp_path / "outputd-cutover.yml"
+    base.write_text(_flat_yaml(), encoding="utf-8")
+
+    with pytest.raises(CorrectionRuntimeSafetyError, match="not valid JSON"):
+        flat_measurement_config_path(base)
+
+
 def test_reset_selects_staged_active_startup_for_active_topology(
     monkeypatch,
     tmp_path: Path,
@@ -75,3 +89,17 @@ def test_reset_selects_staged_active_startup_for_active_topology(
         statefile_path=statefile,
         topology=topology,
     ) == staged
+
+
+def test_reset_rejects_corrupt_saved_topology(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    base = tmp_path / "outputd-cutover.yml"
+    base.write_text(_flat_yaml(), encoding="utf-8")
+
+    with pytest.raises(CorrectionRuntimeSafetyError, match="not valid JSON"):
+        reset_config_path(base)

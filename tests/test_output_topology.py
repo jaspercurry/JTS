@@ -18,10 +18,12 @@ from jasper.output_topology import (
     HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
+    OutputTopologyError,
     channel_identity_report,
     clock_domain_report,
     hardware_from_env,
     load_output_topology,
+    load_output_topology_strict,
     new_topology_draft,
     save_output_topology,
     set_channel_identity_verified,
@@ -793,6 +795,25 @@ def test_load_output_topology_fails_soft_to_detected_draft(tmp_path: Path) -> No
     path.write_text("{not json", encoding="utf-8")
 
     loaded = load_output_topology(path)
+
+    assert loaded.status == "draft"
+    assert loaded.speaker_groups == ()
+
+
+def test_load_output_topology_strict_rejects_corrupt_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "output_topology.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(OutputTopologyError, match="not valid JSON"):
+        load_output_topology_strict(path)
+
+
+def test_load_output_topology_strict_allows_missing_as_unconfigured(
+    tmp_path: Path,
+) -> None:
+    loaded = load_output_topology_strict(tmp_path / "missing.json")
 
     assert loaded.status == "draft"
     assert loaded.speaker_groups == ()

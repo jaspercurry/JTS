@@ -17,7 +17,11 @@ from jasper.active_speaker.runtime_contract import (
     classify_output_contract,
     safe_graph_for_current_topology,
 )
-from jasper.output_topology import OutputTopology, load_output_topology
+from jasper.output_topology import (
+    OutputTopology,
+    OutputTopologyError,
+    load_output_topology_strict,
+)
 
 
 class CorrectionRuntimeSafetyError(RuntimeError):
@@ -36,6 +40,15 @@ def _first_issue(issues: tuple[dict[str, str], ...] | list[dict[str, str]]) -> s
     return _issue_detail(issues[0]) if issues else "no legal graph is available"
 
 
+def _load_topology_for_correction() -> OutputTopology:
+    try:
+        return load_output_topology_strict()
+    except OutputTopologyError as exc:
+        raise CorrectionRuntimeSafetyError(
+            f"saved output topology is unavailable or invalid: {exc}"
+        ) from exc
+
+
 def flat_measurement_config_path(
     base_config_path: str | Path,
     *,
@@ -49,7 +62,7 @@ def flat_measurement_config_path(
     sweep playback starts.
     """
 
-    topology = topology or load_output_topology()
+    topology = topology or _load_topology_for_correction()
     contract = classify_output_contract(topology)
     base = Path(base_config_path)
     must_probe_graph = (
@@ -77,7 +90,7 @@ def reset_config_path(
 ) -> Path:
     """Return the legal correction reset target for the saved topology."""
 
-    topology = topology or load_output_topology()
+    topology = topology or _load_topology_for_correction()
     contract = classify_output_contract(topology)
     base = Path(base_config_path)
     if not contract.requires_roleful_graph:

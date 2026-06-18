@@ -593,6 +593,29 @@ def test_e2e_bonded_follower_rejects_correction_mutation(monkeypatch):
         server.server_close()
 
 
+def test_e2e_start_safety_refusal_returns_422(monkeypatch):
+    from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
+
+    def fake_start(handler):
+        raise CorrectionRuntimeSafetyError("flat sweep is unsafe")
+
+    monkeypatch.setattr(correction_setup, "_handle_start", fake_start)
+    server, base = _start_server()
+    try:
+        e = request_with_csrf(
+            base,
+            "/start",
+            b"{}",
+            content_type="application/json",
+            expect_status=422,
+        )
+        body = json.loads(e.read().decode())
+        assert "flat sweep is unsafe" in body["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_e2e_healthz_returns_plain_ok():
     """systemd's `Type=notify` could replace this later, but for now a
     simple HTTP-200 / "ok" body is what makes `curl jts.local/correction/healthz`
@@ -1100,6 +1123,29 @@ def test_e2e_reset_while_busy_returns_409(monkeypatch):
         )
         body = json.loads(e.read().decode())
         assert "in progress" in body["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_reset_safety_refusal_returns_422(monkeypatch):
+    from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
+
+    def fake_reset(handler):
+        raise CorrectionRuntimeSafetyError("no legal graph is available")
+
+    monkeypatch.setattr(correction_setup, "_handle_reset", fake_reset)
+    server, base = _start_server()
+    try:
+        e = request_with_csrf(
+            base,
+            "/reset",
+            b"{}",
+            content_type="application/json",
+            expect_status=422,
+        )
+        body = json.loads(e.read().decode())
+        assert "no legal graph" in body["error"]
     finally:
         server.shutdown()
         server.server_close()

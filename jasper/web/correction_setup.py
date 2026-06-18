@@ -891,9 +891,12 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             logger.exception("/start: snapshot current_correction failed")
             sess.current_correction_at_start = None
 
-        async def _reset_to_base() -> bool:
-            from jasper.correction.runtime_safety import flat_measurement_config_path
+        from jasper.correction.runtime_safety import (
+            CorrectionRuntimeSafetyError,
+            flat_measurement_config_path,
+        )
 
+        async def _reset_to_base() -> bool:
             target = flat_measurement_config_path(sess.cfg.base_config_path)
             return await cam.set_config_file_path(
                 str(target), best_effort=False,
@@ -901,6 +904,9 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         try:
             reset_ok = _run_async(_reset_to_base(), timeout=5.0)
+        except CorrectionRuntimeSafetyError:
+            logger.warning("/start: reset to base config rejected by safety contract")
+            raise
         except RuntimeError as exc:
             logger.exception("/start: reset to base config rejected")
             raise RuntimeError(str(exc)) from None
@@ -1884,8 +1890,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if path == "/start":
+                    from jasper.correction.runtime_safety import (
+                        CorrectionRuntimeSafetyError,
+                    )
                     try:
                         self._send_json(_handle_start(self))
+                    except CorrectionRuntimeSafetyError as e:
+                        self._send_client_error(
+                            str(e),
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
                     except (FileNotFoundError, ValueError) as e:
                         self._send_client_error(str(e))
                     except RequestConflict as e:
@@ -1970,9 +1984,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/reset":
                     # Local import keeps session/numpy off the socket-activated
                     # process's import path (mirrors the other handlers).
+                    from jasper.correction.runtime_safety import (
+                        CorrectionRuntimeSafetyError,
+                    )
                     from jasper.correction.session import SessionBusyError
                     try:
                         self._send_json(_handle_reset(self))
+                    except CorrectionRuntimeSafetyError as e:
+                        self._send_client_error(
+                            str(e),
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
                     except SessionBusyError as e:
                         # Rejected because a sweep/analysis is mid-flight — a
                         # state conflict (409), not a server error (500).
