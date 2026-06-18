@@ -133,8 +133,9 @@
 > confirmation. The mic-capture path accepts a bounded browser WAV upload (or a
 > local path inside the active-speaker capture store for tests/server-side
 > capture), prunes the raw WAV store by count and bytes as new captures arrive,
-> analyzes it through `commissioning_capture.record_driver_acoustic_capture`, and records the real
-> `driver_acoustics` verdict block. A `present` verdict still requires a matching
+> analyzes it through `commissioning_capture.record_driver_acoustic_capture`,
+> and records the real `driver_acoustics` verdict block. A `present` verdict
+> still requires a matching
 > accepted floor-level safe-playback result and non-clipping mic evidence before
 > it counts as captured; unusable/clipped captures record nothing and leave the
 > baseline locked. If the saved speaker layout or output assignment changes, old
@@ -378,8 +379,9 @@
 > optimization* (triad item 2, "Delay, Phase, and Null Verification" below).
 > **Update, 2026-06-18:** the hardware-free product path is now wired after the
 > Stage-5 driver ramp: `/driver-capture` and `/summed-capture` accept bounded
-> WAV evidence with bounded raw-file retention, call the `commissioning_capture` bridge, and record real acoustic
-> verdicts into measurement state; the `/sound/` UI uses the shared
+> WAV evidence with bounded raw-file retention, call the
+> `commissioning_capture` bridge, and record real acoustic verdicts into
+> measurement state; the `/sound/` UI uses the shared
 > `measurement-audio.js` recorder for those submissions and no longer offers a
 > manual success click that can bypass summed mic evidence. This is still not a
 > JTS3 acoustic validation: the real sweep playback/capture timing, live phone
