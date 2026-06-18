@@ -1,8 +1,10 @@
 """Voice-tool registry + per-provider schema serializers.
 
-Tool factories under ``jasper.tools.*`` register callables via
-``@tool(...)`` and ``ToolRegistry.register(fn)``; the registry then
-serializes them to the provider-specific shape:
+Tool factories under ``jasper.tools.*`` keep the ergonomic
+``@tool(...)`` + ``ToolRegistry.register(fn)`` authoring style. The
+decorator compiles a callable into a provider-neutral ``ToolDefinition``
+plus a ``PythonExecutor``; the registry then serializes the definition
+to the provider-specific shape:
 
 - ``function_declarations()`` — Gemini's ``Tool(function_declarations=[...])``
 - ``openai_tools()`` — OpenAI Realtime's flat
@@ -40,7 +42,7 @@ import re
 import time as _time
 import typing
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 
 if TYPE_CHECKING:
     from .packs import PackOutcome
@@ -196,9 +198,9 @@ DEFAULT_TOOL_TIMEOUT_SEC = 12.0
 MANIFEST_SCHEMA_VERSION = 1
 
 
-@dataclass
-class Tool:
-    """A registered voice tool.
+@dataclass(frozen=True)
+class ToolDefinition:
+    """Provider-neutral tool schema and metadata.
 
     `providers` is None when the tool works across every voice provider
     (the common case — a tool that calls into our own subsystems). Set
@@ -211,7 +213,6 @@ class Tool:
     """
     name: str
     description: str
-    fn: Callable[..., Any]
     parameters: dict[str, Any]
     providers: frozenset[str] | None = None
     # Per-tool dispatch budget (seconds) applied at the session adapters'
@@ -282,9 +283,8 @@ class Tool:
 
     def to_manifest_entry(self) -> dict[str, Any]:
         """One tool's manifest record — a stable, provider-neutral
-        description of the tool built straight from existing Tool fields
-        (reuses build_tool's output; no new concepts). `description` is
-        the MODEL-FACING text (llm_description override or docstring).
+        description built straight from the ToolDefinition. `description`
+        is the MODEL-FACING text (llm_description override or docstring).
         `providers` is None for "all providers". `labels` are the
         catalog's sort/filter tags (declared order preserved)."""
         return {
@@ -298,6 +298,111 @@ class Tool:
             "labels": list(self.labels),
             "timeout": self.timeout,
         }
+
+
+class ToolExecutor(Protocol):
+    """Execution side of a tool definition.
+
+    Dispatch owns timeout/logging/error shaping; executors only know how to
+    run their backing implementation. Current in-repo tools use
+    `PythonExecutor`; future executor types should cross this same seam.
+    """
+
+    async def execute(self, args: dict[str, Any]) -> Any:
+        """Run the tool with already-parsed JSON arguments."""
+        ...
+
+
+@dataclass(frozen=True)
+class PythonExecutor:
+    """ToolExecutor for the current trusted in-process Python callable."""
+
+    fn: Callable[..., Any]
+
+    async def execute(self, args: dict[str, Any]) -> Any:
+        out = self.fn(**args)
+        if asyncio.iscoroutine(out):
+            return await out
+        return out
+
+
+@dataclass(frozen=True)
+class Tool:
+    """A registered voice tool.
+
+    Compatibility wrapper around the explicit boundary: `definition` is
+    the provider-neutral schema/metadata, and `executor` is the runtime
+    implementation. Properties below preserve the pre-boundary Tool API.
+    """
+    definition: ToolDefinition
+    executor: ToolExecutor
+
+    @property
+    def name(self) -> str:
+        return self.definition.name
+
+    @property
+    def description(self) -> str:
+        return self.definition.description
+
+    @property
+    def fn(self) -> Callable[..., Any]:
+        fn = getattr(self.executor, "fn", None)
+        if fn is None:
+            raise AttributeError("tool executor has no Python function")
+        return fn
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self.definition.parameters
+
+    @property
+    def providers(self) -> frozenset[str] | None:
+        return self.definition.providers
+
+    @property
+    def timeout(self) -> float:
+        return self.definition.timeout
+
+    @property
+    def log_payload(self) -> bool:
+        return self.definition.log_payload
+
+    @property
+    def log_args(self) -> bool:
+        return self.definition.log_args
+
+    @property
+    def llm_description(self) -> str | None:
+        return self.definition.llm_description
+
+    @property
+    def user_description_override(self) -> str | None:
+        return self.definition.user_description_override
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        return self.definition.labels
+
+    @property
+    def untrusted_output(self) -> bool:
+        return self.definition.untrusted_output
+
+    @property
+    def consequential(self) -> bool:
+        return self.definition.consequential
+
+    def default_model_facing_description(self) -> str:
+        return self.definition.default_model_facing_description()
+
+    def model_facing_description(self) -> str:
+        return self.definition.model_facing_description()
+
+    def prompt_customized(self) -> bool:
+        return self.definition.prompt_customized()
+
+    def to_manifest_entry(self) -> dict[str, Any]:
+        return self.definition.to_manifest_entry()
 
 
 @dataclass
@@ -315,6 +420,17 @@ class ToolRegistry:
     # voice-eval harness) that never run the pack walk.
     pack_outcomes: list["PackOutcome"] = field(default_factory=list)
 
+    def register_tool(self, tool: Tool) -> Tool:
+        """Register an already-built tool definition/executor pair.
+
+        This is the explicit boundary for non-`@tool` authors. The
+        `register(fn)` helper below is the compatibility sugar for the
+        current in-process Python callables.
+        """
+        self.tools[tool.name] = tool
+        self.tool_packs.pop(tool.name, None)
+        return tool
+
     def register(
         self,
         fn: Callable[..., Any],
@@ -328,10 +444,14 @@ class ToolRegistry:
         editing the tool itself."""
         tool = build_tool(fn, name=name)
         if providers is not None:
-            tool = replace(tool, providers=frozenset(providers))
-        self.tools[tool.name] = tool
-        self.tool_packs.pop(tool.name, None)
-        return tool
+            tool = replace(
+                tool,
+                definition=replace(
+                    tool.definition,
+                    providers=frozenset(providers),
+                ),
+            )
+        return self.register_tool(tool)
 
     def get(self, name: str) -> Tool | None:
         return self.tools.get(name)
@@ -394,7 +514,13 @@ class ToolRegistry:
         for name, prompt in overrides.items():
             tool = self.tools.get(name)
             if tool is not None and prompt.strip():
-                self.tools[name] = replace(tool, user_description_override=prompt)
+                self.tools[name] = replace(
+                    tool,
+                    definition=replace(
+                        tool.definition,
+                        user_description_override=prompt,
+                    ),
+                )
 
 
 def tool(
@@ -440,7 +566,7 @@ def tool(
     attacker-controllable third-party text (an injection SOURCE);
     `consequential=True` declares the tool takes a real-world / irreversible
     ACTION (a SINK). These are declarative risk categories for the planned
-    tool store (see the `Tool` dataclass); they don't change runtime
+    tool store (see `ToolDefinition`); they don't change runtime
     behavior today.
 
     Use with `ToolRegistry.register()`."""
@@ -465,7 +591,10 @@ def tool(
 
 
 def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
-    """Build a `Tool` from a decorated function. The full cleaned
+    """Build a `Tool` from a decorated function.
+
+    `@tool(...)` is sugar for a `ToolDefinition` plus a `PythonExecutor`.
+    The full cleaned
     docstring becomes the LLM-facing description — when-to-call
     guidance, response shape, voice-answer style, and conditional
     output rules all live in the docstring and are sent to the
@@ -494,11 +623,12 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     if not asyncio.iscoroutinefunction(fn):
         # One line per registration (daemon startup), not per dispatch.
         # `dispatch_tool` runs a non-coroutine fn INLINE on the voice
-        # event loop and its `asyncio.wait_for` budget only covers
-        # awaitables — a slow sync body stalls wake detection and audio
-        # playout with no timeout. Every shipped tool is `async def`
-        # (blocking backends go through asyncio.to_thread inside the
-        # tool); this flags the stragglers before they ship.
+        # event loop through PythonExecutor. The `asyncio.wait_for`
+        # timeout cannot preempt a sync body that never yields, so a slow
+        # sync tool still stalls wake detection and audio playout. Every
+        # shipped tool is `async def` (blocking backends go through
+        # asyncio.to_thread inside the tool); this flags stragglers before
+        # they ship.
         logger.warning(
             "event=tool.sync_fn tool=%s — fn is not a coroutine function; "
             "it runs inline on the event loop with no %.0fs dispatch "
@@ -506,10 +636,9 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
             "asyncio.to_thread.",
             declared, DEFAULT_TOOL_TIMEOUT_SEC,
         )
-    return Tool(
+    definition = ToolDefinition(
         name=declared,
         description=desc,
-        fn=fn,
         parameters=params,
         providers=decl_providers,
         timeout=decl_timeout,
@@ -520,6 +649,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         untrusted_output=decl_untrusted_output,
         consequential=decl_consequential,
     )
+    return Tool(definition=definition, executor=PythonExecutor(fn))
 
 
 def _redacted_mapping_preview(values: dict[str, Any]) -> str:
@@ -635,12 +765,11 @@ async def dispatch_tool(
     logger.info("tool %s start args=%s", name, _args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
-        out = tool.fn(**args)
-        if asyncio.iscoroutine(out):
-            # Anything slower than the tool's budget probably means the
-            # upstream API is genuinely failing — report the timeout
-            # rather than hang the session further.
-            out = await asyncio.wait_for(out, timeout=tool.timeout)
+        # Anything slower than the tool's budget probably means the
+        # upstream API is genuinely failing — report the timeout rather
+        # than hang the session further. Sync Python executors still run
+        # inline on the event loop, matching the legacy callable path.
+        out = await asyncio.wait_for(tool.executor.execute(args), timeout=tool.timeout)
         # Pass dict outputs straight through; only wrap scalars so the
         # model doesn't see {"result": {"ok": true}}.
         payload = out if isinstance(out, dict) else {"value": out}

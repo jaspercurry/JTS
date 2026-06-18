@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import typing
 
-from jasper.tools import DEFAULT_TOOL_TIMEOUT_SEC, ToolRegistry, build_tool, tool
+from jasper.tools import (
+    DEFAULT_TOOL_TIMEOUT_SEC,
+    PythonExecutor,
+    Tool,
+    ToolDefinition,
+    ToolRegistry,
+    build_tool,
+    tool,
+)
 from jasper.tools import _annotation_to_schema
 
 
@@ -23,6 +31,43 @@ def test_registers_and_builds_schema_from_type_hints():
     assert decl["parameters"]["type"] == "object"
     assert decl["parameters"]["properties"] == {"level_db": {"type": "number"}}
     assert decl["parameters"]["required"] == ["level_db"]
+
+
+def test_tool_decorator_compiles_to_definition_and_python_executor():
+    @tool(labels=("audio",), timeout=3.0)
+    async def set_volume(level_db: float) -> dict:
+        """Set speaker volume in dB."""
+        return {"ok": True, "level_db": level_db}
+
+    built = build_tool(set_volume)
+
+    assert isinstance(built.definition, ToolDefinition)
+    assert isinstance(built.executor, PythonExecutor)
+    assert built.fn is set_volume
+    assert built.definition.name == built.name == "set_volume"
+    assert built.definition.parameters == built.parameters
+    assert built.definition.labels == built.labels == ("audio",)
+    assert built.definition.timeout == built.timeout == 3.0
+
+
+def test_register_tool_accepts_explicit_definition_and_executor():
+    class ExplicitExecutor:
+        async def execute(self, args):
+            return {"args": args}
+
+    built = Tool(
+        definition=ToolDefinition(
+            name="explicit_tool",
+            description="Explicit tool.",
+            parameters={"type": "object", "properties": {}},
+        ),
+        executor=ExplicitExecutor(),
+    )
+    reg = ToolRegistry(tool_packs={"explicit_tool": "old_pack"})
+
+    assert reg.register_tool(built) is built
+    assert reg.get("explicit_tool") is built
+    assert "explicit_tool" not in reg.tool_packs
 
 
 def test_optional_arg_not_required():
