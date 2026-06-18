@@ -336,8 +336,7 @@ impl Config {
         // exists today" — makes a future sink / bridge mode fail CLOSED
         // (loud at startup) instead of silently mis-sizing content_buf.
         let dac_content_fifo = env_optional("JASPER_OUTPUTD_DAC_CONTENT_FIFO");
-        let dac_content_trim_db =
-            env_f32("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", 0.0)?;
+        let dac_content_trim_db = env_f32("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", 0.0)?;
         if dac_content_trim_db > 0.0 {
             anyhow::bail!(
                 "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB={} must be <= 0 (pair \
@@ -354,11 +353,9 @@ impl Config {
                 dac_content_trim_db
             );
         }
-        let dac_content_channel = ChannelPick::parse(&env_str(
-            "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL",
-            "stereo",
-        ))
-        .map_err(anyhow::Error::msg)?;
+        let dac_content_channel =
+            ChannelPick::parse(&env_str("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", "stereo"))
+                .map_err(anyhow::Error::msg)?;
         if dac_content_fifo.is_some() {
             if content_bridge_mode != ContentBridgeMode::Direct {
                 anyhow::bail!(
@@ -396,37 +393,32 @@ impl Config {
             );
         }
 
-        // The wide active single path is a width-exact passthrough: the
-        // rate-match bridge, the round-trip FIFO, and the outputd TTS lane are
-        // all stereo-only features (their buffers/mixers are 2-channel). Reject
-        // them on a >2-channel single sink so a misconfiguration fails CLOSED
-        // at startup rather than mis-sizing a buffer on live drivers. (The
-        // reconciler never combines them; this is the fail-loud floor.)
-        if sink_mode == SinkMode::SingleAlsa && content_channels > 2 {
-            if content_bridge_mode != ContentBridgeMode::Direct {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_ACTIVE_CHANNELS={} (wide single sink) requires \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the rate-match bridge is \
-                     a stereo-only path)",
-                    content_channels
-                );
-            }
-            if dac_content_fifo.is_some() {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_ACTIVE_CHANNELS={} (wide single sink) is \
-                     incompatible with JASPER_OUTPUTD_DAC_CONTENT_FIFO (the \
-                     round-trip lane is a stereo grouping-member path)",
-                    content_channels
-                );
-            }
-            if tts_socket_path.is_some() {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_ACTIVE_CHANNELS={} (wide single sink) is \
-                     incompatible with JASPER_OUTPUTD_TTS_SOCKET (the outputd TTS \
-                     mixer is stereo-only; active-mode voice rides fanin instead)",
-                    content_channels
-                );
-            }
+        // Stereo-only runtime features are allowlisted to the single-ALSA
+        // stereo path. Composite and wide-active single are both width-exact
+        // passthroughs; accepting a 2-channel bridge/mixer there would mis-size
+        // buffers on live drivers, so fail closed at startup.
+        if content_bridge_mode != ContentBridgeMode::Direct
+            && (sink_mode != SinkMode::SingleAlsa || content_channels != 2)
+        {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match requires \
+                 JASPER_OUTPUTD_SINK=single_alsa and JASPER_OUTPUTD_ACTIVE_CHANNELS=2 \
+                 (the rate-match bridge is a stereo-only path)"
+            );
+        }
+        if tts_socket_path.is_some() && (sink_mode != SinkMode::SingleAlsa || content_channels != 2)
+        {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_TTS_SOCKET requires JASPER_OUTPUTD_SINK=single_alsa \
+                 and JASPER_OUTPUTD_ACTIVE_CHANNELS=2 (the outputd TTS mixer is \
+                 stereo-only; active-mode voice rides fanin instead)"
+            );
+        }
+        if dac_content_fifo.is_some() && content_channels != 2 {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires JASPER_OUTPUTD_ACTIVE_CHANNELS=2 \
+                 (the round-trip lane is a stereo grouping-member path)"
+            );
         }
 
         Ok(Self {
@@ -885,14 +877,11 @@ mod tests {
 
     #[test]
     fn single_sink_takes_active_channels_width() {
-        with_env(
-            &[("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8"))],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
-                assert_eq!(cfg.content_channels, 8);
-            },
-        );
+        with_env(&[("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8"))], || {
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
+            assert_eq!(cfg.content_channels, 8);
+        });
     }
 
     #[test]
@@ -900,10 +889,7 @@ mod tests {
         for bad in ["1", "9", "0"] {
             with_env(&[("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some(bad))], || {
                 let err = Config::from_env().unwrap_err().to_string();
-                assert!(
-                    err.contains("JASPER_OUTPUTD_ACTIVE_CHANNELS"),
-                    "{err}"
-                );
+                assert!(err.contains("JASPER_OUTPUTD_ACTIVE_CHANNELS"), "{err}");
             });
         }
     }
@@ -934,7 +920,7 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("CONTENT_BRIDGE=direct"), "{err}");
+                assert!(err.contains("CONTENT_BRIDGE=rate_match requires"), "{err}");
             },
         );
         with_env(
@@ -955,6 +941,34 @@ mod tests {
             || {
                 let err = Config::from_env().unwrap_err().to_string();
                 assert!(err.contains("JASPER_OUTPUTD_DAC_CONTENT_FIFO"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn composite_rejects_stereo_only_bridge_and_tts() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("CONTENT_BRIDGE=rate_match requires"), "{err}");
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("composite")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_TTS_SOCKET requires"), "{err}");
             },
         );
     }
@@ -1041,7 +1055,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("not-a-number")),
+                (
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES",
+                    Some("not-a-number"),
+                ),
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("1")),
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM", Some("0")),
             ],
@@ -1058,10 +1075,7 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                (
-                    "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES",
-                    Some("262145"),
-                ),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("262145")),
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
             ],
             || {
@@ -1074,10 +1088,7 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                (
-                    "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES",
-                    Some("65537"),
-                ),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("65537")),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -1101,7 +1112,10 @@ mod tests {
         });
         with_env(
             &[
-                ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/jasper-outputd/tts.sock")),
+                (
+                    "JASPER_OUTPUTD_TTS_SOCKET",
+                    Some("/run/jasper-outputd/tts.sock"),
+                ),
                 ("JASPER_OUTPUTD_TTS_MAX_PENDING_FRAMES", Some("48000")),
                 ("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB", Some("-18.5")),
             ],

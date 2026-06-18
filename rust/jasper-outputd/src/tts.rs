@@ -95,11 +95,7 @@ pub struct FlushSummary {
 }
 
 impl FlushSummary {
-    pub fn from_events(
-        requests: u64,
-        pending_frames: u64,
-        events: &[PlayoutEvent],
-    ) -> Self {
+    pub fn from_events(requests: u64, pending_frames: u64, events: &[PlayoutEvent]) -> Self {
         let flushed_frames: u64 = events.iter().map(|e| e.flushed_frames).sum();
         let max_audio_played_ms = events
             .iter()
@@ -177,7 +173,8 @@ impl TtsMetrics {
     }
 
     fn mark_dropped_audio(&self, frames: u64) {
-        self.dropped_audio_frames.fetch_add(frames, Ordering::Relaxed);
+        self.dropped_audio_frames
+            .fetch_add(frames, Ordering::Relaxed);
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -211,9 +208,8 @@ pub fn spawn_tts_server(
     metrics: TtsMetrics,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!("creating outputd TTS socket parent {}", parent.display())
-        })?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating outputd TTS socket parent {}", parent.display()))?;
     }
     let _ = fs::remove_file(&path);
     let listener = UnixListener::bind(&path)
@@ -435,7 +431,6 @@ impl TtsBridge {
         }
     }
 
-
     /// Drain flushes then commands into `core`. Called once per DAC
     /// period by the audio loop; O(queued) with bounded queues.
     pub fn drain(&mut self, core: &mut OutputCore) {
@@ -528,9 +523,7 @@ impl TtsBridge {
                 }
                 TtsCommand::Audio(samples) => {
                     let incoming = (samples.len() / (CHANNELS as usize)) as u64;
-                    if core
-                        .pending_assistant_frames()
-                        .saturating_add(incoming)
+                    if core.pending_assistant_frames().saturating_add(incoming)
                         > self.metrics.max_pending_frames
                     {
                         self.metrics.mark_dropped_audio(incoming);
@@ -620,7 +613,10 @@ mod tests {
         assert_eq!(report.clipped_samples, 0);
         // Content + gain-scaled assistant — the DAC got a real mix.
         let written = &core.dac().periods[0];
-        assert!(written.iter().all(|&s| s > 100), "assistant missing: {written:?}");
+        assert!(
+            written.iter().all(|&s| s > 100),
+            "assistant missing: {written:?}"
+        );
     }
 
     #[test]

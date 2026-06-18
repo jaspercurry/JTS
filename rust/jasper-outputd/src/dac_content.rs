@@ -572,7 +572,7 @@ mod tests {
             p.serve_from_fifo(RECOVERY_READY_PERIODS);
         }
         assert!(p.serve_from_fifo(1)); // serving from FIFO
-        // The very period the FIFO is dry, fall back (no silence gap).
+                                       // The very period the FIFO is dry, fall back (no silence gap).
         assert!(!p.serve_from_fifo(0));
         assert_eq!(p.fallback_transitions, 1);
     }
@@ -647,8 +647,7 @@ mod tests {
     impl TempFifo {
         fn create(tag: &str) -> Self {
             let path = temp_fifo_path(tag);
-            let c_path =
-                std::ffi::CString::new(path.as_os_str().to_str().unwrap()).unwrap();
+            let c_path = std::ffi::CString::new(path.as_os_str().to_str().unwrap()).unwrap();
             let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
             assert_eq!(rc, 0, "mkfifo failed: {}", io::Error::last_os_error());
             Self { path }
@@ -680,7 +679,10 @@ mod tests {
         let mut out = vec![0i16; (TEST_PERIOD_FRAMES as usize) * 2];
         // Prime the source's read end (a fallback period, no writer yet).
         let _ = src.try_fill_period(&mut out);
-        debug_assert!(src.fd.is_some(), "read end must be open before the producer connects");
+        debug_assert!(
+            src.fd.is_some(),
+            "read end must be open before the producer connects"
+        );
         std::fs::OpenOptions::new()
             .write(true)
             .open(&fifo.path)
@@ -690,11 +692,8 @@ mod tests {
     #[test]
     fn source_serves_direct_until_producer_demonstrates_health() {
         let fifo = TempFifo::create("damped");
-        let mut src = DacContentSource::new(
-            fifo.path_str(),
-            ChannelPick::Stereo,
-            TEST_PERIOD_FRAMES,
-        );
+        let mut src =
+            DacContentSource::new(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
         let mut out = vec![0i16; 8];
 
         // No writer: every period is served direct (inv-B), no panic,
@@ -727,7 +726,10 @@ mod tests {
                 assert_eq!(out, vec![7i16; 8]);
             }
         }
-        assert!(served >= 1, "FIFO never took over after demonstrated health");
+        assert!(
+            served >= 1,
+            "FIFO never took over after demonstrated health"
+        );
         let m = src.metrics();
         assert!(m.serving_fifo);
         // First take-over = engagement, not a recovery (no outage yet).
@@ -756,11 +758,7 @@ mod tests {
     #[test]
     fn source_falls_back_immediately_when_writer_stops_then_recovers() {
         let fifo = TempFifo::create("outage");
-        let mut src = DacContentSource::new(
-            fifo.path_str(),
-            ChannelPick::Left,
-            TEST_PERIOD_FRAMES,
-        );
+        let mut src = DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES);
         let mut out = vec![0i16; 8];
         let one_period = le_bytes(&[3i16, -3, 3, -3, 3, -3, 3, -3]);
 
@@ -794,7 +792,10 @@ mod tests {
                 break;
             }
         }
-        assert!(fell_back, "source kept claiming FIFO audio after writer death");
+        assert!(
+            fell_back,
+            "source kept claiming FIFO audio after writer death"
+        );
         let m = src.metrics();
         assert!(!m.serving_fifo);
         assert_eq!(m.fallback_transitions, 1);
@@ -814,7 +815,10 @@ mod tests {
                 break;
             }
         }
-        assert!(recovered, "source never recovered after a new writer connected");
+        assert!(
+            recovered,
+            "source never recovered after a new writer connected"
+        );
         // One real outage cycle: one transition, one recovery (the
         // initial engagement does not count).
         assert_eq!(src.metrics().recoveries, 1);
@@ -824,11 +828,8 @@ mod tests {
     #[test]
     fn source_never_blocks_with_a_writer_that_sends_nothing() {
         let fifo = TempFifo::create("idle-writer");
-        let mut src = DacContentSource::new(
-            fifo.path_str(),
-            ChannelPick::Stereo,
-            TEST_PERIOD_FRAMES,
-        );
+        let mut src =
+            DacContentSource::new(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
         // Writer connected but silent: reads must be EAGAIN, not a hang.
         let _writer = connect_producer(&mut src, &fifo);
         let mut out = vec![0i16; 8];

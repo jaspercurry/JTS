@@ -20,14 +20,14 @@ use std::time::{Duration, Instant};
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{
-    open_playback_pcm, AlsaBackend, ContentRead, IoCounters, PairedCompositeSink,
+    open_playback_pcm, AlsaBackend, ContentRead, IoCounters, NegotiatedPcm, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
-use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::state::{OutputdState, StateServer};
+use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
@@ -80,9 +80,6 @@ fn main() -> Result<()> {
             let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
             run_fake(&config, &mut core, &state, once, &shutdown)
         }
-        BackendMode::Alsa if config.sink_mode == SinkMode::Composite => {
-            run_alsa_dual_apple(&config, &state, once, &shutdown)
-        }
         BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
     };
 
@@ -123,18 +120,131 @@ fn run_fake(
     Ok(())
 }
 
+enum RuntimeAlsaSink {
+    Single(AlsaBackend),
+    Composite(PairedCompositeSink),
+}
+
+impl RuntimeAlsaSink {
+    fn open(config: &Config) -> Result<Self> {
+        match config.sink_mode {
+            SinkMode::SingleAlsa => Ok(Self::Single(AlsaBackend::new(config)?)),
+            SinkMode::Composite => Ok(Self::Composite(PairedCompositeSink::new(config)?)),
+        }
+    }
+
+    fn content_channels(&self) -> u16 {
+        match self {
+            Self::Single(sink) => sink.channels(),
+            Self::Composite(_) => CHANNELS * 2,
+        }
+    }
+
+    fn content_negotiated(&self) -> NegotiatedPcm {
+        match self {
+            Self::Single(sink) => sink.content_negotiated,
+            Self::Composite(sink) => sink.content_negotiated,
+        }
+    }
+
+    fn dac_negotiated(&self) -> NegotiatedPcm {
+        match self {
+            Self::Single(sink) => sink.dac_negotiated,
+            Self::Composite(sink) => sink.dac_negotiated,
+        }
+    }
+
+    fn counters(&self) -> IoCounters {
+        match self {
+            Self::Single(sink) => sink.counters(),
+            Self::Composite(sink) => sink.counters(),
+        }
+    }
+
+    fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
+        match self {
+            Self::Single(sink) => sink.read_content_period(out),
+            Self::Composite(sink) => sink.read_content_period(out),
+        }
+    }
+
+    fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
+        match self {
+            Self::Single(sink) => sink.read_content_available(out),
+            Self::Composite(_) => {
+                anyhow::bail!(
+                    "read_content_available is only supported by the stereo single-ALSA path"
+                )
+            }
+        }
+    }
+
+    fn write_period(&mut self, samples: &[i16]) -> Result<()> {
+        match self {
+            Self::Single(sink) => sink.write_dac_period(samples),
+            Self::Composite(sink) => sink.write_dual_period(samples),
+        }
+    }
+
+    fn start(&self) -> Result<()> {
+        match self {
+            Self::Single(sink) => sink.start_dac(),
+            Self::Composite(sink) => sink.start_dacs(),
+        }
+    }
+
+    fn dac_delay_frames(&self) -> Result<u64> {
+        match self {
+            Self::Single(sink) => sink.dac_delay_frames(),
+            Self::Composite(sink) => sink.dac_delay_frames(),
+        }
+    }
+
+    fn mark_runtime_status(&self, state: &OutputdState) {
+        if let Self::Composite(sink) = self {
+            state.mark_dual_apple_status(&sink.dual_status());
+        }
+    }
+
+    fn prime_context(&self) -> &'static str {
+        match self {
+            Self::Single(_) => "priming outputd DAC with silence",
+            Self::Composite(_) => "priming dual Apple DACs with silence",
+        }
+    }
+
+    fn primed_event(&self) -> &'static str {
+        match self {
+            Self::Single(_) => "outputd.alsa.primed",
+            Self::Composite(_) => "outputd.dual_apple.primed",
+        }
+    }
+
+    fn dac_delay_unavailable_event(&self) -> &'static str {
+        match self {
+            Self::Single(_) => "outputd.dac_delay_unavailable",
+            Self::Composite(_) => "outputd.dual_apple.dac_delay_unavailable",
+        }
+    }
+
+    fn is_composite(&self) -> bool {
+        matches!(self, Self::Composite(_))
+    }
+}
+
 fn run_alsa(
     config: &Config,
     state: &OutputdState,
     once: bool,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut backend = AlsaBackend::new(config)?;
+    let mut sink = RuntimeAlsaSink::open(config)?;
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
-    state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
+    state.set_negotiated(sink.content_negotiated(), sink.dac_negotiated());
+    sink.mark_runtime_status(state);
     // Content/DAC width is carried as data (coherent single DAC of any width);
     // the published reference is always stereo (a wide sink folds to L == R).
-    let content_channels = config.content_channels as usize;
+    let content_channels = sink.content_channels() as usize;
     let content_period_samples = (config.period_frames as usize) * content_channels;
     let mut content_buf = vec![0i16; content_period_samples];
     let mut content_read_buf = vec![0i16; content_period_samples];
@@ -173,55 +283,45 @@ fn run_alsa(
     // segments, loudness, saturating mix, the DAC-true PlayoutLedger)
     // mixes voice at the FINAL output stage: downstream of the
     // round-trip, upstream of the reference publish (inv-A).
-    let mut tts: Option<(OutputCore, TtsBridge)> =
-        if let Some(path) = &config.tts_socket_path {
-            let (tx, rx, flush_tx, flush_rx, metrics, epoch) =
-                tts_channels(config.tts_max_pending_frames);
-            spawn_tts_server(
-                PathBuf::from(path),
-                tx,
-                flush_tx,
-                epoch,
-                metrics.clone(),
-            )?;
-            state.set_tts(path.clone(), metrics.clone());
-            eprintln!(
-                "event=outputd.tts.enabled socket={} budget_frames={} program_duck_db={}",
-                path, config.tts_max_pending_frames, config.tts_program_duck_db,
-            );
-            let core =
-                OutputCore::new_for_daemon(config.period_frames, config.stream_id);
-            let bridge =
-                TtsBridge::new(rx, flush_rx, metrics, config.tts_program_duck_db);
-            Some((core, bridge))
-        } else {
-            None
-        };
+    let mut tts: Option<(OutputCore, TtsBridge)> = if let Some(path) = &config.tts_socket_path {
+        let (tx, rx, flush_tx, flush_rx, metrics, epoch) =
+            tts_channels(config.tts_max_pending_frames);
+        spawn_tts_server(PathBuf::from(path), tx, flush_tx, epoch, metrics.clone())?;
+        state.set_tts(path.clone(), metrics.clone());
+        eprintln!(
+            "event=outputd.tts.enabled socket={} budget_frames={} program_duck_db={}",
+            path, config.tts_max_pending_frames, config.tts_program_duck_db,
+        );
+        let core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
+        let bridge = TtsBridge::new(rx, flush_rx, metrics, config.tts_program_duck_db);
+        Some((core, bridge))
+    } else {
+        None
+    };
     // Pair-balance trim: a fixed linear gain on the round-trip content
     // path (FIFO and inv-B fallback periods alike — no level jump on a
     // starvation transition). Precomputed once; <= 0 dB enforced at
     // config parse, so this can only attenuate.
-    let dac_content_trim: Option<f32> = if dac_content.is_some()
-        && config.dac_content_trim_db < 0.0
+    let dac_content_trim: Option<f32> = if dac_content.is_some() && config.dac_content_trim_db < 0.0
     {
         Some(10f32.powf(config.dac_content_trim_db / 20.0))
     } else {
         None
     };
     let zero_period = vec![0i16; content_period_samples];
-    let prime_periods = prime_periods(
-        backend.dac_negotiated.buffer_frames,
-        backend.dac_negotiated.period_frames,
-    );
+    let dac_negotiated = sink.dac_negotiated();
+    let prime_periods = prime_periods(dac_negotiated.buffer_frames, dac_negotiated.period_frames);
     for _ in 0..prime_periods {
-        backend
-            .write_dac_period(&zero_period)
-            .context("priming outputd DAC with silence")?;
+        sink.write_period(&zero_period)
+            .context(sink.prime_context())?;
     }
-    backend.start_dac()?;
+    sink.start()?;
     eprintln!(
-        "event=outputd.alsa.primed prime_periods={} buffer_frames={} period_frames={}",
-        prime_periods, backend.dac_negotiated.buffer_frames, backend.dac_negotiated.period_frames,
+        "event={} prime_periods={} buffer_frames={} period_frames={}",
+        sink.primed_event(),
+        prime_periods,
+        dac_negotiated.buffer_frames,
+        dac_negotiated.period_frames,
     );
     notify_ready(config)?;
 
@@ -230,9 +330,9 @@ fn run_alsa(
     let mut dac_delay_warning_logged = false;
     let mut content_drain_warning_logged = false;
     let mut reference_sequence = 0u64;
-    let mut last_clipped_samples = 0u32;
 
     while !shutdown.load(Ordering::Relaxed) {
+        let period_clipped_samples: u32;
         let mut served_from_fifo = false;
         if let Some(src) = dac_content.as_mut() {
             served_from_fifo = src.try_fill_period(&mut content_buf);
@@ -252,14 +352,12 @@ fn run_alsa(
                 // surfaces it when we actually need the lane. Xruns are
                 // already recovered inside read_content_available.
                 for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
-                    match backend.read_content_available(&mut content_read_buf) {
+                    match sink.read_content_available(&mut content_read_buf) {
                         Ok(ContentRead::Frames(frames)) if frames > 0 => {}
                         Ok(_) => break,
                         Err(e) => {
                             if !content_drain_warning_logged {
-                                eprintln!(
-                                    "event=outputd.dac_content.drain_failed detail={e:#}"
-                                );
+                                eprintln!("event=outputd.dac_content.drain_failed detail={e:#}");
                                 content_drain_warning_logged = true;
                             }
                             break;
@@ -271,14 +369,14 @@ fn run_alsa(
         if !served_from_fifo {
             if let Some(bridge) = content_bridge.as_mut() {
                 read_content_bridge_period(
-                    &mut backend,
+                    &mut sink,
                     bridge,
                     &mut content_read_buf,
                     &mut content_buf,
                 )?;
                 state.mark_content_bridge(bridge.metrics());
             } else {
-                let _frames_read = backend.read_content_period(&mut content_buf)?;
+                let _frames_read = sink.read_content_period(&mut content_buf)?;
             }
         }
         if let Some(trim) = dac_content_trim {
@@ -295,15 +393,16 @@ fn run_alsa(
                 apply_linear_gain(&mut content_buf, gain);
             }
             core.prepare_period_with_content(&content_buf);
-            backend.write_dac_period(core.output_period())?;
-            let dac_delay_frames = match backend.dac_delay_frames() {
+            sink.write_period(core.output_period())?;
+            sink.mark_runtime_status(state);
+            let dac_delay_frames = match sink.dac_delay_frames() {
                 Ok(frames) => frames,
                 Err(e) => {
                     if !dac_delay_warning_logged {
-                        eprintln!("event=outputd.dac_delay_unavailable detail={e:#}");
+                        eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
                         dac_delay_warning_logged = true;
                     }
-                    backend.dac_negotiated.buffer_frames as u64
+                    sink.dac_negotiated().buffer_frames as u64
                 }
             };
             // The ledger drains against ACTUAL DAC progress — the honest
@@ -311,22 +410,19 @@ fn run_alsa(
             let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
             ref_outputs.publish(core.output_period());
             reference_sequence = report.reference_sequence;
-            last_clipped_samples = report.clipped_samples;
-            state.mark_period(
-                backend.counters(),
-                reference_sequence,
-                report.clipped_samples,
-            );
+            period_clipped_samples = report.clipped_samples;
+            state.mark_period(sink.counters(), reference_sequence, report.clipped_samples);
         } else {
-            backend.write_dac_period(&content_buf)?;
-            let _dac_delay_frames = match backend.dac_delay_frames() {
+            sink.write_period(&content_buf)?;
+            sink.mark_runtime_status(state);
+            let _dac_delay_frames = match sink.dac_delay_frames() {
                 Ok(frames) => frames,
                 Err(e) => {
                     if !dac_delay_warning_logged {
-                        eprintln!("event=outputd.dac_delay_unavailable detail={e:#}");
+                        eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
                         dac_delay_warning_logged = true;
                     }
-                    backend.dac_negotiated.buffer_frames as u64
+                    sink.dac_negotiated().buffer_frames as u64
                 }
             };
             // Real clip accounting (replaces the hardwired 0): the passthrough
@@ -337,20 +433,25 @@ fn run_alsa(
             if content_channels == CHANNELS as usize {
                 // Byte-identical stereo path: the content IS the reference.
                 ref_outputs.publish(&content_buf);
+            } else if sink.is_composite() {
+                // Existing composite monitor contract: pairwise child averages.
+                fold_reference_pairwise_composite(&content_buf, &mut reference_buf);
+                ref_outputs.publish(&reference_buf);
             } else {
                 // Wide sink: fold the driven lanes to the stereo reference.
                 fold_reference(&content_buf, content_channels, &mut reference_buf);
                 ref_outputs.publish(&reference_buf);
             }
             reference_sequence = reference_sequence.saturating_add(1);
-            state.mark_period(backend.counters(), reference_sequence, clipped);
+            period_clipped_samples = clipped;
+            state.mark_period(sink.counters(), reference_sequence, clipped);
         }
         if once {
             eprintln!(
                 "event=outputd.once frames_written={} reference_sequence={} clipped_samples={}",
-                backend.counters().dac_frames_written,
+                sink.counters().dac_frames_written,
                 reference_sequence,
-                last_clipped_samples,
+                period_clipped_samples,
             );
             return Ok(());
         }
@@ -363,80 +464,16 @@ fn run_alsa(
     Ok(())
 }
 
-fn run_alsa_dual_apple(
-    config: &Config,
-    state: &OutputdState,
-    once: bool,
-    shutdown: &Arc<AtomicBool>,
-) -> Result<()> {
-    let mut backend = PairedCompositeSink::new(config)?;
-    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
-    state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
-    state.mark_dual_apple_status(&backend.dual_status());
-    let content_channels = config.content_channels as usize;
-    let mut content_buf = vec![0i16; (config.period_frames as usize) * content_channels];
-    let mut reference_buf = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
-    let zero_period = vec![0i16; (config.period_frames as usize) * content_channels];
-    let prime_periods = prime_periods(
-        backend.dac_negotiated.buffer_frames,
-        backend.dac_negotiated.period_frames,
-    );
-    for _ in 0..prime_periods {
-        backend
-            .write_dual_period(&zero_period)
-            .context("priming dual Apple DACs with silence")?;
-    }
-    backend.start_dacs()?;
-    eprintln!(
-        "event=outputd.dual_apple.primed prime_periods={} buffer_frames={} period_frames={}",
-        prime_periods, backend.dac_negotiated.buffer_frames, backend.dac_negotiated.period_frames,
-    );
-    notify_ready(config)?;
-
-    let watchdog_interval = watchdog_interval();
-    let mut last_watchdog = Instant::now();
-    let mut dac_delay_warning_logged = false;
-    let mut reference_sequence = 0u64;
-
-    while !shutdown.load(Ordering::Relaxed) {
-        let _frames_read = backend.read_content_period(&mut content_buf)?;
-        backend.write_dual_period(&content_buf)?;
-        state.mark_dual_apple_status(&backend.dual_status());
-        downmix_dual_active_reference(&content_buf, &mut reference_buf);
-        ref_outputs.publish(&reference_buf);
-        reference_sequence = reference_sequence.saturating_add(1);
-        let _dac_delay_frames = match backend.dac_delay_frames() {
-            Ok(frames) => frames,
-            Err(e) => {
-                if !dac_delay_warning_logged {
-                    eprintln!("event=outputd.dual_apple.dac_delay_unavailable detail={e:#}");
-                    dac_delay_warning_logged = true;
-                }
-                backend.dac_negotiated.buffer_frames as u64
-            }
-        };
-        state.mark_period(backend.counters(), reference_sequence, 0);
-        if once {
-            eprintln!(
-                "event=outputd.once frames_written={} reference_sequence={} clipped_samples=0",
-                backend.counters().dac_frames_written,
-                reference_sequence,
-            );
-            return Ok(());
-        }
-        if last_watchdog.elapsed() >= watchdog_interval {
-            notify_systemd("WATCHDOG=1")?;
-            state.mark_watchdog_ping();
-            last_watchdog = Instant::now();
-        }
-    }
-    Ok(())
-}
-
-fn downmix_dual_active_reference(samples_4ch: &[i16], out_stereo: &mut [i16]) {
+fn fold_reference_pairwise_composite(samples_4ch: &[i16], out_stereo: &mut [i16]) {
     assert_eq!(samples_4ch.len() % 4, 0);
-    assert_eq!(out_stereo.len(), (samples_4ch.len() / 4) * (CHANNELS as usize));
-    for (frame, out) in samples_4ch.chunks_exact(4).zip(out_stereo.chunks_exact_mut(2)) {
+    assert_eq!(
+        out_stereo.len(),
+        (samples_4ch.len() / 4) * (CHANNELS as usize)
+    );
+    for (frame, out) in samples_4ch
+        .chunks_exact(4)
+        .zip(out_stereo.chunks_exact_mut(2))
+    {
         out[0] = average_i16(frame[0], frame[1]);
         out[1] = average_i16(frame[2], frame[3]);
     }
@@ -503,13 +540,13 @@ fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
 }
 
 fn read_content_bridge_period(
-    backend: &mut AlsaBackend,
+    sink: &mut RuntimeAlsaSink,
     bridge: &mut ContentBridge,
     read_buf: &mut [i16],
     out: &mut [i16],
 ) -> Result<()> {
     for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
-        match backend.read_content_available(read_buf)? {
+        match sink.read_content_available(read_buf)? {
             ContentRead::Frames(frames) => {
                 if frames == 0 {
                     break;
@@ -1002,14 +1039,11 @@ mod tests {
     }
 
     #[test]
-    fn dual_active_reference_downmixes_driver_lanes_to_stereo_monitor() {
+    fn fold_reference_pairwise_composite_matches_dual_active_reference_contract() {
         let mut out = vec![0; 4];
 
-        downmix_dual_active_reference(
-            &[
-                100, 300, 1000, 3000,
-                -100, -300, -1000, -3000,
-            ],
+        fold_reference_pairwise_composite(
+            &[100, 300, 1000, 3000, -100, -300, -1000, -3000],
             &mut out,
         );
 

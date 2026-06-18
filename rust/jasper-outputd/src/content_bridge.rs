@@ -60,11 +60,7 @@ pub struct ContentBridge {
 }
 
 impl ContentBridge {
-    pub fn new(
-        config: ContentBridgeConfig,
-        period_frames: u32,
-        channels: usize,
-    ) -> Result<Self> {
+    pub fn new(config: ContentBridgeConfig, period_frames: u32, channels: usize) -> Result<Self> {
         if channels == 0 {
             anyhow::bail!("content bridge channel count must be > 0");
         }
@@ -101,7 +97,9 @@ impl ContentBridge {
             return;
         }
         self.input_frames += frames as u64;
-        let dropped = self.ring.push_interleaved(&samples[..frames * self.channels]);
+        let dropped = self
+            .ring
+            .push_interleaved(&samples[..frames * self.channels]);
         if dropped > 0 {
             self.overrun_frames += dropped;
             if is_power_of_two(self.overrun_frames) {
@@ -267,9 +265,7 @@ impl ContentBridge {
         if should_log_transition(self.reset_count) {
             eprintln!(
                 "event=outputd.content_bridge.reset reason={} prior_fill_frames={} reset_count={}",
-                reason,
-                fill,
-                self.reset_count,
+                reason, fill, self.reset_count,
             );
         }
     }
@@ -314,9 +310,7 @@ impl ContentBridge {
 
     fn minimum_safe_fill_frames(&self) -> usize {
         let max_ratio = 1.0 + self.config.max_adjust_ppm as f64 / 1_000_000.0;
-        (self.period_frames as f64 * max_ratio).ceil() as usize
-            + SINC_RADIUS_FRAMES as usize
-            + 1
+        (self.period_frames as f64 * max_ratio).ceil() as usize + SINC_RADIUS_FRAMES as usize + 1
     }
 
     fn startup_prefill_frames(&self) -> usize {
@@ -389,8 +383,7 @@ impl AudioRing {
             }
             let dst = (self.write_frame as usize % self.capacity_frames) * self.channels;
             let src = frame * self.channels;
-            self.data[dst..dst + self.channels]
-                .copy_from_slice(&samples[src..src + self.channels]);
+            self.data[dst..dst + self.channels].copy_from_slice(&samples[src..src + self.channels]);
             self.write_frame += 1;
         }
         dropped
@@ -512,9 +505,7 @@ fn build_sinc_table() -> Vec<[f64; SINC_TAPS]> {
 }
 
 fn clamp_i16(value: f64) -> i16 {
-    value
-        .round()
-        .clamp(i16::MIN as f64, i16::MAX as f64) as i16
+    value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
 fn is_power_of_two(value: u64) -> bool {

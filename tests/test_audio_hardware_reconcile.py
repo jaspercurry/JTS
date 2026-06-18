@@ -371,7 +371,30 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):
-    result = _run_reconcile(tmp_path, DUAL_APPLE_LISTING, "--reason", "test")
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="A",
+        usb_path="1-1",
+        serial="left",
+    )
+    _fake_sys_output_card(
+        tmp_path,
+        card_index=2,
+        card_id="A_1",
+        usb_path="1-2",
+        serial="right",
+    )
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SYS_CLASS_SOUND": str(sys_class),
+            "JASPER_PROC_ASOUND": str(proc_asound),
+        },
+    )
 
     assert result.returncode == 0, result.stderr
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")

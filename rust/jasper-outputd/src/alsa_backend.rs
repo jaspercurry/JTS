@@ -311,12 +311,13 @@ impl PairedCompositeSink {
             .context("dual Apple sink missing DAC B PCM")?
             .clone();
 
-        let content = PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
-            format!(
-                "opening outputd active content capture PCM {}",
-                config.content_pcm
-            )
-        })?;
+        let content =
+            PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
+                format!(
+                    "opening outputd active content capture PCM {}",
+                    config.content_pcm
+                )
+            })?;
         let content_negotiated = configure_pcm(
             "active_content",
             &config.content_pcm,
@@ -519,11 +520,7 @@ impl PairedCompositeSink {
     }
 
     pub fn write_dual_period(&mut self, samples_4ch: &[i16]) -> Result<()> {
-        deinterleave_4ch_to_dual_stereo(
-            samples_4ch,
-            &mut self.period_a,
-            &mut self.period_b,
-        )?;
+        deinterleave_4ch_to_dual_stereo(samples_4ch, &mut self.period_a, &mut self.period_b)?;
         write_dac_fail_closed(
             &self.dac_a,
             &self.dac_a_pcm,
@@ -809,12 +806,7 @@ mod tests {
         let mut a = vec![0; 4];
         let mut b = vec![0; 4];
 
-        deinterleave_4ch_to_dual_stereo(
-            &[10, 11, 20, 21, 12, 13, 22, 23],
-            &mut a,
-            &mut b,
-        )
-        .unwrap();
+        deinterleave_4ch_to_dual_stereo(&[10, 11, 20, 21, 12, 13, 22, 23], &mut a, &mut b).unwrap();
 
         assert_eq!(a, vec![10, 11, 12, 13]);
         assert_eq!(b, vec![20, 21, 22, 23]);
