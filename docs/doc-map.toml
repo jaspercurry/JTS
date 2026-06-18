@@ -283,6 +283,7 @@ docs = [
   "docs/AEC-DIAG-02-observability.md",
   "docs/AEC-DIAG-03-timing-probe.md",
   "docs/AEC-DIAG-04-timing-results.md",
+  "docs/AEC-DIAG-06-xvf-format-level-profile.md",
   "docs/HANDOFF-aec.md",
   "docs/HANDOFF-barge-in.md",
   "docs/HANDOFF-speaker-output-reference.md",
