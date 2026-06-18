@@ -190,12 +190,7 @@ impl OutputdState {
             .store(dac.buffer_frames as u64, Ordering::Relaxed);
     }
 
-    pub fn mark_period(
-        &self,
-        counters: IoCounters,
-        reference_sequence: u64,
-        clipped_samples: u32,
-    ) {
+    pub fn mark_period(&self, counters: IoCounters, reference_sequence: u64, clipped_samples: u32) {
         let uptime_ms = self.uptime_ms();
         self.content_frames_read
             .store(counters.content_frames_read, Ordering::Relaxed);
@@ -509,9 +504,7 @@ impl OutputdState {
                 buf.push(',');
                 push_kv_str(&mut buf, "channel", &self.dac_content_channel);
                 buf.push(',');
-                buf.push_str(&format!(
-                    "\"trim_db\":{:.1}", self.dac_content_trim_db
-                ));
+                buf.push_str(&format!("\"trim_db\":{:.1}", self.dac_content_trim_db));
                 buf.push(',');
                 push_kv_bool(
                     &mut buf,
@@ -594,11 +587,7 @@ impl OutputdState {
                 buf.push(',');
                 push_kv_u64(&mut buf, "budget_frames", m.max_pending_frames);
                 buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "requests",
-                    m.requests.load(Ordering::Relaxed),
-                );
+                push_kv_u64(&mut buf, "requests", m.requests.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,
@@ -681,11 +670,7 @@ impl OutputdState {
             buf.push(',');
             push_kv_str_opt(&mut buf, "dac_b_pcm", self.dual_dac_b_pcm.as_deref());
             buf.push(',');
-            push_kv_bool(
-                &mut buf,
-                "linked",
-                self.dual_linked.load(Ordering::Relaxed),
-            );
+            push_kv_bool(&mut buf, "linked", self.dual_linked.load(Ordering::Relaxed));
             buf.push(',');
             push_kv_i64_opt(
                 &mut buf,
@@ -739,7 +724,11 @@ impl OutputdState {
         buf.push(',');
 
         buf.push_str(r#""reference_outputs":{"#);
-        push_kv_str(&mut buf, "speaker_reference_source", "outputd_final_electrical");
+        push_kv_str(
+            &mut buf,
+            "speaker_reference_source",
+            "outputd_final_electrical",
+        );
         buf.push(',');
         push_kv_bool(&mut buf, "speaker_reference_is_fallback", false);
         buf.push(',');

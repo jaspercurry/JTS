@@ -319,7 +319,10 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
     assert "outputd_active_content_capture" in config_rs
     assert "dual_apple_requires_pre_dsp_tts" not in main_rs
-    assert "run_alsa_dual_apple" in main_rs
+    assert "run_alsa_dual_apple" not in main_rs
+    assert "downmix_dual_active_reference" not in main_rs
+    assert "enum RuntimeAlsaSink" in main_rs
+    assert "Composite(PairedCompositeSink)" in main_rs
     assert "PairedCompositeSink::new(config)" in main_rs
     assert "deinterleave_4ch_to_dual_stereo" in alsa_rs
     assert "aborted on xrun/suspend" in alsa_rs
@@ -345,9 +348,11 @@ def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
 
     # Mono reference fold (1/N, clip-proof) + honest clip accounting.
     assert "fn fold_reference(" in main_rs
+    assert "fn fold_reference_pairwise_composite(" in main_rs
     assert "fn count_full_scale_samples(" in main_rs
     # The wide path folds; the 2ch path stays byte-identical (publishes content).
     assert "fold_reference(&content_buf, content_channels, &mut reference_buf);" in main_rs
+    assert "fold_reference_pairwise_composite(&content_buf, &mut reference_buf);" in main_rs
     assert "ref_outputs.publish(&content_buf);" in main_rs
 
 
@@ -432,28 +437,37 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     # Solo branch — unchanged pre-PR-2 ordering. The mark_period search
     # string is the solo call's exact one-line form so it can't bind to
     # the TTS branch's multi-line call.
-    content_read = run_alsa.index("backend.read_content_period(&mut content_buf)?;")
-    dac_write = run_alsa.index("backend.write_dac_period(&content_buf)?;")
+    content_read = run_alsa.index("sink.read_content_period(&mut content_buf)?;")
+    dac_write = run_alsa.index("sink.write_period(&content_buf)?;")
     # Width-2 (byte-identical) branch publishes the content directly; the wide
     # sink folds to a stereo reference first. Either way the publish follows the
     # DAC write (inv-A) and precedes the period mark.
     publish = run_alsa.index("ref_outputs.publish(&content_buf);")
+    composite_fold = run_alsa.index(
+        "fold_reference_pairwise_composite(&content_buf, &mut reference_buf);"
+    )
     # Solo branch now reports REAL clip accounting (a full-scale-sample count)
     # rather than the old hardwired 0, so the no-clip commissioning gate is not
     # vacuously green.
+    clipped = run_alsa.index("let clipped = count_full_scale_samples(&content_buf);")
     state = run_alsa.index(
-        "state.mark_period(backend.counters(), reference_sequence, clipped);"
+        "state.mark_period(sink.counters(), reference_sequence, clipped);"
     )
     assert content_read < dac_write < publish < state
+    assert dac_write < clipped < composite_fold < state
+    assert "state.mark_period(sink.counters(), reference_sequence, 0)" not in run_alsa
+    assert "clipped_samples=0" not in run_alsa
 
     # Bonded TTS branch — duck → prepare(mix) → DAC write → DAC-true
     # commit → post-mix reference publish → ledger-true state mark.
     duck = run_alsa.index("bridge.content_duck_gain()")
     prepare = run_alsa.index("core.prepare_period_with_content(&content_buf);")
-    tts_write = run_alsa.index("backend.write_dac_period(core.output_period())?;")
+    tts_write = run_alsa.index("sink.write_period(core.output_period())?;")
     commit = run_alsa.index("core.commit_prepared_period_with_dac_delay(")
     tts_publish = run_alsa.index("ref_outputs.publish(core.output_period());")
-    tts_state = run_alsa.index("report.clipped_samples,")
+    tts_state = run_alsa.index(
+        "state.mark_period(sink.counters(), reference_sequence, report.clipped_samples);"
+    )
     assert content_read < duck < prepare < tts_write < commit < tts_publish
     assert tts_publish < tts_state
 
@@ -468,36 +482,40 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
         1,
     )[0]
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
-    backend_open = run_alsa.index("let mut backend = AlsaBackend::new(config)?;")
+    sink_open = run_alsa.index("let mut sink = RuntimeAlsaSink::open(config)?;")
     primed = run_alsa.index(
-        ".context(\"priming outputd DAC with silence\")?;"
+        ".context(sink.prime_context())?;"
     )
-    started = run_alsa.index("backend.start_dac()?;")
+    started = run_alsa.index("sink.start()?;")
     ready = run_alsa.index("notify_ready(config)?;")
 
     assert 'notify_systemd("READY=1")' not in main_fn
     assert "notify_ready(config)?" not in main_fn
-    assert backend_open < primed < started < ready
+    assert sink_open < primed < started < ready
     assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs
     assert "fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32" in main_rs
-    assert "event=outputd.alsa.primed" in run_alsa
+    assert '"outputd.alsa.primed"' in main_rs
 
 
 def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
-    run_dual = main_rs.split("fn run_alsa_dual_apple(", 1)[1].split(
-        "fn downmix_dual_active_reference(",
+    sink_impl = main_rs.split("impl RuntimeAlsaSink", 1)[1].split(
+        "fn run_alsa(",
         1,
     )[0]
-    backend_open = run_dual.index("let mut backend = PairedCompositeSink::new(config)?;")
-    prime_count = run_dual.index("let prime_periods = prime_periods(")
-    prime_loop = run_dual.index("for _ in 0..prime_periods")
-    primed = run_dual.index(".context(\"priming dual Apple DACs with silence\")?;")
-    started = run_dual.index("backend.start_dacs()?;")
-    ready = run_dual.index("notify_ready(config)?;")
+    run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
+    composite_open = sink_impl.index("SinkMode::Composite")
+    paired_open = sink_impl.index("PairedCompositeSink::new(config)?")
+    sink_open = run_alsa.index("let mut sink = RuntimeAlsaSink::open(config)?;")
+    prime_count = run_alsa.index("let prime_periods = prime_periods(")
+    prime_loop = run_alsa.index("for _ in 0..prime_periods")
+    primed = run_alsa.index(".context(sink.prime_context())?;")
+    started = run_alsa.index("sink.start()?;")
+    ready = run_alsa.index("notify_ready(config)?;")
 
-    assert backend_open < prime_count < prime_loop < primed < started < ready
-    assert "event=outputd.dual_apple.primed" in run_dual
+    assert composite_open < paired_open
+    assert sink_open < prime_count < prime_loop < primed < started < ready
+    assert '"outputd.dual_apple.primed"' in main_rs
 
 
 def test_outputd_state_socket_is_bound_before_thread_spawn():

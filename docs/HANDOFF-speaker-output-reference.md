@@ -473,9 +473,12 @@ What is still intentionally not done:
 
 ## DAC-agnostic active-output transport (design-of-record)
 
-> **Status: design-of-record, 2026-06-16 — not yet built.** Finalized after a
-> multi-agent design pass (3 architects + 6 adversarial critics) and an external
-> hardware-grounded review. This is the canonical transport design for active
+> **Status: design-of-record, 2026-06-17 — Rust transport cleanup mostly built;
+> hardware verification pending.** Finalized after a multi-agent design pass
+> (3 architects + 6 adversarial critics) and an external hardware-grounded
+> review. The Stage-7 outputd cleanup now routes single ALSA and paired composite
+> through one `run_alsa` loop; Linux/ALSA and dual-Apple hardware regression are
+> still the required proof. This is the canonical transport design for active
 > crossover; the commissioning flow that rides it is in
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) "Single audio
 > path commissioning". The principle that governs every line below: **dispatch
@@ -497,51 +500,58 @@ NOT an outputd concern in active mode:** they enter at fan-in (stereo,
 pre-CamillaDSP — `jasper-voice.service` `JASPER_TTS_OUTPUTD_SOCKET` →
 `/run/jasper-fanin/tts.sock`), so voice rides the crossover/protection chain at
 every width. The active loop therefore needs **no** TTS lane; `OutputCore`/the
-TTS mixer stays conditional on `tts_socket_path` being set (a solo stereo
-speaker pays zero new resident RAM). The dual/active loop's real gaps versus the
-single path are the **DAC-true playout ledger** and **real clip accounting**
-(today `main.rs` hardwires `clipped_samples=0` on the dual path — see
-Observability) — both width-clean, both must move into the unified loop.
+TTS mixer stays conditional on `tts_socket_path` being set and is fail-closed to
+stereo single-ALSA output. The old dual/composite loop gap was **real clip
+accounting** (it hardwired `clipped_samples=0`) plus sharing the same
+reference/state path as single ALSA; the Stage-7 cleanup moved composite into
+the unified `run_alsa` loop so both sink shapes now record the written period's
+full-scale sample count.
 
-### Today's transport is welded to one DAC (the thing being generalized)
+### The transport debt this change paid down
 
-The only active-lane transport, `DualAppleBackend`
-(`rust/jasper-outputd/src/alsa_backend.rs`), is welded to two stereo USB DACs:
+The original active-lane transport, `DualAppleBackend`
+(`rust/jasper-outputd/src/alsa_backend.rs`), was welded to two stereo USB DACs:
 two child PCMs, `snd_pcm_link`, inter-DAC drift tracking,
-`deinterleave_4ch_to_dual_stereo` (ch0/1→DAC A, ch2/3→DAC B). DAC-side width is
-the compile-time `CHANNELS: u16 = 2` (`types.rs`); `content_channels` is
-hardcoded per `SinkMode` (`config.rs`); the active ALSA lane is fixed at
-`channels 4` wrapped in `type plug` (`deploy/alsa/asoundrc.jasper`); the cutover
-gate greps for `channels: 4` (`deploy/bin/jasper-audio-hardware-reconcile`).
-`SinkMode::DualApple` is itself the anti-pattern — a DAC's name in the transport
-enum. The generalization below pays down that debt rather than adding a twin.
+`deinterleave_4ch_to_dual_stereo` (ch0/1→DAC A, ch2/3→DAC B). Stage 1 renamed the
+shape to `PairedCompositeSink` and `SinkMode::Composite` while keeping the
+`dual_apple` wire value stable; Stage 7 removed the separate runtime loop and
+wrapped `PairedCompositeSink` behind `RuntimeAlsaSink` beside the coherent single
+`AlsaBackend`. The pair remains exactly two children. M>2 composite output is
+still out of scope.
 
 ### The change set (build to this)
 
-**1. Transport dispatches on clock-domain shape via a `DacSink` trait.** One loop
-body serves both widths; both get the ledger + clip path:
+**1. Transport dispatches on clock-domain shape via a small runtime sink
+boundary.** One loop body serves both widths; both get the state + reference +
+clip path:
 
 ```rust
-trait DacSink {
-    fn write_period(&mut self, samples_nch: &[i16]) -> Result<()>;
-    fn dac_delay_frames(&self) -> Result<u64>;
-    fn health(&self) -> DacSinkHealth;   // per-child state, delay deltas, xrun counts
-    fn channels(&self) -> u16;
+enum RuntimeAlsaSink {
+    Single(AlsaBackend),
+    Composite(PairedCompositeSink),
 }
-struct SingleAlsaSink { pcm: AlsaPcm, dac_channels: u16 }                  // any coherent N
-struct PairedCompositeSink { children: [AlsaPcm; 2], link: LinkState,     // exactly 2 children
-                             child_period_bufs: [Vec<i16>; 2] }            // preallocated, zero per-period alloc
+
+impl RuntimeAlsaSink {
+    fn content_channels(&self) -> u16;
+    fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize>;
+    fn write_period(&mut self, samples_nch: &[i16]) -> Result<()>;
+    fn start(&self) -> Result<()>;
+    fn dac_delay_frames(&self) -> Result<u64>;
+    fn mark_runtime_status(&self, state: &OutputdState);
+}
 ```
 
-- `SingleAlsaSink` = today's single backend with the **DAC-write** `CHANNELS=2`
+- `AlsaBackend` = today's single backend with the **DAC-write** `CHANNELS=2`
   literals replaced by runtime `dac_channels` at the enumerated write sites only
   (`alsa_backend.rs` open + `write_dac_period` framing). Content-read framing
-  keeps `CHANNELS=2`. **Width 2 is byte-identical to today.** Covers single Apple
-  (2ch), DAC8x (8ch), any future coherent single DAC — zero per-DAC code.
-- `PairedCompositeSink` = today's `DualAppleBackend`, renamed, made a `DacSink`,
-  child PCMs driven by `dac_channel_map` instead of hardcoded A/B. **Stays
+  follows the same runtime width. **Width 2 is byte-identical to today.** Covers
+  single Apple (2ch), DAC8x (8ch), any future coherent single DAC — zero per-DAC
+  code.
+- `PairedCompositeSink` = the renamed dual-Apple transport behind the same
+  boundary. It keeps the existing A/B child PCM env, `snd_pcm_link`,
+  delay-divergence guard, and fail-closed runtime-health behavior. **Stays
   two-child** — a pairwise drift guard cannot be half-`Vec`-ified. M>2 composite
-  is a genuinely *new* `DacSink` impl (explicitly out of scope; named in the
+  is a genuinely *new* sink impl (explicitly out of scope; named in the
   active-speaker doc), not a config row.
 - **No `single_alsa_multi` sink string.** Width is already carried by
   `active_outputd_lane_channels`; a second "is this wide?" field invites drift.
@@ -552,12 +562,11 @@ struct PairedCompositeSink { children: [AlsaPcm; 2], link: LinkState,     // exa
   emits it from `active_outputd_lane_channels`). `types.rs CHANNELS=2` stays as
   the reference/content-read/chip width.
 
-The loop body (single `run_alsa` over `Box<dyn DacSink>`): read N-channel content
-→ `sink.health()` (checked **before** writing — never write a period with a
-known-dead child) → `write_period` → ledger commit against
-`sink.dac_delay_frames()` → `fold_reference(content, &mut ref_mono, &plan)` →
-publish. `run_alsa_dual_apple` + `downmix_dual_active_reference` are **deleted
-last** (after the unified loop is hardware-verified).
+The loop body is now a single `run_alsa` over `RuntimeAlsaSink`: read N-channel
+content → `write_period` → mark sink runtime status → read DAC delay → publish
+the correct reference fold → `state.mark_period(..., clipped)`. The old
+`run_alsa_dual_apple` fork and `downmix_dual_active_reference` helper were
+deleted in the Stage-7 cleanup.
 
 **2. The AEC reference is mono — verified — so the fold is trivial.** Both
 consumers collapse the reference to mono: software AEC3 sums L+R→mono
@@ -577,8 +586,9 @@ uses L vs R separately.** Therefore:
   *uncorrelated* lanes — a woofer+sub share LF, L/R are correlated — so it can
   still clip; a clipped reference is uniquely harmful because the linear AEC
   cannot model the nonlinearity.) Accumulate in `i32`; the AEC adapts its own ERL
-  so the lower level costs nothing. The `PairwiseAverage` path for the existing
-  composite stays byte-identical to the deleted `downmix_dual_active_reference`
+  so the lower level costs nothing. The pairwise composite reference path is now
+  named `fold_reference_pairwise_composite` and stays byte-identical to the old
+  `downmix_dual_active_reference`: `[avg(ch0,ch1), avg(ch2,ch3)]` per frame
   (regression test asserts equality); the N-lane path is the new clip-proof sum.
   *Precondition note:* `1/N` is clip-proof **absolutely** (not relying on
   band-splitting). Band-splitting is why the reference rarely approaches the `N×`
@@ -747,9 +757,10 @@ rejected — see the "Stage 2a landed" callout above.)
 
 ### Observability
 
-- **Real clip accounting at every width** — replace the hardwired
-  `clipped_samples=0` so a clipping active period reports nonzero on `/state`
-  (the commissioning "no clip" gate is otherwise vacuously green).
+- **Real clip accounting at every width** — the Stage-7 cleanup removed the
+  hardwired `clipped_samples=0` composite path. A clipping active period now
+  reports nonzero on `/state` for single and paired-composite output alike (the
+  commissioning "no clip" gate is otherwise vacuously green).
 - **Width-agnostic `/state` block — decouple the wire string from the Rust type
   name.** The serialized `/state` value is a cross-language contract (Rust
   `state.rs` writes it; the Python doctor reads it). Renaming the internal type
@@ -1303,4 +1314,8 @@ datum: how much assistant audio was actually heard.
   bonded member mixes its own assistant audio in outputd after the
   snapcast round trip and before reference publication.
 
-Last verified: 2026-06-13 (solo fan-in TTS ownership and bonded-member outputd TTS ownership rechecked against rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path rechecked after `jasper/voice/turn_playback.py` extraction).
+Last verified: 2026-06-17 (Stage-7 outputd loop unification rechecked against
+rust/jasper-outputd; solo fan-in TTS ownership and bonded-member outputd TTS
+ownership previously rechecked against rust/jasper-outputd and HANDOFF-multiroom;
+voice playback seam path rechecked after `jasper/voice/turn_playback.py`
+extraction).

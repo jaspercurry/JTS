@@ -121,24 +121,33 @@
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > selection, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
-> `/sound/active-speaker/driver-measurement` and
-> `/sound/active-speaker/summed-validation` now persist the first product-grade
+> `/sound/active-speaker/driver-measurement`,
+> `/sound/active-speaker/driver-capture`,
+> `/sound/active-speaker/summed-validation`, and
+> `/sound/active-speaker/summed-capture` now persist the first product-grade
 > measurement evidence through `jasper.active_speaker.measurement` at
 > `/var/lib/jasper/active_speaker_measurements.json` with kind
 > `jts_active_speaker_measurements`. Driver evidence is bound to the current
 > saved physical target fingerprint: topology id, detected hardware, active
 > speaker group/mode, driver role, assigned DAC output, and current identity
-> confirmation. It also requires a matching accepted floor-level safe-playback
-> result, a non-clipping mic/calibration observation, and an operator outcome
-> that the correct driver was heard. If the saved speaker layout or output
-> assignment changes, old records stay in the file for audit but stop counting
-> toward readiness. Summed validation is speaker-group-specific and bound to the
-> current set of driver target fingerprints; it requires all drivers in that
-> active group to have current measurement evidence, stores the operator/mic
-> blend outcome plus optional polarity and delay notes, and never captures audio,
-> emits sound, reloads CamillaDSP, or treats imported research as measurement
-> truth. The UI presents this as the next human task after confirming outputs:
-> measure each driver, then validate that the combined crossover blends.
+> confirmation. The mic-capture path accepts a bounded browser WAV upload (or a
+> local path inside the active-speaker capture store for tests/server-side
+> capture), prunes the raw WAV store by count and bytes as new captures arrive,
+> analyzes it through `commissioning_capture.record_driver_acoustic_capture`, and records the real
+> `driver_acoustics` verdict block. A `present` verdict still requires a matching
+> accepted floor-level safe-playback result and non-clipping mic evidence before
+> it counts as captured; unusable/clipped captures record nothing and leave the
+> baseline locked. If the saved speaker layout or output assignment changes, old
+> records stay in the file for audit but stop counting toward readiness. Summed
+> validation is speaker-group-specific and bound to the current set of driver
+> target fingerprints; the product success path requires a current audible
+> combined-driver test plus a phone-mic summed capture analyzed through
+> `commissioning_capture.record_summed_acoustic_capture`. Manual summed outcomes
+> remain only for failure/problem notes and cannot unlock the active profile by
+> clicking a free-floating "sounds good" button. The UI presents this as the next
+> human task after confirming outputs: capture each driver, run the combined
+> test, record the summed mic capture, then save/apply the active profile when
+> backend permissions allow it.
 > `/sound/` also includes manual crossover settings for active-crossover
 > planning. The visible fields are the product source of truth: driver
 > names, sensitivity, safe low test limits, per-driver level trim, and active
@@ -343,11 +352,16 @@
 > cancellation suckout at the crossover. This implements the *gated-summed flat
 > check* (triad item 3 — a deep null in the normal summed response means a
 > polarity/delay problem), **not** the rigorous *inverted null-depth
-> optimization* (triad item 2, "Delay, Phase, and Null Verification" below). It
-> is analysis-only: the sweep-playback endpoint, the capture-upload endpoint that
-> calls `analyze_driver_capture` → `record_driver_measurement`, and the browser
-> capture UI (reusing `deploy/assets/shared/js/measurement-audio.js`) are not yet
-> wired and need on-device hardware to validate the acoustic path. Separately,
+> optimization* (triad item 2, "Delay, Phase, and Null Verification" below).
+> **Update, 2026-06-18:** the hardware-free product path is now wired after the
+> Stage-5 driver ramp: `/driver-capture` and `/summed-capture` accept bounded
+> WAV evidence with bounded raw-file retention, call the `commissioning_capture` bridge, and record real acoustic
+> verdicts into measurement state; the `/sound/` UI uses the shared
+> `measurement-audio.js` recorder for those submissions and no longer offers a
+> manual success click that can bypass summed mic evidence. This is still not a
+> JTS3 acoustic validation: the real sweep playback/capture timing, live phone
+> mic behavior, room noise, and driver response must be verified on hardware.
+> Separately,
 > the `/sound/` active-crossover setup copy was de-jargoned so no backend
 > vocabulary (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw
 > snake_case codes) reaches the household; `friendlySetupReason` now collapses
@@ -486,8 +500,9 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
    "DAC-agnostic active-output transport (design-of-record)".
 
-2. **Commissioning orchestration** (emitter wired; measurement loop pending). Per
-   driver: compile the preset from the saved crossover preview
+2. **Commissioning orchestration** (browser/API capture submission wired;
+   live sweep playback/capture validation pending). The target live sequence is:
+   per driver, compile the preset from the saved crossover preview
    (`staging.compile_preset_from_crossover_preview`), emit the production graph
    with a per-output mute mask
    (`camilla_yaml.emit_active_speaker_commissioning_config`, **built + wired**:
@@ -496,16 +511,22 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    of the unmasked startup emitter; the unmasked
    `emit_active_speaker_startup_config` is kept for the `startup-template` CLI),
    load it muted through the guarded
-   path, open `correction.coordinator.measurement_window()`, play an ESS sweep
-   into the production fan-in lane (`correction.playback.play_sweep`), capture
-   the phone mic in the browser (reuse
-   [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js)),
-   analyze with `active_speaker.driver_acoustics.analyze_driver_capture`
-   (**built** — per-driver verdict + real `observed_mic_dbfs`), and record via
-   `measurement.record_driver_measurement`. Advance per driver; then unmute all
-   for the summed check (`analyze_summed_crossover`, **built**); then freeze the
-   commissioned config as the durable profile (`baseline_profile.*`). Per-driver
-   isolation is the CamillaDSP **mute mask**, not a channel-targeted WAV — so
+   path, open the protected playback window, play an ESS sweep through the
+   production fan-in lane, capture the phone mic in the browser with
+   [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js),
+   submit the bounded WAV to `/driver-capture`, analyze with
+   `active_speaker.driver_acoustics.analyze_driver_capture`, and record via
+   `commissioning_capture.record_driver_acoustic_capture` →
+   `measurement.record_driver_measurement`. Advance per driver; then run the
+   combined-driver test, submit `/summed-capture`
+   (`analyze_summed_crossover`), and freeze the commissioned config as the
+   durable profile (`baseline_profile.*`) when the measurement gates are
+   complete. The server/UI path above is covered with synthetic capture fixtures;
+   the implemented hardware-free slice is the bounded WAV submit/analyze/record
+   and gate progression, not proof that JTS3 has emitted and captured the sweep.
+   The live playback window, browser mic timing, and actual speaker acoustics
+   still need on-device validation. Per-driver isolation is the CamillaDSP
+   **mute mask**, not a channel-targeted WAV — so
    `driver_acoustics.write_driver_sweep_wav` is superseded and removed when this
    lands. **Filters are designed to *acoustic* LR targets from the measured
    per-driver response — not blindly inserted as electrical LR biquads** (the
@@ -547,12 +568,15 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   1/N mono → stereo reference), real clip accounting replacing the hardwired 0
   (**1b landed**: a coherent single DAC of any width — DAC8x 8ch — rides the
   single path; width-2 is byte-identical; the wide path fails closed against the
-  stereo-only bridge/fifo/tts features). Migrate the `test_outputd_wiring.py`
-  contracts. **Deferred (coupled to the Stage-7 `run_alsa_dual_apple` deletion,
-  since it already works): the `DacSink` trait + folding the *composite* path
-  into the unified loop so it also gains the ledger + real clip + `PairwiseAverage`
-  fold.** *Red:* `cargo test --locked` failure (built on a Linux+ALSA box —
-  jts3 — since the crate needs system ALSA); the byte-identical width-2
+  stereo-only bridge/fifo/tts features); `RuntimeAlsaSink` folds the composite
+  path into the same `run_alsa` loop as single ALSA (**1c landed / Stage-7 code
+  cleanup**: `run_alsa_dual_apple` deleted, `downmix_dual_active_reference`
+  renamed to `fold_reference_pairwise_composite`, composite now records real
+  full-scale sample counts through `state.mark_period(..., clipped)`, while the
+  pairwise `[avg(ch0,ch1), avg(ch2,ch3)]` reference stays byte-identical).
+  `test_outputd_wiring.py` now pins the unified-loop contracts. *Red:*
+  `cargo test --locked` failure (built on a Linux+ALSA box — jts3 — since the
+  crate needs system ALSA); the byte-identical width-2 and pairwise-composite
   regression tests must pass.
 - **Stage 2 — reconciler + wide content lane, dry-run.** `kind`-dispatched
   `OutputTransportPlan` env; route from `dac_channel_map`; the
@@ -647,7 +671,11 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   woofer ramp is bench-gated on jts3 (amps off until confirmed); validation plan
   in the gap-1 increment.**
 - **Stage 6 — sweep + AEC-reference validation (gate that can fail the feature).**
-  Per-driver `driver_acoustics`. **Pre-gate (check before Stage 6, not during):**
+  Per-driver and summed `driver_acoustics` are now wired through the `/sound/`
+  browser/API path and baseline gates with synthetic captures. The remaining
+  proof is live: actual Stage-5 playback handoff into the sweep, phone-mic
+  capture quality/timing, and real driver/summed acoustic behavior on JTS3.
+  **Pre-gate (check before Stage 6, not during):**
   confirm there is **no sub latency outside CamillaDSP's alignment** — a plate-amp
   with its own DSP, a sealed-sub correction stage, anything downstream of the
   reference tap that adds group delay the fold can't see. That is the specific
@@ -660,9 +688,11 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   the sub from the reference fold, else (c) per-lane/per-band reference weighting
   (deferred end-state). *Red:* `/state.output.clipped_samples` not real/≈0, or
   low-band wake regression unresolved by (a)/(b).
-- **Stage 7 — freeze + delete the fork + dual-Apple regression.** Freeze baseline;
-  delete `run_alsa_dual_apple` + `downmix_dual_active_reference`; reboot →
-  deterministic boot into the active config with TTS; re-run dual-Apple
+- **Stage 7 — freeze + delete the fork + dual-Apple regression.** Code cleanup
+  landed 2026-06-17: `run_alsa_dual_apple` is gone, composite opens through
+  `RuntimeAlsaSink`, and the 4ch path now shares the single ALSA loop's
+  reference/clip/state accounting. Remaining hardware work: freeze baseline;
+  reboot → deterministic boot into the active config with TTS; re-run dual-Apple
   end-to-end on a dual-Apple Pi to prove `PairedCompositeSink` didn't regress the
   4ch path (now also gaining ledger + clip). *Red:* `/state` mismatch across
   reboot, or dual-Apple regression.
@@ -1454,4 +1484,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-17
+Last verified: 2026-06-18
