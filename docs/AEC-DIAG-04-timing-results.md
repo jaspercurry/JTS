@@ -143,7 +143,9 @@ regression.
 ## Best Low-Latency Candidate
 
 Use `outputd period=512, dac_buffer=1024` as the current low-latency stable
-candidate for the next diagnostic round.
+candidate for the next diagnostic round on the measured Apple USB-C dongle
+path. Do not treat this period/buffer pair, or any `SYS_DELAY` value below, as
+a universal DAC answer.
 
 Evidence:
 
@@ -158,6 +160,38 @@ Do not promote a non-default `SYS_DELAY` yet. `-64` was best for speech-like
 content, while `96` was best for noise. That split suggests either
 content-dependent chip behavior or an imperfect measurement harness, not a
 single clean timing solution.
+
+## Hardware Adaptability Implication
+
+This run should shape the production architecture as a profile-adaptive timing
+problem, not as an Apple-dongle tuning recipe. The final chip-AEC path must
+support Apple USB-C dongles, HiFiBerry/DAC HATs, DAC8x-style active profiles,
+multiple Apple-dongle composite outputs, and future USB DACs without hard-coded
+assumptions about a single sink.
+
+Preferred order of trust for future AEC enablement:
+
+1. Live timing measurement and outputd `/state` timing fields for the active
+   output profile.
+2. Reconciler/config-owned profile defaults and capability gates.
+3. Per-profile calibrated residual trim only after dynamic timing has been
+   exhausted.
+4. Graceful degraded or unsupported states when the active DAC cannot provide
+   reliable timing evidence.
+
+That implies the output profile, not a shell-only tweak, should own any
+codified calibration artifact. `jasper-outputd` should remain the final
+production output owner and the source of production timing health. The
+diagnostic taps used here, including outputd UDP reference captures and
+chip-ref tee WAVs, should remain diagnostic evidence unless they are promoted
+through an explicit production design.
+
+Doctor and validation should eventually report chip-AEC status per active DAC
+profile, for example `supported`, `needs-calibration`, `degraded`, or
+`unsupported`, with the reason tied to measurable timing/reference constraints.
+Supported profiles should work out of the box when timing is measurable; new or
+unsupported DACs should enter a calibration workflow whose artifacts are
+codified back into the hardware profile path.
 
 ## Remaining Unknowns
 
@@ -176,15 +210,25 @@ single clean timing solution.
   convergence latch and gross attenuation, not long-window drift.
 - The live installed build still lacks the timing fields; they were observed
   through a temporary diagnostic outputd binary from `origin/main`.
+- This run covered one physical output path. The same conclusions must be
+  re-validated, or turned into profile-specific calibration artifacts, before
+  enabling chip AEC by default on other DAC/HAT/composite output profiles.
 
 ## Recommendation
 
-Proceed with `512/1024` as the low-latency outputd transport candidate, but do
-one small timing-telemetry fix before content A/B/C: improve the chip-ref tee
-probe so each run has an aligned capture window or an explicit sequence/time
-anchor. The current outputd UDP timing and state health are good enough to keep
-moving, but the chip-ref timing evidence is too ambiguous to use as the
-decider for content changes.
+Proceed with `512/1024` as the low-latency outputd transport candidate for the
+measured Apple USB-C path, but make one timing/alignment fix before content
+A/B/C: improve production timing telemetry so each run has an aligned
+reference/capture window or an explicit sequence/time anchor. The current
+outputd UDP timing and state health are good enough to keep diagnostics moving,
+but the chip-ref timing evidence is too ambiguous to use as the decider for
+content changes or cross-DAC defaults.
+
+Before generalizing chip AEC beyond this measured path, add a
+profile-adaptive gate: outputd reports active-profile timing health, reconcile
+selects supported/default/degraded behavior from the hardware profile, and
+doctor exposes whether chip AEC is supported, needs calibration, degraded, or
+unsupported for the active DAC.
 
 After that telemetry fix, run content A/B/C at `512/1024` with:
 
