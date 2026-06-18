@@ -112,6 +112,7 @@ pub struct Config {
     pub chip_ref_sample_rate: u32,
     pub chip_ref_period_frames: u32,
     pub chip_ref_buffer_frames: u32,
+    pub chip_ref_tee_path: Option<String>,
     pub reference_udp_target: Option<String>,
     pub stream_id: u64,
     pub control_socket_path: Option<String>,
@@ -441,6 +442,7 @@ impl Config {
             chip_ref_sample_rate,
             chip_ref_period_frames,
             chip_ref_buffer_frames,
+            chip_ref_tee_path: env_optional("JASPER_OUTPUTD_CHIP_REF_TEE_PATH"),
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
@@ -680,6 +682,7 @@ mod tests {
             assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
             assert!(cfg.chip_ref_pcm.is_none());
+            assert!(cfg.chip_ref_tee_path.is_none());
             assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.control_socket_path.is_none());
             // Multi-room round-trip lane is OFF by default (solo contract).
@@ -779,6 +782,10 @@ mod tests {
                 ("JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES", Some("320")),
                 ("JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES", Some("1280")),
                 (
+                    "JASPER_OUTPUTD_CHIP_REF_TEE_PATH",
+                    Some("/tmp/outputd-chip-ref.s16le"),
+                ),
+                (
                     "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
                     Some("127.0.0.1:9891"),
                 ),
@@ -794,6 +801,10 @@ mod tests {
                 assert_eq!(cfg.chip_ref_sample_rate, 16_000);
                 assert_eq!(cfg.chip_ref_period_frames, 320);
                 assert_eq!(cfg.chip_ref_buffer_frames, 1280);
+                assert_eq!(
+                    cfg.chip_ref_tee_path.as_deref(),
+                    Some("/tmp/outputd-chip-ref.s16le")
+                );
                 assert_eq!(cfg.reference_udp_target.as_deref(), Some("127.0.0.1:9891"));
             },
         );

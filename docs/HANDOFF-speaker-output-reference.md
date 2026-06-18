@@ -442,6 +442,16 @@ What exists:
   journal spam. The dashboard labels the two xrun
   counters as content/DAC, since a content-capture recovery is a
   different risk from a physical-output recovery.
+  Outputd also exposes passive DAC/chip-reference timing diagnostics
+  for AEC bring-up: `dac.snd_pcm_delay_*` and
+  `reference_outputs.chip_ref_writer.*` report DAC presentation delay,
+  chip-ref queue depth, ALSA write progress/delay, drop/xrun/recovery
+  counts, and reference-sequence lag. Details and field units live in
+  [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md). The
+  optional `JASPER_OUTPUTD_CHIP_REF_TEE_PATH` raw-sample tee is
+  diagnostic only, should point under `/run/jasper-outputd` or
+  `/var/lib/jasper` in the packaged systemd sandbox, and must not be
+  treated as a production reference path.
   When the opt-in content bridge is enabled, STATUS also reports
   bridge mode, lock state, ring fill/min/max, target fill, ppm ratio,
   input/output/silence frames, underrun/overrun frames, resyncs,

@@ -5,7 +5,7 @@
 //! transport with `JASPER_OUTPUTD_BACKEND=alsa`, reading
 //! CamillaDSP's post-DSP loopback lane and writing the DAC directly.
 
-use std::io;
+use std::io::{self, Write};
 use std::mem;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::RawFd;
@@ -234,12 +234,12 @@ impl RuntimeAlsaSink {
 
 fn run_alsa(
     config: &Config,
-    state: &OutputdState,
+    state: &Arc<OutputdState>,
     once: bool,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut sink = RuntimeAlsaSink::open(config)?;
-    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
+    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown, Arc::clone(state))?;
     state.set_negotiated(sink.content_negotiated(), sink.dac_negotiated());
     sink.mark_runtime_status(state);
     // Content/DAC width is carried as data (coherent single DAC of any width);
@@ -396,7 +396,10 @@ fn run_alsa(
             sink.write_period(core.output_period())?;
             sink.mark_runtime_status(state);
             let dac_delay_frames = match sink.dac_delay_frames() {
-                Ok(frames) => frames,
+                Ok(frames) => {
+                    state.mark_dac_delay(frames);
+                    frames
+                }
                 Err(e) => {
                     if !dac_delay_warning_logged {
                         eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
@@ -408,15 +411,18 @@ fn run_alsa(
             // The ledger drains against ACTUAL DAC progress — the honest
             // max_audio_played_ms barge-in has never had from fanin.
             let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
-            ref_outputs.publish(core.output_period());
             reference_sequence = report.reference_sequence;
+            ref_outputs.publish(core.output_period(), reference_sequence);
             period_clipped_samples = report.clipped_samples;
             state.mark_period(sink.counters(), reference_sequence, report.clipped_samples);
         } else {
             sink.write_period(&content_buf)?;
             sink.mark_runtime_status(state);
             let _dac_delay_frames = match sink.dac_delay_frames() {
-                Ok(frames) => frames,
+                Ok(frames) => {
+                    state.mark_dac_delay(frames);
+                    frames
+                }
                 Err(e) => {
                     if !dac_delay_warning_logged {
                         eprintln!("event={} detail={e:#}", sink.dac_delay_unavailable_event());
@@ -430,19 +436,20 @@ fn run_alsa(
             // ceiling upstream — the honest signal the Stage-6 no-clip gate
             // needs (it was vacuously green against a hardwired 0).
             let clipped = count_full_scale_samples(&content_buf);
+            let next_reference_sequence = reference_sequence.saturating_add(1);
             if content_channels == CHANNELS as usize {
                 // Byte-identical stereo path: the content IS the reference.
-                ref_outputs.publish(&content_buf);
+                ref_outputs.publish(&content_buf, next_reference_sequence);
             } else if sink.is_composite() {
                 // Existing composite monitor contract: pairwise child averages.
                 fold_reference_pairwise_composite(&content_buf, &mut reference_buf);
-                ref_outputs.publish(&reference_buf);
+                ref_outputs.publish(&reference_buf, next_reference_sequence);
             } else {
                 // Wide sink: fold the driven lanes to the stereo reference.
                 fold_reference(&content_buf, content_channels, &mut reference_buf);
-                ref_outputs.publish(&reference_buf);
+                ref_outputs.publish(&reference_buf, next_reference_sequence);
             }
-            reference_sequence = reference_sequence.saturating_add(1);
+            reference_sequence = next_reference_sequence;
             period_clipped_samples = clipped;
             state.mark_period(sink.counters(), reference_sequence, clipped);
         }
@@ -592,12 +599,13 @@ fn fake_counters(frames_written: u64) -> IoCounters {
 struct ReferenceSideOutputs {
     udp_socket: Option<UdpSocket>,
     udp_target: Option<SocketAddr>,
-    chip_tx: Option<SyncSender<Vec<i16>>>,
+    chip_tx: Option<SyncSender<ChipRefPacket>>,
     chip_downsampler: Option<ChipRefDownsampler>,
+    state: Arc<OutputdState>,
 }
 
 impl ReferenceSideOutputs {
-    fn new(config: &Config, shutdown: &Arc<AtomicBool>) -> Result<Self> {
+    fn new(config: &Config, shutdown: &Arc<AtomicBool>, state: Arc<OutputdState>) -> Result<Self> {
         let udp_target =
             match config.reference_udp_target.as_deref() {
                 Some(raw) => Some(raw.parse::<SocketAddr>().with_context(|| {
@@ -621,7 +629,9 @@ impl ReferenceSideOutputs {
                 config.chip_ref_sample_rate,
                 config.chip_ref_period_frames,
                 config.chip_ref_buffer_frames,
+                config.chip_ref_tee_path.clone(),
                 Arc::clone(shutdown),
+                Arc::clone(&state),
             )?)
         } else {
             None
@@ -646,10 +656,11 @@ impl ReferenceSideOutputs {
             } else {
                 None
             },
+            state,
         })
     }
 
-    fn publish(&mut self, stereo_samples: &[i16]) {
+    fn publish(&mut self, stereo_samples: &[i16], reference_sequence: u64) {
         if let (Some(sock), Some(target)) = (&self.udp_socket, self.udp_target) {
             if let Err(e) = sock.send_to(bytemuck_i16(stereo_samples), target) {
                 if e.kind() != io::ErrorKind::WouldBlock {
@@ -666,17 +677,35 @@ impl ReferenceSideOutputs {
             if dual_mono.is_empty() {
                 return;
             }
-            match tx.try_send(dual_mono) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
+            let frames = (dual_mono.len() / (CHANNELS as usize)) as u64;
+            let packet = ChipRefPacket {
+                samples: dual_mono,
+                reference_sequence,
+            };
+            self.state.mark_chip_ref_queue_admitted(frames);
+            match tx.try_send(packet) {
+                Ok(()) => {
+                    self.state.mark_chip_ref_enqueued(reference_sequence);
+                }
+                Err(TrySendError::Full(_packet)) => {
+                    self.state.mark_chip_ref_dequeued(frames);
+                    self.state.mark_chip_ref_dropped_full();
                     eprintln!("event=outputd.chip_ref.queue_full action=drop_period");
                 }
-                Err(TrySendError::Disconnected(_)) => {
+                Err(TrySendError::Disconnected(_packet)) => {
+                    self.state.mark_chip_ref_dequeued(frames);
+                    self.state.mark_chip_ref_dropped_disconnected();
                     eprintln!("event=outputd.chip_ref.disconnected action=drop_period");
                 }
             }
         }
     }
+}
+
+#[derive(Debug)]
+struct ChipRefPacket {
+    samples: Vec<i16>,
+    reference_sequence: u64,
 }
 
 #[derive(Debug)]
@@ -737,8 +766,10 @@ fn spawn_chip_ref_writer(
     sample_rate: u32,
     period_frames: u32,
     buffer_frames: u32,
+    tee_path: Option<String>,
     shutdown: Arc<AtomicBool>,
-) -> Result<SyncSender<Vec<i16>>> {
+    state: Arc<OutputdState>,
+) -> Result<SyncSender<ChipRefPacket>> {
     let (tx, rx) = mpsc::sync_channel(REF_OUTPUT_QUEUE_CAPACITY);
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     thread::Builder::new()
@@ -749,9 +780,11 @@ fn spawn_chip_ref_writer(
                 sample_rate,
                 period_frames,
                 buffer_frames,
+                tee_path.as_deref(),
                 &rx,
                 &shutdown,
                 ready_tx,
+                &state,
             );
             if let Err(e) = result {
                 eprintln!("event=outputd.chip_ref.failed detail={e:#}");
@@ -770,10 +803,13 @@ fn run_chip_ref_writer(
     sample_rate: u32,
     period_frames: u32,
     buffer_frames: u32,
-    rx: &Receiver<Vec<i16>>,
+    tee_path: Option<&str>,
+    rx: &Receiver<ChipRefPacket>,
     shutdown: &AtomicBool,
     ready_tx: SyncSender<Result<(), String>>,
+    state: &OutputdState,
 ) -> Result<()> {
+    let mut tee = open_chip_ref_tee(tee_path, state);
     let startup = (|| -> Result<PCM> {
         let (pcm, negotiated) = open_playback_pcm(
             "chip_ref",
@@ -787,7 +823,18 @@ fn run_chip_ref_writer(
             pcm_name, negotiated.sample_rate, negotiated.period_frames, negotiated.buffer_frames
         );
         let zero = vec![0i16; (period_frames as usize) * (CHANNELS as usize)];
-        write_playback_period(&pcm, pcm_name, &zero)?;
+        let mut report = PlaybackWriteReport::default();
+        let result = write_playback_period(&pcm, pcm_name, &zero, &mut report);
+        state.mark_chip_ref_write(
+            report.frames_written,
+            report.delay_frames,
+            None,
+            report.underruns,
+            report.xruns,
+            report.recoveries,
+            result.is_err(),
+        );
+        result?;
         if pcm.state() != State::Running {
             pcm.start().context("starting outputd chip-ref PCM")?;
         }
@@ -806,8 +853,22 @@ fn run_chip_ref_writer(
     };
     while !shutdown.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(samples) => {
-                if let Err(e) = write_playback_period(&pcm, pcm_name, &samples) {
+            Ok(packet) => {
+                let frames = (packet.samples.len() / (CHANNELS as usize)) as u64;
+                state.mark_chip_ref_dequeued(frames);
+                write_chip_ref_tee(&mut tee, &packet.samples, state);
+                let mut report = PlaybackWriteReport::default();
+                let result = write_playback_period(&pcm, pcm_name, &packet.samples, &mut report);
+                state.mark_chip_ref_write(
+                    report.frames_written,
+                    report.delay_frames,
+                    Some(packet.reference_sequence),
+                    report.underruns,
+                    report.xruns,
+                    report.recoveries,
+                    result.is_err(),
+                );
+                if let Err(e) = result {
                     eprintln!("event=outputd.chip_ref.write_failed detail={e:#}");
                 }
             }
@@ -818,7 +879,21 @@ fn run_chip_ref_writer(
     Ok(())
 }
 
-fn write_playback_period(pcm: &PCM, pcm_name: &str, samples: &[i16]) -> Result<()> {
+#[derive(Debug, Default)]
+struct PlaybackWriteReport {
+    frames_written: u64,
+    delay_frames: Option<u64>,
+    underruns: u64,
+    xruns: u64,
+    recoveries: u64,
+}
+
+fn write_playback_period(
+    pcm: &PCM,
+    pcm_name: &str,
+    samples: &[i16],
+    report: &mut PlaybackWriteReport,
+) -> Result<()> {
     let frames_total = samples.len() / (CHANNELS as usize);
     let io = pcm
         .io_i16()
@@ -830,6 +905,7 @@ fn write_playback_period(pcm: &PCM, pcm_name: &str, samples: &[i16]) -> Result<(
         match io.writei(&samples[offset..]) {
             Ok(n) => {
                 frames_done += n;
+                report.frames_written += n as u64;
                 if n == 0 {
                     recoveries += 1;
                     if recoveries > 3 {
@@ -840,6 +916,11 @@ fn write_playback_period(pcm: &PCM, pcm_name: &str, samples: &[i16]) -> Result<(
             Err(e) => {
                 let errno = e.errno();
                 if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                    report.xruns += 1;
+                    if errno == libc::EPIPE {
+                        report.underruns += 1;
+                    }
+                    report.recoveries += 1;
                     pcm.try_recover(e, true)
                         .context("recovering outputd chip-ref xrun")?;
                     recoveries += 1;
@@ -852,7 +933,42 @@ fn write_playback_period(pcm: &PCM, pcm_name: &str, samples: &[i16]) -> Result<(
             }
         }
     }
+    if let Ok(delay) = pcm.delay() {
+        report.delay_frames = Some(delay.max(0) as u64);
+    }
     Ok(())
+}
+
+fn open_chip_ref_tee(path: Option<&str>, state: &OutputdState) -> Option<std::fs::File> {
+    let path = path?;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(file) => {
+            eprintln!("event=outputd.chip_ref.tee.enabled path={path}");
+            state.mark_chip_ref_tee_opened();
+            Some(file)
+        }
+        Err(e) => {
+            eprintln!("event=outputd.chip_ref.tee.open_failed path={path} detail={e}");
+            state.mark_chip_ref_tee_open_error();
+            None
+        }
+    }
+}
+
+fn write_chip_ref_tee(tee: &mut Option<std::fs::File>, samples: &[i16], state: &OutputdState) {
+    let Some(file) = tee.as_mut() else {
+        return;
+    };
+    if let Err(e) = file.write_all(bytemuck_i16(samples)) {
+        eprintln!("event=outputd.chip_ref.tee.write_failed detail={e}");
+        state.mark_chip_ref_tee_write_error();
+        *tee = None;
+    }
 }
 
 fn log_once(report: PeriodReport) {

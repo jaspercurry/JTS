@@ -1249,9 +1249,12 @@ topology XMOS designed the chip for.
 > clock-domain dependency — a methodology for evaluating any speaker
 > DAC." Before committing a DAC for a chip-AEC build, run the gate
 > there: measure ref→air→mic drift (and watch ref→air delay stability)
-> via `event=outputd.chip_ref.{queue_full,xrun}` — ≤~1 ppm clean ⇒
-> viable (the expected outcome given the shared crystal), tens of ppm or
-> a wandering delay ⇒ needs compensation.
+> while checking outputd chip-ref health via
+> `/state.outputd.reference_outputs.chip_ref_writer` (`dropped_periods_due_to_full_queue`,
+> `write_xrun_count`, `write_underrun_count`, `reference_sequence_lag`) and
+> `event=outputd.chip_ref.queue_full` / `event=outputd.chip_ref.write_failed` —
+> ≤~1 ppm clean ⇒ viable (the expected outcome given the shared crystal),
+> tens of ppm or a wandering delay ⇒ needs compensation.
 
 (USB-IN endpoint advertises 16 kHz S16_LE 2-channel only — verified
 empirically on 2026-05-21 against firmware `ua-io16-6ch-sqr` v2.0.8,

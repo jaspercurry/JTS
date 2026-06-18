@@ -13,7 +13,9 @@
 # to docs/historical/, which sits outside both the orphan sweep and
 # this routing map (see the moOde-removal and 2026-06-10
 # hw-validation runbooks there).
-session_artifacts = []
+session_artifacts = [
+  "docs/AEC-DIAG-01-baseline.md",
+]
 
 [[subsystem]]
 id = "docs-governance"
@@ -141,6 +143,7 @@ docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-barge-in.md",
   "docs/HANDOFF-speaker-output-reference.md",
+  "docs/AEC-DIAG-02-observability.md",
   "docs/HANDOFF-fan-in-daemon.md",
   "docs/HANDOFF-voice-music-control.md",
   "docs/HANDOFF-volume.md",
@@ -277,6 +280,7 @@ code = [
   "scripts/xvf-interrogate.sh",
 ]
 docs = [
+  "docs/AEC-DIAG-02-observability.md",
   "docs/HANDOFF-aec.md",
   "docs/HANDOFF-barge-in.md",
   "docs/HANDOFF-speaker-output-reference.md",
