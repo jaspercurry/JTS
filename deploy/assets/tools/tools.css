@@ -307,14 +307,27 @@
   font-size: 13px;
   color: var(--text);
 }
-.tool-guide h2,
-.tool-guide h3 {
+.tool-guide {
+  max-width: 960px;
+}
+.tool-guide__lede {
+  margin: 0 0 18px;
+  max-width: 780px;
+}
+.tool-guide__section {
+  padding-top: 18px;
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.tool-guide__section:first-of-type {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: 0;
+}
+.tool-guide h2 {
   margin: 0 0 10px;
   font-family: var(--font-display);
   color: var(--text);
-}
-.tool-guide h3 {
-  margin-top: 18px;
   font-size: 16px;
 }
 .tool-guide p,
@@ -322,6 +335,19 @@
   color: var(--muted);
   font-size: 14px;
   line-height: 1.55;
+}
+.tool-guide p {
+  margin: 0;
+}
+.tool-guide ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.tool-guide li + li {
+  margin-top: 6px;
+}
+.tool-guide code {
+  color: var(--text);
 }
 
 .status-line {
