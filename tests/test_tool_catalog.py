@@ -10,19 +10,18 @@ from __future__ import annotations
 import json
 import types
 
-from jasper.tools import ToolRegistry
+from jasper.tools import Tool, ToolDefinition, ToolRegistry
 from jasper.tools.bus import make_bus_tools
 from jasper.tools.catalog import (
     _CATALOG_HIDDEN,
     CATALOG_SCHEMA_VERSION,
-    _SETUP_URLS,
     _build_pack_payloads,
     _full_catalog_registry,
     build_catalog,
     write_catalog,
 )
 from jasper.tools.citibike import make_citibike_tools
-from jasper.tools.packs import ToolDeps, register_packs
+from jasper.tools.packs import CapabilityPack, CatalogPack, ToolDeps, register_packs
 from jasper.tools.subway import make_subway_tools
 
 # The always-on tools (no backend gate) — audio + transport + spotify +
@@ -134,6 +133,79 @@ def test_catalog_includes_display_metadata_for_pack_first_ui():
     assert by_name["get_weather"]["prompt_customized"] is False
 
 
+def test_explicit_capability_pack_flows_through_catalog():
+    """A source-neutral pack reaches the catalog, not just dispatch."""
+    class RecordingExecutor:
+        async def execute(self, args):
+            return {"echo": args["text"]}
+
+    explicit = Tool(
+        definition=ToolDefinition(
+            name="contrib_echo",
+            description="Echo contributor input.",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+            labels=("contrib", "example"),
+            timeout=3.0,
+        ),
+        executor=RecordingExecutor(),
+    )
+    pack = CapabilityPack(
+        "contrib_echo",
+        lambda _d: [explicit],
+        category="Examples",
+        catalog_pack=CatalogPack(
+            "contrib-echo",
+            "Contributor Echo",
+            "Example contributor capability.",
+            setup_url="/contrib/",
+            setup_required=True,
+        ),
+    )
+    deps = ToolDeps(
+        volume_coordinator=None, renderer=None, router=None, weather=None,
+        spotify_device_name="JTS", spotify_setup_url="",
+        transit_tools=[], ha=None, timer_scheduler=None,
+        google_clients=types.SimpleNamespace(list_account_names=lambda: []),
+        wake_event_store=None,
+    )
+
+    live = ToolRegistry()
+    register_packs(
+        live,
+        deps,
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+        packs=(pack,),
+    )
+    cat = build_catalog(live, frozenset(), packs=(pack,))
+
+    row = cat["tools"][0]
+    assert row["name"] == "contrib_echo"
+    assert row["status"] == "active"
+    assert row["category"] == "Examples"
+    assert row["labels"] == ["contrib", "example"]
+    assert row["timeout"] == 3.0
+    assert row["pack"] == {
+        "id": "contrib-echo",
+        "title": "Contributor Echo",
+        "summary": "Example contributor capability.",
+        "setup_url": "/contrib/",
+    }
+    assert row["setup_url"] == "/contrib/"
+    assert row["requires_setup"] is False
+    assert cat["packs"][0]["id"] == "contrib-echo"
+
+    needs_setup = build_catalog(ToolRegistry(), frozenset(), packs=(pack,))
+    setup_row = needs_setup["tools"][0]
+    assert setup_row["status"] == "needs_setup"
+    assert setup_row["setup_url"] == "/contrib/"
+    assert setup_row["requires_setup"] is True
+
+
 def test_disabled_pack_disables_all_child_tools():
     cat = build_catalog(
         _full_live_registry(),
@@ -227,6 +299,25 @@ def test_needs_setup_setup_urls_map_to_right_wizard():
     assert by_name["get_volume"]["setup_url"] is None
 
 
+def test_setup_required_state_is_owned_by_pack_metadata():
+    cat = build_catalog(_minimal_live_registry(), frozenset())
+    by_name = {t["name"]: t for t in cat["tools"]}
+
+    # A future contributor should set CatalogPack(setup_required=True,
+    # setup_url=...) once, not add every child tool to a central table.
+    for name in (
+        "gmail_unread_summary",
+        "calendar_today_summary",
+        "home_assistant",
+        "get_subway_arrivals",
+        "get_bus_arrivals",
+        "get_citibike_status",
+    ):
+        pack = by_name[name]["pack"]
+        assert by_name[name]["setup_url"] == pack["setup_url"]
+        assert by_name[name]["requires_setup"] is True
+
+
 def test_configured_but_disabled_renders_off():
     disabled = frozenset({"get_weather"})
     by_name = {t["name"]: t for t in build_catalog(_full_live_registry(), disabled)["tools"]}
@@ -290,8 +381,15 @@ def test_write_catalog_fail_soft_on_unwritable_path(caplog):
     assert any("tool_catalog.write_failed" in r.message for r in caplog.records)
 
 
-def test_setup_url_keys_are_real_tool_names():
-    """Guard against a tool rename leaving a stale _SETUP_URLS key."""
-    catalog_names = set(_full_catalog_registry().tools.keys())
-    stale = set(_SETUP_URLS) - catalog_names
-    assert not stale, f"_SETUP_URLS keys not in the catalog: {sorted(stale)}"
+def test_pack_setup_required_metadata_has_setup_urls():
+    """A setup-required pack without a URL would strand needs_setup tools."""
+    from jasper.tools.packs import TOOL_PACKS
+
+    broken = [
+        p.name
+        for p in TOOL_PACKS
+        if p.catalog_pack is not None
+        and p.catalog_pack.setup_required
+        and not p.catalog_pack.setup_url
+    ]
+    assert not broken

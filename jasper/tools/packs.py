@@ -1,9 +1,9 @@
-"""Data-driven tool-pack registry (Pattern 2 — registry, not typed Config).
+"""Capability-pack registry (Pattern 2 — registry, not typed Config).
 
 `_build_registry` in jasper/voice/daemon_main.py used to hardcode one
 `for fn in make_X_tools(...): registry.register(fn)` per subsystem, with
 inline `if`-gating interleaved. This module lifts that into a flat,
-ordered tuple of ToolPack records the daemon WALKS — mirroring
+ordered tuple of CapabilityPack records the daemon WALKS — mirroring
 jasper.transit.active_transit's per-provider guard so one broken pack
 contributes no tools instead of crashing the daemon.
 
@@ -15,7 +15,9 @@ This is NOT a DI container. `deps` is exactly the bundle
 _build_registry already received, frozen into one typed object. Ordinary
 tools own no connection pool, so there is deliberately NO managed-result
 / aclose lifecycle here (that lives in jasper.transit.ActiveTransit for
-the one subsystem that needs it).
+the one subsystem that needs it). A capability pack is the copyable
+contributor boundary: metadata, setup gate, runtime builder, tool
+definitions/executors, and catalog grouping live together here.
 """
 from __future__ import annotations
 
@@ -45,7 +47,7 @@ if TYPE_CHECKING:
     from ..volume_coordinator import VolumeCoordinator
     from ..wake_events import WakeEventStore
     from ..weather import WeatherClient
-    from . import ToolRegistry, UntrustedContentMonitor
+    from . import Tool, ToolRegistry, UntrustedContentMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +91,9 @@ class ToolDeps:
 class CatalogPack:
     """Optional user-facing grouping for the /tools/ catalog.
 
-    This is deliberately separate from ToolPack itself: ToolPack is the
-    internal registration/fault-isolation unit, while a CatalogPack is a
+    This is deliberately separate from CapabilityPack itself:
+    CapabilityPack is the internal registration/fault-isolation unit,
+    while a CatalogPack is a
     display affordance. Multiple internal packs may share one catalog pack
     (calendar + gmail -> Google), and some internal packs may expose their
     tools as standalone rows by leaving this unset.
@@ -99,20 +102,39 @@ class CatalogPack:
     title: str
     summary: str
     setup_url: str | None = None
+    # True when tools in this catalog pack can be present in the codebase
+    # but withheld until the user configures/opts into the pack. Pack-level
+    # metadata owns that setup state; the catalog must not grow per-tool
+    # setup URL tables as new packs arrive.
+    setup_required: bool = False
 
 
 @dataclass(frozen=True)
-class ToolPack:
-    """One subsystem's tools. `build(deps)` returns the decorated
-    callables to register (in order); `gate(deps)` lifts the inline
-    `if` that used to wrap the call in _build_registry. Default gate is
-    always-on — the common case where the factory self-gates on a None
-    dep (home_assistant, diagnostic, transit's per-provider build)."""
+class CapabilityPack:
+    """One copyable capability pack.
+
+    `build(deps)` returns either decorated Python callables or already-built
+    `Tool` objects (ToolDefinition + ToolExecutor), in registration order.
+    That keeps `@tool` authoring ergonomic while making the explicit
+    definition/executor boundary the unit future generated or contributor
+    packs compile into.
+
+    `gate(deps)` lifts the inline `if` that used to wrap the call in
+    _build_registry. Default gate is always-on — the common case where the
+    factory self-gates on a None dep (home_assistant, diagnostic, transit's
+    per-provider build).
+    """
     name: str
-    build: Callable[[ToolDeps], Iterable[Callable[..., Any]]]
+    build: Callable[[ToolDeps], Iterable[Callable[..., Any] | "Tool"]]
     gate: Callable[[ToolDeps], bool] = lambda _d: True
     category: str = "Utilities"
     catalog_pack: CatalogPack | None = None
+
+
+# Compatibility name for the Phase-1 registry. New code should use
+# CapabilityPack; old tests/imports keep working until the rename can be
+# made without churn.
+ToolPack = CapabilityPack
 
 
 @dataclass(frozen=True)
@@ -184,12 +206,14 @@ NYC_TRANSIT_PACK = CatalogPack(
     "NYC Transit",
     "Subway, bus, and Citi Bike arrivals from the configured NYC stops.",
     setup_url="/transit/",
+    setup_required=True,
 )
 HOME_ASSISTANT_PACK = CatalogPack(
     "home-assistant",
     "Home Assistant",
     "Relay household device, scene, script, and state requests.",
     setup_url="/ha/",
+    setup_required=True,
 )
 TIMERS_PACK = CatalogPack(
     "timers",
@@ -201,6 +225,7 @@ GOOGLE_PACK = CatalogPack(
     "Google",
     "Read calendar and Gmail data from linked Google accounts.",
     setup_url="/google/",
+    setup_required=True,
 )
 WEATHER_PACK = CatalogPack(
     "weather",
@@ -222,16 +247,16 @@ DIAGNOSTIC_PACK = CatalogPack(
 
 # Order is load-bearing — see module docstring. Mirrors the legacy
 # _build_registry sequence exactly.
-TOOL_PACKS: tuple[ToolPack, ...] = (
-    ToolPack(
+TOOL_PACKS: tuple[CapabilityPack, ...] = (
+    CapabilityPack(
         "audio", lambda d: make_audio_tools(d.volume_coordinator),
         category="Music", catalog_pack=PLAYBACK_PACK,
     ),
-    ToolPack(
+    CapabilityPack(
         "transport", lambda d: make_transport_tools(d.renderer, d.router),
         category="Music", catalog_pack=PLAYBACK_PACK,
     ),
-    ToolPack(
+    CapabilityPack(
         "spotify",
         lambda d: make_spotify_tools(
             d.router,
@@ -242,7 +267,7 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
         category="Music",
         catalog_pack=SPOTIFY_PACK,
     ),
-    ToolPack(
+    CapabilityPack(
         "weather",
         lambda d: make_weather_tools(d.weather),
         category="Utilities",
@@ -251,7 +276,7 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
     # Transit is pre-built by transit.active_transit in run() (it owns an
     # aclose lifecycle the daemon needs); here we only register the flat
     # list. Each provider already self-gated, so an empty list is correct.
-    ToolPack(
+    CapabilityPack(
         "transit", lambda d: d.transit_tools,
         category="Transit", catalog_pack=NYC_TRANSIT_PACK,
     ),
@@ -259,20 +284,20 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
     # on a None dep), so no pack gate is needed — default always-on
     # reproduces today's behavior exactly. home_assistant reads the shared
     # taint monitor to gate consequential actions.
-    ToolPack(
+    CapabilityPack(
         "home_assistant",
         lambda d: make_home_assistant_tools(d.ha, monitor=d.untrusted_monitor),
         category="Smart Home",
         catalog_pack=HOME_ASSISTANT_PACK,
     ),
-    ToolPack(
+    CapabilityPack(
         "time",
         lambda _d: make_time_tools(),
         category="Utilities",
         catalog_pack=TIME_PACK,
     ),
     # timer's factory does NOT self-gate on None, so the gate is load-bearing.
-    ToolPack(
+    CapabilityPack(
         "timer",
         lambda d: make_timer_tools(d.timer_scheduler),
         gate=lambda d: d.timer_scheduler is not None,
@@ -281,21 +306,21 @@ TOOL_PACKS: tuple[ToolPack, ...] = (
     ),
     # calendar + gmail stamp the shared taint monitor when they return
     # third-party text (arming home_assistant's confirmation window).
-    ToolPack(
+    CapabilityPack(
         "calendar",
         lambda d: make_calendar_tools(d.google_clients, monitor=d.untrusted_monitor),
         gate=_google_ready,
         category="Productivity",
         catalog_pack=GOOGLE_PACK,
     ),
-    ToolPack(
+    CapabilityPack(
         "gmail",
         lambda d: make_gmail_tools(d.google_clients, monitor=d.untrusted_monitor),
         gate=_google_ready,
         category="Productivity",
         catalog_pack=GOOGLE_PACK,
     ),
-    ToolPack(
+    CapabilityPack(
         "diagnostic",
         lambda d: make_diagnostic_tools(d.wake_event_store),
         category="System",
@@ -310,6 +335,7 @@ def register_packs(
     *,
     disabled: "frozenset[str] | None" = None,
     disabled_packs: "frozenset[str] | None" = None,
+    packs: Iterable[CapabilityPack] | None = None,
 ) -> list[PackOutcome]:
     """Walk TOOL_PACKS in order; gate, build, and register each pack's
     tools onto `registry`. Each pack's build runs behind try/except for
@@ -325,7 +351,11 @@ def register_packs(
     NOT a failure (no cue). None (default) reads the SSOT file fail-safe;
     pass explicit sets in tests.
 
-    Returns one PackOutcome per pack (in TOOL_PACKS order) so the
+    `packs` defaults to TOOL_PACKS. Tests and future contributor loaders can
+    pass an explicit ordered pack list without patching this module or
+    editing daemon_main.py.
+
+    Returns one PackOutcome per pack (in pack order) so the
     registration result is observable beyond the journal — the daemon
     stashes it on the registry and surfaces it via STATUS ->
     /state.voice.tool_packs, and jasper-doctor cross-checks it. `tool_count`
@@ -340,7 +370,8 @@ def register_packs(
         if disabled_packs is None:
             disabled_packs = state.disabled_packs
     outcomes: list[PackOutcome] = []
-    for pack in TOOL_PACKS:
+    selected_packs = TOOL_PACKS if packs is None else tuple(packs)
+    for pack in selected_packs:
         if not pack.gate(deps):
             outcomes.append(PackOutcome(pack.name, "skipped"))
             continue
@@ -359,8 +390,13 @@ def register_packs(
             and pack.catalog_pack.id in disabled_packs
         )
         registered = 0
-        for fn in fns:
-            t = registry.register(fn)
+        for item in fns:
+            from . import Tool
+            t = (
+                registry.register_tool(item)
+                if isinstance(item, Tool)
+                else registry.register(item)
+            )
             registry.tool_packs[t.name] = pack.name
             if pack_disabled or t.name in disabled:
                 # Registered, then removed by user choice — keeps the
