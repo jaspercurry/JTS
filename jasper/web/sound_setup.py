@@ -1590,7 +1590,7 @@ def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
 
     try:
         payload = _commission_tone_mux_command("AUTO")
-    except Exception as exc:  # noqa: BLE001 - baseline apply must remain durable.
+    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
         logger.warning(
             "event=sound.active_speaker_source_auto action=restore reason=%s "
             "status=failed error=%s",
@@ -1691,7 +1691,7 @@ def _commission_tone_signal_plan(
     if bound_preset is None:
         try:
             bound_preset = load_active_speaker_preset()
-        except Exception as exc:  # noqa: BLE001 - fail closed before playback.
+        except (OSError, ValueError, TypeError) as exc:
             return {
                 "artifact_schema_version": 1,
                 "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
@@ -2158,7 +2158,7 @@ async def _active_speaker_play_summed_commission_tone(
             frequency_hz=frequency_hz,
             duration_s=duration_s,
         )
-    except Exception as exc:  # noqa: BLE001 - fail before opening the graph.
+    except (OSError, TypeError, ValueError) as exc:
         return _summed_playback_with_issue(
             artifact_playback,
             issue=_commission_tone_issue(exc),

@@ -2303,7 +2303,7 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
 
 
 async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
-    async def fake_apply_baseline_profile(*args, **kwargs):  # noqa: ARG001
+    async def fake_apply_baseline_profile(_topology, **_kwargs):
         return {
             "status": "applied",
             "apply": {"result": "success"},
