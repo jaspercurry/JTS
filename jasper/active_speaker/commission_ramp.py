@@ -959,8 +959,20 @@ async def record_ramp_operator_ack(
     confirmed_roles = set(ramp_state.get("confirmed_roles") or [])
     aborted: dict[str, Any] | None = None
 
-    if outcome == "heard_correct_driver":
-        # The driver was heard correctly — record it confirmed for the
+    # A "heard correct" ACK only genuinely confirms the floor when safe_playback
+    # ACCEPTED it: no blocking issues AND the per-driver tri-state actually sits
+    # at ``floor_confirmed`` (it advanced this call, or was already confirmed for
+    # a louder step on the same driver). Without this gate a REJECTED confirm —
+    # e.g. a stale ``playback_id`` from a racing auto-retry — still marked the
+    # role confirmed, and ``confirmed_roles`` is the woofer-before-tweeter
+    # ordering authority, so a tweeter step could proceed before the woofer was
+    # truly heard. Fail closed: anything short of an accepted confirm does NOT
+    # advance the ordering memory.
+    floor_status = (safe.get("quiet_start") or {}).get("status")
+    floor_confirmed_ok = not safe_issues and floor_status == "floor_confirmed"
+
+    if outcome == "heard_correct_driver" and floor_confirmed_ok:
+        # Heard correctly and the floor confirm was accepted — record it for the
         # woofer-before-tweeter ordering, release the per-step gate, and re-mute
         # the transient graph when the operator surface gave us a loader seam.
         confirmed_roles.add(str(pending.get("role")))
@@ -972,9 +984,20 @@ async def record_ramp_operator_ack(
                 state_path=commission_load_state_path,
                 **({"validate": validate} if validate is not None else {}),
             )
+    elif outcome == "heard_correct_driver":
+        # Operator said "heard correct" but safe_playback REJECTED the floor
+        # confirm. Do NOT advance the ordering memory; leave the step pending so
+        # the operator can re-confirm, and surface the safe issues to the caller.
+        new_pending = pending
+        status = "rejected"
     elif outcome in {"too_loud", "heard_wrong_driver"}:
         new_pending = None
         status = "aborted"
+        if outcome == "heard_wrong_driver":
+            # Hearing the WRONG driver at this step casts doubt on the role's
+            # identity — drop it from the ordering memory so a sibling step can't
+            # rely on a now-suspect earlier confirmation.
+            confirmed_roles.discard(str(pending.get("role")))
         if load_config is not None:
             aborted = await rollback_driver_commissioning_config(
                 load_config=load_config,
