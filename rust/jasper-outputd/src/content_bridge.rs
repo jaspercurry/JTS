@@ -323,10 +323,10 @@ impl ContentBridge {
         let phase = ((frac * SINC_PHASES as f64).floor() as usize).min(SINC_PHASES - 1);
         let coeffs = &self.sinc_table[phase];
         let mut acc = 0.0f64;
-        for tap in 0..SINC_TAPS {
+        for (tap, coeff) in coeffs.iter().enumerate().take(SINC_TAPS) {
             let offset = tap as i64 - SINC_RADIUS_FRAMES;
             let frame = center + offset;
-            acc += self.ring.sample(frame, channel) as f64 * coeffs[tap];
+            acc += self.ring.sample(frame, channel) as f64 * coeff;
         }
         clamp_i16(acc)
     }

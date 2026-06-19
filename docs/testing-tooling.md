@@ -134,10 +134,9 @@ node scripts/check-peq-parity.mjs   # asserts eq-math.js matches the fixture
 ```
 
 `tests/test_sound_peq_response.py` asserts the Python side matches the same
-fixture (and adds filter-theory sanity probes). Run the node check when you
-touch either implementation — if they drift, one side regressed. The Python
-half runs in normal `pytest`; the node half is a maintainer check (like the
-firmware builds below), not always-on CI.
+fixture (and adds filter-theory sanity probes). The `js` CI job runs the node
+check as part of the browser-module harness set; run it locally when touching
+either implementation so parity failures land before CI.
 
 ---
 

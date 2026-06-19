@@ -3049,12 +3049,16 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
 1. **Local preflight before every push.** Run `scripts/test-fast`. It
    catches undefined names / dead imports / obvious targeted breaks in
-   seconds instead of a CI round-trip. For substantial or risky work, also
-   run `scripts/test-merge` before publishing. Do *not* lean on a local
-   full-suite run as the only gate — on macOS the
-   `test_wifi_guardian_script.py` / `test_aec_reconcile.py` subprocess tests
-   can flake under load (posix_spawn `EMFILE`/`EAGAIN`); CI on Linux remains
-   the source of truth for the full suite.
+   seconds instead of a CI round-trip; `pre-commit run --all-files` covers
+   the low-noise Python and static-JS gates locally. For JS wizard edits,
+   `scripts/check-js-syntax.sh` mirrors CI's `node --check` loop. For Rust
+   edits, run Rustfmt locally and let CI be the source of truth for
+   Clippy/test on the ALSA-backed crates unless you're on a Linux host with
+   ALSA headers. For substantial or risky work, also run `scripts/test-merge`
+   before publishing. Do *not* lean on a local full-suite run as the only gate
+   — on macOS the `test_wifi_guardian_script.py` / `test_aec_reconcile.py`
+   subprocess tests can flake under load (posix_spawn `EMFILE`/`EAGAIN`); CI
+   on Linux remains the source of truth for the full suite.
 
 2. **Short-lived branches; rebase before you push/merge.** `git fetch origin`
    at the start, and rebase onto `origin/main` right before pushing and again
@@ -3065,10 +3069,10 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 3. **`main` is branch-protected.** The `pytest` check (the stable
    aggregate over the Python 3.11 / 3.12 / 3.13 matrix, with
    `ruff check .` and lenient `mypy` running in the 3.13 leg) — and the
-   path-aware `rust` check (cargo build of the audio daemons) — **must
-   pass before any PR merges**, enforced for admins too; force-pushes and
-   branch deletion are blocked. You cannot merge a red `main`; wait for
-   green. (Emergency override + the exact rule live in
+   path-aware `rust` check (Rustfmt, Clippy, and `cargo test` for the Rust
+   crates) — **must pass before any PR merges**, enforced for admins too;
+   force-pushes and branch deletion are blocked. You cannot merge a red
+   `main`; wait for green. (Emergency override + the exact rule live in
    [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection).)
 
 4. **A conflicted (DIRTY) PR cannot run CI at all.** GitHub builds checks
@@ -3082,13 +3086,14 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    excluded because it is the paid LLM suite) on Python 3.11, 3.12, and
    3.13; `ruff` and lenient `mypy` in the 3.13 pytest leg; the
    supply-chain provenance check; a `shell` job (`bash -n` over every
-   shell entry point + `shellcheck --severity=warning`); and a required
-   `rust` job. The `rust` job is path-aware on PRs: it runs full Cargo
-   only for Rust or Rust deploy/CI surfaces, but always runs on `main`
-   pushes. CI does **not** exercise real audio/mic/voice hardware or the
-   Pi-side install — those still need a deploy + `jasper-doctor` /
-   on-device check.
-   "Green CI" means
+   shell entry point + `shellcheck --severity=warning`), a `js` job
+   (`scripts/check-js-syntax.sh` plus the browser-module harnesses), and a
+   required pinned-toolchain `rust` job. The `rust` job is path-aware on PRs:
+   it runs `cargo fmt --all -- --check`, default Clippy with `-D warnings`,
+   and `cargo test --release --locked` for the Rust crates only for Rust or
+   Rust deploy/CI surfaces, but always runs on `main` pushes. CI does **not**
+   exercise real audio/mic/voice hardware or the Pi-side install — those
+   still need a deploy + `jasper-doctor` / on-device check. "Green CI" means
    "safe to merge," not "validated on hardware."
 
 6. **Workflow-file PRs: try the `gh` merge before assuming you can't.**

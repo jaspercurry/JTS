@@ -26,7 +26,7 @@ use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
-use jasper_outputd::state::{OutputdState, StateServer};
+use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -761,6 +761,15 @@ fn bytemuck_i16(samples: &[i16]) -> &[u8] {
     }
 }
 
+#[derive(Debug)]
+struct ChipRefWriterConfig<'a> {
+    pcm_name: &'a str,
+    sample_rate: u32,
+    period_frames: u32,
+    buffer_frames: u32,
+    tee_path: Option<&'a str>,
+}
+
 fn spawn_chip_ref_writer(
     pcm_name: String,
     sample_rate: u32,
@@ -776,11 +785,13 @@ fn spawn_chip_ref_writer(
         .name("outputd-chip-ref".to_string())
         .spawn(move || {
             let result = run_chip_ref_writer(
-                &pcm_name,
-                sample_rate,
-                period_frames,
-                buffer_frames,
-                tee_path.as_deref(),
+                ChipRefWriterConfig {
+                    pcm_name: &pcm_name,
+                    sample_rate,
+                    period_frames,
+                    buffer_frames,
+                    tee_path: tee_path.as_deref(),
+                },
                 &rx,
                 &shutdown,
                 ready_tx,
@@ -799,41 +810,40 @@ fn spawn_chip_ref_writer(
 }
 
 fn run_chip_ref_writer(
-    pcm_name: &str,
-    sample_rate: u32,
-    period_frames: u32,
-    buffer_frames: u32,
-    tee_path: Option<&str>,
+    config: ChipRefWriterConfig<'_>,
     rx: &Receiver<ChipRefPacket>,
     shutdown: &AtomicBool,
     ready_tx: SyncSender<Result<(), String>>,
     state: &OutputdState,
 ) -> Result<()> {
-    let mut tee = open_chip_ref_tee(tee_path, state);
+    let mut tee = open_chip_ref_tee(config.tee_path, state);
     let startup = (|| -> Result<PCM> {
         let (pcm, negotiated) = open_playback_pcm(
             "chip_ref",
-            pcm_name,
-            sample_rate,
-            period_frames,
-            buffer_frames,
+            config.pcm_name,
+            config.sample_rate,
+            config.period_frames,
+            config.buffer_frames,
         )?;
         eprintln!(
             "event=outputd.chip_ref.opened pcm={} sample_rate={} period_frames={} buffer_frames={}",
-            pcm_name, negotiated.sample_rate, negotiated.period_frames, negotiated.buffer_frames
+            config.pcm_name,
+            negotiated.sample_rate,
+            negotiated.period_frames,
+            negotiated.buffer_frames
         );
-        let zero = vec![0i16; (period_frames as usize) * (CHANNELS as usize)];
+        let zero = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
         let mut report = PlaybackWriteReport::default();
-        let result = write_playback_period(&pcm, pcm_name, &zero, &mut report);
-        state.mark_chip_ref_write(
-            report.frames_written,
-            report.delay_frames,
-            None,
-            report.underruns,
-            report.xruns,
-            report.recoveries,
-            result.is_err(),
-        );
+        let result = write_playback_period(&pcm, config.pcm_name, &zero, &mut report);
+        state.mark_chip_ref_write(ChipRefWrite {
+            frames_written: report.frames_written,
+            delay_frames: report.delay_frames,
+            underruns: report.underruns,
+            xruns: report.xruns,
+            recoveries: report.recoveries,
+            write_failed: result.is_err(),
+            ..ChipRefWrite::default()
+        });
         result?;
         if pcm.state() != State::Running {
             pcm.start().context("starting outputd chip-ref PCM")?;
@@ -858,16 +868,17 @@ fn run_chip_ref_writer(
                 state.mark_chip_ref_dequeued(frames);
                 write_chip_ref_tee(&mut tee, &packet.samples, state);
                 let mut report = PlaybackWriteReport::default();
-                let result = write_playback_period(&pcm, pcm_name, &packet.samples, &mut report);
-                state.mark_chip_ref_write(
-                    report.frames_written,
-                    report.delay_frames,
-                    Some(packet.reference_sequence),
-                    report.underruns,
-                    report.xruns,
-                    report.recoveries,
-                    result.is_err(),
-                );
+                let result =
+                    write_playback_period(&pcm, config.pcm_name, &packet.samples, &mut report);
+                state.mark_chip_ref_write(ChipRefWrite {
+                    frames_written: report.frames_written,
+                    delay_frames: report.delay_frames,
+                    reference_sequence: Some(packet.reference_sequence),
+                    underruns: report.underruns,
+                    xruns: report.xruns,
+                    recoveries: report.recoveries,
+                    write_failed: result.is_err(),
+                });
                 if let Err(e) = result {
                     eprintln!("event=outputd.chip_ref.write_failed detail={e:#}");
                 }

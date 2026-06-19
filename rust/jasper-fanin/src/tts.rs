@@ -20,13 +20,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 use crate::loudness::{
-    apply_gain_i16, clamp_tts_gain_db, gain_db_to_linear, linear_to_db,
-    AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
-    AssistantProfile, SegmentKind, MAX_TTS_GAIN_DB,
+    apply_gain_i16, clamp_tts_gain_db, gain_db_to_linear, linear_to_db, AssistantGainDecision,
+    AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, SegmentKind, MAX_TTS_GAIN_DB,
 };
 use crate::mixer::CHANNELS;
+use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
@@ -201,23 +200,17 @@ impl TtsMetrics {
                 None
             },
             source_peak_dbfs: if decision_seen {
-                unpack_optional_db(
-                    self.assistant_source_peak_dbfs_x10.load(Ordering::Relaxed),
-                )
+                unpack_optional_db(self.assistant_source_peak_dbfs_x10.load(Ordering::Relaxed))
             } else {
                 None
             },
             requested_gain_db: if decision_seen {
-                unpack_optional_db(
-                    self.assistant_requested_gain_db_x10.load(Ordering::Relaxed),
-                )
+                unpack_optional_db(self.assistant_requested_gain_db_x10.load(Ordering::Relaxed))
             } else {
                 None
             },
             peak_cap_gain_db: if decision_seen {
-                unpack_optional_db(
-                    self.assistant_peak_cap_gain_db_x10.load(Ordering::Relaxed),
-                )
+                unpack_optional_db(self.assistant_peak_cap_gain_db_x10.load(Ordering::Relaxed))
             } else {
                 None
             },
@@ -272,12 +265,18 @@ impl TtsMetrics {
                 (decision.profile_confidence.clamp(0.0, 1.0) * 100.0).round() as u64,
                 Ordering::Relaxed,
             );
-            self.assistant_baseline_lufs_x10
-                .store(pack_optional_db(Some(decision.baseline_lufs)), Ordering::Relaxed);
-            self.assistant_target_lufs_x10
-                .store(pack_optional_db(Some(decision.target_lufs)), Ordering::Relaxed);
-            self.assistant_source_lufs_x10
-                .store(pack_optional_db(Some(decision.source_lufs)), Ordering::Relaxed);
+            self.assistant_baseline_lufs_x10.store(
+                pack_optional_db(Some(decision.baseline_lufs)),
+                Ordering::Relaxed,
+            );
+            self.assistant_target_lufs_x10.store(
+                pack_optional_db(Some(decision.target_lufs)),
+                Ordering::Relaxed,
+            );
+            self.assistant_source_lufs_x10.store(
+                pack_optional_db(Some(decision.source_lufs)),
+                Ordering::Relaxed,
+            );
             self.assistant_source_peak_dbfs_x10.store(
                 pack_optional_db(Some(decision.source_peak_dbfs)),
                 Ordering::Relaxed,
@@ -290,8 +289,10 @@ impl TtsMetrics {
                 pack_optional_db(Some(decision.peak_cap_gain_db)),
                 Ordering::Relaxed,
             );
-            self.assistant_final_gain_db_x10
-                .store(pack_optional_db(Some(decision.final_gain_db)), Ordering::Relaxed);
+            self.assistant_final_gain_db_x10.store(
+                pack_optional_db(Some(decision.final_gain_db)),
+                Ordering::Relaxed,
+            );
         }
     }
 }
@@ -304,6 +305,15 @@ pub struct TtsInput {
     pub program_duck_db: f32,
     pub assistant_loudness: AssistantLoudnessConfig,
 }
+
+pub type TtsChannelBundle = (
+    SyncSender<QueuedTtsCommand>,
+    Receiver<QueuedTtsCommand>,
+    SyncSender<QueuedFlush>,
+    Receiver<QueuedFlush>,
+    TtsMetrics,
+    Arc<AtomicU64>,
+);
 
 pub struct TtsMixer {
     rx: Receiver<QueuedTtsCommand>,
@@ -404,8 +414,7 @@ impl TtsMixer {
                     if samples.is_empty() {
                         continue;
                     }
-                    let incoming_frames =
-                        (samples.len() / (CHANNELS as usize)) as u64;
+                    let incoming_frames = (samples.len() / (CHANNELS as usize)) as u64;
                     if self.pending_frames().saturating_add(incoming_frames)
                         > self.max_pending_frames
                     {
@@ -465,12 +474,8 @@ impl TtsMixer {
                     voice,
                     silence_target_lufs,
                 } => {
-                    self.loudness.prepare_context(
-                        provider,
-                        model,
-                        voice,
-                        silence_target_lufs,
-                    );
+                    self.loudness
+                        .prepare_context(provider, model, voice, silence_target_lufs);
                     self.metrics.mark_loudness(
                         self.loudness.content_short_lufs(),
                         self.loudness.content_anchor_lufs(),
@@ -525,14 +530,10 @@ impl TtsMixer {
         self.metrics.mark_program_duck_active(false);
     }
 
-    fn decide_segment_gain(
-        &mut self,
-        kind: SegmentKind,
-        profile: Option<AssistantProfile>,
-    ) -> f32 {
-        let decision =
-            self.loudness
-                .decide_gain(kind, self.current_gain_db, profile);
+    fn decide_segment_gain(&mut self, kind: SegmentKind, profile: Option<AssistantProfile>) -> f32 {
+        let decision = self
+            .loudness
+            .decide_gain(kind, self.current_gain_db, profile);
         let gain_db = decision.final_gain_db;
         log_assistant_loudness_decision(kind, &decision);
         self.metrics.mark_loudness(
@@ -630,14 +631,7 @@ pub fn spawn_tts_server(
     Ok(())
 }
 
-pub fn tts_channels(max_pending_frames: u64) -> (
-    SyncSender<QueuedTtsCommand>,
-    Receiver<QueuedTtsCommand>,
-    SyncSender<QueuedFlush>,
-    Receiver<QueuedFlush>,
-    TtsMetrics,
-    Arc<AtomicU64>,
-) {
+pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
     let (tx, rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
     let (flush_tx, flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
     let metrics = TtsMetrics::new(max_pending_frames);
@@ -792,12 +786,7 @@ impl FlushSummary {
 fn fetch_max(cell: &AtomicU64, value: u64) {
     let mut current = cell.load(Ordering::Relaxed);
     while value > current {
-        match cell.compare_exchange_weak(
-            current,
-            value,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
+        match cell.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => break,
             Err(next) => current = next,
         }
@@ -891,7 +880,7 @@ mod tests {
         TEST_LOGS.with(|logs| logs.borrow().clone())
     }
 
-    use std::io::{Cursor, Write as _};
+    use std::io::Cursor;
 
     fn run_tts_client_payload(
         payload: &[u8],
@@ -932,7 +921,10 @@ mod tests {
             read_command(&mut reader).unwrap(),
             Some(TtsCommand::ProgramDuckOn)
         );
-        assert_eq!(read_command(&mut reader).unwrap(), Some(TtsCommand::FlushSync));
+        assert_eq!(
+            read_command(&mut reader).unwrap(),
+            Some(TtsCommand::FlushSync)
+        );
         assert_eq!(
             read_command(&mut reader).unwrap(),
             Some(TtsCommand::ProgramDuckOff)
@@ -1217,13 +1209,15 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(handle.is_finished(), "FLUSH_SYNC client handler did not exit");
+        assert!(
+            handle.is_finished(),
+            "FLUSH_SYNC client handler did not exit"
+        );
         handle.join().unwrap();
         assert!(mixer.metrics.program_duck_active());
 
         mixer.program_duck_idle_release_ttl = Duration::from_millis(1);
-        mixer.program_duck_last_refresh =
-            Instant::now().checked_sub(Duration::from_secs(1));
+        mixer.program_duck_last_refresh = Instant::now().checked_sub(Duration::from_secs(1));
         assert!(!mixer.prepare_period());
         assert!(!mixer.metrics.program_duck_active());
     }
@@ -1246,8 +1240,7 @@ mod tests {
         })
         .unwrap();
         assert!(mixer.prepare_period());
-        mixer.program_duck_last_refresh =
-            Instant::now().checked_sub(Duration::from_secs(120));
+        mixer.program_duck_last_refresh = Instant::now().checked_sub(Duration::from_secs(120));
         tx.send(QueuedTtsCommand {
             epoch: 0,
             command: TtsCommand::Audio(vec![1, 2, 3, 4]),
@@ -1286,8 +1279,7 @@ mod tests {
         .unwrap();
         assert!(mixer.prepare_period());
         assert_eq!(mixer.pending_frames(), 2);
-        mixer.program_duck_last_refresh =
-            Instant::now().checked_sub(Duration::from_secs(1));
+        mixer.program_duck_last_refresh = Instant::now().checked_sub(Duration::from_secs(1));
 
         assert!(mixer.prepare_period());
         assert!(metrics.program_duck_active());
@@ -1317,8 +1309,7 @@ mod tests {
         .unwrap();
 
         assert!(mixer.prepare_period());
-        mixer.program_duck_last_refresh =
-            Instant::now().checked_sub(Duration::from_secs(1));
+        mixer.program_duck_last_refresh = Instant::now().checked_sub(Duration::from_secs(1));
         assert!(!mixer.prepare_period());
         assert!(!metrics.program_duck_active());
     }
@@ -1453,5 +1444,4 @@ mod tests {
         let _ = mixer.prepare_period();
         assert!(!mixer.content_meter_paused);
     }
-
 }

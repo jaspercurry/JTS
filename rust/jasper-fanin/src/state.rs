@@ -104,19 +104,29 @@ pub struct InputSnapshotSource {
     pub xrun_count: Arc<AtomicU64>,
 }
 
+pub struct StateServerConfig {
+    pub socket_path: PathBuf,
+    pub sample_rate: u32,
+    pub period_frames: u32,
+    pub input_buffer_frames: u32,
+    pub output_buffer_frames: u32,
+    pub output_pcm: String,
+    pub music_output_pcm: Option<String>,
+    pub tts_metrics: Option<TtsMetrics>,
+}
+
 impl StateServer {
-    pub fn new(
-        mixer: &Mixer,
-        heartbeat: Arc<Heartbeat>,
-        socket_path: PathBuf,
-        sample_rate: u32,
-        period_frames: u32,
-        input_buffer_frames: u32,
-        output_buffer_frames: u32,
-        output_pcm: String,
-        music_output_pcm: Option<String>,
-        tts_metrics: Option<TtsMetrics>,
-    ) -> Self {
+    pub fn new(mixer: &Mixer, heartbeat: Arc<Heartbeat>, config: StateServerConfig) -> Self {
+        let StateServerConfig {
+            socket_path,
+            sample_rate,
+            period_frames,
+            input_buffer_frames,
+            output_buffer_frames,
+            output_pcm,
+            music_output_pcm,
+            tts_metrics,
+        } = config;
         let inputs = mixer
             .inputs()
             .iter()
@@ -166,9 +176,8 @@ impl StateServer {
         // bind() would otherwise return -EADDRINUSE.
         let _ = std::fs::remove_file(&self.socket_path);
 
-        let listener = UnixListener::bind(&self.socket_path).with_context(|| {
-            format!("binding UDS socket at {}", self.socket_path.display())
-        })?;
+        let listener = UnixListener::bind(&self.socket_path)
+            .with_context(|| format!("binding UDS socket at {}", self.socket_path.display()))?;
         listener
             .set_nonblocking(true)
             .context("set_nonblocking on listener")?;
@@ -182,20 +191,14 @@ impl StateServer {
             match listener.accept() {
                 Ok((stream, _)) => {
                     if let Err(e) = self.handle_connection(stream) {
-                        warn!(
-                            "event=fanin.state_server.handle_failed detail={:#}",
-                            e
-                        );
+                        warn!("event=fanin.state_server.handle_failed detail={:#}", e);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(ACCEPT_POLL_INTERVAL);
                 }
                 Err(e) => {
-                    warn!(
-                        "event=fanin.state_server.accept_failed detail={}",
-                        e
-                    );
+                    warn!("event=fanin.state_server.accept_failed detail={}", e);
                     std::thread::sleep(ACCEPT_POLL_INTERVAL);
                 }
             }
@@ -221,16 +224,14 @@ impl StateServer {
         let response = match command {
             "STATUS" => self.snapshot_json(),
             "AUTO" => {
-                let previous =
-                    self.selected_input_index.swap(-1, Ordering::Relaxed);
+                let previous = self.selected_input_index.swap(-1, Ordering::Relaxed);
                 if previous != -1 {
                     info!("event=fanin.source_select selected=auto");
                 }
                 self.snapshot_json()
             }
             "NONE" => {
-                let previous =
-                    self.selected_input_index.swap(-2, Ordering::Relaxed);
+                let previous = self.selected_input_index.swap(-2, Ordering::Relaxed);
                 if previous != -2 {
                     info!("event=fanin.source_select selected=none");
                 }
@@ -370,11 +371,7 @@ impl StateServer {
         buf.push(',');
         push_kv_u64(&mut buf, "period_frames", self.period_frames as u64);
         buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "buffer_frames",
-            self.output_buffer_frames as u64,
-        );
+        push_kv_u64(&mut buf, "buffer_frames", self.output_buffer_frames as u64);
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -448,7 +445,11 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(&mut buf, "flushed_frames", metrics.flushed_frames());
                 buf.push(',');
-                push_kv_bool(&mut buf, "program_duck_active", metrics.program_duck_active());
+                push_kv_bool(
+                    &mut buf,
+                    "program_duck_active",
+                    metrics.program_duck_active(),
+                );
                 buf.push(',');
                 buf.push_str(r#""assistant_loudness":{"#);
                 let loudness = metrics.loudness_snapshot();
@@ -483,26 +484,11 @@ impl StateServer {
                 buf.push(',');
                 push_kv_f64_opt(&mut buf, "source_lufs", loudness.source_lufs, 1);
                 buf.push(',');
-                push_kv_f64_opt(
-                    &mut buf,
-                    "source_peak_dbfs",
-                    loudness.source_peak_dbfs,
-                    1,
-                );
+                push_kv_f64_opt(&mut buf, "source_peak_dbfs", loudness.source_peak_dbfs, 1);
                 buf.push(',');
-                push_kv_f64_opt(
-                    &mut buf,
-                    "requested_gain_db",
-                    loudness.requested_gain_db,
-                    1,
-                );
+                push_kv_f64_opt(&mut buf, "requested_gain_db", loudness.requested_gain_db, 1);
                 buf.push(',');
-                push_kv_f64_opt(
-                    &mut buf,
-                    "peak_cap_gain_db",
-                    loudness.peak_cap_gain_db,
-                    1,
-                );
+                push_kv_f64_opt(&mut buf, "peak_cap_gain_db", loudness.peak_cap_gain_db, 1);
                 buf.push(',');
                 push_kv_f64_opt(&mut buf, "final_gain_db", loudness.final_gain_db, 1);
                 buf.push('}');
@@ -516,17 +502,9 @@ impl StateServer {
 
         // watchdog object
         buf.push_str(r#""watchdog":{"#);
-        push_kv_u64(
-            &mut buf,
-            "pings_sent",
-            self.heartbeat.pings_sent(),
-        );
+        push_kv_u64(&mut buf, "pings_sent", self.heartbeat.pings_sent());
         buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "pings_skipped",
-            self.heartbeat.pings_skipped(),
-        );
+        push_kv_u64(&mut buf, "pings_skipped", self.heartbeat.pings_skipped());
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -726,17 +704,21 @@ mod tests {
     fn snapshot_json_reports_selected_input() {
         let server = make_test_server();
         assert!(server.snapshot_json().contains(r#""selected_input":null"#));
-        assert!(server.snapshot_json().contains(r#""selection_mode":"auto""#));
+        assert!(server
+            .snapshot_json()
+            .contains(r#""selection_mode":"auto""#));
         server.selected_input_index.store(1, Ordering::Relaxed);
-        assert!(
-            server
-                .snapshot_json()
-                .contains(r#""selected_input":"airplay""#)
-        );
-        assert!(server.snapshot_json().contains(r#""selection_mode":"select""#));
+        assert!(server
+            .snapshot_json()
+            .contains(r#""selected_input":"airplay""#));
+        assert!(server
+            .snapshot_json()
+            .contains(r#""selection_mode":"select""#));
         server.selected_input_index.store(-2, Ordering::Relaxed);
         assert!(server.snapshot_json().contains(r#""selected_input":null"#));
-        assert!(server.snapshot_json().contains(r#""selection_mode":"none""#));
+        assert!(server
+            .snapshot_json()
+            .contains(r#""selection_mode":"none""#));
     }
 
     #[test]
@@ -761,10 +743,7 @@ mod tests {
         client.shutdown(Shutdown::Write).unwrap();
         server.handle_connection(server_stream).unwrap();
 
-        assert_eq!(
-            server.selected_input_index.load(Ordering::Relaxed),
-            -2,
-        );
+        assert_eq!(server.selected_input_index.load(Ordering::Relaxed), -2,);
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         assert!(response.contains(r#""selection_mode":"none""#));
@@ -786,11 +765,7 @@ mod tests {
         let j = server.snapshot_json();
         let open_braces = j.matches('{').count();
         let close_braces = j.matches('}').count();
-        assert_eq!(
-            open_braces, close_braces,
-            "unbalanced braces in: {}",
-            j
-        );
+        assert_eq!(open_braces, close_braces, "unbalanced braces in: {}", j);
         let open_brackets = j.matches('[').count();
         let close_brackets = j.matches(']').count();
         assert_eq!(
