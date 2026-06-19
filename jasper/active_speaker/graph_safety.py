@@ -29,13 +29,15 @@ legitimately different ways and that difference must be preserved —
    that the text parser cannot read. The caller ``yaml.safe_load``s the
    read-back and hands the dict here.
 
-Both normalise to one :class:`GraphView`; the predicates run on the view, so
-the logic is shared while each source keeps its own parsing semantics. A third
-adapter for ``runtime_contract``'s candidate/unknown-graph ``yaml.safe_load``
-dialect lands with that module's migration — it carries its own
-``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object`` issue codes to
-preserve, so it is added there, driven by a real caller, rather than
-speculatively here.
+3. ``view_from_yaml_text`` — for ``runtime_contract``'s candidate/unknown graph:
+   ``yaml.safe_load`` of an emitted active config, accepting only the
+   ``channels: [..]`` list form (no scalar ``channel: N`` sugar). It collapses
+   the two parse-error states ``runtime_contract`` reports separately
+   (``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object``) into
+   ``parsed_ok=False``, so that caller re-derives the precise code.
+
+All normalise to one :class:`GraphView`; the predicates run on the view, so the
+logic is shared while each source keeps its own parsing semantics.
 
 Everything here is pure and **fail-closed**: an unparseable graph, a missing
 filter, or a mismatched wiring yields ``parsed_ok=False`` / ``False`` so a
@@ -49,6 +51,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+import yaml
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
@@ -116,6 +120,26 @@ def float_matches(value: Any, expected: float) -> bool:
         return abs(float(value) - expected) < 0.0001
     except (TypeError, ValueError):
         return False
+
+
+def float_value(value: Any) -> float | None:
+    """``value`` as a float, or ``None`` if it does not parse.
+
+    For threshold predicates (``freq > 0``, ``clip <= ceiling``) where a missing
+    or unparseable value must fail the check rather than raise. Mirrors
+    ``graph_evidence.float_value`` / ``truthy_bool`` — the two modules' shared
+    scalar vocabulary is slated to reconcile, but ``graph_safety`` stays a leaf
+    (stdlib + ``yaml`` only), so the helpers are duplicated here rather than
+    importing ``graph_evidence`` (which pulls in the emitter's filter names)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def truthy_bool(value: Any) -> bool:
+    """A CamillaDSP YAML boolean: ``True`` or the string ``"true"``."""
+    return value is True or (isinstance(value, str) and value.lower() == "true")
 
 
 # --------------------------------------------------------------------------- #
@@ -212,6 +236,48 @@ def _running_step_channels(step: dict[str, Any]) -> frozenset[int]:
     if isinstance(ch, int) and not isinstance(ch, bool):
         return frozenset({int(ch)})
     return frozenset()
+
+
+def view_from_yaml_text(text: str) -> GraphView:
+    """Adapter for a candidate/unknown graph parsed via ``yaml.safe_load``.
+
+    The dialect ``runtime_contract`` verifies: a JTS-emitted active-speaker
+    candidate config, re-parsed from its text with ``yaml.safe_load`` (so inline
+    ``parameters: {..}`` / ``channels: [..]`` arrive as real typed values, unlike
+    the line/indent ``view_from_emitted_text`` parser). It accepts ONLY the
+    ``channels: [..]`` list form — NOT CamillaDSP's scalar ``channel: N``
+    single-channel sugar that ``view_from_camilla_dict`` reads. The sugar is a
+    read-back artifact never present in a candidate graph, so a list-only reader
+    keeps candidate verification from silently accepting it (and matches the
+    deleted ``runtime_contract._pipeline_contains``, which was list-only too).
+
+    Fails closed: a YAML error or a non-mapping document yields
+    ``parsed_ok=False``. The two *distinct* parse-error codes ``runtime_contract``
+    reports — ``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object`` — are a
+    caller concern this collapses; the caller parses once more to distinguish
+    them. ``bool`` channels and ``None`` names are dropped, uniform with the
+    other adapters (the protective direction — a wiring check only gets stricter).
+    """
+    try:
+        config = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return GraphView(parsed_ok=False)
+    if not isinstance(config, dict):
+        return GraphView(parsed_ok=False)
+    steps: list[GraphPipelineStep] = []
+    pipeline = config.get("pipeline")
+    if isinstance(pipeline, list):
+        for step in pipeline:
+            if not isinstance(step, dict) or step.get("type") != "Filter":
+                continue
+            chans = step.get("channels")
+            if not isinstance(chans, list):
+                continue  # list form only — scalar `channel: N` sugar is ignored
+            channels = frozenset(
+                int(c) for c in chans if isinstance(c, int) and not isinstance(c, bool)
+            )
+            steps.append(GraphPipelineStep(channels, _names_tuple(step.get("names"))))
+    return GraphView(True, _filters_from_dict(config), tuple(steps))
 
 
 def view_from_emitted_text(text: str) -> GraphView:
@@ -383,3 +449,56 @@ def output_unmuted_and_wired(view: GraphView, index: int, *, mute_name: str) -> 
     )
     wired = pipeline_contains_chain(view, channels={index}, required_names=(mute_name,))
     return unmuted and wired
+
+
+def tweeter_guard_present(
+    view: GraphView,
+    *,
+    channels: set[int] | frozenset[int],
+    hp_name: str,
+    limiter_name: str,
+    limiter_clip_ceiling_db: float,
+) -> bool:
+    """True iff a protective high-pass + soft-clip limiter wrap ``channels`` (LOOSE).
+
+    The loose policy ``runtime_contract`` uses when re-proving a candidate
+    commissioning graph — deliberately wider than ``staging``'s exact-match guard,
+    which pins the emitter's exact Fc/order/clip via ``filter_param_matches`` and
+    composes inline. Here ``runtime_contract`` only needs to prove the tweeter is
+    *protected enough to be audible*, not that the graph is bit-identical to the
+    emitter, so the bounds are tolerances rather than equalities:
+
+    - high-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyHighpass`` with **any
+      positive** ``freq`` and ``order`` absent or ``>= 2``;
+    - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
+      *ceiling*, not equality) and a truthy ``soft_clip``;
+    - both filters wired to exactly ``channels`` in one pipeline step.
+
+    Fails closed (missing filter / wrong type / unwired -> ``False``). This is a
+    separate predicate, NOT a relaxation of the strict mute/HP primitives above,
+    so it cannot change ``staging``'s behaviour.
+    """
+    hp = view.filters.get(hp_name)
+    limiter = view.filters.get(limiter_name)
+    hp_params = hp.params if hp else {}
+    limiter_params = limiter.params if limiter else {}
+    hp_freq = float_value(hp_params.get("freq"))
+    hp_order = float_value(hp_params.get("order"))
+    limiter_clip = float_value(limiter_params.get("clip_limit"))
+    hp_ok = (
+        (hp.type if hp else None) == "BiquadCombo"
+        and str(hp_params.get("type") or "") == "LinkwitzRileyHighpass"
+        and hp_freq is not None
+        and hp_freq > 0.0
+        and (hp_order is None or hp_order >= 2.0)
+    )
+    limiter_ok = (
+        (limiter.type if limiter else None) == "Limiter"
+        and limiter_clip is not None
+        and limiter_clip <= limiter_clip_ceiling_db
+        and truthy_bool(limiter_params.get("soft_clip"))
+    )
+    wired = pipeline_contains_chain(
+        view, channels=channels, required_names=(hp_name, limiter_name)
+    )
+    return hp_ok and limiter_ok and wired
