@@ -380,6 +380,11 @@ impl OutputdState {
                     // second, where snd_pcm_delay measurement jitter swamps the
                     // ppm estimate. The estimator's window is tuned for ~1 Hz,
                     // so only feed once ~1 s of chip-ref frames has elapsed.
+                    // `mark_chip_ref_write` is called only from the single
+                    // chip-ref writer thread, so this load/compare/store gate
+                    // needs no compare-and-swap. (Single-DAC today; a future
+                    // multi-clock-domain composite sink would need a per-child
+                    // estimator + tick path, not one shared estimator.)
                     let interval = u64::from(chip_ref_rate.max(1));
                     let last_fed = self.sro_last_fed_chip_ref_frames.load(Ordering::Relaxed);
                     if chip_ref_written.saturating_sub(last_fed) >= interval {
@@ -1114,25 +1119,29 @@ impl OutputdState {
         // Passive chip-AEC clock drift (Layer 0). Observe-only: SRO estimate,
         // a thin verdict, and the latency budget outputd already knows. No
         // audio path is affected by anything in this block.
-        let (sro_ppm, sro_status, verdict, verdict_reason) = {
-            match self.sro_estimator.lock() {
-                Ok(est) => (
-                    est.sro_ppm(),
-                    est.status().as_str(),
-                    est.verdict().as_str(),
-                    est.verdict_reason(),
-                ),
-                // A poisoned lock should never happen (the estimator never
-                // panics), but never surface a panic from /state — degrade to
-                // the fallback verdict instead.
-                Err(_) => (
-                    None,
-                    crate::aec_clock::SroStatus::Untrusted.as_str(),
-                    crate::aec_clock::AecClockVerdict::Fallback.as_str(),
-                    "sro estimator lock poisoned".to_string(),
-                ),
-            }
+        // Read the Copy snapshot under the lock, then build the human-readable
+        // reason string AFTER releasing it — never allocate while the lock is
+        // held, so a /state query can't make the chip-ref writer wait on a heap
+        // allocation. (It is off the audio path either way, but this keeps the
+        // lock hold to a few non-allocating reads.)
+        let (sro_ppm, sro_status, verdict, poisoned) = match self.sro_estimator.lock() {
+            Ok(est) => (est.sro_ppm(), est.status(), est.verdict(), false),
+            // A poisoned lock should never happen (the estimator never panics),
+            // but never surface a panic from /state — degrade to fallback.
+            Err(_) => (
+                None,
+                crate::aec_clock::SroStatus::Untrusted,
+                crate::aec_clock::AecClockVerdict::Fallback,
+                true,
+            ),
         };
+        let verdict_reason = if poisoned {
+            "sro estimator lock poisoned".to_string()
+        } else {
+            crate::aec_clock::verdict_reason_for(sro_status, sro_ppm)
+        };
+        let sro_status = sro_status.as_str();
+        let verdict = verdict.as_str();
         let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
         let playback_queue_ms = frames_to_ms_opt(
             Some(self.dac_buffer_frames.load(Ordering::Relaxed)),
@@ -1772,6 +1781,42 @@ mod tests {
         assert!(
             j.contains(r#""chip_ref_sro_ppm":50."#) || j.contains(r#""chip_ref_sro_ppm":49."#),
             "expected ~50 ppm estimate in {j}"
+        );
+    }
+
+    #[test]
+    fn aec_clock_decimates_sub_interval_chip_ref_writes() {
+        // In production `mark_chip_ref_write` fires ~50 Hz, one ~320-frame
+        // chip-ref period per call. The estimator must be fed only ~1 Hz, so
+        // many sub-interval writes must NOT accumulate enough samples to lock:
+        // without decimation 100 feeds would lock; with it ~2 feeds stay
+        // observing. This pins the decimation gate.
+        let cfg = Config {
+            chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        let mut chip: u64 = 0;
+        let mut dac: u64 = 0;
+        for _ in 0..100u64 {
+            chip += 320; // one ~20 ms chip-ref period
+            dac += 960; // 48k/16k ratio, clock-coherent
+            state.mark_period(
+                IoCounters {
+                    dac_frames_written: dac,
+                    ..IoCounters::default()
+                },
+                1,
+                0,
+            );
+            state.mark_dac_delay(1024);
+            state.mark_chip_ref_write(320, Some(320), None, 0, 0, 0, false);
+        }
+        let j = state.snapshot_json();
+        assert!(
+            j.contains(r#""sro_estimator_status":"observing""#),
+            "100 sub-interval (~320-frame) writes decimate to ~2 feeds and must \
+             stay observing, not lock: {j}"
         );
     }
 }

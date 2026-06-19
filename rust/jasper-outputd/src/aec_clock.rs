@@ -46,6 +46,8 @@
 
 /// Below this absolute ppm a locked estimate is treated as clock-coherent;
 /// the chip reference needs no compensation. (Layer-1 verdict threshold.)
+/// PROVISIONAL: validate/tune per DAC profile on hardware (JTS3 HiFiBerry
+/// first). See docs/HANDOFF-chip-aec-portability.md.
 pub const SRO_COHERENT_PPM: f64 = 5.0;
 
 /// Ring capacity. At one sample per ~second this is a ~32 s window — long
@@ -194,6 +196,9 @@ impl SroEstimator {
         self.last_dac_consumed = Some(dac_consumed);
         self.last_chip_ref_consumed = Some(chip_ref_consumed);
 
+        // u64->f64 is lossless below 2^53 frames (~6000 years at 48 kHz), and
+        // the slope below uses mean-centered values, so ppm precision stays
+        // safe even at multi-billion cumulative frame counts.
         let sample = Sample {
             dac_seconds: dac_consumed / f64::from(crate::types::SAMPLE_RATE),
             chip_ref_seconds: chip_ref_consumed / f64::from(chip_ref_rate),
@@ -216,38 +221,16 @@ impl SroEstimator {
         self.sro_ppm
     }
 
-    /// Layer-1 verdict over the current estimate.
+    /// Layer-1 verdict over the current estimate. Delegates to the pure
+    /// [`verdict_for`] so callers (and the /state serializer) can classify
+    /// from a `(status, ppm)` snapshot without holding an `SroEstimator`.
     pub fn verdict(&self) -> AecClockVerdict {
-        match self.status {
-            SroStatus::Untrusted => AecClockVerdict::Fallback,
-            SroStatus::Observing => AecClockVerdict::Fallback,
-            SroStatus::Locked => match self.sro_ppm {
-                Some(ppm) if ppm.abs() < SRO_COHERENT_PPM => AecClockVerdict::Coherent,
-                Some(_) => AecClockVerdict::Compensable,
-                // Locked-without-estimate is unreachable, but never panic.
-                None => AecClockVerdict::Fallback,
-            },
-        }
+        verdict_for(self.status, self.sro_ppm)
     }
 
     /// Human-readable one-liner explaining the current verdict.
     pub fn verdict_reason(&self) -> String {
-        match self.verdict() {
-            AecClockVerdict::Coherent => format!(
-                "sro {:.1} ppm within coherent threshold ({:.1} ppm)",
-                self.sro_ppm.unwrap_or(0.0),
-                SRO_COHERENT_PPM,
-            ),
-            AecClockVerdict::Compensable => format!(
-                "sro {:.1} ppm exceeds coherent threshold ({:.1} ppm)",
-                self.sro_ppm.unwrap_or(0.0),
-                SRO_COHERENT_PPM,
-            ),
-            AecClockVerdict::Fallback => match self.status {
-                SroStatus::Observing => format!("observing: need {} samples to lock", MIN_SAMPLES,),
-                _ => "drift untrusted (counter non-monotonic or implausible)".to_string(),
-            },
-        }
+        verdict_reason_for(self.status, self.sro_ppm)
     }
 
     fn recompute(&mut self) {
@@ -315,6 +298,43 @@ impl SroEstimator {
         self.status = SroStatus::Untrusted;
         self.sro_ppm = None;
         (self.sro_ppm, self.status)
+    }
+}
+
+/// Pure Layer-1 classification of a `(status, ppm)` snapshot. Free function so
+/// the /state serializer and any future consumer (e.g. a Layer-2 compensator)
+/// can classify without holding an `SroEstimator`. NOTE: this only observes;
+/// Layer 2 owns the decision of how to *act* on a `Compensable` verdict.
+pub fn verdict_for(status: SroStatus, sro_ppm: Option<f64>) -> AecClockVerdict {
+    match status {
+        SroStatus::Untrusted | SroStatus::Observing => AecClockVerdict::Fallback,
+        SroStatus::Locked => match sro_ppm {
+            Some(ppm) if ppm.abs() < SRO_COHERENT_PPM => AecClockVerdict::Coherent,
+            Some(_) => AecClockVerdict::Compensable,
+            // Locked-without-estimate is unreachable, but never panic.
+            None => AecClockVerdict::Fallback,
+        },
+    }
+}
+
+/// Human-readable one-liner for a `(status, ppm)` snapshot. Allocates a
+/// `String`, so callers MUST invoke this OUTSIDE any estimator lock.
+pub fn verdict_reason_for(status: SroStatus, sro_ppm: Option<f64>) -> String {
+    match verdict_for(status, sro_ppm) {
+        AecClockVerdict::Coherent => format!(
+            "sro {:.1} ppm within coherent threshold ({:.1} ppm)",
+            sro_ppm.unwrap_or(0.0),
+            SRO_COHERENT_PPM,
+        ),
+        AecClockVerdict::Compensable => format!(
+            "sro {:.1} ppm exceeds coherent threshold ({:.1} ppm)",
+            sro_ppm.unwrap_or(0.0),
+            SRO_COHERENT_PPM,
+        ),
+        AecClockVerdict::Fallback => match status {
+            SroStatus::Observing => format!("observing: need {} samples to lock", MIN_SAMPLES),
+            _ => "drift untrusted (counter non-monotonic or implausible)".to_string(),
+        },
     }
 }
 
