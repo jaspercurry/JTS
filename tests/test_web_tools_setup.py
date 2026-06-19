@@ -637,6 +637,67 @@ def test_post_prompt_override_and_reset_stage_without_restart(tmp_path, monkeypa
     assert read_prompt_overrides(str(prompts)) == {}
 
 
+def test_post_prompt_equal_to_default_clears_override(tmp_path, monkeypatch):
+    """Editing a prompt back to the exact code default is a reset, not a
+    customization — otherwise prompt_customized() would stay true forever and
+    the 'customized' badge could only be cleared via the explicit Reset."""
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    prompts = tmp_path / "prompts.json"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "get_weather",
+            description="Default prompt",
+            default_description="Default prompt",
+            pack={"id": "weather", "title": "Weather", "summary": ""},
+        )],
+        "packs": [_pack("weather")],
+    })
+    handler = tools_setup._make_handler({
+        "catalog_path": str(cat),
+        "state_path": str(state),
+        "prompt_overrides_path": str(prompts),
+    })
+    # Customize first, then "edit" it back to the exact default.
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": "Custom"})
+    h.do_POST()
+    assert read_prompt_overrides(str(prompts)) == {"get_weather": "Custom"}
+
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": "Default prompt"})
+    h.do_POST()
+    assert h.status == 200
+    assert read_prompt_overrides(str(prompts)) == {}
+
+
+def test_post_prompt_rejects_oversized(tmp_path, monkeypatch):
+    """A pathological prompt paste is bounded so it can't blow the realtime
+    model's instructions+tools token ceiling."""
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    prompts = tmp_path / "prompts.json"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "get_weather",
+            description="Default prompt",
+            default_description="Default prompt",
+            pack={"id": "weather", "title": "Weather", "summary": ""},
+        )],
+        "packs": [_pack("weather")],
+    })
+    handler = tools_setup._make_handler({
+        "catalog_path": str(cat),
+        "state_path": str(state),
+        "prompt_overrides_path": str(prompts),
+    })
+    huge = "x" * (tools_setup.MAX_PROMPT_OVERRIDE_CHARS + 1)
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": huge})
+    h.do_POST()
+    assert h.status == 400
+    assert read_prompt_overrides(str(prompts)) == {}
+
+
 # --- POST /apply -----------------------------------------------------------
 
 def test_post_apply_restarts_once(tmp_path, monkeypatch):

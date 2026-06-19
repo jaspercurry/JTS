@@ -51,9 +51,10 @@ GET_CURRENT_TIME_DESCRIPTION = dedent(
 def make_time_tools() -> list[Tool]:
     """Return the time-tool list (currently one).
 
-    Factory shape mirrors the other tool modules so wiring in
-    `jasper.voice_daemon._build_tool_registry` looks uniform: every
-    tool module has a `make_*_tools(...)` entry point."""
+    Factory shape mirrors the other tool modules so the capability-pack
+    walk in `jasper.tools.packs.register_packs` looks uniform: every tool
+    module exposes a `make_*_tools(...)` entry point that a `CapabilityPack`
+    in `TOOL_PACKS` calls."""
 
     async def get_current_time() -> dict:
         now = datetime.now().astimezone()

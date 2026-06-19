@@ -2910,6 +2910,20 @@ swap models, change prompts, or refactor without regressions.
   [`tests/voice_eval/regression/`](tests/voice_eval/regression/).
   No exceptions. A tool with no scenario can't be reasoned about
   across model swaps.
+- **A new tool *family* is a capability pack, not a `daemon_main.py`
+  edit.** Add (or extend) a `CapabilityPack` in
+  [`jasper/tools/packs.py`](jasper/tools/packs.py)'s `TOOL_PACKS` —
+  metadata, `gate`, `build`, and catalog grouping live together there,
+  and the daemon walks the registry with zero per-pack knowledge. The
+  `build` factory is still a `make_*_tools(...)` (decorated `@tool`
+  callables) *or* explicit `Tool(ToolDefinition(...), PythonExecutor(...))`
+  objects — both cross the same boundary. Read
+  [`docs/tool-platform-plan.md`](docs/tool-platform-plan.md), copy the
+  starter at [`docs/examples/tool_pack_starter.py`](docs/examples/tool_pack_starter.py),
+  and follow the house style at `http://jts.local/tools/guide/`. A pack
+  that needs a *new* runtime collaborator still adds a field to `ToolDeps`
+  and wires it in `daemon_main._build_registry` — that one central touch is
+  expected.
 - **Every reported behavioural bug** (model hallucinates / skips a
   tool / misroutes / etc.) becomes a regression scenario *before*
   the fix lands. The scenario reproduces the bug; the fix turns it

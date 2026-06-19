@@ -42,6 +42,7 @@ import inspect
 import logging
 import re
 import time as _time
+import types
 import typing
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
@@ -256,8 +257,9 @@ class ToolDefinition:
     # behavior (today's fencing, taint-marking, and the consequential-action
     # confirmation are wired explicitly inside the tools). A test pins these
     # to current reality so they don't drift; the enforcement layer reads
-    # them when the store lands. (A natural follow-up is surfacing these in
-    # `to_manifest_entry()` below — deferred to keep this change focused.)
+    # them when the store lands. They are also surfaced in `to_manifest_entry()`
+    # below as a `risk_flags` block (manifest schema v2) so the catalog/store
+    # can read them without sending the model extra text.
     #   untrusted_output — the tool's RESULT can contain attacker-controllable
     #     third-party text (an injection SOURCE: gmail, calendar, a future
     #     web-fetch). Such tools fence their output and arm the taint window.
@@ -709,7 +711,14 @@ def _params_schema(fn: Callable[..., Any]) -> dict[str, Any]:
 
 def _annotation_to_schema(annotation: Any) -> dict[str, Any]:
     origin = typing.get_origin(annotation)
-    if origin is typing.Union:
+    # `typing.Union` matches Optional[X] / Union[...]; `types.UnionType` matches
+    # PEP 604 `X | None` syntax, which get_origin reports as a *separate* origin
+    # on Python 3.10-3.13 (the Pi runs 3.13). Both must unwrap a single non-None
+    # arm — otherwise an `int | None` tool param silently degrades to the
+    # catch-all {"type": "string"}, sending the model a wrong schema. `X | None`
+    # is the codebase's house style, so a copyable contributor pack would hit
+    # this first. (Python 3.14 unifies the two origins; we still support 3.11+.)
+    if origin is typing.Union or origin is types.UnionType:
         args = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(args) == 1:
             return _annotation_to_schema(args[0])

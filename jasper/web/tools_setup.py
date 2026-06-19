@@ -90,6 +90,14 @@ _JSON_BODY_LIMIT = 65536
 # later) restart picks it up.
 _APPLY_MIN_INTERVAL_SEC = 20.0
 
+# Upper bound on a single user-edited tool prompt override. The override text
+# ships verbatim to the realtime model, which has a hard instructions+tools
+# token ceiling (~16k on OpenAI Realtime), and tool descriptions already press
+# against it. 8000 chars (~2k tokens) sits well above the longest shipped
+# description (~3.8k chars) so a legitimate edit is never rejected, while a
+# pathological paste can't blow the model's budget.
+MAX_PROMPT_OVERRIDE_CHARS = 8000
+
 # Serializes the read-modify-write of tool_state.env and the apply timestamp
 # across the ThreadingHTTPServer's request threads, so two concurrent toggles
 # can't lose an update (last-writer-wins on the unserialized RMW).
@@ -695,14 +703,38 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if not prompt.strip():
                 send_proxy_json(self, b'{"error":"prompt cannot be blank"}', status=400)
                 return
+            if len(prompt) > MAX_PROMPT_OVERRIDE_CHARS:
+                send_proxy_json(
+                    self,
+                    json.dumps({
+                        "error": (
+                            f"prompt too long (max {MAX_PROMPT_OVERRIDE_CHARS} "
+                            "characters)"
+                        ),
+                    }).encode(),
+                    status=400,
+                )
+                return
             index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
             if name not in index:
                 send_proxy_json(self, b'{"error":"unknown tool"}', status=400)
                 return
+            # Editing a prompt back to the exact code default is a reset, not a
+            # customization: storing it would leave prompt_customized() true
+            # forever (the "customized" badge would never clear without an
+            # explicit Reset). Treat an equal-to-default save as deleting the
+            # override. default_description rides the overlaid catalog entry.
+            default_text = (index[name].get("default_description") or "").strip()
+            reset_to_default = prompt.strip() == default_text
             with _STATE_LOCK:
                 overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
-                if overrides.get(name) != prompt:
-                    overrides[name] = prompt
+                if reset_to_default:
+                    changed = overrides.pop(name, None) is not None
+                else:
+                    changed = overrides.get(name) != prompt
+                    if changed:
+                        overrides[name] = prompt
+                if changed:
                     try:
                         write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
                     except OSError as e:
@@ -715,7 +747,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         return
                     log_event(
                         logger, "tools.prompt_override_saved",
-                        name=name, client=self.address_string(),
+                        name=name, reset=reset_to_default,
+                        client=self.address_string(),
                     )
             pending = bool(catalog_view(
                 cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],

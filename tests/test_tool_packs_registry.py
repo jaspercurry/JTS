@@ -762,3 +762,27 @@ def test_outcomes_to_state_is_json_shaped():
         {"name": "broken", "status": "failed", "tool_count": 0,
          "error": "RuntimeError('x')"},
     ]
+
+
+def test_content_bearing_tools_pin_log_redaction():
+    """Privacy invariant the byte-identical manifest gate does NOT cover:
+    `to_manifest_entry()` omits `log_payload`/`log_args`, so a regression that
+    started logging an email body or a close-to-verbatim "unlock the front
+    door" utterance at INFO would slip through the equality comparison. Pin the
+    redaction set explicitly instead. `log_payload=False` redacts the tool
+    RESULT preview; `log_args=False` redacts the call ARGS — the home-control
+    tools redact both because their args carry the user's request near-verbatim.
+    Asserting the exact set catches drift in BOTH directions: a content tool
+    silently losing redaction, or an unrelated tool unexpectedly gaining it."""
+    reg = ToolRegistry()
+    register_packs(
+        reg, full_tool_deps(), disabled=frozenset(), disabled_packs=frozenset(),
+    )
+    redact_payload = {n for n, t in reg.tools.items() if not t.log_payload}
+    redact_args = {n for n, t in reg.tools.items() if not t.log_args}
+    assert redact_payload == {
+        "calendar_today_summary", "calendar_upcoming",
+        "gmail_unread_summary", "gmail_read_thread",
+        "home_assistant", "home_assistant_confirm",
+    }
+    assert redact_args == {"home_assistant", "home_assistant_confirm"}
