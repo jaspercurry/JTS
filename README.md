@@ -506,7 +506,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
 | [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, and mic mute scope |
-| [CHANGELOG.md](CHANGELOG.md) | Maintainers / release followers | Keep-a-Changelog release notes; `v0.1.0` will be tagged at OSS launch |
+| [CHANGELOG.md](CHANGELOG.md) | Maintainers / release followers | Keep-a-Changelog release notes; release tags are maintainer-cut (`v0.1.0` marks OSS launch) |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |

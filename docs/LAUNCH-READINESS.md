@@ -30,6 +30,11 @@ items as open, which is exactly why this doc exists).
   Actions pinned to SHAs, `Cargo.lock` + `uv.lock` committed, Rust CI uses `--locked`.
 - **Structured logging** — `jasper.log_event` migration complete + CI-enforced.
 - **The 11 §5.5 runtime defects** — fixed with regressions (from the 2026-06 review).
+- **Release tag** — `v0.1.0` was created as an annotated tag on `5ad21856`
+  (the `origin/main` tip at tagging time) on 2026-06-19. This docs follow-up
+  records the release marker after the fact; no additional Pi/on-device
+  validation was run in the Codex tag session, so hardware confidence comes
+  from owner checks outside that session.
 
 ## 🟡 Open — fan agents out from here
 
@@ -120,11 +125,6 @@ a live run. Add a test bounding doctor wall-clock. The checks are an independent
 flat @doctor_check registry, so parallelism is safe.
 ```
 
-### 8. Tag `v0.1.0` — owner action
-`pyproject` is already `version = 0.1.0` and `CHANGELOG.md` exists; no `v0.1.0`
-git tag yet. This is a release-ceremony decision, sequenced after the on-device
-checks — not an agent task.
-
 ## Deferred by design (not "open")
 
 - **TLS on the secret-bearing wizards** — PSKs/tokens still cross the LAN over
@@ -138,4 +138,4 @@ When an open item ships, move its bullet to **Done** with the PR number and
 delete the agent prompt. When this whole list is empty, this doc itself becomes
 historical — banner it and move it to `docs/historical/`.
 
-Last verified: 2026-06-18
+Last verified: 2026-06-18 (release-tag status updated 2026-06-19)
