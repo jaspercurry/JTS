@@ -396,7 +396,11 @@ thinks the system is healthy.
        sshd accepting the TCP connect but not writing the banner)
     2. **jasper-control's own `/healthz`** on `127.0.0.1:8780`
        (yes, we probe ourselves; this catches "asyncio loop wedged
-       but systemd thinks we're alive")
+       but systemd thinks we're alive"). A `429 Too Many Requests`
+       from jasper-control's bounded request-admission gate counts as
+       alive-but-shedding, not dead; treating overload shedding as a
+       failed liveness probe would let a LAN request burst manufacture
+       a T5.2 reboot.
     3. **`/proc/loadavg` read** within 1 s (kernel I/O stall)
   After 3 consecutive failures (any probe), rate-limited at 1
   reboot per 24 hours, calls `systemctl --no-block reboot` for

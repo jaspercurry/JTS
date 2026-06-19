@@ -155,6 +155,11 @@ SystemCallArchitectures=native
 # can't read the dashboard. Protected at -600, slightly less than
 # voice but well above any normal process.
 OOMScoreAdjust=-600
+# Task-count backstop for the LAN-facing control plane. The Python
+# server sheds excess HTTP requests in-process, but this caps runaway
+# fork/thread bugs below the system default while leaving enough room
+# for normal worker threads plus short-lived systemctl/busctl probes.
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

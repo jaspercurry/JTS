@@ -103,8 +103,13 @@ export async function runDiagnostics(btn, out) {
   try {
     const r = await fetch("diagnostics.json", { cache: "no-store" });
     const body = await r.json();
-    if (body.error) out.replaceChildren(h("span.muted", null, "Error: " + body.error));
-    else renderDiagnostics(out, body);
+    if (body.pending) {
+      out.replaceChildren(h("span.muted", null, "Diagnostics already running…"));
+    } else if (body.error) {
+      out.replaceChildren(h("span.muted", null, "Error: " + body.error));
+    } else {
+      renderDiagnostics(out, body);
+    }
   } catch (e) {
     console.error("system: diagnostics failed", e);
     out.replaceChildren(h("span.muted", null, "Failed: " + e.message));

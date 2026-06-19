@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -505,7 +505,11 @@ def test_diagnostics_starts_root_oneshot_and_serves_result(
     import jasper.control.server as srv_mod
 
     result = tmp_path / "doctor-result.json"
-    result.write_text('{"fails":0,"warns":1,"results":[{"name":"x","status":"warn","detail":"d"}]}')
+    result.write_text(json.dumps({
+        "fails": 0,
+        "warns": 1,
+        "results": [{"name": "x", "status": "warn", "detail": "d"}],
+    }))
     monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
 
     started: list[list[str]] = []
@@ -541,12 +545,109 @@ def test_diagnostics_502_when_oneshot_start_fails(
         stdout = ""
         stderr = "Interactive authentication required."
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *a, **k: FakeProc())
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
 
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/system/diagnostics")
+    status2, body2 = _get(f"{base}/system/diagnostics")
     assert status == 502
+    assert status2 == 502
     assert "unavailable" in body["error"]
+    assert body2 == body
+    assert calls == [["systemctl", "start", "jasper-doctor-json.service"]]
+
+
+def test_diagnostics_concurrent_request_returns_pending_without_second_start(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Only one root doctor capture should run at a time.
+
+    A second browser tab / LAN client gets a fast "pending" response rather
+    than tying up another jasper-control worker for the whole 30 s systemctl
+    timeout window.
+    """
+    import jasper.control.server as srv_mod
+
+    result = tmp_path / "doctor-result.json"
+    result.write_text('{"fails":0,"warns":0,"results":[]}')
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
+
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(cmd)
+        started.set()
+        assert release.wait(timeout=2), "test did not release diagnostics"
+        return FakeProc()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+
+    base, _ = server_with_coordinator
+    first: list[tuple[int, dict]] = []
+    t = threading.Thread(
+        target=lambda: first.append(_get(f"{base}/system/diagnostics")),
+        daemon=True,
+    )
+    t.start()
+    assert started.wait(timeout=1)
+
+    status, body = _get(f"{base}/system/diagnostics")
+    assert status == 202
+    assert body["pending"] is True
+    assert calls == [["systemctl", "start", "jasper-doctor-json.service"]]
+
+    release.set()
+    t.join(timeout=2)
+    assert first == [(200, {"fails": 0, "warns": 0, "results": []})]
+
+
+def test_diagnostics_serves_recent_success_from_cache(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    import jasper.control.server as srv_mod
+
+    result = tmp_path / "doctor-result.json"
+    result.write_text(json.dumps({
+        "fails": 0,
+        "warns": 1,
+        "results": [{"name": "x", "status": "warn"}],
+    }))
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
+
+    calls: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+
+    base, _ = server_with_coordinator
+    status1, body1 = _get(f"{base}/system/diagnostics")
+    status2, body2 = _get(f"{base}/system/diagnostics")
+
+    assert status1 == status2 == 200
+    assert body1 == body2
+    assert body1["warns"] == 1
+    assert calls == [["systemctl", "start", "jasper-doctor-json.service"]]
 
 
 def test_system_audio_quality_applies_and_try_restarts_renderers(
@@ -2033,6 +2134,56 @@ def test_state_502_when_aggregator_raises(
     assert "error" in body
 
 
+def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
+    """Burst polls should collapse to one cross-daemon fan-out."""
+    import jasper.control.server as srv_mod
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    async def fake_get_state(**kwargs):  # noqa: ARG001
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=2), "test did not release state aggregate"
+        return {"ok": True, "calls": calls}
+
+    monkeypatch.setattr(srv_mod, "_get_state", fake_get_state)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    results: list[tuple[int, dict]] = []
+    try:
+        t1 = threading.Thread(
+            target=lambda: results.append(_get(f"{base}/state")),
+            daemon=True,
+        )
+        t2 = threading.Thread(
+            target=lambda: results.append(_get(f"{base}/state")),
+            daemon=True,
+        )
+        t1.start()
+        assert started.wait(timeout=1)
+        t2.start()
+        time.sleep(0.05)
+        assert calls == 1
+        release.set()
+        t1.join(timeout=2)
+        t2.join(timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_thread.join(timeout=2)
+
+    assert len(results) == 2
+    assert all(item == (200, {"ok": True, "calls": 1}) for item in results)
+    assert calls == 1
+
+
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):
     """When JASPER_HA_URL/TOKEN are unset, /state.home_assistant returns
     configured=false with no error — fail-soft for the dashboard."""
@@ -2635,11 +2786,96 @@ class _StubHeartbeat:
 
 
 def _make_loopback_control_server():
-    from http.server import BaseHTTPRequestHandler
-
     from jasper.control.server import ControlHTTPServer
 
     return ControlHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+
+
+def test_control_http_server_sheds_when_worker_cap_is_full():
+    from jasper.control.server import ControlHTTPServer
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):  # noqa: ANN001, A003
+            return None
+
+        def do_GET(self):  # noqa: N802
+            entered.set()
+            assert release.wait(timeout=2), "test did not release handler"
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ControlHTTPServer(
+        ("127.0.0.1", 0),
+        _BlockingHandler,
+        max_workers=1,
+        request_timeout_sec=1.0,
+    )
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    first: list[tuple[int, dict]] = []
+    try:
+        t = threading.Thread(
+            target=lambda: first.append(_get(f"{base}/first")),
+            daemon=True,
+        )
+        t.start()
+        assert entered.wait(timeout=1)
+
+        status, body = _get(f"{base}/second")
+        assert status == 429
+        assert body["error"] == "server_overloaded"
+        assert body["retry_after"] == 1
+
+        release.set()
+        t.join(timeout=2)
+        assert first == [(200, {"ok": True})]
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        http_thread.join(timeout=2)
+
+
+def test_control_http_server_coalesces_overload_logs(caplog):
+    from jasper.control.server import ControlHTTPServer
+
+    now = 100.0
+
+    def clock() -> float:
+        return now
+
+    server = ControlHTTPServer(
+        ("127.0.0.1", 0),
+        BaseHTTPRequestHandler,
+        overload_log_interval_sec=5.0,
+        clock=clock,
+    )
+    try:
+        with caplog.at_level("WARNING", logger="jasper.control.server"):
+            server._log_overloaded(("127.0.0.1", 1001))
+            server._log_overloaded(("127.0.0.1", 1002))
+            server._log_overloaded(("127.0.0.1", 1003))
+            now = 105.1
+            server._log_overloaded(("127.0.0.1", 1004))
+    finally:
+        server.server_close()
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=control.overloaded" in record.getMessage()
+    ]
+    assert len(messages) == 2
+    assert "suppressed=0" in messages[0]
+    assert "suppressed=2" in messages[1]
 
 
 def test_service_actions_bumps_attached_heartbeat():
