@@ -1,5 +1,12 @@
 # JTS open-source due-diligence review — 2026-06-12
 
+> **Status: superseded (2026-06-18).** Point-in-time audit snapshot — several
+> items here have since shipped (notably the daemon privilege separation and the
+> OSS governance docs). **Do not drive work from this doc.** The current,
+> verified launch-readiness backlog is
+> [LAUNCH-READINESS.md](LAUNCH-READINESS.md). Preserved for archaeology (the
+> audit reasoning), not current operational truth.
+
 > **Status: review snapshot.** Staff-engineer-style due-diligence pass conducted
 > 2026-06-12 against `main` @ `6772b81a`, framed as "would a major engineering
 > org adopt/steward this codebase as OSS?" Findings reflect that commit; specific

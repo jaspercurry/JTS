@@ -1,5 +1,12 @@
 # JTS Review — Big Rocks (Architecture & Re-architecture)
 
+> **Status: superseded (2026-06-18).** Point-in-time audit snapshot — several
+> items here have since shipped (notably the daemon privilege separation and the
+> OSS governance docs). **Do not drive work from this doc.** The current,
+> verified launch-readiness backlog is
+> [LAUNCH-READINESS.md](LAUNCH-READINESS.md). Preserved for archaeology (the
+> audit reasoning), not current operational truth.
+
 > Companion to [REVIEW-2026-06-04-deep-dive.md](REVIEW-2026-06-04-deep-dive.md).
 > These are the larger structural items — file decompositions, shared-base
 > extractions, and extensibility seams. None are correctness emergencies;
