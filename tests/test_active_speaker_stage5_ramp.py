@@ -788,6 +788,65 @@ def test_operator_ack_too_loud_aborts_to_staged(monkeypatch, tmp_path):
     assert load_ramp_state(state_path=tmp_path / "ramp.json")["pending"] is None
 
 
+def test_operator_ack_heard_wrong_driver_discards_confirmed_role(monkeypatch, tmp_path):
+    """heard_wrong_driver removes the role from confirmed_roles (identity doubt).
+
+    confirmed_roles is the woofer-before-tweeter ordering authority. Hearing the
+    WRONG driver at a step casts doubt on the role's identity, so a later sibling
+    step's predecessor check must not keep trusting a now-suspect confirmation.
+    """
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer", confirm_first={"woofer"}
+    )
+    assert step["status"] == "stepped"
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["confirmed_roles"] == [
+        "woofer"
+    ]
+
+    ack = asyncio.run(
+        record_ramp_operator_ack(
+            outcome="heard_wrong_driver",
+            load_config=cam.apply_running_config,
+            ramp_state_path_override=tmp_path / "ramp.json",
+            safe_playback_state_path=tmp_path / "safe.json",
+            commission_load_state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+
+    assert ack["status"] == "aborted"
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["confirmed_roles"] == []
+
+
+def test_operator_ack_too_loud_keeps_confirmed_role(monkeypatch, tmp_path):
+    """too_loud aborts but does NOT discard the role — a deliberate asymmetry.
+
+    too_loud is a LEVEL signal at a higher step; it does not invalidate that the
+    driver was heard *correctly* at the floor. So the floor confirmation stands
+    (unlike heard_wrong_driver, which is an identity signal). Pins the contrast.
+    """
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer", confirm_first={"woofer"}
+    )
+    assert step["status"] == "stepped"
+
+    ack = asyncio.run(
+        record_ramp_operator_ack(
+            outcome="too_loud",
+            load_config=cam.apply_running_config,
+            ramp_state_path_override=tmp_path / "ramp.json",
+            safe_playback_state_path=tmp_path / "safe.json",
+            commission_load_state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+
+    assert ack["status"] == "aborted"
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["confirmed_roles"] == [
+        "woofer"
+    ]
+
+
 def test_abort_ramp_rolls_back_and_resets(monkeypatch, tmp_path):
     step, cam, staged_path, state_path, _ = _ramp_step(
         tmp_path, monkeypatch, role="woofer"

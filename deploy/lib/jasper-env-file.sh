@@ -75,7 +75,15 @@ jasper_env_file_set() {
     local dir tmp quoted
 
     dir="$(dirname "$file")"
-    install -d -m "$dir_mode" "$dir"
+    # Only CREATE an absent dir; never re-mode an EXISTING one. The installer
+    # owns each env dir's canonical mode/group (/var/lib/jasper is 0770
+    # root:jasper so the now-non-root daemons can write group-shared state;
+    # /etc/jasper is 0755 so the group-jasper doctor-json oneshot can traverse)
+    # and this writer runs on every boot / udev reconcile — a blanket
+    # `install -d -m $dir_mode` re-strips those bits (the trap #827 closed for
+    # the audio-hardware reconciler's own writers; closing it here covers every
+    # caller of the shared lib, e.g. jasper-aec-reconcile).
+    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(jasper_env_quote_value "$value")"
 

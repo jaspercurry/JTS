@@ -599,7 +599,10 @@ render_asound_if_needed() {
         return 1
     fi
 
-    install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
+    # Only create an absent dir; never re-mode the existing /etc/jasper on every
+    # recognized-DAC render (the installer owns its 0755) — same only-if-absent
+    # discipline as ensure_env_dir above (#827).
+    [[ -d "$(dirname "$ASOUND_TEMPLATE")" ]] || install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
     tmp="$(mktemp "${ASOUND_TEMPLATE}.XXXXXX")"
     jasper_asound_render_template "$ASOUND_SOURCE_TEMPLATE" "$tmp"
     chmod 0644 "$tmp"

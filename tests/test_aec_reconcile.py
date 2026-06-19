@@ -26,7 +26,11 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     return fake, log
 
 
-def _run_reconcile(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_reconcile(
+    tmp_path: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     env = os.environ.copy()
     # These tests drive the active provider exclusively through the
@@ -57,6 +61,8 @@ def _run_reconcile(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[st
             ),
         }
     )
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         check=False,
@@ -311,6 +317,33 @@ def test_ensure_mode_file_seeds_default_leg_keys(tmp_path: Path) -> None:
     assert "JASPER_AEC_MODE=auto" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
     assert "JASPER_WAKE_LEG_DTLN=0" in body
+
+
+def test_reconcile_preserves_existing_mode_file_dir_mode(tmp_path: Path) -> None:
+    """The reconciler must NOT re-chmod an existing /var/lib/jasper.
+
+    /var/lib/jasper is 0770 root:jasper (ensure_state_dir) so the now-non-root
+    daemons can write group-shared state. The mode-file seed (and the shared
+    jasper-env-file.sh writer) re-moded the dir to 0755 on every boot/udev
+    reconcile, stripping that group-write bit — the same class as #827, two
+    sibling sites away. Pin that a pre-created 0770 dir survives a reconcile
+    that seeds the mode file into it.
+    """
+    state_dir = tmp_path / "var-lib-jasper"
+    state_dir.mkdir()
+    state_dir.chmod(0o770)
+    _write_env(tmp_path, "Array")
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_AEC_MODE_FILE": str(state_dir / "aec_mode.env")},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (state_dir / "aec_mode.env").exists()  # seeded into the dir
+    assert oct(state_dir.stat().st_mode & 0o777) == "0o770"
 
 
 def test_ensure_mode_file_appends_missing_leg_keys(tmp_path: Path) -> None:
