@@ -153,3 +153,22 @@ def test_emit_filter_spec_dispatches_by_biquad_type():
     # Peaking: q + gain.
     peak = "\n".join(emit_filter_spec(FilterSpec("f", "Peaking", 1000.0, 3.0, q=1.0)))
     assert "type: Peaking" in peak and "q: 1.0000" in peak and "gain: 3.0000" in peak
+
+
+def test_sound_filters_input_is_normalized_so_a_generator_is_safe():
+    """The builder is shared (stereo today, active pre-split next), so it must
+    normalize sound_filters at the boundary: a one-shot generator must iterate
+    AND gate the preamp by emptiness — not be truthy-but-empty or consumed."""
+    specs = [FilterSpec("sound_simple_bass", "Peaking", 150.0, 6.0, q=1.0)]
+    _yaml, left, _right, trim = build_stereo_prefix(
+        (s for s in specs), [], output_trim_db=4.0
+    )
+    assert trim == 4.0
+    assert left == ["sound_preamp", "sound_simple_bass", "flat"]
+
+    # An empty generator is falsy-by-content after normalization: no preamp.
+    _yaml, left, _right, trim = build_stereo_prefix(
+        (s for s in []), [], output_trim_db=4.0
+    )
+    assert trim == 0.0
+    assert left == ["flat"]

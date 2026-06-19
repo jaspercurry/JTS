@@ -431,6 +431,10 @@ code = [
   "jasper/tools/audio.py",
   "jasper/sound/**",
   "jasper/camilla_stereo_prefix.py",
+  # Shared with audio-routing-and-renderers: it owns the device/volume_limit
+  # defaults AND the FilterSpec/PeqFilter/boost-headroom contract, so a
+  # change here can touch preference-EQ composition too.
+  "jasper/camilla_config_contract.py",
   "jasper/web/sound_setup.py",
   "jasper/dsp_apply.py",
 ]
