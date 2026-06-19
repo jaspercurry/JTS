@@ -2,11 +2,18 @@
 
 Last reviewed: 2026-05-27
 
-This is the living, ordered worklist for bringing JTS from "excellent
+> **The current, verified launch-readiness backlog is
+> [LAUNCH-READINESS.md](LAUNCH-READINESS.md)** — drive launch/cleanup work from
+> there. This file is kept for its contributor-facing "files to know" reference
+> and the original top-five framing, but its *priority list is stale*: the
+> headline privilege-separation items below have since shipped (all five Tier-A
+> daemons now run non-root — see
+> [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)).
+
+This was the living, ordered worklist for bringing JTS from "excellent
 personal project" to "credible open-source appliance project." The
 historical staff-engineering review lives in
-[REVIEW-google-oss-readiness.md](REVIEW-google-oss-readiness.md); use
-this file for current priorities.
+[REVIEW-google-oss-readiness.md](REVIEW-google-oss-readiness.md).
 
 Ordering principle: reduce real user/operator risk first, then make the
 repo easier for outside contributors to change safely. Avoid broad
