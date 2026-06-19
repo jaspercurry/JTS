@@ -1733,8 +1733,8 @@ mod tests {
             r#""sro_estimator_status":"observing""#,
             r#""verdict":"fallback""#,
             r#""latency":{"dac_presentation_ms":null"#,
-            // 48000-frame DAC buffer / 48000 → 1000 ms.
-            r#""playback_queue_ms":1000.000"#,
+            // test_config dac_buffer_frames=3072 / 48000 → 64 ms.
+            r#""playback_queue_ms":64.000"#,
             r#""chip_ref_queue_ms":0.000"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
