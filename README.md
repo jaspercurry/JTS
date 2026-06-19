@@ -1,4 +1,7 @@
-# JTS — Jasper smart speaker
+# JTS — the Jasper Tech Speaker
+
+JTS is the **J**asper **T**ech **S**peaker — the debut build from the
+[Jasper Tech](https://www.youtube.com/@Jasper_Tech) YouTube channel.
 
 A custom voice-controlled smart speaker on a Raspberry Pi 5 running
 Raspberry Pi OS Lite Trixie, with
