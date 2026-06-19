@@ -385,9 +385,10 @@ docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-sound-preferences.md",
   "docs/HANDOFF-correction.md",
+  "docs/HANDOFF-dsp-graph-carrier.md",
 ]
 requires_docs_when = [
-  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, or generated DSP config safety behavior changes.",
+  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
 ]
 verification = [
   "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
@@ -464,6 +465,7 @@ docs = [
   "docs/HANDOFF-correction.md",
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
+  "docs/HANDOFF-dsp-graph-carrier.md",
   "docs/active-crossover-information-design.md",
   "docs/calibration-agent/README.md",
 ]

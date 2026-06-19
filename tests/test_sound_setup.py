@@ -2837,17 +2837,64 @@ async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
     current.write_text("# handmade\n")
     fake = FakeCamilla(str(current))
 
-    try:
+    with pytest.raises(RuntimeError) as excinfo:
         await sound_setup._apply_profile(
             SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
             profile_path=tmp_path / "sound_profile.json",
             config_dir=tmp_path / "configs",
             camilla_factory=lambda: fake,
         )
-    except RuntimeError as e:
-        assert "custom config" in str(e)
-    else:  # pragma: no cover - defensive assertion style
-        raise AssertionError("expected unknown config rejection")
+    # The durable path wraps the carrier refusal as DspApplyError; the route's
+    # discrimination unwraps it to a stable, typed reason (a 200 body, not 502).
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "unknown_config"
+
+
+async def test_apply_profile_blocks_active_baseline_with_typed_reason(tmp_path: Path):
+    # Regression: an applied active-speaker baseline used to hit the misleading
+    # "custom config ... Reset" 502 that would have DESTROYED the active graph
+    # if followed. It must now refuse with a specific, honest reason and never
+    # re-emit over the active graph.
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "active_speaker_baseline.yml"
+    current.write_text(_active_baseline_yaml("mono", 2))
+    fake = FakeCamilla(str(current))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await sound_setup._apply_profile(
+            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+            camilla_factory=lambda: fake,
+        )
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "eq_on_active_not_wired"
+    assert refusal.to_payload()["status"] == "blocked"
+    # Fail closed: the active config was never overwritten / re-loaded.
+    assert fake.loaded_path is None
+
+
+def test_carrier_refusal_unwraps_raw_and_wrapped():
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+
+    raw = CarrierCannotHostEq("unknown_config", "m")
+    assert sound_setup._carrier_refusal(raw) is raw
+
+    # The durable apply path raises DspApplyError(...) from the refusal.
+    try:
+        try:
+            raise raw
+        except CarrierCannotHostEq as cause:
+            raise RuntimeError("DSP config preparation failed: m") from cause
+    except RuntimeError as wrapped:
+        assert sound_setup._carrier_refusal(wrapped) is raw
+
+    assert sound_setup._carrier_refusal(ValueError("unrelated")) is None
 
 
 async def test_apply_profile_rolls_back_when_reload_fails(

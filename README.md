@@ -835,6 +835,13 @@ reference. Currently:
   profile library, room-correction composition order, generated config
   ownership, durable apply + live-draft semantics, doctor and
   `/state` observability, and the future AI boundary.
+- [`HANDOFF-dsp-graph-carrier.md`](docs/HANDOFF-dsp-graph-carrier.md) —
+  Design-of-record for composing preference EQ + room correction on top of
+  ANY output topology (flat / active 1/2/3-way + sub / distributed
+  leader-follower): the graph-carrier dispatcher that re-emits the loaded
+  CamillaDSP graph in its own shape — or fails closed with a typed reason —
+  the program/driver split-mixer seam, the shared stereo-domain prefix, and
+  the deferred distributed-active boundary.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of

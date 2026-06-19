@@ -459,6 +459,24 @@ async def _apply_profile(
     return payload
 
 
+def _carrier_refusal(exc: BaseException):
+    """Return the ``CarrierCannotHostEq`` behind ``exc`` if the loaded
+    CamillaDSP graph refused to host preference EQ, else ``None``.
+
+    The live-draft path raises it directly; the durable apply path wraps it as
+    ``DspApplyError`` (its ``__cause__``). Used to map a carrier refusal to a
+    typed 200 body instead of a 502 — ``jasper/dsp_apply.py`` stays untouched.
+    """
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+
+    if isinstance(exc, CarrierCannotHostEq):
+        return exc
+    cause = exc.__cause__
+    if isinstance(cause, CarrierCannotHostEq):
+        return cause
+    return None
+
+
 async def _apply_settings(
     settings: SoundSettings,
     *,
@@ -606,13 +624,7 @@ async def _live_draft_profile(
     validated YAML file and records rollback state.
     """
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
-    from jasper.sound.camilla_yaml import (
-        BASE_CONFIG_PATH,
-        emit_sound_config,
-        extract_room_peqs_from_config,
-        is_base_config,
-        is_jts_generated_config,
-    )
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
 
     cam = camilla_factory()
     config_path = Path(config_dir)
@@ -700,29 +712,13 @@ async def _live_draft_profile(
         if not current_path:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
 
-        if is_base_config(current_path):
-            room_peqs = []
-        elif is_jts_generated_config(current_path, config_dir=config_path):
-            room_peqs = extract_room_peqs_from_config(current_path)
-        else:
-            raise RuntimeError(
-                "CamillaDSP is running a custom config that JTS cannot safely "
-                f"preserve ({current_path}). Reset to {BASE_CONFIG_PATH} or apply "
-                "room correction before changing sound EQ."
-            )
-
-        # Grouping member-config policy (inv-5 rate_adjust off + channel-split)
-        # is owned by jasper.multiroom.member_config and applied identically on
-        # EVERY config path (/sound, /correction, and the inv-2 reconciler) —
-        # never threaded per call site. Solo/off/invalid → solo defaults.
-        from ..multiroom.member_config import member_camilla_kwargs
-        yaml = emit_sound_config(
+        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+        result = carrier.reemit(
             profile,
-            room_peqs=room_peqs,
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
-            **member_camilla_kwargs(),
         )
+        yaml = result.yaml
 
         try:
             await loader(yaml, best_effort=False)
@@ -730,7 +726,7 @@ async def _live_draft_profile(
             _log_live_draft_unavailable(
                 reason="active_config_raw_failed",
                 output_trim_db=output_trim_db,
-                room_peq_count=len(room_peqs),
+                room_peq_count=result.room_peq_count,
                 sound_filter_count=sound_filter_count,
                 error=e,
             )
@@ -738,7 +734,7 @@ async def _live_draft_profile(
                 status="unavailable",
                 method="active_config_raw_failed",
                 current_epoch=current_epoch,
-                room_peq_count=len(room_peqs),
+                room_peq_count=result.room_peq_count,
                 active_config_path=current_path,
             )
 
@@ -746,7 +742,7 @@ async def _live_draft_profile(
             "event=sound.live_draft result=live output_trim=%.1f "
             "room_peqs=%d sound_filters=%d active_anchor=%s epoch=%s",
             output_trim_db,
-            len(room_peqs),
+            result.room_peq_count,
             sound_filter_count,
             current_path,
             current_epoch,
@@ -755,7 +751,7 @@ async def _live_draft_profile(
             status="live",
             method="active_config_raw",
             current_epoch=current_epoch,
-            room_peq_count=len(room_peqs),
+            room_peq_count=result.room_peq_count,
             active_config_path=current_path,
         )
 
@@ -772,14 +768,10 @@ async def _load_profile_config(
     output_trim_db: float = 0.0,
 ) -> tuple[Any, Path, SoundProfile]:
     from jasper.sound.camilla_yaml import (
-        BASE_CONFIG_PATH,
-        emit_sound_config,
-        extract_room_peqs_from_config,
-        is_base_config,
-        is_jts_generated_config,
         sound_audition_config_path,
         sound_config_path,
     )
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.dsp_apply import apply_dsp_config
 
     config_path = Path(config_dir)
@@ -797,29 +789,16 @@ async def _load_profile_config(
         if not current_path:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
 
-        if is_base_config(current_path):
-            room_peqs = []
-        elif is_jts_generated_config(current_path, config_dir=config_path):
-            room_peqs = extract_room_peqs_from_config(current_path)
-        else:
-            raise RuntimeError(
-                "CamillaDSP is running a custom config that JTS cannot safely "
-                f"preserve ({current_path}). Reset to {BASE_CONFIG_PATH} or apply "
-                "room correction before changing sound EQ."
-            )
-
-        from ..multiroom.member_config import member_camilla_kwargs
-        emit_sound_config(
+        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+        result = carrier.reemit(
             profile,
-            room_peqs=room_peqs,
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            **member_camilla_kwargs(),
         )
         return {
             "prior_config_path": current_path,
-            "room_peq_count": len(room_peqs),
+            "room_peq_count": result.room_peq_count,
             "sound_filter_count": len(build_sound_filters(profile)),
         }
 
@@ -4131,6 +4110,19 @@ def _make_handler(
                         )
                     )
             except Exception as e:  # noqa: BLE001
+                refusal = _carrier_refusal(e)
+                if refusal is not None:
+                    # The loaded graph cannot host EQ — this is a known,
+                    # handled state, not a server error. Return a typed 200
+                    # body so the UI renders an honest hint instead of a 502
+                    # toast or a silent no-op (no silent failure).
+                    logger.info(
+                        "event=sound.eq_blocked path=%s reason=%s",
+                        path,
+                        refusal.reason_code,
+                    )
+                    self._send_json(refusal.to_payload())
+                    return
                 logger.exception("sound profile apply failed")
                 self._send_json({"error": str(e)}, status=502)
                 return

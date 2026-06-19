@@ -2770,10 +2770,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'live draft failed');
       if (seq === liveSeq) {
-        if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
-        if (payload.live_status === 'live') status('Listening to this draft live.');
-        else if (payload.live_status === 'stale') status('Speaker DSP changed — move a control again to hear this draft.');
-        else status('Live preview unavailable on this CamillaDSP connection.', true);
+        if (payload.status === 'blocked') {
+          // The loaded graph can't host EQ (e.g. an active crossover). Show
+          // the server's honest hint; do not touch the draft/epoch state.
+          status(payload.message || 'Sound EQ is unavailable for this speaker setup.', true);
+        } else {
+          if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
+          if (payload.live_status === 'live') status('Listening to this draft live.');
+          else if (payload.live_status === 'stale') status('Speaker DSP changed — move a control again to hear this draft.');
+          else status('Live preview unavailable on this CamillaDSP connection.', true);
+        }
       }
     } catch (e) {
       if (seq === liveSeq) status('Could not update live draft: ' + e.message, true);
@@ -2814,8 +2820,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var resp = await fetch('./apply', {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(profile)});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'apply failed');
-      ingestState(payload);
-      if (sourceSeq === liveSourceSeq) status(okMsg || '');
+      if (payload.status === 'blocked') {
+        // Refused (e.g. EQ over an active crossover). Surface the honest hint
+        // and skip ingestState — a blocked body carries no profile state.
+        if (sourceSeq === liveSourceSeq) status(payload.message || 'Sound EQ is unavailable for this speaker setup.', true);
+      } else {
+        ingestState(payload);
+        if (sourceSeq === liveSourceSeq) status(okMsg || '');
+      }
     } catch (e) {
       if (sourceSeq === liveSourceSeq) status('Could not apply: ' + e.message, true);
     } finally {
