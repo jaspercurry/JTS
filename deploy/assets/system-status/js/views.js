@@ -97,7 +97,8 @@ export function buildPage(root, handlers) {
   const diag = titledCard("Run diagnostics", { accent: true });
   diag.body.append(
     h("p.info-card__note", null,
-      "Runs ", h("code", null, "jasper-doctor"), " on the speaker. Takes ~3–5 s."),
+      "Shows the latest ", h("code", null, "jasper-doctor"),
+      " snapshot and refreshes stale results in the background."),
     h("div", null, diagButton),
     diagOutput,
   );

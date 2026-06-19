@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -554,6 +555,9 @@ __all__ = [
     "render_json",
     "_watch_line",
     "_watch_loop",
+    "_build_doctor_checks",
+    "_doctor_check_timeout",
+    "_doctor_max_concurrency",
     "main",
     "run_async",
     "argparse",
@@ -814,16 +818,24 @@ def render(results: list[CheckResult]) -> int:
     print(f"{GREEN}all checks passed.{RESET}")
     return 0
 
-def _json_payload(results: list[CheckResult]) -> dict:
+def _json_payload(
+    results: list[CheckResult],
+    *,
+    duration_sec: float | None = None,
+) -> dict:
     """The flat /system-dashboard schema — one row per check."""
-    return {
+    payload = {
         "fails": sum(1 for r in results if r.status == "fail"),
         "warns": sum(1 for r in results if r.status == "warn"),
+        "generated_at_epoch": time.time(),
         "results": [
             {"name": r.name, "status": r.status, "detail": r.detail}
             for r in results
         ],
     }
+    if duration_sec is not None:
+        payload["duration_sec"] = round(duration_sec, 3)
+    return payload
 
 
 def _emit_json(payload: dict, out_path: str | None) -> None:
@@ -843,7 +855,12 @@ def _emit_json(payload: dict, out_path: str | None) -> None:
     atomic_write_text(out_path, text + "\n", mode=0o640)
 
 
-def render_json(results: list[CheckResult], out_path: str | None = None) -> int:
+def render_json(
+    results: list[CheckResult],
+    out_path: str | None = None,
+    *,
+    duration_sec: float | None = None,
+) -> int:
     """Machine-readable output for the /system dashboard.
 
     The web UI fetches this via /system/diagnostics → jasper-control. Returns
@@ -854,7 +871,7 @@ def render_json(results: list[CheckResult], out_path: str | None = None) -> int:
 
     Schema is intentionally flat — one row per check — so the dashboard can
     render a table without complex per-check logic."""
-    payload = _json_payload(results)
+    payload = _json_payload(results, duration_sec=duration_sec)
     _emit_json(payload, out_path)
     if out_path is not None:
         return 0
@@ -893,6 +910,44 @@ def _env_int_for_doctor(name: str, default: int) -> int:
     if value <= 0:
         return default
     return value
+
+
+def _env_float_for_doctor(name: str, default: float) -> float:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+_DOCTOR_DEFAULT_CONCURRENCY = 8
+_DOCTOR_MAX_CONCURRENCY = 16
+_DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS = 15.0
+
+
+def _doctor_max_concurrency() -> int:
+    return max(
+        1,
+        min(
+            _DOCTOR_MAX_CONCURRENCY,
+            _env_int_for_doctor(
+                "JASPER_DOCTOR_MAX_CONCURRENCY",
+                _DOCTOR_DEFAULT_CONCURRENCY,
+            ),
+        ),
+    )
+
+
+def _doctor_check_timeout() -> float:
+    return _env_float_for_doctor(
+        "JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS",
+        _DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS,
+    )
 
 
 def _local_audio_config_from_env() -> SimpleNamespace:
@@ -957,6 +1012,107 @@ async def _watch_loop(cfg: Config | SimpleNamespace, interval: float) -> int:
         print("\nexiting", flush=True)
         return 0
 
+
+@dataclass(frozen=True)
+class _RunnableDoctorCheck:
+    name: str
+    check: DoctorCheck | Callable[[], Awaitable[CheckResult]]
+    is_async: bool = False
+    exclusive_group: str = ""
+
+
+def _build_doctor_checks(
+    cfg: Config | SimpleNamespace,
+    install_profile: str,
+) -> list[_RunnableDoctorCheck]:
+    checks: list[_RunnableDoctorCheck] = []
+    for entry in registered_checks():
+        skip_reason = _doctor_skip_reason(entry, install_profile)
+        if skip_reason:
+            skipped = _profile_skip_result(entry, reason=skip_reason)
+            check = (skipped.name, lambda skipped=skipped: skipped)
+            checks.append(_RunnableDoctorCheck(skipped.name, check))
+            continue
+        fn = entry.func
+        if entry.is_async:
+            name = entry.label or _check_name(fn)  # type: ignore[arg-type]
+            async_check = (
+                (lambda fn=fn, cfg=cfg: fn(cfg))
+                if entry.needs_cfg
+                else (lambda fn=fn: fn())
+            )
+            checks.append(
+                _RunnableDoctorCheck(
+                    name,
+                    async_check,  # type: ignore[arg-type]
+                    is_async=True,
+                    exclusive_group=entry.exclusive_group,
+                )
+            )
+            continue
+        if entry.needs_cfg:
+            check: DoctorCheck = (entry.label, lambda fn=fn, cfg=cfg: fn(cfg))
+        else:
+            check = fn  # type: ignore[assignment]
+        name, _ = _normalize_doctor_check(check)
+        checks.append(
+            _RunnableDoctorCheck(
+                name,
+                check,
+                exclusive_group=entry.exclusive_group,
+            )
+        )
+    return checks
+
+
+async def _run_runnable_doctor_check(
+    runnable: _RunnableDoctorCheck,
+) -> CheckResult:
+    if runnable.is_async:
+        return await _run_async_doctor_check(
+            runnable.name,
+            runnable.check,  # type: ignore[arg-type]
+        )
+    return await asyncio.to_thread(
+        _run_doctor_check,
+        runnable.check,  # type: ignore[arg-type]
+    )
+
+
+async def _run_runnable_with_timeout(
+    runnable: _RunnableDoctorCheck,
+    timeout: float,
+) -> CheckResult:
+    # This is an outer row-level guard. `asyncio.to_thread` cannot kill a
+    # worker that is already inside a blocking syscall, and asyncio will wait
+    # for default-executor threads during shutdown. Keep individual blocking
+    # probes bounded with their own subprocess/socket timeouts too.
+    try:
+        return await asyncio.wait_for(
+            _run_runnable_doctor_check(runnable),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        return CheckResult(
+            runnable.name,
+            "fail",
+            f"check timed out after {timeout:g}s",
+        )
+
+
+async def _run_runnable_bounded(
+    runnable: _RunnableDoctorCheck,
+    semaphore: asyncio.Semaphore,
+    exclusive_locks: dict[str, asyncio.Lock],
+    timeout: float,
+) -> CheckResult:
+    async with semaphore:
+        if runnable.exclusive_group:
+            async with exclusive_locks[runnable.exclusive_group]:
+                return await _run_runnable_with_timeout(runnable, timeout)
+        return await _run_runnable_with_timeout(runnable, timeout)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jasper-doctor",
@@ -1014,6 +1170,7 @@ def main() -> None:
         sys.exit(render(results))
     if args.watch:
         sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
+    started_at = time.monotonic()
     try:
         results = asyncio.run(run_async(cfg))
     except Exception as e:  # noqa: BLE001
@@ -1035,7 +1192,11 @@ def main() -> None:
             sys.exit(0 if args.out else 1)
         raise
     if args.json:
-        sys.exit(render_json(results, out_path=args.out))
+        sys.exit(render_json(
+            results,
+            out_path=args.out,
+            duration_sec=time.monotonic() - started_at,
+        ))
     sys.exit(render(results))
 
 if __name__ == "__main__":
@@ -1044,49 +1205,23 @@ if __name__ == "__main__":
 async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     """Run every registered check in canonical order and return the results.
 
-    Rebuilds the exact ``DoctorCheck`` sequence the original hand-ordered
-    ``sync_checks`` literal produced, but from the ordered registry
-    (:func:`jasper.cli.doctor._registry.registered_checks`) instead of a
-    literal list — that is the whole point of the decomposition. The
-    reconstruction is behaviour-preserving:
-
-    - a check registered ``needs_cfg=False`` (the original *bare* entries)
-      is emitted as the bare function, so ``_normalize_doctor_check``
-      derives the same ``__name__`` label and the crash-path label is
-      unchanged;
-    - a check registered ``needs_cfg=True`` (the original
-      ``(label, lambda: fn(cfg))`` *tuple* entries) is emitted as
-      ``(label, lambda: fn(cfg))`` with the same explicit label and the
-      same ``cfg`` closure;
-    - the single ``is_async`` check (CamillaDSP websocket) is run last via
-      ``_run_async_doctor_check``, exactly as the original appended it
-      after the synchronous list comprehension.
-
-    Result order therefore equals the original: the 73 synchronous checks
-    in their literal order, then the CamillaDSP websocket check.
+    The registry remains the ordering source of truth. Checks run
+    concurrently because most are subprocess/socket/file probes, but
+    results are gathered in registry order so CLI and dashboard output
+    stay stable. ``exclusive_group=`` registry metadata serializes
+    hardware-sensitive probes within that lane while unrelated checks
+    continue.
     """
     install_profile = read_install_profile()
-    sync_checks: list[DoctorCheck] = []
-    async_tail: list = []
-    for entry in registered_checks():
-        skip_reason = _doctor_skip_reason(entry, install_profile)
-        if skip_reason:
-            skipped = _profile_skip_result(entry, reason=skip_reason)
-            sync_checks.append((skipped.name, lambda skipped=skipped: skipped))
-            continue
-        fn = entry.func
-        if entry.is_async:
-            async_tail.append((entry.label, fn))
-            continue
-        if entry.needs_cfg:
-            sync_checks.append(
-                (entry.label, lambda fn=fn: fn(cfg))
-            )
-        else:
-            sync_checks.append(fn)
-    results = [_run_doctor_check(c) for c in sync_checks]
-    for label, fn in async_tail:
-        results.append(await _run_async_doctor_check(
-            label, lambda fn=fn: fn(cfg),
-        ))
-    return results
+    checks = _build_doctor_checks(cfg, install_profile)
+    semaphore = asyncio.Semaphore(_doctor_max_concurrency())
+    exclusive_locks = {
+        c.exclusive_group: asyncio.Lock()
+        for c in checks
+        if c.exclusive_group
+    }
+    timeout = _doctor_check_timeout()
+    return list(await asyncio.gather(*[
+        _run_runnable_bounded(c, semaphore, exclusive_locks, timeout)
+        for c in checks
+    ]))
