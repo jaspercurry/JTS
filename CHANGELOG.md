@@ -3,19 +3,17 @@
 All notable changes to JTS will be documented in this file.
 
 This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-format. A maintainer will tag `v0.1.0` at OSS launch; this branch does not create
-release tags.
+format. Release tags are cut manually by a maintainer.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-06-19
 
 First public release candidate. JTS is a voice-controlled smart speaker that
 runs entirely on a single 1 GB Raspberry Pi 5 — voice assistant, multi-source
 music, CamillaDSP room correction, and a local management UI — built to run
 unattended for months and self-heal across crashes, power loss, and missing
 hardware.
-
-> Draft release notes. A maintainer tags `v0.1.0` at OSS launch; rename this
-> section to `[0.1.0] - YYYY-MM-DD` at that point.
 
 ### Added
 
