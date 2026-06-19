@@ -216,6 +216,10 @@ docs = [
   # the /tools/ wizard). The core tool code globbed above must route here so a
   # pack-walk / catalog / wizard change surfaces the living plan for review.
   "docs/tool-platform-plan.md",
+  # Roadmap for the async research tool + the pluggable text-LLM-provider
+  # layer. Code (jasper/research/) does not exist yet; routed here via the
+  # related voice/tools globs until the implementing PR gives it its own globs.
+  "docs/research-tool-plan.md",
   "tests/voice_eval/README.md",
 ]
 requires_docs_when = [
