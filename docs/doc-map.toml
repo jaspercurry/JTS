@@ -18,6 +18,24 @@ session_artifacts = [
 ]
 
 [[subsystem]]
+id = "ci-and-branch-protection"
+title = "CI gates and branch protection"
+safety = "safe-ci"
+code = [
+  ".github/workflows/tests.yml",
+]
+docs = [
+  "CONTRIBUTING.md",
+  "AGENTS.md",
+]
+requires_docs_when = [
+  "A required check name, Python/Rust/shell CI gate, lint/test placement, matrix coverage, or branch-protection expectation changes.",
+]
+verification = [
+  "python3 scripts/docs-impact.py --validate-only",
+]
+
+[[subsystem]]
 id = "docs-governance"
 title = "Documentation governance and AI-agent context"
 safety = "safe-ci"

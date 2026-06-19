@@ -78,9 +78,14 @@ jobs:
           shellcheck --severity=warning "${shell_files[@]}"
           echo "shellcheck --severity=warning clean"
 
-  pytest:
+  pytest-matrix:
+    name: pytest / py${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     # Default provider for tests that load jasper.config (the config
     # loader hard-fails without this set). Individual tests can override.
     env:
@@ -95,7 +100,7 @@ jobs:
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Supply-chain provenance check
@@ -113,12 +118,14 @@ jobs:
         run: pip install -e '.[full,dev]'
 
       - name: Lint (ruff)
+        if: matrix.python-version == '3.13'
         # ruff ships in the dev extras installed above. Config + rule
         # selection live in [tool.ruff] in pyproject.toml. Runs before
         # the suite for fast feedback on undefined names / dead imports.
         run: ruff check .
 
       - name: Type check (mypy; lenient baseline)
+        if: matrix.python-version == '3.13'
         # mypy ships in the dev extras installed above. The config starts
         # permissive and baselines current debt with per-module overrides, so
         # this step catches new unbaselined type regressions without turning a
@@ -137,6 +144,25 @@ jobs:
         # can over-fan-out on larger machines and make socket/subprocess-heavy
         # tests noisier than the fixed 4-worker gate we validated locally.
         run: scripts/test-merge
+
+  pytest:
+    # Branch protection requires a stable check named exactly `pytest`.
+    # The versioned matrix above fans out the real work; this aggregate
+    # preserves the required-check contract while making each interpreter's
+    # failure independently visible in GitHub Actions.
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: pytest-matrix
+    if: ${{ always() }}
+    steps:
+      - name: Require all Python matrix jobs
+        run: |
+          if [[ "${{ needs['pytest-matrix'].result }}" != "success" ]]; then
+            echo "pytest matrix result: ${{ needs['pytest-matrix'].result }}" >&2
+            exit 1
+          fi
+          echo "pytest matrix result: success"
 
   js:
     runs-on: ubuntu-latest

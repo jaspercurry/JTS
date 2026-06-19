@@ -3062,12 +3062,14 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    multi-day refactor of a 3,000+ line file) is the worst staleness profile —
    decompose big work into small, independently-mergeable steps.
 
-3. **`main` is branch-protected.** The `pytest` check (which also runs
-   `ruff check .` and lenient `mypy`) — and the `rust` check (cargo build
-   of the audio daemons) — **must pass before any PR merges**, enforced for
-   admins too; force-pushes and branch deletion are blocked. You cannot
-   merge a red `main`; wait for green. (Emergency override + the exact rule
-   live in [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection).)
+3. **`main` is branch-protected.** The `pytest` check (the stable
+   aggregate over the Python 3.11 / 3.12 / 3.13 matrix, with
+   `ruff check .` and lenient `mypy` running in the 3.13 leg) — and the
+   path-aware `rust` check (cargo build of the audio daemons) — **must
+   pass before any PR merges**, enforced for admins too; force-pushes and
+   branch deletion are blocked. You cannot merge a red `main`; wait for
+   green. (Emergency override + the exact rule live in
+   [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection).)
 
 4. **A conflicted (DIRTY) PR cannot run CI at all.** GitHub builds checks
    against a merge ref that does not exist when there's a conflict, so the
@@ -3077,13 +3079,15 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
 5. **What the CI gate covers — and does NOT.** It runs: the
    hardware-free Python merge lane (`scripts/test-merge`, with voice_eval
-   excluded because it is the paid LLM suite), `ruff`, lenient `mypy`,
-   the supply-chain provenance check, a `shell` job (`bash -n` over every
-   shell entry point + `shellcheck --severity=warning`), and a required
-   `rust` job. The `rust` job is path-aware on PRs: it runs full Cargo only
-   for Rust or Rust deploy/CI surfaces, but always runs on `main` pushes.
-   CI does **not** exercise real audio/mic/voice hardware or the Pi-side
-   install — those still need a deploy + `jasper-doctor` / on-device check.
+   excluded because it is the paid LLM suite) on Python 3.11, 3.12, and
+   3.13; `ruff` and lenient `mypy` in the 3.13 pytest leg; the
+   supply-chain provenance check; a `shell` job (`bash -n` over every
+   shell entry point + `shellcheck --severity=warning`); and a required
+   `rust` job. The `rust` job is path-aware on PRs: it runs full Cargo
+   only for Rust or Rust deploy/CI surfaces, but always runs on `main`
+   pushes. CI does **not** exercise real audio/mic/voice hardware or the
+   Pi-side install — those still need a deploy + `jasper-doctor` /
+   on-device check.
    "Green CI" means
    "safe to merge," not "validated on hardware."
 
