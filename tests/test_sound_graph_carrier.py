@@ -58,17 +58,27 @@ def test_jts_generated_names_resolve_to_sound_or_correction(tmp_path):
         assert carrier.kind == "sound_or_correction", name
 
 
-def test_active_baseline_resolves_by_source_header_not_path(tmp_path):
-    # Detection keys on the '# Source:' header the emitter writes, so it holds
-    # regardless of file name/location — including an env-overridden
-    # JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH. Name it like a sound config
-    # to prove the header (not the name) decides.
+def test_active_graph_resolves_by_structure_not_name_or_header(tmp_path):
+    # Detection reuses the safety classifier's STRUCTURAL signal (the per-driver
+    # split mixer), so a roleful graph is fenced even when (a) it is misnamed
+    # like a sound config AND (b) its '# Source:' header has been stripped (a
+    # CamillaDSP round-trip drops comments). Content beats both name and
+    # comment — this is what makes invariant 1 literally true, not merely true
+    # for header-bearing bytes.
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
-    path = config_dir / "sound_current.yml"
-    path.write_text(_active_baseline_yaml("mono", 2))
+    yaml = _active_baseline_yaml("mono", 2)
+    stripped = "\n".join(ln for ln in yaml.splitlines() if "Source:" not in ln)
+    assert "Source:" not in stripped  # header genuinely removed
+    path = config_dir / "sound_current.yml"  # misnamed like a sound config
+    path.write_text(stripped)
+
     carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
     assert carrier.kind == "active"
+    assert carrier.kind not in _STEREO_HOST_KINDS
+    with pytest.raises(CarrierCannotHostEq) as err:
+        carrier.reemit(mock.sentinel.profile, profile_id="x")
+    assert err.value.reason_code == "eq_on_active_not_wired"
 
 
 def test_non_baseline_active_graph_is_content_fenced(tmp_path):

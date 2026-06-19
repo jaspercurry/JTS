@@ -77,31 +77,36 @@ existing layering):
   and a household-readable `message`; `.to_payload()` →
   `{"status": "blocked", "reason_code": ..., "message": ...}`.
 - `carrier_for_loaded_config(current_path, *, config_dir) -> Carrier` —
-  resolves by path **and** the config's `# Source:` header (never
-  guesses), keyed on the same signals the safety classifier uses:
-  - `is_base_config` / outputd-cutover → **BaseFlatCarrier**
+  resolves by path **and** config *content* (never guesses), keyed on the same
+  signals the safety classifier uses. The four carriers are **private**; the
+  module's public surface is `carrier_for_loaded_config`, `CarrierCannotHostEq`,
+  and `ReemitResult`. Resolution order is safety-critical — **content beats
+  name**:
+  - `is_base_config` / outputd-cutover → **base-flat carrier**
     (`reemit`: `room_peqs=[]` → `emit_sound_config`)
-  - `is_jts_generated_config` → **SoundOrCorrectionCarrier**
-    (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two
-    arms relocated **verbatim**, including the `member_camilla_kwargs()`
-    splat
-  - `# Source:` from the active-speaker emitter module (baseline, startup, OR
-    commissioning — matched by the module prefix derived from
-    `runtime_contract.ACTIVE_BASELINE_SOURCE`, so **content beats a sound-like
-    filename**) → **ActiveGraphCarrier** — *PR-1:* raises
-    `CarrierCannotHostEq("eq_on_active_not_wired", …)`; *PR-3:* folds
-    preference EQ pre-split into the active *baseline* (startup/commissioning
-    stay refusing)
-  - otherwise → **UnknownCarrier** → `CarrierCannotHostEq("unknown_config", …)`
-- `Carrier.reemit(profile, *, out_path=None, profile_id, output_trim_db, member_kwargs=None) -> ReemitResult`
+  - an active-speaker (roleful) graph → **active-graph carrier**, recognised by
+    the **structural** signal the runtime classifier uses
+    (`environment.classify_camilla_config_text(text)["classification"] ==
+    "active_startup_candidate"` — the per-driver split mixer, not a `# Source:`
+    comment a round-trip could strip), so the carrier and the verifier cannot
+    drift (invariant 1) and a roleful graph is fenced **even when misnamed**
+    like a sound/correction config. Baseline / startup / commissioning all
+    match. *PR-1:* raises `CarrierCannotHostEq("eq_on_active_not_wired", …)`;
+    *PR-3:* folds preference EQ pre-split into the active *baseline*
+    (startup/commissioning stay refusing).
+  - `is_jts_generated_config` (name) → **sound/correction carrier**
+    (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
+    relocated **verbatim**, including the `member_camilla_kwargs()` splat
+  - otherwise → **unknown carrier** → `CarrierCannotHostEq("unknown_config", …)`
+- `Carrier.reemit(profile, *, out_path=None, profile_id=None, output_trim_db=0.0, member_kwargs=None) -> ReemitResult`
   — `out_path=None` returns YAML (live-draft); a path writes the file
   (durable), exactly like `emit_sound_config`. `ReemitResult` carries the
   emitted YAML + the preserved room-PEQ count (telemetry). Each carrier owns
-  its own preservation strategy and its grouping kwargs: Base/Sound default to
+  its own preservation strategy and its grouping kwargs: base/sound default to
   `member_camilla_kwargs()` (a disk read); the bonded-leader bake is the one
   caller that passes `member_kwargs=member_camilla_kwargs(cfg)` explicitly
-  (its pipe sink + rate_adjust off). ActiveGraph/Unknown ignore it and refuse
-  — see grouping boundary below.
+  (its pipe sink + rate_adjust off). The active/unknown carriers ignore it and
+  refuse — see grouping boundary below.
 
 **Concrete dispatcher, not a `Protocol`/registry.** This is a 4-member
 set and only the active carrier needs new behavior; per AGENTS.md
@@ -113,12 +118,22 @@ appendix.
 `carrier_for_loaded_config(...).reemit(...)`. Map `CarrierCannotHostEq`
 to a **`200` with `{status:"blocked", reason_code, message}`** (NOT a
 502), so the UI renders an honest hint and the live-draft/active-speaker
-UI's existing `status:"blocked"` vocabulary handles it directly. The
-durable path wraps the raise as `DspApplyError`; the route discriminates
-`CarrierCannotHostEq` (raw, from live-draft) or via `__cause__` (from the
-durable wrap) — `jasper/dsp_apply.py`'s contract stays untouched.
-Collapsing the copy-pasted branch (3 copies — see below) is itself a
-CLEAN win.
+UI's existing `status:"blocked"` vocabulary handles it directly. Both apply
+paths refuse a non-hostable graph **before any apply transaction**: live-draft
+raises directly, and the durable path resolves the carrier and raises *before*
+entering `apply_dsp_config` (a refusal is a handled "blocked" outcome, not a
+DSP failure — so it records no `prepare_failed` state and jasper-doctor /
+`/state` stay clean). The route discriminates `CarrierCannotHostEq` raw or via
+`__cause__` (belt-and-suspenders for the durable-wrap boundary) —
+`jasper/dsp_apply.py`'s contract stays untouched. Collapsing the copy-pasted
+branch (3 copies — see below) is itself a CLEAN win.
+
+The HTTP `/audition` route shares this handler, so it too can return
+`200 {status:"blocked"}`. No HTTP client calls `/audition` today (the
+calibration-agent uses the in-process `audition_profile()` seam, which sees the
+raised `CarrierCannotHostEq`); any future `/audition` HTTP client must branch
+on `payload.status` the way the `/sound` page does for `/apply` and
+`/live-draft`.
 
 ## Where preference EQ slots into the active graph (PR-3)
 

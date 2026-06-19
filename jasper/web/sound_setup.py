@@ -783,13 +783,21 @@ async def _load_profile_config(
         else sound_config_path(config_path)
     )
     cam = camilla_factory()
+    current_path = await cam.get_config_file_path(best_effort=False)
+    if not current_path:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+    if not carrier.can_host_eq:
+        # A graph that can't host EQ is a handled "blocked" outcome, not a DSP
+        # apply attempt. Raise the typed refusal BEFORE entering
+        # apply_dsp_config so it records no prepare_failed state — keeping
+        # jasper-doctor and /state honest with the typed-200 the route returns
+        # (this mirrors the live-draft path, which also refuses before any
+        # apply transaction). reemit() with no out_path raises and writes
+        # nothing.
+        carrier.reemit(profile)
 
-    async def _prepare_config() -> dict[str, Any]:
-        current_path = await cam.get_config_file_path(best_effort=False)
-        if not current_path:
-            raise RuntimeError("CamillaDSP did not report a loaded config path")
-
-        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+    def _prepare_config() -> dict[str, Any]:
         result = carrier.reemit(
             profile,
             out_path=out_path,
@@ -4115,7 +4123,11 @@ def _make_handler(
                     # The loaded graph cannot host EQ — this is a known,
                     # handled state, not a server error. Return a typed 200
                     # body so the UI renders an honest hint instead of a 502
-                    # toast or a silent no-op (no silent failure).
+                    # toast or a silent no-op (no silent failure). 200, not the
+                    # 409 used for the follower-block: the page reads
+                    # reason_code/message from the body, and a 4xx would be
+                    # swallowed by its `if (!resp.ok) throw` into a generic
+                    # error — losing the honest reason.
                     logger.info(
                         "event=sound.eq_blocked path=%s reason=%s",
                         path,

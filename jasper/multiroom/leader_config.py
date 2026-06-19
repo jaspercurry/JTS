@@ -264,8 +264,15 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
                 and is_jts_generated_config(current, config_dir=CONFIG_DIR)
                 else []
             )
-            # Deliberately the SOLO defaults — no member kwargs: this IS
-            # the un-bonding.
+            # Deliberately NOT routed through the graph carrier (unlike the
+            # /sound apply paths and apply_bonded_leader_config): un-bonding
+            # must always succeed, so this stays lenient and never refuses — a
+            # carrier refusal here would strand the speaker on the bonded pipe
+            # config. It is safe to stay lenient because an active speaker
+            # cannot form a bond in the first place (apply_bonded_leader_config
+            # refuses an active `current` via the carrier), so `current` here
+            # is never a roleful graph. Deliberately the SOLO defaults — no
+            # member kwargs: this IS the un-bonding.
             emit_sound_config(
                 profile,
                 room_peqs=peqs,

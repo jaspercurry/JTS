@@ -429,8 +429,10 @@ The generated unsaved audition filename is stable:
 /var/lib/camilladsp/configs/sound_audition.yml
 ```
 
-`/sound/apply`, `/sound/audition`, and `/sound/live-draft` only preserve
-room PEQs from configs they know how to inspect:
+`/sound/apply`, `/sound/audition`, and `/sound/live-draft` route the loaded
+config through the **graph carrier**
+([HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)), which preserves
+room PEQs from the configs it can host:
 
 - `/etc/camilladsp/outputd-cutover.yml` → no room PEQs.
 - `/var/lib/camilladsp/configs/correction_<session>_<ts>.yml` → extract
@@ -438,8 +440,16 @@ room PEQs from configs they know how to inspect:
 - `/var/lib/camilladsp/configs/sound_current.yml` → extract room PEQs.
 - `/var/lib/camilladsp/configs/sound_audition.yml` → extract room PEQs.
 
-Anything else is treated as a custom config and rejected rather than
-silently overwritten. This is intentional fail-closed behavior.
+Anything the carrier cannot host fails **closed** with a typed reason rather
+than being silently overwritten. An active-speaker crossover graph is
+recognized (by the same structural signal the runtime safety classifier
+uses — re-emitting it through the stereo template would drop the
+crossover/limiter/protective-HP) and refused with
+`reason_code="eq_on_active_not_wired"`; any other unrecognized config refuses
+with `unknown_config`. The refusal returns as an HTTP 200
+`{status:"blocked", reason_code, message}` body so the wizard renders an
+honest hint instead of a 502. See the design-of-record for the dispatcher and
+the program/driver-domain boundary.
 
 The applied profile and named profile library are intentionally separate
 files:
@@ -682,7 +692,8 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-18 (`/sound/` active-speaker UI rechecked after the
-working-setup copy cleanup, continuous commission ramp tone, automatic
-quiet-ramp controls, combined-test level control/operator validation, and
-removal of the product direct-DAC driver-test flow.)
+Last verified: 2026-06-19 (config-preservation/refusal section updated for the
+graph-carrier dispatch — active-speaker baselines are now recognized and
+refused with a typed `reason_code` returned as a 200 `{status:"blocked"}`
+body, not a flat "custom config" 502; see HANDOFF-dsp-graph-carrier.md. Prior
+recheck 2026-06-18 after the active-speaker UI / commission-ramp work.)

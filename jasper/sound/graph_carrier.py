@@ -14,7 +14,8 @@ Design-of-record: ``docs/HANDOFF-dsp-graph-carrier.md``.
 
 Layering: this module is the one place allowed to bridge the sound and
 active-speaker subsystems. It depends on :mod:`jasper.sound.camilla_yaml` and
-(lazily) :mod:`jasper.active_speaker.runtime_contract`; neither depends back.
+(lazily) :mod:`jasper.active_speaker.environment` (the safety classifier);
+neither depends back.
 """
 from __future__ import annotations
 
@@ -79,18 +80,14 @@ class _StereoHostCarrier:
     arms of the former ``/sound`` 3-arm branch.
     """
 
+    can_host_eq = True
+
     def __init__(self, kind: str, current_path: str | Path | None) -> None:
         self.kind = kind
         self._current_path = current_path
-        self._room_peqs: list | None = None
 
     def _compute_room_peqs(self) -> list:
         raise NotImplementedError
-
-    def _resolved_room_peqs(self) -> list:
-        if self._room_peqs is None:
-            self._room_peqs = self._compute_room_peqs()
-        return self._room_peqs
 
     def reemit(
         self,
@@ -112,7 +109,7 @@ class _StereoHostCarrier:
 
             member_kwargs = member_camilla_kwargs()
 
-        room_peqs = self._resolved_room_peqs()
+        room_peqs = self._compute_room_peqs()
         yaml = emit_sound_config(
             profile,
             room_peqs=room_peqs,
@@ -158,6 +155,7 @@ class _ActiveGraphCarrier:
     """
 
     kind = "active"
+    can_host_eq = False
 
     def __init__(self, current_path: str | Path | None) -> None:
         self._current_path = current_path
@@ -183,6 +181,7 @@ class _UnknownCarrier:
     """A config JTS did not generate. Fail closed — never re-emit over it."""
 
     kind = "unknown"
+    can_host_eq = False
 
     def __init__(self, current_path: str | Path | None) -> None:
         self._current_path = current_path
@@ -207,29 +206,29 @@ class _UnknownCarrier:
 def _loaded_config_is_active_speaker_graph(current_path: str | Path) -> bool:
     """True when the loaded config is any active-speaker (roleful) graph.
 
-    Baseline (steady-state runtime), startup, and commissioning configs are ALL
-    roleful and must never be re-emitted through the stereo template. Detection
-    keys on the active-speaker emitter MODULE in the config's ``# Source:``
-    header, derived from ``ACTIVE_BASELINE_SOURCE`` so it tracks every
-    active-speaker emitter (not just the baseline) and stays single-sourced
-    with the classifier's vocabulary. Content beats name: this fences a roleful
-    graph even if it is misnamed like a sound/correction config. An unreadable
-    config returns False and falls through to the fail-closed unknown carrier.
-    The constant is imported lazily to keep ``runtime_contract``'s heavy
-    transitive imports out of the wizard process.
+    Reuses the active-speaker safety classifier's STRUCTURAL signal — the same
+    ``classify_camilla_config_text`` that ``runtime_contract.classify_camilla_graph``
+    keys on — so the carrier and the verifier cannot drift (invariant 1). A
+    roleful graph is recognised by its per-driver split mixer, not by a
+    ``# Source:`` comment a CamillaDSP round-trip could strip; **content beats
+    name**, so this fences a roleful graph even when it is misnamed like a
+    sound/correction config. Baseline, startup, and commissioning graphs all
+    classify ``active_startup_candidate``. An unreadable config returns False
+    and falls through to the fail-closed unknown carrier. The import is lazy to
+    keep the classifier's transitive deps out of the socket-activated wizard
+    process; ``classify_camilla_config_text`` is dependency-free text parsing
+    and never raises on arbitrary input.
     """
-    from jasper.active_speaker.runtime_contract import ACTIVE_BASELINE_SOURCE
+    from jasper.active_speaker.environment import classify_camilla_config_text
 
-    # ACTIVE_BASELINE_SOURCE is "<module>.emit_active_speaker_baseline_config";
-    # the module prefix is shared by every active-speaker emitter's header
-    # (baseline / startup / commissioning), and never appears in a sound or
-    # correction config (those carry the jasper.sound.camilla_yaml source).
-    module_prefix = ACTIVE_BASELINE_SOURCE.rsplit(".", 1)[0] + "."
     try:
         text = Path(current_path).read_text()
     except OSError:
         return False
-    return f"Source: {module_prefix}" in text
+    return (
+        classify_camilla_config_text(text).get("classification")
+        == "active_startup_candidate"
+    )
 
 
 def carrier_for_loaded_config(current_path, *, config_dir):
