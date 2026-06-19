@@ -258,6 +258,11 @@ def view_from_emitted_text(text: str) -> GraphView:
     for name, spec in pending.items():
         filters[name] = GraphFilter(type=spec["type"], params=spec["parameters"])
 
+    # _emitted_step returns None for non-Filter pipeline steps (e.g. the
+    # master_gain Mixer); skip those at the append sites so `steps` only ever
+    # holds real Filter steps. Filtering at append is narrowing-independent —
+    # a trailing `tuple(s for s in steps if s is not None)` over an Optional
+    # list is narrowed inconsistently by mypy across Python versions.
     steps: list[GraphPipelineStep] = []
     current: dict[str, Any] | None = None
     for line in sections.get("pipeline", []):
