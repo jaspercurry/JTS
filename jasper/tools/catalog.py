@@ -30,6 +30,12 @@ import types
 from typing import Any, Iterable
 
 from ..log_event import log_event
+# Pack-payload assembly lives in the LIGHT read-side module so the
+# socket-activated /tools/ wizard can group tools without importing
+# jasper.tools. The heavy bake-side writer here reuses the same helper so the
+# baked /run/jasper/tools.json `packs` and the wizard's re-derived view can't
+# drift (they were two copies that already had).
+from ..tool_catalog_view import _build_pack_payloads
 from . import ToolRegistry
 from .packs import TOOL_PACKS, CapabilityPack, CatalogPack, ToolDeps, register_packs
 
@@ -57,72 +63,6 @@ def _catalog_pack_payload(pack: CatalogPack | None) -> dict[str, Any] | None:
         "summary": pack.summary,
         "setup_url": pack.setup_url,
     }
-
-
-def _pack_status(tools: list[dict[str, Any]]) -> str:
-    statuses = {t.get("status") for t in tools}
-    if statuses == {"active"}:
-        return "active"
-    if statuses == {"off"}:
-        return "off"
-    if statuses == {"needs_setup"}:
-        return "needs_setup"
-    return "partial"
-
-
-def _build_pack_payloads(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    packs: dict[str, dict[str, Any]] = {}
-    for tool in tools:
-        pack = tool.get("pack")
-        name = tool.get("name")
-        if not isinstance(name, str):
-            continue
-        if isinstance(pack, dict) and isinstance(pack.get("id"), str):
-            pid = pack["id"]
-            seed = {
-                "id": pid,
-                "title": pack.get("title") or pid,
-                "summary": pack.get("summary") or "",
-                "setup_url": pack.get("setup_url"),
-                "category": tool.get("category") or "Utilities",
-                "tool_names": [],
-            }
-        else:
-            pid = f"tool:{name}"
-            seed = {
-                "id": pid,
-                "title": name,
-                "summary": tool.get("summary") or "",
-                "setup_url": tool.get("setup_url"),
-                "category": tool.get("category") or "Utilities",
-                "tool_names": [],
-                "singleton_tool_name": name,
-            }
-        if pid not in packs:
-            packs[pid] = seed
-        packs[pid]["tool_names"].append(name)
-    by_name = {t["name"]: t for t in tools}
-    out = []
-    for pack in packs.values():
-        members = [by_name[name] for name in pack["tool_names"] if name in by_name]
-        status = _pack_status(members)
-        out.append({
-            **pack,
-            "status": status,
-            "tool_count": len(members),
-            "active_count": sum(1 for t in members if t.get("status") == "active"),
-            "off_count": sum(1 for t in members if t.get("status") == "off"),
-            "needs_setup_count": sum(
-                1 for t in members if t.get("status") == "needs_setup"
-            ),
-            "setup_required_count": sum(
-                1 for t in members if t.get("requires_setup")
-            ),
-            "customized_count": sum(
-                1 for t in members if t.get("prompt_customized")
-            ),
-        })
-    return out
 
 
 def _summary_from_description(text: str, *, max_chars: int = 180) -> str:

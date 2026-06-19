@@ -183,9 +183,20 @@ Our tool **descriptions alone** total **~8,200 tokens** — already about
 half of OpenAI Realtime's hard **16,384-token** instructions+tools
 ceiling (a real builder hit that wall with just 9 verbose tools). Tool
 descriptions are the verbatim docstrings, which we keep deliberately
-rich. Splitting a short model-facing description from the full human
-docstring roughly **halves** that footprint and buys years of runway.
-This is the one near-term fix that isn't optional.
+rich. The fix is to split a short model-facing description from the full
+human docstring.
+
+**The seam shipped; the realized savings are mostly future work, by
+design.** The split mechanism is live — `llm_description` on a
+`ToolDefinition`, resolved by `Tool.model_facing_description()` and held
+under budget by `tests/test_tool_budget.py`. But only `get_weather`
+actually carries a short `llm_description` today (≈3,800 → ≈1,250 chars),
+so the live model-facing total is ≈**7,600 tokens** — a ~7–8% trim, not
+yet the halving. "Halves" describes the *potential* once the verbose
+tools (spotify, transit, home_assistant) are migrated, which is an
+eval-gated step (see §5 "Next boundary slice"), not a silent reword. The
+headroom is banked tool-by-tool as they migrate — the seam being in place
+is what makes that cheap and incremental.
 
 ### 3.5 "Sessions" make the re-declare wall a non-issue for us
 JTS opens **one persistent live connection** at daemon startup; wake

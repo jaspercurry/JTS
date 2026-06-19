@@ -220,7 +220,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   whole pack or a specific child tool. Detail pages expose the full
   model-facing prompt, input schema, and metadata; advanced users can
   override a prompt at their own risk and reset it to the built-in
-  default. Reads the catalog `jasper-voice` writes to
+  default. Each page links a tool-authoring guide at
+  `http://jts.local/tools/guide/` (the house style for first-party and
+  trusted-PR capability packs). Reads the catalog `jasper-voice` writes to
   `/run/jasper/tools.json`; disabled tools/packs persist to
   `/var/lib/jasper/tool_state.env` and prompt overrides persist to
   `/var/lib/jasper/tool_prompt_overrides.json` (fail-safe: missing or
