@@ -119,6 +119,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-xdist>=3.8",
     "ruff>=0.6",
+    # The day-one baseline is checker-version-sensitive. Bump this
+    # deliberately when tightening or regenerating the baseline.
+    "mypy>=2.1,<2.2",
 ]
 
 [dependency-groups]
@@ -127,6 +130,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-xdist>=3.8",
     "ruff>=0.6",
+    # The day-one baseline is checker-version-sensitive. Bump this
+    # deliberately when tightening or regenerating the baseline.
+    "mypy>=2.1,<2.2",
 ]
 
 [project.scripts]
@@ -182,6 +188,7 @@ build-backend = "setuptools.build_meta"
 include = ["jasper", "jasper.*"]
 
 [tool.setuptools.package-data]
+"jasper" = ["py.typed"]
 "jasper.data" = ["*.csv"]
 "jasper.active_speaker" = ["presets/*.json"]
 
@@ -219,3 +226,122 @@ ignore = ["E701", "E731", "E402"]
 # uint16). Ruff resolves those forward-ref strings as names and
 # false-flags them as undefined; they are already `# type: ignore`.
 "jasper/bluetooth/agent.py" = ["F821"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["jasper"]
+ignore_missing_imports = true
+show_error_codes = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# dbus-next exposes BlueZ/ObjectManager methods dynamically from D-Bus
+# introspection XML, e.g. call_connect() and call_get_managed_objects().
+# Treat that library boundary as untyped rather than silencing the JTS
+# modules that call it.
+module = ["dbus_next", "dbus_next.*"]
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# Day-one baseline generated on 2026-06-19 with mypy 2.1.0. Keep this broad
+# but explicit so clean modules are checked now, and tighten by removing
+# entries as local type fixes land.
+module = [
+    "jasper.accessories.bridge",
+    "jasper.active_speaker.baseline_profile",
+    "jasper.active_speaker.bringup",
+    "jasper.active_speaker.calibration_level",
+    "jasper.active_speaker.camilla_yaml",
+    "jasper.active_speaker.commission_ramp",
+    "jasper.active_speaker.commissioning_coordinator",
+    "jasper.active_speaker.crossover_preview",
+    "jasper.active_speaker.driver_protection",
+    "jasper.active_speaker.measurement",
+    "jasper.active_speaker.path_safety",
+    "jasper.active_speaker.playback",
+    "jasper.active_speaker.readiness",
+    "jasper.active_speaker.runtime_contract",
+    "jasper.active_speaker.safe_playback",
+    "jasper.active_speaker.staging",
+    "jasper.active_speaker.startup_load",
+    "jasper.active_speaker.topology_tone",
+    "jasper.aec_sweep",
+    "jasper.assistant_loudness",
+    "jasper.audio_io",
+    "jasper.audio_validation",
+    "jasper.bluetooth.scan",
+    "jasper.camilla",
+    "jasper.citibike",
+    "jasper.cli._esp32_onboard",
+    "jasper.cli.aec_bridge",
+    "jasper.cli.aec_init",
+    "jasper.cli.doctor",
+    "jasper.cli.doctor.aec",
+    "jasper.cli.doctor.audio",
+    "jasper.cli.doctor.correction",
+    "jasper.cli.doctor.grouping",
+    "jasper.cli.doctor.resilience",
+    "jasper.cli.satellite_validation",
+    "jasper.cli.wake_enroll",
+    "jasper.control.aec_endpoints",
+    "jasper.control.airplay_health",
+    "jasper.control.server",
+    "jasper.control.state_aggregate",
+    "jasper.control.system_metrics",
+    "jasper.control.system_supervisor",
+    "jasper.correction.acoustic_quality",
+    "jasper.correction.autolevel",
+    "jasper.correction.bundle_tools",
+    "jasper.correction.calibration",
+    "jasper.correction.peq",
+    "jasper.correction.runtime_integrity",
+    "jasper.correction.session",
+    "jasper.home_assistant",
+    "jasper.multiroom.leader_config",
+    "jasper.multiroom.member_config",
+    "jasper.mux",
+    "jasper.output_hardware",
+    "jasper.output_topology",
+    "jasper.peering.daemon",
+    "jasper.peering.discovery",
+    "jasper.spotify_router",
+    "jasper.spotify_routing",
+    "jasper.subway",
+    "jasper.tool_state",
+    "jasper.tools.catalog",
+    "jasper.tools.packs",
+    "jasper.tools.spotify",
+    "jasper.transit",
+    "jasper.transit.providers.citibike",
+    "jasper.transit.providers.nyc_subway",
+    "jasper.usage",
+    "jasper.usbsink.audio_bridge",
+    "jasper.usbsink.daemon",
+    "jasper.usbsink.preempt_listener",
+    "jasper.usbsink.volume_bridge",
+    "jasper.voice.daemon_main",
+    "jasper.voice.gemini_session",
+    "jasper.voice.openai_session",
+    "jasper.voice_daemon",
+    "jasper.volume_diagnostics",
+    "jasper.wake",
+    "jasper.wake_corpus.bridge_session",
+    "jasper.wake_corpus.recording_backend",
+    "jasper.wake_training.feature_bank",
+    "jasper.weather",
+    "jasper.web.__main__",
+    "jasper.web._common",
+    "jasper.web.balance_flow",
+    "jasper.web.bluetooth_setup",
+    "jasper.web.dial_setup",
+    "jasper.web.rooms_setup",
+    "jasper.web.sound_setup",
+    "jasper.web.spotify_setup",
+    "jasper.web.sync_flow",
+    "jasper.web.tools_setup",
+    "jasper.web.voice_setup",
+    "jasper.web.wake_setup",
+    "jasper.wifi_scan_repair",
+    "jasper.xvf.xvf_host",
+]
+ignore_errors = true

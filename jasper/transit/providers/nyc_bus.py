@@ -119,7 +119,7 @@ class _NycBus:
             # the failure is loud and the message is actionable.
             raise TransitError("MTA BusTime API key required")
         import httpx  # lazy — see import comment at top of module
-        params = {
+        params: dict[str, str | float] = {
             "key": key,
             "lat": f"{lat:.6f}",
             "lon": f"{lon:.6f}",

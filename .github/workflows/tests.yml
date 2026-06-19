@@ -118,6 +118,13 @@ jobs:
         # the suite for fast feedback on undefined names / dead imports.
         run: ruff check .
 
+      - name: Type check (mypy; lenient baseline)
+        # mypy ships in the dev extras installed above. The config starts
+        # permissive and baselines current debt with per-module overrides, so
+        # this step catches new unbaselined type regressions without turning a
+        # partially typed codebase strict on day one.
+        run: mypy
+
       - name: Test (hardware-free; voice_eval explicitly excluded)
         # voice_eval is the paid LLM suite — never CI material, purely on
         # cost discipline. The test_doctor OPENAI_API_KEY=wiz-key env-leak

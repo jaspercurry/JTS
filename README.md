@@ -516,6 +516,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/extensibility.md](docs/extensibility.md) | Maintainers / AI / extension contributors | **Start here before adding a modular subsystem.** The cross-cutting extensibility doctrine: the one invariant (host-mediated indirection), the five extension contracts (tools, sources, model providers, hardware profiles, features), the *what-kind → which-pattern* decision tree, and the build-now-vs-defer trust gradient. Frames the per-contract docs that follow. |
 | [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet, pack-first catalog, singleton packs for standalone tools, generated pack detail pages, full prompt override/reset, and the built-in `/tools/` on/off catalog wizard |
 | [docs/research-tool-plan.md](docs/research-tool-plan.md) | Maintainers / AI | Vision, design, and phased roadmap for the async "research this and tell me later" tool: a fast `research(query)` tool that hands the question to a pluggable text LLM (OpenAI v1, Anthropic v2) running in a bounded background job, then reads a ≤30 s summary back through the existing timer-fire announcement path. Records the chosen v1 defaults (background+poll, no webhook) and the deferred future (barge-in yes/no, interaction history log). Nothing shipped yet. |
+| [docs/conversation-history-plan.md](docs/conversation-history-plan.md) | Maintainers / AI | Execution plan for the first JTS **Feature** (per the extensibility doctrine): a read-only `/chat` log of perceived-command-in / response-back. Native-first transcript capture (OpenAI/Grok surface what they already capture and discard; Gemini needs transcription config), a dedicated `ConversationStore` cloned from the research store, a `/system/`-shaped read-only page, and opt-in / mic-mute-gated / retention-capped privacy. Nothing shipped yet. |
 | [docs/examples/tool_pack_starter.py](docs/examples/tool_pack_starter.py) | Trusted tool-pack contributors | Non-production postcard example of a copyable capability pack: `CapabilityPack`, `CatalogPack`, explicit `ToolDefinition`, `PythonExecutor`, labels, timeout, risk flags, and deps/build shape. Tests import it so the example cannot drift from the real boundary. |
 | [docs/LAUNCH-READINESS.md](docs/LAUNCH-READINESS.md) | Maintainers / cleanup agents | **Current, verified open-source-launch backlog** — what's done (privilege separation, governance) and what's open, each open item with a ready-to-paste agent prompt. Supersedes the `REVIEW-*` audit snapshots. |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Contributor "files to know" register + the original top-five framing (priority list superseded by LAUNCH-READINESS.md) |
@@ -824,6 +825,14 @@ reference. Currently:
   Pre-rendered audio cue subsystem: registry, cache lifecycle, CLI,
   how to add a new reactive or proactive cue. Start here when a
   failure path needs to "say something" rather than fall silent.
+- [`HANDOFF-audio-measurement-core.md`](docs/HANDOFF-audio-measurement-core.md)
+  — **Living architecture + product plan** (2026-06-19) for the shared
+  audio measurement/calibration core that room correction, active-crossover
+  calibration, and pair/leader-follower balance all build on: the layered
+  calibration product (L0 fail-closed crossover / L1 phone-mic level match /
+  L2 calibrated-mic FR-phase), the multi-volume verdict, and a strangler-fig
+  refactor roadmap (kernel extraction + single GraphValidator). The
+  output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
   correction v2 at `/correction/`: iPhone-mic measurement flow,
   calibrated mic ingest, configurable correction strategies,
@@ -893,6 +902,13 @@ reference. Currently:
   browser audio reliability, target/preference tuning, FIR/phase room
   correction, and multi-position confidence. Treat as source material
   and research synthesis, not operational truth.
+- [`docs/research/2026-06-19-active-crossover-calibration/`](docs/research/2026-06-19-active-crossover-calibration/README.md)
+  — 2026-06-19 multi-agent research/design snapshot: mic-driven active
+  crossover level matching, the "is it just level matching?" + calibrated
+  vs uncalibrated-iPhone-mic adjudication, a live JTS3 "crossover not
+  applied" diagnosis, codebase reuse/gap analysis, and the shared
+  audio-measurement-core + layered-product vision. Source material; the
+  shipped design lives in the canonical calibration handoffs.
 - [`docs/research/balance-sync-calibration.md`](docs/research/balance-sync-calibration.md)
   — 2026-06-13 prior-art synthesis for multi-speaker balance versus
   sync calibration, including the Snapcast sync loop, Snapcast
