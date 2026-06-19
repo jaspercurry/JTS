@@ -91,9 +91,20 @@ existing layering):
     comment a round-trip could strip), so the carrier and the verifier cannot
     drift (invariant 1) and a roleful graph is fenced **even when misnamed**
     like a sound/correction config. Baseline / startup / commissioning all
-    match. *PR-1:* raises `CarrierCannotHostEq("eq_on_active_not_wired", …)`;
-    *PR-3:* folds preference EQ pre-split into the active *baseline*
-    (startup/commissioning stay refusing).
+    match structurally; within the active branch the `# Source:` header
+    (`ACTIVE_BASELINE_SOURCE`, the same signal the verifier's `is_baseline`
+    branch keys on) decides which it is. *PR-1:* raised
+    `CarrierCannotHostEq("eq_on_active_not_wired", …)` for all three. *PR-3
+    (DONE):* a **SOLO baseline** folds preference EQ pre-split — recomposed from
+    the saved evidence via
+    [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py),
+    NEVER through the stereo template (invariant 3). Startup/commissioning still
+    refuse `eq_on_active_not_wired`; a **bonded** baseline refuses
+    `eq_on_active_bonded_member` (invariant 7 — the active×grouping decision is
+    deferred); a baseline whose saved evidence has gone missing refuses
+    `active_baseline_recompose_unavailable`. All four are 200-with-body blocked
+    outcomes, never a 5xx, and the durable apply's pre-check dry-runs the active
+    carrier so a refusal records no `prepare_failed` state (SF-2).
   - `is_jts_generated_config` (name) → **sound/correction carrier**
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
     relocated **verbatim**, including the `member_camilla_kwargs()` splat
@@ -162,12 +173,21 @@ makes them safe:
    (the exact mechanism `emit_sound_config` uses for room boosts), so the
    corrected program cannot exceed unity before the split.
 
-**Compose, don't text-splice.** Grow `emit_active_speaker_baseline_config`
-/ `build_baseline_profile_candidate` an optional `preference_filters`
-param wired pre-split, so all active-graph shape decisions stay in
-`active_speaker.camilla_yaml`. `ActiveGraphCarrier.reemit` composes
-from the **saved baseline candidate** (`build_baseline_profile_candidate`),
-not from an extracted running config.
+**Compose, don't text-splice.** `emit_active_speaker_baseline_config` grew an
+optional `preference_filters` param wired pre-split (a separate Filter step on
+`[0, 1]` after the headroom step, before the split Mixer), so all active-graph
+shape decisions stay in `active_speaker.camilla_yaml`. The carrier composes via
+[`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py) — a
+thin helper that rebuilds the structural baseline from the saved evidence using
+the **same derivation primitives** `build_baseline_profile_candidate` uses
+(`resolve_active_playback_device` → `compile_preset_from_crossover_preview` →
+`_derive_corrections` → the emitter), then folds the preference bands in. It is
+a sibling of `build_baseline_profile_candidate`, **not** a new param on it: the
+durable baseline (`active_speaker_baseline.yml`, the reconcile fallback) stays
+EQ-free, while the carrier writes the EQ'd baseline to the `/sound` apply target
+(`sound.yml`). It never parses the running config (the extract-from-running-
+config anti-pattern). For the live-draft slider, the helper returns the YAML
+text without a durable write.
 
 ### The safety contract (what makes PR-3 provably safe)
 
@@ -294,11 +314,21 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   (`tests/test_sound_camilla_yaml_golden.py`) + builder unit test
   (`tests/test_camilla_stereo_prefix.py`); existing sound tests unchanged. See
   the "Sharing" section above.
-- **PR-3 (the capability, hardware-gated on jts3):** `preference_filters`
-  pre-split + folded headroom; `ActiveGraphCarrier` composes from the
-  saved candidate; refuse if bonded-member. Tests 2, 4, 5, 7. Validate
-  the program-level EQ placement + headroom math on real hardware before
-  ship.
+- **PR-3 (the capability — CI-green; hardware gate on jts3 pending):**
+  `emit_active_speaker_baseline_config` grew `preference_filters` (pre-split +
+  folded headroom); the new `recompose_baseline_yaml` sibling rebuilds the
+  baseline with EQ from the saved evidence; `_ActiveGraphCarrier` flips
+  refuse→emit for the SOLO baseline (keyed on `ACTIVE_BASELINE_SOURCE`),
+  refuses startup/commissioning (`eq_on_active_not_wired`), bonded
+  (`eq_on_active_bonded_member`), and missing-evidence
+  (`active_baseline_recompose_unavailable`); the durable apply pre-check
+  dry-runs the active carrier (SF-2). Tests 2, 4, 5, 7 landed
+  (`tests/test_active_speaker_runtime_contract.py`,
+  `tests/test_active_speaker_baseline_profile.py`,
+  `tests/test_sound_graph_carrier.py`). **Still to do:** validate the
+  program-level EQ placement + headroom math on real hardware (jts3
+  commissioning + audible EQ smoke test) and confirm the EQ'd baseline persists
+  across reconcile before declaring the apply path shipped.
 
 ## Deferred — distributed active (separate design increment)
 

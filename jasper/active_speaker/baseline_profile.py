@@ -14,9 +14,10 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
+from jasper.camilla_config_contract import FilterSpec
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -532,6 +533,90 @@ def build_baseline_profile_candidate(
             mode=0o640,
         )
     return payload
+
+
+def recompose_baseline_yaml(
+    topology: OutputTopology,
+    *,
+    crossover_preview: Mapping[str, Any],
+    measurements: Mapping[str, Any],
+    preference_filters: Sequence[FilterSpec] = (),
+    playback_device: str | None = None,
+    out_path: str | Path | None = None,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Re-emit the active-speaker baseline YAML for the current accepted
+    evidence, with optional program-domain preference EQ folded in pre-split.
+
+    This is the composition seam the graph carrier
+    (:mod:`jasper.sound.graph_carrier`) uses to apply preference EQ on top of an
+    applied active baseline (``docs/HANDOFF-dsp-graph-carrier.md`` PR-3). It
+    rebuilds the SAME structural baseline from the saved evidence — reusing the
+    exact derivation primitives :func:`build_baseline_profile_candidate` uses
+    (``resolve_active_playback_device`` → ``compile_preset_from_crossover_preview``
+    → ``_derive_corrections`` → ``emit_active_speaker_baseline_config``) — rather
+    than parsing the running config (the explicit anti-pattern). Only the
+    ``preference_filters`` differ from the durable baseline; the crossover,
+    per-driver limiters, tweeter high-pass, and 0 dB ceiling are identical, so
+    the emitted YAML re-proves as ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
+
+    Returns ``(yaml, [])`` on success (writing to ``out_path`` when given, at the
+    same group-readable mode the emitter uses), or ``(None, issues)`` when the
+    evidence can no longer produce a baseline (preview not ready, preset
+    uncompilable, no playback device) so the carrier can refuse with a typed
+    reason instead of emitting a partial graph. It does NOT validate against
+    CamillaDSP or touch the durable baseline state — the caller (the DSP-apply
+    transaction) owns validation.
+    """
+    resolved_device, _device_source = resolve_active_playback_device(
+        topology,
+        playback_device=playback_device,
+    )
+    if not resolved_device:
+        return None, [_issue(
+            "blocker",
+            "baseline_playback_device_missing",
+            "active profile compiler needs an explicit active playback device",
+        )]
+    preview_ready = (
+        crossover_preview.get("kind") == "jts_active_speaker_crossover_preview"
+        and crossover_preview.get("status") == "ready_for_protected_staging"
+        and bool(
+            (crossover_preview.get("permissions") or {}).get(
+                "may_prepare_protected_startup_config"
+            )
+        )
+    )
+    if not preview_ready:
+        return None, [_issue(
+            "blocker",
+            "baseline_crossover_preview_not_ready",
+            "save a fresh crossover preview before re-emitting the active baseline",
+        )]
+    preset, preset_issues, _gates = compile_preset_from_crossover_preview(
+        topology,
+        dict(crossover_preview),
+    )
+    blockers = [i for i in preset_issues if i.get("severity") == "blocker"]
+    if preset is None or blockers:
+        return None, (blockers or [_issue(
+            "blocker",
+            "baseline_preset_unavailable",
+            "active profile compiler could not build speaker preset intent",
+        )])
+    corrections, _correction_issues = _derive_corrections(
+        preset,
+        crossover_preview,
+        measurements,
+    )
+    yaml = emit_active_speaker_baseline_config(
+        preset,
+        playback_device=resolved_device,
+        corrections=corrections,
+        preference_filters=preference_filters,
+        out_path=out_path,
+        baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+    )
+    return yaml, []
 
 
 async def apply_baseline_profile(

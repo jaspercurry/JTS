@@ -2856,10 +2856,14 @@ async def test_apply_profile_blocks_active_baseline_with_typed_reason(
 ):
     # Regression: an applied active-speaker baseline used to hit the misleading
     # "custom config ... Reset" 502 that would have DESTROYED the active graph
-    # if followed. It must now refuse with a specific, honest reason, never
-    # re-emit over the active graph, and — since a refusal is a handled
-    # "blocked" outcome, not a DSP failure — record NO dsp-apply state (SF-2),
-    # so jasper-doctor's check_dsp_apply_state stays clean on an active speaker.
+    # if followed. PR-3 lets a SOLO baseline host preference EQ by recomposing
+    # from its saved evidence; here that evidence is absent (a bare tmp config
+    # dir), so the apply refuses with a specific, honest reason
+    # (active_baseline_recompose_unavailable), never re-emits a stereo config
+    # over the active graph, and — since a refusal is a handled "blocked"
+    # outcome, not a DSP failure — records NO dsp-apply state (SF-2; the
+    # pre-check dry-runs the active carrier), so jasper-doctor's
+    # check_dsp_apply_state stays clean on an active speaker.
     from jasper.dsp_apply import last_dsp_apply_state
     from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
 
@@ -2879,7 +2883,7 @@ async def test_apply_profile_blocks_active_baseline_with_typed_reason(
         )
     refusal = sound_setup._carrier_refusal(excinfo.value)
     assert refusal is not None
-    assert refusal.reason_code == "eq_on_active_not_wired"
+    assert refusal.reason_code == "active_baseline_recompose_unavailable"
     assert refusal.to_payload()["status"] == "blocked"
     # Fail closed: the active config was never overwritten / re-loaded.
     assert fake.loaded_path is None
@@ -2959,7 +2963,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     assert b"502" not in status_line
     payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
     assert payload["status"] == "blocked"
-    assert payload["reason_code"] == "eq_on_active_not_wired"
+    assert payload["reason_code"] == "active_baseline_recompose_unavailable"
     # Fail closed (active config never swapped) + SF-2 (no prepare_failed state).
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
@@ -3008,7 +3012,7 @@ async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap
         )
     refusal = sound_setup._carrier_refusal(excinfo.value)
     assert refusal is not None
-    assert refusal.reason_code == "eq_on_active_not_wired"
+    assert refusal.reason_code == "active_baseline_recompose_unavailable"
     # The in-lock re-check fired (pre-check saw the hostable config first).
     assert cam.calls >= 2
     # The stereo config was NEVER loaded over the active crossover.

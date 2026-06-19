@@ -31,6 +31,7 @@ from jasper.active_speaker.runtime_contract import (
     apply_safe_graph_decision_to_statefile,
     safe_graph_for_current_topology,
 )
+from jasper.camilla_config_contract import FilterSpec
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
@@ -174,11 +175,17 @@ def _active_yaml(layout: str, way: int, audible: set[int] | frozenset[int]) -> s
     )
 
 
-def _active_baseline_yaml(layout: str, way: int) -> str:
+def _active_baseline_yaml(
+    layout: str,
+    way: int,
+    *,
+    preference_filters: tuple[FilterSpec, ...] = (),
+) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_baseline_config(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
+        preference_filters=preference_filters,
         baseline_id=f"baseline-{layout}-{way}way",
     )
 
@@ -286,6 +293,85 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     assert graph.allowed is True
     assert graph.details["baseline_candidate"] is True
     assert graph.details["unmuted_outputs"] == [0, 1]
+
+
+# --- PR-3: preference EQ folds into the active baseline, pre-split -------
+
+def test_baseline_with_preference_eq_stays_approved() -> None:
+    # Keystone (invariant 2), emitter-level: emit the real active baseline with a
+    # preference SHELF folded in, feed it back through the SAME classifier for the
+    # SAME topology -> still GRAPH_APPROVED_ACTIVE_RUNTIME. Folding EQ never breaks
+    # the protection contract.
+    topology = _active_topology("mono", "active_2_way")
+    prefs = (
+        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
+    )
+
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=_active_baseline_yaml("mono", 2, preference_filters=prefs),
+    )
+
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert graph.allowed is True
+
+
+def test_baseline_preference_boost_folds_into_headroom() -> None:
+    # Invariant 4 (emitter-side): a +N dB preference boost reduces the pre-split
+    # headroom by >= total_positive_boost_db(prefs) and keeps volume_limit 0.0.
+    # Tested with a SHELF (summing a shelf's band gain is the conservative bound
+    # and the easy-to-get-wrong case).
+    import re
+
+    flat = _active_baseline_yaml("mono", 2)
+    boosted = _active_baseline_yaml(
+        "mono",
+        2,
+        preference_filters=(
+            FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
+            FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=3.0, q=1.0),
+        ),
+    )
+
+    def _headroom_db(text: str) -> float:
+        match = re.search(
+            r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
+            text,
+        )
+        assert match is not None
+        return float(match.group(1))
+
+    # +5 shelf + +3 peak = +8 dB worst-case boost; headroom drops by >= 8 dB and
+    # stays non-positive. (12 dB baseline -> 20 dB attenuation.)
+    assert _headroom_db(flat) - _headroom_db(boosted) >= 8.0 - 1e-6
+    assert _headroom_db(boosted) <= 0.0
+    assert "volume_limit: 0.0" in boosted
+
+
+def test_baseline_preference_step_is_before_split_mixer() -> None:
+    # Invariant 5: the preference filter step is wired on the program channels
+    # strictly BEFORE the split mixer (pipeline index of pref step < Mixer step).
+    yaml = _active_baseline_yaml(
+        "mono",
+        2,
+        preference_filters=(
+            FilterSpec(name="pref_pk", biquad_type="Peaking", freq=2000.0, gain=2.0, q=1.0),
+        ),
+    )
+    pipeline = yaml[yaml.index("\npipeline:"):]
+    assert pipeline.index("names: [pref_pk]") < pipeline.index("type: Mixer")
+
+
+def test_baseline_empty_preference_is_byte_identical() -> None:
+    # An all-flat preference profile emits nothing extra: the baseline is
+    # byte-for-byte the pre-PR-3 config. Inactive bands (near-zero gain) drop out
+    # exactly like the stereo emitter's build_sound_filters does.
+    base = _active_baseline_yaml("mono", 2)
+    assert _active_baseline_yaml("mono", 2, preference_filters=()) == base
+    near_zero = (
+        FilterSpec(name="pref_noop", biquad_type="Peaking", freq=1000.0, gain=0.0, q=1.0),
+    )
+    assert _active_baseline_yaml("mono", 2, preference_filters=near_zero) == base
 
 
 def test_tweeter_commissioning_requires_protective_highpass() -> None:

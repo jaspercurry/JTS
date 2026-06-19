@@ -663,3 +663,115 @@ def test_baseline_profile_no_trim_when_sensitivities_match(tmp_path: Path) -> No
     assert "driver_gain_derived_from_sensitivity" not in {
         issue["code"] for issue in payload["issues"]
     }
+
+
+def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
+    tmp_path: Path,
+) -> None:
+    # recompose_baseline_yaml is the carrier's composition seam (PR-3). With no
+    # preference EQ it must reproduce the durable builder's config byte-for-byte
+    # (it reuses the SAME derivation primitives), so applying flat EQ on an
+    # active speaker is a no-op on the protected graph.
+    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    durable_yaml = config_path.read_text(encoding="utf-8")
+
+    flat_yaml, flat_issues = recompose_baseline_yaml(
+        topology,
+        crossover_preview=preview,
+        measurements=measurements,
+    )
+    assert flat_issues == []
+    assert flat_yaml == durable_yaml
+
+
+def test_recompose_baseline_yaml_folds_preference_eq_and_stays_approved(
+    tmp_path: Path,
+) -> None:
+    # The keystone (invariant 2), end-to-end through the recompose seam: a
+    # +6 dB preference (a +4 dB highshelf -- a SHELF, the conservative
+    # boost-sum case -- plus a +2 dB peak) folds into the single
+    # active_baseline_headroom gain (12 -> 18 dB) and rides PRE-SPLIT, and the
+    # emitted graph still re-proves as GRAPH_APPROVED_ACTIVE_RUNTIME. Folding EQ
+    # never breaks the protection contract.
+    import re
+
+    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        classify_camilla_graph,
+    )
+    from jasper.camilla_config_contract import FilterSpec
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+
+    prefs = [
+        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=8000.0, gain=4.0, slope=6.0),
+        FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=2.0, q=1.0),
+    ]
+    eq_yaml, eq_issues = recompose_baseline_yaml(
+        topology,
+        crossover_preview=preview,
+        measurements=measurements,
+        preference_filters=prefs,
+    )
+    assert eq_issues == []
+    assert "pref_hs:" in eq_yaml and "pref_pk:" in eq_yaml
+    assert "volume_limit: 0.0" in eq_yaml
+
+    # invariant 4 (emitter-side): the headroom gain is folded by the worst-case
+    # additive boost (sum of positive shelf+peak gains = 6 dB), keeping it
+    # non-positive -- 12 dB baseline headroom -> 18 dB attenuation.
+    match = re.search(
+        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
+        eq_yaml,
+    )
+    assert match is not None
+    assert float(match.group(1)) == -18.0
+
+    # invariant 5: the preference filter step is wired on the program channels
+    # strictly BEFORE the split mixer.
+    pipeline = eq_yaml[eq_yaml.index("\npipeline:"):]
+    pref_idx = pipeline.index("pref_hs, pref_pk")
+    mixer_idx = pipeline.index("type: Mixer")
+    assert pref_idx < mixer_idx
+
+    # invariant 2 (keystone): the protection contract still holds.
+    graph = classify_camilla_graph(topology=topology, text=eq_yaml)
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert graph.allowed is True
+
+
+def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
+    # When the saved evidence can no longer produce a baseline, recompose returns
+    # (None, issues) so the carrier refuses instead of emitting a partial graph.
+    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
+
+    topology = _dual_apple_topology()
+    yaml, issues = recompose_baseline_yaml(
+        topology,
+        crossover_preview={},
+        measurements={},
+    )
+    assert yaml is None
+    assert any(
+        issue["code"] == "baseline_crossover_preview_not_ready" for issue in issues
+    )

@@ -150,14 +150,26 @@ def test_flat_graph_is_flat_and_hosted_by_a_stereo_carrier(tmp_path):
 # --- inv 3: emit_sound_config is never reachable for unhostable graphs ---
 
 def test_emit_sound_config_never_called_for_active_or_unknown(tmp_path):
+    # inv 3 still holds with PR-3: a SOLO active baseline now hosts EQ, but it is
+    # recomposed via the ACTIVE emitter (recompose helper), never the stereo
+    # emit_sound_config. Mock the recompose so the active SUCCESS path is reached
+    # without touching emit_sound_config; the unknown carrier still refuses.
     active = tmp_path / "baseline.yml"
     active.write_text(_active_baseline_yaml("mono", 2))
 
-    with mock.patch("jasper.sound.graph_carrier.emit_sound_config") as emit:
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config"
+    ) as emit, mock.patch(
+        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
+        return_value="active-yaml",
+    ) as recompose, mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ):
         active_carrier = carrier_for_loaded_config(str(active), config_dir=tmp_path)
-        with pytest.raises(CarrierCannotHostEq) as active_err:
-            active_carrier.reemit(mock.sentinel.profile, profile_id="x")
-        assert active_err.value.reason_code == "eq_on_active_not_wired"
+        result = active_carrier.reemit(mock.sentinel.profile, profile_id="x")
+        assert isinstance(result, ReemitResult)
+        assert result.yaml == "active-yaml"
+        recompose.assert_called_once()
 
         unknown_carrier = carrier_for_loaded_config(str(tmp_path / "gone.yml"), config_dir=tmp_path)
         with pytest.raises(CarrierCannotHostEq) as unknown_err:
@@ -236,6 +248,103 @@ def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
     extract.assert_called_once_with(str(path))
     assert emit.call_args.kwargs["room_peqs"] is preserved
     assert result.room_peq_count == 2
+
+
+# --- PR-3: the SOLO active baseline hosts preference EQ -----------------
+
+def test_solo_active_baseline_can_host_eq(tmp_path):
+    # A header-bearing baseline on a solo speaker is now EQ-hostable: the
+    # carrier reports can_host_eq so the durable /sound apply proceeds (it
+    # recomposes under the dsp-apply lock) instead of refusing in the pre-check.
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ):
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+    assert carrier.kind == "active"
+    assert carrier.can_host_eq is True
+
+
+def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
+    # reemit routes a solo baseline to the ACTIVE recompose helper (never the
+    # stereo template), forwarding out_path so the durable apply writes the
+    # EQ'd-baseline YAML where the apply transaction will load it.
+    out = tmp_path / "sound_current.yml"
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ), mock.patch(
+        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
+        return_value="eqd-active-yaml",
+    ) as recompose:
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+        result = carrier.reemit(mock.sentinel.profile, out_path=out, profile_id="id")
+    assert isinstance(result, ReemitResult)
+    assert result.yaml == "eqd-active-yaml"
+    assert result.room_peq_count == 0
+    assert recompose.call_args.kwargs["out_path"] == out
+
+
+def test_bonded_active_baseline_refuses_with_stable_reason(tmp_path):
+    # inv 7: an active baseline that is a bonded member refuses (the active x
+    # grouping decision is deferred to the Distributed-Active track). The
+    # carrier is the backstop; /sound's follower-block usually fires first.
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=True
+    ):
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+        assert carrier.can_host_eq is False
+        with pytest.raises(CarrierCannotHostEq) as err:
+            carrier.reemit(mock.sentinel.profile, profile_id="id")
+    assert err.value.reason_code == "eq_on_active_bonded_member"
+
+
+def test_active_baseline_refuses_bonded_leader_bake_via_member_kwargs(tmp_path):
+    # inv 7 (bake context): the bonded-leader bake passes member_kwargs even when
+    # grouping.env isn't active yet mid-bake. The active baseline refuses on that
+    # signal — never recomposing an active graph into a bond.
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ), mock.patch(
+        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq"
+    ) as recompose:
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+        with pytest.raises(CarrierCannotHostEq) as err:
+            carrier.reemit(
+                mock.sentinel.profile,
+                member_kwargs={"playback_pipe_path": "/run/snapfifo"},
+            )
+    assert err.value.reason_code == "eq_on_active_bonded_member"
+    recompose.assert_not_called()
+
+
+def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
+    # When the saved evidence can no longer produce a baseline, the recompose
+    # wrapper maps the underlying blocker to a typed refusal — it NEVER emits a
+    # partial active graph. (Exercises the wrapper's None -> raise mapping; the
+    # real evidence-derivation is covered in test_active_speaker_baseline_profile.)
+    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
+
+    with mock.patch(
+        "jasper.sound.profile.build_sound_filters", return_value=()
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_baseline_yaml",
+        return_value=(None, [{
+            "severity": "blocker",
+            "code": "baseline_crossover_preview_not_ready",
+            "message": "save a fresh crossover preview",
+        }]),
+    ):
+        with pytest.raises(CarrierCannotHostEq) as err:
+            _recompose_active_baseline_with_eq(mock.sentinel.profile, out_path=None)
+    assert err.value.reason_code == "active_baseline_recompose_unavailable"
+    assert "save a fresh crossover preview" in err.value.message
 
 
 # --- inv 6: refusals are typed with a stable reason_code ----------------
