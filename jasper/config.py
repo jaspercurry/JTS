@@ -153,6 +153,10 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError(
             "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT must be < SAFE_HIGH_PCT"
         )
+    if cfg.research_max_runtime_sec <= 0:
+        raise RuntimeError("JASPER_RESEARCH_MAX_RUNTIME_SEC must be > 0")
+    if cfg.research_concurrency <= 0:
+        raise RuntimeError("JASPER_RESEARCH_CONCURRENCY must be > 0")
     return cfg
 
 
@@ -353,6 +357,13 @@ class Config:
     # Sits in the same /var/lib/jasper StateDirectory as everything
     # else under jasper-voice's systemd unit.
     timer_db_path: str
+
+    # Async research persistence and bounds. The text-provider key/model
+    # config is deliberately Pattern 2 under jasper.research.providers;
+    # only the cross-cutting scheduler limits live on Config.
+    research_db_path: str
+    research_max_runtime_sec: float
+    research_concurrency: int
 
     # Gemini one-shot TTS model used by the cue subsystem when the
     # active voice provider is `gemini` (or a fallback path picks
@@ -801,6 +812,13 @@ class Config:
             timer_db_path=_env(
                 "JASPER_TIMER_DB", "/var/lib/jasper/timers.db",
             ),
+            research_db_path=_env(
+                "JASPER_RESEARCH_DB", "/var/lib/jasper/research_jobs.db",
+            ),
+            research_max_runtime_sec=_env_float(
+                "JASPER_RESEARCH_MAX_RUNTIME_SEC", 300.0,
+            ),
+            research_concurrency=_env_int("JASPER_RESEARCH_CONCURRENCY", 2),
             gemini_tts_model=_env(
                 "JASPER_GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview",
             ),

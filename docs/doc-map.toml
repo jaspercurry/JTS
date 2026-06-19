@@ -193,6 +193,7 @@ code = [
   "jasper/voice_daemon.py",
   "jasper/vad.py",
   "jasper/tools/**",
+  "jasper/research/**",
   "jasper/tool_state.py",
   "jasper/tool_catalog_view.py",
   "jasper/tool_prompt_overrides.py",
@@ -217,8 +218,7 @@ docs = [
   # pack-walk / catalog / wizard change surfaces the living plan for review.
   "docs/tool-platform-plan.md",
   # Roadmap for the async research tool + the pluggable text-LLM-provider
-  # layer. Code (jasper/research/) does not exist yet; routed here via the
-  # related voice/tools globs until the implementing PR gives it its own globs.
+  # layer.
   "docs/research-tool-plan.md",
   "tests/voice_eval/README.md",
 ]
