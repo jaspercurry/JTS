@@ -33,6 +33,16 @@ from .scheduler import (
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_LIFECYCLE_ERRORS = (
+    AttributeError,
+    ImportError,
+    LookupError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
 
 @dataclass(frozen=True)
 class ActiveResearchProvider:
@@ -45,7 +55,7 @@ class ActiveResearchProvider:
             return
         try:
             await aclose()
-        except Exception:  # noqa: BLE001
+        except _PROVIDER_LIFECYCLE_ERRORS:
             logger.exception(
                 "research provider %s aclose failed during shutdown",
                 self.provider_id,
@@ -56,7 +66,7 @@ def active_research_provider(env: Mapping[str, str]) -> ActiveResearchProvider |
     for entry in PROVIDERS:
         try:
             client = entry.provider.build_client(env)
-        except Exception:  # noqa: BLE001
+        except _PROVIDER_LIFECYCLE_ERRORS:
             logger.exception(
                 "research provider %s build_client failed; skipping it",
                 entry.id,

@@ -22,6 +22,16 @@ from .base import ResearchError, ResearchRequest, TextLLMClient
 
 logger = logging.getLogger(__name__)
 
+_RESEARCH_RUNTIME_ERRORS = (
+    ArithmeticError,
+    AttributeError,
+    LookupError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
 
 DEFAULT_DB_PATH = "/var/lib/jasper/research_jobs.db"
 DEFAULT_MAX_RUNTIME_SEC = 300.0
@@ -294,13 +304,10 @@ class ResearchScheduler:
 
     async def stop(self) -> None:
         """Cancel all in-flight jobs. Running rows remain for restart restore."""
-        for task in list(self._tasks.values()):
+        tasks = list(self._tasks.values())
+        for task in tasks:
             task.cancel()
-        for task in list(self._tasks.values()):
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
         self._started = False
 
@@ -379,7 +386,7 @@ class ResearchScheduler:
             )
         except ResearchError as e:
             done = self._finish_failed(job, str(e))
-        except Exception as e:  # noqa: BLE001
+        except _RESEARCH_RUNTIME_ERRORS as e:
             done = self._finish_failed(job, str(e) or type(e).__name__)
         else:
             done = self._finish_done(job, result.text)
@@ -429,7 +436,7 @@ class ResearchScheduler:
                 await maybe_awaitable
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001
+        except _RESEARCH_RUNTIME_ERRORS as e:
             logger.warning("research on_done failed (id=%s): %s", job.id, e)
 
 
