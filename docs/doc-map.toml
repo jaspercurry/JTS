@@ -497,12 +497,14 @@ code = [
   "docs/calibration-agent/**",
 ]
 docs = [
+  "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
   "docs/HANDOFF-dsp-graph-carrier.md",
   "docs/active-crossover-information-design.md",
   "docs/calibration-agent/README.md",
+  "docs/research/2026-06-19-active-crossover-calibration/README.md",
 ]
 requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
