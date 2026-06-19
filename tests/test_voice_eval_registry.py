@@ -62,11 +62,14 @@ _BACKEND_ENV_KEYS = (
 
 
 def _cleanup(test_state: dict) -> None:
-    """Remove the tmp artifacts the builder creates (timer SQLite DB,
-    wake-events dir) so the guard doesn't litter /tmp on every CI run."""
+    """Remove tmp artifacts the builder creates so the guard doesn't
+    litter /tmp on every CI run."""
     db = test_state.get("timer_db_path")
     if isinstance(db, str) and os.path.exists(db):
         os.unlink(db)
+    research_db = test_state.get("research_db_path")
+    if isinstance(research_db, str) and os.path.exists(research_db):
+        os.unlink(research_db)
     wake_dir = test_state.get("wake_events_dir")
     if isinstance(wake_dir, str):
         shutil.rmtree(wake_dir, ignore_errors=True)
@@ -99,6 +102,7 @@ def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
         assert {"get_weather", "get_current_time", "set_timer", "get_volume"} <= names
         assert "volume_coordinator" in test_state
         assert "google_clients" in test_state
+        assert "research_scheduler" in test_state
     finally:
         _cleanup(test_state)
 
@@ -126,6 +130,7 @@ def test_harness_populates_test_state_eagerly_at_construction(monkeypatch):
     try:
         assert h.test_state.get("volume_coordinator") is not None
         assert "timer_scheduler" in h.test_state
+        assert "research_scheduler" in h.test_state
         assert h._connection is None, "construction must not open a session"
     finally:
         _cleanup(h.test_state)

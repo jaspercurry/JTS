@@ -117,6 +117,40 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     ) == 1, "the degraded->ok transition emits the recovery event exactly once"
 
 
+def test_record_background_usage_records_model_specific_cost(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+
+    cost = store.record_background_usage(
+        provider="openai",
+        model="gpt-5.4-mini",
+        input_tokens=1_000,
+        output_tokens=100,
+        usage={
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "input_token_details": {"text_tokens": 1_000},
+            "output_token_details": {"text_tokens": 100},
+        },
+    )
+
+    expected = (1_000 * 0.75 + 100 * 4.50) / 1_000_000
+    assert cost == pytest.approx(expected)
+    assert store.spend_last_24h_usd() == pytest.approx(expected)
+    [row] = store.aggregate_by_provider()
+    assert row["provider"] == "openai"
+    assert row["input_tokens"] == 1_000
+    assert row["output_tokens"] == 100
+
+
+def test_close_session_requires_explicit_session_id(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+
+    with pytest.raises(TypeError):
+        store.close_session(input_tokens=1, output_tokens=1)  # type: ignore[call-arg]
+
+
 def test_spend_cap_blocks_when_exceeded(tmp_path: Path):
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))
@@ -328,6 +362,10 @@ def test_bundled_defaults_are_current_and_model_specific():
     assert gemini.audio_output_per_million_usd == 12.0
     assert pricing_for_model("gpt-realtime-2").text_output_per_million_usd == 24.0
     assert pricing_for_model("gpt-realtime-1.5").text_output_per_million_usd == 16.0
+    research = pricing_for_model("gpt-5.4-mini")
+    assert research.text_input_per_million_usd == 0.75
+    assert research.text_output_per_million_usd == 4.50
+    assert research.cached_input_per_million_usd == 0.075
 
 
 def test_unknown_model_is_unpriced_not_invented():
@@ -654,7 +692,8 @@ def test_token_billed_provider_has_no_intervals(tmp_path: Path):
 # resolves to an all-zero Pricing labelled ``unpriced:<id>``, which means
 # the daily spend cap silently never accrues for that model. The bundled
 # table's own contract (jasper/data/model_pricing.json `_comment`) is
-# "Bundled DEFAULT voice-model rates ... keyed by exact model ID", so every
+# "Bundled DEFAULT voice and research model rates ... keyed by exact model ID",
+# so every
 # model the /voice wizard offers from the catalog must have an entry —
 # otherwise picking a curated model quietly disables spend accounting
 # until the runtime doctor warning is noticed.

@@ -11,7 +11,13 @@ from typing import Any
 
 from jasper.voice._supervisor import reconnect_backoff_delay
 
-from ..base import ResearchError, ResearchRequest, ResearchResult, TextLLMClient
+from ..base import (
+    RESEARCH_ANSWER_INSTRUCTIONS,
+    ResearchError,
+    ResearchRequest,
+    ResearchResult,
+    TextLLMClient,
+)
 
 
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
@@ -65,6 +71,7 @@ class OpenAIResearchClient:
             response = await client.responses.create(
                 model=self.model,
                 input=req.query,
+                instructions=RESEARCH_ANSWER_INSTRUCTIONS,
                 background=True,
             )
             attempt = 1
@@ -84,7 +91,13 @@ class OpenAIResearchClient:
         text = str(getattr(response, "output_text", "") or "").strip()
         if not text:
             raise ResearchError("OpenAI research completed without text")
-        return ResearchResult(text=text)
+        usage = _normalize_usage(getattr(response, "usage", None))
+        return ResearchResult(
+            text=text,
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            usage=usage,
+        )
 
 
 class OpenAIResearchProvider:
@@ -97,3 +110,51 @@ class OpenAIResearchProvider:
 
 
 PROVIDER = OpenAIResearchProvider()
+
+
+def _normalize_usage(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        usage = _deep_dict(raw)
+    else:
+        dump = getattr(raw, "model_dump", None)
+        if callable(dump):
+            usage = _deep_dict(dump())
+        else:
+            usage = _deep_dict({
+                "input_tokens": getattr(raw, "input_tokens", 0),
+                "output_tokens": getattr(raw, "output_tokens", 0),
+                "input_token_details": getattr(raw, "input_token_details", None),
+                "output_token_details": getattr(raw, "output_token_details", None),
+            })
+
+    if "input_token_details" not in usage and "input_tokens_details" in usage:
+        usage["input_token_details"] = usage.pop("input_tokens_details")
+    if "output_token_details" not in usage and "output_tokens_details" in usage:
+        usage["output_token_details"] = usage.pop("output_tokens_details")
+
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    input_details = usage.get("input_token_details")
+    if not isinstance(input_details, dict):
+        usage["input_token_details"] = {"text_tokens": input_tokens}
+    elif "text_tokens" not in input_details and "audio_tokens" not in input_details:
+        input_details["text_tokens"] = input_tokens
+    output_details = usage.get("output_token_details")
+    if not isinstance(output_details, dict):
+        usage["output_token_details"] = {"text_tokens": output_tokens}
+    elif "text_tokens" not in output_details and "audio_tokens" not in output_details:
+        output_details["text_tokens"] = output_tokens
+    return usage
+
+
+def _deep_dict(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _deep_dict(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_deep_dict(v) for v in value]
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return _deep_dict(dump())
+    return value

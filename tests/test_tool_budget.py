@@ -6,7 +6,7 @@ silently blow that ceiling — this fails first, cheaply, in CI.
 Token estimate is chars/4 (a cheap, dependency-free heuristic; no
 tiktoken). It overestimates slightly for natural-language text, which is
 the safe direction for a ceiling guard. We measure descriptions only
-(the dominant term; the 29 descriptions are ~3.9k estimated tokens after
+(the dominant term; the shipped descriptions are ~3.9k estimated tokens after
 the Phase 1.6 pass, down from ~8.5k) — JSON schema overhead is small and
 bounded.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 from jasper.tools import ToolRegistry
 from tests._tool_pack_contract import full_registry
 
-# After the Phase 1.6 representative llm_description pass, the full 29-tool
+# After the Phase 1.6 representative llm_description pass, the full tool
 # registry should stay around ~3.9k estimated description tokens. 6k leaves
 # room for careful additions while catching a regression to the old ~8.5k
 # footprint. chars/4 estimate, descriptions only.
@@ -34,7 +34,7 @@ LLM_DESCRIPTION_TOOLS = {
 
 
 def _full_registry() -> ToolRegistry:
-    """Build the complete 29-tool registry hardware-free — every pack
+    """Build the complete shipped registry hardware-free — every pack
     gate satisfied with lazy sentinel deps (factories capture deps in
     closures; none are invoked at build time)."""
     return full_registry()
@@ -42,7 +42,7 @@ def _full_registry() -> ToolRegistry:
 
 def test_model_facing_descriptions_stay_under_budget():
     reg = _full_registry()
-    assert len(reg.tools) == 29, "full registry should hold all 29 shipped tools"
+    assert len(reg.tools) == 30, "full registry should hold all 30 shipped tools"
 
     total_chars = sum(len(t.model_facing_description()) for t in reg.tools.values())
     est_tokens = total_chars // 4

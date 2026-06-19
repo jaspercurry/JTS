@@ -11,6 +11,13 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
+RESEARCH_ANSWER_INSTRUCTIONS = (
+    "Answer for a smart speaker to read aloud. Keep the answer to 30 "
+    "seconds or less, roughly 75 words. Be direct and useful. Do not use "
+    "markdown, bullets, citations, links, or preambles unless essential."
+)
+
+
 @dataclass(frozen=True)
 class ResearchRequest:
     query: str
@@ -19,6 +26,9 @@ class ResearchRequest:
 @dataclass(frozen=True)
 class ResearchResult:
     text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage: dict | None = None
 
 
 class ResearchError(RuntimeError):

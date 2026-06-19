@@ -9,14 +9,14 @@ invariant, the five extension contracts, the decision tree) lives in
 > truth about shipped code. Captures the vision for turning JTS's
 > integrations into an extensible foundation, the research behind it,
 > what we decided, and how we'll get there.
-> **Last updated: 2026-06-18.**
+> **Last updated: 2026-06-19.**
 
 ---
 
 ## 1. The vision
 
-Today JTS ships a fixed set of 29 built-in tools (weather, transit,
-smart-home, music, calendar, email, timers, …). The vision is to turn
+Today JTS ships a fixed set of 30 built-in tools (weather, transit,
+smart-home, music, calendar, email, timers, research, ...). The vision is to turn
 that into an **extensible foundation other people can build on** — so
 that adding a new capability to the speaker is a clean, local act, and
 eventually a *store / marketplace* where households discover and add
@@ -183,7 +183,7 @@ remaining scaling rule is now local: adding a tool family should mean
 adding or extending a capability pack, not editing daemon registration,
 provider adapters, catalog internals, or central `Config`.
 
-### 3.4 Prompt footprint was the live near-term pressure at 29 tools
+### 3.4 Prompt footprint was the live near-term pressure near 30 tools
 Before the Phase 1.6 representative pass, tool **descriptions alone**
 totaled **34,011 chars / ~8,502 tokens** — already about half of OpenAI
 Realtime's hard **16,384-token** instructions+tools ceiling (a real
@@ -254,7 +254,7 @@ can't outsource this to the provider. We own the scoping layer.
   can't tell which tool to use, neither can the model."
 
 ### 3.9 Verified codebase corrections (don't build on wrong facts)
-It's **29 tools today**. `build_tool` **warns** on sync functions
+It's **30 tools today**. `build_tool` **warns** on sync functions
 rather than rejecting them (so "everything is a coroutine" is a
 convention, not an invariant). The live connection is **persistent**.
 `peer_id` is **0644**.
@@ -406,7 +406,7 @@ grows.
    `spotify` / `playback` as source-backed references, `transit` as the deep
    wizard/config/provider-registry reference, and `home_assistant` as the
    high-risk consequential-action reference.
-2. **Gate every refactor on byte-identical behavior.** Existing 29-tool
+2. **Gate every refactor on byte-identical behavior.** Existing tool
    provider schemas, manifest entries, catalog payloads, dispatch behavior,
    and registration order must stay identical unless a change is explicitly
    intentional and voice-eval/docs are updated.

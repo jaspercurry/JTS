@@ -20,6 +20,7 @@ from ..cues import AudioCueManager, build_cue_tts_backend
 from ..google_creds import GoogleClients, build_google_clients
 from ..home_assistant import HAClient, build_ha_client
 from ..renderer import RendererClient
+from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import BuildResult, Router, build_clients
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
@@ -294,6 +295,8 @@ def _build_registry(
     volume_persistence: VolumePersistence | None = None,
     spotify_router: Router | None = None,
     timer_scheduler: TimerScheduler | None = None,
+    research_scheduler: ResearchScheduler | None = None,
+    spend_cap: SpendCap | None = None,
     cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
     ha: HAClient | None = None,
@@ -331,9 +334,11 @@ def _build_registry(
         transit_tools=transit_tools,
         ha=ha,
         timer_scheduler=timer_scheduler,
+        research_scheduler=research_scheduler,
         google_clients=google_clients,
         wake_event_store=wake_event_store,
         untrusted_monitor=untrusted_monitor,
+        spend_cap=spend_cap,
     )
     # Stash the per-pack registration outcomes on the registry (the object
     # that crosses back to run()) so a silently-missing tool family is
@@ -450,9 +455,8 @@ async def run() -> None:
     flight_recorder.install("voice")
 
     active_model = _active_model(cfg)
-    pricing = pricing_for_model(
-        active_model, overrides=load_pricing_overrides(),
-    )
+    pricing_overrides = load_pricing_overrides()
+    pricing = pricing_for_model(active_model, overrides=pricing_overrides)
     speech_policy = build_effective_speech_input_policy(cfg)
     log_event(
         logger,
@@ -492,7 +496,11 @@ async def run() -> None:
             ),
             level=logging.WARNING,
         )
-    usage_store = UsageStore(cfg.usage_db, pricing=pricing)
+    usage_store = UsageStore(
+        cfg.usage_db,
+        pricing=pricing,
+        pricing_overrides=pricing_overrides,
+    )
     spend_cap = SpendCap(
         usage_store,
         cfg.daily_spend_cap_usd,
@@ -630,6 +638,24 @@ async def run() -> None:
     # SQLite restore happens in scheduler.start() further down).
     timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
 
+    # Research scheduler — same lifecycle shape as timers. Constructed
+    # before tool registration so research(query) is visible from the first
+    # model session when a text provider key is configured; the WakeLoop
+    # announcement callback is wired after WakeLoop exists.
+    active_research = active_research_provider(os.environ)
+    research_scheduler: ResearchScheduler | None = None
+    if active_research is not None:
+        research_scheduler = ResearchScheduler(
+            active_research.client,
+            db_path=cfg.research_db_path,
+            max_runtime_sec=cfg.research_max_runtime_sec,
+            concurrency=cfg.research_concurrency,
+            max_result_chars=cfg.research_max_result_chars,
+            usage_store=usage_store,
+            usage_provider=active_research.provider_id,
+            usage_model=str(getattr(active_research.client, "model", "")),
+        )
+
     # Cue manager — built early so timer tools can pre-render their
     # fire announcements at set_timer time. The TtsPlayout isn't open
     # yet (that lives inside the async with block below); the manager
@@ -672,6 +698,8 @@ async def run() -> None:
         volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
         timer_scheduler=timer_scheduler,
+        research_scheduler=research_scheduler,
+        spend_cap=spend_cap,
         cues_manager=cues_manager,
         google_clients=google_clients,
         ha=ha,
@@ -907,6 +935,10 @@ async def run() -> None:
             # whose fire_at is < 1s away could fire mid-restore.
             timer_scheduler.set_on_fire(wake_loop.announce_timer)
             await timer_scheduler.start()
+            if research_scheduler is not None:
+                wake_loop.set_research_scheduler(research_scheduler)
+                research_scheduler.set_on_done(wake_loop.announce_research_ready)
+                await research_scheduler.start()
             control_socket = await _start_control_socket(
                 wake_loop, cfg.voice_control_socket,
             )
@@ -921,10 +953,14 @@ async def run() -> None:
                     pass
     finally:
         await _cancel_tracked_tasks(startup_fire_and_forget)
-        # Stop the scheduler FIRST so any in-flight `_run` tasks that
-        # were about to fire get cancelled before we tear down the
-        # cue manager / TtsPlayout they'd be calling into.
+        # Stop schedulers FIRST so any in-flight `_run` tasks that were
+        # about to announce get cancelled before we tear down the cue
+        # manager / TtsPlayout they'd be calling into.
         await timer_scheduler.stop()
+        if research_scheduler is not None:
+            await research_scheduler.stop()
+        if active_research is not None:
+            await active_research.aclose()
         # Wake-event store close — moved out of the inner async-with
         # block when the open was hoisted up so the diagnostic tools
         # could land in the registry before the LLM session opened.

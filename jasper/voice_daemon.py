@@ -40,6 +40,7 @@ from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
+from .research import DONE, FAILED, ResearchJob, ResearchScheduler
 from .usage import (
     SpendCap,
     UsageStore,
@@ -748,6 +749,7 @@ class WakeLoop:
         self._content_activity = content_activity
         self._usage_store = usage_store
         self._spend_cap = spend_cap
+        self._research_scheduler: ResearchScheduler | None = None
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
@@ -1082,6 +1084,7 @@ class WakeLoop:
         self._content_activity = _TestContentActivity()
         self._usage_store = _TestUsageStore()
         self._spend_cap = _TestSpendCap()
+        self._research_scheduler = None
         self._stop_event = asyncio.Event()
         self._volume_coordinator = _TestVolumeCoordinator()
         self._cues = None
@@ -1191,6 +1194,13 @@ class WakeLoop:
             return "skipped_session_active"
         return await self.play_cue(slug)
 
+    def set_research_scheduler(
+        self, scheduler: ResearchScheduler | None,
+    ) -> None:
+        """Wire the research scheduler so announcements can mark jobs
+        announced only after the wake loop has attempted the spoken path."""
+        self._research_scheduler = scheduler
+
     async def announce_timer(self, timer: "Timer") -> None:
         """Public hook called by `TimerScheduler` when a timer fires.
 
@@ -1218,7 +1228,57 @@ class WakeLoop:
         )
         await self._play_dynamic_text(text)
 
-    async def _play_dynamic_text(self, text: str) -> None:
+    async def announce_research_ready(self, job: "ResearchJob") -> None:
+        """Public hook called by `ResearchScheduler` when a job finishes.
+
+        Phase 2 intentionally mirrors `announce_timer`: defer briefly
+        while a voice session is active, then either read the short result
+        or speak one honest failure line. The later hold-and-drain queue is
+        Phase 3, not here.
+        """
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while self._state is State.SESSION:
+            if asyncio.get_event_loop().time() >= deadline:
+                logger.warning(
+                    "research announce: skipped (id=%s) — session still "
+                    "active after 5s grace window",
+                    job.id,
+                )
+                return
+            await asyncio.sleep(0.5)
+
+        if job.status == DONE and job.result:
+            text = f"Hey, your research is ready. {job.result}"
+        elif job.status == FAILED:
+            text = "Sorry, I couldn't finish that research. Please ask me again."
+        else:
+            logger.warning(
+                "research announce: skipped unexpected status id=%s status=%s",
+                job.id,
+                job.status,
+            )
+            return
+
+        logger.info(
+            "research announce: id=%s status=%s text=%r",
+            job.id,
+            job.status,
+            text,
+        )
+        played = await self._play_dynamic_text(text)
+        if not played:
+            logger.warning(
+                "research announce: playback failed id=%s status=%s",
+                job.id,
+                job.status,
+            )
+            return
+        if self._research_scheduler is not None:
+            self._research_scheduler.mark_announced(job.id)
+            if job.status == DONE:
+                self._research_scheduler.mark_read(job.id)
+
+    async def _play_dynamic_text(self, text: str) -> bool:
         """Speak arbitrary `text` through the cue manager, with
         snapshot-based duck/restore around the playback. Used for
         timer announcements (and any future variable-content cue).
@@ -1230,16 +1290,19 @@ class WakeLoop:
         more than the dial-twist-wins behavior `Ducker` is designed
         for. See `jasper/camilla.py:CueDuck` for the rationale."""
         if self._cues is None:
-            return
+            logger.warning("dynamic text play skipped: cues unavailable")
+            return False
         if isinstance(self._ducker, FanInDucker):
+            played = False
             try:
                 await self._ducker.duck()
                 await self._cues.speak_text(text)
+                played = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
             finally:
                 await self._ducker.restore()
-            return
+            return played
         if self._camilla is None:
             # No camilla handle — degrade to unducked playback rather
             # than crash. The user hears the cue over un-ducked music
@@ -1248,12 +1311,15 @@ class WakeLoop:
                 await self._cues.speak_text(text)
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
-            return
+                return False
+            return True
         async with CueDuck(self._camilla, self._cfg.duck_db):
             try:
                 await self._cues.speak_text(text)
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
+                return False
+        return True
 
     async def _play_cue(self, slug: str) -> None:
         """Best-effort cue playback. Ducks music via CamillaDSP for
