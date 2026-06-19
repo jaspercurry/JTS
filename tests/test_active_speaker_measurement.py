@@ -91,6 +91,7 @@ def _record_summed_test(
     *,
     playback_id: str = "summed-playback-1",
     audio_emitted: bool = True,
+    playback_issues: list[dict] | None = None,
 ) -> dict:
     return record_summed_test_artifact(
         topology,
@@ -108,11 +109,81 @@ def _record_summed_test(
                     "channel_count": 2,
                 },
                 "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+                "issues": playback_issues or [],
             },
         },
         state_path=state_path,
         now="2026-06-14T12:02:30Z",
     )
+
+
+def test_failed_summed_test_without_artifact_does_not_claim_output_mismatch(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    payload = record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "failed",
+                "backend": "wav_artifact",
+                "playback_id": "summed-playback-failed",
+                "audio_emitted": False,
+                "artifact": None,
+                "tone": {"frequency_hz": 2500, "level_dbfs": -80},
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "tone_backend_failed",
+                    "message": "tone artifact directory is not writable",
+                }],
+            },
+        },
+        state_path=tmp_path / "measurements.json",
+        now="2026-06-18T20:00:00Z",
+    )
+
+    latest = payload["summary"]["latest_summed_tests"]["mono"]
+    codes = {issue["code"] for issue in latest["issues"]}
+    assert latest["target_output_indices"] == []
+    assert "tone_backend_failed" in codes
+    assert "summed_test_artifact_missing" in codes
+    assert "summed_test_output_mismatch" not in codes
+
+
+def test_summed_test_output_mismatch_requires_inspectable_artifact(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    payload = record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "wav_artifact",
+                "playback_id": "summed-playback-wrong-output",
+                "audio_emitted": False,
+                "artifact": {
+                    "wav_basename": "tone_wrong.wav",
+                    "metadata_basename": "tone_wrong.json",
+                    "target_output_indices": [0],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -80},
+                "issues": [],
+            },
+        },
+        state_path=tmp_path / "measurements.json",
+        now="2026-06-18T20:01:00Z",
+    )
+
+    latest = payload["summary"]["latest_summed_tests"]["mono"]
+    assert latest["target_output_indices"] == [0]
+    assert latest["expected_output_indices"] == [0, 1]
+    assert "summed_test_output_mismatch" in {
+        issue["code"] for issue in latest["issues"]
+    }
 
 
 def test_measurement_state_lists_active_driver_and_summed_targets(
@@ -261,6 +332,24 @@ def test_summed_validation_waits_for_all_driver_measurements(
         ]
     }
 
+    blocked_test = _record_summed_test(
+        topology,
+        state_path,
+        playback_id="summed-playback-blocked",
+        audio_emitted=False,
+        playback_issues=[{
+            "severity": "blocker",
+            "code": "summed_commission_load_failed",
+            "message": "could not open the combined active-speaker test path",
+        }],
+    )
+    assert "summed_commission_load_failed" in {
+        issue["code"]
+        for issue in blocked_test["summary"]["latest_summed_tests"]["mono"][
+            "issues"
+        ]
+    }
+
     _record_summed_test(
         topology,
         state_path,
@@ -308,6 +397,74 @@ def test_summed_validation_waits_for_all_driver_measurements(
     assert ready["summary"]["driver_measurements_complete"] is True
     assert ready["summary"]["summed_validation_complete"] is True
     assert ready["permissions"]["may_compile_baseline"] is True
+
+
+def test_summed_validation_accepts_operator_check_after_audible_test_without_mic(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    for role in ("woofer", "tweeter"):
+        output_index = 0 if role == "woofer" else 1
+        playback_id = f"playback-{role}"
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": role,
+                "outcome": "heard_correct_driver",
+                "playback_id": playback_id,
+            },
+            safe_session=_safe_session(
+                role=role,
+                output_index=output_index,
+                playback_id=playback_id,
+            ),
+            state_path=state_path,
+            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
+        )
+    _record_summed_test(topology, state_path, playback_id="summed-playback-audible")
+
+    no_operator_check = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "summed_test_id": "summed-playback-audible",
+        },
+        state_path=state_path,
+        now="2026-06-14T12:03:00Z",
+    )
+    latest = no_operator_check["summary"]["latest_summed_validations"]["mono"]
+    assert latest["validated"] is False
+    assert latest["operator_listening_check"] is False
+    assert "summed_validation_mic_missing" in {
+        issue["code"] for issue in latest["issues"]
+    }
+
+    operator_check = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "summed_test_id": "summed-playback-audible",
+            "operator_listening_check": True,
+        },
+        state_path=state_path,
+        now="2026-06-14T12:04:00Z",
+    )
+    latest = operator_check["summary"]["latest_summed_validations"]["mono"]
+
+    assert operator_check["status"] == "ready_for_baseline"
+    assert operator_check["summary"]["summed_validation_complete"] is True
+    assert operator_check["permissions"]["may_compile_baseline"] is True
+    assert latest["validated"] is True
+    assert latest["operator_listening_check"] is True
+    assert latest["observed_mic_dbfs"] is None
+    assert latest["acoustic"] is None
+    assert "summed_validation_mic_missing" in {
+        issue["code"] for issue in latest["issues"]
+    }
 
 
 def test_driver_measurement_requires_accepted_floor_result_for_same_target(

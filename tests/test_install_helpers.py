@@ -279,6 +279,18 @@ def test_optional_firmware_builds_are_install_opt_in():
     )
 
 
+def test_active_speaker_tone_artifacts_are_writable_by_web_service():
+    """The /sound/ combined-test path writes bounded WAV artifacts as jasper-web."""
+
+    text = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'install -d -m 2770 -o root -g jasper '
+        '"${STATE_DIR}/active_speaker_tone_artifacts"'
+    ) in text
+
+
 def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     """Fresh installs must not write stale empty Spotify overrides."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")

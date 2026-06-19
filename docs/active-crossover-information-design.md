@@ -147,9 +147,8 @@ Avoid:
 - exposing "check readiness" as a user action; the user chooses a driver and
   JTS checks readiness internally
 - forcing the user to raise a level one decibel at a time just to discover
-  audibility; the UI should raise toward audible in meaningful bounded steps,
-  with a future continuous ramp only after the playback backend is cancellable
-  mid-tone
+  audibility; the UI should raise toward audible in meaningful bounded steps
+  while Stop and "I hear the tone" remain live for the continuous tone session
 
 ### 4. Measure Drivers
 
@@ -192,6 +191,7 @@ Good language:
 
 - "Test each driver"
 - "Start quiet woofer test"
+- "Tone playing at 250 Hz"
 - "What did you hear?"
 - "Too loud" as an always-available operator answer
 
@@ -204,12 +204,21 @@ Avoid:
 
 ### 5. Validate Crossover Blend
 
-After each driver has been measured on its own, the user needs one summed check
-per active speaker group. This is still a guided setup action, not a lab report:
-the UI should say which drivers will be heard together and ask whether the
-blend sounds coherent at the crossover region. Polarity and delay are technical
-implementation details, but they can be captured as simple outcomes when the
-user hears a problem.
+After each driver has a saved per-driver check, the user needs one summed check
+per active speaker group. The per-driver check can be an operator-only guarded
+tone confirmation; it is not the later acoustic measurement flow. The UI should
+use that durable driver-check state, not volatile ramp ordering memory, when it
+decides whether "Test each driver" is complete. The summed check is still a
+guided setup action, not a lab report: the UI should say which drivers will be
+heard together and ask whether the blend sounds coherent at the crossover
+region. Polarity and delay are technical implementation details, but they can
+be captured as simple outcomes when the user hears a problem. The combined
+test also needs a bounded level control for low-sensitivity drivers: the user
+can raise the next play from the quiet floor, while the backend still limits
+upward motion and logs the emitted level. For the current product path, the
+user's explicit listening result can unlock the first baseline after a current
+audible combined test; phone-mic summed capture remains richer acoustic
+validation rather than a prerequisite for the household flow.
 
 Good language:
 
@@ -232,9 +241,10 @@ user is choosing whether to make it active. The card owns three separate user
 actions:
 
 - **Play combined test** runs a short, quiet combined-driver test from the
-  prepared crossover setup.
+  prepared crossover setup at the selected bounded test level.
 - **Blend sounds right** records the user's combined crossover validation; it
-  must be tied to the latest audible combined test.
+  must be tied to the latest audible combined test and is stored as an explicit
+  operator listening check when no microphone reading is present.
 - **Save active profile** writes the candidate CamillaDSP YAML and durable
   profile state, but does not load it.
 - **Apply active profile** loads that profile through the normal DSP apply

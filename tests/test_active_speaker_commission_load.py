@@ -30,6 +30,7 @@ from jasper.active_speaker import (
     emit_active_speaker_commissioning_config,
     load_commission_load_state,
     load_driver_commissioning_config,
+    load_summed_commissioning_config,
     parse_camilla_statefile_config_path,
     rollback_driver_commissioning_config,
     running_commission_evidence,
@@ -278,6 +279,51 @@ def test_woofer_commissioning_load_happy_path(monkeypatch, tmp_path, reconcile_t
     assert state["rollback_available"] is True
     assert state["previous_config_path"] == staged_path
     assert state["candidate_config_path"] == commission_path
+
+
+def test_summed_commissioning_load_happy_path(monkeypatch, tmp_path, reconcile_triggers):
+    staged = _staged(tmp_path)
+    staged_path = staged["config"]["path"]
+    statefile = _statefile(tmp_path, staged_path)
+    path_safety = _write_path_safety(
+        tmp_path / "path_safety.json",
+        staged=staged,
+        current_config_path=staged_path,
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    cam = FakeCommissionCamilla(staged_path)
+    state_path = tmp_path / "commission_load.json"
+
+    result = asyncio.run(
+        load_summed_commissioning_config(
+            _topology(),
+            speaker_group_id="mono",
+            load_config=cam.apply_running_config,
+            read_running_config=cam.read_running_config,
+            get_current_config_path=cam.get_config_file_path,
+            path_safety_evidence_path=path_safety,
+            staged_config=staged,
+            config_path=tmp_path / "commission.yml",
+            statefile_path=statefile,
+            state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+
+    assert result["operation"] == "summed_commissioning"
+    assert result["preflight"]["load_allowed"] is True
+    assert result["load"]["status"] == "loaded"
+    assert result["load"]["target"]["role"] == "summed"
+    assert result["load"]["target"]["audible_outputs"] == [0, 1]
+    assert result["load"]["live_evidence"]["passed"] is True
+    assert result["load"]["live_evidence"]["audible_tweeter_outputs"] == [1]
+    assert reconcile_triggers == [{
+        "units": (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
+        "verb": "start",
+        "reason": "active_speaker_driver_commission_load",
+        "no_block": False,
+        "timeout": 15.0,
+    }]
 
 
 def test_commissioning_load_fails_closed_when_reconcile_trigger_fails(

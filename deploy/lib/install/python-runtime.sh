@@ -11,6 +11,11 @@ install_jasper() {
     # Non-secret, manually inspectable validation reports for mic/DAC/profile
     # readiness. Writers use atomic timestamped JSON files.
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
+    # Active-speaker commissioning writes bounded tone artifacts from the
+    # non-root jasper-web service before handing the same short file to the
+    # protected commissioning graph. Keep the directory group-writable so a
+    # root-created CLI artifact cannot wedge the web setup flow.
+    install -d -m 2770 -o root -g jasper "${STATE_DIR}/active_speaker_tone_artifacts"
 
     write_build_manifest
 

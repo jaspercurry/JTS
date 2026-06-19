@@ -959,6 +959,10 @@
       }
 
       function activeSpeakerSafetyMuted(data) {
+        var safety = data && data.active_speaker_output_safety;
+        if (safety && typeof safety.safety_muted === 'boolean') {
+          return safety.safety_muted;
+        }
         var audio = (data && data.audio) || {};
         var sound = audio.sound || {};
         var runtime = sound.runtime || {};

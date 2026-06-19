@@ -91,6 +91,7 @@ AUDIO_QUALITY_RENDERER_UNITS = [
     "bluealsa-aplay.service",
     "jasper-usbsink.service",
 ]
+ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME = "active_speaker_staged_startup.yml"
 # Streambox is the restricted profile: it runs the local audio graph and
 # sources but no voice brain or developer tools, so jasper-control gates
 # its route surface to the management + audio actions a streambox box
@@ -120,6 +121,31 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/transport/previous",
     "/transport/toggle",
 })
+
+
+def _active_speaker_output_safety_snapshot(
+    airplay_health: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the landing-page speaker-output safety state.
+
+    `/system/snapshot` already carries the CamillaDSP config path via the
+    AirPlay health sampler. Keep the browser dumb: classify that path here and
+    let the page render a boolean instead of knowing commissioning filenames.
+    """
+
+    current = airplay_health.get("current") if isinstance(airplay_health, dict) else {}
+    camilla = current.get("camilla") if isinstance(current, dict) else {}
+    raw_path = camilla.get("config_path") if isinstance(camilla, dict) else None
+    config_path = str(raw_path or "")
+    safety_muted = (
+        os.path.basename(config_path) == ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME
+    )
+    return {
+        "safety_muted": safety_muted,
+        "reason": "active_speaker_staged_startup" if safety_muted else None,
+        "active_config_path": config_path or None,
+        "source": "airplay_health.camilla_config_path",
+    }
 
 # The high-impact mutations the control token gates (SECURITY.md).
 # The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
@@ -1228,6 +1254,9 @@ def _make_handler(
                     sampler.snapshot() if sampler is not None else None
                 ),
                 "airplay_health": airplay_health,
+                "active_speaker_output_safety": (
+                    _active_speaker_output_safety_snapshot(airplay_health)
+                ),
                 "outputd": outputd_status,
                 "audio_quality": _safe_audio_quality_state(),
                 "voice_provider": read_active_provider(),

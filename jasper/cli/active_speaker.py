@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker import ActiveSpeakerConfigError, ActiveSpeakerPreset
+from jasper.active_speaker.baseline_profile import baseline_profile_state_path
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
@@ -243,6 +244,7 @@ def _print_runtime_safe_graph_summary(
 ) -> None:
     contract = payload["topology_contract"]
     current = payload.get("current_graph") or {}
+    preferred = payload.get("preferred_graph") or {}
     fallback = payload.get("fallback_graph") or {}
     print(f"Runtime graph decision: {payload['status']}")
     print(f"  reason: {payload['reason']}")
@@ -258,6 +260,13 @@ def _print_runtime_safe_graph_summary(
             f"allowed={current.get('allowed')} "
             f"path={current.get('config_path')}"
         )
+    if preferred:
+        print(
+            "  preferred: "
+            f"{preferred.get('classification')} "
+            f"allowed={preferred.get('allowed')} "
+            f"path={preferred.get('config_path')}"
+        )
     if fallback:
         print(
             "  fallback: "
@@ -272,11 +281,32 @@ def _print_runtime_safe_graph_summary(
         print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
 
 
+def _applied_baseline_config_path(state_path: str | None = None) -> str | None:
+    path = baseline_profile_state_path(state_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "applied":
+        return None
+    config = payload.get("config")
+    raw_path = config.get("path") if isinstance(config, dict) else None
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    return raw_path.strip()
+
+
 def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
+    preferred_config_path = (
+        None
+        if args.no_applied_baseline
+        else _applied_baseline_config_path(args.applied_baseline_state)
+    )
     decision = safe_graph_for_current_topology(
         load_output_topology_strict(args.topology),
         statefile_path=args.statefile,
         current_config_path=args.current_config,
+        preferred_config_path=preferred_config_path,
         flat_config_path=args.flat_config,
         staged_config=load_staged_startup_config(metadata_path=args.staged_metadata),
     )
@@ -745,6 +775,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--flat-config",
         default=str(DEFAULT_FLAT_OUTPUTD_CONFIG),
         help="normal full-range outputd config path",
+    )
+    runtime.add_argument(
+        "--applied-baseline-state",
+        help=(
+            "saved active-speaker baseline profile state to prefer when it "
+            "has status=applied (default: active_speaker_baseline_profile.json)"
+        ),
+    )
+    runtime.add_argument(
+        "--no-applied-baseline",
+        action="store_true",
+        help="ignore any saved applied active-speaker baseline profile",
     )
     runtime.add_argument(
         "--staged-metadata",

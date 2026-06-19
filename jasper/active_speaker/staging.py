@@ -65,6 +65,7 @@ DEFAULT_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 # the all-muted staged boot config (the crash-recovery-MUTED invariant).
 DEFAULT_COMMISSIONING_CONFIG_NAME = "active_speaker_commissioning.yml"
 COMMISSIONING_CONFIG_KIND = "jts_active_speaker_commissioning_config"
+SUMMED_COMMISSION_TARGET_ROLE = "summed"
 STAGED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 
@@ -1939,6 +1940,12 @@ def prepare_driver_commissioning_config(
     # active group. The audible set is the whole role -- a mono cabinet's woofer
     # is one output, a stereo group's woofer is both sides; per-SIDE isolation
     # (driving L or R alone) is a future selector, not this.
+    #
+    # The same transient commissioning graph is also the intended summed-check
+    # boundary: SUMMED_COMMISSION_TARGET_ROLE is a named internal target, not an
+    # ordinary driver role. It means the target active group's full driver set is
+    # live through the real crossover/limiter path for one bounded validation
+    # tone. The single-active-group gate above keeps that deliberately narrow.
     audible_outputs: frozenset[int] = frozenset()
     active_group_id = active_groups[0].id if active_groups else None
     if group_id and group_id != active_group_id:
@@ -1948,7 +1955,12 @@ def prepare_driver_commissioning_config(
             "driver commissioning target group is not the active speaker group",
         ))
     if active_group_id is not None and bound_preset is not None and role:
-        audible_outputs = audible_outputs_for_role(bound_preset, role)
+        if role == SUMMED_COMMISSION_TARGET_ROLE:
+            audible_outputs = frozenset(
+                output.index for output in bound_preset.channel_map.outputs
+            )
+        else:
+            audible_outputs = audible_outputs_for_role(bound_preset, role)
     if not audible_outputs:
         issues.append(_issue(
             "blocker",
@@ -2127,3 +2139,44 @@ def prepare_driver_commissioning_config(
         blocker_count,
     )
     return payload
+
+
+def prepare_summed_commissioning_config(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    preset: ActiveSpeakerPreset | None = None,
+    crossover_preview: dict[str, Any] | None = None,
+    playback_device: str | None = None,
+    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    config_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+    run_config_check: bool = True,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Emit + safety-assert the combined-driver commissioning config.
+
+    This is the first-class product boundary for the validation card's summed
+    check: the active speaker's full driver set is audible through the same
+    crossover, limiter, headroom, and protection graph used by per-driver
+    commissioning. It deliberately does not load CamillaDSP; the guarded runtime
+    load remains a separate startup-load operation.
+    """
+
+    return prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id=speaker_group_id,
+        role=SUMMED_COMMISSION_TARGET_ROLE,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        playback_device=playback_device,
+        audible_gain_db=audible_gain_db,
+        config_dir=config_dir,
+        config_path=config_path,
+        run_config_check=run_config_check,
+        validate=validate,
+        created_at=created_at,
+    )

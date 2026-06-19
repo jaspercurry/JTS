@@ -477,12 +477,17 @@ playback authority.
 `/sound/active-speaker/driver-measurement`,
 `/sound/active-speaker/summed-test`, and
 `/sound/active-speaker/summed-validation` persist commissioning evidence only;
-they do not change routing. Driver evidence is accepted only for the current
-saved physical target and matching safe-session floor result, so changing the
-speaker layout or DAC output assignment invalidates old evidence for readiness.
-Summed validation must reference the latest current combined-driver test for
-that speaker group, and only an audible combined test can satisfy the baseline
-compiler. `/sound/active-speaker/baseline-profile/apply` is the active-speaker
+they do not apply the normal active profile. `/sound/active-speaker/summed-test`
+is the audible exception: it temporarily loads the protected all-drivers-live
+commissioning graph through the active-speaker runtime lane, plays the bounded
+combined test on `correction_substream`, records the result, and rolls back.
+Driver evidence is accepted only for the current saved physical target and
+matching safe-session floor result, so changing the speaker layout or DAC output
+assignment invalidates old evidence for readiness. Summed validation must
+reference the latest current audible combined-driver test for that speaker
+group; the product flow can use an explicit operator listening check when no
+phone-mic reading is present, while artifact-only or stale tests cannot satisfy
+the baseline compiler. `/sound/active-speaker/baseline-profile/apply` is the active-speaker
 handoff into normal playback, but it is enabled only for an outputd-owned active
 playback lane. Today that product handoff is declared by the measured
 dual-Apple USB-C 4-channel profile. HiFiBerry DAC8x and single Apple USB-C
@@ -556,7 +561,7 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-17 (active-speaker direct-DAC diagnostic route removed,
-dynamic route width, and outputd-only durable apply boundary rechecked against
+Last verified: 2026-06-18 (active-speaker direct-DAC diagnostic route removed,
+dynamic route width, summed-test transient active graph, and outputd-only durable apply boundary rechecked against
 `playback_route.py`, `sound_setup.py`, `playback.py`, `staging.py`, and
 `baseline_profile.py`)

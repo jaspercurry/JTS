@@ -4,9 +4,11 @@ from pathlib import Path
 
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
+    emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
 )
 from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_FLAT_FULL_RANGE,
     GRAPH_GUARDED_COMMISSIONING,
@@ -163,6 +165,15 @@ def _active_yaml(layout: str, way: int, audible: set[int] | frozenset[int]) -> s
     )
 
 
+def _active_baseline_yaml(layout: str, way: int) -> str:
+    raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
+    return emit_active_speaker_baseline_config(
+        ActiveSpeakerPreset.from_mapping(raw),
+        playback_device=ACTIVE_PCM,
+        baseline_id=f"baseline-{layout}-{way}way",
+    )
+
+
 def _staged_metadata(topology: OutputTopology, path: Path) -> dict:
     targets = []
     for group in topology.speaker_groups:
@@ -252,6 +263,20 @@ def test_mono_active_2way_rejects_flat_and_allows_guarded_graphs() -> None:
     assert woofer.allowed is True
     assert tweeter.classification == GRAPH_GUARDED_COMMISSIONING
     assert tweeter.allowed is True
+
+
+def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
+    topology = _active_topology("mono", "active_2_way")
+
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=_active_baseline_yaml("mono", 2),
+    )
+
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert graph.allowed is True
+    assert graph.details["baseline_candidate"] is True
+    assert graph.details["unmuted_outputs"] == [0, 1]
 
 
 def test_tweeter_commissioning_requires_protective_highpass() -> None:
@@ -404,6 +429,51 @@ def test_safe_graph_decision_does_not_persist_guarded_commissioning(
     assert decision.current_graph is not None
     assert decision.current_graph.classification == GRAPH_GUARDED_COMMISSIONING
     assert decision.selected_config_path == str(staged_path)
+
+
+def test_safe_graph_decision_preserves_approved_active_baseline(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    current_path = tmp_path / "active_speaker_baseline.yml"
+    current_path.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=current_path,
+        staged_config=_staged_metadata(topology, staged_path),
+    )
+
+    assert decision.status == "preserve_current"
+    assert decision.current_graph is not None
+    assert decision.current_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert decision.selected_config_path == str(current_path)
+
+
+def test_safe_graph_decision_prefers_applied_baseline_over_staged_current(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    current_path = tmp_path / "active_speaker_staged_startup.yml"
+    current_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+    baseline_path = tmp_path / "active_speaker_baseline.yml"
+    baseline_path.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=current_path,
+        preferred_config_path=baseline_path,
+        staged_config=_staged_metadata(topology, current_path),
+    )
+
+    assert decision.status == "select_active_baseline"
+    assert decision.current_graph is not None
+    assert decision.current_graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    assert decision.preferred_graph is not None
+    assert decision.preferred_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert decision.selected_config_path == str(baseline_path)
 
 
 def test_safe_graph_decision_blocks_active_topology_without_staged_graph(

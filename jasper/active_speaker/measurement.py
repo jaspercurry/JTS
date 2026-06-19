@@ -63,6 +63,16 @@ def _finite_float(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 def _text(value: Any, *, max_chars: int = 240) -> str | None:
     if value is None:
         return None
@@ -561,7 +571,8 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
             "no_audio": True,
             "loads_camilla": False,
             "applies_filters": False,
-            "requires_mic_meter": True,
+            "requires_mic_meter": False,
+            "accepts_operator_listening_check": True,
             "requires_operator_confirmation": True,
         },
     })
@@ -733,6 +744,16 @@ def record_summed_test_artifact(
     expected_indices = _expected_summed_output_indices(topology, group_id)
     observed_indices = _output_indices_from_playback(playback)
     issues: list[dict[str, str]] = []
+    playback_issues = [
+        _issue(
+            str(issue.get("severity") or "blocker"),
+            str(issue.get("code") or "summed_test_playback_issue"),
+            str(issue.get("message") or issue.get("code") or "combined test playback issue"),
+        )
+        for issue in (playback.get("issues") or [])
+        if isinstance(issue, Mapping)
+    ]
+    issues.extend(playback_issues)
     if summed_target is None:
         issues.append(_issue(
             "blocker",
@@ -757,7 +778,7 @@ def record_summed_test_artifact(
             "summed_test_artifact_missing",
             "combined test did not produce an inspectable playback artifact",
         ))
-    if expected_indices and observed_indices != expected_indices:
+    if artifact and expected_indices and observed_indices != expected_indices:
         issues.append(_issue(
             "blocker",
             "summed_test_output_mismatch",
@@ -805,6 +826,7 @@ def record_summed_validation(
     state = load_measurement_state(topology, state_path=path)
     group_id = _text(raw.get("speaker_group_id"), max_chars=80) or ""
     outcome = (_text(raw.get("outcome"), max_chars=40) or "").lower()
+    operator_listening_check = _truthy_flag(raw.get("operator_listening_check"))
     observed, clipping, meter = _mic_meter_from(raw, calibration_level)
     summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
     summed_target = _summed_lookup(topology).get(group_id)
@@ -868,7 +890,7 @@ def record_summed_validation(
         issues.append(_issue(
             "warning",
             "summed_validation_mic_missing",
-            "record a microphone reading before this counts as validated",
+            "no microphone reading was captured for acoustic tuning",
         ))
     if meter.get("status") in {"clipping", "too_loud"}:
         issues.append(_issue(
@@ -879,7 +901,7 @@ def record_summed_validation(
     validated = (
         not any(issue["severity"] == "blocker" for issue in issues)
         and outcome == "blend_ok"
-        and observed is not None
+        and (operator_listening_check or observed is not None)
         and meter.get("status") not in {"clipping", "too_loud"}
     )
     record = {
@@ -891,6 +913,7 @@ def record_summed_validation(
         ),
         "outcome": outcome,
         "validated": validated,
+        "operator_listening_check": operator_listening_check,
         "summed_test_id": requested_test_id,
         "summed_test": dict(latest_test) if isinstance(latest_test, Mapping) else {},
         "observed_mic_dbfs": observed,
