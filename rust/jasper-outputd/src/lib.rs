@@ -11,6 +11,7 @@
 //! riding the synced stream; see HANDOFF-multiroom.md Increment 5 PR-2.
 //! The outputd systemd unit enables the ALSA transport.
 
+pub mod aec_clock;
 pub mod alsa_backend;
 pub mod config;
 pub mod content_bridge;

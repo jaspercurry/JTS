@@ -111,12 +111,16 @@ OUTPUTD_STATUS_CONSUMERS: dict[str, set[str]] = {
         "chip_ref_pcm", "chip_ref_sample_rate", "chip_ref_period_frames",
         "chip_ref_buffer_frames", "udp_target",
     },
-    # check_outputd_service
+    # check_outputd_service + check_aec_clock_drift
     "jasper/cli/doctor/audio.py": {
         "backend", "sink_mode", "content", "dac", "pcm",
         "reference_outputs", "speaker_reference_source",
         "speaker_reference_active", "speaker_reference_channels",
         "udp_target", "chip_ref_pcm",
+        # check_aec_clock_drift (Layer 0 observe-only SRO drift)
+        "aec_clock", "chip_ref_sro_ppm", "sro_estimator_status",
+        "verdict", "verdict_reason", "latency",
+        "dac_presentation_ms", "playback_queue_ms", "chip_ref_queue_ms",
     },
 }
 
