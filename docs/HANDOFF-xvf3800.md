@@ -13,11 +13,16 @@ aren't load-bearing from local code so future sessions can verify if
 upstream changes.
 
 Scope note: this doc covers the **USB UA variant** (the board JTS
-uses). The chip itself also supports an **I2S/INT-Device** mode with
-separate firmware images, and Seeed sells a XIAO-ESP32S3 variant of
-the board for that mode. We don't use it, but it's documented here
-because diagnostics sometimes need to know "is this even the right
-firmware family."
+uses in production). The chip itself also supports an
+**I2S/INT-Device** mode with separate firmware images, and Seeed
+sells **"Flex" boards (Circular-4 and Linear-4) with a XIAO-ESP32S3
+module** that ship in that I2S mode **by default** — so they do
+**not** appear as a USB microphone until you flash USB firmware onto
+them. If a board "won't register" as a USB mic, that's almost always
+what you're hitting — see **§2.6**. We don't run the XIAO/Flex
+variants in production, but they're documented here because lab
+bring-up and diagnostics need to know "is this even the right
+firmware family, and is it in USB or I2S mode."
 
 If you came here trying to understand AEC, **read this first then
 [HANDOFF-aec.md](HANDOFF-aec.md)** — the AEC investigation assumes
@@ -30,6 +35,7 @@ below.
 |---|---|
 | Identify the chip / board | §1 Hardware identity |
 | Flash a different firmware (DFU) | §2 Firmware variants |
+| Mic won't register as a USB device at all (Flex / XIAO board) | §2.6 — ships in I2S mode; flash USB firmware via BOOT-button Safe Mode |
 | Understand the 6-channel USB capture layout | §3 Channel layout |
 | Set a vendor parameter (gain, NS, AEC) | §4 Parameter space, §6 reference tables |
 | Debug a "no audio" / "channel silent" symptom | §5 Failure modes → §7 (ch2-5 silence: resolved root cause at top) → §8 Diagnostic cookbook |
@@ -130,6 +136,9 @@ Documented for completeness; **JTS does not use these.** Listed
 because if a Pi shows up with no `2886:001a` USB device at all, the
 board might be on an I2S firmware (the I2S firmwares **do not
 expose USB Audio at all** — only the I2C control + I2S audio pins).
+The **Flex / XIAO-ESP32S3 boards ship on I2S firmware by default** —
+§2.6 covers recognizing that and flashing USB firmware to turn one
+into a USB mic.
 
 | Filename | Use case | Sample rate |
 |---|---|---|
@@ -161,7 +170,7 @@ The chip exposes three DFU alt-settings:
 |---|---|---|
 | `0` | `reSpeaker DFU Factory` | The **Safe Mode** / recovery partition. Read-only during normal operation. Don't write here. |
 | `1` | `reSpeaker DFU Upgrade` | **The firmware partition.** This is where routine firmware writes go. Always available, in normal runtime as well as Safe Mode. |
-| `2` | `reSpeaker DFU DataPartition` | Persistent parameter store (what `SAVE_CONFIGURATION` writes to). Visible only in Safe Mode (entering it via the mute-button-during-power-on dance). |
+| `2` | `reSpeaker DFU DataPartition` | Persistent parameter store (what `SAVE_CONFIGURATION` writes to). Visible only in Safe Mode (entered via a button-held-during-power-on dance — **Mute** on the USB 4-Mic Array, **BOOT** on the Flex / XIAO boards; see §2.6). |
 
 **The chip supports in-system DFU upgrade** — the USB descriptor in
 normal runtime advertises a DFU function at interface 4 alt 1
@@ -247,6 +256,96 @@ without USB control:
 awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
 # expect "Channels: 6" on 6-ch; "Channels: 2" on default firmware
 ```
+
+### 2.6 Board variants that ship in I2S mode (Flex / XIAO) — getting them into USB mode
+
+Not every "XVF3800" registers as a USB mic out of the box. Seeed ships
+several boards on the same chip:
+
+| Board | Mic geometry | Ships running | Appears on the Pi as |
+|---|---|---|---|
+| reSpeaker XVF3800 USB 4-Mic Array (no XIAO) | circular / square | **USB firmware** | `2886:001a`, ALSA card `Array` — ready immediately |
+| reSpeaker Flex XVF3800 **Circular-4** + XIAO ESP32-S3 | circular / square | **I2S firmware (default)** | nothing (until USB firmware is flashed) |
+| reSpeaker Flex XVF3800 **Linear-4** + XIAO ESP32-S3 | linear (4 in a line) | **I2S firmware (default)** | nothing (until USB firmware is flashed) |
+
+The XIAO-fitted "Flex" boards are built for the **XIAO ESP32-S3 to be
+the host** over I2S, so they ship running I2S firmware and
+**deliberately present no USB Audio interface** (§2.2 — the I2S
+firmwares don't expose USB at all). To use one as a USB mic on a Pi,
+flash USB firmware onto the XVF3800.
+
+**Symptom signature (how to recognize this):**
+
+- The board powers up (its PWR LED is lit) and a known-data USB-C
+  cable is used, **but `lsusb` / `arecord -l` never show a `2886:xxxx`
+  device or a card named `Array`.**
+- The only thing that enumerates is the **XIAO's own USB**:
+  `303a:1001 Espressif USB JTAG/serial debug unit` (when the cable is
+  in the XIAO / "Seeed Studio"-labeled port), or nothing at all.
+- Healthy power + a working data cable + zero USB-audio enumeration =
+  wrong firmware mode, **not** a hardware/cable fault. (Don't keep
+  swapping cables/ports — the kernel log will show no enumeration
+  attempt and no error, which *is* the tell.)
+
+**Two USB-C ports — use the right one.** These boards have two USB-C
+connectors:
+
+- The **XIAO / "Seeed Studio"-labeled** port → the ESP32-S3
+  (`303a:1001`). *Not* the mic.
+- The **XMOS port, next to the 3.5 mm jack** (the green PWR LED sits
+  beside it) → the XVF3800. **This is the port to connect to the Pi
+  for both flashing and USB-mic use.**
+
+**Getting it into USB mode (validated on a Flex Linear-4 + XIAO,
+2026-06-19):**
+
+1. Connect the **XMOS USB-C port** (next to the 3.5 mm jack) to the Pi.
+2. **Enter Safe Mode.** Unlike the USB 4-Mic Array (Mute button), the
+   Flex boards use the **BOOT button**: power the board off, **press
+   and hold BOOT**, reconnect the XMOS USB-C cable while holding, then
+   release. The XVF3800's factory image now exposes USB DFU even though
+   the running app firmware is I2S. (The green LED is only a power
+   indicator — it does not change to confirm Safe Mode; the real
+   confirmation is the next step.)
+3. Confirm it enumerated in Safe Mode — `lsusb` shows
+   `2886:801c reSpeaker XVF3800 Safe Mode`, and `sudo dfu-util -l`
+   lists `alt=0 Factory / alt=1 Upgrade / alt=2 DataPartition`.
+   (`dfu-util` needs root — without `sudo` it prints
+   `LIBUSB_ERROR_ACCESS`.)
+4. Flash the 6-channel USB firmware to **alt 1** (§2.4 has the flag
+   semantics; [BRINGUP.md](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
+   has the full operator procedure incl. the download URL):
+   ```sh
+   sudo dfu-util -R -e -a 1 -D respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
+   ```
+5. After the reset it re-enumerates as `2886:001a` / card `Array` with
+   6 capture channels — verify with `cat /proc/asound/cards` and the
+   channel-count probe in §1. From here it behaves like any production
+   XVF3800; `jasper-aec-reconcile` / `jasper-doctor` pick it up.
+
+Flashing USB firmware **repurposes the board from "XIAO is the host"
+to "plain USB mic for the Pi."** Reflash an I2S image (§2.2) to restore
+standalone/wireless operation. **Never run `SAVE_CONFIGURATION`**
+during any of this — brick hazard (§5.1 / upstream issue #8).
+
+**Mic-geometry caveat (matters for the Linear-4).** The USB firmware's
+build string is `ua-io16-6ch-sqr` — the trailing **`sqr` = square /
+circular mic geometry** (see §2.5's `BLD_MSG` decode). The on-chip
+**processed beams (ch0 Conference, ch1 ASR) and DoA assume that square
+geometry**, so on a **Linear-4** board those processed channels may be
+geometrically mismatched, even though the **raw mic channels (ch2-5)
+are correct regardless of layout.** Before trusting the chip's
+beamforming on a linear array, confirm whether Seeed ships a
+linear-geometry USB firmware/config, or plan to drive beamforming
+JTS-side from the raw mics. A linear 4-mic array also has **front/back
+ambiguity** and roughly a 180° unambiguous field (vs. the circular
+array's 360°), so beam angles tuned on the circular board (e.g. the
+150°/210° chip beams) **do not transfer directly.**
+
+**Links:** [reSpeaker Flex Linear-4 product page](https://www.seeedstudio.com/reSpeaker-Flex-XVF3800-Linear-4-with-XIAO-ESP32S3-p-6736.html)
+· [Getting Started with reSpeaker Flex (Seeed wiki)](https://wiki.seeedstudio.com/respeaker_flex_xiao_introduction/)
+· [Update-firmware / Safe Mode section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/#update-firmware)
+· [firmware repo `xmos_firmwares/usb/`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb).
 
 ---
 
@@ -1448,4 +1547,4 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-06-18 (DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback rechecked)
+Last verified: 2026-06-19 (added §2.6 — Flex / XIAO I2S-default variants, BOOT-button Safe Mode entry, the "won't register as USB" troubleshooting signature, and the Linear-4 mic-geometry caveat; validated on a Flex Linear-4 + XIAO. Prior 2026-06-18 pass: DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback.)
