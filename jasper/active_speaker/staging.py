@@ -23,6 +23,7 @@ import yaml
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
+from . import graph_safety as gs
 from ._common import gate as _gate, issue as _issue
 from .camilla_yaml import (
     COMMISSIONING_HEADROOM_DB,
@@ -37,7 +38,6 @@ from .crossover_preview import CROSSOVER_PREVIEW_KIND
 from .environment import classify_camilla_config_text
 from .graph_evidence import (
     driver_limiter_name,
-    float_matches as _float_matches,
     protective_tweeter_hp_name,
 )
 from .profile import (
@@ -372,154 +372,6 @@ def _protective_hp_hz(preset: ActiveSpeakerPreset) -> float | None:
     return protective_tweeter_highpass_frequency_hz(preset, "tweeter")
 
 
-def _parse_scalar(value: str) -> Any:
-    cleaned = value.split("#", 1)[0].strip()
-    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
-        return cleaned[1:-1]
-    if cleaned in {"true", "false"}:
-        return cleaned == "true"
-    try:
-        if "." in cleaned:
-            return float(cleaned)
-        return int(cleaned)
-    except ValueError:
-        return cleaned
-
-
-def _parse_inline_mapping(value: str) -> dict[str, Any]:
-    value = value.strip()
-    if not (value.startswith("{") and value.endswith("}")):
-        return {}
-    out: dict[str, Any] = {}
-    for item in value[1:-1].split(","):
-        if ":" not in item:
-            continue
-        key, raw_value = item.split(":", 1)
-        out[key.strip()] = _parse_scalar(raw_value)
-    return out
-
-
-def _parse_inline_list(value: str) -> list[Any]:
-    value = value.strip()
-    if not (value.startswith("[") and value.endswith("]")):
-        return []
-    return [
-        _parse_scalar(item)
-        for item in value[1:-1].split(",")
-        if item.strip()
-    ]
-
-
-def _top_level_sections(text: str) -> dict[str, list[str]]:
-    sections: dict[str, list[str]] = {}
-    current: str | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and not line.startswith(" ") and stripped.endswith(":"):
-            current = stripped[:-1]
-            sections[current] = []
-            continue
-        if current:
-            sections[current].append(line)
-    return sections
-
-
-def _parse_generated_filters(text: str) -> dict[str, dict[str, Any]]:
-    filters: dict[str, dict[str, Any]] = {}
-    current_name: str | None = None
-    in_parameters = False
-    for line in _top_level_sections(text).get("filters", []):
-        if not line.strip():
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip()
-        if indent == 2 and stripped.endswith(":"):
-            current_name = stripped[:-1]
-            filters[current_name] = {"parameters": {}}
-            in_parameters = False
-            continue
-        if not current_name or ":" not in stripped:
-            continue
-        key, raw_value = stripped.split(":", 1)
-        key = key.strip()
-        if indent == 4 and key == "type":
-            filters[current_name]["type"] = str(_parse_scalar(raw_value))
-            in_parameters = False
-            continue
-        if indent == 4 and key == "parameters":
-            filters[current_name]["parameters"].update(_parse_inline_mapping(raw_value))
-            in_parameters = True
-            continue
-        if indent > 4 and in_parameters:
-            filters[current_name]["parameters"][key] = _parse_scalar(raw_value)
-    return filters
-
-
-def _parse_generated_pipeline_filters(text: str) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for line in _top_level_sections(text).get("pipeline", []):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("- "):
-            if current:
-                items.append(current)
-            current = {}
-            stripped = stripped[2:]
-        if current is None or ":" not in stripped:
-            continue
-        key, raw_value = stripped.split(":", 1)
-        key = key.strip()
-        raw_value = raw_value.strip()
-        if raw_value.startswith("["):
-            current[key] = _parse_inline_list(raw_value)
-        else:
-            current[key] = _parse_scalar(raw_value)
-    if current:
-        items.append(current)
-    return [item for item in items if item.get("type") == "Filter"]
-
-
-def _filter_param_matches(
-    filters: dict[str, dict[str, Any]],
-    name: str,
-    *,
-    filter_type: str,
-    params: dict[str, Any],
-) -> bool:
-    filter_def = filters.get(name, {})
-    if filter_def.get("type") != filter_type:
-        return False
-    actual = filter_def.get("parameters", {})
-    for key, expected in params.items():
-        value = actual.get(key)
-        if isinstance(expected, float):
-            if not _float_matches(value, expected):
-                return False
-        elif value != expected:
-            return False
-    return True
-
-
-def _pipeline_contains_chain(
-    pipeline_filters: list[dict[str, Any]],
-    *,
-    channels: set[int],
-    required_names: tuple[str, ...],
-) -> bool:
-    for item in pipeline_filters:
-        item_channels = {
-            int(channel)
-            for channel in item.get("channels", [])
-            if isinstance(channel, int)
-        }
-        item_names = tuple(str(name) for name in item.get("names", []))
-        if item_channels == channels and all(name in item_names for name in required_names):
-            return True
-    return False
-
-
 def _all_commission_mutes_engaged(
     yaml: str,
     *,
@@ -544,27 +396,19 @@ def _all_commission_mutes_engaged(
     wired-but-unmuted) output fails closed. Mirrors the per-index rigor of
     :func:`_software_guard_evidence`.
     """
-    filters = _parse_generated_filters(yaml)
-    pipeline_filters = _parse_generated_pipeline_filters(yaml)
+    view = gs.view_from_emitted_text(yaml)
     output_count = max((o.index for o in preset.channel_map.outputs), default=-1) + 1
     if output_count <= 0:
         return False
-    for index in range(output_count):
-        name = output_commission_mute_name(index)
-        muted = _filter_param_matches(
-            filters,
-            name,
-            filter_type="Gain",
-            params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+    return all(
+        gs.output_hard_muted_and_wired(
+            view,
+            index,
+            mute_name=output_commission_mute_name(index),
+            mute_gain_db=STARTUP_MUTE_GAIN_DB,
         )
-        wired = _pipeline_contains_chain(
-            pipeline_filters,
-            channels={index},
-            required_names=(name,),
-        )
-        if not (muted and wired):
-            return False
-    return True
+        for index in range(output_count)
+    )
 
 
 def _software_guard_evidence(
@@ -573,15 +417,14 @@ def _software_guard_evidence(
     preset: ActiveSpeakerPreset,
 ) -> dict[str, Any]:
     protective_hp_hz = _protective_hp_hz(preset)
-    filters = _parse_generated_filters(yaml)
-    pipeline_filters = _parse_generated_pipeline_filters(yaml)
+    view = gs.view_from_emitted_text(yaml)
     tweeter_channels = audible_outputs_for_role(preset, "tweeter")
     # Commissioning isolates per *physical output*, so the tweeter is muted iff
     # every physical output carrying it has its as_out{idx}_commission_mute layer
     # engaged. There is no per-role startup mute to check anymore.
     tweeter_outputs_muted = bool(tweeter_channels) and all(
-        _filter_param_matches(
-            filters,
+        gs.filter_param_matches(
+            view,
             output_commission_mute_name(index),
             filter_type="Gain",
             params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
@@ -593,8 +436,8 @@ def _software_guard_evidence(
     # layer — so an unmuted tweeter cannot reach the amp without its protection.
     tweeter_pipeline_guarded = (
         bool(tweeter_channels)
-        and _pipeline_contains_chain(
-            pipeline_filters,
+        and gs.pipeline_contains_chain(
+            view,
             channels=set(tweeter_channels),
             required_names=(
                 protective_tweeter_hp_name("tweeter"),
@@ -602,8 +445,8 @@ def _software_guard_evidence(
             ),
         )
         and all(
-            _pipeline_contains_chain(
-                pipeline_filters,
+            gs.pipeline_contains_chain(
+                view,
                 channels={index},
                 required_names=(output_commission_mute_name(index),),
             )
@@ -614,8 +457,8 @@ def _software_guard_evidence(
         "startup_muted": tweeter_outputs_muted,
         "protective_highpass": (
             protective_hp_hz is not None
-            and _filter_param_matches(
-                filters,
+            and gs.filter_param_matches(
+                view,
                 protective_tweeter_hp_name("tweeter"),
                 filter_type="BiquadCombo",
                 params={
@@ -625,14 +468,14 @@ def _software_guard_evidence(
                 },
             )
         ),
-        "startup_headroom": _filter_param_matches(
-            filters,
+        "startup_headroom": gs.filter_param_matches(
+            view,
             "active_startup_headroom",
             filter_type="Gain",
             params={"gain": -STARTUP_HEADROOM_DB},
         ),
-        "startup_limiter": _filter_param_matches(
-            filters,
+        "startup_limiter": gs.filter_param_matches(
+            view,
             driver_limiter_name("tweeter"),
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
@@ -686,8 +529,7 @@ def driver_commission_audible_evidence(
     the off-device half that gates whether the config is even allowed to load.
     """
     audible = {int(i) for i in audible_outputs}
-    filters = _parse_generated_filters(yaml)
-    pipeline_filters = _parse_generated_pipeline_filters(yaml)
+    view = gs.view_from_emitted_text(yaml)
     output_count = max((o.index for o in preset.channel_map.outputs), default=-1) + 1
 
     # (1) Audible mask: listed outputs un-muted, all others -120 dB hard-muted,
@@ -699,21 +541,13 @@ def driver_commission_audible_evidence(
     for index in range(output_count):
         name = output_commission_mute_name(index)
         if index in audible:
-            mute_ok = _filter_param_matches(
-                filters, name, filter_type="Gain", params={"mute": False}
-            )
+            ok = gs.output_unmuted_and_wired(view, index, mute_name=name)
         else:
             muted_outputs.append(index)
-            mute_ok = _filter_param_matches(
-                filters,
-                name,
-                filter_type="Gain",
-                params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+            ok = gs.output_hard_muted_and_wired(
+                view, index, mute_name=name, mute_gain_db=STARTUP_MUTE_GAIN_DB
             )
-        wired = _pipeline_contains_chain(
-            pipeline_filters, channels={index}, required_names=(name,)
-        )
-        if not (mute_ok and wired):
+        if not ok:
             mask_correct = False
 
     # (2) Protection-while-audible for an audible tweeter.
@@ -723,8 +557,8 @@ def driver_commission_audible_evidence(
     if not audible_tweeter:
         tweeter_protected = True  # vacuous: the tweeter stays muted
     else:
-        hp_defined = protective_hp_hz is not None and _filter_param_matches(
-            filters,
+        hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
+            view,
             protective_tweeter_hp_name("tweeter"),
             filter_type="BiquadCombo",
             params={
@@ -733,14 +567,14 @@ def driver_commission_audible_evidence(
                 "order": 4,
             },
         )
-        limiter_defined = _filter_param_matches(
-            filters,
+        limiter_defined = gs.filter_param_matches(
+            view,
             driver_limiter_name("tweeter"),
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
         )
-        hp_limiter_wired = _pipeline_contains_chain(
-            pipeline_filters,
+        hp_limiter_wired = gs.pipeline_contains_chain(
+            view,
             channels=audible_tweeter,
             required_names=(
                 protective_tweeter_hp_name("tweeter"),
@@ -749,8 +583,8 @@ def driver_commission_audible_evidence(
         )
         tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
 
-    headroom = _filter_param_matches(
-        filters,
+    headroom = gs.filter_param_matches(
+        view,
         "active_startup_headroom",
         filter_type="Gain",
         params={"gain": -expected_headroom_db},
@@ -781,75 +615,12 @@ def driver_commission_audible_evidence(
 # the load, against the config CamillaDSP is ACTUALLY running — read back over
 # the websocket (`CamillaController.get_active_config_raw`), not the file on
 # disk. CamillaDSP re-serializes the running graph in its own YAML dialect
-# (block-style lists, defaults filled, keys reordered), which the text parsers
-# above do NOT handle (`_parse_generated_pipeline_filters` only reads inline
-# `channels: [..]`). So the live check parses the read-back with a real YAML
-# loader and asserts the same safety invariants structurally on the dict.
-
-
-def _running_config_filter(config: dict[str, Any], name: str) -> dict[str, Any]:
-    filters = config.get("filters")
-    entry = filters.get(name) if isinstance(filters, dict) else None
-    return entry if isinstance(entry, dict) else {}
-
-
-def _running_filter_matches(
-    config: dict[str, Any],
-    name: str,
-    *,
-    filter_type: str,
-    params: dict[str, Any],
-) -> bool:
-    entry = _running_config_filter(config, name)
-    if entry.get("type") != filter_type:
-        return False
-    actual = entry.get("parameters")
-    if not isinstance(actual, dict):
-        return False
-    for key, expected in params.items():
-        value = actual.get(key)
-        if isinstance(expected, float):
-            if not _float_matches(value, expected):
-                return False
-        elif value != expected:
-            return False
-    return True
-
-
-def _running_step_channels(step: dict[str, Any]) -> set[int]:
-    # CamillaDSP Filter pipeline steps carry the target channels as either a
-    # `channels: [..]` list (the JTS emitter form) or a scalar `channel: N`
-    # (CamillaDSP's single-channel sugar). Accept both; bools are not channels.
-    chans = step.get("channels")
-    if isinstance(chans, list):
-        return {
-            int(c) for c in chans if isinstance(c, int) and not isinstance(c, bool)
-        }
-    ch = step.get("channel")
-    if isinstance(ch, int) and not isinstance(ch, bool):
-        return {int(ch)}
-    return set()
-
-
-def _running_pipeline_contains_chain(
-    config: dict[str, Any],
-    *,
-    channels: set[int],
-    required_names: tuple[str, ...],
-) -> bool:
-    pipeline = config.get("pipeline")
-    if not isinstance(pipeline, list):
-        return False
-    for step in pipeline:
-        if not isinstance(step, dict) or step.get("type") != "Filter":
-            continue
-        if _running_step_channels(step) != channels:
-            continue
-        names = step.get("names")
-        names = [str(n) for n in names] if isinstance(names, list) else []
-        if all(req in names for req in required_names):
-            return True
-    return False
+# (block-style lists, defaults filled, keys reordered, scalar `channel: N`
+# sugar) that the emitted-text parser does not handle, so
+# `running_commission_evidence` parses the read-back with a real YAML loader
+# and runs the SAME shared invariant predicates on it via
+# `graph_safety.view_from_camilla_dict` (see graph_safety.py for why the three
+# parse dialects are kept separate while the predicates are shared).
 
 
 def running_commission_evidence(
@@ -887,8 +658,7 @@ def running_commission_evidence(
         except yaml.YAMLError:
             config = None
     parse_ok = isinstance(config, dict)
-    if not parse_ok:
-        config = {}
+    view = gs.view_from_camilla_dict(config if parse_ok else None)
 
     # (1) Audible mask: each declared output un-muted iff in `audible`, every
     # other declared output -120 dB hard-muted, and each mute wired to its own
@@ -897,20 +667,12 @@ def running_commission_evidence(
     for index in sorted(declared):
         name = output_commission_mute_name(index)
         if index in audible:
-            mute_ok = _running_filter_matches(
-                config, name, filter_type="Gain", params={"mute": False}
-            )
+            ok = gs.output_unmuted_and_wired(view, index, mute_name=name)
         else:
-            mute_ok = _running_filter_matches(
-                config,
-                name,
-                filter_type="Gain",
-                params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+            ok = gs.output_hard_muted_and_wired(
+                view, index, mute_name=name, mute_gain_db=STARTUP_MUTE_GAIN_DB
             )
-        wired = _running_pipeline_contains_chain(
-            config, channels={index}, required_names=(name,)
-        )
-        if not (mute_ok and wired):
+        if not ok:
             mask_correct = False
 
     # (2) Protection-while-audible: an audible tweeter keeps its protective HP +
@@ -919,8 +681,8 @@ def running_commission_evidence(
     if not audible_tweeter:
         tweeter_protected = True
     else:
-        hp_defined = protective_hp_hz is not None and _running_filter_matches(
-            config,
+        hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
+            view,
             protective_tweeter_hp_name("tweeter"),
             filter_type="BiquadCombo",
             params={
@@ -929,14 +691,14 @@ def running_commission_evidence(
                 "order": 4,
             },
         )
-        limiter_defined = _running_filter_matches(
-            config,
+        limiter_defined = gs.filter_param_matches(
+            view,
             driver_limiter_name("tweeter"),
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
         )
-        hp_limiter_wired = _running_pipeline_contains_chain(
-            config,
+        hp_limiter_wired = gs.pipeline_contains_chain(
+            view,
             channels=audible_tweeter,
             required_names=(
                 protective_tweeter_hp_name("tweeter"),
@@ -945,8 +707,8 @@ def running_commission_evidence(
         )
         tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
 
-    headroom = _running_filter_matches(
-        config,
+    headroom = gs.filter_param_matches(
+        view,
         "active_startup_headroom",
         filter_type="Gain",
         params={"gain": -expected_headroom_db},

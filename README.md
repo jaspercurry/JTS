@@ -824,6 +824,14 @@ reference. Currently:
   Pre-rendered audio cue subsystem: registry, cache lifecycle, CLI,
   how to add a new reactive or proactive cue. Start here when a
   failure path needs to "say something" rather than fall silent.
+- [`HANDOFF-audio-measurement-core.md`](docs/HANDOFF-audio-measurement-core.md)
+  — **Living architecture + product plan** (2026-06-19) for the shared
+  audio measurement/calibration core that room correction, active-crossover
+  calibration, and pair/leader-follower balance all build on: the layered
+  calibration product (L0 fail-closed crossover / L1 phone-mic level match /
+  L2 calibrated-mic FR-phase), the multi-volume verdict, and a strangler-fig
+  refactor roadmap (kernel extraction + single GraphValidator). The
+  output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
   correction v2 at `/correction/`: iPhone-mic measurement flow,
   calibrated mic ingest, configurable correction strategies,
@@ -893,6 +901,13 @@ reference. Currently:
   browser audio reliability, target/preference tuning, FIR/phase room
   correction, and multi-position confidence. Treat as source material
   and research synthesis, not operational truth.
+- [`docs/research/2026-06-19-active-crossover-calibration/`](docs/research/2026-06-19-active-crossover-calibration/README.md)
+  — 2026-06-19 multi-agent research/design snapshot: mic-driven active
+  crossover level matching, the "is it just level matching?" + calibrated
+  vs uncalibrated-iPhone-mic adjudication, a live JTS3 "crossover not
+  applied" diagnosis, codebase reuse/gap analysis, and the shared
+  audio-measurement-core + layered-product vision. Source material; the
+  shipped design lives in the canonical calibration handoffs.
 - [`docs/research/balance-sync-calibration.md`](docs/research/balance-sync-calibration.md)
   — 2026-06-13 prior-art synthesis for multi-speaker balance versus
   sync calibration, including the Snapcast sync loop, Snapcast
