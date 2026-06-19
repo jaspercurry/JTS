@@ -113,6 +113,8 @@ code = [
   "deploy/nginx-jasper.conf",
   "deploy/modules-load.d/**",
   "deploy/modprobe.d/**",
+  ".github/dependabot.yml",
+  ".github/workflows/tests.yml",
   "scripts/deploy-to-pi.sh",
   "scripts/onboard.sh",
   "scripts/_lib.sh",

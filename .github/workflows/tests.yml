@@ -101,28 +101,34 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          # Pin uv itself so dependency installation is reproducible for
+          # the same reason `uv sync --locked` is.
+          version: "0.11.14"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
       - name: Supply-chain provenance check
         run: python3 scripts/check-provenance.py
 
+      - name: Install JTS from committed uv lock
+        run: uv sync --locked --extra full --extra dev --group openwakeword-onnx
+
       - name: Install openwakeword without its tflite-runtime dep
         # openwakeword 0.6.0 hard-requires tflite-runtime, which has no
         # Python 3.13 wheel. We use ONNX models exclusively, so tflite is
-        # never imported at runtime. Mirrors deploy/install.sh.
-        run: |
-          pip install --no-deps openwakeword==0.6.0
-          pip install requests tqdm 'scikit-learn>=1,<2'
-
-      - name: Install JTS with full runtime + dev extras
-        run: pip install -e '.[full,dev]'
+        # never imported at runtime. This stays after uv sync because sync
+        # is exact by default and would otherwise remove the package.
+        run: uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0
 
       - name: Lint (ruff)
         if: matrix.python-version == '3.13'
         # ruff ships in the dev extras installed above. Config + rule
         # selection live in [tool.ruff] in pyproject.toml. Runs before
         # the suite for fast feedback on undefined names / dead imports.
-        run: ruff check .
+        run: .venv/bin/ruff check .
 
       - name: Type check (mypy; lenient baseline)
         if: matrix.python-version == '3.13'
@@ -130,7 +136,7 @@ jobs:
         # permissive and baselines current debt with per-module overrides, so
         # this step catches new unbaselined type regressions without turning a
         # partially typed codebase strict on day one.
-        run: mypy
+        run: .venv/bin/mypy
 
       - name: Test (hardware-free; voice_eval explicitly excluded)
         # voice_eval is the paid LLM suite — never CI material, purely on

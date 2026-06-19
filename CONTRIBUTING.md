@@ -57,11 +57,13 @@ the required hardware-free pytest lane and runs the suite in four
 pytest-xdist workers. The `pytest` CI job also runs `ruff check .` and the
 lenient, baselined `mypy` gate before the suite.
 
-The Ubuntu CI path also installs `portaudio19-dev`, then installs
-`openwakeword==0.6.0` with `--no-deps` plus the supporting packages it
-actually needs (`requests`, `tqdm`, `scikit-learn`). That mirrors the
-Pi installer's ONNX-only openWakeWord setup and is useful context if
-you're doing audio-adjacent work locally.
+The Ubuntu CI path also installs `portaudio19-dev`, then replays the
+committed lock with
+`uv sync --locked --extra full --extra dev --group openwakeword-onnx`.
+That group lock-covers the ONNX-only openWakeWord helper packages
+(`requests`, `tqdm`, `scikit-learn`). After the exact sync, CI installs
+only `openwakeword==0.6.0` itself with `--no-deps`, mirroring the Pi
+installer's ONNX-only setup.
 
 Hardware-only work (audio playback, the AEC bridge, the wizards in a
 browser) is covered by [BRINGUP.md](BRINGUP.md), which walks from
