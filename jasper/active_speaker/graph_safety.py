@@ -266,7 +266,9 @@ def view_from_emitted_text(text: str) -> GraphView:
             continue
         if stripped.startswith("- "):
             if current is not None:
-                steps.append(_emitted_step(current))
+                step = _emitted_step(current)
+                if step is not None:
+                    steps.append(step)
             current = {}
             stripped = stripped[2:]
         if current is None or ":" not in stripped:
@@ -279,9 +281,11 @@ def view_from_emitted_text(text: str) -> GraphView:
         else:
             current[key] = _parse_scalar(raw_value)
     if current is not None:
-        steps.append(_emitted_step(current))
+        step = _emitted_step(current)
+        if step is not None:
+            steps.append(step)
 
-    return GraphView(True, filters, tuple(s for s in steps if s is not None))
+    return GraphView(True, filters, tuple(steps))
 
 
 def _emitted_step(item: dict[str, Any]) -> GraphPipelineStep | None:
