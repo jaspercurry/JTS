@@ -301,24 +301,33 @@ def test_mux_service_loads_spotify_credentials_env():
 
 
 def test_mux_service_can_write_state_dir():
-    """The manual-pin persistence file lives under /var/lib/jasper.
-    The unit must guarantee that path is writable. Mux runs as root with
-    no ProtectSystem today (so it's writable), but StateDirectory=jasper
-    codifies the write target and keeps the pin durable if mux ever
-    gains filesystem sandboxing — mirroring jasper-voice.service."""
+    """The manual-pin persistence file (mux_mode.json) + shared
+    speaker_volume.json live under /var/lib/jasper; the unit must keep that path
+    writable under ProtectSystem=strict. Since S2, mux does NOT declare
+    StateDirectory=jasper (jasper-voice is the sole owner, to kill the owner-flip
+    re-chown race), so the write guarantee is now explicitly
+    ReadWritePaths=/var/lib/jasper. Pin both halves: mux must not co-own the
+    StateDirectory, and it must list /var/lib/jasper in ReadWritePaths."""
     unit = (REPO / "deploy" / "systemd" / "jasper-mux.service").read_text()
     lines = [line.strip() for line in unit.splitlines()]
-    has_state_dir = "StateDirectory=jasper" in lines
+    assert "StateDirectory=jasper" not in lines, (
+        "mux must NOT declare StateDirectory=jasper (S2: jasper-voice is the "
+        "single owner; co-ownership caused the /var/lib/jasper owner-flip race)."
+    )
     has_rw_path = any(
         line.startswith("ReadWritePaths=") and "/var/lib/jasper" in line
         for line in lines
     )
-    # If mux ever adds ProtectSystem=, one of these must be present or
-    # the persistence write silently fails on the live Pi.
-    no_protect_system = not any(
+    has_protect_system = any(
         line.startswith("ProtectSystem=") for line in lines
     )
-    assert has_state_dir or has_rw_path or no_protect_system
+    # Under ProtectSystem=strict (which mux runs), the explicit ReadWritePaths
+    # entry is the ONLY thing keeping /var/lib/jasper writable.
+    assert has_protect_system, "mux is expected to run ProtectSystem=strict"
+    assert has_rw_path, (
+        "mux must list /var/lib/jasper in ReadWritePaths so the source pin + "
+        "speaker_volume.json stay writable under ProtectSystem=strict (S2)."
+    )
 
 
 # ----------------------------------------------------------------------

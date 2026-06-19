@@ -519,3 +519,52 @@ def test_cross_user_ipc_socket_contract(unit, path):
         f"{unit}: RuntimeDirectory must be 0750 (root:jasper) so the `jasper` "
         "group can traverse to the socket."
     )
+
+
+# WS1 — the shared-state writers set UMask=0007 so files they CREATE in
+# /var/lib/jasper are group-`jasper`-writable (0660), not the umask-default 0644.
+# usage.db / wake-events.sqlite3 / timers.db / speaker_volume.json are written by
+# more than one of these same-group daemons; jasper-voice (the sole
+# StateDirectory=jasper owner since S2) re-chowns the tree to jasper-voice on its
+# restart, so the others (same `jasper` group) write shared files via the group
+# bit — a 0644 file would be group-read-only and the non-owner would hit "attempt
+# to write a readonly database" (the 2026-06-19 incident). Same directive as the
+# fanin/outputd socket UMask contract above; here it's about the files, not the socket.
+_SHARED_STATE_WRITERS = {
+    "jasper-voice": TIER_A["jasper-voice"],
+    "jasper-mux": TIER_A["jasper-mux"],
+    "jasper-control": TIER_A["jasper-control"],
+}
+
+
+@pytest.mark.parametrize("unit,path", sorted(_SHARED_STATE_WRITERS.items()))
+def test_shared_state_writers_set_group_write_umask(unit, path):
+    pairs = set(_directives(path))
+    assert ("UMask", "0007") in pairs, (
+        f"{unit}: must set UMask=0007 so files it creates in /var/lib/jasper are "
+        "group-`jasper`-writable (0660). Without it shared state lands 0644 and a "
+        "non-owner same-group daemon hits 'attempt to write a readonly database' "
+        "(the 2026-06-19 incident). docs/HANDOFF-privilege-separation.md."
+    )
+
+
+def test_single_statedirectory_owner():
+    """S2: jasper-voice is the SOLE StateDirectory=jasper owner. mux dropping its
+    StateDirectory is what removes the owner-flip re-chown race; if mux ever
+    re-declares it, the race (and the 2026-06-19 readonly-DB class) returns."""
+    voice = set(_directives(TIER_A["jasper-voice"]))
+    mux = _directives(TIER_A["jasper-mux"])
+    assert ("StateDirectory", "jasper") in voice, (
+        "jasper-voice must remain the StateDirectory=jasper owner (it creates + "
+        "owns /var/lib/jasper for every group-`jasper` daemon)."
+    )
+    assert ("StateDirectory", "jasper") not in set(mux), (
+        "jasper-mux must NOT declare StateDirectory=jasper (S2: single owner). "
+        "Co-ownership makes systemd re-chown /var/lib/jasper to whichever daemon "
+        "restarted last, flipping ownership and breaking the non-owner's writes."
+    )
+    mux_rwp = " ".join(v for k, v in mux if k == "ReadWritePaths")
+    assert "/var/lib/jasper" in mux_rwp, (
+        "with no StateDirectory, mux must reach /var/lib/jasper via ReadWritePaths "
+        "(its source pin + speaker_volume.json writes under ProtectSystem=strict)."
+    )
