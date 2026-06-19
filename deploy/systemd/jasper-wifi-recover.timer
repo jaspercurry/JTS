@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically check whether JTS Wi-Fi needs recovery
+Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=90s
+AccuracySec=15s
+RandomizedDelaySec=10s
+Unit=jasper-wifi-recover.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

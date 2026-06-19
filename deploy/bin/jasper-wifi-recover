@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Periodic WiFi recovery nudge for transient AP/driver loss.
+#
+# This is deliberately NOT a resident daemon. It is run by
+# jasper-wifi-recover.timer. In steady state it performs one cheap
+# NetworkManager read and exits; only when no WiFi is active does it
+# inspect recent kernel logs, optionally run the Pi 5 brcmfmac scan
+# suppression repair, and delegate profile activation/recreation to
+# jasper-wifi-guardian.
+
+set -uo pipefail
+
+STASH_FILE="${JASPER_WIFI_STASH_FILE:-/var/lib/jasper/wifi_guardian.env}"
+NMCLI="${JASPER_NMCLI:-nmcli}"
+JOURNALCTL="${JASPER_JOURNALCTL:-journalctl}"
+GUARDIAN="${JASPER_WIFI_GUARDIAN:-/usr/local/sbin/jasper-wifi-guardian}"
+IFACE="${JASPER_WIFI_SCAN_REPAIR_IFACE:-wlan0}"
+SCAN_LOG_SINCE="${JASPER_WIFI_SCAN_REPAIR_LOG_SINCE:-10 min ago}"
+PYTHON="${JASPER_WIFI_SCAN_REPAIR_PYTHON:-/opt/jasper/.venv/bin/python}"
+REASON="manual"
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-wifi-recover [--reason TEXT]
+
+Cheap periodic WiFi recovery check:
+
+  - if any WiFi connection is active, exit immediately
+  - if WiFi is down and recent kernel logs show brcmfmac scan suppression,
+    run the bounded non-disruptive scan repair
+  - delegate profile activation/recreation to jasper-wifi-guardian
+
+Emits structured event=wifi_recover.* lines only when manual or when
+real recovery work is attempted. PSKs are owned by jasper-wifi-guardian.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+            REASON="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+emit() {
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=wifi_recover.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=wifi_recover.%s\n' "$1" >&2
+    fi
+}
+
+active_wifi_profile() {
+    "$NMCLI" -t -f NAME,TYPE connection show --active 2>/dev/null \
+        | awk -F: '$2 ~ /wifi|wireless/ { print $1; exit }'
+}
+
+recent_scan_suppression() {
+    "$JOURNALCTL" -k --since "$SCAN_LOG_SINCE" --no-pager --output=cat \
+        2>/dev/null \
+        | grep -qiE 'brcmf_cfg80211_scan: Scanning suppressed|Scanning suppressed: status \(4\)'
+}
+
+if [[ ! -f "$STASH_FILE" ]]; then
+    [[ "$REASON" == "manual" ]] && emit absent "reason=no_stash"
+    exit 0
+fi
+
+active="$(active_wifi_profile || true)"
+if [[ -n "$active" ]]; then
+    [[ "$REASON" == "manual" ]] && emit steady "active=$active"
+    exit 0
+fi
+
+emit no_active "iface=$IFACE"
+
+if recent_scan_suppression; then
+    emit scan_suppressed "iface=$IFACE"
+    if [[ ! -x "$PYTHON" ]]; then
+        PYTHON="python3"
+    fi
+    if "$PYTHON" -m jasper.wifi_scan_repair \
+        --iface "$IFACE" \
+        --json; then
+        emit scan_repair_ok "iface=$IFACE"
+    else
+        rc=$?
+        emit scan_repair_fail "iface=$IFACE rc=$rc"
+    fi
+fi
+
+emit guardian_start ""
+"$GUARDIAN" --reason wifi-recover
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    emit guardian_ok ""
+else
+    emit guardian_fail "rc=$rc"
+fi
+exit "$rc"

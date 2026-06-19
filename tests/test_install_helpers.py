@@ -304,6 +304,29 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     assert "/^SPOTIPY_REDIRECT_URI=/d" in install_sh
 
 
+def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
+    """AirPlay's Wi-Fi tweak also owns NetworkManager retry resilience."""
+    text = _RENDERERS_LIB.read_text(encoding="utf-8")
+    match = re.search(
+        r"tune_wifi_for_airplay\(\) \{(?P<body>.*?)\n\}",
+        text,
+        flags=re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert "connection.autoconnect yes" in body
+    assert "connection.autoconnect-retries 0" in body
+    assert "802-11-wireless.powersave 2" in body
+
+
+def test_install_enables_wifi_recover_timer_with_now():
+    """The low-footprint Wi-Fi recovery loop must be live from first deploy."""
+    install_sh = installer_text()
+    assert "jasper-wifi-recover.service" in install_sh
+    assert "jasper-wifi-recover.timer" in install_sh
+    assert "systemctl enable --now jasper-wifi-recover.timer" in install_sh
+
+
 def test_firmware_staleness_includes_platformio_inputs(tmp_path):
     """Dependency-pin changes live in platformio.ini, so the optional
     rebuild freshness check must not look only at src/."""

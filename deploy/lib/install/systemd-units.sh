@@ -136,6 +136,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-dac-init.service"
             "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
             "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
+            "${SYSTEMD_DIR}/jasper-wifi-recover.service"
+            "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
             "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
@@ -154,9 +156,18 @@ install_resilience_identity_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
         "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-recover.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
+        "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
+        /usr/local/sbin/jasper-wifi-recover
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
@@ -340,6 +351,7 @@ start_streambox_runtime_units() {
     done
     reconcile_grouping_state
     systemctl enable jasper-wifi-guardian.service
+    systemctl enable --now jasper-wifi-recover.timer
     systemctl enable jasper-bootloop-guard.service
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
@@ -495,9 +507,18 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
         "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-recover.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
+        "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
+        /usr/local/sbin/jasper-wifi-recover
 
     # Camilla pipe guard. ExecStartPre= on jasper-camilla: when the
     # statefile points at a bonded multi-room pipe config but the
@@ -878,6 +899,12 @@ install_systemd_units() {
     # wizard saves once. See migrate_wifi_guardian (called from
     # ensure_env_file above) for the SSH-driven-setup seed path.
     systemctl enable jasper-wifi-guardian.service
+    # WiFi recover timer: no resident RAM. Every 90s it runs a tiny
+    # oneshot that exits after one NM active-connection read when WiFi is
+    # healthy; when WiFi is down it can run the Pi 5 scan-suppression
+    # repair and then delegate profile activation/recreation to the
+    # guardian. `--now` makes the first-deploy recovery loop live.
+    systemctl enable --now jasper-wifi-recover.timer
     # Boot-loop guard: oneshot at boot; records the boot timestamp and
     # disarms StartLimitAction=reboot via runtime drop-ins only when
     # boots are looping. Safe on fresh installs (first boots never trip).

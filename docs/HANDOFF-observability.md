@@ -59,7 +59,8 @@ daemon restart (or, for `control`, in-process).
 **The spine is the structured `event=` line.** Cross-daemon state
 changes emit `event=<name> key=val …` lines (`event=shairport.wedge_detected`,
 `event=system_supervisor.userspace_wedge`, `event=wifi_guardian.recreate_ok`,
-`event=duck`, `event=fanin.assistant_loudness`, …).
+`event=wifi_recover.no_active`, `event=duck`,
+`event=fanin.assistant_loudness`, …).
 `scripts/jasper-trace.sh` keys off them. They are the cheap,
 high-signal, always-on observability floor — keep them.
 
@@ -110,8 +111,9 @@ noise:
   path** — one `event=*.start` per boot, then silence until a
   failure (the `_tick` healthy branch returns without logging);
 - the Tier-1 `Heartbeat.bump()` logs nothing per frame;
-- the AEC reconciler and WiFi guardian are oneshot — one line per
-  hardware/boot event.
+- the AEC reconciler, WiFi guardian, and WiFi recover timer are oneshot
+  paths — the recover timer is silent on healthy ticks and logs only
+  manual runs or actual down-path recovery work.
 
 Every recovery/decision line is **WARNING or ERROR**. That gives a
 clean split a debug toggle can rely on:

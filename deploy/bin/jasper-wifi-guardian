@@ -166,20 +166,41 @@ if [[ -n "$ACTIVE_NAME" ]]; then
     [[ -z "$ACTIVE_SSID" ]] && ACTIVE_SSID="$ACTIVE_NAME"
 fi
 
-# Does a connection profile with NAME == stash SSID exist? We match
-# exactly on NAME because that's how nmcli's `dev wifi connect <ssid>`
-# names new profiles (the SSID *is* the profile name for wizard-created
-# entries — see `wifi_setup.connect_new`).
+profile_ssid_for_name() {
+    "$NMCLI" -t -s -f 802-11-wireless.ssid connection show \
+        "$1" 2>/dev/null \
+        | awk -F: '$1 == "802-11-wireless.ssid" { print $2; exit }'
+}
+
+# Does a connection profile for the stashed SSID exist? Wizard-created
+# profiles are usually named exactly like the SSID, but Pi Imager/netplan
+# seeds names such as `netplan-wlan0-Verizon_4TQ9PN`. Match by exact NAME
+# first (cheap), then by the profile's actual 802-11-wireless.ssid field.
 PROFILE_EXISTS=0
+PROFILE_NAME=""
 while IFS= read -r line; do
     name="$(echo "$line" | awk -F: '{print $1}')"
     if [[ "$name" == "$SSID" ]]; then
         PROFILE_EXISTS=1
+        PROFILE_NAME="$name"
         break
     fi
 done < <("$NMCLI" -t -f NAME connection show 2>/dev/null)
 
-log "stash_ssid=$SSID active_ssid=${ACTIVE_SSID:-<none>} profile_exists=$PROFILE_EXISTS key_mgmt=$KEY_MGMT"
+if [[ "$PROFILE_EXISTS" != "1" ]]; then
+    while IFS= read -r line; do
+        name="$(echo "$line" | awk -F: '{print $1}')"
+        [[ -z "$name" ]] && continue
+        profile_ssid="$(profile_ssid_for_name "$name")"
+        if [[ "$profile_ssid" == "$SSID" ]]; then
+            PROFILE_EXISTS=1
+            PROFILE_NAME="$name"
+            break
+        fi
+    done < <("$NMCLI" -t -f NAME connection show 2>/dev/null)
+fi
+
+log "stash_ssid=$SSID active_ssid=${ACTIVE_SSID:-<none>} profile_exists=$PROFILE_EXISTS profile_name=${PROFILE_NAME:-<none>} key_mgmt=$KEY_MGMT"
 
 # Case 1: WiFi is already up on the stashed SSID. Nothing to do.
 if [[ -n "$ACTIVE_SSID" && "$ACTIVE_SSID" == "$SSID" ]]; then
@@ -204,12 +225,12 @@ fi
 # be a transient signal issue or `connection.autoconnect=no`. `connection
 # up` is cheap and the right action.
 if [[ "$PROFILE_EXISTS" == "1" ]]; then
-    emit activate "ssid=$SSID"
-    if "$NMCLI" --wait 20 connection up "$SSID" >/dev/null 2>&1; then
-        emit activate_ok "ssid=$SSID"
+    emit activate "ssid=$SSID profile=$PROFILE_NAME"
+    if "$NMCLI" --wait 20 connection up "$PROFILE_NAME" >/dev/null 2>&1; then
+        emit activate_ok "ssid=$SSID profile=$PROFILE_NAME"
         exit 0
     fi
-    emit activate_fail "ssid=$SSID"
+    emit activate_fail "ssid=$SSID profile=$PROFILE_NAME"
     # Don't fall through to recreate — the profile exists and we couldn't
     # bring it up. Recreate would also stash-stomp a possibly-fine profile
     # whose PSK we'd be overwriting. Operator's job from here.

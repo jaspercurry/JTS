@@ -954,33 +954,59 @@ shutdown adopted, filesystem corruption / accidental `rm` /
 botched migrations can still erase the keyfile, and the Pi
 should self-heal rather than brick.
 
-Fix shape mirrors `jasper-aec-reconcile` exactly:
+The 2026-06-19 JTS3 flap added a second class: the AP went up/down
+several times, the Pi 5 brcmfmac driver logged repeated
+`brcmf_cfg80211_scan: Scanning suppressed: status (4)`, and
+NetworkManager eventually stopped retrying the seeded netplan profile
+after a `no-secrets` failure. A power cycle brought it back. The fix
+for this class is not a resident watchdog; it is a tiny systemd timer
+that periodically asks whether WiFi is actually down, then runs the
+same bounded scan-suppression repair used by `/wifi/scan` before
+delegating profile activation to the guardian.
+
+Core guardian shape mirrors `jasper-aec-reconcile`; the flap recovery
+layer is a periodic nudge around that same policy:
 
 - **Wizard-owned stash** at `/var/lib/jasper/wifi_guardian.env`
   (mode 0600, env-var format with `JASPER_WIFI_SSID` /
   `JASPER_WIFI_PSK` / `JASPER_WIFI_KEY_MGMT`).
 - **Pure-bash policy script** at
   `/usr/local/sbin/jasper-wifi-guardian` (from
-  `deploy/bin/jasper-wifi-guardian`), driven by
+  `deploy/bin/jasper-wifi-guardian`), driven at boot by
   `jasper-wifi-guardian.service` (`Type=oneshot`, after
   `NetworkManager-wait-online`, gated by `ConditionPathExists=`
-  on the stash).
+  on the stash), and also invoked by the recovery timer when WiFi
+  is down.
+- **Low-footprint recovery timer**:
+  `jasper-wifi-recover.timer` runs every 90 s with no resident RAM.
+  The steady-state path is one `nmcli connection show --active` read
+  and no journal output. Only when no WiFi connection is active does
+  `jasper-wifi-recover` inspect recent kernel logs for brcmfmac scan
+  suppression, run `python -m jasper.wifi_scan_repair --iface wlan0`
+  if warranted, then call the guardian.
 - **Write hooks** in the `/wifi/` wizard
   ([`jasper/web/wifi_setup.py`](../jasper/web/wifi_setup.py)) —
   `connect_new` writes from the PSK on the wire, `connect_saved`
   reads via `nmcli -s`, `forget` clears when the SSID matches.
+  Successful connects also harden the NM profile:
+  `connection.autoconnect=yes`, `connection.autoconnect-retries=0`
+  (NetworkManager's retry-forever value), and
+  `802-11-wireless.powersave=2`.
 - **Install-time seed** in `install.sh`'s `migrate_wifi_guardian`
   so SSH-driven setup paths arm recovery on the first deploy
   rather than waiting for the user to open the wizard.
 
-What the script does at boot:
+What the guardian does when invoked:
 
 - Active WiFi SSID matches stash → no-op (`steady_state`).
 - Active WiFi SSID differs from stash → no-op (`stash_stale`,
   operator switched networks via SSH; we don't know which is
   "right", don't stomp the working network).
 - No active WiFi, but a profile for the stashed SSID exists →
-  `nmcli connection up SSID` (`activate`).
+  `nmcli connection up PROFILE_NAME` (`activate`). The profile lookup
+  first matches by profile name, then by `802-11-wireless.ssid`, so
+  Pi Imager/netplan names such as `netplan-wlan0-Home` are handled
+  without creating duplicate profiles.
 - No active WiFi and no profile → THE INCIDENT CASE.
   `nmcli dev wifi connect SSID password $PSK` (`recreate_attempt`).
   On failure, delete the broken half-profile and exit non-zero so
@@ -1006,8 +1032,9 @@ PSK redaction is enforced in three layers:
 Diagnostic surfaces:
 
 ```sh
-# Per-event structured lines (one per guardian run):
-journalctl -u jasper-wifi-guardian | grep event=wifi_guardian
+# Per-event structured lines:
+journalctl -u jasper-wifi-recover -u jasper-wifi-guardian \
+  | grep -E 'event=wifi_(recover|guardian)'
 
 # Live state from jasper-control:
 curl -s http://jts.local:8780/state | jq .resilience.wifi_guardian
@@ -1015,7 +1042,10 @@ curl -s http://jts.local:8780/state | jq .resilience.wifi_guardian
 # Doctor (warns on stash absence + drift; informational only):
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep "WiFi profile guardian"
 
-# Manual trigger (after a known-bad boot to retry now):
+# Manual trigger for the full down-path nudge:
+sudo /usr/local/sbin/jasper-wifi-recover --reason manual
+
+# Manual trigger for guardian only:
 sudo /usr/local/sbin/jasper-wifi-guardian --reason manual
 ```
 

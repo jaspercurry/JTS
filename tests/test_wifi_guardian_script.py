@@ -406,6 +406,27 @@ def test_guardian_activates_present_profile(tmp_path):
     assert "device wifi connect" not in nm
 
 
+def test_guardian_matches_netplan_profile_by_ssid(tmp_path):
+    """Pi Imager/netplan profiles are not named after the SSID. The guardian
+    must activate the profile whose 802-11-wireless.ssid matches the stash,
+    not recreate a duplicate profile named like the SSID."""
+    proc, log = _run_guardian(
+        tmp_path,
+        _stash(ssid="Home"),
+        nmcli_env={
+            "JASPER_NMCLI_ACTIVE": "",
+            "JASPER_NMCLI_ALL_PROFILES": "netplan-wlan0-Home\nGuest\n",
+            "JASPER_NMCLI_PROFILE_DETAILS": "802-11-wireless.ssid:Home\n",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_guardian.activate" in proc.stderr
+    assert "profile=netplan-wlan0-Home" in proc.stderr
+    nm = _nmcli_log(log)
+    assert "connection up netplan-wlan0-Home" in nm
+    assert "device wifi connect" not in nm
+
+
 def test_guardian_activate_failure_exits_nonzero(tmp_path):
     """Profile exists but `connection up` fails (PSK changed, AP gone).
     The guardian does NOT fall through to recreate — that would stomp

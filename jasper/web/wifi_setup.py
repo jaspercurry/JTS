@@ -98,6 +98,7 @@ _ROLLBACK_TIMEOUT = 30
 _SCAN_HEALTH_JOURNAL_LINES = 120
 _SCAN_REPAIR_IFACE = os.environ.get("JASPER_WIFI_SCAN_REPAIR_IFACE", "wlan0")
 _SCAN_REPAIR_RETRY_DELAYS = (2.0, 3.0)
+_NM_AUTOCONNECT_RETRIES_FOREVER = "0"
 
 
 def _env_truthy(name: str) -> bool:
@@ -178,6 +179,33 @@ def _run_nmcli_secret(
     Use for any command that has a PSK on the command line."""
     logger.info("nmcli: %s", " ".join(_scrub_argv(cmd)))
     return _run_nmcli(cmd, timeout=timeout, log_argv=False)
+
+
+def _harden_wifi_profile(profile_name: str) -> None:
+    """Best-effort NetworkManager resilience settings for JTS-owned WiFi.
+
+    `connection.autoconnect-retries 0` is NetworkManager's "retry forever"
+    value. Without this, `-1` falls back to NM's global default and a long
+    household/router flap can exhaust retries before the AP is healthy again.
+    """
+    proc = _run_nmcli(
+        [
+            "nmcli", "connection", "modify", profile_name,
+            "connection.autoconnect", "yes",
+            "connection.autoconnect-retries", _NM_AUTOCONNECT_RETRIES_FOREVER,
+            "802-11-wireless.powersave", "2",
+        ],
+        timeout=10,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        log_event(
+            logger,
+            "wifi.profile_harden_failed",
+            profile=profile_name,
+            err=err[0] if err else "unknown",
+            level=logging.WARNING,
+        )
 
 
 def _parse_terse(line: str) -> list[str]:
@@ -906,6 +934,7 @@ def connect_new(
             err = _readable_nmcli_error(hidden_proc)
 
     if proc.returncode == 0:
+        _harden_wifi_profile(ssid)
         # Guardian stash refresh — best-effort, never blocks the
         # connect success. Sees the PSK on the wire here; this is
         # the canonical point to capture it. See `_stash_after_connect`
@@ -947,6 +976,7 @@ def connect_saved(name: str) -> tuple[bool, str]:
         timeout=_CONNECT_TIMEOUT,
     )
     if proc.returncode == 0:
+        _harden_wifi_profile(name)
         # Refresh the stash so the guardian's saved intent matches what
         # the operator just activated. The PSK comes out of NM's own
         # keyfile via `nmcli -s` (we don't see it on the wire here).
