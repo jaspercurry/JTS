@@ -52,11 +52,12 @@ MAX_Q = 10.0
 # it is meant to be surgical and narrow.
 CUT_MAX_Q = 1.4
 
-# FilterSpec, GAINLESS_BIQUAD_TYPES, and FILTER_EPSILON_DB now live in the
-# neutral jasper.camilla_config_contract (the stereo-prefix builder shares
-# them). They are imported at the top of this module and re-exported here,
-# so `from jasper.sound.profile import FilterSpec` / the jasper.sound
-# package re-exports keep working unchanged.
+# FilterSpec and GAINLESS_BIQUAD_TYPES now live in the neutral
+# jasper.camilla_config_contract (the stereo-prefix builder shares them);
+# they are imported at the top of this module and re-exported here, so
+# `from jasper.sound.profile import FilterSpec` and the jasper.sound package
+# re-exports keep working unchanged. FILTER_EPSILON_DB moved there too (it
+# backs FilterSpec.active()); profile.py no longer references it directly.
 
 # Sample rate the drawn magnitude response is evaluated at. Must match
 # CamillaDSP's runtime rate (camilla_config_contract.DEFAULT_SAMPLE_RATE =

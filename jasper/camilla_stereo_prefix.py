@@ -95,8 +95,9 @@ def build_stereo_prefix(
 
     ``sound_filters`` is the already-built, already-filtered preference
     filter list (``build_sound_filters(profile)`` — only ``.active()``
-    specs); pass a concrete sequence (its truthiness gates the optional
-    preamp). A flat profile passes ``()``.
+    specs); it is normalized to a tuple at the boundary, so a generator is
+    safe. Its emptiness gates the optional preamp off — a flat profile
+    passes ``()``.
 
     ``chain_names_right`` is ``None`` when ``room_peqs_right`` is ``None``
     (solo — channel 1 duplicates channel 0, byte-identical to before this
@@ -105,6 +106,10 @@ def build_stereo_prefix(
     filters (taste, shared household EQ) and the optional preamp are the
     SAME named filters referenced by both chains — defined once.
     """
+    # Normalize at the boundary: this is a shared builder (the stereo emitter
+    # today, the active pre-split section next), so `if sound_filters` and the
+    # iteration below stay correct even if a caller hands a generator.
+    sound_filters = tuple(sound_filters)
     lines: list[str] = []
     room_names: list[str] = []
     room_names_right: list[str] | None = None
