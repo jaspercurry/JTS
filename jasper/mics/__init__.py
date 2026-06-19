@@ -17,9 +17,9 @@ what's genuinely shared.
 Consumers today:
 - jasper.cli.doctor — reads constants, runs the per-profile checks
 - jasper.cli.aec_bridge — reads ALSA card name + channel indices
-- deploy/bin/jasper-aec-reconcile — bash, can't import; carries its
-  own copies of the constants with a comment pointing here as the
-  canonical source. Keep both in sync when changing names/numids.
+- jasper.cli.xvf_profile — import-cheap bridge that resolves profile
+  facts for deploy/bin/jasper-aec-reconcile, so bash consumes generated
+  env instead of owning XVF geometry/channel constants.
 
 What this package is NOT:
 - A general runtime mic-detection layer (it maps known USB IDs to the

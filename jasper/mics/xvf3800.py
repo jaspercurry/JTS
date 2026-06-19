@@ -8,9 +8,8 @@ vendor-control helper used for chip-side parameter reads/writes).
 
 This module holds the mic-family-specific knowledge consulted by
 doctor checks, the AEC bridge, and operator tooling. The bash
-reconciler at deploy/bin/jasper-aec-reconcile carries its own
-copies (it can't import Python); when changing constants here,
-update there too.
+reconciler consumes these facts through `python -m jasper.cli.xvf_profile`
+so geometry/channel truth stays in this module.
 """
 from __future__ import annotations
 

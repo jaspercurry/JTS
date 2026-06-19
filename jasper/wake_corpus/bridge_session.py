@@ -199,21 +199,35 @@ OUTPUTD_REF_UDP_TARGET = "127.0.0.1:9891"
 OUTPUTD_REF_UDP_PORT = "9891"
 
 
-def _default_chip_ref_pcm() -> str:
-    try:
-        from jasper.mics import xvf3800
-    except Exception:  # noqa: BLE001 - constants should remain import-safe
-        return "plughw:CARD=Array,DEV=0"
-    return f"plughw:CARD={xvf3800.alsa_card_name()},DEV=0"
-
-
-DEFAULT_CHIP_REF_PCM = _default_chip_ref_pcm()
+DEFAULT_CHIP_REF_PCM = "plughw:CARD=Array,DEV=0"
 DEFAULT_CHIP_REF_SAMPLE_RATE = "16000"
 DEFAULT_CHIP_REF_PERIOD_FRAMES = "320"
 DEFAULT_CHIP_REF_BUFFER_FRAMES = "1280"
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"
+
+
+def _plain_alsa_card_id(value: str) -> bool:
+    return bool(value) and not any(ch.isspace() or ch in ":,/" for ch in value)
+
+
+def chip_ref_pcm_for_env(env: Mapping[str, Any] | None = None) -> str:
+    """Return the current XVF USB-IN PCM for corpus chip-ref output."""
+    card = ""
+    if env:
+        card = str(env.get("JASPER_XVF_ALSA_CARD") or "").strip()
+        if not card:
+            aec_mic = str(env.get("JASPER_AEC_MIC_DEVICE") or "").strip()
+            if _plain_alsa_card_id(aec_mic):
+                card = aec_mic
+    if card:
+        return f"plughw:CARD={card},DEV=0"
+    try:
+        from jasper.mics import xvf3800
+    except Exception:  # noqa: BLE001 - constants should remain import-safe
+        return DEFAULT_CHIP_REF_PCM
+    return f"plughw:CARD={xvf3800.detect_runtime_profile().alsa_card_name},DEV=0"
 
 BRIDGE_OUTPUT_LABELS = {
     "dtln": "XVF DTLN",
@@ -263,7 +277,9 @@ def chip_aec_config_metadata() -> dict[str, object]:
         "beam_plan": plan.plan_id,
         "reference_topology": "outputd_direct_fanout",
         "outputd_reference_udp_target": OUTPUTD_REF_UDP_TARGET,
-        "chip_ref_pcm": DEFAULT_CHIP_REF_PCM,
+        "chip_ref_pcm": chip_ref_pcm_for_env(
+            {"JASPER_XVF_ALSA_CARD": runtime_profile.alsa_card_name}
+        ),
         "chip_ref_sample_rate": int(DEFAULT_CHIP_REF_SAMPLE_RATE),
         "chip_ref_period_frames": int(DEFAULT_CHIP_REF_PERIOD_FRAMES),
         "chip_ref_buffer_frames": int(DEFAULT_CHIP_REF_BUFFER_FRAMES),
@@ -1259,7 +1275,7 @@ def set_bridge_outputs_for_session(
         values["JASPER_AEC_REF_SOURCE"] = "outputd_udp"
         values["JASPER_AEC_OUTPUTD_REF_UDP_HOST"] = "127.0.0.1"
         values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
-        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = DEFAULT_CHIP_REF_PCM
+        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = chip_ref_pcm_for_env(system_env)
         values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
         values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"] = DEFAULT_CHIP_REF_SAMPLE_RATE
         values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"] = DEFAULT_CHIP_REF_PERIOD_FRAMES

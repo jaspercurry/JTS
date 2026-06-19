@@ -2263,6 +2263,15 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     ]
 
 
+def test_chip_ref_pcm_prefers_resolved_xvf_card() -> None:
+    assert bridge_session.chip_ref_pcm_for_env(
+        {
+            "JASPER_XVF_ALSA_CARD": "L16K6Ch",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+        }
+    ) == "plughw:CARD=L16K6Ch,DEV=0"
+
+
 def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

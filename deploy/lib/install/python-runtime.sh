@@ -237,7 +237,6 @@ install_jasper() {
         sed \
             -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
             -e "s|JASPER_AEC_MIC_DEVICE=Array|JASPER_AEC_MIC_DEVICE=${mic_card}|" \
-            -e "s|JASPER_MIC_DEVICE_CANDIDATES=Array|JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch|" \
             -e "s|^JASPER_HOSTNAME=.*|JASPER_HOSTNAME=${hostname_value}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
