@@ -9,11 +9,12 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use crate::aec_clock::SroEstimator;
 use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
@@ -99,6 +100,17 @@ pub struct OutputdState {
     chip_ref_tee_active: AtomicBool,
     chip_ref_tee_open_error_count: AtomicU64,
     chip_ref_tee_write_error_count: AtomicU64,
+    // Passive SRO (sample-rate-offset) drift estimator (chip-AEC Layer 0).
+    // Ticked from `mark_chip_ref_write` — i.e. wherever the chip-ref delay is
+    // already sampled — reading the already-stored DAC counters. Observe-only:
+    // it never warps audio. Mutex (not atomics) because the estimate is a
+    // small struct with a ring buffer; the chip-ref writer is the only writer
+    // and the state server the only reader, so contention is negligible.
+    sro_estimator: Mutex<SroEstimator>,
+    // Last cumulative `chip_ref_frames_written` fed to the SRO estimator.
+    // Decimates the ~50 Hz `mark_chip_ref_write` ticks down to ~1 Hz (the rate
+    // the estimator's slope window is tuned for).
+    sro_last_fed_chip_ref_frames: AtomicU64,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
     content_partial_period_count: AtomicU64,
@@ -196,6 +208,8 @@ impl OutputdState {
             chip_ref_tee_active: AtomicBool::new(false),
             chip_ref_tee_open_error_count: AtomicU64::new(0),
             chip_ref_tee_write_error_count: AtomicU64::new(0),
+            sro_estimator: Mutex::new(SroEstimator::new()),
+            sro_last_fed_chip_ref_frames: AtomicU64::new(0),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
             content_partial_period_count: AtomicU64::new(0),
@@ -346,6 +360,42 @@ impl OutputdState {
                     .store(delay_frames, Ordering::Relaxed);
                 self.chip_ref_snd_pcm_delay_sample_ms
                     .store(uptime_ms, Ordering::Relaxed);
+                // Tick the passive SRO estimator here — the chip-ref delay is
+                // freshly sampled. Read the already-stored DAC counters; this
+                // never touches the audio path. A fresh chip-ref consumed
+                // count (frames_written includes this write) pairs with the
+                // most recent DAC snapshot. Both deltas are well below the
+                // estimator's monotonicity/plausibility guards.
+                let dac_written = self.dac_frames_written.load(Ordering::Relaxed);
+                let dac_delay =
+                    unpack_optional_u64(self.dac_snd_pcm_delay_frames.load(Ordering::Relaxed));
+                let chip_ref_written = self.chip_ref_frames_written.load(Ordering::Relaxed);
+                let chip_ref_rate = self.chip_ref_sample_rate.load(Ordering::Relaxed) as u32;
+                // Only feed once the DAC has a real delay sample; otherwise the
+                // pair is incomplete and the estimator should keep observing.
+                if let Some(dac_delay) = dac_delay {
+                    // Decimate to ~1 sample/sec. `mark_chip_ref_write` runs once
+                    // per chip-ref period (~50 Hz); feeding the estimator that
+                    // fast collapses its slope baseline to a fraction of a
+                    // second, where snd_pcm_delay measurement jitter swamps the
+                    // ppm estimate. The estimator's window is tuned for ~1 Hz,
+                    // so only feed once ~1 s of chip-ref frames has elapsed.
+                    let interval = u64::from(chip_ref_rate.max(1));
+                    let last_fed = self.sro_last_fed_chip_ref_frames.load(Ordering::Relaxed);
+                    if chip_ref_written.saturating_sub(last_fed) >= interval {
+                        self.sro_last_fed_chip_ref_frames
+                            .store(chip_ref_written, Ordering::Relaxed);
+                        if let Ok(mut est) = self.sro_estimator.lock() {
+                            est.update(
+                                dac_written,
+                                dac_delay,
+                                chip_ref_written,
+                                delay_frames,
+                                chip_ref_rate,
+                            );
+                        }
+                    }
+                }
             }
         }
         if underruns > 0 {
@@ -1059,6 +1109,56 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
         push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
+        buf.push(',');
+
+        // Passive chip-AEC clock drift (Layer 0). Observe-only: SRO estimate,
+        // a thin verdict, and the latency budget outputd already knows. No
+        // audio path is affected by anything in this block.
+        let (sro_ppm, sro_status, verdict, verdict_reason) = {
+            match self.sro_estimator.lock() {
+                Ok(est) => (
+                    est.sro_ppm(),
+                    est.status().as_str(),
+                    est.verdict().as_str(),
+                    est.verdict_reason(),
+                ),
+                // A poisoned lock should never happen (the estimator never
+                // panics), but never surface a panic from /state — degrade to
+                // the fallback verdict instead.
+                Err(_) => (
+                    None,
+                    crate::aec_clock::SroStatus::Untrusted.as_str(),
+                    crate::aec_clock::AecClockVerdict::Fallback.as_str(),
+                    "sro estimator lock poisoned".to_string(),
+                ),
+            }
+        };
+        let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
+        let playback_queue_ms = frames_to_ms_opt(
+            Some(self.dac_buffer_frames.load(Ordering::Relaxed)),
+            sample_rate,
+        );
+        let chip_ref_queue_ms = frames_to_ms_opt(
+            Some(self.chip_ref_queued_frames.load(Ordering::Relaxed)),
+            chip_ref_sample_rate,
+        );
+        buf.push_str(r#""aec_clock":{"#);
+        push_kv_f64_opt(&mut buf, "chip_ref_sro_ppm", sro_ppm, 3);
+        buf.push(',');
+        push_kv_str(&mut buf, "sro_estimator_status", sro_status);
+        buf.push(',');
+        push_kv_str(&mut buf, "verdict", verdict);
+        buf.push(',');
+        push_kv_str(&mut buf, "verdict_reason", &verdict_reason);
+        buf.push(',');
+        buf.push_str(r#""latency":{"#);
+        push_kv_f64_opt(&mut buf, "dac_presentation_ms", dac_presentation_ms, 3);
+        buf.push(',');
+        push_kv_f64_opt(&mut buf, "playback_queue_ms", playback_queue_ms, 3);
+        buf.push(',');
+        push_kv_f64_opt(&mut buf, "chip_ref_queue_ms", chip_ref_queue_ms, 3);
+        buf.push('}');
+        buf.push('}');
         buf.push('}');
         buf.push(',');
 
@@ -1613,5 +1713,65 @@ mod tests {
         let j = state.snapshot_json();
         assert_eq!(j.matches(r#""last_xrun_age_ms":null"#).count(), 2);
         assert_eq!(j.matches(r#""xrun_rate_per_hour":0.000"#).count(), 2);
+    }
+
+    #[test]
+    fn snapshot_json_aec_clock_observing_by_default() {
+        let state = OutputdState::new(&test_config());
+        let j = state.snapshot_json();
+        for needle in [
+            r#""aec_clock":{"chip_ref_sro_ppm":null"#,
+            r#""sro_estimator_status":"observing""#,
+            r#""verdict":"fallback""#,
+            r#""latency":{"dac_presentation_ms":null"#,
+            // 48000-frame DAC buffer / 48000 → 1000 ms.
+            r#""playback_queue_ms":1000.000"#,
+            r#""chip_ref_queue_ms":0.000"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn snapshot_json_aec_clock_locks_and_classifies_drift() {
+        let cfg = Config {
+            chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        // Drive enough paired DAC + chip-ref snapshots for the estimator to
+        // lock. The DAC runs ~50 ppm fast relative to the 16 kHz chip ref.
+        // Round the CUMULATIVE DAC target each step so the integer counter
+        // tracks the true ppm (per-step rounding would bias the slope).
+        let mut chip_written: u64 = 0;
+        for step in 1..=40u64 {
+            chip_written += 16_000;
+            let dac_written = (48_000.0 * step as f64 * (1.0 + 50.0 / 1.0e6)).round() as u64;
+            // The DAC counters land via the playback-loop marks...
+            state.mark_period(
+                IoCounters {
+                    dac_frames_written: dac_written,
+                    ..IoCounters::default()
+                },
+                1,
+                0,
+            );
+            state.mark_dac_delay(1024);
+            // ...and the chip-ref write ticks the estimator with both pairs.
+            state.mark_chip_ref_write(16_000, Some(320), None, 0, 0, 0, false);
+        }
+        let j = state.snapshot_json();
+        assert!(
+            j.contains(r#""sro_estimator_status":"locked""#),
+            "estimator should lock in {j}"
+        );
+        assert!(
+            j.contains(r#""verdict":"compensable""#),
+            "50 ppm should classify compensable in {j}"
+        );
+        assert!(
+            j.contains(r#""chip_ref_sro_ppm":50."#) || j.contains(r#""chip_ref_sro_ppm":49."#),
+            "expected ~50 ppm estimate in {j}"
+        );
     }
 }

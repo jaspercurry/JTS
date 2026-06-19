@@ -2653,6 +2653,134 @@ def test_outputd_service_warns_on_content_bridge_anomalies(monkeypatch):
 
 
 
+def _outputd_aec_clock_payload(
+    *,
+    chip_ref_pcm: str | None = "plughw:CARD=Array,DEV=0",
+    aec_clock: dict | None = None,
+) -> bytes:
+    """An outputd STATUS payload whose reference_outputs carries a chip-ref
+    and (optionally) an aec_clock block — the surface check_aec_clock_drift
+    reads."""
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["reference_outputs"]["chip_ref_pcm"] = chip_ref_pcm
+    if aec_clock is not None:
+        payload["reference_outputs"]["aec_clock"] = aec_clock
+    return json.dumps(payload).encode()
+
+
+def _aec_clock_block(*, verdict: str, status: str, ppm) -> dict:
+    return {
+        "chip_ref_sro_ppm": ppm,
+        "sro_estimator_status": status,
+        "verdict": verdict,
+        "verdict_reason": f"{verdict}/{status}",
+        "latency": {
+            "dac_presentation_ms": 21.3,
+            "playback_queue_ms": 64.0,
+            "chip_ref_queue_ms": 80.0,
+        },
+    }
+
+
+def test_aec_clock_drift_ok_when_coherent(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(
+            aec_clock=_aec_clock_block(
+                verdict="coherent", status="locked", ppm=1.2
+            )
+        ),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "verdict=coherent" in r.detail
+    assert "chip_ref_sro_ppm=1.2" in r.detail
+    assert "playback_queue_ms=64.0" in r.detail
+
+
+def test_aec_clock_drift_ok_when_compensable(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(
+            aec_clock=_aec_clock_block(
+                verdict="compensable", status="locked", ppm=42.0
+            )
+        ),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "verdict=compensable" in r.detail
+    assert "chip_ref_sro_ppm=42.0" in r.detail
+
+
+def test_aec_clock_drift_warns_when_untrusted(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(
+            aec_clock=_aec_clock_block(
+                verdict="fallback", status="untrusted", ppm=None
+            )
+        ),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "warn"
+    assert "cannot be trusted" in r.detail
+    assert "sro_estimator_status=untrusted" in r.detail
+
+
+def test_aec_clock_drift_ok_while_observing(monkeypatch):
+    """The initial lock window (status=observing, which maps to a fallback
+    verdict) is healthy, not a warning — warning there would cry wolf on every
+    boot before the estimator has enough samples."""
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(
+            aec_clock=_aec_clock_block(
+                verdict="fallback", status="observing", ppm=None
+            )
+        ),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "sro_estimator_status=observing" in r.detail
+
+
+def test_aec_clock_drift_skips_when_chip_ref_not_configured(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(chip_ref_pcm=None),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+    assert "chip reference not configured" in r.detail
+
+
+def test_aec_clock_drift_skips_on_pre_layer0_build(monkeypatch):
+    """A chip-ref is present but the outputd build has no aec_clock block."""
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(aec_clock=None),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+    assert "predates aec_clock" in r.detail
+
+
+def test_aec_clock_drift_skips_when_outputd_disabled(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch, enabled="disabled")
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+    assert "not enabled" in r.detail
+
 
 def test_audio_path_no_swap_includes_fanin_and_outputd():
     assert "jasper-fanin" in doctor._AUDIO_PATH_UNITS
