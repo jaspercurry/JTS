@@ -3,10 +3,12 @@
 Source of truth for findings: `docs/REVIEW-2026-06-12-oss-due-diligence.md`
 (on main). Each brief below = one Codex agent session = 1–3 small PRs.
 
-**Lifecycle:** this directory is committed *temporarily* so every agent can
-read its brief from main, regardless of where it runs. It is exempt from the
-orphan-doc sweep (which globs only root and top-level `docs/*.md`). Delete the
-whole directory in a cleanup PR once wave-1 and wave-2 remediation completes.
+**Lifecycle:** this directory was committed temporarily so every agent could
+read its brief from main, regardless of where it ran. It is now mostly a status
+ledger and review-archaeology bundle. It remains exempt from the orphan-doc
+sweep (which globs only root and top-level `docs/*.md`). Delete the whole
+directory in a final cleanup PR once the partial items below are closed or moved
+into canonical living docs.
 
 ## Ground rules for every agent (paste happens via the brief files; AGENTS.md
 covers the rest and Codex loads it automatically)
@@ -54,41 +56,43 @@ verification), reworked where needed, and merged: 17 PRs on main, plus the
 lan-trust stack (652/653/654), the two resilience reworks (647/650), and the
 XVF rewrite (656) in final re-review/sign-off at the time of writing.
 
-## Wave 2 — briefs 10-17 (expanded, ready to assign)
+## Wave 2 status — verified 2026-06-19
 
-| Brief | Theme | Sequencing notes |
+Do not assign these briefs blindly from the original sequencing notes. Most of
+wave 2 has landed on main; use this table to route only the remaining work.
+
+| Brief | Current status | Evidence / remaining work |
 |---|---|---|
-| 10-voice-daemon | Defect PR, then the seam extractions | HOT file — rebase before every push |
-| 11-control-server-split | Defect PR, then the five-module split | HOTTEST file (multiroom) — pick a quiet window |
-| 12-aec-bridge-emit-legs | One emit path, leg table, BridgeConfig | Independent; wire-neutral required |
-| 13-sound-profile-js | rehearsal state-loss bug + guards, then split | Independent; EQ half moves verbatim or not at all |
-| 14-install-sh-split | God-function split + de-heredoc models | Land AFTER brief 17 (both touch install.sh) |
-| 15-outputd-loudness-extract | Shared loudness engine (NOT deletion — layer is live) | Lowest priority; coordinate with multiroom churn |
-| 16-improv-dedup | Shared Improv module for dial/satellite CLIs | Independent |
-| 17-supply-chain-mirrors | Mirror commit archives as release assets | Needs network + gh release perms; BEFORE brief 14 |
+| 10-voice-daemon | Landed; residual hotspot | Defect coverage and protocol tests landed. Prompt text, earcons, turn playback, and daemon entrypoint code now live in `jasper/voice/prompt.py`, `jasper/voice/earcons.py`, `jasper/voice/turn_playback.py`, and `jasper/voice/daemon_main.py`; `WakeLoop.for_tests` exists. `jasper/voice_daemon.py` is still large, so future cleanup belongs in the OSS hotspot register rather than this brief. |
+| 11-control-server-split | Landed; residual hotspot | `jasper/control/aec_endpoints.py`, `uds.py`, `state_aggregate.py`, `volume_ops.py`, and `dial.py` exist, with route tables still centralized in `server.py`. Future endpoint churn should keep shrinking `server.py` locally. |
+| 12-aec-bridge-emit-legs | Landed | `BridgeConfig`, wake-leg-derived default ports, shared `emit_packet`, `LegEmitter`, and regression tests are present. |
+| 13-sound-profile-js | Partial | The rehearsal state-loss fix, sequence guards, `patchActiveSpeaker`, and `active-speaker-ui.js` extraction landed. `main.js` is still a large module and no per-probe `Promise.allSettled` degradation was found, so active-speaker JS cleanup remains live work. |
+| 14-install-sh-split | Landed; residual installer debt | Model staging moved into `jasper/model_downloads.py`, and installer helpers now live under `deploy/lib/install/`. `deploy/install.sh` remains large, so future work is incremental installer-hotspot cleanup. |
+| 15-outputd-loudness-extract | Landed | The shared loudness engine lives in `rust/jasper-tts-protocol/src/loudness.rs`; fan-in and outputd keep compatibility shims. |
+| 16-improv-dedup | Landed | Shared Improv onboarding modules exist in `jasper/cli/_improv.py` and `jasper/cli/_esp32_onboard.py`; dial and satellite CLIs are thin wrappers. |
+| 17-supply-chain-mirrors | Landed; narrower supply-chain gaps remain | JTS-owned release-asset mirrors, `deploy/provenance.toml`, `uv.lock`, and `deploy/constraints-pi.txt` are committed. Remaining Python hash/mirror, apt snapshot, and PlatformIO depth work lives in `docs/HANDOFF-supply-chain.md`. |
 
-Run 12/13/16/17 freely in parallel; 10 and 11 are fine in parallel with each
-other (disjoint files) but expect rebases; 14 after 17; 15 whenever quiet.
+**Mechanical noqa strip** (about 610 vestigial `BLE001` markers as of
+2026-06-19) — still queued LAST, when no other PRs are open; it is a
+tree-wide merge-conflict bomb.
 
-**Mechanical noqa strip** (495 vestigial BLE001 markers) — still queued LAST,
-when no other PRs are open; it's a tree-wide merge-conflict bomb.
+## Owner-only / hardware actions
 
-## Owner-only actions (updated after wave 1)
+The old wave-1 owner-only list is superseded. Current hardware-sensitive
+follow-ups live in canonical docs:
 
-- Bless #656's provenance position (rewrite-with-reference from XMOS docs,
-  not strict clean-room) so the XVF rewrite can merge.
-- Hardware checks queued: flash the dial once (procedural gauge, #634); one
-  Pi boot-check of XVF chip control after #656 deploys; unplug/replug test
-  for the outputd DAC-park change (#650) after it merges; full
-  `deploy-to-pi.sh` after brief 14 lands.
-- Confirm the live branch-protection required-check list matches the docs
-  (`pytest` + `rust`).
-- Tag v0.1.0 when Phase 0 closes (licensing + privacy + LAN-trust docs all
-  merged).
+- AEC/chip-AEC verification and post-AEC voice UX gates:
+  `docs/audit-pending-followups.md` and `docs/HANDOFF-aec.md`.
+- Supply-chain maintenance: `docs/HANDOFF-supply-chain.md`.
+- Release tagging: `CHANGELOG.md` notes that maintainers tag v0.1.0 at OSS
+  launch.
+- Branch protection/check names are repository settings; `CONTRIBUTING.md`
+  documents the current contributor-facing expectations.
 
 ## Review loop
 
-As PRs open, hand them to Claude (the coordinator session) for review against
-each brief's acceptance criteria + the COAH bar before merge. Both sides use
-`codex-briefs/REVIEW-PROMPT.md`: the working agent runs it as a self-review
-before opening the PR; the coordinator runs it again as the merge gate.
+For any remaining live brief cleanup PR, hand it to Claude (the coordinator
+session) for review against the original acceptance criteria + the COAH bar
+before merge. Both sides use `codex-briefs/REVIEW-PROMPT.md`: the working
+agent runs it as a self-review before opening the PR; the coordinator runs it
+again as the merge gate.
