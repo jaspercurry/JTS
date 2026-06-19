@@ -96,16 +96,16 @@ impl AlsaBackend {
             PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
                 format!("opening outputd content capture PCM {}", config.content_pcm)
             })?;
-        let content_negotiated = configure_pcm(
-            "content",
-            &config.content_pcm,
-            &content,
-            config.sample_rate,
-            config.period_frames,
-            config.content_channels,
-            config.content_buffer_frames,
-            false,
-        )
+        let content_negotiated = configure_pcm(PcmConfig {
+            role: "content",
+            pcm_name: &config.content_pcm,
+            pcm: &content,
+            sample_rate: config.sample_rate,
+            period_frames: config.period_frames,
+            channels: config.content_channels,
+            buffer_frames: config.content_buffer_frames,
+            manual_start: false,
+        })
         .with_context(|| {
             format!(
                 "configuring outputd content capture PCM {}",
@@ -118,16 +118,16 @@ impl AlsaBackend {
 
         let dac = PCM::new(&config.dac_pcm, Direction::Playback, false)
             .with_context(|| format!("opening outputd DAC PCM {}", config.dac_pcm))?;
-        let dac_negotiated = configure_pcm(
-            "dac",
-            &config.dac_pcm,
-            &dac,
-            config.sample_rate,
-            config.period_frames,
-            config.content_channels,
-            config.dac_buffer_frames,
-            true,
-        )
+        let dac_negotiated = configure_pcm(PcmConfig {
+            role: "dac",
+            pcm_name: &config.dac_pcm,
+            pcm: &dac,
+            sample_rate: config.sample_rate,
+            period_frames: config.period_frames,
+            channels: config.content_channels,
+            buffer_frames: config.dac_buffer_frames,
+            manual_start: true,
+        })
         .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm))?;
 
         eprintln!(
@@ -318,16 +318,16 @@ impl PairedCompositeSink {
                     config.content_pcm
                 )
             })?;
-        let content_negotiated = configure_pcm(
-            "active_content",
-            &config.content_pcm,
-            &content,
-            config.sample_rate,
-            config.period_frames,
-            config.content_channels,
-            config.content_buffer_frames,
-            false,
-        )
+        let content_negotiated = configure_pcm(PcmConfig {
+            role: "active_content",
+            pcm_name: &config.content_pcm,
+            pcm: &content,
+            sample_rate: config.sample_rate,
+            period_frames: config.period_frames,
+            channels: config.content_channels,
+            buffer_frames: config.content_buffer_frames,
+            manual_start: false,
+        })
         .with_context(|| {
             format!(
                 "configuring outputd active content capture PCM {}",
@@ -340,30 +340,30 @@ impl PairedCompositeSink {
 
         let dac_a = PCM::new(&dac_a_pcm, Direction::Playback, false)
             .with_context(|| format!("opening outputd dual DAC A PCM {}", dac_a_pcm))?;
-        let dac_a_negotiated = configure_pcm(
-            "dual_dac_a",
-            &dac_a_pcm,
-            &dac_a,
-            config.sample_rate,
-            config.period_frames,
-            CHANNELS,
-            config.dac_buffer_frames,
-            true,
-        )
+        let dac_a_negotiated = configure_pcm(PcmConfig {
+            role: "dual_dac_a",
+            pcm_name: &dac_a_pcm,
+            pcm: &dac_a,
+            sample_rate: config.sample_rate,
+            period_frames: config.period_frames,
+            channels: CHANNELS,
+            buffer_frames: config.dac_buffer_frames,
+            manual_start: true,
+        })
         .with_context(|| format!("configuring outputd dual DAC A PCM {}", dac_a_pcm))?;
 
         let dac_b = PCM::new(&dac_b_pcm, Direction::Playback, false)
             .with_context(|| format!("opening outputd dual DAC B PCM {}", dac_b_pcm))?;
-        let dac_b_negotiated = configure_pcm(
-            "dual_dac_b",
-            &dac_b_pcm,
-            &dac_b,
-            config.sample_rate,
-            config.period_frames,
-            CHANNELS,
-            config.dac_buffer_frames,
-            true,
-        )
+        let dac_b_negotiated = configure_pcm(PcmConfig {
+            role: "dual_dac_b",
+            pcm_name: &dac_b_pcm,
+            pcm: &dac_b,
+            sample_rate: config.sample_rate,
+            period_frames: config.period_frames,
+            channels: CHANNELS,
+            buffer_frames: config.dac_buffer_frames,
+            manual_start: true,
+        })
         .with_context(|| format!("configuring outputd dual DAC B PCM {}", dac_b_pcm))?;
 
         if dac_a_negotiated != dac_b_negotiated {
@@ -604,30 +604,42 @@ pub fn open_playback_pcm(
 ) -> Result<(PCM, NegotiatedPcm)> {
     let pcm = PCM::new(pcm_name, Direction::Playback, false)
         .with_context(|| format!("opening outputd {role} playback PCM {pcm_name}"))?;
-    let negotiated = configure_pcm(
+    let negotiated = configure_pcm(PcmConfig {
         role,
         pcm_name,
-        &pcm,
+        pcm: &pcm,
         sample_rate,
         period_frames,
-        CHANNELS,
+        channels: CHANNELS,
         buffer_frames,
-        true,
-    )
+        manual_start: true,
+    })
     .with_context(|| format!("configuring outputd {role} playback PCM {pcm_name}"))?;
     Ok((pcm, negotiated))
 }
 
-fn configure_pcm(
-    role: &str,
-    pcm_name: &str,
-    pcm: &PCM,
+struct PcmConfig<'a> {
+    role: &'a str,
+    pcm_name: &'a str,
+    pcm: &'a PCM,
     sample_rate: u32,
     period_frames: u32,
     channels: u16,
     buffer_frames: u32,
     manual_start: bool,
-) -> Result<NegotiatedPcm> {
+}
+
+fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
+    let PcmConfig {
+        role,
+        pcm_name,
+        pcm,
+        sample_rate,
+        period_frames,
+        channels,
+        buffer_frames,
+        manual_start,
+    } = config;
     let negotiated;
     {
         let hwp = HwParams::any(pcm).context("creating HwParams::any")?;

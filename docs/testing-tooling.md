@@ -134,10 +134,9 @@ node scripts/check-peq-parity.mjs   # asserts eq-math.js matches the fixture
 ```
 
 `tests/test_sound_peq_response.py` asserts the Python side matches the same
-fixture (and adds filter-theory sanity probes). Run the node check when you
-touch either implementation — if they drift, one side regressed. The Python
-half runs in normal `pytest`; the node half is a maintainer check (like the
-firmware builds below), not always-on CI.
+fixture (and adds filter-theory sanity probes). The `js` CI job runs the node
+check as part of the browser-module harness set; run it locally when touching
+either implementation so parity failures land before CI.
 
 ---
 
@@ -618,7 +617,8 @@ Live Pi state without modifying anything:
 
 | Tool | What it gives you |
 |---|---|
-| `sudo /opt/jasper/.venv/bin/jasper-doctor` | Codified BRINGUP smoke tests — first command to run when something's broken. Also re-checks output hardware observed-vs-active state plus presence/hashes for opaque runtime model files that JTS stages directly (required openWakeWord assets, the active wake model when registry-pinned, and configured DTLN ONNX stages when DTLN is enabled). |
+| `sudo /opt/jasper/.venv/bin/jasper-doctor` | Codified BRINGUP smoke tests — first command to run when something's broken. Checks run with bounded parallelism while ALSA-sensitive probes stay serialized, so the flat report keeps stable ordering without summing every subprocess timeout. Also re-checks output hardware observed-vs-active state plus presence/hashes for opaque runtime model files that JTS stages directly (required openWakeWord assets, the active wake model when registry-pinned, and configured DTLN ONNX stages when DTLN is enabled). |
+| `curl -s http://jts.local/system/diagnostics.json \| jq` | Management dashboard doctor snapshot. It serves the last root-fidelity `jasper-doctor --json --out` result immediately and schedules a background refresh when the cache is stale or missing, so the dashboard does not block on a live doctor run. |
 | `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio including `output_hardware` / AEC runtime profile / renderers / satellites). Fail-soft per section. |
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |

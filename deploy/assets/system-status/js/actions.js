@@ -91,24 +91,34 @@ function renderDiagnostics(out, body) {
       h("td.diag-mark", { style: { color: "var(--status-" + tone(c.status) + ")" } }, mark(c.status)),
       h("td", null, c.name),
       h("td.muted", null, c.detail || "")));
+  const meta = [];
+  if (typeof body.cache_age_seconds === "number") {
+    meta.push("snapshot age " + Math.round(body.cache_age_seconds) + "s");
+  }
+  if (body.stale) meta.push("stale");
+  if (body.refreshing) meta.push("refreshing");
   out.replaceChildren(
     h("div.table-wrap", null, h("table.table.table--diag", null, h("tbody", null, ...rows))),
-    h("p.info-card__note", null, body.fails + " failed, " + body.warns + " warning(s)."));
+    h("p.info-card__note", null,
+      body.fails + " failed, " + body.warns + " warning(s)." +
+      (meta.length ? " " + meta.join(" - ") + "." : "")));
 }
 
 export async function runDiagnostics(btn, out) {
   btn.disabled = true;
   out.style.display = "block";
-  out.replaceChildren(h("span.muted", null, "Running jasper-doctor…"));
+  out.replaceChildren(h("span.muted", null, "Loading diagnostics snapshot…"));
   try {
-    const r = await fetch("diagnostics.json", { cache: "no-store" });
-    const body = await r.json();
-    if (body.pending) {
-      out.replaceChildren(h("span.muted", null, "Diagnostics already running…"));
-    } else if (body.error) {
-      out.replaceChildren(h("span.muted", null, "Error: " + body.error));
-    } else {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const r = await fetch("diagnostics.json", { cache: "no-store" });
+      const body = await r.json();
+      if (body.error) {
+        out.replaceChildren(h("span.muted", null, "Error: " + body.error));
+        break;
+      }
       renderDiagnostics(out, body);
+      if (!body.refreshing) break;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   } catch (e) {
     console.error("system: diagnostics failed", e);

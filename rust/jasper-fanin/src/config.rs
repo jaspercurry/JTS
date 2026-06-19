@@ -151,8 +151,7 @@ impl Config {
             "JASPER_FANIN_BUFFER_FRAMES",
             4096,
         )?;
-        let output_buffer_frames =
-            env_u32("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", 3072)?;
+        let output_buffer_frames = env_u32("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", 3072)?;
 
         // Sanity: buffer sizes must be >= 2 × period_frames per the
         // standard ALSA convention (the period is what wakes the
@@ -244,9 +243,7 @@ fn env_str(name: &str, default: &str) -> String {
 
 fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
     match std::env::var(name) {
-        Ok(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("disabled") => {
-            None
-        }
+        Ok(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("disabled") => None,
         Ok(s) => Some(s),
         Err(_) => Some(default.to_string()),
     }
@@ -258,9 +255,7 @@ fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
 /// feature that is OFF unless explicitly configured (the music-only tap).
 fn env_optional(name: &str) -> Option<String> {
     match std::env::var(name) {
-        Ok(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("disabled") => {
-            None
-        }
+        Ok(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("disabled") => None,
         Ok(s) => Some(s.trim().to_string()),
         Err(_) => None,
     }
@@ -286,9 +281,7 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
         Ok(s) if !s.trim().is_empty() => s
             .trim()
             .parse::<u32>()
-            .with_context(|| {
-                format!("{} must be a non-negative integer; got {:?}", name, s)
-            }),
+            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
         _ => Ok(default),
     }
 }
@@ -298,9 +291,7 @@ fn env_u64(name: &str, default: u64) -> Result<u64> {
         Ok(s) if !s.trim().is_empty() => s
             .trim()
             .parse::<u64>()
-            .with_context(|| {
-                format!("{} must be a non-negative integer; got {:?}", name, s)
-            }),
+            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
         _ => Ok(default),
     }
 }
@@ -312,11 +303,7 @@ fn env_f32(name: &str, default: f32) -> Result<f32> {
     }
 }
 
-fn env_f32_fallback(
-    name: &str,
-    fallback_name: &str,
-    default: f32,
-) -> Result<f32> {
+fn env_f32_fallback(name: &str, fallback_name: &str, default: f32) -> Result<f32> {
     match std::env::var(name) {
         Ok(s) if !s.trim().is_empty() => parse_env_f32(name, &s),
         _ => env_f32(fallback_name, default),
@@ -339,9 +326,7 @@ fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result<u32
         Ok(s) if !s.trim().is_empty() => s
             .trim()
             .parse::<u32>()
-            .with_context(|| {
-                format!("{} must be a non-negative integer; got {:?}", name, s)
-            }),
+            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
         _ => env_u32(fallback_name, default),
     }
 }
@@ -423,10 +408,7 @@ mod tests {
                 ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
-                (
-                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    None,
-                ),
+                ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
                 ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
                 ("JASPER_DUCK_DB", None),
             ],
@@ -451,23 +433,17 @@ mod tests {
                 assert_eq!(cfg.tts_program_duck_db, -25.0);
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
-                assert_eq!(
-                    cfg.assistant_loudness.default_silence_target_lufs,
-                    -41.0
-                );
+                assert_eq!(cfg.assistant_loudness.default_silence_target_lufs, -41.0);
             },
         );
     }
 
     #[test]
     fn tts_socket_can_be_disabled() {
-        with_env(
-            &[("JASPER_FANIN_TTS_SOCKET", Some("disabled"))],
-            || {
-                let cfg = Config::from_env().expect("disabled TTS socket must parse");
-                assert_eq!(cfg.tts_socket_path, None);
-            },
-        );
+        with_env(&[("JASPER_FANIN_TTS_SOCKET", Some("disabled"))], || {
+            let cfg = Config::from_env().expect("disabled TTS socket must parse");
+            assert_eq!(cfg.tts_socket_path, None);
+        });
     }
 
     #[test]
@@ -478,9 +454,12 @@ mod tests {
         });
         // Explicit "disabled" sentinel → None (rollback parity with the
         // TTS socket knob).
-        with_env(&[("JASPER_FANIN_MUSIC_OUTPUT_PCM", Some("disabled"))], || {
-            assert_eq!(Config::from_env().unwrap().music_output_pcm, None);
-        });
+        with_env(
+            &[("JASPER_FANIN_MUSIC_OUTPUT_PCM", Some("disabled"))],
+            || {
+                assert_eq!(Config::from_env().unwrap().music_output_pcm, None);
+            },
+        );
         // A real PCM name → Some (and trimmed).
         with_env(
             &[("JASPER_FANIN_MUSIC_OUTPUT_PCM", Some("  hw:Loopback,0,6 "))],
@@ -535,8 +514,7 @@ mod tests {
                 ),
             ],
             || {
-                let err = Config::from_env()
-                    .expect_err("mismatched lengths must error");
+                let err = Config::from_env().expect_err("mismatched lengths must error");
                 let msg = format!("{:#}", err);
                 assert!(
                     msg.contains("must match"),
@@ -560,14 +538,10 @@ mod tests {
                     "JASPER_FANIN_INPUT_PCMS",
                     Some("hw:Loopback,1,5|hw:Loopback,1,6"),
                 ),
-                (
-                    "JASPER_FANIN_INPUT_RENDERERS",
-                    Some("test_a|test_b"),
-                ),
+                ("JASPER_FANIN_INPUT_RENDERERS", Some("test_a|test_b")),
             ],
             || {
-                let cfg = Config::from_env()
-                    .expect("pipe-delimited hw names must parse");
+                let cfg = Config::from_env().expect("pipe-delimited hw names must parse");
                 assert_eq!(cfg.input_pcms.len(), 2);
                 assert_eq!(cfg.input_pcms[0], "hw:Loopback,1,5");
                 assert_eq!(cfg.input_pcms[1], "hw:Loopback,1,6");
@@ -587,8 +561,7 @@ mod tests {
                 ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
             ],
             || {
-                let err = Config::from_env()
-                    .expect_err("whitespace-only PCM list must error");
+                let err = Config::from_env().expect_err("whitespace-only PCM list must error");
                 let msg = format!("{:#}", err);
                 assert!(
                     msg.contains("empty") || msg.contains("at least one"),
@@ -607,8 +580,7 @@ mod tests {
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
             ],
             || {
-                let err = Config::from_env()
-                    .expect_err("buffer < 2×period must error");
+                let err = Config::from_env().expect_err("buffer < 2×period must error");
                 let msg = format!("{:#}", err);
                 assert!(
                     msg.contains("JASPER_FANIN_INPUT_BUFFER_FRAMES"),
@@ -627,8 +599,7 @@ mod tests {
                 ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("512")),
             ],
             || {
-                let err = Config::from_env()
-                    .expect_err("output buffer < 2×period must error");
+                let err = Config::from_env().expect_err("output buffer < 2×period must error");
                 let msg = format!("{:#}", err);
                 assert!(
                     msg.contains("JASPER_FANIN_OUTPUT_BUFFER_FRAMES"),
@@ -660,8 +631,7 @@ mod tests {
         with_env(
             &[("JASPER_FANIN_SAMPLE_RATE", Some("not-a-number"))],
             || {
-                let err = Config::from_env()
-                    .expect_err("bad integer must error");
+                let err = Config::from_env().expect_err("bad integer must error");
                 let msg = format!("{:#}", err);
                 assert!(
                     msg.contains("JASPER_FANIN_SAMPLE_RATE"),

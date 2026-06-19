@@ -8,6 +8,7 @@ coordinator that records calls.
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
 import threading
@@ -479,7 +480,7 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
 
     calls = []
 
-    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+    def fake_run(*args: object, **kwargs: object) -> None:
         calls.append((args, kwargs))
         raise AssertionError("diagnostics should not run")
 
@@ -495,22 +496,44 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
     assert calls == []
 
 
-def test_diagnostics_starts_root_oneshot_and_serves_result(
+def test_diagnostics_serves_fresh_cached_result_without_start(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """WS1 Phase 3b-2: /system/diagnostics must START the root
-    jasper-doctor-json.service oneshot (via the non-root jasper-control's polkit
-    grant) and serve the JSON it wrote — NOT spawn the doctor in-process (which
-    would run non-root and report false hardware failures)."""
+    """A fresh root-fidelity snapshot should return immediately without
+    starting the root oneshot again."""
     import jasper.control.server as srv_mod
 
     result = tmp_path / "doctor-result.json"
-    result.write_text(json.dumps({
-        "fails": 0,
-        "warns": 1,
-        "results": [{"name": "x", "status": "warn", "detail": "d"}],
-    }))
+    result.write_text('{"fails":0,"warns":1,"results":[{"name":"x","status":"warn","detail":"d"}]}')
     monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
+
+    def fake_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("fresh diagnostics cache should not refresh")
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/diagnostics")
+
+    assert status == 200
+    assert body["warns"] == 1
+    assert body["stale"] is False
+    assert body["refreshing"] is False
+
+
+def test_diagnostics_stale_cache_starts_root_oneshot_and_serves_result(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """A stale snapshot is still useful: serve it and kick a background
+    root-fidelity refresh without blocking on the doctor run."""
+    import jasper.control.server as srv_mod
+
+    result = tmp_path / "doctor-result.json"
+    result.write_text('{"fails":0,"warns":1,"results":[{"name":"x","status":"warn","detail":"d"}]}')
+    old = time.time() - 120
+    os.utime(result, (old, old))
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_CACHE_TTL_SECONDS", "1")
 
     started: list[list[str]] = []
 
@@ -519,7 +542,7 @@ def test_diagnostics_starts_root_oneshot_and_serves_result(
         stdout = ""
         stderr = ""
 
-    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
+    def fake_run(cmd: list[str], *_args: object, **_kwargs: object) -> FakeProc:
         started.append(cmd)
         return FakeProc()
 
@@ -530,124 +553,141 @@ def test_diagnostics_starts_root_oneshot_and_serves_result(
 
     assert status == 200
     assert body["warns"] == 1
-    assert started == [["systemctl", "start", "jasper-doctor-json.service"]]
+    assert body["stale"] is True
+    assert body["refreshing"] is True
+    assert started == [[
+        "systemctl", "--no-block", "start", "jasper-doctor-json.service",
+    ]]
 
 
-def test_diagnostics_502_when_oneshot_start_fails(
+def test_diagnostics_stale_cache_refresh_failure_is_visible(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """A polkit denial / hard start failure (non-zero systemctl) must surface as
-    an honest 502, never a silent/garbled report."""
+    """A stale snapshot is still served, but a failed background refresh must
+    become a table row so the dashboard does not silently show old evidence."""
     import jasper.control.server as srv_mod
+
+    result = tmp_path / "doctor-result-stale-failure.json"
+    result.write_text(json.dumps({
+        "fails": 0,
+        "warns": 0,
+        "results": [{"name": "cached", "status": "ok", "detail": "old"}],
+    }))
+    old = time.time() - 120
+    os.utime(result, (old, old))
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_CACHE_TTL_SECONDS", "1")
 
     class FakeProc:
         returncode = 1
         stdout = ""
         stderr = "Interactive authentication required."
 
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
-        calls.append(cmd)
-        return FakeProc()
-
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *a, **k: FakeProc())
 
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/system/diagnostics")
-    status2, body2 = _get(f"{base}/system/diagnostics")
-    assert status == 502
-    assert status2 == 502
-    assert "unavailable" in body["error"]
-    assert body2 == body
-    assert calls == [["systemctl", "start", "jasper-doctor-json.service"]]
+
+    assert status == 200
+    assert body["stale"] is True
+    assert body["refreshing"] is False
+    assert body["fails"] == 1
+    assert [r["name"] for r in body["results"]] == [
+        "cached",
+        "jasper-doctor refresh",
+    ]
+    refresh_row = body["results"][-1]
+    assert refresh_row["status"] == "fail"
+    assert "Interactive authentication required" in refresh_row["detail"]
 
 
-def test_diagnostics_concurrent_request_returns_pending_without_second_start(
+def test_diagnostics_placeholder_when_snapshot_missing(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """Only one root doctor capture should run at a time.
-
-    A second browser tab / LAN client gets a fast "pending" response rather
-    than tying up another jasper-control worker for the whole 30 s systemctl
-    timeout window.
-    """
     import jasper.control.server as srv_mod
 
-    result = tmp_path / "doctor-result.json"
-    result.write_text('{"fails":0,"warns":0,"results":[]}')
-    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
-
-    started = threading.Event()
-    release = threading.Event()
-    calls: list[list[str]] = []
-
-    class FakeProc:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
-        calls.append(cmd)
-        started.set()
-        assert release.wait(timeout=2), "test did not release diagnostics"
-        return FakeProc()
-
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
-
-    base, _ = server_with_coordinator
-    first: list[tuple[int, dict]] = []
-    t = threading.Thread(
-        target=lambda: first.append(_get(f"{base}/system/diagnostics")),
-        daemon=True,
+    monkeypatch.setenv(
+        "JASPER_DIAGNOSTICS_RESULT_PATH",
+        str(tmp_path / "missing.json"),
     )
-    t.start()
-    assert started.wait(timeout=1)
-
-    status, body = _get(f"{base}/system/diagnostics")
-    assert status == 202
-    assert body["pending"] is True
-    assert calls == [["systemctl", "start", "jasper-doctor-json.service"]]
-
-    release.set()
-    t.join(timeout=2)
-    assert first == [(200, {"fails": 0, "warns": 0, "results": []})]
-
-
-def test_diagnostics_serves_recent_success_from_cache(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    import jasper.control.server as srv_mod
-
-    result = tmp_path / "doctor-result.json"
-    result.write_text(json.dumps({
-        "fails": 0,
-        "warns": 1,
-        "results": [{"name": "x", "status": "warn"}],
-    }))
-    monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
-
-    calls: list[list[str]] = []
 
     class FakeProc:
         returncode = 0
         stdout = ""
         stderr = ""
 
-    def fake_run(cmd, *args, **kwargs):  # noqa: ANN002, ANN003
-        calls.append(cmd)
+    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *a, **k: FakeProc())
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/diagnostics")
+
+    assert status == 200
+    assert body["stale"] is True
+    assert body["refreshing"] is True
+    assert body["results"][0]["name"] == "jasper-doctor"
+    assert "not ready" in body["results"][0]["detail"]
+
+
+def test_diagnostics_missing_snapshot_throttles_refresh_starts(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setenv(
+        "JASPER_DIAGNOSTICS_RESULT_PATH",
+        str(tmp_path / "missing-throttle.json"),
+    )
+    monkeypatch.setenv("JASPER_DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS", "60")
+
+    started: list[tuple] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(*args: object, **_kwargs: object) -> FakeProc:
+        started.append(args)
         return FakeProc()
 
     monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
 
     base, _ = server_with_coordinator
-    status1, body1 = _get(f"{base}/system/diagnostics")
-    status2, body2 = _get(f"{base}/system/diagnostics")
+    first_status, first_body = _get(f"{base}/system/diagnostics")
+    second_status, second_body = _get(f"{base}/system/diagnostics")
 
-    assert status1 == status2 == 200
-    assert body1 == body2
-    assert body1["warns"] == 1
-    assert calls == [["systemctl", "start", "jasper-doctor-json.service"]]
+    assert first_status == 200
+    assert second_status == 200
+    assert first_body["refreshing"] is True
+    assert second_body["refreshing"] is True
+    assert len(started) == 1
+
+
+def test_diagnostics_fail_row_when_refresh_start_fails(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """A polkit denial / hard start failure should be visible in the
+    diagnostics table without making the dashboard request itself a 502."""
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setenv(
+        "JASPER_DIAGNOSTICS_RESULT_PATH",
+        str(tmp_path / "missing.json"),
+    )
+
+    class FakeProc:
+        returncode = 1
+        stdout = ""
+        stderr = "Interactive authentication required."
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", lambda *a, **k: FakeProc())
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/diagnostics")
+    assert status == 200
+    assert body["fails"] == 1
+    assert body["results"][0]["status"] == "fail"
+    assert "Interactive authentication required" in body["results"][0]["detail"]
 
 
 def test_system_audio_quality_applies_and_try_restarts_renderers(
@@ -2142,7 +2182,7 @@ def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
     release = threading.Event()
     calls = 0
 
-    async def fake_get_state(**kwargs):  # noqa: ARG001
+    async def fake_get_state(**kwargs):
         nonlocal calls
         calls += 1
         started.set()
@@ -2798,10 +2838,10 @@ def test_control_http_server_sheds_when_worker_cap_is_full():
     release = threading.Event()
 
     class _BlockingHandler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):  # noqa: ANN001, A003
+        def log_message(self, fmt, *args):
             return None
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             entered.set()
             assert release.wait(timeout=2), "test did not release handler"
             body = b'{"ok":true}'

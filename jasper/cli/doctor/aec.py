@@ -551,7 +551,7 @@ def _assess_aec_bridge_output(
         summary += f"; silent-ref={silent_ref_count} (<5 = below alarm)"
     return CheckResult("AEC bridge output", "ok", summary)
 
-@doctor_check(order=48, group="aec")
+@doctor_check(order=48, group="aec", exclusive_group="audio-probe")
 def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
@@ -857,7 +857,7 @@ def check_xvf_firmware_6ch() -> CheckResult:
         f"{xvf3800.dfu_flash_command()}",
     )
 
-@doctor_check(order=56, group="aec")
+@doctor_check(order=56, group="aec", exclusive_group="audio-probe")
 def check_xvf_mixer_state() -> CheckResult:
     """The XVF chip exposes each capture channel as a kernel ALSA
     mixer slot. When the chip is flashed from 2-ch to 6-ch firmware

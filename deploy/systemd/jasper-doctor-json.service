@@ -21,10 +21,11 @@ Type=oneshot
 # /run dir — is group-readable by the non-root jasper-control without being
 # world-readable (the doctor JSON can name configured subsystems).
 Group=jasper
-# `systemctl start` of a Type=oneshot blocks until ExecStart finishes (~3-5 s
-# on a Pi 5); the /system/diagnostics handler does exactly that, then reads the
-# file. `--out` makes the doctor exit 0 even when checks fail (the failures are
-# in the JSON), so a "report with failures" never flips this unit to `failed`.
+# The /system/diagnostics handler starts this unit with `systemctl --no-block`
+# when the cached result is stale/missing, then serves the previous snapshot
+# immediately. `--out` makes the doctor exit 0 even when checks fail (the
+# failures are in the JSON), so a "report with failures" never flips this unit
+# to `failed`.
 ExecStart=/opt/jasper/.venv/bin/jasper-doctor --json --out /run/jasper-control/doctor-result.json
 StandardOutput=journal
 StandardError=journal

@@ -225,6 +225,22 @@ each caller wires the names into its own pipeline. Output is
 list — **data**, not a `SoundProfile`), `total_positive_boost_db`, and the
 `camilla_emit` leaves.
 
+**Headroom-policy seam (read before PR-3 reuses this).** PR-3 reuses the
+*filter-definition assembly* + the now-public `emit_filter_spec` + the
+neutral `FilterSpec` — but **not** the headroom output verbatim. The stereo
+policy `build_stereo_prefix` bakes is: a standalone `room_headroom` gain for
+the worst-case **room** boost only (`max` over `room_peqs`/`room_peqs_right`),
+with preference boosts riding at unity (the master `volume_limit==0` ceiling
+guards them). The active baseline's policy is different (see "Where
+preference EQ slots into the active graph"): it folds
+`total_positive_boost_db(preference + room)` into the single
+`active_baseline_headroom` gain — room **and** preference, into an existing
+gain, not a sibling. So PR-3 must NOT splice the stereo `room_headroom` into
+an active graph; it should either have `build_stereo_prefix` surface
+`room_headroom_db` (returned, so the active caller can fold rather than emit
+it) or compose at the `emit_filter_spec` level. Naming the seam here so the
+"reused by PR-3" line above is not read as "splice it wholesale."
+
 **Layering note (why it's a neutral leaf module).** The builder takes the
 preference `FilterSpec` list and emits it, so it needs `FilterSpec` +
 `GAINLESS_BIQUAD_TYPES`. PR-2 promoted those (with `FILTER_EPSILON_DB`) from

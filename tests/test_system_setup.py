@@ -441,14 +441,6 @@ def test_modules_wire_the_proxy_endpoints() -> None:
         assert path in js, f"system modules no longer reference {path}"
 
 
-def test_modules_show_diagnostics_pending_as_wait_state() -> None:
-    """A concurrent diagnostics capture returns pending=true; the dashboard
-    should present that as an in-progress state, not a failure."""
-    js = _system_js()
-    assert "body.pending" in js
-    assert "Diagnostics already running" in js
-
-
 def test_modules_preserve_metric_logic() -> None:
     """Spot-check that the formatting/threshold port survived: the system-total
     breakdown, throttle wording, the MPRIS fallback, the audio-conversion

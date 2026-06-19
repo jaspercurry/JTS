@@ -93,6 +93,138 @@ AUDIO_QUALITY_RENDERER_UNITS = [
     "jasper-usbsink.service",
 ]
 ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME = "active_speaker_staged_startup.yml"
+_DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
+_DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
+_DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
+_diagnostics_refresh_lock = threading.Lock()
+_diagnostics_refresh_requested_at: dict[str, float] = {}
+
+
+def _diagnostics_result_path() -> str:
+    return os.environ.get(
+        "JASPER_DIAGNOSTICS_RESULT_PATH",
+        _DIAGNOSTICS_RESULT_PATH,
+    )
+
+
+def _diagnostics_cache_ttl_seconds() -> float:
+    raw = os.environ.get("JASPER_DIAGNOSTICS_CACHE_TTL_SECONDS", "")
+    if not raw:
+        return _DIAGNOSTICS_CACHE_TTL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DIAGNOSTICS_CACHE_TTL_SECONDS
+    if value < 0:
+        return _DIAGNOSTICS_CACHE_TTL_SECONDS
+    return value
+
+
+def _diagnostics_refresh_min_interval_seconds() -> float:
+    raw = os.environ.get("JASPER_DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS", "")
+    if not raw:
+        return _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS
+    if value < 0:
+        return _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS
+    return value
+
+
+def _start_diagnostics_refresh(result_path: str) -> tuple[bool, str]:
+    now = time.monotonic()
+    min_interval = _diagnostics_refresh_min_interval_seconds()
+    with _diagnostics_refresh_lock:
+        last = _diagnostics_refresh_requested_at.get(result_path, 0.0)
+        if now - last < min_interval:
+            return True, ""
+        _diagnostics_refresh_requested_at[result_path] = now
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--no-block", "start", "jasper-doctor-json.service"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        with _diagnostics_refresh_lock:
+            _diagnostics_refresh_requested_at.pop(result_path, None)
+        return False, f"diagnostics refresh failed: {e}"
+    if proc.returncode != 0:
+        with _diagnostics_refresh_lock:
+            _diagnostics_refresh_requested_at.pop(result_path, None)
+        return (
+            False,
+            "diagnostics refresh unavailable: "
+            + (proc.stderr or "").strip()[:300],
+        )
+    return True, ""
+
+
+def _diagnostics_placeholder_result(
+    *,
+    detail: str,
+    status: str = "warn",
+) -> dict[str, Any]:
+    return {
+        "fails": 1 if status == "fail" else 0,
+        "warns": 1 if status == "warn" else 0,
+        "generated_at_epoch": None,
+        "duration_sec": None,
+        "cache_age_seconds": None,
+        "stale": True,
+        "refreshing": status != "fail",
+        "results": [{
+            "name": "jasper-doctor",
+            "status": status,
+            "detail": detail,
+        }],
+    }
+
+
+def _append_diagnostics_refresh_failure(
+    body: dict[str, Any],
+    refresh_error: str,
+) -> None:
+    row = {
+        "name": "jasper-doctor refresh",
+        "status": "fail",
+        "detail": refresh_error,
+    }
+    results = body.get("results")
+    if isinstance(results, list):
+        results.append(row)
+    else:
+        body["results"] = [row]
+    try:
+        body["fails"] = int(body.get("fails", 0)) + 1
+    except (TypeError, ValueError):
+        body["fails"] = 1
+    body["refresh_error"] = refresh_error
+
+
+def _read_diagnostics_snapshot(
+    result_path: str,
+    *,
+    ttl_seconds: float,
+) -> tuple[dict[str, Any] | None, str]:
+    try:
+        stat = os.stat(result_path)
+        with open(result_path, encoding="utf-8") as f:
+            body = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        return None, str(e)
+    if not isinstance(body, dict):
+        return None, "diagnostics result was not a JSON object"
+    now = time.time()
+    age = max(0.0, now - stat.st_mtime)
+    body.setdefault("generated_at_epoch", stat.st_mtime)
+    body["cache_age_seconds"] = round(age, 3)
+    body["stale"] = age > ttl_seconds
+    body.setdefault("refreshing", False)
+    return body, ""
+
+
 # Streambox is the restricted profile: it runs the local audio graph and
 # sources but no voice brain or developer tools, so jasper-control gates
 # its route surface to the management + audio actions a streambox box
@@ -227,7 +359,6 @@ CONTROL_REQUEST_QUEUE_SIZE = 16
 CONTROL_REQUEST_TIMEOUT_SEC = 5.0
 CONTROL_OVERLOAD_LOG_INTERVAL_SEC = 5.0
 STATE_RESPONSE_CACHE_TTL_SEC = 1.0
-DIAGNOSTICS_RESPONSE_CACHE_TTL_SEC = 10.0
 
 
 _MISSING = object()
@@ -265,13 +396,15 @@ class _SingleFlightTTLCache:
                     break
                 self._cond.wait()
 
+        computed = False
         try:
             value = compute()
-        except Exception:
-            with self._cond:
-                self._inflight = False
-                self._cond.notify_all()
-            raise
+            computed = True
+        finally:
+            if not computed:
+                with self._cond:
+                    self._inflight = False
+                    self._cond.notify_all()
 
         with self._cond:
             self._value = value
@@ -280,42 +413,6 @@ class _SingleFlightTTLCache:
             self._cond.notify_all()
             return value
 
-
-class _NonBlockingTTLCache:
-    """Cache with a one-caller refresh lane for long read-only routes."""
-
-    def __init__(
-        self,
-        ttl_sec: float,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._ttl_sec = float(ttl_sec)
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._value: Any = _MISSING
-        self._expires_at = 0.0
-        self._inflight = False
-
-    def get_fresh(self) -> Any:
-        with self._lock:
-            if self._value is not _MISSING and self._clock() < self._expires_at:
-                return self._value
-            return _MISSING
-
-    def try_begin_refresh(self) -> bool:
-        with self._lock:
-            if self._inflight:
-                return False
-            self._inflight = True
-            return True
-
-    def finish_refresh(self, value: Any = _MISSING, *, cache: bool = False) -> None:
-        with self._lock:
-            if cache:
-                self._value = value
-                self._expires_at = self._clock() + self._ttl_sec
-            self._inflight = False
 
 VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
@@ -582,49 +679,6 @@ async def _dispatch_transport(action: str) -> dict:
     )
 
 
-def _capture_system_diagnostics() -> tuple[HTTPStatus, dict[str, Any]]:
-    """Run the root-fidelity doctor oneshot and read its JSON result."""
-    result_path = os.environ.get(
-        "JASPER_DIAGNOSTICS_RESULT_PATH",
-        "/run/jasper-control/doctor-result.json",
-    )
-    try:
-        proc = subprocess.run(
-            ["systemctl", "start", "jasper-doctor-json.service"],
-            capture_output=True, text=True, timeout=30,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError) as e:
-        return (
-            HTTPStatus.BAD_GATEWAY,
-            {"error": f"diagnostics capture failed: {e}"},
-        )
-    if proc.returncode != 0:
-        # The oneshot couldn't run — polkit denial (rule missing) or a
-        # hard start failure. The doctor itself exits 0 via --out even
-        # when checks fail, so a non-zero here is never "report has
-        # failures"; it's a genuine capture failure.
-        return (
-            HTTPStatus.BAD_GATEWAY,
-            {
-                "error": "diagnostics capture unavailable",
-                "detail": (proc.stderr or "").strip()[:300],
-            },
-        )
-    try:
-        with open(result_path, encoding="utf-8") as f:
-            body = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        return (
-            HTTPStatus.BAD_GATEWAY,
-            {"error": f"diagnostics result unreadable: {e}"},
-        )
-    if not isinstance(body, dict):
-        return (
-            HTTPStatus.BAD_GATEWAY,
-            {"error": "diagnostics result unreadable: JSON root was not object"},
-        )
-    return HTTPStatus.OK, body
-
 # ---------- peering daemon supervisor ----------
 
 # The peering daemon runs an asyncio event loop; jasper-control is
@@ -830,9 +884,6 @@ def _make_handler(
     # camilla), but passing None there keeps the construction uniform.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
     state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
-    diagnostics_response_cache = _NonBlockingTTLCache(
-        DIAGNOSTICS_RESPONSE_CACHE_TTL_SEC,
-    )
 
     async def _set_op(percent: int):
         async def _op(coord):
@@ -1419,43 +1470,50 @@ def _make_handler(
         # hardware checks fail on permissions (false red on the dashboard). So
         # the report is produced by the root jasper-doctor-json.service oneshot,
         # which jasper-control starts via its polkit manage-units grant (the
-        # unit is in MANAGED_UNITS). `systemctl start` of a Type=oneshot blocks
-        # until the doctor finishes and writes the group-readable result file.
+        # unit is in MANAGED_UNITS). The HTTP path serves the latest cached
+        # report immediately and schedules stale/missing refreshes with
+        # `systemctl --no-block`, so the dashboard never waits on a live run.
         def _get_system_diagnostics(self) -> None:
-            # ~3-5 s on a Pi 5; the dashboard shows a spinner and single-flights
-            # the button. A root caller (pre-drop / rollback) authorizes the
-            # start directly; the non-root jasper-control via the polkit rule.
-            # The result path matches jasper-doctor-json.service's --out target;
-            # env-overridable for tests (never set in production).
-            cached = diagnostics_response_cache.get_fresh()
-            if cached is not _MISSING:
-                status, body = cached
-                self._send_json(body, status=status)
-                return
-            if not diagnostics_response_cache.try_begin_refresh():
+            result_path = _diagnostics_result_path()
+            body, read_error = _read_diagnostics_snapshot(
+                result_path,
+                ttl_seconds=_diagnostics_cache_ttl_seconds(),
+            )
+            if body is None:
+                refresh_started, refresh_error = _start_diagnostics_refresh(
+                    result_path,
+                )
+                if refresh_started:
+                    self._send_json(
+                        _diagnostics_placeholder_result(
+                            detail=(
+                                "diagnostics snapshot not ready yet; "
+                                "background refresh started"
+                            ),
+                        ),
+                    )
+                    return
                 self._send_json(
-                    {
-                        "error": "diagnostics capture already running",
-                        "pending": True,
-                        "retry_after": 2,
-                    },
-                    status=HTTPStatus.ACCEPTED,
+                    _diagnostics_placeholder_result(
+                        detail=(
+                            f"diagnostics snapshot unavailable ({read_error}); "
+                            f"{refresh_error}"
+                        ),
+                        status="fail",
+                    ),
                 )
                 return
-            try:
-                status, body = _capture_system_diagnostics()
-            except Exception as e:  # noqa: BLE001
-                status = HTTPStatus.BAD_GATEWAY
-                body = {"error": str(e)}
-                diagnostics_response_cache.finish_refresh((status, body), cache=True)
-                logger.exception("diagnostics capture crashed")
-                self._send_json(body, status=status)
-                return
-            diagnostics_response_cache.finish_refresh(
-                (status, body),
-                cache=True,
-            )
-            self._send_json(body, status=status)
+
+            if body.get("stale"):
+                refresh_started, refresh_error = _start_diagnostics_refresh(
+                    result_path,
+                )
+                body["refreshing"] = refresh_started
+                if refresh_error:
+                    _append_diagnostics_refresh_failure(body, refresh_error)
+            else:
+                body["refreshing"] = False
+            self._send_json(body)
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._guard_mutating_request():
@@ -2446,7 +2504,7 @@ class ControlHTTPServer(ThreadingHTTPServer):
         )
         try:
             super().__init__(*args, **kwargs)
-        except Exception:  # noqa: BLE001
+        except OSError:
             self._executor.shutdown(wait=False, cancel_futures=True)
             raise
 
@@ -2466,18 +2524,15 @@ class ControlHTTPServer(ThreadingHTTPServer):
             return
         try:
             self._executor.submit(self._handle_in_pool, request, client_address)
-        except Exception:  # noqa: BLE001
+        except RuntimeError:
             self._admission.release()
             self.shutdown_request(request)
             raise
 
     def _handle_in_pool(self, request: Any, client_address: Any) -> None:
         try:
-            self.finish_request(request, client_address)
-        except Exception:  # noqa: BLE001
-            self.handle_error(request, client_address)
+            super().process_request_thread(request, client_address)
         finally:
-            self.shutdown_request(request)
             self._admission.release()
 
     def _send_overloaded(self, request: Any, client_address: Any) -> None:

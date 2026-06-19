@@ -199,7 +199,13 @@ def _jasper_voice_active() -> bool:
     """True if jasper-voice.service reports active. Cheap systemctl call."""
     return _run(["systemctl", "is-active", "jasper-voice.service"]).stdout.strip() == "active"
 
-@doctor_check(order=6, group="audio", label="mic capture", needs_cfg=True)
+@doctor_check(
+    order=6,
+    group="audio",
+    label="mic capture",
+    needs_cfg=True,
+    exclusive_group="audio-probe",
+)
 def check_mic_capture(cfg: Config) -> CheckResult:
     """Probe-open the mic device to confirm it produces non-silent audio.
 
@@ -463,7 +469,7 @@ def check_apple_dongle_audio() -> CheckResult:
         "the chip stays in low-power mode without an analog load.",
     )
 
-@doctor_check(order=22, group="audio")
+@doctor_check(order=22, group="audio", exclusive_group="audio-probe")
 def check_dongle_headphone_at_max() -> CheckResult:
     """The Apple dongle's analog Headphone control should be pinned at
     100%. Anything lower throws away analog headroom that we'd rather

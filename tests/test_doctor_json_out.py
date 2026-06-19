@@ -68,12 +68,13 @@ def test_oneshot_in_managed_units_and_polkit_allowlist():
     assert "jasper-doctor-json.service" in MANAGED_UNITS
 
 
-def test_endpoint_uses_the_oneshot_not_inprocess_doctor():
-    """The /system/diagnostics handler must start the root oneshot + read the
-    result file — NOT spawn jasper-doctor in-process (which would run non-root
-    and report false failures)."""
+def test_endpoint_uses_cached_oneshot_not_inprocess_doctor():
+    """The /system/diagnostics handler must schedule the root oneshot + read the
+    cached result file — NOT spawn jasper-doctor in-process (which would run
+    non-root and report false failures)."""
     server = (ROOT / "jasper/control/server.py").read_text(encoding="utf-8")
     assert "jasper-doctor-json.service" in server
+    assert '"--no-block"' in server
     assert "/run/jasper-control/doctor-result.json" in server
     # The old in-process spawn must be gone.
     assert '"/opt/jasper/.venv/bin/jasper-doctor", "--json"' not in server

@@ -179,32 +179,26 @@ jobs:
       - name: Browser module syntax + harnesses
         run: |
           set -euo pipefail
-          js_files=()
-          while IFS= read -r f; do
-            js_files+=("$f")
-          done < <(git ls-files 'deploy/assets/**/js/*.js' 'tests/js/*.mjs')
-          if (( ${#js_files[@]} == 0 )); then
-            echo "no JavaScript files found for syntax check" >&2
-            exit 1
-          fi
-          for f in "${js_files[@]}"; do
-            node --check "$f"
-          done
+          bash scripts/check-js-syntax.sh
           node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
           node scripts/check-peq-parity.mjs
 
   rust:
-    # CI compiles AND tests the Rust audio daemons — the pytest job above
-    # does not. The job name is required by branch protection, so PRs that
-    # do not touch Rust-relevant surfaces still run this job and exit green
-    # quickly after scripts/rust-ci-needed. Rust-relevant PRs and every
-    # push to main run the full Cargo gate. Without this, a dependency bump
-    # (e.g. the `alsa` crate used by jasper-fanin/jasper-outputd) that
+    # CI formats, lints, compiles, and tests the Rust audio daemons — the
+    # pytest job above does not. The job name is required by branch protection,
+    # so PRs that do not touch Rust-relevant surfaces still run this job and
+    # exit green quickly after scripts/rust-ci-needed. Rust-relevant PRs and
+    # every push to main run the full Cargo gate. Without this, a dependency
+    # bump (e.g. the `alsa` crate used by jasper-fanin/jasper-outputd) that
     # breaks the build passes CI green and only fails at deploy-time
-    # `cargo build` on the Pi, and a logic regression in the output/
-    # loudness path goes uncaught. Mirrors install.sh's release build
-    # profile and runs each crate's hardware-free unit tests.
+    # `cargo build` on the Pi, and a logic regression in the output/loudness
+    # path goes uncaught. `cargo test --release --locked` mirrors install.sh's
+    # release build profile and runs each crate's hardware-free unit tests.
+    # Rustfmt and default Clippy-with-warnings-as-errors are the low-noise
+    # table stakes; do not broaden to pedantic/restriction lint groups without
+    # a separate triage. Pin the Rust toolchain to the Pi/Trixie-era rustc so
+    # Clippy's warn-by-default set is not a moving merge gate.
     #
     # History: enabling this gate first surfaced 3 stale jasper-outputd
     # tests (assistant-gain clamp + loudness) that had been red since the
@@ -214,6 +208,8 @@ jobs:
     # here.
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RUST_TOOLCHAIN: "1.85.0"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -224,6 +220,23 @@ jobs:
       - name: Skip Rust gate when unrelated
         if: steps.rust-needed.outputs.run != 'true'
         run: echo "${{ steps.rust-needed.outputs.reason }}"
+
+      - name: Install pinned Rust toolchain
+        if: steps.rust-needed.outputs.run == 'true'
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+
+      - name: Rust formatting (rustfmt)
+        if: steps.rust-needed.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          for crate in \
+            rust/jasper-tts-protocol \
+            rust/jasper-fanin \
+            rust/jasper-outputd \
+            rust/jasper-dual-dac-lab
+          do
+            (cd "$crate" && cargo +"$RUST_TOOLCHAIN" fmt --all -- --check)
+          done
 
       - name: System deps for the ALSA crate
         if: steps.rust-needed.outputs.run == 'true'
@@ -240,20 +253,40 @@ jobs:
             rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
 
+      - name: jasper-tts-protocol — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-tts-protocol
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-fanin — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-fanin
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-outputd — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-outputd
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-dual-dac-lab — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-dual-dac-lab
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-tts-protocol
-        run: cargo test --release --locked
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-fanin — build + test (release, locked; mirrors install.sh)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-fanin
-        run: cargo test --release --locked
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
-        run: cargo test --release --locked
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-dual-dac-lab — build + test (release, locked)
         if: steps.rust-needed.outputs.run == 'true'
@@ -262,4 +295,4 @@ jobs:
         # same `alsa` crate the production daemons pin) can silently
         # break the lab runner until someone needs it on a bench.
         working-directory: rust/jasper-dual-dac-lab
-        run: cargo test --release --locked
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked

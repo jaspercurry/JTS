@@ -177,7 +177,12 @@
 > `/var/lib/jasper/active_speaker_crossover_preview.json` with kind
 > `jts_active_speaker_crossover_preview`. The preview proposes bounded
 > low-pass/high-pass filter intent for active 2-way and 3-way speaker groups,
-> raises candidate frequencies to driver high-pass / do-not-test-below floors,
+> raises a candidate up to the upper driver's recommended-highpass / usable-range
+> soft floor (`_upper_soft_floor`) with a warning, and — fail closed — **blocks**
+> a crossover sitting at or below the upper driver's `do_not_test_below_hz`
+> protection line (`crossover_below_do_not_test_floor`), dropping its filter
+> intent so a compression/horn driver is never crossed on or under its
+> do-not-test floor,
 > prefers operator-entered manual settings over imported research when both are
 > present, surfaces missing crossover settings and low-confidence candidates as
 > evidence, and records whether a later protected-staging step may consume it.
@@ -202,7 +207,14 @@
 > requires an explicit active playback device, keeps `devices.volume_limit`
 > non-positive, inserts baseline headroom and per-driver limiters, rejects
 > positive correction gain, bounds delay/polarity corrections, and records a
-> source comment in the YAML. Summed validation must reference the latest
+> source comment in the YAML. Per-driver gain prefers an explicit
+> `gain_offset_db`; when research gives none but declares sensitivities,
+> `_derive_corrections` fail-safes by attenuating the hotter drivers down to the
+> least-sensitive (reference) driver by the sensitivity gap (e.g. a 108.5 dB horn
+> next to an 83.3 dB woofer is trimmed −25.2 dB) so a high-sensitivity
+> compression driver never compiles at full level relative to the woofer; the
+> trim is surfaced as `driver_gain_derived_from_sensitivity` and measurement
+> refines it later. Summed validation must reference the latest
 > combined-driver test record for the same speaker-group fingerprint; artifact
 > generation alone is not enough to unlock the durable baseline because the
 > accepted result must come from an audible combined-driver test plus either
