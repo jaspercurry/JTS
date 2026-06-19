@@ -71,6 +71,52 @@ def test_session_writes_fail_soft_on_readonly_db(tmp_path: Path, caplog):
     assert store.close_session(1, input_tokens=1, output_tokens=1) >= 0.0
 
 
+def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
+    """UsageStore tracks write-failure health and emits a structured event on
+    the TRANSITION into degraded and on recovery — once each, never per-turn —
+    so a persistently-unwritable usage.db is monitorable (and surfaced via
+    /state.voice.usage_tracking_degraded) instead of buried in per-turn
+    WARNings. This is the S1 fix: the spend cap can't enforce while writes fail,
+    and now that's observable rather than silent."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    store.close_session(store.open_session(), 1, 1)  # healthy round-trip
+    assert store.write_degraded is False
+
+    # Every write now raises (read-only handle to the same file).
+    store._conn.close()
+    store._conn = sqlite3.connect(
+        f"file:{db}?mode=ro", uri=True, isolation_level=None,
+    )
+
+    with caplog.at_level("WARNING"):
+        assert store.open_session() == _UNRECORDED_SESSION
+    assert store.write_degraded is True
+    assert sum(
+        "event=usage.write_degraded" in r.getMessage() for r in caplog.records
+    ) == 1, "the ok->degraded transition emits the structured event exactly once"
+
+    # A further failure bumps the counter but must NOT re-emit (no journal spam).
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        assert store.open_session() == _UNRECORDED_SESSION
+    assert store.write_degraded is True
+    assert not any(
+        "event=usage.write_degraded" in r.getMessage() for r in caplog.records
+    ), "a persistent failure must not re-emit the degraded event"
+
+    # Recovery: writes succeed again -> degraded clears + ONE recovery event.
+    store._conn.close()
+    store._conn = sqlite3.connect(str(db), isolation_level=None)
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        store.close_session(store.open_session(), 1, 1)
+    assert store.write_degraded is False
+    assert sum(
+        "event=usage.write_recovered" in r.getMessage() for r in caplog.records
+    ) == 1, "the degraded->ok transition emits the recovery event exactly once"
+
+
 def test_spend_cap_blocks_when_exceeded(tmp_path: Path):
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))

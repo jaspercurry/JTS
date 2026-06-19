@@ -297,4 +297,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-06-04
+Last verified: 2026-06-19

@@ -992,6 +992,8 @@ class WakeLoop:
                 raise AssertionError("WakeLoop.for_tests acquire_turn stub used")
 
         class _TestDucker:
+            is_ducked = False
+
             async def duck(self) -> None:
                 return None
 
@@ -1011,6 +1013,8 @@ class WakeLoop:
                 return None
 
         class _TestUsageStore:
+            write_degraded = False
+
             def open_session(self, *_args, **_kwargs) -> int:
                 return 1
 
@@ -2621,6 +2625,12 @@ class WakeLoop:
             "state": self._state.name,
             "input_ended": self._input_ended,
             "spend_allowed": self._spend_cap.allowed(),
+            # Spend accounting is degraded: usage.db writes are failing, so
+            # turns are served but their cost isn't recorded and the spend cap
+            # can't enforce. Surfaced (like spend_allowed) so /state +
+            # jasper-control can show "recorded spend may be stale" instead of
+            # the cap silently flatlining. See UsageStore.write_degraded.
+            "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
             "duck_active": self._ducker.is_ducked,

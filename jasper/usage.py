@@ -384,6 +384,19 @@ _SESSIONS_TABLE_DDL = """
 """
 
 
+@dataclass
+class WriteHealth:
+    """Write-failure health for a single ``UsageStore`` writer instance.
+
+    Only the voice daemon's writable store accumulates failures; the read-only
+    status surfaces (the /voice spend card, jasper-doctor) never write, so they
+    keep the default (not degraded). Surfaced as
+    /state.voice.usage_tracking_degraded — see ``UsageStore.write_degraded``."""
+    consecutive_failures: int = 0
+    last_error: str | None = None
+    last_failure_at: str | None = None
+
+
 class UsageStore:
     def __init__(
         self, db_path: str, pricing: Pricing | None = None,
@@ -455,6 +468,10 @@ class UsageStore:
         self._pricing: Pricing = pricing or pricing_for_model(
             _DEFAULT_DISPLAY_MODEL
         )
+        # Write-failure health — only meaningful on the writable voice store
+        # (read-only surfaces never write). Drives the
+        # /state.voice.usage_tracking_degraded signal via ``write_degraded``.
+        self._write_health = WriteHealth()
 
     def open_session(self, provider: str | None = None) -> int:
         """Insert a new session row and return its id.
@@ -477,13 +494,15 @@ class UsageStore:
                 "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
                 (datetime.now(timezone.utc).isoformat(), provider),
             )
-            return int(cur.lastrowid)
         except sqlite3.Error as e:
             logger.warning(
                 "usage: open_session write failed (%s: %s); serving turn "
                 "unrecorded", type(e).__name__, e,
             )
+            self._note_write_failed(e)
             return _UNRECORDED_SESSION
+        self._note_write_ok()
+        return int(cur.lastrowid)
 
     def close_session(
         self,
@@ -535,7 +554,55 @@ class UsageStore:
                 "usage: close_session write failed (%s: %s); cost unrecorded",
                 type(e).__name__, e,
             )
+            self._note_write_failed(e)
+            return cost
+        self._note_write_ok()
         return cost
+
+    def _note_write_ok(self) -> None:
+        """A successful write clears degraded state, emitting ONE recovery
+        event on the failure->ok transition (not per successful write)."""
+        if self._write_health.consecutive_failures:
+            log_event(
+                logger,
+                "usage.write_recovered",
+                after_failures=self._write_health.consecutive_failures,
+                note="usage.db writable again; spend recording resumed",
+            )
+            self._write_health = WriteHealth()
+
+    def _note_write_failed(self, exc: Exception) -> None:
+        """A failed write marks accounting degraded. Emits ONE structured event
+        on the ok->degraded transition; subsequent failures bump the counter
+        without re-emitting, so a persistent failure does not spam the journal.
+        This is the monitorable signal (beyond the per-call WARNING) that the
+        daily spend cap can no longer enforce: turns are still served, but their
+        cost isn't persisted, so the rolling 24 h total stops growing."""
+        first = self._write_health.consecutive_failures == 0
+        self._write_health = WriteHealth(
+            consecutive_failures=self._write_health.consecutive_failures + 1,
+            last_error=f"{type(exc).__name__}: {exc}",
+            last_failure_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if first:
+            log_event(
+                logger,
+                "usage.write_degraded",
+                error_type=type(exc).__name__,
+                note=(
+                    "usage.db writes failing; turns still served but their cost "
+                    "is unrecorded, so the daily spend cap cannot enforce until "
+                    "writes recover"
+                ),
+                level=logging.WARNING,
+            )
+
+    @property
+    def write_degraded(self) -> bool:
+        """True once a usage write has failed and not yet recovered. Surfaced as
+        /state.voice.usage_tracking_degraded so the spend-cap status can warn
+        that recorded spend may be stale instead of silently flatlining."""
+        return self._write_health.consecutive_failures > 0
 
     # ------------------------------------------------------------------
     # Connection-uptime intervals (time-billed providers, e.g. Grok)

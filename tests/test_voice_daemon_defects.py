@@ -289,3 +289,23 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
     # Connection genuinely dropped into paused/failed mid-acquire ->
     # cant_connect is the truthful cue.
     assert await _drive(paused=True) == ["cant_connect"]
+
+
+def test_session_status_surfaces_usage_tracking_degraded():
+    """session_status() exposes the UsageStore write-health so /state.voice (and
+    the spend-cap UI) can show that spend recording is degraded — the S1 signal.
+    Defaults False; reflects the store's write_degraded."""
+    wl = WakeLoop.for_tests()
+    assert wl.session_status()["usage_tracking_degraded"] is False
+
+    class _DegradedStore:
+        write_degraded = True
+
+        def open_session(self, *_a, **_k):
+            return 1
+
+        def close_session(self, *_a, **_k):
+            return 0.0
+
+    wl._usage_store = _DegradedStore()
+    assert wl.session_status()["usage_tracking_degraded"] is True
