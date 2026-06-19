@@ -314,3 +314,189 @@ def test_load_crossover_preview_fails_soft_on_bad_json(tmp_path: Path) -> None:
 
     assert payload["status"] == "unreadable"
     assert payload["issues"][0]["code"] == "crossover_preview_unreadable"
+
+
+# --- Compression-driver protection-floor gate (do-not-test vs recommended_highpass) ---
+#
+# Regression cover for the DE250-on-a-horn commissioning bug: the working-setup
+# form selected the low-confidence 1600 Hz candidate (== the tweeter's
+# do_not_test_below_hz) while the preview corrected upward to 2000 Hz, so the two
+# surfaces disagreed and a value sitting on the do-not-test line could slip
+# through as a mere warning.
+
+
+def _de250_research(
+    *,
+    candidate_hz: float,
+    recommended_highpass_hz: float | None = 2000,
+    do_not_test_below_hz: float | None = 1600,
+    confidence: str = "medium",
+) -> dict:
+    tweeter: dict = {
+        "role": "tweeter",
+        "model": "DE250-8",
+        "sensitivity_db_2v83_1m": 108.5,
+        "usable_frequency_range_hz": [1000, 18000],
+    }
+    if recommended_highpass_hz is not None:
+        tweeter["recommended_highpass_hz"] = recommended_highpass_hz
+    if do_not_test_below_hz is not None:
+        tweeter["do_not_test_below_hz"] = do_not_test_below_hz
+    return {
+        "artifact_schema_version": 1,
+        "kind": DRIVER_RESEARCH_KIND,
+        "drivers": [
+            {
+                "role": "woofer",
+                "model": "Epique E150HE-44",
+                "sensitivity_db_2v83_1m": 83.3,
+                "usable_frequency_range_hz": [30, 4000],
+                "recommended_lowpass_hz": 2000,
+            },
+            tweeter,
+        ],
+        "crossover_candidates": [
+            {
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": candidate_hz,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": confidence,
+            }
+        ],
+    }
+
+
+def _crossover(payload: dict) -> dict:
+    return payload["groups"][0]["crossovers"][0]
+
+
+def test_crossover_floor_prefers_recommended_highpass_over_do_not_test() -> None:
+    # The reported case: candidate at 1600 Hz (== do_not_test floor) is raised to
+    # the recommended 2000 Hz highpass and allowed — not blocked — because 2000 Hz
+    # clears the do-not-test line with margin.
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_de250_research(candidate_hz=1600),
+            created_at="2026-06-19T12:00:00Z",
+        ),
+        created_at="2026-06-19T12:30:00Z",
+    )
+    crossover = _crossover(payload)
+
+    assert payload["status"] == "ready_for_protected_staging"
+    assert crossover["proposed_frequency_hz"] == 2000
+    assert crossover["do_not_test_below_hz"] == 1600
+    codes = {issue["code"] for issue in crossover["issues"]}
+    assert "crossover_frequency_raised_for_driver_floor" in codes
+    assert "crossover_below_do_not_test_floor" not in codes
+    assert [item["filter"] for item in crossover["filters"]] == ["lowpass", "highpass"]
+    assert all(item["frequency_hz"] == 2000 for item in crossover["filters"])
+
+
+def test_crossover_blocks_at_do_not_test_floor_without_safe_highpass() -> None:
+    # No recommended_highpass to rescue it: a crossover sitting on the
+    # do_not_test line must fail closed — blocker, no filter intent emitted.
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_de250_research(
+                candidate_hz=1600,
+                recommended_highpass_hz=None,
+                do_not_test_below_hz=1600,
+                confidence="low",
+            ),
+            created_at="2026-06-19T12:00:00Z",
+        ),
+        created_at="2026-06-19T12:30:00Z",
+    )
+    crossover = _crossover(payload)
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_prepare_protected_startup_config"] is False
+    assert crossover["status"] == "blocked"
+    assert crossover["proposed_frequency_hz"] is None
+    assert crossover["filters"] == []
+    assert "crossover_below_do_not_test_floor" in {
+        issue["code"] for issue in crossover["issues"]
+    }
+
+
+def test_crossover_hard_floor_wins_even_after_soft_raise() -> None:
+    # Pathological research where recommended_highpass sits below do_not_test:
+    # the soft raise lands on 1500 Hz but the hard do-not-test line (1600) still
+    # blocks it. The protection line is the final authority.
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_de250_research(
+                candidate_hz=1400,
+                recommended_highpass_hz=1500,
+                do_not_test_below_hz=1600,
+            ),
+            created_at="2026-06-19T12:00:00Z",
+        ),
+        created_at="2026-06-19T12:30:00Z",
+    )
+    crossover = _crossover(payload)
+
+    assert payload["status"] == "blocked"
+    assert crossover["proposed_frequency_hz"] is None
+    assert crossover["filters"] == []
+    assert "crossover_below_do_not_test_floor" in {
+        issue["code"] for issue in crossover["issues"]
+    }
+
+
+def test_crossover_persisted_low_confidence_value_does_not_compile_below_floor() -> None:
+    # Reproduces the exact persisted draft from the bug: the form saved the
+    # low-confidence 1600 candidate into manual_settings (which outranks the
+    # research candidates), alongside the research candidates [2000 medium,
+    # 1600 low]. The preview must still land on the safe 2000 Hz, never the
+    # persisted 1600.
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research={
+                "artifact_schema_version": 1,
+                "kind": DRIVER_RESEARCH_KIND,
+                "drivers": _de250_research(candidate_hz=2000)["drivers"],
+                "crossover_candidates": [
+                    {
+                        "between_roles": ["woofer", "tweeter"],
+                        "frequency_hz": 2000,
+                        "filter_type": "Linkwitz-Riley",
+                        "slope_db_per_octave": 24,
+                        "confidence": "medium",
+                    },
+                    {
+                        "between_roles": ["woofer", "tweeter"],
+                        "frequency_hz": 1600,
+                        "filter_type": "Linkwitz-Riley",
+                        "slope_db_per_octave": 24,
+                        "confidence": "low",
+                    },
+                ],
+            },
+            manual_settings={
+                "crossover_candidates": [
+                    {
+                        "between_roles": ["woofer", "tweeter"],
+                        "frequency_hz": 1600,
+                        "filter_type": "Linkwitz-Riley",
+                        "slope_db_per_octave": 24,
+                        "confidence": "medium",
+                    }
+                ],
+            },
+            created_at="2026-06-19T12:00:00Z",
+        ),
+        created_at="2026-06-19T12:30:00Z",
+    )
+    crossover = _crossover(payload)
+
+    assert crossover["proposed_frequency_hz"] == 2000
+    assert "crossover_below_do_not_test_floor" not in {
+        issue["code"] for issue in crossover["issues"]
+    }

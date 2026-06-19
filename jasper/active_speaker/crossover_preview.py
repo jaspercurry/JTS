@@ -180,14 +180,32 @@ def _range_ceiling(driver: Mapping[str, Any] | None) -> float | None:
     return None
 
 
-def _upper_floor(driver: Mapping[str, Any] | None) -> float | None:
+def _upper_soft_floor(driver: Mapping[str, Any] | None) -> float | None:
+    """Lowest frequency a crossover may be *raised up to* for the upper driver.
+
+    Prefers the researched ``recommended_highpass_hz`` and the usable-range
+    floor. It deliberately excludes ``do_not_test_below_hz``: that value is the
+    hard "never cross at or below this" protection line, enforced separately as
+    a blocker, not a target a crossover may land on.
+    """
     values = [
         _range_floor(driver),
         _finite_positive(driver.get("recommended_highpass_hz")) if driver else None,
-        _finite_positive(driver.get("do_not_test_below_hz")) if driver else None,
     ]
     present = [value for value in values if value is not None]
     return max(present) if present else None
+
+
+def _do_not_test_floor(driver: Mapping[str, Any] | None) -> float | None:
+    """The hard protection line for the upper driver.
+
+    A compression/horn driver must be crossed *strictly above* this frequency;
+    crossing at or below it (even after a 24 dB/oct highpass) passes damaging
+    energy into the diaphragm. ``None`` when the research did not declare one.
+    """
+    if not driver:
+        return None
+    return _finite_positive(driver.get("do_not_test_below_hz"))
 
 
 def _filter_type(candidate: Mapping[str, Any]) -> str:
@@ -265,16 +283,40 @@ def _build_crossover(
         )
 
     proposed_frequency = candidate_frequency
-    floor = _upper_floor(upper_driver)
-    if proposed_frequency is not None and floor is not None and proposed_frequency < floor:
-        proposed_frequency = floor
+    soft_floor = _upper_soft_floor(upper_driver)
+    if (
+        proposed_frequency is not None
+        and soft_floor is not None
+        and proposed_frequency < soft_floor
+    ):
+        proposed_frequency = soft_floor
         issues.append(
             _issue(
                 "warning",
                 "crossover_frequency_raised_for_driver_floor",
-                f"{upper_role} research requires at least {round(floor)} Hz",
+                f"{upper_role} research requires at least {round(soft_floor)} Hz",
             )
         )
+    do_not_test = _do_not_test_floor(upper_driver)
+    if (
+        proposed_frequency is not None
+        and do_not_test is not None
+        and proposed_frequency <= do_not_test
+    ):
+        issues.append(
+            _issue(
+                "blocker",
+                "crossover_below_do_not_test_floor",
+                (
+                    f"{upper_role} must be crossed strictly above its do-not-test "
+                    f"floor of {round(do_not_test)} Hz; {round(proposed_frequency)} Hz "
+                    "would risk the driver"
+                ),
+            )
+        )
+        # Fail closed: never carry an at/below-do-not-test crossover into filter
+        # intent or downstream staging. Drop the frequency so no filters emit.
+        proposed_frequency = None
     ceiling = _range_ceiling(lower_driver)
     if proposed_frequency is not None and ceiling is not None and proposed_frequency > ceiling:
         issues.append(
@@ -350,7 +392,7 @@ def _build_crossover(
         "proposed_frequency_hz": (
             round(proposed_frequency, 2) if proposed_frequency is not None else None
         ),
-        "do_not_test_below_hz": round(floor, 2) if floor is not None else None,
+        "do_not_test_below_hz": round(do_not_test, 2) if do_not_test is not None else None,
         "filters": filters,
         "issues": issues,
     }
