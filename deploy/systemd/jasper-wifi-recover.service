@@ -1,0 +1,19 @@
+[Unit]
+Description=Recover Wi-Fi after transient AP or Pi 5 scan-suppression loss
+Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
+# Order after wait-online (like jasper-wifi-guardian) so the first
+# post-boot tick can't race NetworkManager's startup connection bring-up.
+# For later periodic ticks both targets are long reached, so this only
+# affects boot ordering.
+After=NetworkManager.service NetworkManager-wait-online.service
+Wants=NetworkManager.service
+ConditionPathExists=/var/lib/jasper/wifi_guardian.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jasper-wifi-recover --reason systemd
+# Bounded: active Wi-Fi exits immediately; fault path may run one scan-repair
+# attempt plus one guardian activation/recreate attempt.
+TimeoutStartSec=75
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Periodic WiFi recovery nudge for transient AP/driver loss.
+#
+# This is deliberately NOT a resident daemon. It is run by
+# jasper-wifi-recover.timer. In steady state it performs one cheap
+# NetworkManager read and exits; only when no WiFi is active does it
+# inspect recent kernel logs, optionally run the Pi 5 brcmfmac scan
+# suppression repair, and delegate profile activation/recreation to
+# jasper-wifi-guardian.
+#
+# The small arg-parse / emit() / stash-gate boilerplate here intentionally
+# mirrors jasper-wifi-guardian rather than sourcing a shared library: both
+# are standalone root recovery scripts installed to /usr/local/sbin, and a
+# sourced lib would add a runtime "source-or-die" dependency to the exact
+# path that must keep working when the box is in a degraded state. Two
+# self-contained ~100-line scripts is the more resilient trade here.
+
+set -uo pipefail
+
+STASH_FILE="${JASPER_WIFI_STASH_FILE:-/var/lib/jasper/wifi_guardian.env}"
+NMCLI="${JASPER_NMCLI:-nmcli}"
+JOURNALCTL="${JASPER_JOURNALCTL:-journalctl}"
+GUARDIAN="${JASPER_WIFI_GUARDIAN:-/usr/local/sbin/jasper-wifi-guardian}"
+IFACE="${JASPER_WIFI_SCAN_REPAIR_IFACE:-wlan0}"
+SCAN_LOG_SINCE="${JASPER_WIFI_SCAN_REPAIR_LOG_SINCE:-10 min ago}"
+PYTHON="${JASPER_WIFI_SCAN_REPAIR_PYTHON:-/opt/jasper/.venv/bin/python}"
+REASON="manual"
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-wifi-recover [--reason TEXT]
+
+Cheap periodic WiFi recovery check:
+
+  - if any WiFi connection is active, exit immediately
+  - if WiFi is down and recent kernel logs show brcmfmac scan suppression,
+    run the bounded non-disruptive scan repair
+  - delegate profile activation/recreation to jasper-wifi-guardian
+
+Emits structured event=wifi_recover.* lines only when manual or when
+real recovery work is attempted. PSKs are owned by jasper-wifi-guardian.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+            REASON="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+emit() {
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=wifi_recover.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=wifi_recover.%s\n' "$1" >&2
+    fi
+}
+
+# `nmcli -t` escapes literal ':' in values as '\:'. Reverse it so a
+# colon-bearing SSID/profile name reads correctly (mirrors the guardian).
+nm_unescape() {
+    printf '%s' "${1//\\:/:}"
+}
+
+# First active wifi connection's profile name, colon-safe. TYPE comes first
+# so the first ':' is an unambiguous field boundary even when NAME has a
+# colon (TYPE never does).
+active_wifi_profile() {
+    local name
+    name="$("$NMCLI" -t -f TYPE,NAME connection show --active 2>/dev/null \
+        | awk -F: '$1 ~ /wifi|wireless/ { sub(/^[^:]*:/, ""); print; exit }')"
+    nm_unescape "$name"
+}
+
+# Only the specific Pi 5 brcmfmac scan-suppression signature triggers the
+# repair. This is intentionally NARROWER than
+# jasper.wifi_scan_repair.text_mentions_scan_suppression (which also matches
+# bare "EAGAIN" / "Resource temporarily unavailable"): that matcher runs on
+# already-scoped scan diagnostics, whereas here we grep the *whole* kernel
+# log, where those generic markers are common noise from unrelated
+# subsystems. The Python CLI re-gates on driver==brcmfmac and rate-limits,
+# so the only cost of being conservative is a missed repair on an exotic
+# suppression variant — the guardian still runs either way.
+recent_scan_suppression() {
+    "$JOURNALCTL" -k --since "$SCAN_LOG_SINCE" --no-pager --output=cat \
+        2>/dev/null \
+        | grep -qiE 'brcmf_cfg80211_scan: Scanning suppressed|Scanning suppressed: status \(4\)'
+}
+
+if [[ ! -f "$STASH_FILE" ]]; then
+    [[ "$REASON" == "manual" ]] && emit absent "reason=no_stash"
+    exit 0
+fi
+
+active="$(active_wifi_profile || true)"
+if [[ -n "$active" ]]; then
+    [[ "$REASON" == "manual" ]] && emit steady "active=$active"
+    exit 0
+fi
+
+emit no_active "iface=$IFACE"
+
+if recent_scan_suppression; then
+    emit scan_suppressed "iface=$IFACE"
+    # No system-python fallback: jasper.wifi_scan_repair is only importable
+    # from the /opt/jasper venv, so a bare `python3` would just ImportError.
+    # If the venv python is missing, skip the repair honestly (observable
+    # event) and let the guardian run.
+    if [[ -x "$PYTHON" ]]; then
+        if "$PYTHON" -m jasper.wifi_scan_repair --iface "$IFACE" --json; then
+            emit scan_repair_ok "iface=$IFACE"
+        else
+            rc=$?
+            emit scan_repair_fail "iface=$IFACE rc=$rc"
+        fi
+    else
+        emit scan_repair_skip "iface=$IFACE reason=no_venv_python python=$PYTHON"
+    fi
+fi
+
+emit guardian_start
+"$GUARDIAN" --reason wifi-recover
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    emit guardian_ok ""
+else
+    emit guardian_fail "rc=$rc"
+fi
+exit "$rc"

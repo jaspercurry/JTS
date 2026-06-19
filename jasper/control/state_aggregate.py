@@ -609,6 +609,11 @@ async def _get_state(
             "provider_error": active_provider.detail or None,
             "session_active": voice_session,
             "spend_allowed": (voice_st or {}).get("spend_allowed"),
+            # usage.db writes failing -> recorded spend goes stale and the cap
+            # can't enforce. Curated explicitly like the other voice fields
+            # (see the wake_legs note below); a new session_status field must be
+            # pulled through here too.
+            "usage_tracking_degraded": (voice_st or {}).get("usage_tracking_degraded"),
             "connection_paused": (voice_st or {}).get("connection_paused"),
             "mic_muted": (voice_st or {}).get("mic_muted"),
             "music_dbfs": (voice_st or {}).get("music_dbfs"),

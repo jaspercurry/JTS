@@ -3,6 +3,8 @@ name = "jasper-speaker"
 version = "0.1.0"
 description = "Voice-controlled smart speaker on Raspberry Pi 5 with CamillaDSP and a swappable real-time voice backend (Gemini Live, OpenAI Realtime, xAI Grok)"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "LICENSE-third-party.md"]
 dependencies = [
     # systemd watchdog notification (sd_notify protocol). Kept in the
     # base install because jasper-control runs on both full speakers and
@@ -168,7 +170,7 @@ jasper-wake-review = "jasper.cli.wake_review:main"
 jasper-wake-corpus-web = "jasper.web.wake_corpus_setup:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -1,5 +1,10 @@
 # JTS Tool Platform — Vision, Research & Plan
 
+**Part of the JTS extensibility model** — this doc owns the *Tools* contract
+(capability packs). The cross-cutting lens (the host-mediated-indirection
+invariant, the five extension contracts, the decision tree) lives in
+[extensibility.md](extensibility.md).
+
 > **Status: living plan.** Forward-looking roadmap, not operational
 > truth about shipped code. Captures the vision for turning JTS's
 > integrations into an extensible foundation, the research behind it,

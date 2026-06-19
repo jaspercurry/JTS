@@ -1,5 +1,10 @@
 # HANDOFF: LLM-driven calibration agent
 
+**Part of the JTS extensibility model** — a *Feature* (cross-layer vertical)
+instance. The cross-cutting lens (the host-mediated-indirection invariant,
+the five extension contracts, the decision tree) lives in
+[extensibility.md](extensibility.md).
+
 > **Status: research + early substrate (2026-05-31).** This is the
 > design-space document for the guided calibration/tuning arc. Phase
 > 0a substrate has landed: calibrated mic registry/parser,

@@ -62,10 +62,12 @@ The 40 privileged-restart sites and 8 self-healing reconcilers split cleanly:
   surface. These get hardened (Phase 1) and dropped (Phase 3).
 - **Tier B — udev/boot-triggered one-shots + operator sudo-CLIs**
   (`jasper-aec-reconcile`, `jasper-aec-init`, `jasper-dac-init`,
-  `jasper-dongle-recover`, `jasper-wifi-guardian`; `jasper-aec-tune`,
-  `jasper-wake-enroll`, `jasper-noise-capture`): short-lived, systemd-launched,
-  **not network-reachable**, and the components doing the scariest privileged
-  ops (nmcli network recreate, amixer, XVF USB writes, `/etc` writes).
+  `jasper-dongle-recover`, `jasper-wifi-guardian`,
+  `jasper-wifi-recover`; `jasper-aec-tune`, `jasper-wake-enroll`,
+  `jasper-noise-capture`): short-lived, systemd-launched, **not
+  network-reachable**, and the components doing the scariest privileged ops
+  (nmcli network recreate, journal/kernel-log scan repair, amixer, XVF USB
+  writes, `/etc` writes).
 
 Keeping Tier B root in v1 is what makes the Tier-A drop *safe* — the highest-risk
 self-healing paths (Wi-Fi recovery, AEC reconcile, DAC pinning) are untouched by
@@ -266,13 +268,46 @@ SIGSYS), a TTS cue rendered end-to-end through the non-root voice→fanin path,
 tokens, and the Class-2 reconcilers stay root and run clean.
 
 **systemd `StateDirectory=jasper` recursively chowns** `/var/lib/jasper`'s
-contents to whichever of jasper-voice/jasper-mux started (group stays `jasper`,
+contents to jasper-voice (its sole owner since S2 — see below; group stays `jasper`,
 modes preserved) — so cross-daemon reads must rely on **group** read (`0640`+),
 never owner. That's why `speaker_volume.json` is `0660` and the Google tree is
 `0640`; files only one daemon reads (its own state, or root-read files like the
 control token) keep owner-only modes. Pinned by `tests/test_systemd_hardening.py`
 (User/Group/caps/syscall-filter per dropped unit; the deferred daemons stay
 root; the install↔unit user contract).
+
+**Shared files must be group-WRITABLE, not just group-readable (2026-06-19 fix).**
+The paragraph above is about cross-daemon *reads*; the multi-*writer* files are
+the trap. `usage.db`, `wake-events.sqlite3`, `timers.db`, and
+`speaker_volume.json` are written by more than one same-`jasper`-group daemon,
+and — before S2 (below) — the StateDirectory chown flipped their *owner* between
+jasper-voice and jasper-mux on each restart. A file created at the umask-default
+`0644` is group-read-**only**, so once the owner flipped, the non-owner daemon got
+`sqlite3.OperationalError: attempt to write a readonly database` — and the
+speaker then played the (false) `cant_connect` cue instead of answering.
+Fix: **jasper-voice/-mux/-control set `UMask=0007`** (the same directive the
+fanin/outputd *sockets* use, here applied to *files*) so everything they create
+lands `0660`; `env-migrations.sh`'s `heal_shared_state_modes` repairs
+pre-existing `0644` files on upgrade as a tight **allowlist** (deliberately
+never the `0600` WiFi PSK in `wifi_guardian.env` — a blanket `chmod -R g+w`
+would have leaked it); and `jasper-doctor`'s `check_state_dir_group_writable`
+flags drift before it bites. Pinned by `tests/test_systemd_hardening.py` (the
+UMask contract), `tests/test_install_state_group_write.py` (the heal + the
+PSK-safety property), and `tests/test_doctor_state_files.py`.
+
+**S2 — single StateDirectory owner.** `jasper-voice` is now the *sole*
+`StateDirectory=jasper` owner; `jasper-mux` dropped its `StateDirectory` and
+reaches `/var/lib/jasper` via `ReadWritePaths` instead. That removes the
+owner-*flip* entirely — only voice re-chowns the tree, always to
+`jasper-voice:jasper` — so a non-owner write no longer depends on restart order.
+`UMask=0007` is still required (voice's single-direction re-chown still leaves
+mux a non-owner of files voice created, so mux writes them via the group bit),
+and `heal_shared_state_modes` still backfills pre-existing drift. The dir's
+existence is guaranteed by voice's `StateDirectory` + `install.sh`'s
+`ensure_state_dir`; mux's `Restart=always` rides out any transient
+not-yet-created window. Pinned by `tests/test_systemd_hardening.py` (mux has no
+`StateDirectory`; its `ReadWritePaths` covers `/var/lib/jasper`) and
+`tests/test_mux.py`.
 
 **3b-2 (LANDED) — control.** `jasper-control` drops to a non-root
 `jasper-control` user (primary group `jasper`, no supplementary groups —
@@ -441,9 +476,10 @@ web-as-non-root paths (including the wifi-lockout brick path) with 3b-3
 | `jasper-mux` librespot recovery | mux → broker | ✅ (3b-1) mux→broker; `librespot` is in the allowlist |
 
 Class-2 (unchanged — still root — regression smoke only): `jasper-wifi-guardian`
-(kill `wpa_supplicant`), `jasper-aec-reconcile` (remove `/proc/asound/Array`),
-`jasper-dac-init` (set Headphone 50%, reboot), `jasper-dongle-recover`
-(re-enumerate dongle).
+(kill `wpa_supplicant`), `jasper-wifi-recover` (run scan repair + guardian
+activation when Wi-Fi is down), `jasper-aec-reconcile` (remove
+`/proc/asound/Array`), `jasper-dac-init` (set Headphone 50%, reboot),
+`jasper-dongle-recover` (re-enumerate dongle).
 
 **Accepted trade — the broker becomes a restart *dependency*.** Once the
 clients are non-root, `manage_units`' root fallback is structurally gone
@@ -693,8 +729,8 @@ Rules for all Tier-B slices:
   unit/action allowlist.
 - Do not expand `restart_broker.MANAGED_UNITS` for the deferred support units
   unless the specific slice designs that as its boundary. In particular,
-  `jasper-wifi-guardian.service`, `jasper-dac-init.service`,
-  `jasper-audio-hardware-reconcile.service`, and
+  `jasper-wifi-guardian.service`, `jasper-wifi-recover.service`,
+  `jasper-dac-init.service`, `jasper-audio-hardware-reconcile.service`, and
   `jasper-dongle-recover.service` stay outside the Tier-A restart broker today.
   If a graph transition needs one fixed helper, prefer `START_ONLY_UNITS` over
   general brokerability and pin that narrower verb contract in tests.
@@ -707,6 +743,7 @@ Rules for all Tier-B slices:
 | `jasper-headphone-monitor.service` + [`deploy/bin/jasper-headphone-monitor`](../deploy/bin/jasper-headphone-monitor) | long-running DAC drift monitor | Poll the same Apple DAC mixer and self-heal drift back to 100%. | **Landed:** same `jasper-recon` + `audio` permission contract as `jasper-dac-init`. |
 | Apple dongle udev fast path + [`99-jasper-apple-dongle.rules`](../deploy/udev/99-jasper-apple-dongle.rules) | Apple dongle sound-card / USB add | udev runs the hotplug `amixer -c $card sset Headphone 100% unmute` fast path as root and writes USB autosuspend `power/control=on`; it also triggers `jasper-dongle-recover.service`. | **Root exception remains:** the immediate `RUN+=amixer` repair path stayed root-owned to preserve hotplug recovery. A later PR can replace it with a fixed root helper or systemd oneshot if real replug/`udevadm test` validation proves the replacement preserves Headphone repinning. |
 | `jasper-wifi-guardian.service` + [`deploy/bin/jasper-wifi-guardian`](../deploy/bin/jasper-wifi-guardian) | boot after NetworkManager wait-online | Read the root-only PSK stash, inspect NM state, run `nmcli connection up`, `nmcli dev wifi connect`, and cleanup of broken profiles. | `jasper-recon` could own the stash plus a narrow NetworkManager polkit rule parallel to `jasper-web`, but the failed-connect/recreate path is lockout-sensitive. Not first without Wi-Fi hardware validation. |
+| `jasper-wifi-recover.service` + timer + [`deploy/bin/jasper-wifi-recover`](../deploy/bin/jasper-wifi-recover) | periodic (~3 min) timer, manual operator retry | If Wi-Fi is active, exit after one NM read. If Wi-Fi is down, inspect recent kernel logs for brcmfmac scan suppression, run the bounded `jasper.wifi_scan_repair` CLI when warranted, then invoke the Wi-Fi guardian. | Keep root with the guardian for now. The scan-repair and guardian handoff are lockout-sensitive and should move only after the Wi-Fi recovery slice has hardware validation under a narrower user/polkit/root-helper design. |
 | `jasper-aec-init.service` + `jasper-aec-init` | boot and AEC reconcile restarts | Raw XVF3800 USB control writes through `xvf_host`; `amixer` on the `Array` UAC mixer; volatile chip profile only, with `SAVE_CONFIGURATION` and `REBOOT` deliberately forbidden. | Needs a hardware-gated design. Either `jasper-recon` gets a device-specific udev group for the XVF control endpoint plus `audio`, or a root helper owns the raw USB writes. Brick-loop hazards mean this is not an early slice. |
 | `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
 | `jasper-audio-hardware-reconcile.service` + [`deploy/bin/jasper-audio-hardware-reconcile`](../deploy/bin/jasper-audio-hardware-reconcile) | install, boot, udev sound add/remove | Detect output hardware, write `/var/lib/jasper/outputd.env` and `/run/jasper-output-hardware/output_hardware.json`, render `/etc/jasper/asoundrc.jasper.template`, toggle `jasper-dac-init`/monitor, and kick outputd/AEC reconcile. | Split policy from root apply. Rendering `/etc/jasper/*` and unit orchestration should stay behind a fixed root helper; state observation can move to `jasper-recon`. |
@@ -773,4 +810,4 @@ For future Tier-B slices, do not compensate for failed hardware validation by
 granting broad sudo, adding the units to `MANAGED_UNITS`, or weakening the
 hotplug recovery path.
 
-Last verified: 2026-06-17
+Last verified: 2026-06-19

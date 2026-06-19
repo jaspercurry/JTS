@@ -12,6 +12,7 @@ from jasper.research import (
     FAILED,
     RUNNING,
     ResearchJob,
+    ResearchError,
     ResearchJobStore,
     ResearchResult,
     ResearchScheduler,
@@ -183,6 +184,45 @@ async def test_runtime_ceiling_marks_job_failed_and_fires_on_done():
         row = ResearchJobStore(path).get(failed.id)
         assert row is not None
         assert row.status == FAILED
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_provider_error_marks_job_failed_and_fires_on_done():
+    path = _tmp_db_path()
+    done_jobs: list[ResearchJob] = []
+
+    class FailingClient:
+        async def complete(self, _req):
+            raise ResearchError("provider unavailable")
+
+    async def on_done(job: ResearchJob) -> None:
+        done_jobs.append(job)
+
+    try:
+        sched = ResearchScheduler(
+            FailingClient(),
+            on_done=on_done,
+            db_path=path,
+        )
+        accepted = sched.submit("failing question")
+        assert accepted.accepted is True
+        assert accepted.job is not None
+
+        await _wait_for(lambda: bool(done_jobs))
+
+        failed = done_jobs[0]
+        assert failed.id == accepted.job.id
+        assert failed.status == FAILED
+        assert failed.error == "provider unavailable"
+
+        row = ResearchJobStore(path).get(failed.id)
+        assert row is not None
+        assert row.status == FAILED
+        assert row.error == "provider unavailable"
         await sched.stop()
     finally:
         if os.path.exists(path):

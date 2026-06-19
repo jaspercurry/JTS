@@ -226,13 +226,16 @@ EOF
 }
 
 tune_wifi_for_airplay() {
-    # Disable WiFi power-save on the active wlan0 connection.
+    # Disable WiFi power-save and make NetworkManager keep retrying on the
+    # active wlan0 connection.
     # Pi's brcmfmac driver defaults to power-save ON, which causes
     # micro-stalls in WiFi RX during radio sleeps. AirPlay 2 streams
     # over unicast UDP and has no application-level retransmit; even
     # a few-ms WiFi stall correlates with shairport-sync sync errors
-    # and underruns. nmcli value 2 = disable; the setting persists in
-    # the NetworkManager keyfile, so a future reinstall is a no-op.
+    # and underruns. nmcli value 2 = disable. `connection.autoconnect-retries
+    # 0` means retry forever; the default `-1` delegates to NM's global retry
+    # budget, which can be exhausted by a long router/ISP flap. Both settings
+    # persist in the NetworkManager keyfile, so a future reinstall is a no-op.
     if ! command -v nmcli >/dev/null 2>&1; then
         echo "  nmcli not present; skipping WiFi power-save tweak."
         return 0
@@ -244,11 +247,14 @@ tune_wifi_for_airplay() {
         echo "  no active wlan0 connection; skipping WiFi power-save tweak."
         return 0
     fi
-    nmcli c modify "$wlan_conn" 802-11-wireless.powersave 2 \
+    nmcli c modify "$wlan_conn" \
+        connection.autoconnect yes \
+        connection.autoconnect-retries 0 \
+        802-11-wireless.powersave 2 \
         2>/dev/null || true
     # Apply without dropping the connection. If the driver doesn't
     # accept a live reapply (some brcmfmac variants), the change
     # still takes effect on the next reconnect/reboot.
     nmcli dev reapply wlan0 2>/dev/null || true
-    echo "  WiFi power-save disabled on connection '$wlan_conn'."
+    echo "  WiFi power-save disabled and autoconnect retries set to forever on connection '$wlan_conn'."
 }

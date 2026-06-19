@@ -17,10 +17,10 @@
 # http://jts.local/system/.
 defaults.pcm.rate_converter "__RATE_CONVERTER__"
 
-# /etc/asound.conf — installed by deploy/install.sh with
-# __OUTPUT_DAC_CARD__ substituted by the selected final-output card
-# and __DONGLE_CARD__ substituted by the detected USB-C dongle name
-# for legacy rollback / mixer-control paths.
+# /etc/asound.conf — installed by deploy/install.sh with outputd_dac blocks
+# rendered by deploy/lib/jasper-asound-render.sh for the selected final-output
+# role, and __DONGLE_CARD__ substituted by the detected USB-C dongle name for
+# legacy rollback / mixer-control paths.
 #
 # Location: /etc/asound.conf (NOT /root/.asoundrc). The system-wide
 # location is required so non-root renderer users (shairport-sync as
@@ -266,17 +266,11 @@ ctl.outputd_content_capture {
     card Loopback
 }
 
-# DAC alias for jasper-outputd once it owns the final speaker boundary.
-# The installer/reconciler renders this block as either the default direct
-# hardware alias or, for explicit DAC8x-family lab/commissioning configs, a tiny
-# ALSA route map that keeps outputd's public surface stereo while targeting
-# selected physical DAC8x-family outputs.
+# DAC alias for jasper-outputd once it owns the final speaker boundary. The
+# installer/reconciler renders parked states as a silent null PCM; live
+# composite output opens its child hw PCMs directly.
 __OUTPUTD_DAC_PCM_BLOCK__
-
-ctl.outputd_dac {
-    type hw
-    card __OUTPUT_DAC_CARD__
-}
+__OUTPUTD_DAC_CTL_BLOCK__
 
 pcm.jasper_capture {
     type dsnoop

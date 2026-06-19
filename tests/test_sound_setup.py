@@ -2837,17 +2837,182 @@ async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
     current.write_text("# handmade\n")
     fake = FakeCamilla(str(current))
 
-    try:
+    with pytest.raises(RuntimeError) as excinfo:
         await sound_setup._apply_profile(
             SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
             profile_path=tmp_path / "sound_profile.json",
             config_dir=tmp_path / "configs",
             camilla_factory=lambda: fake,
         )
-    except RuntimeError as e:
-        assert "custom config" in str(e)
-    else:  # pragma: no cover - defensive assertion style
-        raise AssertionError("expected unknown config rejection")
+    # The durable path wraps the carrier refusal as DspApplyError; the route's
+    # discrimination unwraps it to a stable, typed reason (a 200 body, not 502).
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "unknown_config"
+
+
+async def test_apply_profile_blocks_active_baseline_with_typed_reason(
+    tmp_path: Path, monkeypatch
+):
+    # Regression: an applied active-speaker baseline used to hit the misleading
+    # "custom config ... Reset" 502 that would have DESTROYED the active graph
+    # if followed. It must now refuse with a specific, honest reason, never
+    # re-emit over the active graph, and — since a refusal is a handled
+    # "blocked" outcome, not a DSP failure — record NO dsp-apply state (SF-2),
+    # so jasper-doctor's check_dsp_apply_state stays clean on an active speaker.
+    from jasper.dsp_apply import last_dsp_apply_state
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "active_speaker_baseline.yml"
+    current.write_text(_active_baseline_yaml("mono", 2))
+    fake = FakeCamilla(str(current))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await sound_setup._apply_profile(
+            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+            camilla_factory=lambda: fake,
+        )
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "eq_on_active_not_wired"
+    assert refusal.to_payload()["status"] == "blocked"
+    # Fail closed: the active config was never overwritten / re-loaded.
+    assert fake.loaded_path is None
+    # SF-2: the refusal raised before the apply transaction — no failure state.
+    assert last_dsp_apply_state() is None
+
+
+def test_carrier_refusal_unwraps_raw_and_wrapped():
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+
+    raw = CarrierCannotHostEq("unknown_config", "m")
+    assert sound_setup._carrier_refusal(raw) is raw
+
+    # The durable path's in-lock re-check wraps the refusal as DspApplyError
+    # (...) in the rare concurrent-swap race; the unwrap must still find it.
+    try:
+        try:
+            raise raw
+        except CarrierCannotHostEq as cause:
+            raise RuntimeError("DSP config preparation failed: m") from cause
+    except RuntimeError as wrapped:
+        assert sound_setup._carrier_refusal(wrapped) is raw
+
+    assert sound_setup._carrier_refusal(ValueError("unrelated")) is None
+
+
+def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch):
+    # SF-4: the headline user-facing contract, exercised through the real
+    # do_POST handler (the carrier unit tests can't reach it). A graph that
+    # can't host EQ yields HTTP 200 {status:"blocked"} — the page's honest-hint
+    # vocabulary — never a 502 toast or a silent no-op. A regression that
+    # dropped the handler's `return` (falling through to the 502 branch) would
+    # pass every other test but fail this one.
+    import io
+
+    from jasper.dsp_apply import last_dsp_apply_state
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    # CSRF / host guard is covered by its own tests; bypass it to drive dispatch.
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda handler: True)
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    active = config_dir / "active_speaker_baseline.yml"
+    active.write_text(_active_baseline_yaml("mono", 2))
+    fake = FakeCamilla(str(active))
+
+    Handler = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+    body = json.dumps({"enabled": True}).encode()
+    raw = (
+        b"POST /apply HTTP/1.1\r\nHost: jts.local\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"\r\n"
+        + body
+    )
+    rfile = io.BytesIO(raw)
+    wfile = io.BytesIO()
+    handler = Handler.__new__(Handler)
+    handler.rfile = rfile
+    handler.wfile = wfile
+    handler.client_address = ("127.0.0.1", 0)
+    handler.server = None
+    handler.raw_requestline = rfile.readline()
+    handler.parse_request()
+    handler.protocol_version = "HTTP/1.1"
+    handler.do_POST()
+    resp = wfile.getvalue()
+
+    status_line = resp.split(b"\r\n", 1)[0]
+    assert b"200" in status_line, status_line
+    assert b"502" not in status_line
+    payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
+    assert payload["status"] == "blocked"
+    assert payload["reason_code"] == "eq_on_active_not_wired"
+    # Fail closed (active config never swapped) + SF-2 (no prepare_failed state).
+    assert fake.loaded_path is None
+    assert last_dsp_apply_state() is None
+
+
+async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap(
+    tmp_path: Path, monkeypatch
+):
+    # SF-2 TOCTOU guard: the carrier is re-resolved UNDER the dsp-apply writer
+    # lock, so if the loaded config is swapped to an active graph between the
+    # pre-lock fast-check and lock acquisition (a concurrent active-startup load
+    # shares that lock), the durable apply refuses in-lock and NEVER re-emits a
+    # stereo config over the active crossover. Simulated by a fake that reports
+    # a hostable config on the first read (pre-lock) and an active graph on
+    # every read after (in-lock).
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / "sound_current.yml").write_text(_room_config())  # hostable
+    (config_dir / "active_speaker_baseline.yml").write_text(
+        _active_baseline_yaml("mono", 2)
+    )
+
+    class _RacingCamilla:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.loaded_path: str | None = None
+
+        async def get_config_file_path(self, *, best_effort: bool = True):
+            self.calls += 1
+            name = "sound_current.yml" if self.calls == 1 else "active_speaker_baseline.yml"
+            return str(config_dir / name)
+
+        async def set_config_file_path(self, path, *, best_effort: bool = False):
+            self.loaded_path = path
+
+    cam = _RacingCamilla()
+    with pytest.raises(RuntimeError) as excinfo:
+        await sound_setup._apply_profile(
+            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+            camilla_factory=lambda: cam,
+        )
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "eq_on_active_not_wired"
+    # The in-lock re-check fired (pre-check saw the hostable config first).
+    assert cam.calls >= 2
+    # The stereo config was NEVER loaded over the active crossover.
+    assert cam.loaded_path is None
 
 
 async def test_apply_profile_rolls_back_when_reload_fails(

@@ -2,11 +2,18 @@
 
 Last reviewed: 2026-05-27
 
-This is the living, ordered worklist for bringing JTS from "excellent
+> **The current, verified launch-readiness backlog is
+> [LAUNCH-READINESS.md](LAUNCH-READINESS.md)** — drive launch/cleanup work from
+> there. This file is kept for its contributor-facing "files to know" reference
+> and the original top-five framing, but its *priority list is stale*: the
+> headline privilege-separation items below have since shipped (all five Tier-A
+> daemons now run non-root — see
+> [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)).
+
+This was the living, ordered worklist for bringing JTS from "excellent
 personal project" to "credible open-source appliance project." The
 historical staff-engineering review lives in
-[REVIEW-google-oss-readiness.md](REVIEW-google-oss-readiness.md); use
-this file for current priorities.
+[REVIEW-google-oss-readiness.md](REVIEW-google-oss-readiness.md).
 
 Ordering principle: reduce real user/operator risk first, then make the
 repo easier for outside contributors to change safely. Avoid broad
@@ -151,10 +158,11 @@ protect the project without creating noisy churn across active branches.
 
 ## 5. Refactor High-Complexity Hotspots
 
-**Status.** Pending. The current hotspot register below is the source of
-truth for where future refactor energy should go. Keep it current when a
-large file is split, when a new high-churn subsystem appears, or when a
-hotspot becomes safe to leave alone.
+**Status.** Partially started; hotspot register refreshed 2026-06-19. Several
+review-era splits have landed, but the current hotspot register below remains
+the source of truth for future refactor energy. Keep it current when a large
+file is split, when a new high-churn subsystem appears, or when a hotspot
+becomes safe to leave alone.
 
 **Why it matters.** The architecture is strong, but a few files carry
 too much operational surface area. The goal is not aesthetic cleanup;
@@ -179,13 +187,13 @@ their head.
 
 | Hotspot | Why it is on the list | Good next slice | Avoid |
 |---|---|---|---|
-| `jasper/voice_daemon.py` | Owns wake detection, turn lifecycle, cues, telemetry, timers, mic mute, manual sessions, and control-socket behavior. It is the highest-churn file and the hardest one for a new contributor to hold in their head. | Extract only along already-visible seams: `SYSTEM_INSTRUCTION`, wake-loop config construction, control-socket handling, or cue coordination. Add regression coverage before moving behavior. | Replacing the state model wholesale or introducing a framework-y event bus. |
+| `jasper/voice_daemon.py` | Owns wake detection, turn lifecycle, cues, telemetry, timers, mic mute, manual sessions, and control-socket behavior. Prompt text, earcons, turn playback, and daemon entrypoint code have been extracted, but the file remains a major hotspot. | Continue only along already-visible seams: wake-loop config construction, control-socket handling, cue coordination, or smaller session-lifecycle helpers. Add regression coverage before moving behavior. | Replacing the state model wholesale or introducing a framework-y event bus. |
 | `deploy/install.sh` | Root install path for packages, systemd units, env migrations, source builds, audio topology, provenance-bearing downloads, and Pi runtime state. Small mistakes here affect fresh installs and deploys. Dry-run/plan mode now reports the major install surfaces without requiring root or mutating the host. | Keep the plan current when install surfaces change; good future slices are env-key merge support or more machine-derived provenance helpers. | Rewriting the installer before the existing idempotent steps have test coverage. |
 | `jasper/control/server.py` | LAN control plane for state, source selection, volume, restart/reboot, AEC toggles, cues, and dashboard integration. Security-sensitive and easy to grow accidentally. | Group route helpers and security checks when adding related endpoints; keep host/origin/body-size behavior centralized. | Mixing product UI restructuring with control-plane auth or privilege changes in one PR. |
 | `jasper/web/*_setup.py` wizards | The stdlib HTTP pattern is intentional, but page wrappers, CSRF/form handling, restart plumbing, and env-file persistence recur across many files. `correction_setup.py` and `wifi_setup.py` are especially large because they mix UI and domain logic. | Extract small shared helpers only when touching a second wizard for the same reason; move domain logic into subsystem modules when it already has tests. | A broad web-framework migration or generic wizard abstraction before repeated pain is clear. |
 | `jasper/voice/{gemini_session.py,openai_session.py,grok_session.py}` | Provider-specific protocol handling is real, but supervisor scaffolding, state logging, escalation cues, and reconnect mechanics overlap. | Share narrow primitives in `jasper/voice/_supervisor.py` after a provider change proves the duplication is active maintenance cost. | Sharing the provider loop bodies; `HANDOFF-voice-providers.md` explicitly rejects that. |
 | `deploy/bin/jasper-aec-reconcile` plus mic/doctor constants | Bash policy duplicates hardware facts also known to Python mic and doctor modules. This is easy to drift during AEC or XVF3800 work. | Add sync tests or move a small, stable piece of policy into Python when touching AEC install/reconcile behavior. | Porting the whole reconciler just for aesthetics. |
-| `jasper/cli/doctor.py` | Broad observability surface with many subsystem checks. It is valuable, but tends to accumulate one-off parsing and policy. | Factor shared check/result helpers only when adding related checks; keep new checks fail-soft and actionable. | Hiding operational detail behind abstractions that make incidents harder to debug. |
+| `jasper/cli/doctor/` | Broad observability package with many subsystem checks. It is valuable, but tends to accumulate one-off parsing and policy. | Factor shared check/result helpers only when adding related checks; keep new checks fail-soft and actionable. | Hiding operational detail behind abstractions that make incidents harder to debug. |
 
 **Cost and trade-off.** Medium to high. Refactors create merge conflicts
 in an actively developed repo, so they should be sequenced after the
@@ -225,6 +233,6 @@ honest: mock hardware boundaries, not business logic.
 
 These are real but not top-five yet: full local authentication, HTTPS or
 pairing for setup pages, rootless daemon privilege separation, DCO/CLA
-policy, Dependabot/update automation, release artifacts, OTA update
+policy, dependency-update policy tuning, release artifacts, OTA update
 design, metrics export, broader third-party attribution depth, and the
 software-only development path above.

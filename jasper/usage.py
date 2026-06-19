@@ -63,6 +63,13 @@ DEFAULT_DAILY_SPEND_CAP_USD = 1.0
 DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER = 1.25
 DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
 
+# Sentinel session id returned by ``UsageStore.open_session`` when the
+# accounting INSERT fails (e.g. usage.db ends up owned by the wrong user
+# and writes raise "attempt to write a readonly database"). Negative so it
+# can never collide with a real AUTOINCREMENT rowid (those start at 1).
+# ``close_session`` treats it as a no-op. See ``open_session``.
+_UNRECORDED_SESSION = -1
+
 
 @dataclass(frozen=True)
 class Pricing:
@@ -377,6 +384,19 @@ _SESSIONS_TABLE_DDL = """
 """
 
 
+@dataclass
+class WriteHealth:
+    """Write-failure health for a single ``UsageStore`` writer instance.
+
+    Only the voice daemon's writable store accumulates failures; the read-only
+    status surfaces (the /voice spend card, jasper-doctor) never write, so they
+    keep the default (not degraded). Surfaced as
+    /state.voice.usage_tracking_degraded — see ``UsageStore.write_degraded``."""
+    consecutive_failures: int = 0
+    last_error: str | None = None
+    last_failure_at: str | None = None
+
+
 class UsageStore:
     def __init__(
         self, db_path: str, pricing: Pricing | None = None,
@@ -448,12 +468,40 @@ class UsageStore:
         self._pricing: Pricing = pricing or pricing_for_model(
             _DEFAULT_DISPLAY_MODEL
         )
+        # Write-failure health — only meaningful on the writable voice store
+        # (read-only surfaces never write). Drives the
+        # /state.voice.usage_tracking_degraded signal via ``write_degraded``.
+        self._write_health = WriteHealth()
 
     def open_session(self, provider: str | None = None) -> int:
-        cur = self._conn.execute(
-            "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
-            (datetime.now(timezone.utc).isoformat(), provider),
-        )
+        """Insert a new session row and return its id.
+
+        Fail-soft: a usage-accounting write must NEVER break the voice
+        turn (this mirrors ``ConnectionUptimeMeter`` and the module
+        contract). The voice loop calls this on the turn-open hot path,
+        before the connection is even acquired. If the INSERT raises —
+        chiefly ``sqlite3.OperationalError: attempt to write a readonly
+        database`` when usage.db is owned by the wrong user — we log and
+        return ``_UNRECORDED_SESSION`` instead of propagating. The caller
+        stores that id and serves the turn anyway; ``close_session``
+        no-ops on it. This turn's cost goes unrecorded, which is fine for
+        disposable spend telemetry — far better than aborting the turn
+        and playing a failure cue (the 2026-06-19 outage, where this
+        raising on every wake made the daemon say "I can't connect"
+        instead of answering)."""
+        try:
+            cur = self._conn.execute(
+                "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
+                (datetime.now(timezone.utc).isoformat(), provider),
+            )
+        except sqlite3.Error as e:
+            logger.warning(
+                "usage: open_session write failed (%s: %s); serving turn "
+                "unrecorded", type(e).__name__, e,
+            )
+            self._note_write_failed(e)
+            return _UNRECORDED_SESSION
+        self._note_write_ok()
         return int(cur.lastrowid)
 
     def close_session(
@@ -477,21 +525,84 @@ class UsageStore:
                 "output_tokens": output_tokens,
             }
         cost = self._pricing.estimate_cost(usage)
-        self._conn.execute(
-            """
-            UPDATE sessions
-            SET ended_at = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?
-            WHERE id = ?
-            """,
-            (
-                datetime.now(timezone.utc).isoformat(),
-                input_tokens,
-                output_tokens,
-                cost,
-                session_id,
-            ),
-        )
+        # No row to update when open_session's write failed — the cost
+        # estimate is still returned for the caller's logging, it just
+        # isn't persisted (see _UNRECORDED_SESSION / open_session).
+        if session_id == _UNRECORDED_SESSION:
+            return cost
+        # Fail-soft for the same reason open_session is: a telemetry
+        # write must never break the voice turn. The cost estimate is
+        # already computed above, so a failed persist just means this
+        # turn drops out of the stored 24 h spend total.
+        try:
+            self._conn.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?
+                WHERE id = ?
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                    session_id,
+                ),
+            )
+        except sqlite3.Error as e:
+            logger.warning(
+                "usage: close_session write failed (%s: %s); cost unrecorded",
+                type(e).__name__, e,
+            )
+            self._note_write_failed(e)
+            return cost
+        self._note_write_ok()
         return cost
+
+    def _note_write_ok(self) -> None:
+        """A successful write clears degraded state, emitting ONE recovery
+        event on the failure->ok transition (not per successful write)."""
+        if self._write_health.consecutive_failures:
+            log_event(
+                logger,
+                "usage.write_recovered",
+                after_failures=self._write_health.consecutive_failures,
+                note="usage.db writable again; spend recording resumed",
+            )
+            self._write_health = WriteHealth()
+
+    def _note_write_failed(self, exc: Exception) -> None:
+        """A failed write marks accounting degraded. Emits ONE structured event
+        on the ok->degraded transition; subsequent failures bump the counter
+        without re-emitting, so a persistent failure does not spam the journal.
+        This is the monitorable signal (beyond the per-call WARNING) that the
+        daily spend cap can no longer enforce: turns are still served, but their
+        cost isn't persisted, so the rolling 24 h total stops growing."""
+        first = self._write_health.consecutive_failures == 0
+        self._write_health = WriteHealth(
+            consecutive_failures=self._write_health.consecutive_failures + 1,
+            last_error=f"{type(exc).__name__}: {exc}",
+            last_failure_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if first:
+            log_event(
+                logger,
+                "usage.write_degraded",
+                error_type=type(exc).__name__,
+                note=(
+                    "usage.db writes failing; turns still served but their cost "
+                    "is unrecorded, so the daily spend cap cannot enforce until "
+                    "writes recover"
+                ),
+                level=logging.WARNING,
+            )
+
+    @property
+    def write_degraded(self) -> bool:
+        """True once a usage write has failed and not yet recovered. Surfaced as
+        /state.voice.usage_tracking_degraded so the spend-cap status can warn
+        that recorded spend may be stale instead of silently flatlining."""
+        return self._write_health.consecutive_failures > 0
 
     # ------------------------------------------------------------------
     # Connection-uptime intervals (time-billed providers, e.g. Grok)

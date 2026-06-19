@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +20,22 @@ def load_docs_impact():
     return module
 
 
+def _exclude_gitignored(paths: set[str]) -> set[str]:
+    if not paths:
+        return paths
+    proc = subprocess.run(
+        ["git", "check-ignore", "--stdin"],
+        cwd=ROOT,
+        input="\n".join(sorted(paths)) + "\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    ignored = set(proc.stdout.splitlines()) if proc.returncode == 0 else set()
+    return paths - ignored
+
+
 def test_doc_map_valid():
     docs_impact = load_docs_impact()
 
@@ -33,8 +50,12 @@ def test_root_and_top_level_docs_are_intentionally_mapped():
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
     classified_docs = docs_impact.load_classified_docs(ROOT / "docs" / "doc-map.toml")
     mapped_docs = {doc for subsystem in subsystems for doc in subsystem.docs}
-    root_docs = {str(path.relative_to(ROOT)) for path in ROOT.glob("*.md")}
-    docs_top = {str(path.relative_to(ROOT)) for path in (ROOT / "docs").glob("*.md")}
+    root_docs = _exclude_gitignored(
+        {str(path.relative_to(ROOT)) for path in ROOT.glob("*.md")}
+    )
+    docs_top = _exclude_gitignored(
+        {str(path.relative_to(ROOT)) for path in (ROOT / "docs").glob("*.md")}
+    )
 
     assert sorted((root_docs | docs_top) - mapped_docs - set(classified_docs)) == []
 

@@ -12,6 +12,7 @@ single primitive isolated, observable, and rate-limited.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -466,3 +467,32 @@ def send_crit_proto_stop(iface: str, *, dry_run: bool = False) -> dict[str, Any]
                     )
                     result["ack"] = True
                     return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m jasper.wifi_scan_repair",
+        description="Attempt the bounded Pi 5 brcmfmac scan-suppression repair.",
+    )
+    parser.add_argument("--iface", default=DEFAULT_IFACE)
+    parser.add_argument(
+        "--state-path",
+        default=str(DEFAULT_STATE_PATH),
+        help="rate-limit state path",
+    )
+    parser.add_argument("--json", action="store_true", help="print JSON result")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    result = maybe_repair_scan_suppression(args.iface, state_path=args.state_path)
+    payload = result.to_dict()
+    if args.json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        attempted = "attempted" if result.attempted else "skipped"
+        print(f"{attempted}: reason={result.reason}")
+    return 1 if result.reason == "error" else 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through main()
+    raise SystemExit(main())

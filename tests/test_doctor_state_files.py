@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 
+from jasper.cli.doctor.env import _classify_state_group_write
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
@@ -150,6 +151,46 @@ def test_bootloop_guard_registered_in_doctor_run():
 
     names = {c.func.__name__ for c in registered_checks()}
     assert "check_bootloop_guard" in names
+
+
+# ---- shared-state group-writability (env) ----------------------------
+
+def test_state_group_write_no_files_is_ok(tmp_path):
+    res = _classify_state_group_write(tmp_path / "usage.db")
+    assert res.status == "ok"
+    assert "no shared state files yet" in res.detail
+
+
+def test_state_group_write_flags_group_unwritable(tmp_path):
+    usage = tmp_path / "usage.db"
+    usage.write_text("x", encoding="utf-8")
+    usage.chmod(0o644)  # group can't write — the readonly-DB outage condition
+    res = _classify_state_group_write(usage)
+    assert res.status == "warn"
+    assert "usage.db" in res.detail
+
+
+def test_state_group_write_ok_when_group_jasper_and_writable(tmp_path, monkeypatch):
+    import grp
+    import types as _types
+
+    usage = tmp_path / "usage.db"
+    usage.write_text("x", encoding="utf-8")
+    usage.chmod(0o660)  # group-writable
+    # CI has no `jasper` group; pretend the file's gid resolves to it.
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: _types.SimpleNamespace(gr_name="jasper"),
+    )
+    res = _classify_state_group_write(usage)
+    assert res.status == "ok"
+    assert "group-`jasper`-writable" in res.detail
+
+
+def test_state_group_write_check_registered_in_doctor_run():
+    from jasper.cli.doctor import registered_checks
+
+    names = {c.func.__name__ for c in registered_checks()}
+    assert "check_state_dir_group_writable" in names
 
 
 # ---- mux mode state --------------------------------------------------

@@ -293,8 +293,10 @@ when the configured AEC mic is present with 6-channel firmware — see
   bounded non-disruptive self-heal before falling back to manual join.
   Connect rolls back to the previous network on failure
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
-  <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
-  case only.
+  <previous>` on non-zero exit). Saved profiles are hardened to keep
+  retrying after router/ISP flaps, and a no-resident-RAM recovery timer
+  nudges scan suppression + guardian activation when Wi-Fi is actually
+  down. WPA-Enterprise deferred — home-network case only.
 - ✅ Persistent live session with sustained-speech VAD
 - ✅ Hardware AEC investigation: the 2026-05-29 Option D lab pass has
   been promoted into the recommended XVF3800 input profile. Fresh
@@ -504,17 +506,19 @@ steps. Apache 2.0 like the rest of the repo.
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
 | [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, and mic mute scope |
-| [CHANGELOG.md](CHANGELOG.md) | Maintainers / release followers | Keep-a-Changelog release notes; `v0.1.0` will be tagged at OSS launch |
+| [CHANGELOG.md](CHANGELOG.md) | Maintainers / release followers | Keep-a-Changelog release notes; release tags are maintainer-cut (`v0.1.0` marks OSS launch) |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |
 | [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker in ~30 min. Carries the chosen hostname through every step. |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
+| [docs/extensibility.md](docs/extensibility.md) | Maintainers / AI / extension contributors | **Start here before adding a modular subsystem.** The cross-cutting extensibility doctrine: the one invariant (host-mediated indirection), the five extension contracts (tools, sources, model providers, hardware profiles, features), the *what-kind → which-pattern* decision tree, and the build-now-vs-defer trust gradient. Frames the per-contract docs that follow. |
 | [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet, pack-first catalog, singleton packs for standalone tools, generated pack detail pages, full prompt override/reset, and the built-in `/tools/` on/off catalog wizard |
 | [docs/research-tool-plan.md](docs/research-tool-plan.md) | Maintainers / AI | Vision, design, and phased roadmap for the async "research this and tell me later" tool: a fast `research(query)` tool that hands the question to a pluggable text LLM (OpenAI v1, Anthropic v2) running in a bounded background job, then reads a ≤30 s summary back through the existing timer-fire announcement path. Records the chosen v1 defaults (background+poll, no webhook) and the deferred future (barge-in yes/no, interaction history log). Nothing shipped yet. |
 | [docs/examples/tool_pack_starter.py](docs/examples/tool_pack_starter.py) | Trusted tool-pack contributors | Non-production postcard example of a copyable capability pack: `CapabilityPack`, `CatalogPack`, explicit `ToolDefinition`, `PythonExecutor`, labels, timeout, risk flags, and deps/build shape. Tests import it so the example cannot drift from the real boundary. |
-| [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, hotspot register, software-only dev-path notes, and deliberate deferrals |
+| [docs/LAUNCH-READINESS.md](docs/LAUNCH-READINESS.md) | Maintainers / cleanup agents | **Current, verified open-source-launch backlog** — what's done (privilege separation, governance) and what's open, each open item with a ready-to-paste agent prompt. Supersedes the `REVIEW-*` audit snapshots. |
+| [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Contributor "files to know" register + the original top-five framing (priority list superseded by LAUNCH-READINESS.md) |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
@@ -833,6 +837,13 @@ reference. Currently:
   profile library, room-correction composition order, generated config
   ownership, durable apply + live-draft semantics, doctor and
   `/state` observability, and the future AI boundary.
+- [`HANDOFF-dsp-graph-carrier.md`](docs/HANDOFF-dsp-graph-carrier.md) —
+  Design-of-record for composing preference EQ + room correction on top of
+  ANY output topology (flat / active 1/2/3-way + sub / distributed
+  leader-follower): the graph-carrier dispatcher that re-emits the loaded
+  CamillaDSP graph in its own shape — or fails closed with a typed reason —
+  the program/driver split-mixer seam, the shared stereo-domain prefix, and
+  the deferred distributed-active boundary.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of
@@ -1001,7 +1012,8 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-voice` (wake + LLM + tools) | Active | ~140-150 MB | ~12% of one core during a session |
 | `jasper-aec-bridge` (software AEC) | **Active** on 6-ch firmware, **disabled** on 2-ch | +85 MB | +3% of one core |
 | `jasper-aec-init` (boot-time chip init) | follows aec-bridge | one-shot, ~0 | ~0 |
-| `jasper-wifi-guardian` (boot-time NM keyfile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
+| `jasper-wifi-guardian` (NM keyfile/profile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
+| `jasper-wifi-recover` (Wi-Fi-down periodic nudge) | Active timer | ~0 resident; one-shot only | healthy tick is one NM read every ~3 min; repair path only when Wi-Fi is down |
 | `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~16 MB | ~0% idle |

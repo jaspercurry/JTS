@@ -91,6 +91,7 @@ def test_managed_units_excludes_tier_b_reconcilers():
     the dongle."""
     tier_b = {
         "jasper-wifi-guardian.service",
+        "jasper-wifi-recover.service",
         "jasper-audio-hardware-reconcile.service",
         "jasper-dac-init.service",
         "jasper-headphone-monitor.service",
