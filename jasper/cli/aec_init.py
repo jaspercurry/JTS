@@ -92,21 +92,31 @@ _CHIP_HPF_MAP = {
     "180": 4,
 }
 _DEFAULT_CHIP_HPF_HZ = "125"
-_CHIP_CORPUS_AZIMUTHS_RAD = (2.61799, 3.66519)  # 150 deg, 210 deg
-_CHIP_CORPUS_PROFILE: tuple[tuple[str, list[int | float]], ...] = (
-    ("SHF_BYPASS", [0]),
-    ("AUDIO_MGR_SYS_DELAY", [12]),
-    ("AEC_ASROUTONOFF", [1]),
-    ("AEC_ASROUTGAIN", [1.0]),
-    ("AEC_FIXEDBEAMSONOFF", [1]),
-    ("AEC_FIXEDBEAMSGATING", [1]),
-    ("AEC_FIXEDBEAMSAZIMUTH_VALUES", list(_CHIP_CORPUS_AZIMUTHS_RAD)),
-    ("AEC_FIXEDBEAMSELEVATION_VALUES", [0.0, 0.0]),
-    ("AEC_AECEMPHASISONOFF", [2]),
-    ("AEC_FAR_EXTGAIN", [0.0]),
-    ("AUDIO_MGR_OP_L", [7, 0]),
-    ("AUDIO_MGR_OP_R", [7, 1]),
-)
+
+
+def _chip_beam_plan() -> xvf3800.ChipBeamPlan | None:
+    return xvf3800.chip_beam_plan_from_env(os.environ)
+
+
+def _chip_corpus_profile(
+    plan: xvf3800.ChipBeamPlan,
+) -> tuple[tuple[str, list[int | float]], ...]:
+    return (
+        ("SHF_BYPASS", [0]),
+        ("AUDIO_MGR_SYS_DELAY", [12]),
+        ("AEC_ASROUTONOFF", [1]),
+        ("AEC_ASROUTGAIN", [1.0]),
+        ("AEC_FIXEDBEAMSONOFF", [1]),
+        ("AEC_FIXEDBEAMSGATING", [1]),
+        ("AEC_FIXEDBEAMSAZIMUTH_VALUES", [leg.azimuth_rad for leg in plan.legs]),
+        ("AEC_FIXEDBEAMSELEVATION_VALUES", [leg.elevation_rad for leg in plan.legs]),
+        ("AEC_AECEMPHASISONOFF", [2]),
+        ("AEC_FAR_EXTGAIN", [0.0]),
+        ("AUDIO_MGR_OP_L", [7, 0]),
+        ("AUDIO_MGR_OP_R", [7, 1]),
+    )
+
+
 _CHIP_PRODUCTION_PROFILE: tuple[tuple[str, list[int | float]], ...] = (
     ("SHF_BYPASS", [1]),
     ("AEC_ASROUTONOFF", [0]),
@@ -199,11 +209,12 @@ def _apply_required_profile(
 
 
 def _corpus_profile_with_delay(
+    plan: xvf3800.ChipBeamPlan,
     sys_delay: int,
 ) -> tuple[tuple[str, list[int | float]], ...]:
     return tuple(
         (param, [sys_delay] if param == "AUDIO_MGR_SYS_DELAY" else values)
-        for param, values in _CHIP_CORPUS_PROFILE
+        for param, values in _chip_corpus_profile(plan)
     )
 
 
@@ -260,6 +271,16 @@ def main() -> int:
         corpus_chip_aec = _env_truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")
         production_chip_aec = _env_truthy("JASPER_AEC_CHIP_AEC_ENABLED")
         if corpus_chip_aec or production_chip_aec:
+            beam_plan = _chip_beam_plan()
+            if beam_plan is None:
+                log_event(
+                    logger,
+                    "chip_profile_failed",
+                    mode="corpus" if corpus_chip_aec else "chip_aec",
+                    error="no validated chip beam plan for detected XVF geometry",
+                    level=logging.ERROR,
+                )
+                return 1
             mode = "corpus" if corpus_chip_aec else "chip_aec"
             delay_env = (
                 "JASPER_AEC_CORPUS_CHIP_SYS_DELAY"
@@ -268,11 +289,14 @@ def main() -> int:
             sys_delay = int(os.environ.get(delay_env, "12"))
             logger.info(
                 "applying chip-AEC %s profile "
-                "(fixed gated 150/210 ASR beams, sys_delay=%d)",
-                mode, sys_delay,
+                "(beam_plan=%s, sys_delay=%d)",
+                mode, beam_plan.plan_id, sys_delay,
             )
             try:
-                _apply_required_profile(dev, _corpus_profile_with_delay(sys_delay))
+                _apply_required_profile(
+                    dev,
+                    _corpus_profile_with_delay(beam_plan, sys_delay),
+                )
             except ChipProfileError as e:
                 log_event(
                     logger,

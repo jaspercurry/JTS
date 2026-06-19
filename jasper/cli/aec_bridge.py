@@ -633,20 +633,28 @@ def _env_bool(name: str, default: str) -> bool:
     )
 
 
-def _chip_aec_primary_leg() -> str:
+def _chip_beam_plan() -> _mic_profile.ChipBeamPlan | None:
+    return _mic_profile.chip_beam_plan_from_env(os.environ)
+
+
+def _chip_aec_primary_leg(
+    plan: _mic_profile.ChipBeamPlan | None,
+) -> str:
+    allowed = set(plan.leg_tokens if plan else ("chip_aec_150", "chip_aec_210"))
+    fallback = next(iter(plan.leg_tokens), "chip_aec_150") if plan else "chip_aec_150"
     value = os.environ.get(
-        "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", "chip_aec_150",
+        "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", fallback,
     ).strip()
-    if value in {"chip_aec_150", "chip_aec_210"}:
+    if value in allowed:
         return value
     log_event(
         logger,
         "chip_aec_primary_invalid",
         value=repr(value),
-        fallback="chip_aec_150",
+        fallback=fallback,
         level=logging.WARNING,
     )
-    return "chip_aec_150"
+    return fallback
 
 
 def _cfg_value(
@@ -1277,6 +1285,7 @@ def _mic_thread(
     mic_q: Queue,
     raw0_q: Optional[Queue] = None,
     chip_aec_qs: Optional[dict[str, Queue]] = None,
+    chip_beam_plan: _mic_profile.ChipBeamPlan | None = None,
     config: BridgeConfig | None = None,
 ) -> None:
     """Capture 16k 6ch from XVF chip (6-ch firmware), pluck
@@ -1323,12 +1332,12 @@ def _mic_thread(
                 # drop quietly so we don't spam the journal during a
                 # bridge stall that's already noisy via the mic_q path.
                 pass
-        if chip_aec_qs:
-            for leg, channel in (("chip_aec_150", 0), ("chip_aec_210", 1)):
-                q = chip_aec_qs.get(leg)
+        if chip_aec_qs and chip_beam_plan:
+            for beam in chip_beam_plan.legs:
+                q = chip_aec_qs.get(beam.token)
                 if q is None:
                     continue
-                pcm = indata[:, channel].astype(np.int16, copy=True)
+                pcm = indata[:, beam.channel_index].astype(np.int16, copy=True)
                 try:
                     q.put_nowait(pcm.tobytes())
                 except Full:
@@ -1476,6 +1485,7 @@ def _aec_loop(  # noqa: PLR0915
     heartbeat: Optional[Heartbeat] = None,
     raw0_q: Optional[Queue] = None,
     chip_aec_qs: Optional[dict[str, Queue]] = None,
+    chip_beam_plan: _mic_profile.ChipBeamPlan | None = None,
     production_chip_aec_enabled: bool = False,
     chip_aec_primary_leg: str = "chip_aec_150",
     emit_ref: bool = False,
@@ -1558,8 +1568,8 @@ def _aec_loop(  # noqa: PLR0915
     import math
     import time
     import wave
-    if production_chip_aec_enabled and not chip_aec_qs:
-        raise RuntimeError("chip-AEC mode requires chip_aec_qs")
+    if production_chip_aec_enabled and (not chip_aec_qs or not chip_beam_plan):
+        raise RuntimeError("chip-AEC mode requires a validated chip beam plan")
     # UDP output: localhost, non-blocking sendto. Replaces the old
     # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
     # never blocks on `lo` at our rate (~256 kbps), so the main
@@ -1598,12 +1608,10 @@ def _aec_loop(  # noqa: PLR0915
     # affect the AEC ON or chip-direct paths.
     raw0_emitter = add_emitter("raw0", config.out_port_raw0)
     chip_aec_emitters: dict[str, LegEmitter] = {}
-    if chip_aec_qs:
-        for leg, port in (
-            ("chip_aec_150", config.out_port_chip_aec_150),
-            ("chip_aec_210", config.out_port_chip_aec_210),
-        ):
-            chip_aec_emitters[leg] = add_emitter(leg, port)
+    if chip_aec_qs and chip_beam_plan:
+        for beam in chip_beam_plan.legs:
+            port = _leg_default_port(beam.token)
+            chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
 
     xvf_raw0_engine = None
     xvf_raw0_webrtc_emitter = None
@@ -1836,12 +1844,11 @@ def _aec_loop(  # noqa: PLR0915
     output_parts.append(f"raw0={config.out_host}:{config.out_port_raw0}")
     if dtln_engine is not None:
         output_parts.append(f"dtln={config.out_host}:{config.out_port_dtln}")
-    for leg, port in (
-        ("chip_aec_150", config.out_port_chip_aec_150),
-        ("chip_aec_210", config.out_port_chip_aec_210),
-    ):
-        if leg in chip_aec_emitters:
-            output_parts.append(f"{leg}={config.out_host}:{port}")
+    if chip_beam_plan:
+        for beam in chip_beam_plan.legs:
+            if beam.token in chip_aec_emitters:
+                port = _leg_default_port(beam.token)
+                output_parts.append(f"{beam.token}={config.out_host}:{port}")
     if xvf_raw0_engine is not None:
         output_parts.append(
             "xvf_raw0_webrtc_aec3="
@@ -2300,7 +2307,16 @@ def main() -> int:
     )
     production_chip_aec_enabled = _env_bool("JASPER_AEC_CHIP_AEC_ENABLED", "0")
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
-    chip_aec_primary_leg = _chip_aec_primary_leg()
+    chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
+    if chip_aec_enabled and chip_beam_plan is None:
+        logger.error(
+            "chip-AEC requested but no validated chip beam plan is active "
+            "(variant=%s geometry=%s)",
+            os.environ.get("JASPER_XVF_VARIANT", "unknown"),
+            os.environ.get("JASPER_XVF_GEOMETRY", "unknown"),
+        )
+        return 1
+    chip_aec_primary_leg = _chip_aec_primary_leg(chip_beam_plan)
     corpus_xvf_raw0_webrtc_enabled = _env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED", "0",
     )
@@ -2318,7 +2334,7 @@ def main() -> int:
         "corpus_ref=%s corpus_usb=%s corpus_usb_dtln=%s "
         "corpus_aec3_sweep=%s corpus_aec3_sweep_source=%s "
         "corpus_chip_aec=%s production_chip_aec=%s "
-        "chip_aec_primary=%s corpus_xvf_raw0_webrtc=%s "
+        "chip_beam_plan=%s chip_aec_primary=%s corpus_xvf_raw0_webrtc=%s "
         "corpus_xvf_raw0_dtln=%s",
         (
             REF_DEVICE
@@ -2335,6 +2351,7 @@ def main() -> int:
         config.aec3_sweep_input_source,
         "on" if corpus_chip_aec_enabled else "off",
         "on" if production_chip_aec_enabled else "off",
+        chip_beam_plan.plan_id if chip_beam_plan else "none",
         chip_aec_primary_leg,
         "on" if corpus_xvf_raw0_webrtc_enabled else "off",
         "on" if corpus_xvf_raw0_dtln_enabled else "off",
@@ -2404,10 +2421,7 @@ def main() -> int:
     # OUT_PORT_RAW0. See OUT_PORT_RAW0 comment for rationale.
     raw0_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     chip_aec_qs: dict[str, Queue[bytes]] | None = (
-        {
-            "chip_aec_150": Queue(maxsize=QUEUE_MAXSIZE),
-            "chip_aec_210": Queue(maxsize=QUEUE_MAXSIZE),
-        }
+        {beam.token: Queue(maxsize=QUEUE_MAXSIZE) for beam in chip_beam_plan.legs}
         if chip_aec_enabled else None
     )
     usb_q: Queue[bytes] | None = (
@@ -2424,7 +2438,7 @@ def main() -> int:
         ref_t = threading.Thread(target=_ref_thread, args=(ref_q,), daemon=True)
     mic_t = threading.Thread(
         target=_mic_thread,
-        args=(mic_q, raw0_q, chip_aec_qs, config),
+        args=(mic_q, raw0_q, chip_aec_qs, chip_beam_plan, config),
         daemon=True,
     )
     usb_t = (
@@ -2467,6 +2481,7 @@ def main() -> int:
             heartbeat=heartbeat,
             raw0_q=raw0_q,
             chip_aec_qs=chip_aec_qs,
+            chip_beam_plan=chip_beam_plan,
             production_chip_aec_enabled=production_chip_aec_enabled,
             chip_aec_primary_leg=chip_aec_primary_leg,
             emit_ref=corpus_ref_enabled,

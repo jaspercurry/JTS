@@ -10,8 +10,9 @@ below are answered.
 generic USB mic path remains strategically important for open-source
 accessibility and BOM reduction, but the active product path now uses
 profile-first input selection: `auto` resolves to the XVF chip-AEC
-profile on 6-channel XVF3800 hardware and falls back when that profile
-is unavailable. Do not treat this file as an abandoned thread; treat it
+profile only when the detected XVF mic profile has a validated chip beam
+plan and falls back when that profile is unavailable. Do not treat this
+file as an abandoned thread; treat it
 as the next hardware-accessibility track after the current XVF profile
 and corpus instrumentation are stable.
 
@@ -128,7 +129,8 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
 - Do not promote waveform-mixed USB outputs without hard-negative
   validation; the first mix result is interesting but not decisive.
 
-Last verified: 2026-06-07 (re-read against the profile-first input
-policy: USB legs remain corpus-only; pluggable USB production support
-remains a deliberate Phase 2 follow-up after the XVF profile stabilizes,
-not abandoned work. Wake-corpus USB capture controls are toggles.)
+Last verified: 2026-06-19 (re-read against the geometry-aware
+profile-first input policy: USB legs remain corpus-only; pluggable USB
+production support remains a deliberate Phase 2 follow-up after the XVF
+profile stabilizes, not abandoned work. Wake-corpus USB capture controls
+are toggles.)

@@ -243,8 +243,24 @@ def _legacy_aec3_sweep_source(value: str | None = None) -> str:
 
 def chip_aec_config_metadata() -> dict[str, object]:
     """Effective chip-AEC corpus profile recorded with each session."""
+    from jasper.mics import xvf3800
+
+    runtime_profile = xvf3800.detect_runtime_profile()
+    plan = runtime_profile.chip_beam_plan
+    if plan is None:
+        return {
+            "schema_version": 1,
+            "available": False,
+            "variant_id": runtime_profile.variant_id,
+            "geometry": runtime_profile.geometry,
+            "reason": runtime_profile.reason,
+        }
     return {
         "schema_version": 1,
+        "available": True,
+        "variant_id": runtime_profile.variant_id,
+        "geometry": runtime_profile.geometry,
+        "beam_plan": plan.plan_id,
         "reference_topology": "outputd_direct_fanout",
         "outputd_reference_udp_target": OUTPUTD_REF_UDP_TARGET,
         "chip_ref_pcm": DEFAULT_CHIP_REF_PCM,
@@ -256,15 +272,20 @@ def chip_aec_config_metadata() -> dict[str, object]:
         "AEC_ASROUTGAIN": 1.0,
         "AEC_FIXEDBEAMSONOFF": 1,
         "AEC_FIXEDBEAMSGATING": 1,
-        "AEC_FIXEDBEAMSAZIMUTH_VALUES": [2.61799, 3.66519],
-        "AEC_FIXEDBEAMSELEVATION_VALUES": [0.0, 0.0],
+        "AEC_FIXEDBEAMSAZIMUTH_VALUES": [leg.azimuth_rad for leg in plan.legs],
+        "AEC_FIXEDBEAMSELEVATION_VALUES": [leg.elevation_rad for leg in plan.legs],
         "AEC_AECEMPHASISONOFF": 2,
         "AEC_FAR_EXTGAIN": 0.0,
         "AUDIO_MGR_OP_L": [7, 0],
         "AUDIO_MGR_OP_R": [7, 1],
         "beams": [
-            {"leg": "chip_aec_150", "angle_deg": 150},
-            {"leg": "chip_aec_210", "angle_deg": 210},
+            {
+                "leg": leg.token,
+                "channel_index": leg.channel_index,
+                "angle_deg": leg.azimuth_deg,
+                "label": leg.label,
+            }
+            for leg in plan.legs
         ],
     }
 
@@ -474,19 +495,28 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
     try:
         from jasper.mics import xvf3800
 
-        xvf_present = xvf3800.is_present()
-        capture_channels = xvf3800.capture_channels()
-        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+        runtime_profile = xvf3800.detect_runtime_profile()
+        xvf_present = runtime_profile.present
+        capture_channels = runtime_profile.capture_channels
+        recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
         probe_error = None
         identity = {
             "family": (
                 "xvf3800"
                 if xvf_present or capture_channels is not None else "unknown"
             ),
-            "display_name": xvf3800.DISPLAY_NAME,
-            "usb_vid_pid": xvf3800.USB_VID_PID,
+            "display_name": runtime_profile.display_name,
+            "variant_id": runtime_profile.variant_id,
+            "geometry": runtime_profile.geometry,
+            "chip_beam_plan": runtime_profile.chip_beam_plan_id,
+            "chip_aec_supported": runtime_profile.chip_aec_supported,
+            "profile_reason": runtime_profile.reason,
+            "usb_vid_pid": (
+                runtime_profile.variant.usb_vid_pid
+                if runtime_profile.variant else ""
+            ),
             "usb_vid_pids": list(xvf3800.USB_VID_PIDS),
-            "alsa_card": xvf3800.alsa_card_name(),
+            "alsa_card": runtime_profile.alsa_card_name,
             "alsa_card_candidates": list(xvf3800.ALSA_CARD_NAMES),
             "observed": {
                 "present": xvf_present,
@@ -502,10 +532,12 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
                 "build_repo_hash": xvf3800.FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH,
                 "supported_6ch_variants": [
                     {
+                        "variant_id": variant.variant_id,
                         "bld_msg": variant.bld_msg,
                         "geometry": variant.geometry,
                         "usb_vid_pid": variant.usb_vid_pid,
                         "alsa_card": variant.alsa_card_name,
+                        "chip_beam_plan": variant.chip_beam_plan_id,
                     }
                     for variant in xvf3800.SUPPORTED_6CH_FIRMWARE
                 ],
@@ -531,6 +563,9 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
         display_name=identity.get(
             "display_name", "Seeed ReSpeaker XVF3800 (USB UA)",
         ),
+        variant_id=str(identity.get("variant_id", "")),
+        geometry=str(identity.get("geometry", "")),
+        chip_beam_plan=str(identity.get("chip_beam_plan", "")),
         probe_error=probe_error,
     )
     return probe, identity

@@ -52,6 +52,7 @@ from jasper.cli.aec_bridge import (  # noqa: E402
     _shutdown,
     _validate_mic_device,
 )
+from jasper.mics import xvf3800  # noqa: E402
 
 
 class _AlwaysEmptyQ:
@@ -460,6 +461,7 @@ def test_aec_loop_chip_aec_mode_repoints_primary_and_skips_software_aec(monkeypa
             "chip_aec_150": _ScriptedMicQ(chip_150_frames),
             "chip_aec_210": _ScriptedMicQ(chip_210_frames),
         },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
         production_chip_aec_enabled=True,
         chip_aec_primary_leg="chip_aec_150",
     )

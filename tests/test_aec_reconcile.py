@@ -380,6 +380,41 @@ def test_fresh_auto_profile_uses_chip_aec_on_supported_6ch_xvf(tmp_path: Path) -
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
 
 
+def test_mic_profile_resolver_failure_clears_stale_chip_support(
+    tmp_path: Path,
+) -> None:
+    """The resolver owns geometry truth; stale JASPER_XVF_* env must not
+    keep chip-AEC armed when the resolver is unavailable."""
+    _write_env(
+        tmp_path,
+        "Array",
+        extra=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_XVF_VARIANT=xvf3800_legacy_square_6ch\n"
+            "JASPER_XVF_GEOMETRY=square\n"
+            "JASPER_XVF_CHIP_BEAM_PLAN=xvf_square_fixed_150_210\n"
+            "JASPER_XVF_CHIP_AEC_SUPPORTED=1\n"
+        ),
+    )
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "missing-python")},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "mic profile resolver unavailable" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
+    assert "JASPER_XVF_CHIP_BEAM_PLAN=''" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+
+
 @pytest.mark.parametrize(
     ("dac_id", "stderr_phrase"),
     [
@@ -684,12 +719,12 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "restart jasper-outputd.service" in commands
 
 
-def test_chip_aec_auto_discovers_flex_linear_card_for_usb_reference(
+def test_flex_linear_auto_discovers_card_but_does_not_arm_square_chip_beams(
     tmp_path: Path,
 ) -> None:
     """Flex linear firmware enumerates as L16K6Ch, not Array. With no
     explicit JASPER_AEC_MIC_DEVICE pinned, the reconciler should select
-    the present Flex card and derive outputd's chip-reference PCM from it."""
+    the present Flex card but refuse the legacy square 150/210 chip plan."""
     _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1")
     _write_card(tmp_path, card="L16K6Ch", channels=6)
@@ -699,9 +734,14 @@ def test_chip_aec_auto_discovers_flex_linear_card_for_usb_reference(
     assert result.returncode == 0, result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE=udp:9876" in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0" in body
+    assert "JASPER_XVF_VARIANT=xvf3800_flex_linear_6ch" in body
+    assert "JASPER_XVF_GEOMETRY=linear" in body
+    assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "aec_mic=L16K6Ch" in result.stderr
-    assert "candidates=Array L16K6Ch" in result.stderr
+    assert "no validated production chip beam plan" in result.stderr
 
 
 def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:

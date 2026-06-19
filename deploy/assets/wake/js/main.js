@@ -145,7 +145,8 @@ function applyState(s) {
   const rawOn = !!(legs.raw && legs.raw.configured);
   const dtlnOn = !!(legs.dtln && legs.dtln.configured);
   const chipOn = !!(legs.chip_aec && legs.chip_aec.configured);
-  // Hardware gate: the chip-AEC beams only exist on the 6-ch firmware.
+  // Hardware gate: chip-AEC requires a detected mic profile with a
+  // validated geometry-specific beam plan.
   const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
 
   applyProfileStatus(s);
@@ -181,9 +182,9 @@ function applyState(s) {
     el("layer-row-" + name).classList.toggle("is-disabled", blocked);
   });
 
-  // Chip-AEC beams: require AEC + the 6-ch firmware. Disabled (greyed) when
-  // AEC is off or the chip isn't on the 6-ch firmware; enabling pauses the
-  // raw + DTLN layers (mutual exclusion, handled above).
+  // Chip-AEC beams: require AEC + a validated mic beam plan. Disabled
+  // when AEC is off or the active mic profile has no production beam plan;
+  // enabling pauses raw + DTLN (mutual exclusion, handled above).
   const chipBlocked = !aecOn || !chipAvailable;
   if (!dirty.chip_aec) {
     el("layer-chip_aec").checked = chipOn;
@@ -192,7 +193,7 @@ function applyState(s) {
   el("layer-status-chip_aec").textContent = !aecOn
     ? "— requires AEC on"
     : !chipAvailable
-      ? "— needs 6-channel firmware"
+      ? "— unavailable for this mic profile"
       : chipOn
         ? bridgeOn
           ? "✓ active"
@@ -308,7 +309,7 @@ PROFILES.forEach((profile) => {
       profile === "xvf_chip_aec" &&
       !(await jtsConfirm(
         "Use the XVF chip-AEC profile?\n\n" +
-          "This uses the mic array's hardware echo-cancelled 150°/210° beams and disables the software raw/DTLN wake legs.",
+          "This uses the active mic profile's validated hardware AEC beam plan and disables the software raw/DTLN wake legs.",
       ))
     ) {
       setTimeout(pollDetection, 0);
@@ -354,7 +355,7 @@ LAYERS.forEach((name) => {
       !(await jtsConfirm(
         "Use the chip-AEC beams as the wake layers?\n\n" +
           "This switches to the mic array's hardware echo-cancelled " +
-          "150°/210° beams and PAUSES the raw + DTLN layers — the chip " +
+          "beam plan and PAUSES the raw + DTLN layers — the chip " +
           "can't do both at once.\n" +
           "jasper-voice + bridge will restart (~15 s).",
       ))

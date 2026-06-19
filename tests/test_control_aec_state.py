@@ -18,6 +18,7 @@ import pytest
 
 from jasper import atomic_io
 from jasper.control import server
+from jasper.mics import xvf3800
 from jasper.web import wake_setup
 
 
@@ -35,6 +36,28 @@ def wake_model_file(tmp_path: Path, monkeypatch):
     path = tmp_path / "wake_model.env"
     monkeypatch.setattr(server, "_WAKE_MODEL_FILE", str(path))
     return path
+
+
+def _stub_xvf_runtime(
+    monkeypatch,
+    *,
+    variant: xvf3800.FirmwareVariant | None = xvf3800.VARIANT_6CH,
+    present: bool = True,
+    channels: int | None = 6,
+) -> None:
+    plan = xvf3800.chip_beam_plan_for_variant(variant)
+    card = variant.alsa_card_name if variant else xvf3800.ALSA_CARD_NAME
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.detect_runtime_profile",
+        lambda: xvf3800.RuntimeProfile(
+            present=present,
+            variant=variant,
+            alsa_card_name=card,
+            capture_channels=channels,
+            chip_beam_plan=plan,
+            reason="test profile",
+        ),
+    )
 
 
 # ---------- _parse_env_bool ------------------------------------------------
@@ -448,13 +471,9 @@ def test_aec_full_status_includes_legs_and_threshold(
     # Stub the systemctl call — we don't want this unit test to
     # depend on a live jasper-aec-bridge.service.
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
-    # Stub the firmware probe so the chip leg's `available` flag is
+    # Stub the mic profile probe so the chip leg's `available` flag is
     # deterministic off-device (no /proc/asound/Array here).
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
-    )
-    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         server,
         "_fresh_jasper_env",
@@ -505,11 +524,7 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: False,
-    )
-    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: False)
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: None)
+    _stub_xvf_runtime(monkeypatch, variant=None, present=False, channels=None)
     monkeypatch.setattr(server, "_fresh_jasper_env", lambda: {})
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     status = server._aec_full_status()
@@ -533,20 +548,21 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
 def test_aec_full_status_chip_available_tracks_firmware(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
-    """The chip-AEC leg's `available` flag mirrors
-    xvf3800.is_recommended_firmware() so the /wake/ toggle can grey out
-    on non-6-ch firmware. Configured state is independent of available."""
+    """The chip-AEC leg's `available` flag mirrors the detected mic beam
+    plan, so the /wake/ toggle can grey out on unsupported firmware or
+    geometry. Configured state is independent of available."""
     aec_mode_file.write_text(
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: False,
+    _stub_xvf_runtime(
+        monkeypatch,
+        variant=xvf3800.VARIANT_2CH,
+        present=True,
+        channels=2,
     )
-    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 2)
     monkeypatch.setattr(server, "_fresh_jasper_env", lambda: {})
     status = server._aec_full_status()
     # Configured reflects the operator's intent even when unavailable.
@@ -554,10 +570,7 @@ def test_aec_full_status_chip_available_tracks_firmware(
     assert status["legs"]["chip_aec"]["available"] is False
     assert "Chip-AEC needs" in " ".join(status["microphone"]["warnings"])
 
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
-    )
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
@@ -573,11 +586,7 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     )
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
-    )
-    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         server,
         "_fresh_jasper_env",
@@ -600,6 +609,39 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
 
 
+def test_aec_full_status_flex_linear_auto_resolves_software_aec3(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=auto\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    _stub_xvf_runtime(monkeypatch, variant=xvf3800.VARIANT_FLEX_LINEAR_6CH)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
+            "JASPER_XVF_VARIANT": "xvf3800_flex_linear_6ch",
+            "JASPER_XVF_GEOMETRY": "linear",
+            "JASPER_XVF_CHIP_AEC_SUPPORTED": "0",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["legs"]["chip_aec"]["available"] is False
+    assert status["audio_profile"]["requested"] == "xvf_software_aec3"
+    assert status["microphone"]["variant_id"] == "xvf3800_flex_linear_6ch"
+    assert status["microphone"]["geometry"] == "linear"
+
+
 def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
@@ -615,11 +657,7 @@ def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
     )
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
-    )
-    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         server,
         "_fresh_jasper_env",
@@ -648,11 +686,7 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
     )
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
-    )
-    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
-    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         server,
         "_fresh_jasper_env",
@@ -685,7 +719,7 @@ def test_aec_full_status_survives_firmware_probe_error(
         raise RuntimeError("proc read blew up")
 
     monkeypatch.setattr(
-        "jasper.mics.xvf3800.is_recommended_firmware", _boom,
+        "jasper.mics.xvf3800.detect_runtime_profile", _boom,
     )
     status = server._aec_full_status()
     assert status["legs"]["chip_aec"]["available"] is False

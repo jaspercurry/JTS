@@ -1140,9 +1140,10 @@ worst-case FP cost.
 > we proved the XVF3800's on-chip AEC can do useful cancellation in
 > JTS's external-DAC topology when JTS feeds the chip a clean USB-IN
 > reference. Fresh installs use `JASPER_AUDIO_INPUT_PROFILE=auto`, which
-> resolves to chip-AEC on 6-channel XVF3800 hardware with a
-> supported/calibrated output DAC profile and falls back to software AEC3
-> when chip-AEC is unavailable. The wake-corpus recorder can
+> resolves to chip-AEC only when the detected XVF mic profile has a
+> validated chip beam plan and the output DAC profile is supported /
+> calibrated; it falls back to software AEC3 when chip-AEC is
+> unavailable. The wake-corpus recorder can
 > still enter reversible chip-AEC comparison profiles that use outputd
 > direct source fanout, apply the volatile chip profile, and capture
 > explicit `chip_aec_150` / `chip_aec_210` legs for validation.
@@ -1384,11 +1385,11 @@ Realistic bring-up sequence:
 
 **Verdict for future scoping:** feasibility is confirmed in lab, and the
 production profile path now exists. Fresh installs use `auto`, which
-resolves to chip-AEC on 6-channel XVF3800 hardware with a
-supported/calibrated output DAC profile and falls back when that path is
-unavailable. Continue recording and scoring wake events across chip AEC,
-WebRTC AEC3, raw, USB corpus legs, and optional DTLN legs. Current best chip
-settings:
+resolves to chip-AEC only when the detected XVF mic profile has a
+validated chip beam plan and the output DAC profile is supported /
+calibrated; otherwise it falls back to software AEC3. Continue recording
+and scoring wake events across chip AEC, WebRTC AEC3, raw, USB corpus
+legs, and optional DTLN legs. Current best square-board chip settings:
 `AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
 `AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 available as the explicit
 fallback profile and avoid stacking it under chip-AEC.
@@ -2638,4 +2639,6 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-18.
+Last verified: 2026-06-19 (chip-AEC availability rechecked against the
+geometry-aware XVF profile resolver; Flex LINEAR-4 uses software AEC3
+until a linear beam plan is validated).

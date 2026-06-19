@@ -14,9 +14,10 @@ Three stacked sections, one page:
      DTLN legs are sub-features layered on top, and are disabled
      (visually + interactively) when AEC is off because they consume the
      bridge's UDP stream. The chip-AEC layer is additionally gated on the
-     6-channel firmware (its `available` flag) and is mutually exclusive
-     with raw + DTLN — enabling it greys those out (one chip can't emit
-     both the software legs and the chip beams).
+     detected mic profile having a validated chip beam plan (its
+     `available` flag) and is mutually exclusive with raw + DTLN —
+     enabling it greys those out (one chip can't emit both the software
+     legs and the chip beams).
 
   3. **Wake-word model picker** — radio over the curated registry in
      jasper/wake_models.py. Bundled openWakeWord names always show as
@@ -231,10 +232,10 @@ _LAYERS = (
     (
         "chip_aec",
         "Chip-AEC beams (XVF3800)",
-        "Uses the mic array's hardware echo-cancelled 150°/210° beams "
-        "as the wake layers. Mutually exclusive with the raw + DTLN "
+        "Uses a validated geometry-specific mic-array hardware AEC beam "
+        "plan as the wake layers. Mutually exclusive with the raw + DTLN "
         "layers — turning this on pauses them (the chip can't do both "
-        "at once). Needs the 6-channel firmware.",
+        "at once). Needs a supported mic profile, firmware, and beam plan.",
         # Two openWakeWord detectors (one per beam), no neural engine.
         # Estimate pending on-device measurement; matches the format of
         # the rows above (<RAM> · <CPU>).
@@ -254,7 +255,7 @@ _PROFILES = (
     (
         "xvf_chip_aec",
         "XVF chip-AEC",
-        "Use the mic array's hardware echo-cancelled beams.",
+        "Use the mic array's validated hardware echo-cancelled beam plan.",
         "XVF3800",
     ),
     (

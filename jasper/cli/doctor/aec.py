@@ -94,7 +94,7 @@ def _wake_leg_setting(key: str, default: bool) -> bool:
 def _chip_aec_available_for_doctor() -> bool:
     try:
         from ...mics import xvf3800
-        return xvf3800.is_recommended_firmware()
+        return xvf3800.detect_runtime_profile().chip_aec_supported
     except Exception:  # noqa: BLE001
         return False
 
@@ -125,14 +125,15 @@ def _audio_profile_status_for_doctor(
     if mic_probe is None:
         try:
             from ...mics import xvf3800
-            capture_channels = xvf3800.capture_channels()
+            runtime_profile = xvf3800.detect_runtime_profile()
             mic_probe = MicProbe(
-                xvf_present=xvf3800.is_present(),
-                capture_channels=capture_channels,
-                recommended_channels=(
-                    xvf3800.RECOMMENDED_FIRMWARE.capture_channels
-                ),
-                display_name=xvf3800.DISPLAY_NAME,
+                xvf_present=runtime_profile.present,
+                capture_channels=runtime_profile.capture_channels,
+                recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
+                display_name=runtime_profile.display_name,
+                variant_id=runtime_profile.variant_id,
+                geometry=runtime_profile.geometry,
+                chip_beam_plan=runtime_profile.chip_beam_plan_id,
             )
         except Exception:  # noqa: BLE001
             mic_probe = MicProbe(
@@ -142,8 +143,9 @@ def _audio_profile_status_for_doctor(
             )
 
     chip_available = (
-        mic_probe.xvf_present
-        and mic_probe.capture_channels == mic_probe.recommended_channels
+        bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+        if mic_probe is not None
+        else _chip_aec_available_for_doctor()
     )
     return build_audio_profile_status(
         AecIntent(

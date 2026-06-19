@@ -130,6 +130,20 @@ def test_production_chip_profile_uses_chip_flag_and_delay(monkeypatch) -> None:
     assert dev.dev.closed is True
 
 
+def test_chip_profile_refuses_linear_geometry_without_beam_plan(monkeypatch) -> None:
+    dev = _FakeXvfDevice()
+    _install_fake_xvf(monkeypatch, dev)
+    amixer_calls = _stub_amixer(monkeypatch)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    monkeypatch.setenv("JASPER_XVF_GEOMETRY", "linear")
+    monkeypatch.delenv("JASPER_XVF_CHIP_BEAM_PLAN", raising=False)
+
+    assert aec_init.main() == 1
+    assert "AEC_FIXEDBEAMSAZIMUTH_VALUES" not in _write_map(dev)
+    assert amixer_calls == []
+    assert dev.dev.closed is True
+
+
 def test_corpus_profile_fails_when_critical_write_fails(monkeypatch) -> None:
     dev = _FakeXvfDevice(fail_on={"AUDIO_MGR_OP_L"})
     _install_fake_xvf(monkeypatch, dev)

@@ -224,11 +224,12 @@ ALTER TABLE wake_events ADD COLUMN fired_legs TEXT;
 
 The chip-AEC promotion
 ([HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4) turns the XVF3800's fixed 150°/210° hardware-AEC ASR beams from
-corpus-only capture into opt-in, hardware-conditional **scored wake
-legs**. Each beam gets the same per-leg score / offset / fire-time-RMS
-columns as the software legs, added via **both** `CREATE TABLE` (fresh
-DBs) and `_MIGRATION_COLUMNS` (already-deployed Pis backfill on
+§2.4) turns the current square-board XVF beam plan's `chip_aec_150` /
+`chip_aec_210` hardware-AEC ASR beams from corpus-only capture into
+opt-in, hardware-conditional **scored wake legs**. Each beam gets the
+same per-leg score / offset / fire-time-RMS columns as the software
+legs, added via **both** `CREATE TABLE` (fresh DBs) and
+`_MIGRATION_COLUMNS` (already-deployed Pis backfill on
 `open()`):
 
 ```sql
@@ -669,11 +670,12 @@ listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
 
-Last verified: 2026-06-10 (retention/off-loop language rechecked
-against `jasper/wake_events.py`: WAV writes and `_retention_sweep`
-run via `asyncio.to_thread`, gated by the running
-`_audio_bytes_estimate`, and the sweep still runs from the
-audio-attach path with no hourly timer; audio ring-buffer cap still
-matches the 1 GB production default,
+Last verified: 2026-06-19 (chip-AEC beam-leg language rechecked against
+the geometry-aware XVF profile resolver; retention/off-loop language was
+rechecked 2026-06-10 against `jasper/wake_events.py`: WAV writes and
+`_retention_sweep` run via `asyncio.to_thread`, gated by the running
+`_audio_bytes_estimate`, and the sweep still runs from the audio-attach
+path with no hourly timer; audio ring-buffer cap still matches the 1 GB
+production default,
 `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`. Prior
 schema/file-layout checks still apply.)
