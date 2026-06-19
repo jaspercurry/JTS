@@ -223,3 +223,69 @@ def test_gemini_does_not_inherit_optional_server_vad_shadow_members():
 
     conn = GeminiLiveConnection(api_key="fake", model="fake")
     assert conn.supports_server_vad() is False
+
+
+async def test_turn_open_failure_cue_is_honest_about_cause():
+    """Regression for the 2026-06-19 incident.
+
+    An UNEXPECTED local error during turn-open (the trigger that day was
+    a readonly usage.db write) used to fire the `cant_connect` cue — the
+    speaker told the user "I can't connect right now, I'll keep trying"
+    when connectivity was fine. The turn-open catch-all must pick the cue
+    by the LIVE connection state: `cant_connect` only when the connection
+    is genuinely paused, otherwise the honest, low-alarm `internal_error`
+    cue. (Layer 2 separately keeps the usage write from reaching here at
+    all; this pins the cue honesty regardless of what throws.)"""
+
+    async def _drive(*, paused: bool) -> list[str]:
+        wl = WakeLoop.for_tests()
+        played: list[str] = []
+
+        async def _rec(slug: str) -> None:
+            played.append(slug)
+
+        async def _win(**_kwargs) -> str:
+            return "WIN"
+
+        async def _noop(*_args, **_kwargs) -> None:
+            return None
+
+        async def _begin_boom() -> None:
+            # Stands in for the real incident: an unexpected local failure
+            # on the turn-open hot path (the connection itself is fine).
+            raise RuntimeError("attempt to write a readonly database")
+
+        class _Conn:
+            def __init__(self, is_paused: bool) -> None:
+                self._paused = is_paused
+
+            def is_paused(self) -> bool:
+                return self._paused
+
+        wl._wake_late_cancelled = lambda *_a, **_k: False
+        wl._peer_arbitrate = _win
+        wl._prepare_assistant_loudness_context = _noop
+        wl._play_listening_chirp = _noop
+        wl._begin_turn = _begin_boom
+        wl._play_cue = _rec
+        wl._connection = _Conn(paused)
+
+        try:
+            await wl._arbitrate_acquire_drain(
+                score=0.9,
+                rms_dbfs=-30.0,
+                spend_allowed=True,
+                conn_paused=False,  # snapshot said fine; the failure is local
+                can_serve=True,
+            )
+        finally:
+            await wl._cancel_fire_and_forget_tasks()
+        return played
+
+    # Healthy connection + unexpected local error -> honest internal cue,
+    # NOT a false "I can't connect".
+    assert await _drive(paused=False) == ["internal_error"]
+
+    # Connection genuinely dropped into paused/failed mid-acquire ->
+    # cant_connect is the truthful cue.
+    assert await _drive(paused=True) == ["cant_connect"]

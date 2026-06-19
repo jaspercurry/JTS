@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from jasper.usage import (
+    _UNRECORDED_SESSION,
     ConnectionUptimeMeter,
     Pricing,
     SpendCap,
@@ -33,6 +34,41 @@ def test_open_and_close_session_records_cost(tmp_path: Path):
     )
     assert abs(cost - expected) < 1e-9
     assert store.spend_last_24h_usd() == cost
+
+
+def test_session_writes_fail_soft_on_readonly_db(tmp_path: Path, caplog):
+    """A usage-accounting write must NEVER break the voice turn.
+
+    Reproduces the 2026-06-19 outage: usage.db ends up unwritable by
+    jasper-voice, so the per-turn INSERT raises "attempt to write a
+    readonly database". open_session must swallow it, return the
+    _UNRECORDED_SESSION sentinel, and let the caller serve the turn;
+    close_session must no-op on that sentinel and also survive a failed
+    UPDATE. Neither may raise — a raise here aborted the turn and made
+    the daemon play the (false) cant_connect cue."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))  # creates the schema read-write
+    # Swap in a read-only handle to the same file: every subsequent
+    # write now raises sqlite3.OperationalError, exactly as a DB owned
+    # by the wrong user does.
+    store._conn.close()
+    store._conn = sqlite3.connect(
+        f"file:{db}?mode=ro", uri=True, isolation_level=None,
+    )
+
+    with caplog.at_level("WARNING"):
+        sid = store.open_session(provider="gemini")  # must not raise
+    assert sid == _UNRECORDED_SESSION
+    assert any("open_session write failed" in r.message for r in caplog.records)
+
+    # close_session on the sentinel is a no-op that still returns a cost
+    # estimate and never raises.
+    cost = store.close_session(sid, input_tokens=10_000, output_tokens=20_000)
+    assert cost >= 0.0
+
+    # A real session id whose UPDATE can't persist also fails soft
+    # (returns the estimate, logs, does not raise).
+    assert store.close_session(1, input_tokens=1, output_tokens=1) >= 0.0
 
 
 def test_spend_cap_blocks_when_exceeded(tmp_path: Path):
@@ -617,8 +653,14 @@ def test_read_only_cannot_write(tmp_path: Path):
     db = tmp_path / "usage.db"
     UsageStore(str(db))  # create schema as the writer
     ro = UsageStore(str(db), read_only=True)
-    with pytest.raises(sqlite3.OperationalError):
-        ro.open_session(provider="openai")
+    # open_session is fail-soft as of 2026-06-19: it must NOT raise — a
+    # raise on the turn-open hot path aborted the turn and fired a false
+    # cant_connect cue. The read-only connection must still genuinely
+    # reject the write, so a reader can never create/mutate usage.db (the
+    # 2026-06-16 protection): the call returns the unrecorded sentinel and
+    # no session row is persisted.
+    assert ro.open_session(provider="openai") == _UNRECORDED_SESSION
+    assert ro.session_count_today_utc() == 0
 
 
 def test_read_only_reads_existing_spend(tmp_path: Path):

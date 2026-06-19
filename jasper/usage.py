@@ -63,6 +63,13 @@ DEFAULT_DAILY_SPEND_CAP_USD = 1.0
 DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER = 1.25
 DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
 
+# Sentinel session id returned by ``UsageStore.open_session`` when the
+# accounting INSERT fails (e.g. usage.db ends up owned by the wrong user
+# and writes raise "attempt to write a readonly database"). Negative so it
+# can never collide with a real AUTOINCREMENT rowid (those start at 1).
+# ``close_session`` treats it as a no-op. See ``open_session``.
+_UNRECORDED_SESSION = -1
+
 
 @dataclass(frozen=True)
 class Pricing:
@@ -450,11 +457,33 @@ class UsageStore:
         )
 
     def open_session(self, provider: str | None = None) -> int:
-        cur = self._conn.execute(
-            "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
-            (datetime.now(timezone.utc).isoformat(), provider),
-        )
-        return int(cur.lastrowid)
+        """Insert a new session row and return its id.
+
+        Fail-soft: a usage-accounting write must NEVER break the voice
+        turn (this mirrors ``ConnectionUptimeMeter`` and the module
+        contract). The voice loop calls this on the turn-open hot path,
+        before the connection is even acquired. If the INSERT raises —
+        chiefly ``sqlite3.OperationalError: attempt to write a readonly
+        database`` when usage.db is owned by the wrong user — we log and
+        return ``_UNRECORDED_SESSION`` instead of propagating. The caller
+        stores that id and serves the turn anyway; ``close_session``
+        no-ops on it. This turn's cost goes unrecorded, which is fine for
+        disposable spend telemetry — far better than aborting the turn
+        and playing a failure cue (the 2026-06-19 outage, where this
+        raising on every wake made the daemon say "I can't connect"
+        instead of answering)."""
+        try:
+            cur = self._conn.execute(
+                "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
+                (datetime.now(timezone.utc).isoformat(), provider),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.Error as e:
+            logger.warning(
+                "usage: open_session write failed (%s: %s); serving turn "
+                "unrecorded", type(e).__name__, e,
+            )
+            return _UNRECORDED_SESSION
 
     def close_session(
         self,
@@ -477,20 +506,35 @@ class UsageStore:
                 "output_tokens": output_tokens,
             }
         cost = self._pricing.estimate_cost(usage)
-        self._conn.execute(
-            """
-            UPDATE sessions
-            SET ended_at = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?
-            WHERE id = ?
-            """,
-            (
-                datetime.now(timezone.utc).isoformat(),
-                input_tokens,
-                output_tokens,
-                cost,
-                session_id,
-            ),
-        )
+        # No row to update when open_session's write failed — the cost
+        # estimate is still returned for the caller's logging, it just
+        # isn't persisted (see _UNRECORDED_SESSION / open_session).
+        if session_id == _UNRECORDED_SESSION:
+            return cost
+        # Fail-soft for the same reason open_session is: a telemetry
+        # write must never break the voice turn. The cost estimate is
+        # already computed above, so a failed persist just means this
+        # turn drops out of the stored 24 h spend total.
+        try:
+            self._conn.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?
+                WHERE id = ?
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                    session_id,
+                ),
+            )
+        except sqlite3.Error as e:
+            logger.warning(
+                "usage: close_session write failed (%s: %s); cost unrecorded",
+                type(e).__name__, e,
+            )
         return cost
 
     # ------------------------------------------------------------------
