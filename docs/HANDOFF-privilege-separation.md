@@ -266,7 +266,7 @@ SIGSYS), a TTS cue rendered end-to-end through the non-root voice→fanin path,
 tokens, and the Class-2 reconcilers stay root and run clean.
 
 **systemd `StateDirectory=jasper` recursively chowns** `/var/lib/jasper`'s
-contents to whichever of jasper-voice/jasper-mux started (group stays `jasper`,
+contents to jasper-voice (its sole owner since S2 — see below; group stays `jasper`,
 modes preserved) — so cross-daemon reads must rely on **group** read (`0640`+),
 never owner. That's why `speaker_volume.json` is `0660` and the Google tree is
 `0640`; files only one daemon reads (its own state, or root-read files like the
@@ -278,9 +278,9 @@ root; the install↔unit user contract).
 The paragraph above is about cross-daemon *reads*; the multi-*writer* files are
 the trap. `usage.db`, `wake-events.sqlite3`, `timers.db`, and
 `speaker_volume.json` are written by more than one same-`jasper`-group daemon,
-and the StateDirectory chown flips their *owner* between jasper-voice and
-jasper-mux on restart. A file created at the umask-default `0644` is
-group-read-**only**, so once the owner flips, the non-owner daemon gets
+and — before S2 (below) — the StateDirectory chown flipped their *owner* between
+jasper-voice and jasper-mux on each restart. A file created at the umask-default
+`0644` is group-read-**only**, so once the owner flipped, the non-owner daemon got
 `sqlite3.OperationalError: attempt to write a readonly database` — and the
 speaker then played the (false) `cant_connect` cue instead of answering.
 Fix: **jasper-voice/-mux/-control set `UMask=0007`** (the same directive the
@@ -292,6 +292,20 @@ would have leaked it); and `jasper-doctor`'s `check_state_dir_group_writable`
 flags drift before it bites. Pinned by `tests/test_systemd_hardening.py` (the
 UMask contract), `tests/test_install_state_group_write.py` (the heal + the
 PSK-safety property), and `tests/test_doctor_state_files.py`.
+
+**S2 — single StateDirectory owner.** `jasper-voice` is now the *sole*
+`StateDirectory=jasper` owner; `jasper-mux` dropped its `StateDirectory` and
+reaches `/var/lib/jasper` via `ReadWritePaths` instead. That removes the
+owner-*flip* entirely — only voice re-chowns the tree, always to
+`jasper-voice:jasper` — so a non-owner write no longer depends on restart order.
+`UMask=0007` is still required (voice's single-direction re-chown still leaves
+mux a non-owner of files voice created, so mux writes them via the group bit),
+and `heal_shared_state_modes` still backfills pre-existing drift. The dir's
+existence is guaranteed by voice's `StateDirectory` + `install.sh`'s
+`ensure_state_dir`; mux's `Restart=always` rides out any transient
+not-yet-created window. Pinned by `tests/test_systemd_hardening.py` (mux has no
+`StateDirectory`; its `ReadWritePaths` covers `/var/lib/jasper`) and
+`tests/test_mux.py`.
 
 **3b-2 (LANDED) — control.** `jasper-control` drops to a non-root
 `jasper-control` user (primary group `jasper`, no supplementary groups —
@@ -792,4 +806,4 @@ For future Tier-B slices, do not compensate for failed hardware validation by
 granting broad sudo, adding the units to `MANAGED_UNITS`, or weakening the
 hotplug recovery path.
 
-Last verified: 2026-06-17
+Last verified: 2026-06-19

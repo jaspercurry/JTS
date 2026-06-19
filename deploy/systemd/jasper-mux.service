@@ -40,22 +40,21 @@ MemoryMax=120M
 Nice=-3
 RuntimeDirectory=jasper-mux
 RuntimeDirectoryMode=0750
-# StateDirectory guarantees /var/lib/jasper exists + is writable for the
-# durable source-selection mode file (mux_mode.json), so a household's
-# manual source pin survives the Restart=always deploy/restart cycle.
-# Mux runs as root with no ProtectSystem today, so /var/lib/jasper is
-# already writable; this codifies the write target and keeps the pin
-# durable if mux ever gains filesystem sandboxing. Mirrors jasper-voice.
-StateDirectory=jasper
-# 0770 (was 0750): group-write so the shared `jasper` group can write
-# speaker_volume.json here (atomic tempfile+rename needs dir write). Same
-# rationale as jasper-voice.
-StateDirectoryMode=0770
-# UMask=0007 — group-writable (0660) shared state. mux co-owns
-# StateDirectory=jasper with jasper-voice and re-chowns the tree to its own user
-# on restart, so both (same `jasper` group) must be able to write the shared DBs
-# (usage.db etc.). Without it they land 0644 and the non-owner hits a readonly-DB
-# error. Mirrors jasper-voice; see docs/HANDOFF-privilege-separation.md (2026-06-19).
+# S2 — single StateDirectory owner: mux does NOT declare StateDirectory=jasper.
+# jasper-voice is the SOLE StateDirectory=jasper owner. When mux ALSO declared
+# it, systemd recursively re-chowned /var/lib/jasper to jasper-mux:jasper on
+# every mux restart (and back to jasper-voice:jasper on every voice restart) — an
+# owner-flip that left shared files unwritable by the non-owner (the 2026-06-19
+# readonly-DB incident). Mux now reaches /var/lib/jasper purely via ReadWritePaths
+# (below) under ProtectSystem=strict, for the durable source-selection pin
+# (mux_mode.json) and the shared speaker_volume.json. The dir is guaranteed to
+# exist by voice's StateDirectory + install.sh's ensure_state_dir; mux's
+# Restart=always rides out any transient dir-not-created-yet window.
+# docs/HANDOFF-privilege-separation.md ("S2: single StateDirectory owner").
+# UMask=0007 — files mux CREATES in /var/lib/jasper land group-`jasper`-writable
+# (0660), not 0644. voice (sole owner) re-chowns the tree to jasper-voice:jasper
+# on its restarts, so mux (same `jasper` group) must write shared files via the
+# group bit. Same directive jasper-fanin/-outputd already use for their sockets.
 UMask=0007
 
 # OOM protection (Stage 1 of memory-resilience plan, see
@@ -70,15 +69,19 @@ OOMScoreAdjust=-300
 
 # WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
 # mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
-# the phase-1 directives. Most writes are covered by StateDirectory=jasper +
-# RuntimeDirectory=jasper-mux; WS1 Phase 4b adds the Spotify token-cache write
-# path below. The capability/syscall filters and the non-root user drop (mux is
+# the phase-1 directives. Writes are covered by RuntimeDirectory=jasper-mux +
+# ReadWritePaths (/var/lib/jasper for the source pin, /var/lib/jasper-intsecrets
+# for the WS1 Phase 4b Spotify token cache). The capability/syscall filters and the non-root user drop (mux is
 # now a broker client for its librespot-stall restart) are in the Phase-3b block
 # above.
 NoNewPrivileges=true
 ProtectSystem=strict
 # WS1 Phase 4b — Spotify token refreshes are legitimate runtime writes.
-ReadWritePaths=/var/lib/jasper-intsecrets
+# /var/lib/jasper (S2) — mux's write target for the source-selection pin
+# (mux_mode.json) + shared speaker_volume.json, now that mux no longer declares
+# StateDirectory=jasper. Under ProtectSystem=strict this is what keeps the path
+# writable.
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets
 ProtectHome=tmpfs
 PrivateTmp=true
 ProtectKernelTunables=true
