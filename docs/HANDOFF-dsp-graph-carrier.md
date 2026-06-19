@@ -325,10 +325,17 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   dry-runs the active carrier (SF-2). Tests 2, 4, 5, 7 landed
   (`tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_baseline_profile.py`,
-  `tests/test_sound_graph_carrier.py`). **Still to do:** validate the
-  program-level EQ placement + headroom math on real hardware (jts3
-  commissioning + audible EQ smoke test) and confirm the EQ'd baseline persists
-  across reconcile before declaring the apply path shipped.
+  `tests/test_sound_graph_carrier.py`). **On-device validation (jts3,
+  2026-06-19, non-destructive):** against jts3's REAL applied mono active-2-way
+  baseline + measured corrections, the flat recompose classifies
+  `GRAPH_APPROVED_ACTIVE_RUNTIME` (headroom −12 dB) and a +6 dB preference
+  (a +4 dB shelf + a +2 dB peak) folds headroom to exactly −18 dB, rides
+  pre-split, keeps `volume_limit: 0.0`, and still classifies APPROVED; jts3's
+  own CamillaDSP 4.1.3 `--check` accepts the EQ'd graph ("Config is valid").
+  **Still to do (human-gated):** the live load-and-listen audible smoke test
+  (it changes playback on a shared lab Pi and needs a human at the speaker) and
+  confirming the EQ'd baseline persists across a reconcile, before declaring the
+  apply path shipped.
 
 ## Deferred — distributed active (separate design increment)
 
