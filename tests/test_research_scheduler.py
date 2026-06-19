@@ -226,6 +226,44 @@ async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_fai
 
 
 @pytest.mark.asyncio
+async def test_resurfaced_done_jobs_do_not_consume_concurrency_slots():
+    path = _tmp_db_path()
+    surfaced_started = asyncio.Event()
+    release_resurface = asyncio.Event()
+    client = BlockingClient()
+
+    async def on_done(_job: ResearchJob) -> None:
+        surfaced_started.set()
+        await release_resurface.wait()
+
+    try:
+        store = ResearchJobStore(path)
+        assert store.add(_job("done1", status=DONE, result="Ready", announced=False))
+        store.close()
+
+        sched = ResearchScheduler(
+            client,
+            on_done=on_done,
+            db_path=path,
+            concurrency=1,
+        )
+        await sched.start()
+        await _wait_for(surfaced_started.is_set)
+
+        accepted = sched.submit("new question")
+
+        assert accepted.accepted is True
+        assert accepted.job is not None
+        await _wait_for(lambda: client.started == 1)
+
+        release_resurface.set()
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_in_flight_without_calling_on_done():
     path = _tmp_db_path()
     done_jobs: list[ResearchJob] = []

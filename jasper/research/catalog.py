@@ -17,7 +17,7 @@ class TextProviderEntry:
     provider: TextLLMProvider
 
 
-PROVIDERS: tuple[TextProviderEntry, ...] = (
+_PROVIDER_ENTRIES: tuple[TextProviderEntry, ...] = (
     TextProviderEntry(
         id="openai",
         label="OpenAI Responses",
@@ -27,6 +27,18 @@ PROVIDERS: tuple[TextProviderEntry, ...] = (
         provider=openai_research.PROVIDER,
     ),
 )
+
+
+def _validate_providers(entries: tuple[TextProviderEntry, ...]) -> tuple[TextProviderEntry, ...]:
+    seen: set[str] = set()
+    for entry in entries:
+        if entry.id in seen:
+            raise ValueError(f"duplicate research provider id: {entry.id}")
+        seen.add(entry.id)
+    return entries
+
+
+PROVIDERS = _validate_providers(_PROVIDER_ENTRIES)
 
 
 def provider_by_id(provider_id: str) -> TextProviderEntry | None:

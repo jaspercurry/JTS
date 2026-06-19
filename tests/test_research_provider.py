@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 import jasper.research as research
+from jasper.research import catalog as research_catalog
 from jasper.research import ResearchRequest, ResearchResult
 from jasper.research.catalog import TextProviderEntry, default_model, provider_by_id
 from jasper.research.providers import openai_research
@@ -73,6 +74,20 @@ def test_catalog_helpers():
     assert default_model("openai") == openai_research.DEFAULT_MODEL
     assert provider_by_id("missing") is None
     assert default_model("missing") == ""
+
+
+def test_catalog_rejects_duplicate_provider_ids():
+    entry = TextProviderEntry(
+        id="dup",
+        label="Duplicate",
+        key_env="DUP_KEY",
+        model_env="DUP_MODEL",
+        default_model="dup-model",
+        provider=openai_research.PROVIDER,
+    )
+
+    with pytest.raises(ValueError, match="duplicate research provider id: dup"):
+        research_catalog._validate_providers((entry, entry))
 
 
 @dataclass

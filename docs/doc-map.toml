@@ -194,7 +194,6 @@ code = [
   "jasper/vad.py",
   "jasper/tools/**",
   "jasper/research/**",
-  "jasper/research.py",
   "jasper/tool_state.py",
   "jasper/tool_catalog_view.py",
   "jasper/tool_prompt_overrides.py",

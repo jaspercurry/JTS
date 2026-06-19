@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from .research.base import ResearchError, ResearchRequest, TextLLMClient
+from .base import ResearchError, ResearchRequest, TextLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +59,13 @@ class ResearchJobStore:
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        conn: sqlite3.Connection | None = None
         try:
             parent = os.path.dirname(db_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            self._conn = sqlite3.connect(db_path, isolation_level=None)
-            self._conn.execute(
+            conn = sqlite3.connect(db_path, isolation_level=None)
+            conn.execute(
                 "CREATE TABLE IF NOT EXISTS research_jobs ("
                 "  id TEXT PRIMARY KEY,"
                 "  query TEXT NOT NULL,"
@@ -79,7 +80,14 @@ class ResearchJobStore:
             )
         except (OSError, sqlite3.Error) as e:
             logger.warning("research store unavailable (%s): %s", db_path, e)
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
             self._conn = None
+        else:
+            self._conn = conn
 
     @property
     def available(self) -> bool:
@@ -304,7 +312,7 @@ class ResearchScheduler:
                 job=None,
                 message="I need a research question first.",
             )
-        if len(self._tasks) >= self._concurrency:
+        if self._running_task_count() >= self._concurrency:
             return ResearchStartResult(
                 accepted=False,
                 job=None,
@@ -339,6 +347,13 @@ class ResearchScheduler:
 
     def get(self, job_id: str) -> ResearchJob | None:
         return self._jobs.get(job_id) or self._store.get(job_id)
+
+    def _running_task_count(self) -> int:
+        return sum(
+            1
+            for job_id in self._tasks
+            if (job := self._jobs.get(job_id)) is not None and job.status == RUNNING
+        )
 
     async def _resurface(self, job: ResearchJob) -> None:
         try:

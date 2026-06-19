@@ -6,12 +6,9 @@ never take down the rest of the daemon when Phase 2 wires this in.
 """
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 from .base import (
     ResearchError,
@@ -21,6 +18,18 @@ from .base import (
     TextLLMProvider,
 )
 from .catalog import PROVIDERS, TextProviderEntry, default_model, provider_by_id
+from .scheduler import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_DB_PATH,
+    DEFAULT_MAX_RUNTIME_SEC,
+    DONE,
+    FAILED,
+    RUNNING,
+    ResearchJob,
+    ResearchJobStore,
+    ResearchScheduler,
+    ResearchStartResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,38 +66,6 @@ def active_research_provider(env: Mapping[str, str]) -> ActiveResearchProvider |
             continue
         return ActiveResearchProvider(provider_id=entry.id, client=client)
     return None
-
-
-def _load_scheduler_exports() -> dict[str, object]:
-    """Expose jasper/research.py despite jasper/research/ shadowing it."""
-    module_name = "jasper._research_scheduler"
-    cached = sys.modules.get(module_name)
-    if cached is not None:
-        module = cached
-    else:
-        path = Path(__file__).resolve().parent.parent / "research.py"
-        spec = importlib.util.spec_from_file_location(module_name, path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"could not load {path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-    names = (
-        "DEFAULT_CONCURRENCY",
-        "DEFAULT_DB_PATH",
-        "DEFAULT_MAX_RUNTIME_SEC",
-        "DONE",
-        "FAILED",
-        "RUNNING",
-        "ResearchJob",
-        "ResearchJobStore",
-        "ResearchScheduler",
-        "ResearchStartResult",
-    )
-    return {name: getattr(module, name) for name in names}
-
-
-globals().update(_load_scheduler_exports())
 
 
 __all__ = [
