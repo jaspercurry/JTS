@@ -1,0 +1,116 @@
+"""Pattern-2 text-provider registry for async research.
+
+Providers parse their own env keys from a plain mapping. A missing key
+returns no client; a broken provider is fault-isolated so one adapter can
+never take down the rest of the daemon when Phase 2 wires this in.
+"""
+from __future__ import annotations
+
+import importlib.util
+import logging
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from .base import (
+    ResearchError,
+    ResearchRequest,
+    ResearchResult,
+    TextLLMClient,
+    TextLLMProvider,
+)
+from .catalog import PROVIDERS, TextProviderEntry, default_model, provider_by_id
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ActiveResearchProvider:
+    provider_id: str
+    client: TextLLMClient
+
+    async def aclose(self) -> None:
+        aclose = getattr(self.client, "aclose", None)
+        if aclose is None:
+            return
+        try:
+            await aclose()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "research provider %s aclose failed during shutdown",
+                self.provider_id,
+            )
+
+
+def active_research_provider(env: Mapping[str, str]) -> ActiveResearchProvider | None:
+    for entry in PROVIDERS:
+        try:
+            client = entry.provider.build_client(env)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "research provider %s build_client failed; skipping it",
+                entry.id,
+            )
+            continue
+        if client is None:
+            continue
+        return ActiveResearchProvider(provider_id=entry.id, client=client)
+    return None
+
+
+def _load_scheduler_exports() -> dict[str, object]:
+    """Expose jasper/research.py despite jasper/research/ shadowing it."""
+    module_name = "jasper._research_scheduler"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        module = cached
+    else:
+        path = Path(__file__).resolve().parent.parent / "research.py"
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"could not load {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    names = (
+        "DEFAULT_CONCURRENCY",
+        "DEFAULT_DB_PATH",
+        "DEFAULT_MAX_RUNTIME_SEC",
+        "DONE",
+        "FAILED",
+        "RUNNING",
+        "ResearchJob",
+        "ResearchJobStore",
+        "ResearchScheduler",
+        "ResearchStartResult",
+    )
+    return {name: getattr(module, name) for name in names}
+
+
+globals().update(_load_scheduler_exports())
+
+
+__all__ = [
+    "ActiveResearchProvider",
+    "DONE",
+    "DEFAULT_CONCURRENCY",
+    "DEFAULT_DB_PATH",
+    "DEFAULT_MAX_RUNTIME_SEC",
+    "FAILED",
+    "PROVIDERS",
+    "RUNNING",
+    "ResearchError",
+    "ResearchJob",
+    "ResearchJobStore",
+    "ResearchRequest",
+    "ResearchResult",
+    "ResearchScheduler",
+    "ResearchStartResult",
+    "TextLLMClient",
+    "TextLLMProvider",
+    "TextProviderEntry",
+    "active_research_provider",
+    "default_model",
+    "provider_by_id",
+]
