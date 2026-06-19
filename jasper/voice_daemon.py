@@ -1265,13 +1265,20 @@ class WakeLoop:
             job.status,
             text,
         )
-        await self._play_dynamic_text(text)
+        played = await self._play_dynamic_text(text)
+        if not played:
+            logger.warning(
+                "research announce: playback failed id=%s status=%s",
+                job.id,
+                job.status,
+            )
+            return
         if self._research_scheduler is not None:
             self._research_scheduler.mark_announced(job.id)
             if job.status == DONE:
                 self._research_scheduler.mark_read(job.id)
 
-    async def _play_dynamic_text(self, text: str) -> None:
+    async def _play_dynamic_text(self, text: str) -> bool:
         """Speak arbitrary `text` through the cue manager, with
         snapshot-based duck/restore around the playback. Used for
         timer announcements (and any future variable-content cue).
@@ -1283,16 +1290,19 @@ class WakeLoop:
         more than the dial-twist-wins behavior `Ducker` is designed
         for. See `jasper/camilla.py:CueDuck` for the rationale."""
         if self._cues is None:
-            return
+            logger.warning("dynamic text play skipped: cues unavailable")
+            return False
         if isinstance(self._ducker, FanInDucker):
+            played = False
             try:
                 await self._ducker.duck()
                 await self._cues.speak_text(text)
+                played = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
             finally:
                 await self._ducker.restore()
-            return
+            return played
         if self._camilla is None:
             # No camilla handle — degrade to unducked playback rather
             # than crash. The user hears the cue over un-ducked music
@@ -1301,12 +1311,15 @@ class WakeLoop:
                 await self._cues.speak_text(text)
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
-            return
+                return False
+            return True
         async with CueDuck(self._camilla, self._cfg.duck_db):
             try:
                 await self._cues.speak_text(text)
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
+                return False
+        return True
 
     async def _play_cue(self, slug: str) -> None:
         """Best-effort cue playback. Ducks music via CamillaDSP for

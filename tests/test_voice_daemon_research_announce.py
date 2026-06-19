@@ -49,8 +49,9 @@ async def test_announce_research_ready_reads_done_result_and_marks_announced():
     wl._state = State.WAKE
     spoken: list[str] = []
 
-    async def _play(text: str) -> None:
+    async def _play(text: str) -> bool:
         spoken.append(text)
+        return True
 
     scheduler = _MarkingScheduler()
     wl._play_dynamic_text = _play
@@ -70,8 +71,9 @@ async def test_announce_research_ready_failed_job_speaks_one_failure_line():
     wl._state = State.WAKE
     spoken: list[str] = []
 
-    async def _play(text: str) -> None:
+    async def _play(text: str) -> bool:
         spoken.append(text)
+        return True
 
     scheduler = _MarkingScheduler()
     wl._play_dynamic_text = _play
@@ -85,4 +87,26 @@ async def test_announce_research_ready_failed_job_speaks_one_failure_line():
         "Sorry, I couldn't finish that research. Please ask me again.",
     ]
     assert scheduler.announced == ["job12345"]
+    assert scheduler.read == []
+
+
+async def test_announce_research_ready_does_not_mark_read_when_playback_fails():
+    wl = WakeLoop.for_tests()
+    wl._state = State.WAKE
+    spoken: list[str] = []
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        return False
+
+    scheduler = _MarkingScheduler()
+    wl._play_dynamic_text = _play
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    await wl.announce_research_ready(_job())
+
+    assert spoken == [
+        "Hey, your research is ready. Use induction if you want fast response.",
+    ]
+    assert scheduler.announced == []
     assert scheduler.read == []

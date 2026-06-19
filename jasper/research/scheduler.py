@@ -318,6 +318,11 @@ class ResearchScheduler:
                 )
                 if failed is not None:
                     self._jobs[failed.id] = failed
+                    if not failed.announced:
+                        self._tasks[failed.id] = asyncio.create_task(
+                            self._resurface(failed),
+                            name=f"research-resurface-{failed.id}",
+                        )
                 continue
             if job.status == DONE and not job.announced:
                 self._jobs[job.id] = job
@@ -489,7 +494,7 @@ class ResearchScheduler:
                 "output_token_details": {"text_tokens": result.output_tokens},
             }
         try:
-            self._usage_store.close_session(
+            self._usage_store.record_background_usage(
                 provider=self._usage_provider,
                 model=self._usage_model,
                 input_tokens=result.input_tokens,

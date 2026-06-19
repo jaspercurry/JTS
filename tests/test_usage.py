@@ -692,7 +692,8 @@ def test_token_billed_provider_has_no_intervals(tmp_path: Path):
 # resolves to an all-zero Pricing labelled ``unpriced:<id>``, which means
 # the daily spend cap silently never accrues for that model. The bundled
 # table's own contract (jasper/data/model_pricing.json `_comment`) is
-# "Bundled DEFAULT voice-model rates ... keyed by exact model ID", so every
+# "Bundled DEFAULT voice and research model rates ... keyed by exact model ID",
+# so every
 # model the /voice wizard offers from the catalog must have an entry —
 # otherwise picking a curated model quietly disables spend accounting
 # until the runtime doctor warning is noticed.

@@ -251,7 +251,7 @@ async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_fai
         )
         await sched.start()
 
-        await _wait_for(lambda: [job.id for job in surfaced] == ["done1"])
+        await _wait_for(lambda: {job.id for job in surfaced} == {"done1", "run1"})
 
         rows = {job.id: job for job in ResearchJobStore(path).all()}
         assert rows["done1"].status == DONE
@@ -259,6 +259,7 @@ async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_fai
         assert rows["done2"].status == DONE
         assert rows["run1"].status == FAILED
         assert "interrupted by a restart" in (rows["run1"].error or "")
+        assert [job.status for job in surfaced if job.id == "run1"] == [FAILED]
         await sched.stop()
     finally:
         if os.path.exists(path):
@@ -383,7 +384,7 @@ async def test_done_result_is_capped_and_usage_is_recorded():
         def __init__(self) -> None:
             self.calls = []
 
-        def close_session(self, **kwargs):
+        def record_background_usage(self, **kwargs):
             self.calls.append(kwargs)
             return 0.001
 
