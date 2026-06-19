@@ -75,3 +75,15 @@ def test_readwritepaths_pins_control_write_contracts():
         "peering renders /etc/avahi/services/jasper-peer.service from inside "
         f"jasper-control under ProtectSystem=full. Got {val!r}"
     )
+
+
+def test_unit_caps_tasks_without_memorymax_kill_boundary():
+    """Control sheds overload in-process; systemd caps runaway task growth.
+
+    Do not use MemoryMax here: jasper-control is the protected recovery
+    surface, so a cgroup-local OOM kill would remove the dashboard/control
+    plane exactly when the household needs it.
+    """
+    unit = _read_unit()
+    assert _value_for(unit, "TasksMax") == "256"
+    assert _value_for(unit, "MemoryMax") is None

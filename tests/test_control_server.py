@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2174,6 +2174,56 @@ def test_state_502_when_aggregator_raises(
     assert "error" in body
 
 
+def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
+    """Burst polls should collapse to one cross-daemon fan-out."""
+    import jasper.control.server as srv_mod
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    async def fake_get_state(**kwargs):
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=2), "test did not release state aggregate"
+        return {"ok": True, "calls": calls}
+
+    monkeypatch.setattr(srv_mod, "_get_state", fake_get_state)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    results: list[tuple[int, dict]] = []
+    try:
+        t1 = threading.Thread(
+            target=lambda: results.append(_get(f"{base}/state")),
+            daemon=True,
+        )
+        t2 = threading.Thread(
+            target=lambda: results.append(_get(f"{base}/state")),
+            daemon=True,
+        )
+        t1.start()
+        assert started.wait(timeout=1)
+        t2.start()
+        time.sleep(0.05)
+        assert calls == 1
+        release.set()
+        t1.join(timeout=2)
+        t2.join(timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_thread.join(timeout=2)
+
+    assert len(results) == 2
+    assert all(item == (200, {"ok": True, "calls": 1}) for item in results)
+    assert calls == 1
+
+
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):
     """When JASPER_HA_URL/TOKEN are unset, /state.home_assistant returns
     configured=false with no error — fail-soft for the dashboard."""
@@ -2776,11 +2826,96 @@ class _StubHeartbeat:
 
 
 def _make_loopback_control_server():
-    from http.server import BaseHTTPRequestHandler
-
     from jasper.control.server import ControlHTTPServer
 
     return ControlHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+
+
+def test_control_http_server_sheds_when_worker_cap_is_full():
+    from jasper.control.server import ControlHTTPServer
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return None
+
+        def do_GET(self):
+            entered.set()
+            assert release.wait(timeout=2), "test did not release handler"
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ControlHTTPServer(
+        ("127.0.0.1", 0),
+        _BlockingHandler,
+        max_workers=1,
+        request_timeout_sec=1.0,
+    )
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    first: list[tuple[int, dict]] = []
+    try:
+        t = threading.Thread(
+            target=lambda: first.append(_get(f"{base}/first")),
+            daemon=True,
+        )
+        t.start()
+        assert entered.wait(timeout=1)
+
+        status, body = _get(f"{base}/second")
+        assert status == 429
+        assert body["error"] == "server_overloaded"
+        assert body["retry_after"] == 1
+
+        release.set()
+        t.join(timeout=2)
+        assert first == [(200, {"ok": True})]
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        http_thread.join(timeout=2)
+
+
+def test_control_http_server_coalesces_overload_logs(caplog):
+    from jasper.control.server import ControlHTTPServer
+
+    now = 100.0
+
+    def clock() -> float:
+        return now
+
+    server = ControlHTTPServer(
+        ("127.0.0.1", 0),
+        BaseHTTPRequestHandler,
+        overload_log_interval_sec=5.0,
+        clock=clock,
+    )
+    try:
+        with caplog.at_level("WARNING", logger="jasper.control.server"):
+            server._log_overloaded(("127.0.0.1", 1001))
+            server._log_overloaded(("127.0.0.1", 1002))
+            server._log_overloaded(("127.0.0.1", 1003))
+            now = 105.1
+            server._log_overloaded(("127.0.0.1", 1004))
+    finally:
+        server.server_close()
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=control.overloaded" in record.getMessage()
+    ]
+    assert len(messages) == 2
+    assert "suppressed=0" in messages[0]
+    assert "suppressed=2" in messages[1]
 
 
 def test_service_actions_bumps_attached_heartbeat():

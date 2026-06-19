@@ -27,6 +27,7 @@ import pytest
 
 from jasper.control.system_supervisor import (
     SystemSupervisor,
+    _control_health_response_alive,
     _read_reboot_state,
     snapshot,
     start_supervisor,
@@ -288,6 +289,30 @@ async def test_probe_exception_counts_as_failure():
     for _ in range(3):
         await sup._tick()
     assert sup.reboot_calls == 1
+
+
+def test_control_health_overload_response_counts_as_alive():
+    """429 from jasper-control's admission gate is alive-but-shedding.
+
+    Counting it as dead would let the concurrency cap trigger the T5.2
+    reboot path under a diagnostics/read burst.
+    """
+    assert _control_health_response_alive(b"HTTP/1.1 200 OK\r\n") is True
+    assert (
+        _control_health_response_alive(
+            b"HTTP/1.1 429 Too Many Requests\r\n",
+        )
+        is True
+    )
+    assert _control_health_response_alive(b"HTTP/1.1 503 Unavailable\r\n") is False
+
+
+def test_resilience_doc_mentions_control_overload_probe_semantics():
+    """The operator-facing T5.2 doc must match the 429 liveness contract."""
+    doc = (Path(__file__).resolve().parents[1] / "docs/HANDOFF-resilience.md")
+    text = doc.read_text(encoding="utf-8")
+    assert "429 Too Many Requests" in text
+    assert "alive-but-shedding" in text
 
 
 async def test_rate_limit_blocks_second_reboot_in_window():

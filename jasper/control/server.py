@@ -2,8 +2,8 @@
 home automation). Bound to LAN so an ESP32 dial on the household network
 can drive volume / transport / session.
 
-Stack: stdlib http.server (ThreadingHTTPServer), pycamilladsp client,
-VolumeCoordinator (source-aware dispatch).
+Stack: stdlib http.server (bounded ThreadingHTTPServer), pycamilladsp
+client, VolumeCoordinator (source-aware dispatch).
 
 The route table is in `_make_handler` below — `do_GET` and `do_POST`
 own the dispatch in one place rather than mirroring the list here
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import json
 import urllib.request
 import logging
@@ -353,6 +354,65 @@ def _env_int(name: str, default: int) -> int:
 
 
 CONTROL_MAX_POST_BYTES = _env_int("JASPER_CONTROL_MAX_POST_BYTES", 4096)
+CONTROL_MAX_WORKERS = 8
+CONTROL_REQUEST_QUEUE_SIZE = 16
+CONTROL_REQUEST_TIMEOUT_SEC = 5.0
+CONTROL_OVERLOAD_LOG_INTERVAL_SEC = 5.0
+STATE_RESPONSE_CACHE_TTL_SEC = 1.0
+
+
+_MISSING = object()
+
+
+class _SingleFlightTTLCache:
+    """Small thread-safe cache for expensive read-only JSON routes."""
+
+    def __init__(
+        self,
+        ttl_sec: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_sec = float(ttl_sec)
+        self._clock = clock
+        self._cond = threading.Condition()
+        self._value: Any = _MISSING
+        self._expires_at = 0.0
+        self._inflight = False
+
+    def get_or_compute(self, compute: Callable[[], Any]) -> Any:
+        """Return a fresh value, sharing one in-flight computation.
+
+        Only successful computations are cached. If the compute raises,
+        waiters are released and the next caller may retry.
+        """
+        while True:
+            with self._cond:
+                now = self._clock()
+                if self._value is not _MISSING and now < self._expires_at:
+                    return self._value
+                if not self._inflight:
+                    self._inflight = True
+                    break
+                self._cond.wait()
+
+        computed = False
+        try:
+            value = compute()
+            computed = True
+        finally:
+            if not computed:
+                with self._cond:
+                    self._inflight = False
+                    self._cond.notify_all()
+
+        with self._cond:
+            self._value = value
+            self._expires_at = self._clock() + self._ttl_sec
+            self._inflight = False
+            self._cond.notify_all()
+            return value
+
 
 VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
@@ -618,6 +678,7 @@ async def _dispatch_transport(action: str) -> dict:
         spotify_router_factory=_build_spotify_router_or_none,
     )
 
+
 # ---------- peering daemon supervisor ----------
 
 # The peering daemon runs an asyncio event loop; jasper-control is
@@ -822,6 +883,7 @@ def _make_handler(
     # `_get_op` doesn't need it (`get_listening_level` doesn't touch
     # camilla), but passing None there keeps the construction uniform.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
+    state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
 
     async def _set_op(percent: int):
         async def _op(coord):
@@ -1287,11 +1349,13 @@ def _make_handler(
             # for ad-hoc debugging. ~200 ms typical (mostly the
             # parallel busctl + camilla WS probes).
             try:
-                state = asyncio.run(_get_state(
-                    camilla_host=camilla_host,
-                    camilla_port=camilla_port,
-                    voice_socket_path=voice_socket_path,
-                ))
+                state = state_response_cache.get_or_compute(
+                    lambda: asyncio.run(_get_state(
+                        camilla_host=camilla_host,
+                        camilla_port=camilla_port,
+                        voice_socket_path=voice_socket_path,
+                    )),
+                )
             except Exception as e:  # noqa: BLE001
                 logger.exception("/state aggregation failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -2397,7 +2461,7 @@ def _make_handler(
 
 
 class ControlHTTPServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer whose accept loop drives the systemd watchdog.
+    """Bounded ThreadingHTTPServer whose accept loop drives the watchdog.
 
     `service_actions()` runs on every `serve_forever()` poll iteration
     (~0.5 s cadence) **in the accept-loop thread itself**, so bumping the
@@ -2413,13 +2477,110 @@ class ControlHTTPServer(ThreadingHTTPServer):
     `heartbeat` stays None in tests/dev so the server runs standalone.
     """
 
+    daemon_threads = True
     heartbeat: Any = None
+    request_queue_size = CONTROL_REQUEST_QUEUE_SIZE
+
+    def __init__(
+        self,
+        *args: Any,
+        max_workers: int = CONTROL_MAX_WORKERS,
+        request_timeout_sec: float = CONTROL_REQUEST_TIMEOUT_SEC,
+        overload_log_interval_sec: float = CONTROL_OVERLOAD_LOG_INTERVAL_SEC,
+        clock: Callable[[], float] = time.monotonic,
+        **kwargs: Any,
+    ) -> None:
+        self._max_workers = max(1, int(max_workers))
+        self._request_timeout_sec = float(request_timeout_sec)
+        self._overload_log_interval_sec = max(0.0, float(overload_log_interval_sec))
+        self._clock = clock
+        self._overload_log_lock = threading.Lock()
+        self._overload_next_log_at = 0.0
+        self._overload_suppressed = 0
+        self._admission = threading.BoundedSemaphore(self._max_workers)
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._max_workers,
+            thread_name_prefix="jasper-control-http",
+        )
+        try:
+            super().__init__(*args, **kwargs)
+        except OSError:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            raise
 
     def service_actions(self) -> None:
         super().service_actions()
         hb = self.heartbeat
         if hb is not None:
             hb.bump()
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        try:
+            request.settimeout(self._request_timeout_sec)
+        except OSError:
+            pass
+        if not self._admission.acquire(blocking=False):
+            self._send_overloaded(request, client_address)
+            return
+        try:
+            self._executor.submit(self._handle_in_pool, request, client_address)
+        except RuntimeError:
+            self._admission.release()
+            self.shutdown_request(request)
+            raise
+
+    def _handle_in_pool(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._admission.release()
+
+    def _send_overloaded(self, request: Any, client_address: Any) -> None:
+        payload = {
+            "error": "server_overloaded",
+            "retry_after": 1,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        response = (
+            b"HTTP/1.1 429 Too Many Requests\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Cache-Control: no-store\r\n"
+            b"Connection: close\r\n"
+            b"Retry-After: 1\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode("ascii")
+            + b"\r\n"
+            + body
+        )
+        try:
+            request.sendall(response)
+        except OSError:
+            pass
+        finally:
+            self._log_overloaded(client_address)
+            self.shutdown_request(request)
+
+    def _log_overloaded(self, client_address: Any) -> None:
+        now = self._clock()
+        with self._overload_log_lock:
+            if now < self._overload_next_log_at:
+                self._overload_suppressed += 1
+                return
+            suppressed = self._overload_suppressed
+            self._overload_suppressed = 0
+            self._overload_next_log_at = now + self._overload_log_interval_sec
+        log_event(
+            logger,
+            "control.overloaded",
+            client=repr(client_address),
+            max_workers=self._max_workers,
+            suppressed=suppressed,
+            level=logging.WARNING,
+        )
+
+    def server_close(self) -> None:
+        super().server_close()
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def build_server(

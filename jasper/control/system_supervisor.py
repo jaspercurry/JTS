@@ -102,6 +102,20 @@ SSHD_ENABLED_STATUSES = {
 SSHD_SKIP_STATUSES = {"disabled", "masked", "not-found"}
 
 
+def _control_health_response_alive(data: bytes) -> bool:
+    """True when jasper-control answered enough to prove process liveness."""
+    return (
+        data.startswith(b"HTTP/1.0 200")
+        or data.startswith(b"HTTP/1.1 200")
+        # jasper-control sheds overload with 429 before dispatching a
+        # request worker. That is degraded service, but it proves the
+        # accept loop is alive; counting it as dead would let an overload
+        # guard manufacture a T5.2 reboot.
+        or data.startswith(b"HTTP/1.0 429")
+        or data.startswith(b"HTTP/1.1 429")
+    )
+
+
 class SystemSupervisor:
     """Probes userspace liveness; clean-reboots on confident wedge.
 
@@ -470,9 +484,10 @@ class SystemSupervisor:
                 await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except (OSError, asyncio.TimeoutError):
                 pass
-        # 200 OK from healthz — anything else (502, timeout, half-
-        # closed connection) is a failure.
-        return data.startswith(b"HTTP/1.0 200") or data.startswith(b"HTTP/1.1 200")
+        # 200 OK from healthz, or 429 from jasper-control's overload
+        # admission gate. Timeouts / half-closed connections remain
+        # failures.
+        return _control_health_response_alive(data)
 
     async def probe_loadavg(self) -> bool:
         """Can we read /proc/loadavg within 1 s? Kernel I/O stall
