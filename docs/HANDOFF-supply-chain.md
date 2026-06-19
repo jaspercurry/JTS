@@ -124,6 +124,17 @@ Python dependency determinism is split by runtime target:
   [CONTRIBUTING.md](../CONTRIBUTING.md)'s `uv sync` flow. This pins the
   developer environment without pretending it is a Raspberry Pi wheel
   lock.
+- **GitHub Actions** also consumes the committed `uv.lock`, on Ubuntu
+  x86_64 / Python 3.13, with
+  `uv sync --locked --extra full --extra dev --group openwakeword-onnx`.
+  That makes the hardware-free CI slice test the reviewed dependency
+  resolve instead of whatever PyPI happens to satisfy on a given run.
+  The `openwakeword-onnx` dependency group keeps openWakeWord's non-tflite
+  helper packages (`requests`, `tqdm`, `scikit-learn`) lock-covered. The
+  only post-sync Python install is the exact ONNX-only
+  `openwakeword==0.6.0 --no-deps` workaround; it remains outside `uv.lock`
+  because the package's declared `tflite-runtime` dependency is
+  unsatisfiable on Python 3.13 and is not imported by JTS.
 - **Pi deploys** use the committed, Pi-generated
   `deploy/constraints-pi.txt` when present. `install.sh` passes it to
   pip via `-c` for open-range runtime installs, replaying a reviewed
@@ -133,15 +144,12 @@ Python dependency determinism is split by runtime target:
   `flatbuffers==20181003210633` freeze value because PyPI cannot replay
   it; `onnxruntime` then resolves a published flatbuffers wheel during
   deploy.
-- **GitHub Actions** still installs from `pyproject.toml` on Ubuntu
-  x86_64 with pip. That is intentional for the hardware-free CI slice:
-  the Pi constraints file is architecture-specific, and `uv.lock` is
-  the local-development lock rather than a deploy promise.
 
-This is one dependency-management story with two platform-specific
-resolution artifacts, not the old "choose a lock later" gap. The
-remaining Python gap is hash-level verification for PyPI artifacts and
-`jasper_aec3` build-isolation dependencies.
+This is one dependency-management story with platform-specific resolution
+artifacts where they matter: `uv.lock` for laptop and GitHub Actions
+x86_64 environments, and `deploy/constraints-pi.txt` for the arm64 Pi
+runtime. The remaining Python gap is hash-level verification for PyPI
+artifacts and `jasper_aec3` build-isolation dependencies.
 
 The two PlatformIO firmware projects now pin their shared git library
 dependency by commit and use exact top-level registry versions rather
@@ -168,13 +176,14 @@ These are real and intentionally left for later slices:
   Raspberry Pi OS / Debian repositories. Apt signatures protect
   transport and repository integrity, but installs are not snapshot-
   pinned.
-- **Python hash-level verification.** Local development has `uv.lock`
-  and Pi deploys have `deploy/constraints-pi.txt`, but pip still
-  downloads PyPI wheels/sdists without hash checking, and `jasper_aec3`
-  build isolation still resolves `jasper_aec3/pyproject.toml`
-  requirements. The next supply-chain slice should add a hash-checked
-  artifact or mirror path without collapsing the local-development and
-  Pi-runtime lock stories into one misleading file.
+- **Python hash-level verification.** Local development and GitHub
+  Actions have `uv.lock`, and Pi deploys have `deploy/constraints-pi.txt`,
+  but pip/uv still download PyPI wheels/sdists without an enforced
+  artifact mirror, CI's exact `openwakeword --no-deps` workaround remains
+  a narrow exception, and `jasper_aec3` build isolation still resolves
+  `jasper_aec3/pyproject.toml` requirements. The next supply-chain slice
+  should add a hash-checked artifact or mirror path without collapsing the
+  local-development/CI and Pi-runtime lock stories into one misleading file.
 - **PlatformIO transitive/toolchain resolution.** Top-level firmware
   inputs are exact, but PlatformIO still consults its package registry
   for toolchains and metadata.
@@ -221,11 +230,12 @@ The active/fallback stock model is treated as runtime-critical; inactive
 stock options are optional so a transient upstream download failure does
 not block unrelated deploys.
 
-Python install determinism now has explicit artifacts for the two places
-that need them today: `uv.lock` for local contributor environments and
-`deploy/constraints-pi.txt` for Pi deploys. Future work should focus on
-hash verification/mirroring for Python artifacts, not on pretending an
-x86_64 developer lock and an arm64 appliance resolve are interchangeable.
+Python install determinism now has explicit artifacts for the places that
+need them today: `uv.lock` for local contributor and GitHub Actions
+environments, and `deploy/constraints-pi.txt` for Pi deploys. Future work
+should focus on hash verification/mirroring for Python artifacts, not on
+pretending an x86_64 CI/developer lock and an arm64 appliance resolve are
+interchangeable.
 
 The 2026-06-01 install-productization slice removed the base install's
 direct `git` fetches for `nqptp`, `shairport-sync`,

@@ -52,12 +52,46 @@ def test_dev_dependency_group_matches_dev_extra() -> None:
     )
 
 
-def test_ci_installs_full_runtime_with_dev_extra() -> None:
-    """The full pytest suite imports optional runtime packages."""
+def test_openwakeword_onnx_group_covers_ci_helper_deps() -> None:
+    """Only openWakeWord itself is installed outside uv sync in CI."""
+
+    data = _pyproject()
+
+    assert data["dependency-groups"]["openwakeword-onnx"] == [
+        "requests",
+        "tqdm",
+        "scikit-learn>=1,<2",
+    ]
+
+
+def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
+    """The full pytest suite imports optional runtime packages.
+
+    CI should replay the committed lock instead of resolving
+    `.[full,dev]` from live PyPI on every run. The openWakeWord install is
+    deliberately after the exact sync because it is an ONNX-only exception
+    installed without its unsatisfiable Python 3.13 tflite dependency.
+    """
 
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
+    test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
 
-    assert "pip install -e '.[full,dev]'" in workflow
+    sync = "uv sync --locked --extra full --extra dev --group openwakeword-onnx"
+    openwakeword = (
+        "uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0"
+    )
+
+    assert "astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39" in workflow
+    assert 'version: "0.11.14"' in workflow
+    assert sync in workflow
+    assert openwakeword in workflow
+    assert workflow.index(sync) < workflow.index(openwakeword)
+    assert ".venv/bin/ruff check ." in workflow
+    assert "run: scripts/test-merge" in workflow
+    assert '".venv/bin/pytest"' in test_merge
+    assert "scikit-learn>=1,<2" not in workflow
+    assert "uv pip install --python .venv/bin/python requests" not in workflow
+    assert "pip install -e '.[full,dev]'" not in workflow
 
 
 def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
@@ -227,13 +261,13 @@ def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
         if "dbus_next" in override["module"]
     } == {"skip"}
     assert "Type check (mypy; lenient baseline)" in workflow
-    assert "run: mypy" in workflow
+    assert "run: .venv/bin/mypy" in workflow
     assert (ROOT / "jasper" / "py.typed").is_file()
     assert "py.typed" in data["tool"]["setuptools"]["package-data"]["jasper"]
 
 
 def test_python_resolution_artifacts_are_committed_and_documented() -> None:
-    """Local dev and Pi deploys intentionally use different Python
+    """Local dev/CI and Pi deploys intentionally use different Python
     resolution artifacts; keep both present and keep the canonical doc
     from drifting back to the old "choose later" language."""
 
