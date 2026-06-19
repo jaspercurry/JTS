@@ -184,6 +184,62 @@ capture reality.
 
 - **No control, no resampler.** Pure measurement. This is how we run the
   `not_run` production-path drift measurement (deploy → watch SRO ≥30 min).
+
+### Chip-ref observe mode — breaking the bootstrap deadlock
+
+The Layer-0 estimator only ticks while outputd's chip-ref writer runs, and
+the writer only runs when `JASPER_OUTPUTD_CHIP_REF_PCM` is set. But
+`jasper-aec-reconcile` refuses to arm chip-AEC on an independent-clock DAC
+(HiFiBerry/DAC8x → `chip_aec_dac_status=needs_calibration` → it falls back to
+software AEC3 and *clears* `JASPER_OUTPUTD_CHIP_REF_PCM`). So on the very box
+that needs the measurement (JTS3), the writer is off, the estimator is never
+fed, and we cannot measure the drift that would *produce* the calibration —
+a deadlock.
+
+**Observe mode** is the opt-in escape hatch: it arms the chip-ref writer
+**for measurement only**, without arming chip-AEC as the production mic path.
+The mic path stays software AEC3; only the chip-ref *producer* is added so the
+estimator reads real DAC-vs-XVF counters. Default OFF → zero cost for every
+household that does not opt in.
+
+Two env keys, both wizard/operator-owned in `aec_mode.env` and the runtime
+`jasper.env`:
+
+| Key | File | Default | Writer | Reader |
+|---|---|---|---|---|
+| `JASPER_AEC_CHIP_REF_OBSERVE` | `/var/lib/jasper/aec_mode.env` | `0` | operator/wizard | `jasper-aec-reconcile` |
+| `JASPER_OUTPUTD_CHIP_REF_OBSERVE` | `/etc/jasper/jasper.env` | `0` | `jasper-aec-reconcile` | `jasper-outputd` (self-describe in `/state.outputd…aec_clock.observe`) |
+
+The reconciler only honors observe on the **software-AEC3 leg path** and only
+when the XVF USB-IN PCM is known: it sets `JASPER_OUTPUTD_CHIP_REF_PCM` to the
+chip reference and `JASPER_OUTPUTD_CHIP_REF_OBSERVE=1`, while keeping
+`JASPER_AEC_CHIP_AEC_ENABLED=0` and the raw/AEC3 mic legs intact (the
+safety-critical invariant, pinned in `tests/test_aec_reconcile.py`). On the
+chip-AEC-armed path and the bridge-down (non-6-ch) path, observe is forced
+off. outputd restarts when the flag flips so the writer comes up. The
+`observe` boolean rides the `aec_clock` block in outputd `/state` and the
+`jasper-doctor` "AEC clock drift" detail (`observe=…`) purely to explain why
+the writer is running; it changes **no** audio behavior.
+
+**JTS3 measurement procedure** (the `not_run` production-path drift run):
+
+```sh
+# 1. Enable observe in the mode file (or via the /wake/ advanced layer once
+#    surfaced), then let the reconciler arm the writer:
+printf 'JASPER_AEC_CHIP_REF_OBSERVE=1\n' | sudo tee -a /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
+# 2. Deploy is the canonical path on a laptop:  bash scripts/deploy-to-pi.sh
+# 3. Let it run ≥30 min, then read the drift the estimator measured:
+curl -s http://jts3.local:8780/state \
+  | jq '.outputd.reference_outputs.aec_clock'
+#    → { chip_ref_sro_ppm, sro_estimator_status: "locked", verdict, observe: true, … }
+```
+
+The resulting `chip_ref_sro_ppm` / `verdict` is the calibration evidence that
+decides whether the HiFiBerry needs Layer 2 (compensable) or is coherent
+enough to arm chip-AEC directly — see the [hardware test matrix](#hardware-test-matrix).
+Turn observe back off (`JASPER_AEC_CHIP_REF_OBSERVE=0` → reconcile) once the
+measurement is captured; it is a diagnostic, not a steady state.
 - **Thin Layer 1:** a minimal verdict (`coherent` if |SRO| ≈ 0 and pointers
   sane; else `compensable` candidate; `untrusted` if counters are
   implausible) wired to the AEC3 fallback `jasper-aec-reconcile` *already*

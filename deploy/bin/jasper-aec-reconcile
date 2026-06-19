@@ -17,6 +17,12 @@ SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
+# Opt-in chip-ref observe mode (default 0). When set, the software-AEC3
+# path additionally arms outputd's chip-ref writer FOR MEASUREMENT ONLY,
+# so the Layer-0 SRO drift estimator gets fed real DAC-vs-XVF counters on
+# DACs the reconciler will not (yet) trust for production chip-AEC. Set
+# from the mode file near the bottom (mirrors the LEG_* globals).
+CHIP_REF_OBSERVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 
@@ -121,6 +127,9 @@ ensure_mode_file() {
         if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC=' "$MODE_FILE"; then
             printf 'JASPER_WAKE_LEG_CHIP_AEC=0\n' >> "$MODE_FILE"
         fi
+        if ! grep -q '^JASPER_AEC_CHIP_REF_OBSERVE=' "$MODE_FILE"; then
+            printf 'JASPER_AEC_CHIP_REF_OBSERVE=0\n' >> "$MODE_FILE"
+        fi
         if ! grep -q '^JASPER_AUDIO_INPUT_PROFILE=' "$MODE_FILE"; then
             printf 'JASPER_AUDIO_INPUT_PROFILE=%s\n' \
                 "$(infer_audio_input_profile_from_mode_file)" >> "$MODE_FILE"
@@ -128,7 +137,7 @@ ensure_mode_file() {
         return
     fi
     install -d -m 0755 "$(dirname "$MODE_FILE")"
-    printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' > "$MODE_FILE"
+    printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$MODE_FILE"
     chmod 0644 "$MODE_FILE"
 }
 
@@ -384,7 +393,7 @@ write_leg_env() {
     local leg_dtln="$3"
     local leg_chip_aec="$4"
     local raw_udp dtln_udp dtln_flag chip_150_udp chip_210_udp chip_flag
-    local ref_source outputd_chip_ref_pcm outputd_ref_target
+    local ref_source outputd_chip_ref_pcm outputd_ref_target observe_flag
     local outputd_chip_ref_rate outputd_chip_ref_period outputd_chip_ref_buffer
     local bridge_ref_host bridge_ref_port producer_was_active
     producer_was_active=0
@@ -400,6 +409,9 @@ write_leg_env() {
         chip_150_udp="udp:${AEC_UDP_PORT_CHIP_AEC_150}"
         chip_210_udp="udp:${AEC_UDP_PORT_CHIP_AEC_210}"
         chip_flag="1"
+        # Production chip-AEC, not observe mode: the chip-ref writer is
+        # armed because the chip IS the mic path here.
+        observe_flag="0"
         raw_udp=""
         dtln_udp=""
         dtln_flag="0"
@@ -434,7 +446,22 @@ write_leg_env() {
         ref_source="outputd_udp"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
-        outputd_chip_ref_pcm=""
+        # Chip-ref observe mode (opt-in, default off): arm outputd's
+        # chip-ref writer FOR MEASUREMENT ONLY so the Layer-0 SRO drift
+        # estimator reads real DAC-vs-XVF counters. The mic path stays
+        # software AEC3 (chip_flag=0, raw/DTLN as configured above) — this
+        # ONLY adds the chip-ref producer, breaking the bootstrap deadlock
+        # where the reconciler will not arm chip-AEC until drift is
+        # measured, but drift can only be measured while the writer runs.
+        # Gated on the XVF USB-IN PCM being known (OUTPUTD_CHIP_REF_PCM
+        # non-empty); otherwise observe no-ops and the writer stays off.
+        if [[ "$CHIP_REF_OBSERVE" == "1" && -n "${OUTPUTD_CHIP_REF_PCM}" ]]; then
+            outputd_chip_ref_pcm="${OUTPUTD_CHIP_REF_PCM}"
+            observe_flag="1"
+        else
+            outputd_chip_ref_pcm=""
+            observe_flag="0"
+        fi
         outputd_ref_target="${bridge_ref_host}:${bridge_ref_port}"
         outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
         outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
@@ -446,6 +473,7 @@ write_leg_env() {
         chip_150_udp=""
         chip_210_udp=""
         chip_flag="0"
+        observe_flag="0"
         ref_source="alsa"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
@@ -465,8 +493,13 @@ write_leg_env() {
     set_env_var "$ENV_FILE" JASPER_AEC_OUTPUTD_REF_UDP_HOST "$bridge_ref_host"
     set_env_var "$ENV_FILE" JASPER_AEC_OUTPUTD_REF_UDP_PORT "$bridge_ref_port"
 
+    if [[ "$observe_flag" == "1" ]]; then
+        log "chip-ref observe mode: arming chip-ref writer for drift measurement; mic path stays software AEC3"
+    fi
+
     mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_PCM "$outputd_chip_ref_pcm"
     mark_outputd_restart_if_changed JASPER_OUTPUTD_REFERENCE_UDP_TARGET "$outputd_ref_target"
+    mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_OBSERVE "$observe_flag"
     if [[ "$chip_flag" == "1" || "$producer_was_active" == "1" ]]; then
         mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE "$outputd_chip_ref_rate"
         mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES "$outputd_chip_ref_period"
@@ -474,6 +507,7 @@ write_leg_env() {
     fi
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_PCM "$outputd_chip_ref_pcm"
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_REFERENCE_UDP_TARGET "$outputd_ref_target"
+    set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_OBSERVE "$observe_flag"
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE "$outputd_chip_ref_rate"
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES "$outputd_chip_ref_period"
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES "$outputd_chip_ref_buffer"
@@ -725,6 +759,10 @@ LEG_DTLN="$(normalize_bool "${JASPER_WAKE_LEG_DTLN:-0}")"
 # write_leg_env). Default off; only applied on the 6-channel-present
 # (bridge-running) path, so it's structurally gated on the firmware.
 LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
+# Opt-in chip-ref observe mode (default off). Read like the LEG_* booleans
+# (mode_file_value + normalize_bool) so a hand-edited yes/true also works.
+# Only the software-AEC3 leg path in write_leg_env acts on it.
+CHIP_REF_OBSERVE="$(normalize_bool "$(mode_file_value JASPER_AEC_CHIP_REF_OBSERVE 0)")"
 AUDIO_DAC_ID="$(normalize_output_dac_id "${JASPER_AUDIO_DAC_ID:-unknown}")"
 AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
 apply_audio_input_profile

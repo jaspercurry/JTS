@@ -100,6 +100,12 @@ pub struct OutputdState {
     chip_ref_tee_active: AtomicBool,
     chip_ref_tee_open_error_count: AtomicU64,
     chip_ref_tee_write_error_count: AtomicU64,
+    // Observe-only label (chip-AEC Layer 0): true when the reconciler armed
+    // the chip-ref writer purely to MEASURE drift on the software-AEC3 path
+    // (not for production chip-AEC). Set once at construction from config;
+    // changes no behavior — surfaced in the aec_clock block so /state can
+    // self-describe why the chip-ref writer is running.
+    chip_ref_observe: bool,
     // Passive SRO (sample-rate-offset) drift estimator (chip-AEC Layer 0).
     // Ticked from `mark_chip_ref_write` — i.e. wherever the chip-ref delay is
     // already sampled — reading the already-stored DAC counters. Observe-only:
@@ -208,6 +214,7 @@ impl OutputdState {
             chip_ref_tee_active: AtomicBool::new(false),
             chip_ref_tee_open_error_count: AtomicU64::new(0),
             chip_ref_tee_write_error_count: AtomicU64::new(0),
+            chip_ref_observe: config.chip_ref_observe,
             sro_estimator: Mutex::new(SroEstimator::new()),
             sro_last_fed_chip_ref_frames: AtomicU64::new(0),
             content_frames_read: AtomicU64::new(0),
@@ -1160,6 +1167,11 @@ impl OutputdState {
         buf.push(',');
         push_kv_str(&mut buf, "verdict_reason", &verdict_reason);
         buf.push(',');
+        // Observe-only label: the chip-ref writer was armed purely to MEASURE
+        // drift on the software-AEC3 path (not for production chip-AEC). Pure
+        // self-description; no audio path reads it.
+        push_kv_bool(&mut buf, "observe", self.chip_ref_observe);
+        buf.push(',');
         buf.push_str(r#""latency":{"#);
         push_kv_f64_opt(&mut buf, "dac_presentation_ms", dac_presentation_ms, 3);
         buf.push(',');
@@ -1454,6 +1466,7 @@ mod tests {
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,
             chip_ref_buffer_frames: 4096,
+            chip_ref_observe: false,
             chip_ref_tee_path: None,
             reference_udp_target: None,
             stream_id: 1,
@@ -1732,6 +1745,8 @@ mod tests {
             r#""aec_clock":{"chip_ref_sro_ppm":null"#,
             r#""sro_estimator_status":"observing""#,
             r#""verdict":"fallback""#,
+            // Observe mode is off in test_config (default).
+            r#""observe":false"#,
             r#""latency":{"dac_presentation_ms":null"#,
             // test_config dac_buffer_frames=3072 / 48000 → 64 ms.
             r#""playback_queue_ms":64.000"#,
@@ -1739,6 +1754,28 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+    }
+
+    #[test]
+    fn snapshot_json_aec_clock_observe_reflects_config() {
+        // The `observe` label is a pure passthrough of config.chip_ref_observe
+        // (set by the reconciler when it armed the chip-ref writer for drift
+        // MEASUREMENT on the software-AEC3 path). It changes no behavior; this
+        // pins both polarities so the wire contract can't silently drop it.
+        let off = OutputdState::new(&test_config());
+        assert!(
+            off.snapshot_json().contains(r#""observe":false"#),
+            "observe must be false when config.chip_ref_observe is off"
+        );
+        let cfg_on = Config {
+            chip_ref_observe: true,
+            ..test_config()
+        };
+        let on = OutputdState::new(&cfg_on);
+        assert!(
+            on.snapshot_json().contains(r#""observe":true"#),
+            "observe must be true when config.chip_ref_observe is on"
+        );
     }
 
     #[test]

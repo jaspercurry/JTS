@@ -283,6 +283,7 @@ def _write_mode_with_legs(
     raw: str = "1",
     dtln: str = "0",
     chip_aec: str | None = None,
+    chip_ref_observe: str | None = None,
 ) -> None:
     body = (
         f"JASPER_AEC_MODE={mode}\n"
@@ -293,6 +294,9 @@ def _write_mode_with_legs(
     # appends the default (0) — exercising the pre-chip-AEC upgrade path.
     if chip_aec is not None:
         body += f"JASPER_WAKE_LEG_CHIP_AEC={chip_aec}\n"
+    # Same upgrade-path contract for the opt-in observe key.
+    if chip_ref_observe is not None:
+        body += f"JASPER_AEC_CHIP_REF_OBSERVE={chip_ref_observe}\n"
     (tmp_path / "aec_mode.env").write_text(body)
 
 
@@ -752,6 +756,121 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
     assert "JASPER_AEC_REF_SOURCE=alsa" in body
+
+
+# ---------- Chip-ref observe mode (chip-AEC Layer 0 bootstrap) ------------
+# JASPER_AEC_CHIP_REF_OBSERVE (opt-in, default off) arms outputd's chip-ref
+# writer FOR DRIFT MEASUREMENT ONLY on the software-AEC3 leg path — the mic
+# path stays software AEC3 (chip-AEC NOT armed). It breaks the bootstrap
+# deadlock on independent-clock DACs (HiFiBerry/DAC8x): the reconciler won't
+# arm chip-AEC until drift is measured, but drift can only be measured while
+# the writer runs. The estimator then reads real DAC-vs-XVF counters that
+# become the calibration. CRITICAL safety property: observe NEVER touches the
+# mic path — only adds the chip-ref producer.
+
+
+def test_ensure_mode_file_seeds_chip_ref_observe_default(tmp_path: Path) -> None:
+    """Fresh install: the mode file gets JASPER_AEC_CHIP_REF_OBSERVE=0
+    alongside the leg defaults. Must match install.sh's seed verbatim."""
+    _write_env(tmp_path, "Array")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_AEC_CHIP_REF_OBSERVE=0" in body
+
+
+def test_ensure_mode_file_appends_missing_chip_ref_observe_key(
+    tmp_path: Path,
+) -> None:
+    """Pre-observe deploy: aec_mode.env lacks the observe key. Reconciler
+    appends it (default off), preserving the operator's existing keys."""
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+    )
+    _write_env(tmp_path, "Array")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_WAKE_LEG_RAW=1" in body              # preserved
+    assert "JASPER_AEC_CHIP_REF_OBSERVE=0" in body      # appended
+
+
+def test_chip_ref_observe_arms_writer_but_keeps_software_aec3_mic_path(
+    tmp_path: Path,
+) -> None:
+    """SAFETY-CRITICAL: observe=1 on a software-AEC3 path (uncalibrated DAC
+    that falls back from auto) arms outputd's chip-ref writer FOR MEASUREMENT
+    but leaves the mic path on software AEC3 — chip-AEC stays disabled and
+    the raw/AEC3 leg stays intact. This is the bootstrap path that feeds the
+    Layer-0 SRO estimator on the HiFiBerry."""
+    # HiFiBerry/DAC8x: auto falls back to software AEC3 (needs_calibration).
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n")
+    _write_mode_with_legs(
+        tmp_path, mode="auto", raw="1", dtln="0", chip_aec="0",
+        chip_ref_observe="1",
+    )
+    _write_card(tmp_path, channels=6)
+    result = _run_reconcile(tmp_path, "--reason", "test")
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    # Writer armed for measurement.
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=1" in body
+    # Mic path is UNCHANGED: software AEC3 with the raw leg, chip-AEC OFF.
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
+    # The reconciler announces why the writer is on.
+    assert "chip-ref observe mode" in result.stderr
+    # outputd restarts to pick up the newly-armed writer.
+    assert "restart jasper-outputd.service" in _systemctl_log(tmp_path)
+
+
+def test_chip_ref_observe_off_keeps_writer_off_on_software_aec3(
+    tmp_path: Path,
+) -> None:
+    """observe=0 (default) preserves current behavior: the software-AEC3 path
+    leaves the chip-ref writer OFF and the observe flag clear."""
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n")
+    _write_mode_with_legs(
+        tmp_path, mode="auto", raw="1", dtln="0", chip_aec="0",
+        chip_ref_observe="0",
+    )
+    _write_card(tmp_path, channels=6)
+    result = _run_reconcile(tmp_path, "--reason", "test")
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "chip-ref observe mode" not in result.stderr
+
+
+def test_chip_ref_observe_noops_without_chip_capable_mic(tmp_path: Path) -> None:
+    """observe=1 but the XVF Array is not 6-channel → the bridge doesn't run,
+    so there's no chip-capable mic to source the reference. Observe no-ops:
+    the writer stays off and the observe flag is clear (the bridge-down path
+    forces observe_flag=0). Guards against arming a producer on the
+    direct-mic fallback shape."""
+    _write_env(
+        tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n"
+    )
+    _write_mode_with_legs(
+        tmp_path, mode="auto", raw="1", dtln="0", chip_aec="0",
+        chip_ref_observe="1",
+    )
+    # 2-channel firmware → not aec_ready → bridge down (no chip reference).
+    _write_card(tmp_path, channels=2)
+    result = _run_reconcile(tmp_path, "--reason", "test")
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "chip-ref observe mode" not in result.stderr
 
 
 def test_reconcile_parks_voice_and_aec_for_bonded_follower(tmp_path: Path) -> None:
