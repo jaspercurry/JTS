@@ -911,6 +911,20 @@ trade-off analysis.
 
 ### XVF firmware: switch to 6-channel variant via DFU
 
+> **Mic doesn't show up as a USB device at all?** If `lsusb` /
+> `arecord -l` never list the XVF3800 — you see only an Espressif
+> `303a:1001` "USB JTAG/serial debug unit", or nothing — even though
+> the board powers up (PWR LED lit) and the cable carries data, you
+> have a **Flex / XIAO-ESP32S3 variant that shipped in I2S mode.** It
+> is *not* a USB device until you flash USB firmware, so the in-system
+> DFU below won't see it. You must first enter **Safe Mode via the
+> BOOT button** — hold BOOT while powering on the **XMOS USB-C port**
+> (the one next to the 3.5 mm jack, *not* the XIAO/Seeed port; *not*
+> the Mute-button procedure). Full variant identification + the
+> validated recovery steps are in
+> [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §2.6. Once it
+> enumerates as `2886:001a` / card `Array`, return here.
+
 #### Why this step exists
 
 The XVF3800 ships from Seeed on a "2-channel" firmware variant.
@@ -980,7 +994,10 @@ mode" via a button combo. **That procedure is for Safe Mode
 recovery only** — used when the DataPartition is corrupted, e.g.
 after an unsafe `SAVE_CONFIGURATION` call has bricked normal boot.
 For a routine 2-ch → 6-ch firmware upgrade, no button combo is
-needed.
+needed. **One exception:** a Flex / XIAO board that shipped in I2S
+mode was never a USB device, so its *first* USB flash does require
+Safe Mode entry (the BOOT button on those boards) — see the callout
+at the top of this section and HANDOFF-xvf3800.md §2.6.
 
 #### Step 1 — fetch the firmware
 
