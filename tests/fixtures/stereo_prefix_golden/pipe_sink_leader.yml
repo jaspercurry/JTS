@@ -1,0 +1,81 @@
+---
+# Auto-generated JTS DSP config (id=pipe-id).
+# Source: jasper.sound.camilla_yaml.emit_sound_config
+# DO NOT HAND-EDIT — update http://jts.local/correction/ or
+# http://jts.local/sound/ instead.
+#
+# Structure mirrors deploy/camilladsp/outputd-cutover.yml.
+# Room-correction PEQs, when present, run before sound-curve /
+# preference-EQ filters. The `master_gain` mixer remains identity so
+# the Ducker contract holds.
+# output_trim_db=0.000
+
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 2048
+  volume_limit: 0.0
+  enable_rate_adjust: false
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+    format: S16_LE
+
+filters:
+  flat:
+    type: Gain
+    parameters: { gain: 0.0000, inverted: false, mute: false }
+  room_peq_1:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 80.0000
+      q: 4.0000
+      gain: -3.0000
+  room_peq_r1:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 120.0000
+      q: 2.0000
+      gain: -2.0000
+  sound_curve_harman_bass:
+    type: Biquad
+    parameters:
+      type: Lowshelf
+      freq: 105.0000
+      slope: 6.0000
+      gain: 4.0000
+  sound_curve_harman_tilt:
+    type: Biquad
+    parameters:
+      type: Highshelf
+      freq: 3500.0000
+      slope: 3.0000
+      gain: -2.0000
+
+mixers:
+  master_gain:
+    channels: { in: 2, out: 2 }
+    mapping:
+      - dest: 0
+        sources: [{ channel: 0, gain: 0, inverted: false }]
+      - dest: 1
+        sources: [{ channel: 1, gain: 0, inverted: false }]
+
+pipeline:
+  - type: Mixer
+    name: master_gain
+  - type: Filter
+    channels: [0]
+    names: [room_peq_1, sound_curve_harman_bass, sound_curve_harman_tilt, flat]
+  - type: Filter
+    channels: [1]
+    names: [room_peq_r1, sound_curve_harman_bass, sound_curve_harman_tilt, flat]

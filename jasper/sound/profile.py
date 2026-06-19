@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from jasper.camilla_config_contract import FilterSpec, GAINLESS_BIQUAD_TYPES
+
 logger = logging.getLogger(__name__)
 
 PROFILE_PATH = "/var/lib/jasper/sound_profile.json"
@@ -49,13 +51,12 @@ MAX_Q = 10.0
 # clipping source. 1.4 caps the resonant bump near +3 dB. Notch is exempt —
 # it is meant to be surgical and narrow.
 CUT_MAX_Q = 1.4
-FILTER_EPSILON_DB = 0.05
 
-# Cut/notch biquads shape the response without a user gain term. They are
-# "active" by virtue of being enabled, not by a non-zero gain — see
-# FilterSpec.active(). Highpass/Lowpass protect against rumble / tame top
-# end; Notch is a surgical gain-less cut.
-GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
+# FilterSpec, GAINLESS_BIQUAD_TYPES, and FILTER_EPSILON_DB now live in the
+# neutral jasper.camilla_config_contract (the stereo-prefix builder shares
+# them). They are imported at the top of this module and re-exported here,
+# so `from jasper.sound.profile import FilterSpec` / the jasper.sound
+# package re-exports keep working unchanged.
 
 # Sample rate the drawn magnitude response is evaluated at. Must match
 # CamillaDSP's runtime rate (camilla_config_contract.DEFAULT_SAMPLE_RATE =
@@ -115,23 +116,6 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 def _clip(value: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, value))
-
-
-@dataclass(frozen=True)
-class FilterSpec:
-    """A bounded CamillaDSP-friendly filter definition."""
-
-    name: str
-    biquad_type: str
-    freq: float
-    gain: float
-    q: float | None = None
-    slope: float | None = None
-
-    def active(self) -> bool:
-        if self.biquad_type in GAINLESS_BIQUAD_TYPES:
-            return True
-        return abs(self.gain) >= FILTER_EPSILON_DB
 
 
 @dataclass(frozen=True)

@@ -150,9 +150,10 @@ ducking the whole mix.
 **Room-correction boosts are the exception — they are headroom-compensated
 automatically.** The assertive correction strategy (`cuts_only=False`) can
 emit room PEQs with up to +3 dB total boost. Unlike preference boosts,
-those bands cannot be left to clip: `_emit_filter_definitions` derives a
-`room_headroom` preamp from the worst-case additive room boost (the sum of
-positive room-PEQ gains, an upper bound on the combined peak) and
+those bands cannot be left to clip: the shared stereo-prefix builder
+(`jasper.camilla_stereo_prefix.build_stereo_prefix`, which `emit_sound_config`
+calls) derives a `room_headroom` preamp from the worst-case additive room
+boost (the sum of positive room-PEQ gains, an upper bound on the combined peak) and
 attenuates the whole signal by it, so a corrected room boost can never
 exceed unity. Cuts-only correction (the safe/balanced default) has zero
 boost and emits no `room_headroom`, keeping the config byte-identical.
