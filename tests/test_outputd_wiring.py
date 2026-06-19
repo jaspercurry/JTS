@@ -76,7 +76,7 @@ def test_active_path_pcms_never_use_plug_or_plughw():
     driver path it could remix 8->4 onto a tweeter (the single most dangerous
     fail-open in active mode). Covers the asoundrc active content lanes and
     every outputd_dac block the render lib emits (direct hw / composite null /
-    DAC8x route — all conversion-free)."""
+    DAC8x direct — all conversion-free)."""
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     for name in ("outputd_active_content_playback", "outputd_active_content_capture"):
         block = _pcm_block(rc, name)
@@ -89,9 +89,12 @@ def test_active_path_pcms_never_use_plug_or_plughw():
 
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
+    render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     assert "__OUTPUTD_DAC_PCM_BLOCK__" in rc
-    assert "ctl.outputd_dac" in rc
-    assert "card __OUTPUT_DAC_CARD__" in rc
+    assert "__OUTPUTD_DAC_CTL_BLOCK__" in rc
+    assert "__OUTPUT_DAC_CARD__" not in rc
+    assert "line//__OUTPUT_DAC_CARD__" not in render_lib
+    assert "OUTPUT_DAC_RECOGNIZED:-1" in render_lib
 
 
 def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
@@ -114,6 +117,7 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert 'echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"' in install_sh
     assert 'echo "  Output DAC id: ${OUTPUT_DAC_ID}"' in install_sh
     assert "jasper_asound_render_template" in install_sh
+    assert "Skipped /etc/asound.conf render" not in install_sh
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
     assert "JASPER_AUDIO_DAC_CARD" in reconcile
@@ -237,6 +241,23 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_rollback\")" in startup_load
+
+
+def test_install_alsa_refreshes_asound_renderer_before_rendering():
+    install_sh = installer_text()
+    start = install_sh.index("install_alsa() {")
+    end = install_sh.index("\nwrite_build_manifest() {", start)
+    install_alsa = install_sh[start:end]
+
+    render_lib_install = install_alsa.index(
+        "/usr/local/lib/jasper/jasper-asound-render.sh"
+    )
+    source_template_install = install_alsa.index("asoundrc.jasper.source")
+    render_call = install_alsa.index("jasper_asound_render_template")
+
+    assert "deploy/lib/jasper-asound-render.sh" in install_alsa
+    assert render_lib_install < source_template_install
+    assert render_lib_install < render_call
 
 
 def test_voice_tts_socket_is_canonical_fanin_path():

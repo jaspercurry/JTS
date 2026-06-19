@@ -590,10 +590,6 @@ print_env() {
 render_asound_if_needed() {
     local tmp changed=1
 
-    if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
-        log_event "asound_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=0"
-        return 1
-    fi
     if [[ ! -f "$ASOUND_SOURCE_TEMPLATE" ]]; then
         log_event "asound_skip" "source_template=${ASOUND_SOURCE_TEMPLATE} missing=1"
         return 1

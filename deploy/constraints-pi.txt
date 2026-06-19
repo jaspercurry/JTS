@@ -28,7 +28,6 @@ dbus-next==0.2.3
 distro==1.9.0
 esptool==5.3.0
 evdev==1.9.3
-flatbuffers==20181003210633
 google-api-core==2.29.0
 google-api-python-client==2.197.0
 google-auth-httplib2==0.4.0

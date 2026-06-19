@@ -64,12 +64,13 @@ def _render_install_asound_template(
     *,
     output_dac_id: str,
     output_dac_card: str,
+    output_dac_recognized: str = "1",
 ) -> tuple[str, str]:
     source = tmp_path / "asoundrc.jasper"
     dest = tmp_path / "asoundrc.rendered"
     source.write_text(
         "__OUTPUTD_DAC_PCM_BLOCK__\n"
-        "ctl.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
+        "__OUTPUTD_DAC_CTL_BLOCK__\n"
         "pcm.jasper_out { card __DONGLE_CARD__ }\n",
         encoding="utf-8",
     )
@@ -78,6 +79,7 @@ def _render_install_asound_template(
         "DONGLE_CARD=A && "
         f"OUTPUT_DAC_CARD={shlex.quote(output_dac_card)} && "
         f"OUTPUT_DAC_ID={shlex.quote(output_dac_id)} && "
+        f"OUTPUT_DAC_RECOGNIZED={shlex.quote(output_dac_recognized)} && "
         f"jasper_asound_render_template {shlex.quote(str(source))} {shlex.quote(str(dest))}"
     )
     result = subprocess.run(
@@ -91,6 +93,11 @@ def _render_install_asound_template(
             f"render helper failed (rc={result.returncode}): {result.stderr}"
         )
     return dest.read_text(encoding="utf-8"), result.stderr
+
+
+def _assert_no_empty_alsa_card(rendered: str) -> None:
+    assert not re.search(r"(?m)^\s*card\s*$", rendered)
+    assert not re.search(r"\bcard\s+}", rendered)
 
 
 def _run_install_helper(
@@ -581,8 +588,10 @@ def test_install_asound_renderer_renders_direct_outputd_dac(tmp_path: Path):
     assert "type hw" in rendered
     assert "card sndrpihifiberry" in rendered
     assert "device 0" in rendered
-    assert "ctl.outputd_dac { card sndrpihifiberry }" in rendered
+    assert "ctl.outputd_dac" in rendered
+    assert "card sndrpihifiberry" in rendered
     assert "pcm.jasper_out { card A }" in rendered
+    _assert_no_empty_alsa_card(rendered)
 
 
 def test_install_asound_renderer_dual_apple_parks_outputd_dac(tmp_path: Path):
@@ -595,6 +604,54 @@ def test_install_asound_renderer_dual_apple_parks_outputd_dac(tmp_path: Path):
     assert stderr == ""
     assert "type null" in rendered
     assert "type route" not in rendered
+    assert "ctl.outputd_dac" not in rendered
+    _assert_no_empty_alsa_card(rendered)
+
+
+def test_install_asound_renderer_unknown_output_parks_outputd_dac(tmp_path: Path):
+    rendered, stderr = _render_install_asound_template(
+        tmp_path,
+        output_dac_id="A",
+        output_dac_card="",
+        output_dac_recognized="0",
+    )
+
+    assert stderr == ""
+    assert "pcm.outputd_dac" in rendered
+    assert "type null" in rendered
+    assert "ctl.outputd_dac" not in rendered
+    assert "pcm.jasper_out { card A }" in rendered
+    _assert_no_empty_alsa_card(rendered)
+
+
+def test_install_asound_renderer_rejects_empty_direct_outputd_dac_card(
+    tmp_path: Path,
+):
+    source = tmp_path / "asoundrc.jasper"
+    dest = tmp_path / "asoundrc.rendered"
+    source.write_text(
+        "__OUTPUTD_DAC_PCM_BLOCK__\n"
+        "__OUTPUTD_DAC_CTL_BLOCK__\n",
+        encoding="utf-8",
+    )
+    script = (
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+        "DONGLE_CARD=A && "
+        "OUTPUT_DAC_CARD='' && "
+        "OUTPUT_DAC_ID=hifiberry_dac8x && "
+        "OUTPUT_DAC_RECOGNIZED=1 && "
+        f"jasper_asound_render_template {shlex.quote(str(source))} {shlex.quote(str(dest))}"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 64
+    assert "OUTPUT_DAC_CARD is required for hifiberry_dac8x" in result.stderr
+    assert not dest.exists()
 
 
 def _sha256_of(path: Path) -> str:
@@ -827,6 +884,15 @@ def test_unpinned_pip_installs_carry_the_constraints_args():
     assert text.count('pip" install "${pip_constraints[@]}"') == 3
     assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"' in text
     assert 'install "${pip_constraints[@]}" \\\n        -e "${INSTALL_DIR}[streambox]"' in text
+
+
+def test_pi_constraints_do_not_pin_non_pypi_flatbuffers_release():
+    constraints = (Path(__file__).parent.parent / "deploy" / "constraints-pi.txt")
+    text = constraints.read_text(encoding="utf-8")
+    generator = _GENERATE_CONSTRAINTS_SH.read_text(encoding="utf-8")
+
+    assert "flatbuffers==20181003210633" not in text
+    assert "grep -v -Fx 'flatbuffers==20181003210633'" in generator
 
 
 def test_full_install_editable_pip_install_keeps_full_extra():
