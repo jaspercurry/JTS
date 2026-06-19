@@ -899,7 +899,7 @@ install_systemd_units() {
     # wizard saves once. See migrate_wifi_guardian (called from
     # ensure_env_file above) for the SSH-driven-setup seed path.
     systemctl enable jasper-wifi-guardian.service
-    # WiFi recover timer: no resident RAM. Every 90s it runs a tiny
+    # WiFi recover timer: no resident RAM. Every few minutes it runs a tiny
     # oneshot that exits after one NM active-connection read when WiFi is
     # healthy; when WiFi is down it can run the Pi 5 scan-suppression
     # repair and then delegate profile activation/recreation to the

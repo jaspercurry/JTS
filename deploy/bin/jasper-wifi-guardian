@@ -147,11 +147,48 @@ fi
 # connection (if any), and whether a connection profile with the
 # stashed SSID's NAME exists.
 #
-# `nmcli -t -f NAME,TYPE connection show --active` is the canonical
-# active-connection query. We pick the first wifi/802-11-wireless row.
-ACTIVE_LINE="$("$NMCLI" -t -f NAME,TYPE connection show --active 2>/dev/null \
-    | awk -F: '$2 ~ /wifi|wireless/ { print $1; exit }')"
-ACTIVE_NAME="$ACTIVE_LINE"
+# `nmcli -t` escapes a literal ':' inside a value as '\:'. Reverse that
+# so an SSID/profile name containing a colon (e.g. "Cafe:Work") is matched
+# rather than truncated. A literal backslash in an SSID ('\\') is left
+# as-is — SSIDs with backslashes are not a real-world case; the canonical
+# full-fidelity parser is jasper.web.wifi_setup._parse_terse if ever needed.
+nm_unescape() {
+    printf '%s' "${1//\\:/:}"
+}
+
+# Persist the JTS WiFi resilience contract on a profile we just recovered:
+# autoconnect on, retry forever (`0`, not NM's small default), power-save
+# off. Best-effort — a failure here must never undo the recovery we just
+# achieved. The identical key set is written by the /wifi/ wizard
+# (jasper.web.wifi_setup._harden_wifi_profile) and at install
+# (tune_wifi_for_airplay); drift across the three is guarded by
+# tests/test_wifi_profile_hardening_contract.py.
+harden_profile() {
+    "$NMCLI" connection modify "$1" \
+        connection.autoconnect yes \
+        connection.autoconnect-retries 0 \
+        802-11-wireless.powersave 2 >/dev/null 2>&1 \
+        || emit harden_fail "profile=$1"
+}
+
+# `nmcli -t -f TYPE,NAME connection show --active` is the canonical
+# active-connection query. TYPE comes first so the first ':' is an
+# unambiguous field boundary even when the profile NAME contains a colon
+# (TYPE never does). We pick the first wifi/802-11-wireless row.
+ACTIVE_NAME="$("$NMCLI" -t -f TYPE,NAME connection show --active 2>/dev/null \
+    | awk -F: '$1 ~ /wifi|wireless/ { sub(/^[^:]*:/, ""); print; exit }')"
+ACTIVE_NAME="$(nm_unescape "$ACTIVE_NAME")"
+
+profile_ssid_for_name() {
+    # 802-11-wireless.ssid of profile $1, colon-safe: the key has no ':',
+    # so the first ':' is the key/value boundary; the value may carry
+    # escaped colons.
+    local line
+    line="$("$NMCLI" -t -s -f 802-11-wireless.ssid connection show \
+        "$1" 2>/dev/null | sed -n '1p')"
+    [[ "$line" == 802-11-wireless.ssid:* ]] || return 0
+    nm_unescape "${line#*:}"
+}
 
 # Resolve the active connection's actual SSID (not just the profile
 # name — netplan-seeded profiles have a NAME like `netplan-wlan0-foo`
@@ -159,27 +196,20 @@ ACTIVE_NAME="$ACTIVE_LINE"
 # stashed SSID, not the profile name.
 ACTIVE_SSID=""
 if [[ -n "$ACTIVE_NAME" ]]; then
-    ACTIVE_SSID="$("$NMCLI" -t -s -f 802-11-wireless.ssid connection show \
-        "$ACTIVE_NAME" 2>/dev/null \
-        | awk -F: '$1 == "802-11-wireless.ssid" { print $2; exit }')"
+    ACTIVE_SSID="$(profile_ssid_for_name "$ACTIVE_NAME")"
     # Fallback to profile name if the SSID field is empty for some reason.
     [[ -z "$ACTIVE_SSID" ]] && ACTIVE_SSID="$ACTIVE_NAME"
 fi
-
-profile_ssid_for_name() {
-    "$NMCLI" -t -s -f 802-11-wireless.ssid connection show \
-        "$1" 2>/dev/null \
-        | awk -F: '$1 == "802-11-wireless.ssid" { print $2; exit }'
-}
 
 # Does a connection profile for the stashed SSID exist? Wizard-created
 # profiles are usually named exactly like the SSID, but Pi Imager/netplan
 # seeds names such as `netplan-wlan0-Verizon_4TQ9PN`. Match by exact NAME
 # first (cheap), then by the profile's actual 802-11-wireless.ssid field.
+# `-f NAME` returns one (possibly colon-escaped) name per line.
 PROFILE_EXISTS=0
 PROFILE_NAME=""
 while IFS= read -r line; do
-    name="$(echo "$line" | awk -F: '{print $1}')"
+    name="$(nm_unescape "$line")"
     if [[ "$name" == "$SSID" ]]; then
         PROFILE_EXISTS=1
         PROFILE_NAME="$name"
@@ -189,7 +219,7 @@ done < <("$NMCLI" -t -f NAME connection show 2>/dev/null)
 
 if [[ "$PROFILE_EXISTS" != "1" ]]; then
     while IFS= read -r line; do
-        name="$(echo "$line" | awk -F: '{print $1}')"
+        name="$(nm_unescape "$line")"
         [[ -z "$name" ]] && continue
         profile_ssid="$(profile_ssid_for_name "$name")"
         if [[ "$profile_ssid" == "$SSID" ]]; then
@@ -227,6 +257,7 @@ fi
 if [[ "$PROFILE_EXISTS" == "1" ]]; then
     emit activate "ssid=$SSID profile=$PROFILE_NAME"
     if "$NMCLI" --wait 20 connection up "$PROFILE_NAME" >/dev/null 2>&1; then
+        harden_profile "$PROFILE_NAME"
         emit activate_ok "ssid=$SSID profile=$PROFILE_NAME"
         exit 0
     fi
@@ -254,6 +285,7 @@ else
 fi
 
 if [[ $rc -eq 0 ]]; then
+    harden_profile "$SSID"
     emit recreate_ok "ssid=$SSID"
     rm -f /tmp/wifi-guardian.stderr.$$
     exit 0

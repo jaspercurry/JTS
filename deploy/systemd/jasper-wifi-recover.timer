@@ -2,11 +2,19 @@
 Description=Periodically check whether JTS Wi-Fi needs recovery
 Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 
+# 3-minute cadence, not seconds: NetworkManager's connection.autoconnect
+# -retries=0 (retry-forever, set on every JTS profile) already covers the
+# ordinary AP/ISP flap continuously, and the boot guardian covers boot. The
+# timer's unique job is the rare brcmfmac scan-suppression *wedge*, where a
+# few-minutes detection window is fine — so we keep the journal quiet (each
+# oneshot activation costs ~2 systemd log lines regardless of the script's
+# own silence) rather than poll every 90 s. OnBootSec is past the boot
+# guardian + wait-online so the first tick doesn't race startup.
 [Timer]
-OnBootSec=90s
-OnUnitActiveSec=90s
-AccuracySec=15s
-RandomizedDelaySec=10s
+OnBootSec=2min
+OnUnitActiveSec=3min
+AccuracySec=30s
+RandomizedDelaySec=20s
 Unit=jasper-wifi-recover.service
 Persistent=false
 

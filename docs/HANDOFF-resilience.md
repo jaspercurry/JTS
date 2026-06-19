@@ -978,12 +978,20 @@ layer is a periodic nudge around that same policy:
   on the stash), and also invoked by the recovery timer when WiFi
   is down.
 - **Low-footprint recovery timer**:
-  `jasper-wifi-recover.timer` runs every 90 s with no resident RAM.
-  The steady-state path is one `nmcli connection show --active` read
-  and no journal output. Only when no WiFi connection is active does
-  `jasper-wifi-recover` inspect recent kernel logs for brcmfmac scan
-  suppression, run `python -m jasper.wifi_scan_repair --iface wlan0`
-  if warranted, then call the guardian.
+  `jasper-wifi-recover.timer` runs every ~3 min with no resident RAM.
+  The steady-state path is one `nmcli connection show --active` read and
+  **no script output** — the `event=wifi_recover.*` lines fire only on a
+  manual run or real down-path work. (systemd still logs ~2 activation
+  lines per tick regardless; that, plus the fact that NM's
+  retry-forever autoconnect already covers ordinary flaps, is why the
+  cadence is minutes rather than seconds — the timer's unique job is the
+  rare scan-suppression wedge, where a few-minutes window is fine.) Only
+  when no WiFi connection is active does `jasper-wifi-recover` inspect
+  recent kernel logs for brcmfmac scan suppression, run
+  `python -m jasper.wifi_scan_repair --iface wlan0` if warranted (skipped
+  with `event=wifi_recover.scan_repair_skip` if the venv python is
+  absent), then call the guardian. `jasper-doctor`'s
+  `check_wifi_recover_timer` warns if the timer is disabled.
 - **Write hooks** in the `/wifi/` wizard
   ([`jasper/web/wifi_setup.py`](../jasper/web/wifi_setup.py)) —
   `connect_new` writes from the PSK on the wire, `connect_saved`

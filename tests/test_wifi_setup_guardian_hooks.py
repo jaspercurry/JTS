@@ -125,6 +125,67 @@ def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
     ] in calls
 
 
+def test_connect_new_hardening_nonzero_does_not_block_connect(stash_path):
+    """Contract (AGENTS.md): a profile-hardening failure MUST NOT turn a
+    successful user connect into a failed one. nmcli returning non-zero on
+    the `connection modify` hardening call is logged and swallowed."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            return _mock_proc(returncode=1, stderr="Error: hardening failed")
+        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
+            return _mock_proc(
+                returncode=0,
+                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+            )
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
+
+    assert ok is True
+
+
+def test_connect_new_hardening_oserror_does_not_block_connect(stash_path):
+    """Even an exception from the hardening call (e.g. nmcli not on PATH)
+    must not fail the connect — _harden_wifi_profile swallows OSError."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            raise FileNotFoundError("nmcli not found")
+        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
+            return _mock_proc(
+                returncode=0,
+                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+            )
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
+
+    assert ok is True
+
+
+def test_connect_saved_hardening_failure_does_not_block_connect(stash_path):
+    """Same best-effort contract on the saved-profile activation path."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            return _mock_proc(returncode=1, stderr="Error: hardening failed")
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_saved("Home")
+
+    assert ok is True
+
+
 def test_connect_new_open_network_writes_stash(stash_path, monkeypatch):
     """Open network: no password arg → stash gets empty PSK +
     key_mgmt=none."""

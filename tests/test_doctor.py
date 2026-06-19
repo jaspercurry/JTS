@@ -4692,3 +4692,56 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
         r = check()
         assert r.status == "ok", r
         assert "parked (bonded follower)" in r.detail
+
+
+# ----- check_wifi_recover_timer (Wi-Fi flap recovery timer health) -----
+
+
+def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
+    monkeypatch.setattr(
+        doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl"
+    )
+    monkeypatch.setattr(
+        doctor.network, "_run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="enabled\n", stderr=""),
+    )
+    r = doctor.check_wifi_recover_timer()
+    assert r.status == "ok"
+    assert "enabled" in r.detail
+
+
+def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
+    monkeypatch.setattr(
+        doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl"
+    )
+    monkeypatch.setattr(
+        doctor.network, "_run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="disabled\n", stderr=""),
+    )
+    r = doctor.check_wifi_recover_timer()
+    assert r.status == "warn"
+    assert "enable --now jasper-wifi-recover.timer" in r.detail
+
+
+def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
+    """A dev box with systemctl but no JTS units: skip, don't warn."""
+    monkeypatch.setattr(
+        doctor.network.shutil, "which", lambda _x: "/usr/bin/systemctl"
+    )
+    monkeypatch.setattr(
+        doctor.network, "_run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=1, stdout="",
+            stderr="Failed to get unit file state ...: No such file or directory\n",
+        ),
+    )
+    r = doctor.check_wifi_recover_timer()
+    assert r.status == "ok"
+    assert "not installed" in r.detail
+
+
+def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
+    monkeypatch.setattr(doctor.network.shutil, "which", lambda _x: None)
+    r = doctor.check_wifi_recover_timer()
+    assert r.status == "ok"
+    assert "no systemctl" in r.detail

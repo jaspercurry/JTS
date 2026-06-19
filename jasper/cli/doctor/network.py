@@ -218,6 +218,38 @@ def check_wifi_guardian() -> CheckResult:
         f"network.",
     )
 
+@doctor_check(order=64.5, group="network")
+def check_wifi_recover_timer() -> CheckResult:
+    """The Wi-Fi flap recovery timer must stay enabled so the Wi-Fi-down
+    nudge (brcmfmac scan-suppression repair + guardian activation) is live.
+
+    jasper-wifi-recover.timer fires periodically with no resident RAM; a
+    healthy tick is one NetworkManager read that exits silently. If the timer
+    is disabled or masked, a scan-suppression wedge after a network flap has
+    no automatic recovery and the operator is back to a power cycle (the
+    2026-06-19 incident). Informational only — never fail-blocking; the box
+    is online or not regardless of this timer.
+
+    Skipped on dev hosts: no systemctl, or the unit was never installed."""
+    label = "WiFi recover timer"
+    if shutil.which("systemctl") is None:
+        return CheckResult(label, "ok", "skipped — no systemctl")
+    proc = _run(["systemctl", "is-enabled", "jasper-wifi-recover.timer"])
+    state = proc.stdout.strip()
+    if state == "enabled":
+        return CheckResult(label, "ok", "jasper-wifi-recover.timer enabled")
+    # is-enabled exits non-zero with empty/"not-found" stdout (or a
+    # "could not be found" stderr) when the unit isn't installed — a dev box,
+    # not a misconfigured Pi. Don't warn there.
+    if state in ("", "not-found") or "could not be found" in (proc.stderr or "").lower():
+        return CheckResult(label, "ok", "skipped — timer not installed")
+    return CheckResult(
+        label, "warn",
+        f"jasper-wifi-recover.timer is '{state}', not enabled — Wi-Fi can't "
+        f"auto-recover from a brcmfmac scan-suppression wedge until it is. "
+        f"Fix: `sudo systemctl enable --now jasper-wifi-recover.timer`.",
+    )
+
 @doctor_check(order=65, group="network")
 def check_avahi_daemon() -> CheckResult:
     """avahi-daemon is the mDNS *publisher* — without it the speaker

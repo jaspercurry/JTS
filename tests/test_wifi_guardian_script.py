@@ -341,7 +341,8 @@ def test_guardian_steady_state(tmp_path):
         tmp_path,
         _stash(ssid="Home"),
         nmcli_env={
-            "JASPER_NMCLI_ACTIVE": "Home:802-11-wireless\n",
+            # nmcli -t -f TYPE,NAME --active → "<type>:<name>".
+            "JASPER_NMCLI_ACTIVE": "802-11-wireless:Home\n",
             "JASPER_NMCLI_PROFILE_DETAILS": "802-11-wireless.ssid:Home\n",
             "JASPER_NMCLI_ALL_PROFILES": "Home\n",
         },
@@ -367,7 +368,7 @@ def test_guardian_stash_stale_does_not_stomp(tmp_path):
         tmp_path,
         _stash(ssid="Home"),
         nmcli_env={
-            "JASPER_NMCLI_ACTIVE": "Cafe:802-11-wireless\n",
+            "JASPER_NMCLI_ACTIVE": "802-11-wireless:Cafe\n",
             "JASPER_NMCLI_PROFILE_DETAILS": "802-11-wireless.ssid:Cafe\n",
             "JASPER_NMCLI_ALL_PROFILES": "Cafe\n",  # Home isn't in the list either
         },
@@ -403,6 +404,32 @@ def test_guardian_activates_present_profile(tmp_path):
     assert "connection up Home" in nm
     # Critically: no `device wifi connect` (that would create a NEW
     # profile and potentially clobber the existing PSK).
+    assert "device wifi connect" not in nm
+    # A recovered profile is hardened so the next flap doesn't exhaust NM's
+    # default retry budget (the whole point of the recovery layer).
+    assert "connection modify Home" in nm
+    assert "connection.autoconnect-retries 0" in nm
+
+
+def test_guardian_matches_profile_with_colon_in_ssid(tmp_path):
+    """An SSID/profile name with a colon ("Cafe:Work") must be matched and
+    activated, not truncated by naive `:`-splitting (which would fall
+    through to recreate and create a duplicate). nmcli -t escapes the colon
+    as `\\:`; the guardian un-escapes before comparing."""
+    proc, log = _run_guardian(
+        tmp_path,
+        _stash(ssid="Cafe:Work"),
+        nmcli_env={
+            "JASPER_NMCLI_ACTIVE": "",
+            # nmcli -t -f NAME escapes the literal ':' in the profile name.
+            "JASPER_NMCLI_ALL_PROFILES": "Cafe\\:Work\nGuest\n",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_guardian.activate_ok" in proc.stderr
+    assert "profile=Cafe:Work" in proc.stderr
+    nm = _nmcli_log(log)
+    assert "connection up Cafe:Work" in nm
     assert "device wifi connect" not in nm
 
 
@@ -469,6 +496,11 @@ def test_guardian_recreates_missing_profile(tmp_path):
     # Raw log: did nmcli actually receive the PSK?
     raw = _nmcli_raw_log(log)
     assert "device wifi connect Home password myhomepsk" in raw
+    # The freshly-recreated profile is hardened too (retry-forever), so the
+    # incident-recovery path produces a profile as resilient as a wizard one.
+    nm = _nmcli_log(log)
+    assert "connection modify Home" in nm
+    assert "connection.autoconnect-retries 0" in nm
 
 
 def test_guardian_recreates_open_network(tmp_path):
@@ -594,7 +626,7 @@ def test_guardian_accepts_reason_argument(tmp_path):
         tmp_path,
         _stash(ssid="Home"),
         nmcli_env={
-            "JASPER_NMCLI_ACTIVE": "Home:802-11-wireless\n",
+            "JASPER_NMCLI_ACTIVE": "802-11-wireless:Home\n",
             "JASPER_NMCLI_PROFILE_DETAILS": "802-11-wireless.ssid:Home\n",
             "JASPER_NMCLI_ALL_PROFILES": "Home\n",
         },

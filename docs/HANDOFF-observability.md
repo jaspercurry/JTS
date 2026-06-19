@@ -112,8 +112,10 @@ noise:
   failure (the `_tick` healthy branch returns without logging);
 - the Tier-1 `Heartbeat.bump()` logs nothing per frame;
 - the AEC reconciler, WiFi guardian, and WiFi recover timer are oneshot
-  paths — the recover timer is silent on healthy ticks and logs only
-  manual runs or actual down-path recovery work.
+  paths — the recover timer's *script* emits no `event=` line on a healthy
+  tick (only manual runs or actual down-path recovery work log), though
+  systemd still records its ~2 activation lines per tick; the timer's
+  ~3-min cadence keeps that churn low.
 
 Every recovery/decision line is **WARNING or ERROR**. That gives a
 clean split a debug toggle can rely on:

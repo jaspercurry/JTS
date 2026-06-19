@@ -1307,11 +1307,19 @@ rate-limited by `/var/lib/jasper/wifi_scan_repair.json` so page reloads
 or repeated button taps do not spam the radio. Structured logs use
 `event=wifi_scan_repair.*`.
 
-Successful `/wifi/` connects also harden the NetworkManager profile:
+The same NetworkManager profile-hardening triple —
 `connection.autoconnect=yes`, `connection.autoconnect-retries=0` (NM's
-retry-forever value), and `802-11-wireless.powersave=2`. Keep that
-resilience write best-effort; a profile-hardening failure must not turn
-a successful user connect into a failed connect.
+retry-forever value), and `802-11-wireless.powersave=2` — is written from
+**three** places so a recovered profile is as resilient as a freshly-
+connected one: `/wifi/` wizard connects
+(`jasper.web.wifi_setup._harden_wifi_profile`), install-time
+(`tune_wifi_for_airplay`), and the guardian after it activates/recreates a
+profile (`jasper-wifi-guardian`'s `harden_profile`). Keep every one of
+those writes best-effort — a profile-hardening failure must not turn a
+successful user connect (or a successful recovery) into a failure. Because
+the triple now lives in three writers (Python + two bash), drift is pinned
+by [`tests/test_wifi_profile_hardening_contract.py`](tests/test_wifi_profile_hardening_contract.py);
+add any new key there too.
 
 The repair is intentionally narrow: it only runs for the brcmfmac
 driver, only after suppression evidence, and never reloads kernel
@@ -1346,12 +1354,20 @@ than bricking.
 
 The 2026-06-19 JTS3 flap added the "network is down long enough that
 NM gives up, then brcmfmac scan suppression keeps it stuck" class.
-That is handled by `jasper-wifi-recover.timer`: every 90 s, with no
-resident RAM, it performs one active-WiFi read and exits silently when
-healthy. If no WiFi is active, it checks recent kernel logs for
+That is handled by `jasper-wifi-recover.timer`: every ~3 min, with no
+resident RAM, it performs one active-WiFi read and exits when healthy.
+If no WiFi is active, it checks recent kernel logs for
 `brcmf_cfg80211_scan: Scanning suppressed`, runs the bounded
 `jasper.wifi_scan_repair` CLI when warranted, then invokes the
-guardian.
+guardian. The cadence is minutes, not seconds, on purpose: NM's
+`connection.autoconnect-retries=0` (set on every JTS profile) already
+retries ordinary AP/ISP flaps forever, so the timer's unique job is the
+rare scan-suppression *wedge* — a few-minutes detection window is fine,
+and a healthy tick produces **no script output** (the `event=` lines fire
+only on manual runs or real down-path work). Note that a oneshot still
+costs ~2 systemd journal lines per activation regardless of that silence,
+which is the other reason the cadence is minutes rather than 90 s. A
+doctor check (`check_wifi_recover_timer`) warns if the timer is disabled.
 
 **Guardian architecture** mirrors `jasper-aec-reconcile`. Wizard-owned env
 file at `/var/lib/jasper/wifi_guardian.env` (mode 0600, three keys:

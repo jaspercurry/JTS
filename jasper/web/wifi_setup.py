@@ -187,16 +187,36 @@ def _harden_wifi_profile(profile_name: str) -> None:
     `connection.autoconnect-retries 0` is NetworkManager's "retry forever"
     value. Without this, `-1` falls back to NM's global default and a long
     household/router flap can exhaust retries before the AP is healthy again.
+
+    Best-effort by contract: a hardening failure (nmcli non-zero, timeout,
+    or even a missing/unrunnable nmcli binary) MUST NOT turn a successful
+    user connect into a failed one — so every failure mode here is logged at
+    WARNING and swallowed (see AGENTS.md "harden that NM profile … keep that
+    resilience write best-effort"). The identical key set is written at
+    install by `tune_wifi_for_airplay` and on recovery by the guardian's
+    `harden_profile`; drift across the three is guarded by
+    tests/test_wifi_profile_hardening_contract.py.
     """
-    proc = _run_nmcli(
-        [
-            "nmcli", "connection", "modify", profile_name,
-            "connection.autoconnect", "yes",
-            "connection.autoconnect-retries", _NM_AUTOCONNECT_RETRIES_FOREVER,
-            "802-11-wireless.powersave", "2",
-        ],
-        timeout=10,
-    )
+    try:
+        proc = _run_nmcli(
+            [
+                "nmcli", "connection", "modify", profile_name,
+                "connection.autoconnect", "yes",
+                "connection.autoconnect-retries", _NM_AUTOCONNECT_RETRIES_FOREVER,
+                "802-11-wireless.powersave", "2",
+            ],
+            timeout=10,
+        )
+    except OSError as exc:
+        # e.g. nmcli not on PATH. _run_nmcli already absorbs TimeoutExpired.
+        log_event(
+            logger,
+            "wifi.profile_harden_failed",
+            profile=profile_name,
+            err=f"{type(exc).__name__}: {exc}",
+            level=logging.WARNING,
+        )
+        return
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip().splitlines()
         log_event(

@@ -95,11 +95,16 @@ def _run_recover(
     reason: str = "systemd",
     python_rc: int = 0,
     guardian_rc: int = 0,
+    python_path: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     paths = _setup_fakes(tmp_path)
     stash_path = tmp_path / "wifi_guardian.env"
     if stash:
         stash_path.write_text("JASPER_WIFI_SSID=Home\n", encoding="utf-8")
+
+    # python_path=None → use the fake (venv-python-present path); pass a
+    # bogus path to exercise the "venv python missing → skip repair" branch.
+    scan_python = str(paths["python"]) if python_path is None else python_path
 
     env = os.environ.copy()
     env.update({
@@ -111,7 +116,7 @@ def _run_recover(
         "JASPER_JOURNALCTL_LOG": str(paths["journalctl_log"]),
         "JASPER_WIFI_GUARDIAN": str(paths["guardian"]),
         "JASPER_GUARDIAN_LOG": str(paths["guardian_log"]),
-        "JASPER_WIFI_SCAN_REPAIR_PYTHON": str(paths["python"]),
+        "JASPER_WIFI_SCAN_REPAIR_PYTHON": scan_python,
         "JASPER_PYTHON_LOG": str(paths["python_log"]),
         "JASPER_NMCLI_ACTIVE": active,
         "JASPER_JOURNALCTL_KERNEL": kernel,
@@ -133,7 +138,8 @@ def _run_recover(
 def test_active_wifi_systemd_tick_is_silent_and_cheap(tmp_path):
     proc, paths = _run_recover(
         tmp_path,
-        active="Home:802-11-wireless\n",
+        # nmcli -t -f TYPE,NAME --active → "<type>:<name>".
+        active="802-11-wireless:Home\n",
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -146,7 +152,7 @@ def test_active_wifi_systemd_tick_is_silent_and_cheap(tmp_path):
 def test_manual_active_wifi_reports_steady(tmp_path):
     proc, paths = _run_recover(
         tmp_path,
-        active="Home:802-11-wireless\n",
+        active="802-11-wireless:Home\n",
         reason="manual",
     )
 
@@ -193,6 +199,40 @@ def test_scan_repair_failure_still_runs_guardian(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_recover.scan_repair_fail iface=wlan0 rc=42" in proc.stderr
     assert "--reason wifi-recover" in _read(paths["guardian_log"])
+
+
+def test_scan_repair_skipped_when_venv_python_missing(tmp_path):
+    """No system-python fallback: if the /opt/jasper venv python is absent,
+    the repair is skipped with a clear event (not a misleading ImportError
+    failure) and the guardian still runs."""
+    proc, paths = _run_recover(
+        tmp_path,
+        kernel="brcmf_cfg80211_scan: Scanning suppressed: status (4)\n",
+        python_path=str(tmp_path / "definitely" / "no" / "python"),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_recover.scan_suppressed iface=wlan0" in proc.stderr
+    assert "event=wifi_recover.scan_repair_skip" in proc.stderr
+    assert "reason=no_venv_python" in proc.stderr
+    # The fake python is never invoked, and the guardian still runs.
+    assert _read(paths["python_log"]) == ""
+    assert "--reason wifi-recover" in _read(paths["guardian_log"])
+
+
+def test_active_wifi_with_colon_in_name_is_parsed(tmp_path):
+    """A colon-bearing profile name (nmcli escapes it as `\\:`) must be
+    read as active, not mis-split — otherwise recover would needlessly
+    treat a healthy box as down."""
+    proc, paths = _run_recover(
+        tmp_path,
+        active="802-11-wireless:Cafe\\:Work\n",
+        reason="manual",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_recover.steady active=Cafe:Work" in proc.stderr
+    assert _read(paths["guardian_log"]) == ""
 
 
 def test_guardian_failure_is_returned(tmp_path):
