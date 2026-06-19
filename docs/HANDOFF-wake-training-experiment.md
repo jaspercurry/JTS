@@ -37,7 +37,8 @@ the XVF chip-AEC beams (`:9887`/`:9888`) for testing hardware AEC
 against software AEC on the same utterance. As of 2026-06-04,
 `chip_aec_150` / `chip_aec_210` are no longer corpus-only: they are
 hardware-conditional production wake legs inside the `xvf_chip_aec`
-input profile, which `auto` selects on 6-channel XVF3800 hardware.
+input profile, which `auto` selects only when the detected XVF mic
+profile has a validated chip beam plan.
 Build an offline test harness and
 scoring runner around that corpus. Train per-leg specialized Jarvis
 models (one for raw, one for AEC ON, one for DTLN) using
@@ -1817,9 +1818,9 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-06-07 (profile-selected chip-AEC wake legs and the
-corpus leg table were rechecked against the current profile-first input
-policy; v33 capture-plan metadata still matches
+Last verified: 2026-06-19 (profile-selected chip-AEC wake legs and the
+corpus leg table were rechecked against the current geometry-aware
+profile-first input policy; v33 capture-plan metadata still matches
 `jasper/web/wake_corpus_setup.py`, with reference capture part of the
 chip profile, cheap USB mic legs optional, and capture controls rendered
 as canonical toggles.)

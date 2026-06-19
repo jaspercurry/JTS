@@ -17,12 +17,13 @@ what's genuinely shared.
 Consumers today:
 - jasper.cli.doctor — reads constants, runs the per-profile checks
 - jasper.cli.aec_bridge — reads ALSA card name + channel indices
-- deploy/bin/jasper-aec-reconcile — bash, can't import; carries its
-  own copies of the constants with a comment pointing here as the
-  canonical source. Keep both in sync when changing names/numids.
+- jasper.cli.xvf_profile — import-cheap bridge that resolves profile
+  facts for deploy/bin/jasper-aec-reconcile, so bash consumes generated
+  env instead of owning XVF geometry/channel constants.
 
 What this package is NOT:
-- A runtime mic-detection layer (no VID/PID auto-discovery yet)
+- A general runtime mic-detection layer (it maps known USB IDs to the
+  single XVF3800 family profile; it does not probe arbitrary mics)
 - A firmware-flash abstraction (mechanisms vary wildly across
   vendors; not worth abstracting until we have two concrete cases)
 - A `MicProfile` base class (see above — premature)
@@ -33,5 +34,5 @@ from . import xvf3800
 
 # USB VID:PID → profile module. Stable identifier for the mic family.
 PROFILES = {
-    xvf3800.USB_VID_PID: xvf3800,
+    vid_pid: xvf3800 for vid_pid in xvf3800.USB_VID_PIDS
 }

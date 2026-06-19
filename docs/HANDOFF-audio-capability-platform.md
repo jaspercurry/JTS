@@ -634,8 +634,9 @@ against clear metrics.
 
 - No PipeWire dependency.
 - No broad `MicProfile` Protocol before a second real mic forces one.
-- No chip-AEC on hardware that lacks the 6-channel XVF3800/reference
-  path, and no stacked software AEC/raw/DTLN under the chip-AEC profile.
+- No chip-AEC on hardware that lacks a validated XVF chip beam plan and
+  reference path, and no stacked software AEC/raw/DTLN under the
+  chip-AEC profile.
 - No DTLN-by-default on small Pis without measured value and resource
   budget.
 - No production mode that depends on corpus-only legs.
@@ -643,4 +644,6 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-09
+Last verified: 2026-06-19 (chip-AEC availability wording rechecked
+against the geometry-aware XVF profile resolver; broader platform plan
+still matches 2026-06-09 scope).

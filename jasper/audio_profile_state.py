@@ -53,6 +53,10 @@ class RuntimeAecEnv:
 
     primary_device: str = "Array"
     aec_device: str = "Array"
+    mic_variant: str = ""
+    mic_geometry: str = ""
+    mic_display_name: str = ""
+    chip_beam_plan: str = ""
     chip_primary_leg: str = "chip_aec_150"
     chip_enabled: bool = False
     chip_aec_150_device: str = ""
@@ -67,6 +71,9 @@ class MicProbe:
     capture_channels: int | None
     recommended_channels: int = 6
     display_name: str = "Seeed ReSpeaker XVF3800 (USB UA)"
+    variant_id: str = ""
+    geometry: str = ""
+    chip_beam_plan: str = ""
     probe_error: str | None = None
 
 
@@ -252,6 +259,20 @@ def runtime_env_from_mapping(
     return RuntimeAecEnv(
         primary_device=env_value(env, "JASPER_MIC_DEVICE", "Array", process_env=process_env),
         aec_device=env_value(env, "JASPER_AEC_MIC_DEVICE", "Array", process_env=process_env),
+        mic_variant=env_value(env, "JASPER_XVF_VARIANT", "", process_env=process_env),
+        mic_geometry=env_value(env, "JASPER_XVF_GEOMETRY", "", process_env=process_env),
+        mic_display_name=env_value(
+            env,
+            "JASPER_XVF_DISPLAY_NAME",
+            "",
+            process_env=process_env,
+        ),
+        chip_beam_plan=env_value(
+            env,
+            "JASPER_XVF_CHIP_BEAM_PLAN",
+            "",
+            process_env=process_env,
+        ),
         chip_primary_leg=env_value(
             env,
             "JASPER_AEC_CHIP_AEC_PRIMARY_LEG",
@@ -341,8 +362,11 @@ def build_audio_profile_status(
         chip_available=chip_available,
     )
     direct_mic_configured = _direct_mic_configured(runtime)
+    mic_variant = runtime.mic_variant or mic.variant_id
+    mic_geometry = runtime.mic_geometry or mic.geometry
+    chip_beam_plan = runtime.chip_beam_plan or mic.chip_beam_plan
     if mic.xvf_present:
-        mic_name = mic.display_name
+        mic_name = runtime.mic_display_name or mic.display_name
     elif direct_mic_configured:
         mic_name = f"Direct mic ({runtime.primary_device})"
     elif mic.probe_error:
@@ -383,7 +407,10 @@ def build_audio_profile_status(
             session_source = "waiting for AEC bridge"
             profile_state = "unavailable"
             active_profile = None
-            profile_reason = "Chip-AEC needs the XVF3800 6-channel firmware."
+            profile_reason = (
+                "Chip-AEC needs a validated XVF3800 chip beam plan for "
+                "the detected mic geometry."
+            )
         elif not bridge_active:
             session_source = "waiting for AEC bridge"
             profile_state = "waiting_bridge"
@@ -415,7 +442,10 @@ def build_audio_profile_status(
     if effective_intent.mode == "auto" and not bridge_active:
         warnings.append("AEC bridge is not active yet.")
     if effective_intent.chip_aec_enabled and not chip_available:
-        warnings.append("Chip-AEC needs the XVF3800 6-channel firmware.")
+        warnings.append(
+            "Chip-AEC needs a validated XVF3800 chip beam plan for the "
+            "detected mic geometry."
+        )
     if (
         effective_intent.chip_aec_enabled
         and chip_available
@@ -448,6 +478,9 @@ def build_audio_profile_status(
             "processing_mode": processing_mode,
             "session_source": session_source,
             "wake_legs": wake_legs,
+            "variant_id": mic_variant,
+            "geometry": mic_geometry,
+            "chip_beam_plan": chip_beam_plan,
             "warnings": warnings,
         },
     }

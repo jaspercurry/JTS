@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 from jasper.wake_corpus import bridge_session
+from jasper.mics import xvf3800
 from jasper.web import wake_corpus_setup
 
 
@@ -40,6 +41,29 @@ from jasper.web import wake_corpus_setup
 
 _ASSETS = Path(__file__).resolve().parents[1] / "deploy" / "assets" / "wake-corpus"
 _NODE = shutil.which("node")
+
+
+def _stub_xvf_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    variant: xvf3800.FirmwareVariant | None = xvf3800.VARIANT_6CH,
+    present: bool = True,
+    channels: int | None = 6,
+) -> None:
+    plan = xvf3800.chip_beam_plan_for_variant(variant)
+    card = variant.alsa_card_name if variant else xvf3800.ALSA_CARD_NAME
+    monkeypatch.setattr(
+        xvf3800,
+        "detect_runtime_profile",
+        lambda: xvf3800.RuntimeProfile(
+            present=present,
+            variant=variant,
+            alsa_card_name=card,
+            capture_channels=channels,
+            chip_beam_plan=plan,
+            reason="test profile",
+        ),
+    )
 
 
 def _module_js() -> str:
@@ -453,6 +477,10 @@ def test_metadata_records_audio_context_snapshot(
             "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
+            "JASPER_XVF_VARIANT=xvf3800_legacy_square_6ch\n"
+            "JASPER_XVF_GEOMETRY=square\n"
+            "JASPER_XVF_CHIP_BEAM_PLAN=xvf_square_fixed_150_210\n"
+            "JASPER_XVF_CHIP_AEC_SUPPORTED=1\n"
             "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
             "JASPER_OUTPUTD_DAC_PCM=envfile_dac\n"
             "JASPER_OUTPUTD_BACKEND=alsa_envfile\n"
@@ -506,11 +534,7 @@ def test_metadata_records_audio_context_snapshot(
         "/run/stale-process-outputd.sock",
     )
     monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
-
-    from jasper.mics import xvf3800
-
-    monkeypatch.setattr(xvf3800, "is_present", lambda: True)
-    monkeypatch.setattr(xvf3800, "capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
 
     backend.begin_session(
         "jasper",
@@ -576,6 +600,10 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
             "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
+            "JASPER_XVF_VARIANT=xvf3800_legacy_square_6ch\n"
+            "JASPER_XVF_GEOMETRY=square\n"
+            "JASPER_XVF_CHIP_BEAM_PLAN=xvf_square_fixed_150_210\n"
+            "JASPER_XVF_CHIP_AEC_SUPPORTED=1\n"
         ),
     )
     aec_mode_path = tmp_path / "aec_mode.env"
@@ -587,11 +615,7 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
     )
     monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
     monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
-
-    from jasper.mics import xvf3800
-
-    monkeypatch.setattr(xvf3800, "is_present", lambda: True)
-    monkeypatch.setattr(xvf3800, "capture_channels", lambda: 6)
+    _stub_xvf_runtime(monkeypatch)
 
     backend.begin_session("jasper", include_dtln=False)
     backend.start_recording("quiet", "near")
@@ -2237,6 +2261,15 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
         wake_corpus_setup.AEC_INIT_UNIT,
         wake_corpus_setup.BRIDGE_UNIT,
     ]
+
+
+def test_chip_ref_pcm_prefers_resolved_xvf_card() -> None:
+    assert bridge_session.chip_ref_pcm_for_env(
+        {
+            "JASPER_XVF_ALSA_CARD": "L16K6Ch",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+        }
+    ) == "plughw:CARD=L16K6Ch,DEV=0"
 
 
 def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(

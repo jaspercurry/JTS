@@ -1,6 +1,7 @@
 import ast
 import re
 import struct
+import types
 from pathlib import Path
 
 import pytest
@@ -134,12 +135,60 @@ def _caller_command_literals(relpath: str) -> set[str]:
 
 def _aec_init_profile_writes() -> tuple[tuple[str, list[int | float]], ...]:
     from jasper.cli import aec_init
+    from jasper.mics import xvf3800
 
     return (
-        *aec_init._CHIP_CORPUS_PROFILE,
+        *aec_init._chip_corpus_profile(xvf3800.SQUARE_FIXED_150_210_PLAN),
         *aec_init._CHIP_PRODUCTION_PROFILE,
         ("AEC_HPFONOFF", [0]),
     )
+
+
+def test_find_auto_discovers_legacy_and_flex_runtime_pids(monkeypatch) -> None:
+    calls: list[tuple[int, int]] = []
+    fake_device = object()
+
+    def fake_find(idVendor: int, idProduct: int):
+        calls.append((idVendor, idProduct))
+        if idProduct == xvf_host.FLEX_USB_PID:
+            return fake_device
+        return None
+
+    monkeypatch.setattr(
+        xvf_host,
+        "usb",
+        types.SimpleNamespace(core=types.SimpleNamespace(find=fake_find)),
+    )
+
+    dev = xvf_host.find()
+
+    assert dev is not None
+    assert dev.dev is fake_device
+    assert calls == [
+        (xvf_host.DEFAULT_USB_VID, xvf_host.LEGACY_USB_PID),
+        (xvf_host.DEFAULT_USB_VID, xvf_host.FLEX_USB_PID),
+    ]
+
+
+def test_find_exact_pid_does_not_probe_other_supported_pids(monkeypatch) -> None:
+    calls: list[tuple[int, int]] = []
+    fake_device = object()
+
+    def fake_find(idVendor: int, idProduct: int):
+        calls.append((idVendor, idProduct))
+        return fake_device
+
+    monkeypatch.setattr(
+        xvf_host,
+        "usb",
+        types.SimpleNamespace(core=types.SimpleNamespace(find=fake_find)),
+    )
+
+    dev = xvf_host.find(pid=xvf_host.FLEX_USB_PID)
+
+    assert dev is not None
+    assert dev.dev is fake_device
+    assert calls == [(xvf_host.DEFAULT_USB_VID, xvf_host.FLEX_USB_PID)]
 
 
 def test_static_guard_keeps_unsafe_xvf_commands_out_of_command_table() -> None:

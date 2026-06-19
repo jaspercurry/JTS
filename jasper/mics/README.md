@@ -3,7 +3,8 @@
 One module per supported mic family. Today the only profile is
 [`xvf3800.py`](xvf3800.py) (Seeed ReSpeaker XVF3800 USB UA). The
 package exists so that mic-family-specific knowledge (USB identity,
-ALSA card name, mixer invariants, firmware variants, AEC wiring)
+ALSA card name, mixer invariants, firmware variants, geometry,
+validated chip beam plans, and AEC wiring)
 lives in one canonical place instead of being scattered across
 doctor checks, the AEC bridge, the reconciler, and BRINGUP.
 
@@ -45,17 +46,22 @@ docstring in [`__init__.py`](__init__.py) for the longer rationale.
 - [`jasper.cli.aec_bridge`](../cli/aec_bridge.py) — reads
   `ALSA_CARD_NAME`, `MIC_CHANNEL_INDEX`, and the recommended
   channel count from the XVF profile.
+- [`jasper.cli.xvf_profile`](../cli/xvf_profile.py) — import-cheap
+  resolver/CLI that emits the detected XVF variant, geometry, and
+  beam-plan state as JSON or shell-safe env assignments. Shell-only
+  layers consume this instead of copying geometry rules.
 - [`deploy/bin/jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile)
-  — bash, can't import Python. Carries its own copies of the
-  mixer names and channel-count check with a code comment
-  pointing back here as the source of truth.
+  — bash, so it cannot import the profile directly. It calls
+  `python -m jasper.cli.xvf_profile`, writes the resolved
+  `JASPER_XVF_*` env keys, and uses those keys for chip-AEC gating.
 
 ## What this package is NOT
 
-- **Runtime mic auto-detection.** No VID/PID-based dispatch right
-  now. Each consumer knows which mic it's talking to. If/when we
-  support multiple mic families simultaneously, that's when an
-  enumeration layer makes sense.
+- **A generic multi-mic framework.** `xvf3800.detect_runtime_profile()`
+  does runtime detection within the XVF3800 family because the legacy
+  square/circular board and Flex linear board share a chip but require
+  different geometry policy. Supporting a totally different mic family
+  still starts with one concrete module, not a premature Protocol.
 - **A firmware-flash framework.** DFU vs I2C-update vs no-firmware-
   at-all are all wildly different. The `dfu_flash_command()` helper
   on `xvf3800` is a string-returning convenience for doctor

@@ -197,6 +197,8 @@ BRIDGE_CORPUS_OUTPUT_VARS = (
 )
 OUTPUTD_REF_UDP_TARGET = "127.0.0.1:9891"
 OUTPUTD_REF_UDP_PORT = "9891"
+
+
 DEFAULT_CHIP_REF_PCM = "plughw:CARD=Array,DEV=0"
 DEFAULT_CHIP_REF_SAMPLE_RATE = "16000"
 DEFAULT_CHIP_REF_PERIOD_FRAMES = "320"
@@ -204,6 +206,28 @@ DEFAULT_CHIP_REF_BUFFER_FRAMES = "1280"
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"
+
+
+def _plain_alsa_card_id(value: str) -> bool:
+    return bool(value) and not any(ch.isspace() or ch in ":,/" for ch in value)
+
+
+def chip_ref_pcm_for_env(env: Mapping[str, Any] | None = None) -> str:
+    """Return the current XVF USB-IN PCM for corpus chip-ref output."""
+    card = ""
+    if env:
+        card = str(env.get("JASPER_XVF_ALSA_CARD") or "").strip()
+        if not card:
+            aec_mic = str(env.get("JASPER_AEC_MIC_DEVICE") or "").strip()
+            if _plain_alsa_card_id(aec_mic):
+                card = aec_mic
+    if card:
+        return f"plughw:CARD={card},DEV=0"
+    try:
+        from jasper.mics import xvf3800
+    except Exception:  # noqa: BLE001 - constants should remain import-safe
+        return DEFAULT_CHIP_REF_PCM
+    return f"plughw:CARD={xvf3800.detect_runtime_profile().alsa_card_name},DEV=0"
 
 BRIDGE_OUTPUT_LABELS = {
     "dtln": "XVF DTLN",
@@ -233,11 +257,29 @@ def _legacy_aec3_sweep_source(value: str | None = None) -> str:
 
 def chip_aec_config_metadata() -> dict[str, object]:
     """Effective chip-AEC corpus profile recorded with each session."""
+    from jasper.mics import xvf3800
+
+    runtime_profile = xvf3800.detect_runtime_profile()
+    plan = runtime_profile.chip_beam_plan
+    if plan is None:
+        return {
+            "schema_version": 1,
+            "available": False,
+            "variant_id": runtime_profile.variant_id,
+            "geometry": runtime_profile.geometry,
+            "reason": runtime_profile.reason,
+        }
     return {
         "schema_version": 1,
+        "available": True,
+        "variant_id": runtime_profile.variant_id,
+        "geometry": runtime_profile.geometry,
+        "beam_plan": plan.plan_id,
         "reference_topology": "outputd_direct_fanout",
         "outputd_reference_udp_target": OUTPUTD_REF_UDP_TARGET,
-        "chip_ref_pcm": DEFAULT_CHIP_REF_PCM,
+        "chip_ref_pcm": chip_ref_pcm_for_env(
+            {"JASPER_XVF_ALSA_CARD": runtime_profile.alsa_card_name}
+        ),
         "chip_ref_sample_rate": int(DEFAULT_CHIP_REF_SAMPLE_RATE),
         "chip_ref_period_frames": int(DEFAULT_CHIP_REF_PERIOD_FRAMES),
         "chip_ref_buffer_frames": int(DEFAULT_CHIP_REF_BUFFER_FRAMES),
@@ -246,15 +288,20 @@ def chip_aec_config_metadata() -> dict[str, object]:
         "AEC_ASROUTGAIN": 1.0,
         "AEC_FIXEDBEAMSONOFF": 1,
         "AEC_FIXEDBEAMSGATING": 1,
-        "AEC_FIXEDBEAMSAZIMUTH_VALUES": [2.61799, 3.66519],
-        "AEC_FIXEDBEAMSELEVATION_VALUES": [0.0, 0.0],
+        "AEC_FIXEDBEAMSAZIMUTH_VALUES": [leg.azimuth_rad for leg in plan.legs],
+        "AEC_FIXEDBEAMSELEVATION_VALUES": [leg.elevation_rad for leg in plan.legs],
         "AEC_AECEMPHASISONOFF": 2,
         "AEC_FAR_EXTGAIN": 0.0,
         "AUDIO_MGR_OP_L": [7, 0],
         "AUDIO_MGR_OP_R": [7, 1],
         "beams": [
-            {"leg": "chip_aec_150", "angle_deg": 150},
-            {"leg": "chip_aec_210", "angle_deg": 210},
+            {
+                "leg": leg.token,
+                "channel_index": leg.channel_index,
+                "angle_deg": leg.azimuth_deg,
+                "label": leg.label,
+            }
+            for leg in plan.legs
         ],
     }
 
@@ -464,18 +511,29 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
     try:
         from jasper.mics import xvf3800
 
-        xvf_present = xvf3800.is_present()
-        capture_channels = xvf3800.capture_channels()
-        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+        runtime_profile = xvf3800.detect_runtime_profile()
+        xvf_present = runtime_profile.present
+        capture_channels = runtime_profile.capture_channels
+        recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
         probe_error = None
         identity = {
             "family": (
                 "xvf3800"
                 if xvf_present or capture_channels is not None else "unknown"
             ),
-            "display_name": xvf3800.DISPLAY_NAME,
-            "usb_vid_pid": xvf3800.USB_VID_PID,
-            "alsa_card": xvf3800.ALSA_CARD_NAME,
+            "display_name": runtime_profile.display_name,
+            "variant_id": runtime_profile.variant_id,
+            "geometry": runtime_profile.geometry,
+            "chip_beam_plan": runtime_profile.chip_beam_plan_id,
+            "chip_aec_supported": runtime_profile.chip_aec_supported,
+            "profile_reason": runtime_profile.reason,
+            "usb_vid_pid": (
+                runtime_profile.variant.usb_vid_pid
+                if runtime_profile.variant else ""
+            ),
+            "usb_vid_pids": list(xvf3800.USB_VID_PIDS),
+            "alsa_card": runtime_profile.alsa_card_name,
+            "alsa_card_candidates": list(xvf3800.ALSA_CARD_NAMES),
             "observed": {
                 "present": xvf_present,
                 "capture_channels": capture_channels,
@@ -488,6 +546,17 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
                 "known_good_as_of": xvf3800.FIRMWARE_KNOWN_GOOD_AS_OF,
                 "blob": xvf3800.FIRMWARE_BLOB_6CH,
                 "build_repo_hash": xvf3800.FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH,
+                "supported_6ch_variants": [
+                    {
+                        "variant_id": variant.variant_id,
+                        "bld_msg": variant.bld_msg,
+                        "geometry": variant.geometry,
+                        "usb_vid_pid": variant.usb_vid_pid,
+                        "alsa_card": variant.alsa_card_name,
+                        "chip_beam_plan": variant.chip_beam_plan_id,
+                    }
+                    for variant in xvf3800.SUPPORTED_6CH_FIRMWARE
+                ],
             },
         }
     except Exception as e:  # noqa: BLE001 - metadata must not block recording
@@ -510,6 +579,9 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
         display_name=identity.get(
             "display_name", "Seeed ReSpeaker XVF3800 (USB UA)",
         ),
+        variant_id=str(identity.get("variant_id", "")),
+        geometry=str(identity.get("geometry", "")),
+        chip_beam_plan=str(identity.get("chip_beam_plan", "")),
         probe_error=probe_error,
     )
     return probe, identity
@@ -1203,7 +1275,7 @@ def set_bridge_outputs_for_session(
         values["JASPER_AEC_REF_SOURCE"] = "outputd_udp"
         values["JASPER_AEC_OUTPUTD_REF_UDP_HOST"] = "127.0.0.1"
         values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
-        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = DEFAULT_CHIP_REF_PCM
+        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = chip_ref_pcm_for_env(system_env)
         values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
         values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"] = DEFAULT_CHIP_REF_SAMPLE_RATE
         values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"] = DEFAULT_CHIP_REF_PERIOD_FRAMES

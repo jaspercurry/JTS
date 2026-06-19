@@ -19,7 +19,7 @@ sells **"Flex" boards (Circular-4 and Linear-4) with a XIAO-ESP32S3
 module** that ship in that I2S mode **by default** — so they do
 **not** appear as a USB microphone until you flash USB firmware onto
 them. If a board "won't register" as a USB mic, that's almost always
-what you're hitting — see **§2.6**. We don't run the XIAO/Flex
+what you're hitting — see **§2.8**. We don't run the XIAO/Flex
 variants in production, but they're documented here because lab
 bring-up and diagnostics need to know "is this even the right
 firmware family, and is it in USB or I2S mode."
@@ -35,7 +35,7 @@ below.
 |---|---|
 | Identify the chip / board | §1 Hardware identity |
 | Flash a different firmware (DFU) | §2 Firmware variants |
-| Mic won't register as a USB device at all (Flex / XIAO board) | §2.6 — ships in I2S mode; flash USB firmware via BOOT-button Safe Mode |
+| Mic won't register as a USB device at all (Flex / XIAO board) | §2.8 — ships in I2S mode; flash USB firmware via BOOT-button Safe Mode |
 | Understand the 6-channel USB capture layout | §3 Channel layout |
 | Set a vendor parameter (gain, NS, AEC) | §4 Parameter space, §6 reference tables |
 | Debug a "no audio" / "channel silent" symptom | §5 Failure modes → §7 (ch2-5 silence: resolved root cause at top) → §8 Diagnostic cookbook |
@@ -49,10 +49,11 @@ below.
 
 | Component | Detail |
 |---|---|
-| Product (no XIAO) | Seeed Studio reSpeaker XVF3800 USB 4-Mic Array, SKU 101991441 |
-| Product (with XIAO ESP32S3) | SKU 114993701 — same chip, adds the XIAO module for I2S/INT mode |
+| Product (no XIAO, square/circular 4-mic board) | Seeed Studio reSpeaker XVF3800 USB 4-Mic Array, SKU 101991441 |
+| Product (with XIAO ESP32S3, square/circular 4-mic board) | SKU 114993701 — same chip, adds the XIAO module for I2S/INT mode |
+| Product (Flex linear/circular board) | Seeed Studio reSpeaker Flex XVF3800. The microphone PCB can be circular or linear; JTS has the LINEAR-4 board on jts5. |
 | Main DSP | XMOS XVF3800 ("VocalFusion 4-Mic"), purpose-built voice processor |
-| Microphones | 4× PDM MEMS in a circular array (geometry: square, 33 mm radius — see `AEC_MIC_ARRAY_GEO` below) |
+| Microphones | 4× PDM MEMS. Square/circular board: circular/square geometry, 33 mm radius. Flex LINEAR-4: four mics on a line; chip beams and DoA must use a linear firmware/config. |
 | Onboard codec | TI TLV320AIC3104 (drives the 3.5 mm jack + JST speaker connector) — **not** used in the JTS build |
 | LEDs | 12× WS2812 individually-addressable RGB ring |
 | Buttons | Mute (latching software state) + Reset (hardware reset of the XVF chip) |
@@ -60,21 +61,23 @@ below.
 | GPIO | 3 GPI + 5 GPO (see GPIO table in §6.5) — exposed both to the host and to onboard subsystems (mute LED, amp enable, WS2812 power) |
 | Speaker outputs | 3.5 mm AUX jack + JST speaker connector (5 W amp). **Both driven by the chip's AIC3104, not the host.** JTS leaves both unconnected and drives the speaker from a separate Apple USB-C → 3.5 mm dongle. |
 
-Source: [Seeed wiki — Getting Started](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/),
-specifically the "Main Components" table.
+Sources: [Seeed XVF3800 wiki — Getting Started](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/),
+specifically the "Main Components" table, and the
+[Seeed Flex wiki](https://wiki.seeedstudio.com/respeaker_flex/) for the
+Flex linear/circular board split.
 
 ### USB descriptor
 
 | Field | Value |
 |---|---|
 | Vendor ID (VID) | **0x2886** (Seeed Studio / Seeed Technology) |
-| Product ID (PID) | **0x001a** |
+| Product ID (PID) | **0x001a** for the legacy square/circular USB firmware; **0x0022** for ReSpeaker Flex USB firmware. |
 | Class | USB Audio Class 2.0 (UAC2) compliant, in normal mode |
 | Speed | **High Speed (480 Mb/s) — confirmed required for the 6-channel firmware** (see §5.5) |
 | DFU interface | Interface number is platform-dependent: `intf=3` on Linux, `intf=4` on macOS / Windows (per the upstream dfu_guide.md sample outputs) |
 | Control interface | Interface 3 (per `host_control/README.md`: *"Found device VID: 10374 PID: 26 interface: 3"*) |
 | iSerial format | 18 ASCII digits, format `<SKU 9 digits><device number 9 digits>` — e.g. `101991441000000001`. Stable across reboots (it's burned into the chip during board manufacture). |
-| Audio bit-depth (USB endpoint) | Default S16_LE; can be set to 24-bit or 32-bit via the `USB_BIT_DEPTH` parameter (see §6.1) — changing this reboots the chip. Seeed wiki says "16 kHz / 32-bit depth" for both 2-ch and 6-ch USB firmware; in practice `cat /proc/asound/Array/stream0` on JTS shows `S16_LE` after default install. |
+| Audio bit-depth (USB endpoint) | Default S16_LE; can be set to 24-bit or 32-bit via the `USB_BIT_DEPTH` parameter (see §6.1) — changing this reboots the chip. Seeed wiki says "16 kHz / 32-bit depth" for both 2-ch and 6-ch USB firmware; in practice `cat /proc/asound/<card>/stream0` on JTS shows `S16_LE` after default install. |
 | Audio sample rate (USB endpoint) | **16 kHz, fixed.** Not switchable on the USB firmware (issue #6 on the upstream repo asks for 48 kHz support; v2.0.10 attempts to add it but the PR has not been merged). The HA-targeted I2S firmware runs at 48 kHz; the USB firmware does not. |
 | Endpoint layout | One ISO IN endpoint (capture, `0x81`), one ISO OUT endpoint (playback, `0x01`), both SYNC mode, 500 µs data packet interval. Channel count differs per firmware variant — see §3. |
 
@@ -83,19 +86,22 @@ Sources: [respeaker upstream dfu_guide.md](https://github.com/respeaker/reSpeake
 How to read all of this on a live Pi:
 
 ```sh
-# VID/PID + bus topology
+# VID/PID + bus topology. Use 001a for legacy square/circular USB
+# firmware, 0022 for ReSpeaker Flex USB firmware.
 lsusb -d 2886:001a -v 2>/dev/null | head -40
+lsusb -d 2886:0022 -v 2>/dev/null | head -40
 
 # Speed (high vs full) + interfaces + endpoint sizes + serial
 lsusb -t -v -d 2886:001a 2>/dev/null
+lsusb -t -v -d 2886:0022 2>/dev/null
 cat /sys/bus/usb/devices/*/idVendor | grep -B1 -A1 2886
 # … or
 udevadm info -a -p /sys/class/sound/card*/ | grep -E 'idVendor|idProduct|speed|serial'
 
 # What ALSA sees once the kernel enumerates it
-arecord -l | grep -i array            # the card row
-cat /proc/asound/Array/stream0        # capture channel count, format, rate
-cat /proc/asound/Array/stream1        # playback equivalent
+arecord -l | grep -Ei 'array|L16K6Ch' # card row: Array or Flex L16K6Ch
+cat /proc/asound/Array/stream0        # legacy square/circular firmware
+cat /proc/asound/L16K6Ch/stream0      # Flex linear 16 kHz 6-ch firmware
 ```
 
 Note on the iSerial: it is exposed both via `lsusb -v` (the
@@ -109,10 +115,13 @@ ever need it programmatically.
 
 ## 2. Firmware variants
 
-Seeed publishes four official firmwares across two interface modes,
-plus a recovery "all-FF" blob.
+Seeed publishes separate firmware sets for the legacy square/circular
+USB board and the newer ReSpeaker Flex boards. The geometry tag matters:
+chip processed beams (channels 0/1) and DoA are geometry-specific.
+Raw mic channels (2-5 on 6-channel USB builds) are layout-agnostic at
+the firmware interface.
 
-### 2.1 USB firmwares (in `xmos_firmwares/usb/`)
+### 2.1 Legacy square/circular USB firmwares (in `xmos_firmwares/usb/`)
 
 | Filename | Variant | Channels (capture) | Notes |
 |---|---|---|---|
@@ -128,17 +137,34 @@ ASR** — i.e. the 6-ch firmware is a strict superset of the 2-ch
 output. Switching back to 2-ch firmware is reversible without losing
 the "what does ch0/1 do" mental model; it just removes ch2-5.
 
-Source: [upstream `xmos_firmwares/usb/` listing](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb).
+Source: [legacy upstream `xmos_firmwares/usb/` listing](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb).
 
-### 2.2 I2S / INT-Device firmwares (in `xmos_firmwares/i2s/`)
+### 2.2 Flex USB firmwares (in `respeaker/reSpeaker_Flex`)
+
+These are the correct USB builds for the ReSpeaker Flex linear/circular
+hardware. Do **not** flash `ua-io16-6ch-sqr` onto a Flex LINEAR-4 board
+except as a raw-channel-only diagnostic; the chip's processed beams and
+DoA would be using square geometry on linear hardware.
+
+| Filename | Geometry / rate / channels | Runtime identity | Notes |
+|---|---|---|---|
+| `respeaker_flex_usb_l16k6ch_v1.0.0.bin` | **linear, 16 kHz, 6 capture channels** | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` | **JTS jts5 Flex LINEAR-4 known-good as of 2026-06-19.** SHA256 `136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8`; observed `BLD_REPO_HASH=4b339d00721937451ee487759c04e2acb3215793`. |
+| `respeaker_flex_usb_l16k2ch_v1.0.0.bin` | linear, 16 kHz, 2 capture channels | USB `2886:0022` | Removes raw mic channels; not enough for JTS software-AEC/fusion work. |
+| `respeaker_flex_usb_l48k2ch_v1.0.0.bin` | linear, 48 kHz, 2 capture channels | USB `2886:0022` | Not validated for JTS; no raw channels. |
+| `respeaker_flex_usb_c16k6ch_v1.0.0.bin` | circular, 16 kHz, 6 capture channels | USB `2886:0022` | Correct geometry family for Flex circular, not the LINEAR-4 board. |
+| `respeaker_flex_usb_c16k2ch_v1.0.0.bin` / `c48k2ch` | circular, 2 capture channels | USB `2886:0022` | Not enough for JTS raw-mic fusion. |
+
+Source: [Flex upstream USB firmware listing](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) and the [Seeed Flex wiki](https://wiki.seeedstudio.com/respeaker_flex/), which explicitly documents linear and circular array variants.
+
+### 2.3 I2S / INT-Device firmwares (in `xmos_firmwares/i2s/`)
 
 Documented for completeness; **JTS does not use these.** Listed
-because if a Pi shows up with no `2886:001a` USB device at all, the
-board might be on an I2S firmware (the I2S firmwares **do not
-expose USB Audio at all** — only the I2C control + I2S audio pins).
-The **Flex / XIAO-ESP32S3 boards ship on I2S firmware by default** —
-§2.6 covers recognizing that and flashing USB firmware to turn one
-into a USB mic.
+because if a Pi shows up with neither `2886:001a` nor `2886:0022`
+USB Audio, the board might be on an I2S firmware (the I2S firmwares
+**do not expose USB Audio at all** — only the I2C control + I2S
+audio pins). The **Flex / XIAO-ESP32S3 boards ship on I2S firmware
+by default** — §2.8 covers recognizing that and flashing USB firmware
+to turn one into a USB mic.
 
 | Filename | Use case | Sample rate |
 |---|---|---|
@@ -152,7 +178,7 @@ ASR, Channel 1: Wake word`. Unlike the USB firmware, the channel
 1 here carries an on-chip wake-word indicator, not a second audio
 stream.
 
-### 2.3 Recovery firmware
+### 2.4 Recovery firmware
 
 `xmos_firmwares/recover/4mb_all_ff.bin` — a 4 MB blob of 0xFF used
 to wipe the DataPartition when a corrupted `SAVE_CONFIGURATION`
@@ -162,7 +188,7 @@ out of range"); the partition has been wiped by that point and you
 re-flash real firmware on top. See §5.1 for the full recovery
 procedure.
 
-### 2.4 DFU flashing — alt-setting semantics
+### 2.5 DFU flashing — alt-setting semantics
 
 The chip exposes three DFU alt-settings:
 
@@ -170,7 +196,7 @@ The chip exposes three DFU alt-settings:
 |---|---|---|
 | `0` | `reSpeaker DFU Factory` | The **Safe Mode** / recovery partition. Read-only during normal operation. Don't write here. |
 | `1` | `reSpeaker DFU Upgrade` | **The firmware partition.** This is where routine firmware writes go. Always available, in normal runtime as well as Safe Mode. |
-| `2` | `reSpeaker DFU DataPartition` | Persistent parameter store (what `SAVE_CONFIGURATION` writes to). Visible only in Safe Mode (entered via a button-held-during-power-on dance — **Mute** on the USB 4-Mic Array, **BOOT** on the Flex / XIAO boards; see §2.6). |
+| `2` | `reSpeaker DFU DataPartition` | Persistent parameter store (what `SAVE_CONFIGURATION` writes to). Visible only in Safe Mode (entered via a button-held-during-power-on dance — **Mute** on the USB 4-Mic Array, **BOOT** on the Flex / XIAO boards; see §2.8). |
 
 **The chip supports in-system DFU upgrade** — the USB descriptor in
 normal runtime advertises a DFU function at interface 4 alt 1
@@ -178,7 +204,8 @@ alongside the chip's audio class interfaces, so `dfu-util` can write
 firmware while the chip is plugged in and running normally. No button
 combo or Safe Mode entry is required for routine upgrades. Confirmed
 empirically via `lsusb -v -d 2886:001a` on both jts and jts2 chips
-on 2026-05-15; the relevant descriptor block is:
+on 2026-05-15, and via the same normal-runtime DFU flow on jts5
+Flex LINEAR-4 on 2026-06-19; the relevant descriptor block is:
 
 ```
 Interface Descriptor:
@@ -214,7 +241,34 @@ steps, what each `dfu-util` flag does and why).
 
 Sources: [upstream dfu_guide.md](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md), [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (DataPartition + recovery), [Seeed wiki Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/), and the captured `lsusb -v` from the 2026-05-15 jts2 investigation (`logs/xvf-interrogate-*-jts2-*-20260515T*.txt`).
 
-### 2.5 Reading the running firmware version
+### 2.6 Geometry caveat: chip beams are not portable across boards
+
+The 6-channel USB endpoint shape is shared across the validated
+legacy square firmware and the Flex linear firmware:
+
+- channel 0 = chip processed Conference output
+- channel 1 = chip processed ASR output
+- channels 2-5 = raw mic PCM
+
+Only channels 2-5 are geometry-agnostic. Channels 0/1 and any DoA
+or fixed-beam configuration depend on the firmware's compiled mic
+geometry. `ua-io16-6ch-sqr` is the square/circular board build;
+`ua-io16-6ch-lin` is the Flex LINEAR-4 build JTS verified on jts5
+on 2026-06-19. Flashing the square build onto a linear board can
+still expose six capture channels, but the chip processed beams are
+not trustworthy for wake/AEC tuning.
+
+Operational rule for JTS:
+
+- Square/circular board: existing `Array` / `2886:001a` /
+  `ua-io16-6ch-sqr` assumptions apply.
+- Flex LINEAR-4: flash `respeaker_flex_usb_l16k6ch_v1.0.0.bin`,
+  expect ALSA `L16K6Ch`, and begin retuning with `xvf_software_aec3`
+  / raw-mic corpus legs. Treat `chip_aec_150` / `chip_aec_210` as
+  unvalidated legacy square-board beam labels until a Flex-specific
+  corpus proves otherwise.
+
+### 2.7 Reading the running firmware version
 
 Three useful parameters are bundled into "what firmware am I
 running":
@@ -225,6 +279,8 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host VERSION
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_MSG
 #   → e.g. BLD_MSG: ['u', 'a', '-', 'i', 'o', '1', '6', '-', 's', 'q', 'r']
 #     means "ua-io16-sqr"  =  USB-UA / 16-kHz IO / square mic geometry
+#   → Flex LINEAR-4 6-ch reports BLD_MSG: ['ua-io16-6ch-lin']
+#     and enumerates as USB 2886:0022 / ALSA L16K6Ch.
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_REPO_HASH
 #   → e.g. BLD_REPO_HASH: ['a','1','f','7','0','6','5','1', …]
 #     i.e. git hash from sw_xvf3800 — the firmware-side repo
@@ -254,10 +310,11 @@ without USB control:
 # then Capture (Channels: 6 on 6-ch firmware). A naive `grep Channels:`
 # returns the Playback value — exactly the May 2026 reconciler bug.
 awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/L16K6Ch/stream0
 # expect "Channels: 6" on 6-ch; "Channels: 2" on default firmware
 ```
 
-### 2.6 Board variants that ship in I2S mode (Flex / XIAO) — getting them into USB mode
+### 2.8 Board variants that ship in I2S mode (Flex / XIAO) — getting them into USB mode
 
 Not every "XVF3800" registers as a USB mic out of the box. Seeed ships
 several boards on the same chip:
@@ -270,7 +327,7 @@ several boards on the same chip:
 
 The XIAO-fitted "Flex" boards are built for the **XIAO ESP32-S3 to be
 the host** over I2S, so they ship running I2S firmware and
-**deliberately present no USB Audio interface** (§2.2 — the I2S
+**deliberately present no USB Audio interface** (§2.3 — the I2S
 firmwares don't expose USB at all). To use one as a USB mic on a Pi,
 flash USB firmware onto the XVF3800.
 
@@ -312,40 +369,37 @@ connectors:
    lists `alt=0 Factory / alt=1 Upgrade / alt=2 DataPartition`.
    (`dfu-util` needs root — without `sudo` it prints
    `LIBUSB_ERROR_ACCESS`.)
-4. Flash the 6-channel USB firmware to **alt 1** (§2.4 has the flag
+4. Flash the 6-channel USB firmware to **alt 1** (§2.5 has the flag
    semantics; [BRINGUP.md](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
    has the full operator procedure incl. the download URL):
    ```sh
-   sudo dfu-util -R -e -a 1 -D respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
+   sudo dfu-util -R -e -a 1 -D respeaker_flex_usb_l16k6ch_v1.0.0.bin
    ```
-5. After the reset it re-enumerates as `2886:001a` / card `Array` with
-   6 capture channels — verify with `cat /proc/asound/cards` and the
-   channel-count probe in §1. From here it behaves like any production
-   XVF3800; `jasper-aec-reconcile` / `jasper-doctor` pick it up.
+5. After the reset it re-enumerates as `2886:0022` / card `L16K6Ch`
+   with 6 capture channels — verify with `cat /proc/asound/cards` and
+   the channel-count probe in §1. From here JTS treats it as the Flex
+   XVF profile; `jasper-aec-reconcile` / `jasper-doctor` pick it up.
 
 Flashing USB firmware **repurposes the board from "XIAO is the host"
 to "plain USB mic for the Pi."** Reflash an I2S image (§2.2) to restore
 standalone/wireless operation. **Never run `SAVE_CONFIGURATION`**
 during any of this — brick hazard (§5.1 / upstream issue #8).
 
-**Mic-geometry caveat (matters for the Linear-4).** The USB firmware's
-build string is `ua-io16-6ch-sqr` — the trailing **`sqr` = square /
-circular mic geometry** (see §2.5's `BLD_MSG` decode). The on-chip
-**processed beams (ch0 Conference, ch1 ASR) and DoA assume that square
-geometry**, so on a **Linear-4** board those processed channels may be
-geometrically mismatched, even though the **raw mic channels (ch2-5)
-are correct regardless of layout.** Before trusting the chip's
-beamforming on a linear array, confirm whether Seeed ships a
-linear-geometry USB firmware/config, or plan to drive beamforming
-JTS-side from the raw mics. A linear 4-mic array also has **front/back
-ambiguity** and roughly a 180° unambiguous field (vs. the circular
-array's 360°), so beam angles tuned on the circular board (e.g. the
-150°/210° chip beams) **do not transfer directly.**
+**Mic-geometry caveat (matters for the Linear-4).** Flash the Flex
+linear USB build, not the legacy square build: `ua-io16-6ch-lin`
+means linear mic geometry, while `ua-io16-6ch-sqr` means square /
+circular mic geometry (see §2.7's `BLD_MSG` decode). The on-chip
+processed beams (ch0 Conference, ch1 ASR), DoA, and fixed-beam angles
+use that compiled geometry. Raw mic channels (ch2-5) are the safe
+layout-agnostic interface. A linear 4-mic array still has front/back
+ambiguity and a different useful field than the circular board, so
+beam angles tuned on the circular board (e.g. the 150°/210° chip beams)
+do not transfer directly.
 
 **Links:** [reSpeaker Flex Linear-4 product page](https://www.seeedstudio.com/reSpeaker-Flex-XVF3800-Linear-4-with-XIAO-ESP32S3-p-6736.html)
 · [Getting Started with reSpeaker Flex (Seeed wiki)](https://wiki.seeedstudio.com/respeaker_flex_xiao_introduction/)
 · [Update-firmware / Safe Mode section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/#update-firmware)
-· [firmware repo `xmos_firmwares/usb/`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb).
+· [Flex firmware repo `xmos_firmwares/usb/`](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb).
 
 ---
 
@@ -1547,4 +1601,4 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-06-19 (added §2.6 — Flex / XIAO I2S-default variants, BOOT-button Safe Mode entry, the "won't register as USB" troubleshooting signature, and the Linear-4 mic-geometry caveat; validated on a Flex Linear-4 + XIAO. Prior 2026-06-18 pass: DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback.)
+Last verified: 2026-06-19 (Flex / XIAO I2S-default variants, BOOT-button Safe Mode entry, the "won't register as USB" troubleshooting signature, and the Linear-4 mic-geometry caveat validated on Flex Linear-4 + XIAO; Flex LINEAR-4 USB identity PID 2886:0022, ALSA L16K6Ch, and `ua-io16-6ch-lin` verified on jts5. Prior 2026-06-18 pass: DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback.)

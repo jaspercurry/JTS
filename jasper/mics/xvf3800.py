@@ -8,15 +8,16 @@ vendor-control helper used for chip-side parameter reads/writes).
 
 This module holds the mic-family-specific knowledge consulted by
 doctor checks, the AEC bridge, and operator tooling. The bash
-reconciler at deploy/bin/jasper-aec-reconcile carries its own
-copies (it can't import Python); when changing constants here,
-update there too.
+reconciler consumes these facts through `python -m jasper.cli.xvf_profile`
+so geometry/channel truth stays in this module.
 """
 from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from math import pi
 from pathlib import Path
+from typing import Any, Mapping
 
 
 # ---------------------------------------------------------------------
@@ -24,12 +25,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------
 
 USB_VID_PID = "2886:001a"
-DISPLAY_NAME = "Seeed ReSpeaker XVF3800 (USB UA)"
+FLEX_USB_VID_PID = "2886:0022"
+USB_VID_PIDS = (USB_VID_PID, FLEX_USB_VID_PID)
+DISPLAY_NAME = "Seeed ReSpeaker XVF3800 (USB UA/Flex)"
 
-# ALSA card name as enumerated by snd-usb-audio (the kernel's literal
-# `id` field). Stable across reboots and across the 2-ch / 6-ch
-# firmware variants — both expose the same iProduct string.
+# ALSA card names as enumerated by snd-usb-audio (the kernel's literal
+# `id` field). The legacy square USB firmware enumerates as `Array`;
+# the ReSpeaker Flex linear/circular USB firmware enumerates by firmware
+# family, e.g. `L16K6Ch` for the 16 kHz linear 6-channel build.
 ALSA_CARD_NAME = "Array"
+FLEX_LINEAR_ALSA_CARD_NAME = "L16K6Ch"
+ALSA_CARD_NAMES = (ALSA_CARD_NAME, FLEX_LINEAR_ALSA_CARD_NAME)
 
 
 # ---------------------------------------------------------------------
@@ -37,30 +43,201 @@ ALSA_CARD_NAME = "Array"
 # ---------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class ChipBeamLeg:
+    """One chip-emitted hardware-AEC beam stream.
+
+    token is the frozen JTS wake-leg/corpus identifier. It is not a UI
+    label and must not be re-used for a different physical beam plan.
+    """
+
+    token: str
+    channel_index: int
+    azimuth_deg: float
+    label: str
+    elevation_deg: float = 0.0
+
+    @property
+    def azimuth_rad(self) -> float:
+        return self.azimuth_deg * pi / 180.0
+
+    @property
+    def elevation_rad(self) -> float:
+        return self.elevation_deg * pi / 180.0
+
+
+@dataclass(frozen=True)
+class ChipBeamPlan:
+    """Geometry-specific XVF chip beam configuration.
+
+    This is the line between "the chip can produce some processed
+    channels" and "JTS is allowed to label/use those channels as a
+    production wake profile." Flex linear intentionally has no production
+    plan yet; corpus evidence can add one later without changing the
+    square-board contract.
+    """
+
+    plan_id: str
+    display_name: str
+    geometry: str
+    description: str
+    legs: tuple[ChipBeamLeg, ...]
+    production_validated: bool = True
+
+    @property
+    def leg_tokens(self) -> tuple[str, ...]:
+        return tuple(leg.token for leg in self.legs)
+
+
+@dataclass(frozen=True)
 class FirmwareVariant:
+    variant_id: str            # Stable JTS id for runtime state/artifacts
+    display_name: str
     bld_msg: str               # BLD_MSG string the chip reports (xvf_host BLD_MSG)
     capture_channels: int      # USB capture endpoint channel count
     raw_mic_indices: tuple[int, ...]  # capture channels carrying raw PDM mic data
+    geometry: str              # square/linear; chip beams and DoA are geometry-specific
+    usb_vid_pid: str = USB_VID_PID
+    alsa_card_name: str = ALSA_CARD_NAME
+    chip_beam_plan_id: str | None = None
 
 
-# The two USB firmware variants Seeed publishes. Both share the same
-# repo hash and chip silicon — the 6-ch variant just adds the raw-mic
-# capture channels needed by the software AEC bridge.
+@dataclass(frozen=True)
+class RuntimeProfile:
+    """Detected XVF runtime facts used by reconcilers and status surfaces."""
+
+    present: bool
+    variant: FirmwareVariant | None
+    alsa_card_name: str
+    capture_channels: int | None
+    chip_beam_plan: ChipBeamPlan | None
+    reason: str
+
+    @property
+    def variant_id(self) -> str:
+        return self.variant.variant_id if self.variant else ""
+
+    @property
+    def display_name(self) -> str:
+        return self.variant.display_name if self.variant else DISPLAY_NAME
+
+    @property
+    def geometry(self) -> str:
+        return self.variant.geometry if self.variant else ""
+
+    @property
+    def chip_beam_plan_id(self) -> str:
+        return self.chip_beam_plan.plan_id if self.chip_beam_plan else ""
+
+    @property
+    def chip_aec_supported(self) -> bool:
+        return bool(self.chip_beam_plan and self.chip_beam_plan.production_validated)
+
+    @property
+    def recommended_profile(self) -> str:
+        if self.present and self.capture_channels == RECOMMENDED_CAPTURE_CHANNELS:
+            return "xvf_chip_aec" if self.chip_aec_supported else "xvf_software_aec3"
+        return "direct_mic"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "present": self.present,
+            "variant_id": self.variant_id,
+            "display_name": self.display_name,
+            "geometry": self.geometry,
+            "usb_vid_pid": self.variant.usb_vid_pid if self.variant else "",
+            "alsa_card_name": self.alsa_card_name,
+            "capture_channels": self.capture_channels,
+            "recommended_capture_channels": RECOMMENDED_CAPTURE_CHANNELS,
+            "raw_mic_indices": (
+                list(self.variant.raw_mic_indices) if self.variant else []
+            ),
+            "chip_beam_plan": (
+                {
+                    "id": self.chip_beam_plan.plan_id,
+                    "display_name": self.chip_beam_plan.display_name,
+                    "geometry": self.chip_beam_plan.geometry,
+                    "production_validated": self.chip_beam_plan.production_validated,
+                    "legs": [
+                        {
+                            "token": leg.token,
+                            "channel_index": leg.channel_index,
+                            "azimuth_deg": leg.azimuth_deg,
+                            "elevation_deg": leg.elevation_deg,
+                            "label": leg.label,
+                        }
+                        for leg in self.chip_beam_plan.legs
+                    ],
+                }
+                if self.chip_beam_plan else None
+            ),
+            "chip_aec_supported": self.chip_aec_supported,
+            "recommended_profile": self.recommended_profile,
+            "reason": self.reason,
+        }
+
+
+RECOMMENDED_CAPTURE_CHANNELS = 6
+
+
+SQUARE_FIXED_150_210_PLAN = ChipBeamPlan(
+    plan_id="xvf_square_fixed_150_210",
+    display_name="Square/circular fixed 150/210 ASR beams",
+    geometry="square",
+    description=(
+        "Legacy square/circular XVF3800 USB 6-channel chip-AEC plan. "
+        "Channels 0/1 carry the fixed 150° and 210° ASR beams."
+    ),
+    legs=(
+        ChipBeamLeg("chip_aec_150", channel_index=0, azimuth_deg=150.0,
+                    label="Chip AEC ASR 150"),
+        ChipBeamLeg("chip_aec_210", channel_index=1, azimuth_deg=210.0,
+                    label="Chip AEC ASR 210"),
+    ),
+)
+CHIP_BEAM_PLANS: dict[str, ChipBeamPlan] = {
+    SQUARE_FIXED_150_210_PLAN.plan_id: SQUARE_FIXED_150_210_PLAN,
+}
+
+
+# The USB firmware variants JTS has validated. The 6-ch variants add
+# the raw-mic capture channels needed by the software AEC bridge.
 VARIANT_2CH = FirmwareVariant(
+    variant_id="xvf3800_legacy_square_2ch",
+    display_name="Legacy square/circular XVF3800 USB 2-channel",
     bld_msg="ua-io16-sqr",
     capture_channels=2,
     raw_mic_indices=(),
+    geometry="square",
 )
 VARIANT_6CH = FirmwareVariant(
+    variant_id="xvf3800_legacy_square_6ch",
+    display_name="Legacy square/circular XVF3800 USB 6-channel",
     bld_msg="ua-io16-6ch-sqr",
     capture_channels=6,
     raw_mic_indices=(2, 3, 4, 5),
+    geometry="square",
+    chip_beam_plan_id=SQUARE_FIXED_150_210_PLAN.plan_id,
+)
+VARIANT_FLEX_LINEAR_6CH = FirmwareVariant(
+    variant_id="xvf3800_flex_linear_6ch",
+    display_name="ReSpeaker Flex XVF3800 LINEAR-4 16 kHz 6-channel",
+    bld_msg="ua-io16-6ch-lin",
+    capture_channels=6,
+    raw_mic_indices=(2, 3, 4, 5),
+    geometry="linear",
+    usb_vid_pid=FLEX_USB_VID_PID,
+    alsa_card_name=FLEX_LINEAR_ALSA_CARD_NAME,
 )
 
 # Required for the reconciler-managed XVF AEC profiles. The bridge opens
 # the 6-channel capture shape for both chip-AEC (fixed beams on ch0/1)
 # and the software-AEC fallback (raw-ish ch1 plus raw mic legs).
 RECOMMENDED_FIRMWARE = VARIANT_6CH
+SUPPORTED_6CH_FIRMWARE = (VARIANT_6CH, VARIANT_FLEX_LINEAR_6CH)
+FIRMWARE_VARIANTS = (VARIANT_2CH, VARIANT_6CH, VARIANT_FLEX_LINEAR_6CH)
+VARIANTS_BY_BLD_MSG = {variant.bld_msg: variant for variant in FIRMWARE_VARIANTS}
+VARIANTS_BY_ID = {variant.variant_id: variant for variant in FIRMWARE_VARIANTS}
 
 
 # ---------------------------------------------------------------------
@@ -79,8 +256,9 @@ RECOMMENDED_FIRMWARE = VARIANT_6CH
 # §5.1 for the recovery flow).
 #
 # When the chip enters DFU during a flash it briefly enumerates as
-# the XMOS bootloader at 20b1:0008, then resets back to its normal
-# 2886:001a runtime identity after the flash completes.
+# the XMOS bootloader at 20b1:0008, then resets back to its runtime
+# identity after the flash completes: 2886:001a for the legacy square
+# firmware, 2886:0022 for Flex firmware.
 DFU_VID_PID = "20b1:0008"
 
 # Alt 0 is the read-only Factory partition; alt 1 is the Upgrade
@@ -115,10 +293,18 @@ DFU_ALT_SETTING = 1
 # accurate.
 FIRMWARE_KNOWN_GOOD_AS_OF = "2026-05-15"
 FIRMWARE_BLOB_6CH = "respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin"
+FIRMWARE_BLOB_FLEX_LINEAR_6CH = "respeaker_flex_usb_l16k6ch_v1.0.0.bin"
 # Built from sw_xvf3800 commit `a1f70651e992d6f0bcff655b26925d33999b9c2d`.
 # The chip reports this via `xvf_host BLD_REPO_HASH` — useful to
 # verify after a flash that you actually wrote what you intended.
 FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH = "a1f70651e992d6f0bcff655b26925d33999b9c2d"
+FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_AS_OF = "2026-06-19"
+FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_SHA256 = (
+    "136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8"
+)
+FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_BLD_REPO_HASH = (
+    "4b339d00721937451ee487759c04e2acb3215793"
+)
 
 # Upstream firmware directory. Single canonical source for blobs.
 FIRMWARE_UPSTREAM_DIR_URL = (
@@ -128,6 +314,13 @@ FIRMWARE_UPSTREAM_DIR_URL = (
 FIRMWARE_RAW_URL_6CH = (
     "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY"
     f"/raw/master/xmos_firmwares/usb/{FIRMWARE_BLOB_6CH}"
+)
+FIRMWARE_UPSTREAM_FLEX_DIR_URL = (
+    "https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb"
+)
+FIRMWARE_RAW_URL_FLEX_LINEAR_6CH = (
+    "https://github.com/respeaker/reSpeaker_Flex"
+    f"/raw/main/xmos_firmwares/usb/{FIRMWARE_BLOB_FLEX_LINEAR_6CH}"
 )
 
 
@@ -184,21 +377,12 @@ MIC_CHANNEL_INDEX = 1
 # Helpers
 # ---------------------------------------------------------------------
 
-def is_present() -> bool:
-    """True if the chip's ALSA card has enumerated under /proc/asound."""
-    return Path(f"/proc/asound/{ALSA_CARD_NAME}/stream0").exists()
-
-
-def capture_channels() -> int | None:
-    """Return the chip's USB capture endpoint channel count from
-    /proc/asound/<card>/stream0, or None if the card is absent.
-
-    Pinned to the ^Capture: section — /proc/asound/<card>/stream0
-    has Playback first (Channels: 2 for the XVF chip's playback
-    endpoint) then Capture (Channels: 6 on 6-ch firmware). A naive
-    `grep Channels:` returns the Playback value, which was the May
-    2026 reconciler bug that silently disabled software AEC."""
-    p = Path(f"/proc/asound/{ALSA_CARD_NAME}/stream0")
+def _capture_channels_for_card(
+    card: str,
+    *,
+    asound_root: Path = Path("/proc/asound"),
+) -> int | None:
+    p = asound_root / card / "stream0"
     if not p.exists():
         return None
     in_capture = False
@@ -214,10 +398,163 @@ def capture_channels() -> int | None:
     return None
 
 
+def variant_for_bld_msg(bld_msg: str | None) -> FirmwareVariant | None:
+    value = (bld_msg or "").strip().strip("'\"")
+    return VARIANTS_BY_BLD_MSG.get(value)
+
+
+def variant_for_card(
+    card: str,
+    capture_channel_count: int | None,
+) -> FirmwareVariant | None:
+    if card == FLEX_LINEAR_ALSA_CARD_NAME and capture_channel_count == 6:
+        return VARIANT_FLEX_LINEAR_6CH
+    if card == ALSA_CARD_NAME and capture_channel_count == 6:
+        return VARIANT_6CH
+    if card == ALSA_CARD_NAME and capture_channel_count == 2:
+        return VARIANT_2CH
+    return None
+
+
+def chip_beam_plan(plan_id: str | None) -> ChipBeamPlan | None:
+    return CHIP_BEAM_PLANS.get((plan_id or "").strip())
+
+
+def chip_beam_plan_for_variant(
+    variant: FirmwareVariant | None,
+) -> ChipBeamPlan | None:
+    if variant is None or not variant.chip_beam_plan_id:
+        return None
+    return chip_beam_plan(variant.chip_beam_plan_id)
+
+
+def chip_beam_plan_from_env(env: Mapping[str, str]) -> ChipBeamPlan | None:
+    """Return the active chip beam plan from reconciler-applied env.
+
+    Back-compat: older square/circular installs may have chip-AEC enabled
+    without a plan id because the pre-geometry code only had one implicit
+    plan. Treat missing plan + non-linear geometry as the legacy square
+    plan; never do that when the env says the active geometry is linear.
+    """
+
+    explicit = chip_beam_plan(env.get("JASPER_XVF_CHIP_BEAM_PLAN", ""))
+    if explicit:
+        return explicit
+    geometry = (env.get("JASPER_XVF_GEOMETRY", "") or "").strip().lower()
+    if geometry == "linear":
+        return None
+    truthy = {"1", "true", "yes", "on"}
+    if (
+        str(env.get("JASPER_AEC_CHIP_AEC_ENABLED", "")).strip().lower() in truthy
+        or str(env.get("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "")).strip().lower()
+        in truthy
+    ):
+        return SQUARE_FIXED_150_210_PLAN
+    return None
+
+
+def detect_runtime_profile(
+    *,
+    asound_root: Path = Path("/proc/asound"),
+    bld_msg: str | None = None,
+) -> RuntimeProfile:
+    """Detect the active XVF runtime variant from cheap local facts.
+
+    ALSA card identity is the hot path because it is available without
+    USB control permissions. BLD_MSG, when supplied by a caller that has
+    already read the chip, wins because it is the firmware's own word.
+    """
+
+    bld_variant = variant_for_bld_msg(bld_msg)
+    for card in ALSA_CARD_NAMES:
+        channels = _capture_channels_for_card(card, asound_root=asound_root)
+        if channels is None:
+            continue
+        variant = bld_variant or variant_for_card(card, channels)
+        plan = chip_beam_plan_for_variant(variant)
+        if variant is None:
+            return RuntimeProfile(
+                present=True,
+                variant=None,
+                alsa_card_name=card,
+                capture_channels=channels,
+                chip_beam_plan=None,
+                reason="XVF-like ALSA card present but firmware variant is unknown",
+            )
+        if plan:
+            reason = f"{variant.display_name}; chip beam plan {plan.plan_id}"
+        elif variant.capture_channels == RECOMMENDED_CAPTURE_CHANNELS:
+            reason = (
+                f"{variant.display_name}; no validated production chip "
+                "beam plan for this geometry"
+            )
+        else:
+            reason = f"{variant.display_name}; not 6-channel firmware"
+        return RuntimeProfile(
+            present=True,
+            variant=variant,
+            alsa_card_name=card,
+            capture_channels=channels,
+            chip_beam_plan=plan,
+            reason=reason,
+        )
+    return RuntimeProfile(
+        present=False,
+        variant=None,
+        alsa_card_name=ALSA_CARD_NAME,
+        capture_channels=None,
+        chip_beam_plan=None,
+        reason="No supported XVF3800 ALSA card detected",
+    )
+
+
+def alsa_card_name() -> str:
+    """Return the currently enumerated XVF ALSA card name.
+
+    Legacy square USB firmware appears as `Array`; Flex linear firmware
+    appears as `L16K6Ch`. If no supported card is present, return the
+    legacy card name so existing defaults and remediation text stay
+    stable on older installations.
+    """
+    for card in ALSA_CARD_NAMES:
+        if Path(f"/proc/asound/{card}/stream0").exists():
+            return card
+    return ALSA_CARD_NAME
+
+
+def _stream_path(card: str | None = None) -> Path:
+    return Path(f"/proc/asound/{card or alsa_card_name()}/stream0")
+
+
+def is_present() -> bool:
+    """True if the chip's ALSA card has enumerated under /proc/asound."""
+    return any(
+        Path(f"/proc/asound/{card}/stream0").exists()
+        for card in ALSA_CARD_NAMES
+    )
+
+
+def capture_channels() -> int | None:
+    """Return the chip's USB capture endpoint channel count from
+    /proc/asound/<card>/stream0, or None if the card is absent.
+
+    Pinned to the ^Capture: section — /proc/asound/<card>/stream0
+    has Playback first (Channels: 2 for the XVF chip's playback
+    endpoint) then Capture (Channels: 6 on 6-ch firmware). A naive
+    `grep Channels:` returns the Playback value, which was the May
+    2026 reconciler bug that silently disabled software AEC."""
+    return _capture_channels_for_card(alsa_card_name())
+
+
 def is_recommended_firmware() -> bool:
     """True if the chip is on the 6-ch firmware variant — the one the
     software AEC bridge needs."""
     return capture_channels() == RECOMMENDED_FIRMWARE.capture_channels
+
+
+def chip_aec_supported() -> bool:
+    """True only when the detected mic variant has a validated beam plan."""
+    return detect_runtime_profile().chip_aec_supported
 
 
 def ensure_capture_open() -> bool:
@@ -227,16 +564,17 @@ def ensure_capture_open() -> bool:
 
     Caller is responsible for sudo: this runs `amixer` directly with
     no privilege escalation. The reconciler invokes us as root."""
+    card = alsa_card_name()
     on = ",".join(["on"] * RECOMMENDED_FIRMWARE.capture_channels)
     max_vol = ",".join([str(MIXER_VOLUME_MAX)] * RECOMMENDED_FIRMWARE.capture_channels)
     try:
         subprocess.run(
-            ["amixer", "-c", ALSA_CARD_NAME, "cset",
+            ["amixer", "-c", card, "cset",
              f"name={MIXER_CAPTURE_SWITCH}", on],
             check=True, capture_output=True, timeout=5,
         )
         subprocess.run(
-            ["amixer", "-c", ALSA_CARD_NAME, "cset",
+            ["amixer", "-c", card, "cset",
              f"name={MIXER_CAPTURE_VOLUME}", max_vol],
             check=True, capture_output=True, timeout=5,
         )

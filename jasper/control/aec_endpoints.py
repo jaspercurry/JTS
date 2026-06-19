@@ -284,16 +284,23 @@ def _audio_profile_status(
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
     try:
         from ..mics import xvf3800
-        xvf_present = xvf3800.is_present()
-        capture_channels = xvf3800.capture_channels()
-        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
-        display_name = xvf3800.DISPLAY_NAME
+        runtime_profile = xvf3800.detect_runtime_profile()
+        xvf_present = runtime_profile.present
+        capture_channels = runtime_profile.capture_channels
+        recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
+        display_name = runtime_profile.display_name
+        variant_id = runtime_profile.variant_id
+        geometry = runtime_profile.geometry
+        chip_beam_plan = runtime_profile.chip_beam_plan_id
         probe_error = None
     except Exception:  # noqa: BLE001
         xvf_present = False
         capture_channels = None
         recommended_channels = 6
         display_name = "Seeed ReSpeaker XVF3800 (USB UA)"
+        variant_id = ""
+        geometry = ""
+        chip_beam_plan = ""
         probe_error = "firmware probe failed"
 
     return build_audio_profile_status(
@@ -310,6 +317,9 @@ def _audio_profile_status(
             capture_channels=capture_channels,
             recommended_channels=recommended_channels,
             display_name=display_name,
+            variant_id=variant_id,
+            geometry=geometry,
+            chip_beam_plan=chip_beam_plan,
             probe_error=probe_error,
         ),
         bridge_active=bridge_active,
@@ -318,10 +328,10 @@ def _audio_profile_status(
 
 
 def _chip_aec_available() -> bool:
-    """True when the XVF3800 exposes the chip-AEC beam firmware shape."""
+    """True when the detected XVF variant has a validated beam plan."""
     try:
         from ..mics import xvf3800
-        return xvf3800.is_recommended_firmware()
+        return xvf3800.detect_runtime_profile().chip_aec_supported
     except Exception:  # noqa: BLE001
         return False
 
@@ -351,15 +361,13 @@ def _aec_full_status() -> dict:
     load failures surface via jasper-doctor's check_aec_bridge_dtln_engine,
     which the /system Diagnostics disclosure runs on demand.
 
-    The chip-AEC leg also carries an `available` flag: the XVF3800 chip
-    beams only exist on the 6-channel firmware, so the /wake/ toggle stays
-    disabled (with explanatory copy) when the chip isn't on that variant."""
+    The chip-AEC leg also carries an `available` flag: production chip
+    beams require a detected XVF profile with a validated beam plan, so the
+    /wake/ toggle stays disabled when the connected geometry has no plan."""
     state = _read_aec_state()
     bridge_active = _aec_bridge_active()
-    # The chip-AEC beams require the 6-channel XVF firmware.
-    # is_recommended_firmware() reads /proc/asound and returns False when the
-    # card is absent or on the 2-ch variant; wrap defensively so a probe
-    # failure can never 500 a status GET the /wake/ page polls every 3 s.
+    # Wrap defensively so a profile probe failure can never 500 a status
+    # GET the /wake/ page polls every 3 s.
     chip_available = _chip_aec_available()
     effective = resolve_audio_input_intent(
         AecIntent(

@@ -12,11 +12,13 @@ outputd's direct final-output fanout: a 48 kHz UDP reference for
 software AEC/corpus analysis plus a 16 kHz downsampled XVF3800 USB-IN
 reference PCM for chip AEC. The production speaker is now
 **profile-first**: fresh installs seed `JASPER_AUDIO_INPUT_PROFILE=auto`,
-which resolves to the XVF chip-AEC profile on 6-channel XVF3800 hardware
-and falls back to software AEC3/direct mic when that path is unavailable
-(see [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+which resolves to the XVF chip-AEC profile only when the detected mic
+profile has a validated chip beam plan and falls back to software
+AEC3/direct mic when that path is unavailable (see
+[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
 §2.4). The `chip_aec_150` / `chip_aec_210` beams remain
-hardware-conditional scored wake legs inside that profile.
+hardware-conditional, square-board beam-plan wake legs inside that
+profile.
 
 **Current production state (verified on Pi, 2026-05-31, build
 `c95bfdd`).**

@@ -496,12 +496,12 @@ def test_index_html_renders_microphone_status_card():
 
 def test_index_html_chip_aec_row_explains_mutual_exclusion():
     """The chip-AEC layer row tells the household it's mutually exclusive
-    with raw + DTLN (one chip can't do both) and needs the 6-ch firmware
-    — so a user understands why enabling it greys the others out."""
+    with raw + DTLN (one chip can't do both) and needs a supported mic
+    profile — so a user understands why enabling it greys the others out."""
     html = wake_setup._index_html({}).decode()
     assert "Chip-AEC beams" in html
     assert "Mutually exclusive" in html or "pauses them" in html
-    assert "6-channel firmware" in html
+    assert "supported mic profile" in html
 
 
 def test_index_html_includes_sensitivity_slider():

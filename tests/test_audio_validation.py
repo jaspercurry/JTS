@@ -370,6 +370,10 @@ def _active_chip_inputs() -> dict:
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
+            "JASPER_XVF_VARIANT": "xvf3800_legacy_square_6ch",
+            "JASPER_XVF_GEOMETRY": "square",
+            "JASPER_XVF_CHIP_BEAM_PLAN": "xvf_square_fixed_150_210",
+            "JASPER_XVF_CHIP_AEC_SUPPORTED": "1",
             "JASPER_OUTPUTD_BACKEND": "alsa",
             "JASPER_OUTPUTD_DAC_PCM": "outputd_dac",
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
@@ -378,6 +382,9 @@ def _active_chip_inputs() -> dict:
             xvf_present=True,
             capture_channels=6,
             recommended_channels=6,
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
         ),
         "service_states": {
             "jasper-outputd.service": "active",
@@ -537,6 +544,38 @@ def test_chip_aec_readiness_requires_calibrated_output_dac():
     assert artifact.checks["dac_support"]["observed"]["status"] == "needs_calibration"
     assert "needs chip-AEC calibration" in artifact.checks["dac_support"]["summary"]
     assert artifact.recommendation == "calibrate_output_dac_before_chip_aec"
+
+
+def test_chip_aec_readiness_requires_validated_mic_beam_plan():
+    inputs = _active_chip_inputs()
+    inputs["mic_probe"] = MicProbe(
+        xvf_present=True,
+        capture_channels=6,
+        recommended_channels=6,
+        display_name="Seeed ReSpeaker Flex XVF3800 LINEAR-4",
+        variant_id="xvf3800_flex_linear_6ch",
+        geometry="linear",
+        chip_beam_plan="",
+    )
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+        "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
+        "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
+        "JASPER_XVF_VARIANT": "xvf3800_flex_linear_6ch",
+        "JASPER_XVF_GEOMETRY": "linear",
+        "JASPER_XVF_CHIP_BEAM_PLAN": "",
+        "JASPER_XVF_CHIP_AEC_SUPPORTED": "0",
+    }
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.status == "fail"
+    assert artifact.checks["mic_detected"]["status"] == "fail"
+    assert "validated XVF3800 chip beam plan" in (
+        artifact.checks["mic_detected"]["summary"]
+    )
+    assert artifact.checks["runtime_profile"]["status"] == "fail"
 
 
 def test_chip_aec_readiness_fails_when_outputd_reference_missing():

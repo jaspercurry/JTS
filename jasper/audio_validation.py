@@ -505,11 +505,15 @@ def _probe_xvf_mic() -> MicProbe:
     try:
         from .mics import xvf3800
 
+        runtime_profile = xvf3800.detect_runtime_profile()
         return MicProbe(
-            xvf_present=xvf3800.is_present(),
-            capture_channels=xvf3800.capture_channels(),
-            recommended_channels=xvf3800.RECOMMENDED_FIRMWARE.capture_channels,
-            display_name=xvf3800.DISPLAY_NAME,
+            xvf_present=runtime_profile.present,
+            capture_channels=runtime_profile.capture_channels,
+            recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
+            display_name=runtime_profile.display_name,
+            variant_id=runtime_profile.variant_id,
+            geometry=runtime_profile.geometry,
+            chip_beam_plan=runtime_profile.chip_beam_plan_id,
         )
     except Exception as e:  # noqa: BLE001 - readiness must fail soft
         return MicProbe(
@@ -527,6 +531,9 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
         "present": mic.xvf_present,
         "capture_channels": mic.capture_channels,
         "recommended_channels": mic.recommended_channels,
+        "variant_id": mic.variant_id,
+        "geometry": mic.geometry,
+        "chip_beam_plan": mic.chip_beam_plan,
         "probe_error": mic.probe_error,
     }
 
@@ -1698,10 +1705,7 @@ def build_chip_aec_readiness_artifact(
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
-    chip_available = (
-        mic_probe.xvf_present
-        and mic_probe.capture_channels == mic_probe.recommended_channels
-    )
+    chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
     profile_status = build_audio_profile_status(
         intent,
         runtime,
@@ -1717,11 +1721,18 @@ def build_chip_aec_readiness_artifact(
         "mic_detected": _check(
             "pass" if chip_available else "fail",
             summary=(
-                "XVF3800 6-channel firmware is available."
-                if chip_available else "Chip-AEC requires XVF3800 6-channel firmware."
+                "XVF3800 mic profile has a validated chip beam plan."
+                if chip_available
+                else (
+                    "Chip-AEC requires a validated XVF3800 chip beam plan "
+                    "for the detected mic geometry."
+                )
             ),
             observed=mic,
-            expected={"family": "xvf3800", "capture_channels": mic_probe.recommended_channels},
+            expected={
+                "family": "xvf3800",
+                "chip_beam_plan": "validated",
+            },
         ),
         "dac_support": _chip_aec_dac_support_check(dac),
         "runtime_env": _runtime_env_check(runtime),

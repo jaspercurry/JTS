@@ -211,12 +211,13 @@ install_jasper() {
 
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
         # Detect ReSpeaker XVF3800 card name. Default "Array" (PiOS literal
-        # name; product description matches and it's also a substring of
-        # PortAudio's enumerated name "Array: USB Audio (hw:N,0)").
+        # name for the legacy square USB firmware). ReSpeaker Flex linear
+        # firmware enumerates as "L16K6Ch"; both are substrings of the
+        # PortAudio device names sounddevice opens.
         # JASPER_MIC_DEVICE format is a PortAudio device name/substring,
         # NOT an ALSA pcm string — see jasper/config.py for the rationale.
         local mic_card
-        mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
+        mic_card=$(detect_card arecord 'xvf3800|respeaker.*(array|flex)|L16K6Ch' 'Array')
         echo "  ReSpeaker mic: ${mic_card}"
         # Derive JASPER_HOSTNAME from the OS hostname so a fresh Pi
         # named "jts2" in Raspberry Pi Imager ends up with
@@ -235,6 +236,7 @@ install_jasper() {
         # tests/test_env_example_matches_config_defaults.py.
         sed \
             -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
+            -e "s|JASPER_AEC_MIC_DEVICE=Array|JASPER_AEC_MIC_DEVICE=${mic_card}|" \
             -e "s|^JASPER_HOSTNAME=.*|JASPER_HOSTNAME=${hostname_value}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"

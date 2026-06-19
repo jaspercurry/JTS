@@ -4198,6 +4198,9 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
             xvf_present=True,
             capture_channels=6,
             recommended_channels=6,
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
         ),
     )
     result = doctor._assess_audio_profile(status)
@@ -4234,6 +4237,9 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
             xvf_present=True,
             capture_channels=6,
             recommended_channels=6,
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
         ),
     )
     result = doctor._assess_audio_profile(status)

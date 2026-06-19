@@ -311,6 +311,20 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     assert "/^SPOTIPY_REDIRECT_URI=/d" in install_sh
 
 
+def test_mic_device_candidates_are_template_owned_for_fresh_install():
+    """The install-time seed must not duplicate hot-swap mic candidates."""
+    env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert (
+        env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch\n")
+        == 1
+    )
+
+    python_runtime = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "JASPER_MIC_DEVICE_CANDIDATES=Array|" not in python_runtime
+
+
 def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
     """AirPlay's Wi-Fi tweak also owns NetworkManager retry resilience."""
     text = _RENDERERS_LIB.read_text(encoding="utf-8")
