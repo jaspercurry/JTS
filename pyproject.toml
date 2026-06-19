@@ -30,7 +30,7 @@ streambox = [
 ]
 
 full = [
-    "google-genai==2.8.0",
+    "google-genai==2.9.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
