@@ -92,6 +92,7 @@ from jasper.weather import WeatherClient
 from . import tts
 
 logger = logging.getLogger(__name__)
+_CLEANUP_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
 
 
 HARNESS_DIR = Path(__file__).resolve().parent
@@ -639,7 +640,7 @@ class VoiceEvalHarness:
         if research_sched is not None:
             try:
                 await research_sched.stop()  # type: ignore[union-attr]
-            except Exception:  # noqa: BLE001
+            except _CLEANUP_ERRORS:
                 logger.warning("voice-eval: research scheduler stop raised",
                                exc_info=True)
         active_transit = self.test_state.get("active_transit")

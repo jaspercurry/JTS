@@ -4,12 +4,19 @@ import sys
 import time
 import types
 
+from jasper.research import DONE, FAILED, ResearchJob
+
 
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = types.ModuleType("sounddevice")
 
-from jasper.research import DONE, FAILED, ResearchJob  # noqa: E402
-from jasper.voice_daemon import State, WakeLoop  # noqa: E402
+
+def _wake_loop():
+    from jasper.voice_daemon import State, WakeLoop
+
+    wl = WakeLoop.for_tests()
+    wl._state = State.WAKE
+    return wl
 
 
 def _job(
@@ -45,8 +52,7 @@ class _MarkingScheduler:
 
 
 async def test_announce_research_ready_reads_done_result_and_marks_announced():
-    wl = WakeLoop.for_tests()
-    wl._state = State.WAKE
+    wl = _wake_loop()
     spoken: list[str] = []
 
     async def _play(text: str) -> bool:
@@ -67,8 +73,7 @@ async def test_announce_research_ready_reads_done_result_and_marks_announced():
 
 
 async def test_announce_research_ready_failed_job_speaks_one_failure_line():
-    wl = WakeLoop.for_tests()
-    wl._state = State.WAKE
+    wl = _wake_loop()
     spoken: list[str] = []
 
     async def _play(text: str) -> bool:
@@ -91,8 +96,7 @@ async def test_announce_research_ready_failed_job_speaks_one_failure_line():
 
 
 async def test_announce_research_ready_does_not_mark_read_when_playback_fails():
-    wl = WakeLoop.for_tests()
-    wl._state = State.WAKE
+    wl = _wake_loop()
     spoken: list[str] = []
 
     async def _play(text: str) -> bool:
