@@ -236,6 +236,26 @@ verification = [
 ]
 
 [[subsystem]]
+id = "conversation-history"
+title = "Conversation history storage and capture plan"
+safety = "voice-runtime"
+code = [
+  "jasper/conversation_history.py",
+]
+docs = [
+  "docs/extensibility.md",
+  "docs/conversation-history-plan.md",
+]
+requires_docs_when = [
+  "Conversation-history storage schema, retention behavior, privacy boundaries, capture hooks, web surface, or Feature-contract ownership changes.",
+]
+verification = [
+  "pytest tests/test_conversation_history.py",
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/conversation-history-plan.md",
+]
+
+[[subsystem]]
 id = "voice-runtime-and-providers"
 title = "Voice runtime, provider switching, prompts, and tools"
 safety = "voice-runtime"
