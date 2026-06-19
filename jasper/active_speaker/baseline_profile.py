@@ -42,6 +42,13 @@ DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 
+# Sensitivity deltas below this magnitude (dB) are treated as level-matched and
+# get no derived trim, so the least-sensitive (reference) driver and any ties
+# stay at unity.
+_SENSITIVITY_TRIM_EPS_DB = 0.05
+# Floor for any single attenuation, mirroring the explicit-gain clamp below.
+_MAX_ATTENUATION_DB = -60.0
+
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -111,10 +118,15 @@ def _derive_corrections(
         for role in required_driver_roles(preset.way_count)
     }
     drivers = crossover_preview.get("drivers")
+    explicit_gain_roles: set[str] = set()
+    sensitivities: dict[str, float] = {}
     if isinstance(drivers, Mapping):
         for role, driver in drivers.items():
             if role not in corrections or not isinstance(driver, Mapping):
                 continue
+            sensitivity = _finite_float(driver.get("sensitivity_db_2v83_1m"))
+            if sensitivity is not None:
+                sensitivities[str(role)] = sensitivity
             gain = _finite_float(driver.get("gain_offset_db"))
             if gain is None:
                 continue
@@ -133,6 +145,39 @@ def _derive_corrections(
                 ))
                 gain = -60.0
             corrections[str(role)]["gain_db"] = gain
+            explicit_gain_roles.add(str(role))
+
+    # Fail-safe sensitivity trim. When research declares no explicit
+    # gain_offset_db for a driver but the sensitivities are known, attenuate the
+    # hotter drivers down to the least-sensitive (reference) driver so a
+    # high-sensitivity compression/horn driver can never start at full level
+    # relative to the woofer (the shrill / horn-dominant failure mode, and a
+    # diaphragm hazard). An explicit gain_offset_db always wins; on-axis
+    # measurement refines this interim trim later.
+    derivable_roles = [
+        role for role in sensitivities if role not in explicit_gain_roles
+    ]
+    if len(sensitivities) >= 2 and derivable_roles:
+        reference_db = min(sensitivities.values())
+        derived_notes: list[str] = []
+        for role in derivable_roles:
+            trim_db = reference_db - sensitivities[role]  # <= 0 by construction
+            if trim_db >= -_SENSITIVITY_TRIM_EPS_DB:
+                continue  # reference driver and ties stay at unity
+            if trim_db < _MAX_ATTENUATION_DB:
+                trim_db = _MAX_ATTENUATION_DB
+            corrections[role]["gain_db"] = round(trim_db, 1)
+            derived_notes.append(f"{role} {round(trim_db, 1):.1f} dB")
+        if derived_notes:
+            issues.append(_issue(
+                "warning",
+                "driver_gain_derived_from_sensitivity",
+                (
+                    "applied an interim level trim from the sensitivity gap ("
+                    + ", ".join(derived_notes)
+                    + "); confirm against measurement before final tuning"
+                ),
+            ))
 
     latest_summed = measurements.get("latest_summed_by_group")
     summed_records = [

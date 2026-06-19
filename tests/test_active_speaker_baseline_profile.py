@@ -540,3 +540,126 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert payload["profile"]["status"] == "applied"
     assert payload["profile"]["permissions"]["may_apply"] is False
     assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+
+
+# --- Fail-safe level trim derived from the driver sensitivity gap -------------
+#
+# Regression cover for the DE250 compression-driver bug: research that declares
+# sensitivities (woofer 83.3 dB, tweeter 108.5 dB) but no explicit
+# gain_offset_db used to compile both drivers at 0 dB, leaving the ~25 dB-hotter
+# horn at full level (shrill / horn-dominant, and a diaphragm hazard).
+
+
+def _research_with_sensitivity(
+    *,
+    woofer_sens_db: float = 83.3,
+    tweeter_sens_db: float = 108.5,
+    tweeter_gain_db: float | None = None,
+) -> dict:
+    tweeter: dict = {
+        "role": "tweeter",
+        "model": "DE250-8",
+        "sensitivity_db_2v83_1m": tweeter_sens_db,
+        "recommended_highpass_hz": 2000,
+        "do_not_test_below_hz": 1600,
+        "sources": ["https://example.test/tweeter"],
+    }
+    if tweeter_gain_db is not None:
+        tweeter["gain_offset_db"] = tweeter_gain_db
+    return {
+        "artifact_schema_version": 1,
+        "kind": DRIVER_RESEARCH_KIND,
+        "drivers": [
+            {
+                "role": "woofer",
+                "model": "Epique E150HE-44",
+                "sensitivity_db_2v83_1m": woofer_sens_db,
+                "usable_frequency_range_hz": [30, 4000],
+                "recommended_lowpass_hz": 2000,
+                "sources": ["https://example.test/woofer"],
+            },
+            tweeter,
+        ],
+        "crossover_candidates": [
+            {
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": 2000,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+            }
+        ],
+    }
+
+
+def _baseline_payload(topology: OutputTopology, research: dict, tmp_path: Path) -> dict:
+    draft = build_design_draft(
+        topology,
+        driver_research=research,
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    return build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+
+
+def test_baseline_profile_derives_level_trim_from_sensitivity_gap(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    payload = _baseline_payload(
+        topology,
+        _research_with_sensitivity(),  # 25.2 dB gap, no explicit gain_offset_db
+        tmp_path,
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    # Hotter horn is attenuated to the woofer reference; woofer stays at unity.
+    assert payload["corrections"]["tweeter"]["gain_db"] == -25.2
+    assert payload["corrections"]["woofer"]["gain_db"] == 0.0
+    assert payload["safety"]["positive_gain_allowed"] is False
+    assert "driver_gain_derived_from_sensitivity" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_baseline_profile_explicit_gain_overrides_sensitivity_trim(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    payload = _baseline_payload(
+        topology,
+        _research_with_sensitivity(tweeter_gain_db=-18.5),
+        tmp_path,
+    )
+
+    # An explicit (e.g. measured) trim wins over the sensitivity heuristic.
+    assert payload["corrections"]["tweeter"]["gain_db"] == -18.5
+    assert "driver_gain_derived_from_sensitivity" not in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_baseline_profile_no_trim_when_sensitivities_match(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    payload = _baseline_payload(
+        topology,
+        _research_with_sensitivity(woofer_sens_db=90.0, tweeter_sens_db=90.0),
+        tmp_path,
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == 0.0
+    assert payload["corrections"]["woofer"]["gain_db"] == 0.0
+    assert "driver_gain_derived_from_sensitivity" not in {
+        issue["code"] for issue in payload["issues"]
+    }

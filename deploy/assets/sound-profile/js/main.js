@@ -1126,11 +1126,59 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ? {drivers: drivers, crossover_candidates: candidates}
       : null;
   }
+  // Mirror jasper/active_speaker/crossover_preview.py:_CONFIDENCE_RANK so the
+  // form selects the same candidate the preview will.
+  var CANDIDATE_CONFIDENCE_RANK = {high: 3, medium: 2, low: 1, unknown: 0};
+  function candidateConfidenceRank(candidate) {
+    return CANDIDATE_CONFIDENCE_RANK[
+      String((candidate && candidate.confidence) || 'unknown')
+    ] || 0;
+  }
+  function upperDriverSoftFloorHz(driver) {
+    // Mirror crossover_preview.py:_upper_soft_floor — the lowest frequency a
+    // crossover may be raised up to (recommended highpass + usable-range floor).
+    // The do-not-test line is the server's hard blocker, not a raise target.
+    if (!driver) return null;
+    var values = [];
+    var range = driver.usable_frequency_range_hz;
+    if (Array.isArray(range) && range.length) {
+      var low = manualNumberValue(range[0]);
+      if (low != null && low > 0) values.push(low);
+    }
+    var hp = manualNumberValue(driver.recommended_highpass_hz);
+    if (hp != null && hp > 0) values.push(hp);
+    return values.length ? Math.max.apply(null, values) : null;
+  }
+  function proposeSensitivityTrims(driversByRole) {
+    // Propose a starting level trim from the sensitivity gap so a hotter
+    // compression/horn driver is never left at full level relative to the
+    // woofer. The operator reviews/confirms the value; the server enforces the
+    // same fail-safe (baseline_profile.py:_derive_corrections). Only fill when
+    // the field is empty — never clobber an operator/research-supplied trim.
+    var sensitivities = {};
+    Object.keys(driversByRole).forEach(function(role) {
+      var sens = manualNumberValue(driversByRole[role].sensitivity_db_2v83_1m);
+      if (sens != null) sensitivities[role] = sens;
+    });
+    var roles = Object.keys(sensitivities);
+    if (roles.length < 2) return;
+    var reference = Math.min.apply(null, roles.map(function(role) {
+      return sensitivities[role];
+    }));
+    roles.forEach(function(role) {
+      var setting = driverSetting(role);
+      if (manualNumberValue(setting.gain_offset_db) != null) return;  // keep explicit
+      var trim = Math.round((reference - sensitivities[role]) * 10) / 10;  // <= 0
+      if (trim < 0) setting.gain_offset_db = trim;
+    });
+  }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
+    var driversByRole = {};
     (Array.isArray(payload.drivers) ? payload.drivers : []).forEach(function(driver) {
       if (!driver || !driver.role) return;
       var role = String(driver.role);
+      driversByRole[role] = driver;
       if (driver.model && !driverResearch.inputs[role]) {
         driverResearch.inputs[role] = String(driver.model);
       }
@@ -1145,18 +1193,44 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         if (driver[field] != null) driverSetting(role)[field] = driver[field];
       });
     });
+    // Pick ONE crossover per role-pair: the highest-confidence candidate with a
+    // usable frequency (ties keep the first listed). The old code applied every
+    // candidate last-write-wins, so a low-confidence value listed after the
+    // recommended one became the form's "starting crossover" while the preview
+    // chose the recommended one — the two surfaces then disagreed.
+    var bestByPair = {};
     (Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [])
       .forEach(function(candidate) {
         if (!candidate || !Array.isArray(candidate.between_roles) ||
             candidate.between_roles.length !== 2) return;
-        var pair = candidate.between_roles.map(String);
-        var setting = crossoverSetting(pair);
-        if (candidate.frequency_hz != null) setting.frequency_hz = candidate.frequency_hz;
-        if (candidate.filter_type) setting.filter_type = String(candidate.filter_type);
-        if (candidate.slope_db_per_octave != null) {
-          setting.slope_db_per_octave = candidate.slope_db_per_octave;
+        if (candidateFrequency(candidate) == null) return;
+        var key = pairRoleKey(candidate.between_roles);
+        var current = bestByPair[key];
+        if (!current ||
+            candidateConfidenceRank(candidate) >
+              candidateConfidenceRank(current.candidate)) {
+          bestByPair[key] = {
+            pair: candidate.between_roles.map(String),
+            candidate: candidate
+          };
         }
       });
+    Object.keys(bestByPair).forEach(function(key) {
+      var pick = bestByPair[key];
+      var candidate = pick.candidate;
+      var setting = crossoverSetting(pick.pair);
+      var frequency = candidateFrequency(candidate);
+      // Raise to the upper driver's protection floor so the form never shows a
+      // value the preview will silently correct upward.
+      var floor = upperDriverSoftFloorHz(driversByRole[pick.pair[1]]);
+      if (floor != null && frequency < floor) frequency = floor;
+      setting.frequency_hz = frequency;
+      if (candidate.filter_type) setting.filter_type = String(candidate.filter_type);
+      if (candidate.slope_db_per_octave != null) {
+        setting.slope_db_per_octave = candidate.slope_db_per_octave;
+      }
+    });
+    proposeSensitivityTrims(driversByRole);
   }
   function driverResearchPrompt(topology) {
     var roles = outputRoleSummary(topology);
