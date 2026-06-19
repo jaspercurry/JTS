@@ -1,5 +1,10 @@
 # HANDOFF - Source capabilities and provider boundaries
 
+**Part of the JTS extensibility model** — this doc owns the *Sources*
+contract. The cross-cutting lens (the host-mediated-indirection invariant,
+the five extension contracts, the decision tree) lives in
+[extensibility.md](extensibility.md).
+
 This is the execution plan for making JTS easier to extend with new
 music sources and providers without turning source integration into a
 framework project. It is not yet the shipped implementation. Current

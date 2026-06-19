@@ -1,5 +1,11 @@
 # JTS Research Tool — Vision, Design & Roadmap
 
+**Part of the JTS extensibility model** — the first *Feature* (cross-layer
+vertical), plus the pluggable text-LLM *provider* layer it rides on. The
+cross-cutting lens (the host-mediated-indirection invariant, the five
+extension contracts, the decision tree) lives in
+[extensibility.md](extensibility.md).
+
 > **Status: living plan.** Forward-looking roadmap for the async
 > "research this and tell me later" capability and the modular
 > text-LLM-provider layer it rides on. Not operational truth about
