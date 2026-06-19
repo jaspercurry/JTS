@@ -34,7 +34,7 @@ Topology:
        ▼
     [downsample 48→16k, L+R summed to mono, HPF at 125 Hz]         16k mono ref
        │
-       │      hw:Array,0 ch 1 (16k mono, chip clock)
+       │      hw:<XVF card>,0 ch 1 (16k mono, chip clock)
        │  default production mic: raw-ish channel 1, chip AEC disabled
        │       │
        ▼       ├──────────────────────────────────────────────────┐
@@ -147,8 +147,9 @@ REF_CHANNELS = 2
 # Device names are PortAudio substring matches (sounddevice's
 # backend) — NOT ALSA pcm strings. PortAudio enumerates ALSA
 # cards by their card description, not by hw:CARD= syntax.
-# Default matches "Array: USB Audio (hw:N,0)".
-MIC_DEVICE = _mic_profile.ALSA_CARD_NAME
+# Default matches "Array: USB Audio (hw:N,0)" on the legacy square
+# firmware and "L16K6Ch: USB Audio (hw:N,0)" on the Flex linear firmware.
+MIC_DEVICE = _mic_profile.alsa_card_name()
 MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
 MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 
@@ -329,7 +330,7 @@ class BridgeConfig:
         return cls(
             mic_device=os.environ.get(
                 "JASPER_AEC_MIC_DEVICE",
-                _mic_profile.ALSA_CARD_NAME,
+                _mic_profile.alsa_card_name(),
             ),
             out_host=os.environ.get("JASPER_AEC_UDP_HOST", OUT_HOST),
             out_port=_env_leg_port("JASPER_AEC_UDP_PORT", "on"),

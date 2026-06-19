@@ -527,7 +527,7 @@ def test_aec_on_dual_stream_writes_raw_clears_dtln(tmp_path: Path) -> None:
     """AEC auto + RAW=1 + DTLN=0 → writes raw UDP device, clears
     DTLN device, sets DTLN_ENABLED=0. The default dual-stream OSS
     config."""
-    _write_env(tmp_path, "udp:9876")
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="0")
     _write_card(tmp_path, channels=6)
     _run_reconcile(tmp_path, "--reason", "test")
@@ -682,6 +682,26 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_AEC_DTLN_ENABLED=1" not in body
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-outputd.service" in commands
+
+
+def test_chip_aec_auto_discovers_flex_linear_card_for_usb_reference(
+    tmp_path: Path,
+) -> None:
+    """Flex linear firmware enumerates as L16K6Ch, not Array. With no
+    explicit JASPER_AEC_MIC_DEVICE pinned, the reconciler should select
+    the present Flex card and derive outputd's chip-reference PCM from it."""
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1")
+    _write_card(tmp_path, card="L16K6Ch", channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0" in body
+    assert "aec_mic=L16K6Ch" in result.stderr
+    assert "candidates=Array L16K6Ch" in result.stderr
 
 
 def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:

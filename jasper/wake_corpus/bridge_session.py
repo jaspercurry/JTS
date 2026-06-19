@@ -197,7 +197,17 @@ BRIDGE_CORPUS_OUTPUT_VARS = (
 )
 OUTPUTD_REF_UDP_TARGET = "127.0.0.1:9891"
 OUTPUTD_REF_UDP_PORT = "9891"
-DEFAULT_CHIP_REF_PCM = "plughw:CARD=Array,DEV=0"
+
+
+def _default_chip_ref_pcm() -> str:
+    try:
+        from jasper.mics import xvf3800
+    except Exception:  # noqa: BLE001 - constants should remain import-safe
+        return "plughw:CARD=Array,DEV=0"
+    return f"plughw:CARD={xvf3800.alsa_card_name()},DEV=0"
+
+
+DEFAULT_CHIP_REF_PCM = _default_chip_ref_pcm()
 DEFAULT_CHIP_REF_SAMPLE_RATE = "16000"
 DEFAULT_CHIP_REF_PERIOD_FRAMES = "320"
 DEFAULT_CHIP_REF_BUFFER_FRAMES = "1280"
@@ -475,7 +485,9 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
             ),
             "display_name": xvf3800.DISPLAY_NAME,
             "usb_vid_pid": xvf3800.USB_VID_PID,
-            "alsa_card": xvf3800.ALSA_CARD_NAME,
+            "usb_vid_pids": list(xvf3800.USB_VID_PIDS),
+            "alsa_card": xvf3800.alsa_card_name(),
+            "alsa_card_candidates": list(xvf3800.ALSA_CARD_NAMES),
             "observed": {
                 "present": xvf_present,
                 "capture_channels": capture_channels,
@@ -488,6 +500,15 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
                 "known_good_as_of": xvf3800.FIRMWARE_KNOWN_GOOD_AS_OF,
                 "blob": xvf3800.FIRMWARE_BLOB_6CH,
                 "build_repo_hash": xvf3800.FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH,
+                "supported_6ch_variants": [
+                    {
+                        "bld_msg": variant.bld_msg,
+                        "geometry": variant.geometry,
+                        "usb_vid_pid": variant.usb_vid_pid,
+                        "alsa_card": variant.alsa_card_name,
+                    }
+                    for variant in xvf3800.SUPPORTED_6CH_FIRMWARE
+                ],
             },
         }
     except Exception as e:  # noqa: BLE001 - metadata must not block recording

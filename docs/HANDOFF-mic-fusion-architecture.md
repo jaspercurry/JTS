@@ -273,6 +273,16 @@ consumers rather than on the frozen registry: `_LEG_DEVICE_ATTR`
 (token→`cfg` device field) in `voice_daemon.py`, and `_TOGGLE_TO_TOKEN`
 (operator `raw`↔`off`) in `control/server.py`.
 
+**Geometry caveat (2026-06-19, jts5 Flex LINEAR-4).** The shipped
+`chip_aec_150` / `chip_aec_210` leg names are the square-board fixed
+beam experiment vocabulary. They are not portable proof that a linear
+array should use those beam angles. Flex LINEAR-4 must be treated as a
+separate capture profile/topology: flash the linear firmware
+(`ua-io16-6ch-lin`, ALSA `L16K6Ch`) and start from
+`xvf_software_aec3` plus raw-mic corpus legs. Only promote Flex chip
+processed outputs into wake/AEC production after a labeled corpus shows
+they beat or complement the raw/AEC3 legs.
+
 This is the literal answer to *"design for 4 as the harder expected
 path; swaps fall out easier."* Four legs is a longer dict. Replacing
 AEC3 with chip-AEC is `legs = [CHIP_AEC, RAW, DTLN]` (drop AEC3 when
@@ -931,6 +941,6 @@ the wake cluster before each daemon-touching PR.
 
 ---
 
-Last verified: 2026-06-04 (profile-first input policy, `auto` default,
-chip-AEC producer path, per-beam wake-event WAVs, and `/wake/` mic/profile
-status were checked against current code.)
+Last verified: 2026-06-19 (profile-first input policy rechecked for Flex
+LINEAR-4 geometry; chip-AEC beam labels remain square-board vocabulary until
+a Flex corpus validates them.)

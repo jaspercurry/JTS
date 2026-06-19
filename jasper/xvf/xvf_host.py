@@ -34,6 +34,10 @@ CONTROL_SUCCESS = 0
 CONTROL_RETRY = 64
 DEFAULT_TIMEOUT_MS = 100_000
 MAX_READ_ATTEMPTS = 100
+DEFAULT_USB_VID = 0x2886
+LEGACY_USB_PID = 0x001A
+FLEX_USB_PID = 0x0022
+SUPPORTED_USB_PIDS = (LEGACY_USB_PID, FLEX_USB_PID)
 
 _CTRL_IN_VENDOR_DEVICE = 0x80 | 0x40
 _CTRL_OUT_VENDOR_DEVICE = 0x00 | 0x40
@@ -289,18 +293,30 @@ class ReSpeaker:
             usb.util.dispose_resources(self.dev)
 
 
-def find(vid: int = 0x2886, pid: int = 0x001A) -> ReSpeaker | None:
+def _find_usb_device(vid: int, pid: int):
     if sys.platform.startswith("win"):
         if libusb_package is None:
             _raise_usb_dependency_error()
-        dev = libusb_package.find(idVendor=vid, idProduct=pid)
-    else:
-        if usb is None:
-            _raise_usb_dependency_error()
-        dev = usb.core.find(idVendor=vid, idProduct=pid)
-    if not dev:
-        return None
-    return ReSpeaker(dev)
+        return libusb_package.find(idVendor=vid, idProduct=pid)
+    if usb is None:
+        _raise_usb_dependency_error()
+    return usb.core.find(idVendor=vid, idProduct=pid)
+
+
+def find(vid: int = DEFAULT_USB_VID, pid: int | None = None) -> ReSpeaker | None:
+    """Find a supported XVF3800 runtime USB device.
+
+    ``pid=None`` means auto-discover any JTS-supported Seeed XVF USB
+    product: the legacy square USB array (2886:001a) or the ReSpeaker
+    Flex linear/circular firmware family (2886:0022). Passing ``pid``
+    keeps the old exact-match behavior for diagnostics.
+    """
+    pids = (pid,) if pid is not None else SUPPORTED_USB_PIDS
+    for candidate_pid in pids:
+        dev = _find_usb_device(vid, candidate_pid)
+        if dev:
+            return ReSpeaker(dev)
+    return None
 
 
 def parse_value(value_str: str) -> int | float:
@@ -351,8 +367,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="JTS XVF3800 control helper")
     parser.add_argument("-l", "--list", action="store_true", help="list supported commands")
     parser.add_argument("COMMAND", nargs="?", type=case_insensitive_command)
-    parser.add_argument("--vid", type=lambda x: int(x, 0), default=0x2886)
-    parser.add_argument("--pid", type=lambda x: int(x, 0), default=0x001A)
+    parser.add_argument("--vid", type=lambda x: int(x, 0), default=DEFAULT_USB_VID)
+    parser.add_argument(
+        "--pid",
+        type=lambda x: int(x, 0),
+        default=None,
+        help="USB PID to match exactly; default auto-detects supported XVF PIDs",
+    )
     parser.add_argument("--values", nargs="+", type=parse_value)
     args = parser.parse_args()
 

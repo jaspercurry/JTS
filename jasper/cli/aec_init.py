@@ -72,6 +72,7 @@ import time
 from collections.abc import Sequence
 
 from jasper.log_event import log_event
+from jasper.mics import xvf3800
 
 logger = logging.getLogger("jasper.aec_init")
 
@@ -240,7 +241,10 @@ def main() -> int:
         logger.info("XVF3800 not yet on USB, retrying (%d/10)", attempt + 1)
         time.sleep(1)
     if dev is None:
-        logger.error("XVF3800 (VID:PID 2886:001a) not found after 10 sec")
+        logger.error(
+            "XVF3800 (VID:PID %s) not found after 10 sec",
+            "/".join(xvf3800.USB_VID_PIDS),
+        )
         return 1
 
     try:
@@ -351,9 +355,10 @@ def main() -> int:
         # AEC_FAR_EXTGAIN which used to matter when we relied on
         # chip AEC. Now software AEC ignores the chip's USB-IN, but
         # the convention is still cleaner with PCM at unity.
+        card = xvf3800.alsa_card_name()
         for ctl in ("PCM,0", "PCM,1"):
             r = subprocess.run(
-                ["amixer", "-c", "Array", "sset", ctl, "60", "unmute"],
+                ["amixer", "-c", card, "sset", ctl, "60", "unmute"],
                 capture_output=True, text=True,
             )
             if r.returncode != 0:

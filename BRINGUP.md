@@ -949,22 +949,23 @@ it just removes the raw channels.
 
 #### Which firmware to flash
 
-As of **2026-05-15**, the recommended file is:
+Pick the firmware by **physical microphone geometry**, not by the
+fact that the chip is an XVF3800:
 
-```
-respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
-```
+| Board | Firmware | Expected runtime identity |
+|---|---|---|
+| Legacy square/circular XVF3800 USB 4-Mic Array | `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` from [`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-sqr`, USB `2886:001a`, ALSA `Array` |
+| ReSpeaker Flex XVF3800 **LINEAR-4** | `respeaker_flex_usb_l16k6ch_v1.0.0.bin` from [`respeaker/reSpeaker_Flex`](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` |
 
-It's the only 6-channel variant currently in upstream `master`.
-Source of truth: [`xmos_firmwares/usb/`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb)
-in the Seeed-maintained
-[`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY)
-repo.
+The old `ua-io16-6ch-sqr` blob will enumerate and expose raw mics on
+a linear board, but its chip processed beams and DoA assume square
+geometry. Use it only for raw-channel-only diagnostics. For JTS wake
+and AEC tuning on the Flex LINEAR-4, flash the linear Flex blob and
+start retuning from `xvf_software_aec3` / raw-mic corpus legs.
 
 **Before flashing, check the upstream directory for newer entries.**
-If a newer 6-channel variant exists (e.g. PR #13's v2.0.10 attempt
-at 48 kHz 6-channel was unmerged as of this writing), read its
-changelog/PR description against what JTS depends on:
+If a newer 6-channel variant exists, read its changelog/PR
+description against what JTS depends on:
 
 - channel 0 = Conference (post-DSP beam output)
 - channel 1 = ASR (post-DSP, speech-tuned)
@@ -973,8 +974,8 @@ changelog/PR description against what JTS depends on:
 If those channels survive the upgrade, the new version should drop
 into JTS by bumping three constants in
 [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py):
-`FIRMWARE_BLOB_6CH`, `FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH`, and
-`FIRMWARE_KNOWN_GOOD_AS_OF`. The fuller variant table is in
+`FIRMWARE_BLOB_6CH` / Flex equivalents, build hash constants, and
+`*_KNOWN_GOOD_AS_OF`. The fuller variant table is in
 [`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) §2.
 
 #### How DFU works on this chip (no button combo needed)
@@ -985,8 +986,9 @@ descriptor advertises a DFU function (Application Specific class
 interfaces, available continuously while the chip is in runtime
 mode. `dfu-util` writes directly to that interface; the chip
 briefly enumerates as the XMOS bootloader at `20b1:0008` during
-the actual flash, then resets back to the normal audio device at
-`2886:001a`.
+the actual flash, then resets back to the normal audio device:
+`2886:001a` for the legacy square/circular firmware, `2886:0022`
+for Flex firmware.
 
 You may have read elsewhere (the Seeed wiki, older drafts of
 this doc, ESPHome examples) about putting the chip into "DFU
@@ -1005,15 +1007,22 @@ at the top of this section and HANDOFF-xvf3800.md §2.6.
 # On the Pi, with the XVF mic plugged in normally:
 sudo apt install -y dfu-util curl
 
-# As of 2026-05-15 the latest 6-ch firmware in upstream master is
-# v2.0.8. Check the directory listing before flashing in case a
-# newer version has shipped:
+# Legacy square/circular board, known-good as of 2026-05-15:
 #   https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb
 curl -L -o /tmp/xvf-6ch.bin \
     https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/raw/master/xmos_firmwares/usb/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
+
+# Flex LINEAR-4 board, known-good on jts5 as of 2026-06-19:
+#   https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb
+curl -L -o /tmp/xvf-flex-linear-6ch.bin \
+    https://github.com/respeaker/reSpeaker_Flex/raw/main/xmos_firmwares/usb/respeaker_flex_usb_l16k6ch_v1.0.0.bin
+sha256sum /tmp/xvf-flex-linear-6ch.bin
+# Expected SHA256 for the jts5-known-good blob:
+#   136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8
+
 md5sum /tmp/xvf-6ch.bin
 # Record this hash — if Seeed re-cuts the same filename with new
-# bits in the future, the md5 will change and you'll know to
+# bits in the future, the md5/SHA256 will change and you'll know to
 # re-read the changelog before flashing again.
 ```
 
@@ -1024,6 +1033,7 @@ sudo dfu-util -l
 # Expect a line resembling:
 #   Found DFU: [2886:001a] devnum=N, cfg=1, intf=4, path="...",
 #       alt=1, name="reSpeaker DFU Upgrade", serial="..."
+# Flex firmware in runtime mode reports [2886:0022] instead.
 # If alt=1 isn't visible, the chip isn't in normal runtime — re-plug
 # and recheck. (alt=0 "Factory" is read-only; don't try to write to it.)
 ```
@@ -1032,6 +1042,8 @@ sudo dfu-util -l
 
 ```sh
 sudo dfu-util -R -e -a 1 -D /tmp/xvf-6ch.bin
+# or, for the Flex LINEAR-4:
+sudo dfu-util -R -e -a 1 -D /tmp/xvf-flex-linear-6ch.bin
 # ~30-60 seconds. You'll see:
 #   - "Invalid DFU suffix signature" — this is NORMAL. Seeed doesn't
 #     sign their binaries; dfu-util warns but proceeds.
@@ -1056,16 +1068,21 @@ on some host stacks.
 # Capture (Channels: 6), and a naive `grep Channels:` returns the
 # wrong one.
 awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
+# Flex LINEAR-4:
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/L16K6Ch/stream0
 # Expect: "Channels: 6"
 
 # Chip-side build identification:
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_MSG
 # Expect: ['u','a','-','i','o','1','6','-','6','c','h','-','s','q','r']
 #         (the chip-reported BLD_MSG = "ua-io16-6ch-sqr")
+# Flex LINEAR-4 expects: ['ua-io16-6ch-lin']
 
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_REPO_HASH
 # For v2.0.8 6chl as of 2026-05-15, expect hash:
 #   'a1f70651e992d6f0bcff655b26925d33999b9c2d'
+# For Flex LINEAR-4 v1.0.0 as of 2026-06-19, expect:
+#   '4b339d00721937451ee487759c04e2acb3215793'
 # Newer versions will report different hashes — that's fine, the
 # value is for change-detection, not validation.
 ```
@@ -1077,6 +1094,18 @@ to the AEC bridge's UDP output, and resets the kernel ALSA mixer
 to known-good values for the newly-exposed ch2-5 (which can
 otherwise persist a stale mute from before the firmware change —
 see "The reconciler step matters" below).
+
+On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` and
+`JASPER_AEC_MIC_DEVICE` from the detected card. On an existing Pi that
+was first installed with the legacy square board, update the frozen
+env seed before reconciling:
+
+```sh
+sudo sed -i \
+  -e 's/^JASPER_AEC_MIC_DEVICE=.*/JASPER_AEC_MIC_DEVICE=L16K6Ch/' \
+  -e 's/^JASPER_MIC_DEVICE_CANDIDATES=.*/JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch/' \
+  /etc/jasper/jasper.env
+```
 
 ```sh
 sudo systemctl start jasper-aec-reconcile
@@ -1098,7 +1127,7 @@ capture channels 2–5. Their defaults are off / 0 dB. `alsactl
 restore` then happily persists that silently across reboot —
 killing the raw mics in spite of the new firmware, with no
 surface that would let an operator notice (chip-side params look
-healthy, `/proc/asound/Array/stream0` shows 6 channels, but
+healthy, `/proc/asound/<card>/stream0` shows 6 channels, but
 `arecord` returns zeros on ch2-5).
 
 The reconciler's `ensure_capture_mixer_open` resets the relevant
@@ -1114,6 +1143,9 @@ fix the mixer state manually:
 ```sh
 sudo amixer -c Array cset name='Headset Capture Switch' on,on,on,on,on,on
 sudo amixer -c Array cset name='Headset Capture Volume' 60,60,60,60,60,60
+# Flex LINEAR-4 uses ALSA card L16K6Ch:
+sudo amixer -c L16K6Ch cset name='Headset Capture Switch' on,on,on,on,on,on
+sudo amixer -c L16K6Ch cset name='Headset Capture Volume' 60,60,60,60,60,60
 sudo alsactl store
 ```
 
@@ -1129,7 +1161,8 @@ sudo alsactl store
 #### Sources for this section
 
 - **Firmware blobs + DFU protocol semantics**: [upstream `xmos_firmwares/dfu_guide.md`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md) and the `xmos_firmwares/usb/` directory listing in the same repo.
-- **In-system DFU mechanism**: confirmed empirically via `lsusb -v -d 2886:001a` showing the Application Specific class 254 interface at alt 1 = "reSpeaker DFU Upgrade" while the chip is in normal audio runtime. Same descriptor visible on both jts and jts2 chips on 2026-05-15.
+- **Flex geometry-specific firmware blobs**: [`respeaker/reSpeaker_Flex` `xmos_firmwares/usb/`](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) and the [Seeed Flex wiki](https://wiki.seeedstudio.com/respeaker_flex/).
+- **In-system DFU mechanism**: confirmed empirically via `lsusb -v -d 2886:001a` showing the Application Specific class 254 interface at alt 1 = "reSpeaker DFU Upgrade" while the chip is in normal audio runtime. Same descriptor visible on both jts and jts2 chips on 2026-05-15; jts5 Flex LINEAR-4 was flashed through the same normal-runtime DFU flow on 2026-06-19 and re-enumerated as `2886:0022`.
 - **Channel layout per firmware variant**: [Seeed wiki — Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/#update-firmware), cross-verified against the `BLD_MSG` strings the chip itself reports.
 - **`SAVE_CONFIGURATION` brick hazard**: [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (still open as of this writing — treat the warning as applying to every firmware version we've shipped against).
 - **ALSA mixer mute trap after firmware flash**: discovered during the 2026-05-15 jts2 raw-mic-silence investigation; full root cause and resolution log in [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §7.

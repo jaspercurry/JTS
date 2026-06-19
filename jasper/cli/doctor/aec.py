@@ -839,9 +839,10 @@ def check_xvf_firmware_6ch() -> CheckResult:
     raw0 corpus leg."""
     from ...mics import xvf3800
     capture_ch = xvf3800.capture_channels()
+    card = xvf3800.alsa_card_name()
     if capture_ch is None:
         return CheckResult("XVF firmware 6-ch", "warn",
-                           f"{xvf3800.ALSA_CARD_NAME} card not present")
+                           f"{card} card not present")
     target = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
     if capture_ch == target:
         return CheckResult("XVF firmware 6-ch", "ok",
@@ -866,12 +867,13 @@ def check_xvf_mixer_state() -> CheckResult:
     from ...mics import xvf3800
     if not xvf3800.is_present():
         return CheckResult("XVF mixer state", "warn",
-                           f"{xvf3800.ALSA_CARD_NAME} card not present")
+                           f"{xvf3800.alsa_card_name()} card not present")
+    card = xvf3800.alsa_card_name()
     # Use cget (not get) — these controls aren't part of any aggregated
     # "simple control" group, so `amixer get` misses them.
-    sw = _run(["amixer", "-c", xvf3800.ALSA_CARD_NAME, "cget",
+    sw = _run(["amixer", "-c", card, "cget",
                f"name={xvf3800.MIXER_CAPTURE_SWITCH}"])
-    vol = _run(["amixer", "-c", xvf3800.ALSA_CARD_NAME, "cget",
+    vol = _run(["amixer", "-c", card, "cget",
                 f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
     if sw.returncode != 0 or vol.returncode != 0:
         return CheckResult("XVF mixer state", "warn", "amixer cget failed")

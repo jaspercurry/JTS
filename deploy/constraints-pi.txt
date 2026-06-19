@@ -6,11 +6,11 @@
 # full generate -> review -> commit workflow).
 #
 # Provenance:
-#   generated-at: 2026-06-11T20:56:12Z
-#   source-pi:    pi@jts3.local
+#   generated-at: 2026-06-19T18:51:37Z
+#   source-pi:    pi@192.168.1.53
 #   pi-python:    Python 3.13.5
 #   pi-pip:       pip 26.1.2 from /opt/jasper/.venv/lib/python3.13/site-packages/pip (python 3.13)
-#   pi-build:     JASPER_GIT_SHA=efb2643b JASPER_GIT_SHA_FULL=efb2643b15a4a649bde8f498eb777655b6c53f27 JASPER_GIT_BRANCH=claude/google-genai-2-8 JASPER_INSTALL_AT=2026-06-11T16:50:02-04:00
+#   pi-build:     JASPER_GIT_SHA=7bf41dac-dirty JASPER_GIT_SHA_FULL=7bf41dac8b9097aa977ba46ab89194df62e53e85-dirty JASPER_GIT_BRANCH=HEAD JASPER_INSTALL_AT=2026-06-19T14:50:08-04:00
 #
 # install.sh passes this file to pip via -c ONLY when it exists;
 # deleting it reverts deploys to open-range resolution.
@@ -28,7 +28,7 @@ dbus-next==0.2.3
 distro==1.9.0
 esptool==5.3.0
 evdev==1.9.3
-flatbuffers==20181003210633
+flatbuffers==25.12.19
 google-api-core==2.29.0
 google-api-python-client==2.197.0
 google-auth-httplib2==0.4.0

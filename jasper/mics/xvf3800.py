@@ -24,12 +24,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------
 
 USB_VID_PID = "2886:001a"
-DISPLAY_NAME = "Seeed ReSpeaker XVF3800 (USB UA)"
+FLEX_USB_VID_PID = "2886:0022"
+USB_VID_PIDS = (USB_VID_PID, FLEX_USB_VID_PID)
+DISPLAY_NAME = "Seeed ReSpeaker XVF3800 (USB UA/Flex)"
 
-# ALSA card name as enumerated by snd-usb-audio (the kernel's literal
-# `id` field). Stable across reboots and across the 2-ch / 6-ch
-# firmware variants — both expose the same iProduct string.
+# ALSA card names as enumerated by snd-usb-audio (the kernel's literal
+# `id` field). The legacy square USB firmware enumerates as `Array`;
+# the ReSpeaker Flex linear/circular USB firmware enumerates by firmware
+# family, e.g. `L16K6Ch` for the 16 kHz linear 6-channel build.
 ALSA_CARD_NAME = "Array"
+FLEX_LINEAR_ALSA_CARD_NAME = "L16K6Ch"
+ALSA_CARD_NAMES = (ALSA_CARD_NAME, FLEX_LINEAR_ALSA_CARD_NAME)
 
 
 # ---------------------------------------------------------------------
@@ -41,26 +46,39 @@ class FirmwareVariant:
     bld_msg: str               # BLD_MSG string the chip reports (xvf_host BLD_MSG)
     capture_channels: int      # USB capture endpoint channel count
     raw_mic_indices: tuple[int, ...]  # capture channels carrying raw PDM mic data
+    geometry: str              # square/linear; chip beams and DoA are geometry-specific
+    usb_vid_pid: str = USB_VID_PID
+    alsa_card_name: str = ALSA_CARD_NAME
 
 
-# The two USB firmware variants Seeed publishes. Both share the same
-# repo hash and chip silicon — the 6-ch variant just adds the raw-mic
-# capture channels needed by the software AEC bridge.
+# The USB firmware variants JTS has validated. The 6-ch variants add
+# the raw-mic capture channels needed by the software AEC bridge.
 VARIANT_2CH = FirmwareVariant(
     bld_msg="ua-io16-sqr",
     capture_channels=2,
     raw_mic_indices=(),
+    geometry="square",
 )
 VARIANT_6CH = FirmwareVariant(
     bld_msg="ua-io16-6ch-sqr",
     capture_channels=6,
     raw_mic_indices=(2, 3, 4, 5),
+    geometry="square",
+)
+VARIANT_FLEX_LINEAR_6CH = FirmwareVariant(
+    bld_msg="ua-io16-6ch-lin",
+    capture_channels=6,
+    raw_mic_indices=(2, 3, 4, 5),
+    geometry="linear",
+    usb_vid_pid=FLEX_USB_VID_PID,
+    alsa_card_name=FLEX_LINEAR_ALSA_CARD_NAME,
 )
 
 # Required for the reconciler-managed XVF AEC profiles. The bridge opens
 # the 6-channel capture shape for both chip-AEC (fixed beams on ch0/1)
 # and the software-AEC fallback (raw-ish ch1 plus raw mic legs).
 RECOMMENDED_FIRMWARE = VARIANT_6CH
+SUPPORTED_6CH_FIRMWARE = (VARIANT_6CH, VARIANT_FLEX_LINEAR_6CH)
 
 
 # ---------------------------------------------------------------------
@@ -79,8 +97,9 @@ RECOMMENDED_FIRMWARE = VARIANT_6CH
 # §5.1 for the recovery flow).
 #
 # When the chip enters DFU during a flash it briefly enumerates as
-# the XMOS bootloader at 20b1:0008, then resets back to its normal
-# 2886:001a runtime identity after the flash completes.
+# the XMOS bootloader at 20b1:0008, then resets back to its runtime
+# identity after the flash completes: 2886:001a for the legacy square
+# firmware, 2886:0022 for Flex firmware.
 DFU_VID_PID = "20b1:0008"
 
 # Alt 0 is the read-only Factory partition; alt 1 is the Upgrade
@@ -115,10 +134,18 @@ DFU_ALT_SETTING = 1
 # accurate.
 FIRMWARE_KNOWN_GOOD_AS_OF = "2026-05-15"
 FIRMWARE_BLOB_6CH = "respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin"
+FIRMWARE_BLOB_FLEX_LINEAR_6CH = "respeaker_flex_usb_l16k6ch_v1.0.0.bin"
 # Built from sw_xvf3800 commit `a1f70651e992d6f0bcff655b26925d33999b9c2d`.
 # The chip reports this via `xvf_host BLD_REPO_HASH` — useful to
 # verify after a flash that you actually wrote what you intended.
 FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH = "a1f70651e992d6f0bcff655b26925d33999b9c2d"
+FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_AS_OF = "2026-06-19"
+FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_SHA256 = (
+    "136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8"
+)
+FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_BLD_REPO_HASH = (
+    "4b339d00721937451ee487759c04e2acb3215793"
+)
 
 # Upstream firmware directory. Single canonical source for blobs.
 FIRMWARE_UPSTREAM_DIR_URL = (
@@ -128,6 +155,13 @@ FIRMWARE_UPSTREAM_DIR_URL = (
 FIRMWARE_RAW_URL_6CH = (
     "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY"
     f"/raw/master/xmos_firmwares/usb/{FIRMWARE_BLOB_6CH}"
+)
+FIRMWARE_UPSTREAM_FLEX_DIR_URL = (
+    "https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb"
+)
+FIRMWARE_RAW_URL_FLEX_LINEAR_6CH = (
+    "https://github.com/respeaker/reSpeaker_Flex"
+    f"/raw/main/xmos_firmwares/usb/{FIRMWARE_BLOB_FLEX_LINEAR_6CH}"
 )
 
 
@@ -184,9 +218,30 @@ MIC_CHANNEL_INDEX = 1
 # Helpers
 # ---------------------------------------------------------------------
 
+def alsa_card_name() -> str:
+    """Return the currently enumerated XVF ALSA card name.
+
+    Legacy square USB firmware appears as `Array`; Flex linear firmware
+    appears as `L16K6Ch`. If no supported card is present, return the
+    legacy card name so existing defaults and remediation text stay
+    stable on older installations.
+    """
+    for card in ALSA_CARD_NAMES:
+        if Path(f"/proc/asound/{card}/stream0").exists():
+            return card
+    return ALSA_CARD_NAME
+
+
+def _stream_path(card: str | None = None) -> Path:
+    return Path(f"/proc/asound/{card or alsa_card_name()}/stream0")
+
+
 def is_present() -> bool:
     """True if the chip's ALSA card has enumerated under /proc/asound."""
-    return Path(f"/proc/asound/{ALSA_CARD_NAME}/stream0").exists()
+    return any(
+        Path(f"/proc/asound/{card}/stream0").exists()
+        for card in ALSA_CARD_NAMES
+    )
 
 
 def capture_channels() -> int | None:
@@ -198,7 +253,7 @@ def capture_channels() -> int | None:
     endpoint) then Capture (Channels: 6 on 6-ch firmware). A naive
     `grep Channels:` returns the Playback value, which was the May
     2026 reconciler bug that silently disabled software AEC."""
-    p = Path(f"/proc/asound/{ALSA_CARD_NAME}/stream0")
+    p = _stream_path()
     if not p.exists():
         return None
     in_capture = False
@@ -227,16 +282,17 @@ def ensure_capture_open() -> bool:
 
     Caller is responsible for sudo: this runs `amixer` directly with
     no privilege escalation. The reconciler invokes us as root."""
+    card = alsa_card_name()
     on = ",".join(["on"] * RECOMMENDED_FIRMWARE.capture_channels)
     max_vol = ",".join([str(MIXER_VOLUME_MAX)] * RECOMMENDED_FIRMWARE.capture_channels)
     try:
         subprocess.run(
-            ["amixer", "-c", ALSA_CARD_NAME, "cset",
+            ["amixer", "-c", card, "cset",
              f"name={MIXER_CAPTURE_SWITCH}", on],
             check=True, capture_output=True, timeout=5,
         )
         subprocess.run(
-            ["amixer", "-c", ALSA_CARD_NAME, "cset",
+            ["amixer", "-c", card, "cset",
              f"name={MIXER_CAPTURE_VOLUME}", max_vol],
             check=True, capture_output=True, timeout=5,
         )

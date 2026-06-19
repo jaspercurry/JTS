@@ -4,7 +4,7 @@
 # This is intentionally a small policy layer around /etc/jasper/jasper.env
 # and systemd. It keeps a stale JASPER_MIC_DEVICE=udp:PORT from stranding
 # jasper-voice when the XVF Array is unplugged, while leaving a narrow config
-# hook for future microphones via JASPER_MIC_DEVICE_CANDIDATES.
+# hook for microphone variants via JASPER_MIC_DEVICE_CANDIDATES.
 
 set -euo pipefail
 
@@ -14,6 +14,7 @@ VOICE_PROVIDER_FILE="${JASPER_VOICE_PROVIDER_FILE:-/var/lib/jasper/voice_provide
 VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice_provider_ids}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K6Ch"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
@@ -61,7 +62,7 @@ usage() {
 Usage: jasper-aec-reconcile [--reason TEXT] [--check-aec-ready]
 
 Reconcile microphone/AEC systemd state:
-  - auto + 6-channel Array present -> JASPER_MIC_DEVICE=udp:PORT, AEC on
+  - auto + supported 6-channel XVF present -> JASPER_MIC_DEVICE=udp:PORT, AEC on
   - auto + direct mic present only -> JASPER_MIC_DEVICE=<mic>, AEC off
   - owned mic config + no mic present -> clear stale UDP, stop voice
   - custom JASPER_MIC_DEVICE -> leave voice config alone, keep AEC off
@@ -738,19 +739,26 @@ fi
 load_env_file "$MODE_FILE"
 
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
-AEC_MIC_DEVICE="${JASPER_AEC_MIC_DEVICE:-Array}"
+AEC_MIC_DEVICE="${JASPER_AEC_MIC_DEVICE:-}"
 AEC_UDP_PORT="${JASPER_AEC_UDP_PORT:-9876}"
 AEC_UDP_PORT_RAW="${JASPER_AEC_UDP_PORT_RAW:-9877}"
 AEC_UDP_PORT_DTLN="${JASPER_AEC_UDP_PORT_DTLN:-9878}"
 AEC_UDP_PORT_CHIP_AEC_150="${JASPER_AEC_UDP_PORT_CHIP_AEC_150:-9887}"
 AEC_UDP_PORT_CHIP_AEC_210="${JASPER_AEC_UDP_PORT_CHIP_AEC_210:-9888}"
 AEC_OUTPUTD_REF_UDP_PORT="${JASPER_AEC_OUTPUTD_REF_UDP_PORT:-9891}"
-OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-plughw:CARD=Array,DEV=0}"
 OUTPUTD_CHIP_REF_SAMPLE_RATE="${JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE:-16000}"
 OUTPUTD_CHIP_REF_PERIOD_FRAMES="${JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES:-320}"
 OUTPUTD_CHIP_REF_BUFFER_FRAMES="${JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES:-1280}"
 UDP_DEVICE="udp:${AEC_UDP_PORT}"
-split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-$AEC_MIC_DEVICE}"
+split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE:-$DEFAULT_MIC_DEVICE_CANDIDATES}}"
+if [[ -z "$AEC_MIC_DEVICE" ]]; then
+    if AEC_MIC_DEVICE="$(first_present_candidate)"; then
+        :
+    else
+        AEC_MIC_DEVICE="$(first_candidate)"
+    fi
+fi
+OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-plughw:CARD=${AEC_MIC_DEVICE},DEV=0}"
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
 # Additive wake-detection legs (see write_leg_env for the mapping).
 # JASPER_AEC_MODE remains the master toggle; these only matter when
