@@ -34,8 +34,10 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/design-draft persist speaker design/research evidence
   POST /active-speaker/crossover-preview persist no-audio crossover preview
   POST /active-speaker/driver-measurement record one measured driver result
+  POST /active-speaker/driver-capture analyze + record one phone-mic driver WAV
   POST /active-speaker/summed-test run combined-driver test artifact/playback
   POST /active-speaker/summed-validation record summed crossover validation
+  POST /active-speaker/summed-capture analyze + record one phone-mic summed WAV
   POST /active-speaker/baseline-profile compile active baseline YAML
   POST /active-speaker/baseline-profile/apply explicitly apply active baseline
   POST /active-speaker/channel-identity mark/clear physical identity evidence
@@ -59,6 +61,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 import html
 import json
 import logging
@@ -69,6 +73,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -148,6 +153,13 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
 
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
 MAX_JSON_BYTES = 64 * 1024
+MAX_CAPTURE_JSON_BYTES = 4 * 1024 * 1024
+MAX_CAPTURE_WAV_BYTES = 3 * 1024 * 1024
+MAX_CAPTURE_STORED_FILES = 24
+MAX_CAPTURE_STORAGE_BYTES = 32 * 1024 * 1024
+CAPTURE_FILE_MODE = 0o640
+DEFAULT_ACTIVE_SPEAKER_CAPTURE_DIR = Path("/var/lib/jasper/active_speaker_captures")
+ACTIVE_SPEAKER_CAPTURE_DIR_ENV = "JASPER_ACTIVE_SPEAKER_CAPTURE_DIR"
 LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
 
 _live_draft_unavailable_log_at: dict[str, float] = {}
@@ -2701,6 +2713,11 @@ async def _active_speaker_commission_state_payload(
                 quiet.get("floor_audio_confirmed") and not stale
             ),
             "last_level_dbfs": None if stale else quiet.get("last_level_dbfs"),
+            "last_operator_result": (
+                {}
+                if stale or not isinstance(quiet.get("last_operator_result"), dict)
+                else quiet.get("last_operator_result")
+            ),
         },
     }
 
@@ -2774,6 +2791,221 @@ def _active_speaker_measurements_payload() -> dict[str, Any]:
     return payload
 
 
+def _safe_capture_slug(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip().lower()
+    out = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
+    out = "_".join(part for part in out.split("_") if part)
+    return (out[:64] or fallback)
+
+
+def _active_speaker_capture_dir() -> Path:
+    return Path(
+        os.environ.get(ACTIVE_SPEAKER_CAPTURE_DIR_ENV)
+        or DEFAULT_ACTIVE_SPEAKER_CAPTURE_DIR
+    )
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _capture_mapping(raw: dict[str, Any]) -> dict[str, Any]:
+    capture = raw.get("capture")
+    return capture if isinstance(capture, dict) else {}
+
+
+def _capture_store_files(root: Path) -> list[Path]:
+    try:
+        children = list(root.iterdir())
+    except FileNotFoundError:
+        return []
+    return [
+        child
+        for child in children
+        if child.is_file() and child.suffix.lower() == ".wav"
+    ]
+
+
+def _capture_sort_key(path: Path) -> tuple[float, str]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0.0, path.name)
+    return (stat.st_mtime, path.name)
+
+
+def _enforce_capture_retention(root: Path, *, keep: Path | None = None) -> None:
+    protected = keep.resolve() if keep is not None else None
+    ordered: list[Path] = []
+    protected_path: Path | None = None
+    for path in sorted(
+        _capture_store_files(root),
+        key=_capture_sort_key,
+        reverse=True,
+    ):
+        try:
+            resolved = path.resolve()
+        except OSError:
+            ordered.append(path)
+            continue
+        if protected is not None and resolved == protected:
+            protected_path = path
+        else:
+            ordered.append(path)
+    if protected_path is not None:
+        ordered.insert(0, protected_path)
+
+    kept_count = 0
+    kept_bytes = 0
+    for path in ordered:
+        try:
+            resolved = path.resolve()
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if protected is not None and resolved == protected:
+            kept_count += 1
+            kept_bytes += size
+            continue
+        if (
+            kept_count < MAX_CAPTURE_STORED_FILES
+            and kept_bytes + size <= MAX_CAPTURE_STORAGE_BYTES
+        ):
+            kept_count += 1
+            kept_bytes += size
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _active_speaker_capture_wav_path(raw: dict[str, Any], *, kind: str) -> Path:
+    """Return a bounded local WAV path from a JSON capture request.
+
+    Browser callers send base64 WAV bytes. Tests and future server-side capture
+    machinery may pass a path, but only from the active-speaker capture
+    directory so the setup endpoint cannot become an arbitrary local file
+    reader.
+    """
+
+    capture = _capture_mapping(raw)
+    path_value = (
+        raw.get("captured_wav_path")
+        or raw.get("capture_wav_path")
+        or capture.get("captured_wav_path")
+        or capture.get("wav_path")
+        or capture.get("path")
+    )
+    capture_root = _active_speaker_capture_dir().resolve()
+    if path_value:
+        candidate = Path(str(path_value)).expanduser().resolve()
+        if not _is_relative_to(candidate, capture_root):
+            raise ValueError(
+                "capture WAV path must be inside active-speaker capture storage"
+            )
+        if not candidate.is_file():
+            raise ValueError("capture WAV file does not exist")
+        if candidate.stat().st_size > MAX_CAPTURE_WAV_BYTES:
+            raise ValueError("capture WAV file is too large")
+        _enforce_capture_retention(capture_root, keep=candidate)
+        return candidate
+
+    encoded = (
+        raw.get("captured_wav_base64")
+        or raw.get("capture_wav_base64")
+        or capture.get("wav_base64")
+        or capture.get("data")
+    )
+    if not encoded:
+        raise ValueError("capture WAV evidence is missing")
+    encoded_text = str(encoded)
+    if encoded_text.startswith("data:"):
+        _prefix, _sep, encoded_text = encoded_text.partition(",")
+    try:
+        wav_bytes = base64.b64decode(encoded_text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("capture WAV base64 is invalid") from exc
+    if not wav_bytes:
+        raise ValueError("capture WAV evidence is empty")
+    if len(wav_bytes) > MAX_CAPTURE_WAV_BYTES:
+        raise ValueError("capture WAV upload is too large")
+    capture_root.mkdir(parents=True, exist_ok=True)
+    group = _safe_capture_slug(raw.get("speaker_group_id"), fallback="group")
+    role = _safe_capture_slug(raw.get("role"), fallback="target")
+    target = capture_root / f"{kind}_{group}_{role}_{uuid.uuid4().hex}.wav"
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        tmp.write_bytes(wav_bytes)
+        os.chmod(tmp, CAPTURE_FILE_MODE)
+        os.replace(tmp, target)
+        os.chmod(target, CAPTURE_FILE_MODE)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+    _enforce_capture_retention(capture_root, keep=target)
+    return target
+
+
+def _active_speaker_capture_sweep_meta(raw: dict[str, Any]) -> dict[str, Any]:
+    capture = _capture_mapping(raw)
+    sweep_meta = raw.get("sweep_meta") or capture.get("sweep_meta")
+    if not isinstance(sweep_meta, dict):
+        from jasper.active_speaker import driver_acoustics as acoustic
+        from jasper.correction import sweep as sweep_mod
+
+        _signal, meta = sweep_mod.synchronized_swept_sine(
+            f1=acoustic.DEFAULT_F1_HZ,
+            f2=acoustic.DEFAULT_F2_HZ,
+            duration_approx_s=acoustic.DEFAULT_DURATION_S,
+            sample_rate=acoustic.DEFAULT_SAMPLE_RATE,
+            amplitude_dbfs=acoustic.DEFAULT_AMPLITUDE_DBFS,
+        )
+        return meta.to_dict()
+    required = {"sample_rate", "n_samples", "f1", "f2", "duration_s", "amplitude_dbfs"}
+    missing = sorted(key for key in required if key not in sweep_meta)
+    if missing:
+        raise ValueError("capture sweep metadata is incomplete")
+    return dict(sweep_meta)
+
+
+def _active_speaker_capture_preset(topology: OutputTopology) -> Any:
+    preset, crossover_preview = resolve_commission_inputs()
+    if preset is not None:
+        return preset
+    if crossover_preview is not None:
+        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+
+        compiled, issues, _gates = compile_preset_from_crossover_preview(
+            topology,
+            crossover_preview,
+        )
+        if compiled is not None:
+            return compiled
+        messages = [
+            str(issue.get("message") or issue.get("code"))
+            for issue in issues
+            if isinstance(issue, dict)
+        ]
+        raise ValueError(
+            "active speaker preset is not ready for capture analysis"
+            + (": " + "; ".join(messages[:2]) if messages else "")
+        )
+    return _active_speaker_preset()
+
+
+def _playback_id_from_capture(raw: dict[str, Any]) -> str | None:
+    playback = raw.get("playback") if isinstance(raw.get("playback"), dict) else {}
+    value = raw.get("playback_id") or playback.get("playback_id")
+    return str(value).strip() if value else None
+
+
 def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Record one operator-confirmed driver test result."""
 
@@ -2805,6 +3037,67 @@ def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str,
         )
         if isinstance(summary.get("latest_driver_measurements"), dict)
         else False,
+        summary.get("captured_driver_count"),
+        summary.get("required_driver_count"),
+    )
+    return payload
+
+
+def _active_speaker_driver_capture_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Analyze one phone-mic driver WAV and record acoustic measurement evidence."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.commissioning_capture import (
+        record_driver_acoustic_capture,
+    )
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+
+    if not isinstance(raw, dict):
+        raise ValueError("driver capture request must be an object")
+    topology = load_output_topology()
+    preset = _active_speaker_capture_preset(topology)
+    wav_path = _active_speaker_capture_wav_path(raw, kind="driver")
+    sweep_meta = _active_speaker_capture_sweep_meta(raw)
+    group_id = str(raw.get("speaker_group_id") or "").strip()
+    role = str(raw.get("role") or "").strip().lower()
+    payload = record_driver_acoustic_capture(
+        topology,
+        preset,
+        speaker_group_id=group_id,
+        role=role,
+        captured_wav=wav_path,
+        sweep_meta=sweep_meta,
+        playback_id=_playback_id_from_capture(raw),
+        test_level_dbfs=raw.get("test_level_dbfs"),
+        has_mic_calibration=bool(raw.get("has_mic_calibration")),
+        notes=raw.get("notes"),
+        calibration_level=load_calibration_level_state(),
+        safe_session=load_safe_playback_state(),
+    )
+    measurement = (
+        payload.get("measurement")
+        if isinstance(payload.get("measurement"), dict)
+        else None
+    )
+    summary = (
+        measurement.get("summary")
+        if measurement and isinstance(measurement.get("summary"), dict)
+        else {}
+    )
+    latest = (
+        (summary.get("latest_driver_measurements") or {}).get(f"{group_id}:{role}")
+        if isinstance(summary.get("latest_driver_measurements"), dict)
+        else None
+    )
+    logger.info(
+        "event=sound.active_speaker_driver_capture status=%s group_id=%s "
+        "role=%s verdict=%s recorded=%s captured=%s drivers=%s/%s",
+        "recorded" if payload.get("recorded") else "not_recorded",
+        group_id,
+        role,
+        payload.get("verdict"),
+        bool(payload.get("recorded")),
+        bool(latest and latest.get("captured")),
         summary.get("captured_driver_count"),
         summary.get("required_driver_count"),
     )
@@ -3088,6 +3381,78 @@ def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, 
     return payload
 
 
+def _summed_test_id_from_capture(raw: dict[str, Any]) -> str | None:
+    playback = raw.get("playback") if isinstance(raw.get("playback"), dict) else {}
+    value = (
+        raw.get("summed_test_id")
+        or raw.get("playback_id")
+        or playback.get("summed_test_id")
+        or playback.get("playback_id")
+    )
+    return str(value).strip() if value else None
+
+
+def _active_speaker_summed_capture_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Analyze one phone-mic summed WAV and record crossover validation evidence."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.commissioning_capture import (
+        record_summed_acoustic_capture,
+    )
+
+    if not isinstance(raw, dict):
+        raise ValueError("summed capture request must be an object")
+    topology = load_output_topology()
+    preset = _active_speaker_capture_preset(topology)
+    wav_path = _active_speaker_capture_wav_path(raw, kind="summed")
+    sweep_meta = _active_speaker_capture_sweep_meta(raw)
+    group_id = str(raw.get("speaker_group_id") or "").strip()
+    summed_test_id = _summed_test_id_from_capture(raw)
+    payload = record_summed_acoustic_capture(
+        topology,
+        preset,
+        speaker_group_id=group_id,
+        captured_wav=wav_path,
+        sweep_meta=sweep_meta,
+        crossover_fc_hz=raw.get("crossover_fc_hz"),
+        summed_test_id=summed_test_id,
+        playback_id=_playback_id_from_capture(raw),
+        polarity=raw.get("polarity"),
+        delay_ms=raw.get("delay_ms"),
+        delay_target_role=raw.get("delay_target_role"),
+        has_mic_calibration=bool(raw.get("has_mic_calibration")),
+        notes=raw.get("notes"),
+        calibration_level=load_calibration_level_state(),
+    )
+    measurement = (
+        payload.get("measurement")
+        if isinstance(payload.get("measurement"), dict)
+        else None
+    )
+    summary = (
+        measurement.get("summary")
+        if measurement and isinstance(measurement.get("summary"), dict)
+        else {}
+    )
+    latest = (
+        (summary.get("latest_summed_validations") or {}).get(group_id)
+        if isinstance(summary.get("latest_summed_validations"), dict)
+        else None
+    )
+    logger.info(
+        "event=sound.active_speaker_summed_capture status=%s group_id=%s "
+        "verdict=%s recorded=%s validated=%s summed=%s/%s",
+        "recorded" if payload.get("recorded") else "not_recorded",
+        group_id,
+        payload.get("verdict"),
+        bool(payload.get("recorded")),
+        bool(latest and latest.get("validated")),
+        summary.get("validated_summed_group_count"),
+        summary.get("required_summed_group_count"),
+    )
+    return payload
+
+
 def _active_speaker_baseline_profile_payload(
     *,
     write: bool = False,
@@ -3186,9 +3551,9 @@ def _make_handler(
             self.end_headers()
             self.wfile.write(body)
 
-        def _read_json(self) -> dict[str, Any]:
+        def _read_json(self, *, max_bytes: int = MAX_JSON_BYTES) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or "0")
-            if length > MAX_JSON_BYTES:
+            if length > max_bytes:
                 raise ValueError("request body too large")
             if not length:
                 return {}
@@ -3404,8 +3769,10 @@ def _make_handler(
                 "/active-speaker/commission-ramp-ack",
                 "/active-speaker/commission-ramp-abort",
                 "/active-speaker/driver-measurement",
+                "/active-speaker/driver-capture",
                 "/active-speaker/summed-test",
                 "/active-speaker/summed-validation",
+                "/active-speaker/summed-capture",
                 "/active-speaker/baseline-profile",
                 "/active-speaker/baseline-profile/apply",
                 "/output-topology",
@@ -3434,7 +3801,16 @@ def _make_handler(
                 )
                 return
             try:
-                raw = self._read_json()
+                raw = self._read_json(
+                    max_bytes=(
+                        MAX_CAPTURE_JSON_BYTES
+                        if path in {
+                            "/active-speaker/driver-capture",
+                            "/active-speaker/summed-capture",
+                        }
+                        else MAX_JSON_BYTES
+                    )
+                )
                 if path == "/active-speaker/stop":
                     self._send_json(_active_speaker_stop_payload())
                     return
@@ -3503,6 +3879,17 @@ def _make_handler(
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
+                if path == "/active-speaker/driver-capture":
+                    try:
+                        self._send_json(_active_speaker_driver_capture_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_driver_capture "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
                 if path == "/active-speaker/summed-test":
                     try:
                         self._send_json(
@@ -3527,6 +3914,17 @@ def _make_handler(
                     except OSError as e:
                         logger.exception(
                             "event=sound.active_speaker_summed_validation "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/summed-capture":
+                    try:
+                        self._send_json(_active_speaker_summed_capture_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_summed_capture "
                             "result=error error=%s",
                             type(e).__name__,
                         )

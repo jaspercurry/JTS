@@ -204,26 +204,22 @@ Avoid:
 
 ### 5. Validate Crossover Blend
 
-After each driver has a saved per-driver check, the user needs one summed check
-per active speaker group. The per-driver check can be an operator-only guarded
-tone confirmation; it is not the later acoustic measurement flow. The UI should
-use that durable driver-check state, not volatile ramp ordering memory, when it
-decides whether "Test each driver" is complete. The summed check is still a
-guided setup action, not a lab report: the UI should say which drivers will be
-heard together and ask whether the blend sounds coherent at the crossover
-region. Polarity and delay are technical implementation details, but they can
-be captured as simple outcomes when the user hears a problem. The combined
-test also needs a bounded level control for low-sensitivity drivers: the user
-can raise the next play from the quiet floor, while the backend still limits
-upward motion and logs the emitted level. For the current product path, the
-user's explicit listening result can unlock the first baseline after a current
-audible combined test; phone-mic summed capture remains richer acoustic
-validation rather than a prerequisite for the household flow.
+After each driver has been measured on its own, the user needs one summed check
+per active speaker group. This is still a guided setup action, not a lab report:
+the UI should say which drivers will be heard together, play the combined test,
+then record the phone-mic capture that proves whether the crossover blends.
+Polarity and delay are technical implementation details, but they can be
+captured as simple problem outcomes when the user hears something wrong. The
+combined test also needs a bounded level control for low-sensitivity drivers:
+the user can raise the next play from the quiet floor, while the backend still
+limits upward motion and logs the emitted level. A manual success click must not
+unlock the active profile without current mic evidence tied to the latest
+audible combined test.
 
 Good language:
 
 - "Check the crossover blend"
-- "Blend sounds right"
+- "Record mic capture"
 - "Sounds hollow or weak"
 - "Needs level or delay adjustment"
 
@@ -242,9 +238,8 @@ actions:
 
 - **Play combined test** runs a short, quiet combined-driver test from the
   prepared crossover setup at the selected bounded test level.
-- **Blend sounds right** records the user's combined crossover validation; it
-  must be tied to the latest audible combined test and is stored as an explicit
-  operator listening check when no microphone reading is present.
+- **Record mic capture** records the combined crossover validation; it must be
+  tied to the latest audible combined test and produce usable mic evidence.
 - **Save active profile** writes the candidate CamillaDSP YAML and durable
   profile state, but does not load it.
 - **Apply active profile** loads that profile through the normal DSP apply
@@ -294,6 +289,11 @@ Avoid:
   the exact saved output target that was tested; if the user changes the speaker
   layout or DAC assignment, the old measurement can remain visible as history
   but should no longer satisfy the current step.
+- Phone-mic capture is now the product success path for driver measurements and
+  summed validation. The hardware-free implementation can submit bounded WAV
+  evidence and record acoustic verdicts, but JTS3 still needs live validation of
+  real playback timing, browser mic capture quality, room noise, and driver
+  response before the copy should imply the speaker has been acoustically proven.
 - "Raise toward audible" should be product language for one backend-bounded
   step. A true 5-15 second rising tone needs a playback backend that owns the
   running process and can stop immediately; do not fake that interaction with
@@ -321,7 +321,7 @@ Avoid:
   compile, and apply are distinct product states. Do not collapse them into
   one "done" flag.
 - Summed validation must be tied to the current combined-driver test for that
-  speaker group; a free-floating "sounds good" click should never unlock the
+  speaker group; a free-floating "sounds good" click must never unlock the
   active profile.
 - The final apply step should use product language, but the backend must still
   write through the shared DSP transaction, retain rollback visibility, and

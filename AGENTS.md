@@ -1129,15 +1129,14 @@ The rules most often violated without it:
 - **Preamble suppression is a conditional skip-list, never a
   ban.** Live version in the `Tools — preambles` section of
   `SYSTEM_INSTRUCTION`; mirrors OpenAI's documented pattern.
-- **Per-tool conditional rules belong in the tool's docstring,
+- **Per-tool conditional rules belong in the tool's description,
   not `SYSTEM_INSTRUCTION`.** `build_tool()` at
-  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends
-  the full cleaned docstring to the LLM (unless a tool sets a
-  shorter `@tool(llm_description=...)` override — none do today).
-  When-to-call,
-  voice-answer style, and response-shape handling live in each
-  tool's docstring. `SYSTEM_INSTRUCTION` keeps only cross-tool
-  meta-rules (`error` / `confirm` field handling, preamble
+  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends the
+  tool's model-facing description to the LLM: user override first,
+  then `llm_description` when set, else the full cleaned docstring.
+  When-to-call, voice-answer style, and response-shape handling live in
+  each tool's code-owned description. `SYSTEM_INSTRUCTION` keeps only
+  cross-tool meta-rules (`error` / `confirm` field handling, preamble
   policy, verbosity, unclear-audio handling, the small set of
   cross-tool routing rules where two similar tools need
   disambiguation).
@@ -2872,11 +2871,26 @@ rsync the captures.
 
 ## Testing
 
-Hardware-free tests (run locally, no SDK auth needed):
+### Agent test routing
 
-```sh
-.venv/bin/pytest
-```
+Use the repo's executable test lanes instead of inventing ad hoc
+commands. This is the contract for humans and LLM agents:
+
+- **Fast local lane:** `scripts/test-fast` while iterating. It runs
+  `ruff check .`, last-failed pytest tests, a changed-file test
+  selection, and a small always-on guard set. This is the default
+  command for Codex/Claude before a local handoff or push.
+- **Merge lane:** `scripts/test-merge` before publishing or merging
+  non-trivial work. This is the full hardware-free Python gate:
+  parallel pytest, short tracebacks, and `tests/voice_eval` excluded.
+- **Deep/manual lane:** hardware, paid LLM evals, firmware builds, and
+  Pi deploy checks. Run only when the touched subsystem requires it,
+  with explicit cost/hardware scope.
+
+The scripts are the source of truth. If a lane changes, update the
+script first, then adjust this short routing note and
+[CONTRIBUTING.md](CONTRIBUTING.md). Do not duplicate long command
+matrices in agent files.
 
 Anything Pi-specific (audio I/O, websocket, Gemini Live) needs
 to run on the actual hardware via `jasper-doctor` or by tailing
@@ -2961,14 +2975,14 @@ it's a branch going **stale** under you. These habits keep velocity high
 without merging breakage. They were distilled from a real incident where a
 branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
-1. **Local preflight before every push.** Run `ruff check .` plus a fast
-   test subset for what you touched (`pytest tests/test_<area>.py`) before
-   you push. This catches undefined names / dead imports / obvious breaks in
-   seconds instead of a ~4-minute CI round-trip. This is the single biggest
-   velocity win. Do *not* lean on a local full-suite run to gate — on macOS
-   the `test_wifi_guardian_script.py` / `test_aec_reconcile.py` subprocess
-   tests flake under load (posix_spawn `EMFILE`/`EAGAIN`); CI on Linux is the
-   source of truth for the full suite.
+1. **Local preflight before every push.** Run `scripts/test-fast`. It
+   catches undefined names / dead imports / obvious targeted breaks in
+   seconds instead of a CI round-trip. For substantial or risky work, also
+   run `scripts/test-merge` before publishing. Do *not* lean on a local
+   full-suite run as the only gate — on macOS the
+   `test_wifi_guardian_script.py` / `test_aec_reconcile.py` subprocess tests
+   can flake under load (posix_spawn `EMFILE`/`EAGAIN`); CI on Linux remains
+   the source of truth for the full suite.
 
 2. **Short-lived branches; rebase before you push/merge.** `git fetch origin`
    at the start, and rebase onto `origin/main` right before pushing and again
@@ -2989,15 +3003,16 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    **suspect a conflict first** (`gh pr view <n> --json mergeable`), not a
    trigger glitch — rebase onto `main` to resolve.
 
-5. **What the CI gate covers — and does NOT.** It runs: hardware-free
-   `pytest` (voice_eval is **excluded** — paid LLM suite, never CI), `ruff`,
-   the supply-chain provenance check, a `shell` job (`bash -n` over every
-   shell entry point + `shellcheck --severity=error`), and a
-   `cargo build --release --locked` plus `cargo test --locked` of
-   `rust/jasper-fanin`, `rust/jasper-outputd`, and `rust/jasper-dual-dac-lab`.
-   It does **not** exercise real audio/mic/voice hardware or the Pi-side
-   install — those still need a deploy + `jasper-doctor` / on-device check.
-   "Green CI" means "safe to merge," not "validated on hardware."
+5. **What the CI gate covers — and does NOT.** It runs: the
+   hardware-free Python merge lane (`scripts/test-merge`, with voice_eval
+   excluded because it is the paid LLM suite), `ruff`, the supply-chain
+   provenance check, a `shell` job (`bash -n` over every shell entry point +
+   `shellcheck --severity=warning`), and a required `rust` job. The `rust`
+   job is path-aware on PRs: it runs full Cargo only for Rust or Rust
+   deploy/CI surfaces, but always runs on `main` pushes. CI does **not**
+   exercise real audio/mic/voice hardware or the Pi-side install — those
+   still need a deploy + `jasper-doctor` / on-device check. "Green CI" means
+   "safe to merge," not "validated on hardware."
 
 6. **Workflow-file PRs: try the `gh` merge before assuming you can't.**
    An earlier version of this rule said a `gh` OAuth token can never

@@ -76,6 +76,7 @@ def test_render_escapes_every_untrusted_tool_field():
     assert out["packCardsClickable"] is True, "pack cards should expose full-card navigation"
     assert out["toolCountInTitleRow"] is True, "pack/detail tool counts should sit by the title"
     assert out["noDuplicateDetailBack"] is True, "detail cards should not duplicate the header back link"
+    assert out["guideLinkRendered"] is True, "pack details should link to the authoring guide"
     assert out["noCustomPromptCount"] is True, "custom prompt counts should not render as metadata"
     assert out["noTimeoutMetadata"] is True, "tool timeout metadata should not render"
     assert out["noRiskFlagMetadata"] is True, "risk flags should not render in the operator UI"

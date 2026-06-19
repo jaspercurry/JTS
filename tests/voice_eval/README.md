@@ -255,17 +255,16 @@ production (no trace is set). Zero production overhead.
 
 ## Adding a tool to the test environment
 
-`_build_test_registry` in [harness.py](harness.py) is a minimal
-subset of the daemon's registry. Today it has weather, subway,
-and (when the router builds successfully) Spotify + transport.
+`_build_test_registry` in [harness.py](harness.py) builds the same
+`ToolDeps` bundle as the daemon and registers tools through
+`jasper.tools.packs.register_packs`.
 
 When a new scenario needs a tool:
 
-1. Add construction (call the appropriate `make_*_tools(...)`)
-   to `_build_test_registry`.
-2. Construct the backend dependency directly. HTTP-based tools
-   are easy (just their client class). Tools that depend on
-   heavier subsystems may need a stub.
+1. Add or extend the capability pack in `jasper.tools.packs.TOOL_PACKS`.
+2. If the pack needs a new shared dependency, add that dependency to
+   `ToolDeps` and construct the test-safe client/stub in
+   `_build_test_registry`.
 3. Run `pytest -v` to confirm the scenario picks up the tool.
 
 ---

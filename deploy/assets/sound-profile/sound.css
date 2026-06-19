@@ -798,3 +798,20 @@
     flex-wrap: wrap; gap: 8px; min-height: 42px; align-items: stretch;
   }
   .commission-card__actions .btn { min-height: 40px; }
+  .driver-capture-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    margin-top: 2px;
+  }
+  .driver-capture-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+  }
+  .driver-capture-row .active-speaker-actions {
+    justify-content: flex-end;
+  }

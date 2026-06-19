@@ -31,6 +31,7 @@ URL surface (after nginx strips /tools/):
   GET  /             page render
   GET  /catalog.json catalog metadata + the fresh disabled-set overlaid
                      ({..., tools:[...], pending: bool})
+  GET  /guide        static contributor/developer authoring guide
   GET  /pack/<id>    pack detail page render
   POST /toggle-pack  body {id: str, enabled: bool} — write pack state
   POST /toggle       body {name: str, enabled: bool} — write tool_state.env
@@ -154,8 +155,12 @@ def _index_html(csrf_token: str = "") -> bytes:
     # shared app.css link, the CSRF meta tag (read by main.js for the POST),
     # and the icon sprite. The module graph is served static + revalidated
     # from /assets/tools/js/ (the `location ~ \\.js$` block in nginx).
+    guide_link = (
+        '<a class="btn btn--ghost tools-guide-link" href="/tools/guide/" '
+        'target="_blank" rel="noopener">Guide</a>'
+    )
     body = f"""
-{canonical_header("Tools")}
+{canonical_header("Tools", right_html=guide_link)}
 <main class="page">
   <div class="tools-search">
     <input type="search" id="tools-search" placeholder="Search tools&hellip;"
@@ -227,26 +232,129 @@ def _guide_html(csrf_token: str = "") -> bytes:
 {canonical_header("Tool authoring guide", back_href="/tools/", back_label="Tools")}
 <main class="page">
   <article class="info-card tool-guide">
-    <h2>Good tools are small, explicit, and tested</h2>
-    <p>Use packs for user-facing capabilities and tools for the individual
-      callable leaves the model can invoke. Keep model-facing prompts short
-      enough to scan, but specific about when to call, when not to call,
-      response style, and failure behavior.</p>
-    <h3>Prompt copy</h3>
-    <ul>
-      <li>Start with the tool's purpose in one sentence.</li>
-      <li>Name concrete call boundaries and common false positives.</li>
-      <li>Describe the response shape the model should speak from.</li>
-      <li>Keep implementation notes in code comments, not tool prompts.</li>
-    </ul>
-    <h3>Safety</h3>
-    <ul>
-      <li>Mark third-party text tools as untrusted output.</li>
-      <li>Mark real-world action tools as consequential.</li>
-      <li>Own setup at the pack level when several tools share one account or
-        backend.</li>
-      <li>Ship a regression scenario under tests/voice_eval/regression/.</li>
-    </ul>
+    <p class="tool-guide__lede">This is the house style for first-party and
+      trusted-PR capability packs. It is documentation and UI guidance only:
+      no marketplace, install flow, sandbox, secret broker, or untrusted-code
+      runtime lives here.</p>
+
+    <section class="tool-guide__section">
+      <h2>Tool or Pack</h2>
+      <p>A tool is one callable leaf the model can invoke. A capability pack
+        is the copyable user-facing unit that owns metadata, setup, runtime
+        clients, tools, and tests.</p>
+      <ul>
+        <li>Create a new pack when the capability has its own user-facing
+          identity, setup state, account, backend, or runtime client graph.</li>
+        <li>Extend an existing pack when the new callable shares that identity
+          and setup contract, such as another Spotify or transit action.</li>
+        <li>Add a label when the distinction is taxonomy only, such as a city,
+          mode, topic, or search facet that does not own behavior.</li>
+      </ul>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Runtime Boundary</h2>
+      <p>The runtime path is source-neutral:
+        <code>CapabilityPack</code> -&gt; <code>ToolDefinition</code> +
+        <code>ToolExecutor</code> -&gt; registry -&gt; serializers, catalog,
+        and <code>dispatch_tool()</code>. First-party code and trusted PRs use
+        the same boundary.</p>
+      <ul>
+        <li><code>ToolDefinition</code> owns the provider-neutral schema,
+          model-facing prompt, labels, timeout, and risk metadata.</li>
+        <li><code>ToolExecutor</code> only runs the backing implementation.
+          Dispatch owns timeout, logging, scalar wrapping, and error shaping.</li>
+        <li>The tools wizard reads catalog JSON and wizard-owned state. It must
+          not import tool modules or build the registry.</li>
+      </ul>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Reference Shapes</h2>
+      <ul>
+        <li><code>time</code>: simple explicit definition and Python executor,
+          no setup.</li>
+        <li><code>weather</code>: API-backed tool with local setup state and a
+          clear upstream-failure answer.</li>
+        <li><code>spotify</code> and <code>playback</code>: source-backed music
+          actions that share existing renderer/router services.</li>
+        <li><code>transit</code>: deep pack with wizard-owned configuration,
+          provider registries, and several related tools.</li>
+        <li><code>home_assistant</code>: high-risk action pack with longer
+          timeout and consequential-action confirmation.</li>
+      </ul>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Prompt Writing</h2>
+      <ul>
+        <li>Start with a short purpose sentence.</li>
+        <li>Use positive call conditions: "Call this when..." with concrete
+          user utterances and parameter rules.</li>
+        <li>Use "Do not call when..." only for load-bearing false positives,
+          routing boundaries, or safety constraints.</li>
+        <li>State the response shape and voice-answer style the model should
+          speak from.</li>
+        <li>Include the failure contract. On hard failure, return
+          <code>{{"error": "short speakable sentence"}}</code>, not an empty
+          success payload.</li>
+      </ul>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Docstrings and Descriptions</h2>
+      <p>Keep rich docstrings for humans. Use
+        <code>llm_description</code> only when the model needs a shorter
+        prompt than the engineer-facing docstring. The provider sees user
+        override, then <code>llm_description</code>, then the default
+        <code>ToolDefinition.description</code>.</p>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Metadata</h2>
+      <ul>
+        <li>Add useful <code>labels</code>; they are catalog facets, not model
+          prompt text.</li>
+        <li>Set <code>untrusted_output=True</code> for tools returning
+          outsider-controlled text such as email, calendar, web, or chat
+          content.</li>
+        <li>Set <code>consequential=True</code> for real-world or irreversible
+          actions.</li>
+        <li>Raise <code>timeout</code> only when a backend is legitimately slow,
+          and use <code>log_payload=False</code> or <code>log_args=False</code>
+          when logs would otherwise contain household content or secrets.</li>
+      </ul>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Setup Ownership</h2>
+      <p>Per-pack setup belongs in the pack and its wizard-owned state under
+        <code>/var/lib/jasper/</code>. Defaults should fail safe and loudly:
+        missing setup means <code>needs_setup</code> or a speakable
+        <code>error</code>, not a silent empty answer. Do not add central
+        <code>Config</code> fields for per-pack configuration unless the value
+        is truly cross-cutting.</p>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Tests</h2>
+      <ul>
+        <li>Cover pack registration, derived manifest/catalog output, and
+          dispatch behavior.</li>
+        <li>Pin setup gates, failure contracts, timeout/redaction choices, and
+          risk metadata when they are load-bearing.</li>
+        <li>Add or update a <code>tests/voice_eval/regression/</code> scenario
+          when model-visible behavior changes.</li>
+      </ul>
+    </section>
+
+    <section class="tool-guide__section">
+      <h2>Non-goals</h2>
+      <p>This phase does not add a sandbox, marketplace, install flow, secret
+        broker, no-code executable builder, MCP bridge, or untrusted-code
+        runtime. Those belong only after JTS runs code the maintainer has not
+        personally vetted.</p>
+    </section>
   </article>
 </main>
 """

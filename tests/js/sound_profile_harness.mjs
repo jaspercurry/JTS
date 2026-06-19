@@ -15,10 +15,29 @@ const escapePreamble = readFileSync(escapePath, "utf8")
 const activeSpeakerUiPath = new URL("../../deploy/assets/sound-profile/js/active-speaker-ui.js", import.meta.url);
 const activeSpeakerUiPreamble = readFileSync(activeSpeakerUiPath, "utf8")
   .replace(/^export\s+/gm, "");
+const measurementAudioPreamble = `
+const DEFAULT_SAMPLE_RATE = 48000;
+async function createMonoRecorder() {
+  return {
+    context: { sampleRate: DEFAULT_SAMPLE_RATE },
+    start() {},
+    async stop() { return new Float32Array(480); },
+    async close() {},
+  };
+}
+function float32ToWavBlob() {
+  return {
+    async arrayBuffer() {
+      return Uint8Array.from([82, 73, 70, 70, 4, 0, 0, 0]).buffer;
+    },
+  };
+}
+`;
 
 const rawSource = readFileSync(modulePath, "utf8");
 const source = rawSource
   .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n")
+  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
@@ -349,10 +368,12 @@ function setupHarness(fetchHandler) {
     value: { clipboard: { async writeText() {} } },
     configurable: true,
   });
+  globalThis.btoa = (binary) => Buffer.from(binary, "binary").toString("base64");
   globalThis.fetch = fetchHandler;
 
   new Function(
-    escapePreamble + "\n" + eqMathPreamble + "\n" + activeSpeakerUiPreamble + "\n" + source
+    escapePreamble + "\n" + eqMathPreamble + "\n" +
+      activeSpeakerUiPreamble + "\n" + measurementAudioPreamble + "\n" + source
   )();
 
   const viewBody = elements.get("view-body");
@@ -716,8 +737,8 @@ async function testMeasuredDriversOpenProfileStep() {
     'data-output-step="profile" open',
     "Validate and apply",
     "Combined crossover check",
-    "Blend sounds right",
     "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
+    "Record mic capture",
     "Save active profile",
   ]) {
     if (!html.includes(expected)) {
@@ -1462,6 +1483,187 @@ async function testStaleRampConfirmationsDoNotCompleteDriverChecks() {
   return { staleRampConfirmationsDoNotCompleteDriverChecks: true };
 }
 
+async function testDriverCaptureAfterRampConfirmationPostsMicPayload() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  let measurements = {
+    status: "needs_driver_measurements",
+    summary: {
+      required_driver_count: 2,
+      captured_driver_count: 0,
+      driver_measurements_complete: false,
+      required_summed_group_count: 1,
+      validated_summed_group_count: 0,
+      summed_validation_complete: false,
+      latest_driver_measurements: {},
+      latest_summed_validations: {},
+    },
+    permissions: { may_compile_baseline: false },
+    issues: [],
+  };
+  const capturePosts = [];
+  const commissionState = {
+    commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: ["woofer"], pending: null },
+    floor: {
+      status: "floor_confirmed",
+      floor_audio_confirmed: true,
+      last_operator_result: {
+        accepted: true,
+        playback_id: "pb-woofer",
+        target: { speaker_group_id: "main", role: "woofer", driver_role: "woofer", output_index: 0 },
+      },
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/driver-capture": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      capturePosts.push(body);
+      measurements = {
+        ...measurements,
+        summary: {
+          ...measurements.summary,
+          captured_driver_count: 1,
+          latest_driver_measurements: {
+            "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+          },
+        },
+      };
+      return Promise.resolve(response({
+        recorded: true,
+        verdict: "present",
+        outcome: "heard_correct_driver",
+        measurement: measurements,
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+  const originalSetTimeout = globalThis.window.setTimeout;
+  globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  try {
+    let html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes('data-act="record-driver-capture"')) {
+      fail("confirmed ramp should expose driver mic capture", { html });
+    }
+    if (html.includes("not yet wired")) {
+      fail("driver capture follow-up should not claim measurement is unwired", { html });
+    }
+
+    harness.dispatchClick({
+      "data-act": "record-driver-capture",
+      "data-group-id": "main",
+      "data-role": "woofer",
+      "data-playback-id": "pb-woofer",
+    });
+    await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+    if (capturePosts.length !== 1) fail("driver capture should POST once", { capturePosts });
+    const body = capturePosts[0];
+    if (body.speaker_group_id !== "main" || body.role !== "woofer" || body.playback_id !== "pb-woofer") {
+      fail("driver capture should bind to the accepted floor result", { body });
+    }
+    if (!body.capture || !body.capture.wav_base64) {
+      fail("driver capture should upload a WAV payload", { body });
+    }
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+  }
+  return { driverCaptureAfterRampConfirmationPostsMicPayload: true };
+}
+
+async function testSummedCapturePostsInsteadOfManualSuccess() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  let measurements = {
+    status: "needs_summed_validation",
+    summary: {
+      required_driver_count: 2,
+      captured_driver_count: 2,
+      driver_measurements_complete: true,
+      required_summed_group_count: 1,
+      validated_summed_group_count: 0,
+      summed_validation_complete: false,
+      latest_driver_measurements: {
+        "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+        "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+      },
+      latest_summed_tests: {
+        main: {
+          captured: true,
+          audio_emitted: true,
+          summed_test_id: "sum-1",
+          playback_id: "sum-1",
+        },
+      },
+      latest_summed_validations: {},
+    },
+    permissions: { may_compile_baseline: false },
+    issues: [],
+  };
+  const summedPosts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/summed-capture": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      summedPosts.push(body);
+      measurements = {
+        ...measurements,
+        status: "ready_for_baseline",
+        summary: {
+          ...measurements.summary,
+          validated_summed_group_count: 1,
+          summed_validation_complete: true,
+          latest_summed_validations: {
+            main: { validated: true, outcome: "blend_ok" },
+          },
+        },
+        permissions: { may_compile_baseline: true },
+      };
+      return Promise.resolve(response({
+        recorded: true,
+        verdict: "blend_ok",
+        outcome: "blend_ok",
+        measurement: measurements,
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const originalSetTimeout = globalThis.window.setTimeout;
+  globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  try {
+    const html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes('data-act="record-summed-capture"')) {
+      fail("summed validation should expose mic-backed capture", { html });
+    }
+    if (html.includes('data-outcome="blend_ok"')) {
+      fail("summed validation should not expose manual success bypass", { html });
+    }
+
+    harness.dispatchClick({
+      "data-act": "record-summed-capture",
+      "data-group-id": "main",
+      "data-summed-test-id": "sum-1",
+    });
+    await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+    if (summedPosts.length !== 1) fail("summed capture should POST once", { summedPosts });
+    const body = summedPosts[0];
+    if (body.speaker_group_id !== "main" || body.summed_test_id !== "sum-1") {
+      fail("summed capture should bind to the latest combined test", { body });
+    }
+    if (!body.capture || !body.capture.wav_base64) {
+      fail("summed capture should upload a WAV payload", { body });
+    }
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+  }
+  return { summedCapturePostsInsteadOfManualSuccess: true };
+}
+
 async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   const commissionState = {
     commission_load: {
@@ -1764,6 +1966,8 @@ results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testCommissionCardArmsAndSteps());
 results.push(await testCommissionCompleteDoesNotWrapToWoofer());
 results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
+results.push(await testDriverCaptureAfterRampConfirmationPostsMicPayload());
+results.push(await testSummedCapturePostsInsteadOfManualSuccess());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());

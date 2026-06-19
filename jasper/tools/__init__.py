@@ -1,23 +1,24 @@
 """Voice-tool registry + per-provider schema serializers.
 
-Tool factories under ``jasper.tools.*`` keep the ergonomic
-``@tool(...)`` + ``ToolRegistry.register(fn)`` authoring style. The
-decorator compiles a callable into a provider-neutral ``ToolDefinition``
-plus a ``PythonExecutor``; the registry then serializes the definition
-to the provider-specific shape:
+Tool factories under ``jasper.tools.*`` may return either explicit
+``Tool(ToolDefinition(...), PythonExecutor(...))`` objects or decorated
+``@tool(...)`` callables. The decorator is ergonomic sugar for that same
+provider-neutral ``ToolDefinition`` plus ``PythonExecutor`` boundary; the
+registry then serializes the definition to the provider-specific shape:
 
 - ``function_declarations()`` — Gemini's ``Tool(function_declarations=[...])``
 - ``openai_tools()`` — OpenAI Realtime's flat
   ``{type: "function", name, description, parameters}``. Grok's
   voice agent inherits this shape unchanged.
 
-The LLM-facing description for each tool is the function's full
-cleaned docstring (``build_tool`` sends ``inspect.getdoc(fn).strip()``
-verbatim). Per-tool conditional rules — when to call, when NOT to
-call, response shape, voice-answer style — live in the docstring
-and are sent to the model with the tool. Engineer-only notes
-(implementation details, TODOs) belong in ``#`` comments or this
-module docstring, NOT in tool function docstrings.
+The LLM-facing description for each tool is the explicit
+``ToolDefinition.description`` or, for ``@tool`` callables, the
+function's full cleaned docstring (``build_tool`` sends
+``inspect.getdoc(fn).strip()`` verbatim). Per-tool conditional rules —
+when to call, when NOT to call, response shape, voice-answer style — live
+there and are sent to the model with the tool. Engineer-only notes
+(implementation details, TODOs) belong in ``#`` comments or this module
+docstring, NOT in model-facing tool descriptions.
 
 When adding or editing a tool, read ``docs/HANDOFF-prompting.md``
 first — it covers tool description style, where conditional rules
@@ -28,8 +29,9 @@ Prompt-injection seam (see below + docs/HANDOFF-prompting.md "Untrusted
 tool-result fencing"): ``fence_untrusted`` wraps attacker-controllable
 third-party text, ``UntrustedContentMonitor`` tracks the taint window, and
 each ``Tool`` carries declarative ``untrusted_output`` / ``consequential``
-risk flags (set via ``@tool(...)``) for the planned tool store's policy
-layer. A tool that returns third-party text declares ``untrusted_output``,
+risk flags (set via ``@tool(...)`` or ``ToolDefinition``) for the planned
+tool store's policy layer. A tool that returns third-party text declares
+``untrusted_output``,
 fences its output, and arms the taint window (gmail and calendar do all
 three). A tool that takes a real-world action declares ``consequential``.
 """
@@ -195,7 +197,7 @@ DEFAULT_TOOL_TIMEOUT_SEC = 12.0
 # detect a breaking change. The manifest is a stable, provider-neutral
 # description built straight from existing Tool fields — additive, with
 # no effect on dispatch or the provider serializers.
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -297,6 +299,10 @@ class ToolDefinition:
             },
             "labels": list(self.labels),
             "timeout": self.timeout,
+            "risk_flags": {
+                "untrusted_output": self.untrusted_output,
+                "consequential": self.consequential,
+            },
         }
 
 
@@ -408,7 +414,7 @@ class Tool:
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
-    # Tool name -> internal ToolPack.name for registries populated by
+    # Tool name -> internal CapabilityPack.name for registries populated by
     # jasper.tools.packs.register_packs. Manual/test registries that call
     # register() directly leave this empty. The mapping is catalog metadata
     # only; provider serializers and dispatch never read it.
@@ -433,16 +439,26 @@ class ToolRegistry:
 
     def register(
         self,
-        fn: Callable[..., Any],
+        fn: Callable[..., Any] | Tool,
         *,
         name: str | None = None,
         providers: Iterable[str] | None = None,
     ) -> Tool:
-        """Register `fn` as a tool. `providers` overrides any allowlist
-        the `@tool(...)` decorator set on the function — useful when a
-        wiring point needs to gate a generic tool to one backend without
-        editing the tool itself."""
-        tool = build_tool(fn, name=name)
+        """Register a decorated callable or explicit Tool.
+
+        `@tool(...)` callables remain the ergonomic first-party path.
+        Explicit Tool objects are the copyable ToolDefinition +
+        ToolExecutor boundary for richer packs and future non-Python
+        executors. `providers` overrides any allowlist the callable or
+        Tool definition set — useful when a wiring point needs to gate a
+        generic tool to one backend without editing the tool itself.
+        """
+        if isinstance(fn, Tool):
+            tool = fn
+            if name is not None:
+                tool = replace(tool, definition=replace(tool.definition, name=name))
+        else:
+            tool = build_tool(fn, name=name)
         if providers is not None:
             tool = replace(
                 tool,

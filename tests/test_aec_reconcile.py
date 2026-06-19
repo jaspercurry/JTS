@@ -323,11 +323,11 @@ def test_ensure_mode_file_appends_missing_leg_keys(tmp_path: Path) -> None:
     assert "JASPER_AUDIO_INPUT_PROFILE=direct_mic" in body
 
 
-def test_fresh_auto_profile_uses_chip_aec_on_6ch_xvf(tmp_path: Path) -> None:
+def test_fresh_auto_profile_uses_chip_aec_on_supported_6ch_xvf(tmp_path: Path) -> None:
     """A truly fresh aec_mode.env defaults to the canonical auto profile.
-    On the recommended 6-channel XVF3800 shape that resolves to chip-AEC,
-    not stacked software AEC/raw/DTLN."""
-    _write_env(tmp_path, "Array")
+    On the recommended 6-channel XVF3800 shape plus a measured output DAC
+    profile, that resolves to chip-AEC rather than stacked software legs."""
+    _write_env(tmp_path, "Array", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_card(tmp_path, channels=6)
 
     result = _run_reconcile(tmp_path, "--reason", "test")
@@ -341,6 +341,62 @@ def test_fresh_auto_profile_uses_chip_aec_on_6ch_xvf(tmp_path: Path) -> None:
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+
+
+@pytest.mark.parametrize(
+    ("dac_id", "stderr_phrase"),
+    [
+        ("hifiberry_dac8x", "HiFiBerry/DAC8x active profiles need per-profile"),
+        ("mystery_usb_audio", "has no codified chip-AEC calibration"),
+    ],
+)
+def test_auto_profile_falls_back_when_output_dac_needs_calibration(
+    tmp_path: Path,
+    dac_id: str,
+    stderr_phrase: str,
+) -> None:
+    """Chip-AEC is gated by both XVF firmware and output DAC timing support.
+    Calibration-required and future DAC profiles stay on the software AEC path
+    instead of inheriting the Apple baseline by accident."""
+    _write_env(tmp_path, "Array", extra=f"JASPER_AUDIO_DAC_ID={dac_id}\n")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert stderr_phrase in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
+
+
+def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
+    tmp_path: Path,
+) -> None:
+    """Even an explicit xvf_chip_aec profile is fail-closed for output
+    profiles whose reference timing contract requires calibration."""
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=dual_apple_usb_c_dac_4ch\n",
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "requested xvf_chip_aec" in result.stderr
+    assert "measured-sync contract" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
 
 
 @pytest.mark.parametrize(
@@ -411,7 +467,11 @@ def test_profile_env_updates_are_consumed_by_reconciler(
     env. This test catches drift between the two implementations before a
     new profile or alias ships with mismatched Python/Bash behavior.
     """
-    env_file = _write_env(tmp_path, "Array")
+    env_file = _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n",
+    )
     _write_profile_mode(tmp_path, profile)
     _write_card(tmp_path, channels=channels)
 
@@ -564,7 +624,7 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     JASPER_AEC_CHIP_AEC_ENABLED=1, and CLEARS raw/DTLN even though their
     booleans are on (single-chip mutual exclusion: the bridge can't emit
     the software legs and the chip beams at the same time)."""
-    _write_env(tmp_path, "udp:9876")
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1", chip_aec="1")
     _write_card(tmp_path, channels=6)
     _run_reconcile(tmp_path, "--reason", "test")
@@ -595,7 +655,7 @@ def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:
     reconciler's own read-back, marking outputd for a restart on every
     pass (restart churn). Two consecutive runs must converge: identical
     env file, no second outputd restart."""
-    _write_env(tmp_path, "udp:9876")
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1")
     _write_card(tmp_path, channels=6)
 
@@ -682,7 +742,7 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
     """CHIP_AEC=1 but the mic isn't 6-channel → the bridge doesn't run, so
     the chip vars stay cleared. The chip leg is structurally gated on the
     6-ch firmware (the bridge-running branch is the only one that arms it)."""
-    _write_env(tmp_path, "udp:9876")
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_mode_with_legs(
         tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1",
     )

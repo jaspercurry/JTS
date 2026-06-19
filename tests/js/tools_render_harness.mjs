@@ -170,6 +170,9 @@ console.log(JSON.stringify({
   toolCountInTitleRow: html.includes("tool-count tool-count--title"),
   // Pack detail already has canonical header back navigation; don't duplicate it.
   noDuplicateDetailBack: !html.includes('class="tool-back"'),
+  guideLinkRendered:
+    html.includes('href="/tools/guide/" target="_blank" rel="noopener"') &&
+    html.includes(">Tool authoring guide</a>"),
   // Non-actionable metadata stays in the catalog/code, not the operator UI.
   noCustomPromptCount: !html.includes("Custom prompts") && !html.includes(" customized"),
   noTimeoutMetadata: !/>Timeout<\/dt>/.test(html),

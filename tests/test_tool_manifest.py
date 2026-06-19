@@ -9,36 +9,12 @@ serializers.
 """
 from __future__ import annotations
 
-import types
-
 from jasper.tools import MANIFEST_SCHEMA_VERSION, ToolRegistry
-from jasper.tools.bus import make_bus_tools
-from jasper.tools.citibike import make_citibike_tools
-from jasper.tools.packs import ToolDeps, register_packs
-from jasper.tools.subway import make_subway_tools
+from tests._tool_pack_contract import full_registry
 
 
 def _full_registry() -> ToolRegistry:
-    transit = []
-    transit += list(make_subway_tools(object()))
-    transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
-    transit += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    deps = ToolDeps(
-        volume_coordinator=None,
-        renderer=None,
-        router=None,
-        weather=None,
-        spotify_device_name="JTS",
-        spotify_setup_url="",
-        transit_tools=transit,
-        ha=object(),
-        timer_scheduler=object(),
-        google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
-        wake_event_store=object(),
-    )
-    reg = ToolRegistry()
-    register_packs(reg, deps)
-    return reg
+    return full_registry()
 
 
 def test_manifest_covers_every_tool_in_order():
@@ -62,6 +38,10 @@ def test_manifest_entries_are_no_loss():
         assert entry["compatibility"]["providers"] == expected_providers
         assert entry["timeout"] == t.timeout
         assert entry["labels"] == list(t.labels)
+        assert entry["risk_flags"] == {
+            "untrusted_output": t.untrusted_output,
+            "consequential": t.consequential,
+        }
 
 
 def test_manifest_providers_are_sorted_deterministically():

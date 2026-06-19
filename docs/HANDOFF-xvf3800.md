@@ -279,11 +279,10 @@ What that chain does, in order (User Guide §4.1, Fig. 4.1):
    before the SHF block. Disabled by default; we set `on125`
    (125 Hz) in jasper-aec-init.
 3. **SHF block** (AEC + beamformer + NS + AGC + NLP, gated on
-   `SHF_BYPASS`). In our config we set `SHF_BYPASS=1` to bypass
-   the entire SHF block because the chip's AEC reference path is
-   incompatible with our external-DAC topology (see
-   [HANDOFF-aec.md](HANDOFF-aec.md) § "Why SHF_BYPASS=1 instead of
-   relying on chip AEC").
+   `SHF_BYPASS`). The software fallback sets `SHF_BYPASS=1` to
+   bypass the entire SHF block and let host-side AEC3 do the work.
+   The recommended `xvf_chip_aec` profile sets `SHF_BYPASS=0` and
+   feeds the chip a live XVF USB-IN reference from outputd.
 4. **Output mux** — routes the SHF output (or, when bypassed, the
    pre-SHF signal) to USB capture channels 0/1.
 
@@ -598,18 +597,16 @@ below.
 
 **Defaults**: L=`(8, 0)`, R=`(0, 0)` per Seeed wiki Output Selection
 section (the "L is auto-select beam, R is Silence" baseline).
-**Production JTS does not leave `OP_R` at firmware default.** The AEC
-bridge consumes XVF capture channel 1 (`MIC_CHANNEL_INDEX = 1`), so
-`jasper-aec-init` writes and read-back verifies OP_L=`(8, 0)` and
-OP_R=`(8, 0)`. Leaving OP_R at the Seeed default `OP_R=(0, 0)` mutes
-the bridge input. Chip-AEC mode is the narrow exception: when the
-production wake toggle sets `JASPER_AEC_CHIP_AEC_ENABLED=1`, or when
-corpus test mode sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1`,
-`jasper-aec-init` temporarily writes and read-back verifies
+**JTS does not leave `OP_R` at firmware default.** In the recommended
+`xvf_chip_aec` profile, `jasper-aec-init` writes and read-back verifies
 OP_L=`(7, 0)` and OP_R=`(7, 1)` to expose the fixed-gated 150°/210°
-ASR outputs. Turning chip-AEC off, or exiting corpus test mode, re-runs
-the normal production init, which explicitly restores OP_L=`(8, 0)` and
-OP_R=`(8, 0)`.
+ASR outputs while outputd feeds the XVF USB-IN reference. In the
+`xvf_software_aec3` fallback, the AEC bridge consumes XVF capture
+channel 1 (`MIC_CHANNEL_INDEX = 1`), so init restores OP_L=`(8, 0)`
+and OP_R=`(8, 0)`; leaving OP_R at the Seeed default `OP_R=(0, 0)`
+mutes the bridge input. Corpus chip-AEC mode uses the same
+OP_L=`(7, 0)` / OP_R=`(7, 1)` routing as the production chip-AEC
+profile, with corpus-owned timing overrides.
 
 **These commands address slots 0/1 only.** There is no
 `AUDIO_MGR_OP_2` / `_OP_3` / `_OP_4` / `_OP_5` — the routing for
@@ -1451,4 +1448,4 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-06-12 (DFU link, production OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback rechecked)
+Last verified: 2026-06-18 (DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback rechecked)

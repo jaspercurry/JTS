@@ -25,7 +25,7 @@ errors deep in `jasper/peering/`.)
 git clone https://github.com/jaspercurry/JTS.git
 cd JTS
 uv sync --extra full --extra streambox
-JASPER_VOICE_PROVIDER=gemini .venv/bin/pytest -q --tb=short --ignore=tests/voice_eval -n 4
+scripts/test-fast
 ```
 
 `uv.lock` is the canonical lockfile for contributor development
@@ -36,10 +36,9 @@ runtime packages the hardware-free suite imports (`numpy`, `httpx`,
 `dev` group, so pytest would fail collection with missing-module errors —
 the extras carry the code under test. (uv 0.11 has no `default-extras`
 setting to fold these into a bare sync, so the flags are explicit; a
-regression test pins this command.) The pytest command above mirrors the
-required CI gate: the hardware-free suite runs in parallel, while
-`tests/voice_eval` stays out of the default path because it can open paid
-LLM sessions when provider keys are present.
+regression test pins this command.) `scripts/test-fast` is the normal
+local iteration lane: it runs lint, last-failed tests, a changed-file
+pytest selection, and a small always-on guard set.
 
 If you'd rather not install a new tool, stock pip + venv works too —
 just make sure your python is 3.11+:
@@ -48,13 +47,14 @@ just make sure your python is 3.11+:
 python3.11 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
 source .venv/bin/activate
 pip install -e '.[full,dev]'
-JASPER_VOICE_PROVIDER=gemini pytest -q --tb=short --ignore=tests/voice_eval -n 4
+scripts/test-fast
 ```
 
-That runs the full hardware-free suite — thousands of tests reachable
-without a Pi, mic, or speaker — in four pytest-xdist workers. The audio
-I/O, network calls, and systemd surfaces are mocked. If it passes here,
-the change is safe to deploy to hardware.
+That runs the fast local lane without a Pi, mic, or speaker. The audio
+I/O, network calls, and systemd surfaces are mocked in the default suite.
+Before publishing substantial work, run `scripts/test-merge`; that mirrors
+the required Python CI gate and runs the full hardware-free suite in four
+pytest-xdist workers.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then installs
 `openwakeword==0.6.0` with `--no-deps` plus the supporting packages it
@@ -72,8 +72,8 @@ blank SD card to working speaker.
 2. **Write the change + tests.** Every new voice tool ships with a
    regression scenario under `tests/voice_eval/regression/`. Every
    new subsystem ships with hardware-free pytest coverage.
-3. **Run the hardware-free pytest gate** (and `ruff check .` for style):
-   `JASPER_VOICE_PROVIDER=gemini pytest -q --tb=short --ignore=tests/voice_eval -n 4`.
+3. **Run the local test lane**: `scripts/test-fast`. For non-trivial
+   work, also run the full Python merge lane: `scripts/test-merge`.
 4. **Push and open a PR** against `main`. Fill in the template.
 5. **No direct pushes to main** — even one-line fixes go through PR.
 
@@ -83,8 +83,11 @@ blank SD card to working speaker.
 (which also runs `ruff check .`) and `rust`. Both **must pass before
 any PR can merge**, force-pushes and branch deletion are blocked, and
 the rule is enforced for admins too — so nobody, including the
-maintainer, can merge into a red `main`. There is no required reviewer,
-so you can self-merge your own green PR.
+maintainer, can merge into a red `main`. The `rust` job is path-aware
+on PRs: it exits green quickly for unrelated changes, but runs full
+Cargo when Rust or Rust deploy/CI surfaces change and always runs on
+`main` pushes. There is no required reviewer, so you can self-merge
+your own green PR.
 
 Two operational notes:
 
@@ -109,13 +112,16 @@ Two operational notes:
 
 ## Tests
 
-- **Hardware-free pytest** (`pytest -q --tb=short --ignore=tests/voice_eval -n 4`) —
-  required green before merge. No SDK auth or network. Runs the
-  hardware-free suite in parallel.
+- **Fast local lane** (`scripts/test-fast`) — default for humans and AI
+  agents while iterating. Runs lint, last-failed tests, changed-file
+  pytest selection, and always-on guard tests.
+- **Python merge lane** (`scripts/test-merge`) — required green before
+  merge through the `pytest` CI job. No SDK auth or network. Runs the
+  hardware-free suite in parallel and excludes paid `tests/voice_eval`.
 - **Rust audio-daemon gate** (`cargo build --release --locked` and
-  `cargo test --locked`) — required green for the `rust/` crates in
-  CI, including the production fan-in/outputd daemons and shared
-  protocol crate.
+  `cargo test --locked`) — required green through the `rust` CI job
+  when Rust-relevant surfaces change, and on every `main` push. Covers
+  the production fan-in/outputd daemons and shared protocol crate.
 - **Shell entry-point gate** (`bash -n` plus `shellcheck
   --severity=warning`) — CI parses and lints the installer, deploy
   helpers, and shell operator scripts that can mutate a live speaker.

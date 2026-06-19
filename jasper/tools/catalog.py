@@ -27,11 +27,11 @@ from __future__ import annotations
 
 import logging
 import types
-from typing import Any
+from typing import Any, Iterable
 
 from ..log_event import log_event
 from . import ToolRegistry
-from .packs import TOOL_PACKS, CatalogPack, ToolDeps, ToolPack, register_packs
+from .packs import TOOL_PACKS, CapabilityPack, CatalogPack, ToolDeps, register_packs
 
 logger = logging.getLogger(__name__)
 
@@ -47,30 +47,6 @@ DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
 # It stays in the registry + manifest (the model uses it); it's only hidden
 # from the catalog UI.
 _CATALOG_HIDDEN: frozenset[str] = frozenset({"home_assistant_confirm"})
-
-# Tool -> setup wizard, for tools that can be "needs_setup". Only tools
-# whose backend SELF-GATES (so they're absent from the live registry until
-# configured) ever surface a setup link — transit, Home Assistant, and
-# Google. Tools that register unconditionally (spotify_*, get_weather,
-# core time/volume/transport/timer/diagnostic) can never be needs_setup,
-# so they get no entry. Keys are tool NAMES; a guard test pins every key
-# against the full catalog so a rename can't leave a stale entry.
-_SETUP_URLS: dict[str, str] = {
-    # transit pack (subway/bus/citibike self-gate on config)
-    "get_subway_arrivals": "/transit/",
-    "get_bus_arrivals": "/transit/",
-    "get_citibike_status": "/transit/",
-    # home assistant (factory returns [] when unconfigured). Only the
-    # user-facing home_assistant tool gets a card; home_assistant_confirm is
-    # hidden (_CATALOG_HIDDEN), so it needs no setup link.
-    "home_assistant": "/ha/",
-    # google (gated on ≥1 linked account)
-    "calendar_today_summary": "/google/",
-    "calendar_upcoming": "/google/",
-    "gmail_unread_summary": "/google/",
-    "gmail_read_thread": "/google/",
-}
-
 
 def _catalog_pack_payload(pack: CatalogPack | None) -> dict[str, Any] | None:
     if pack is None:
@@ -167,7 +143,9 @@ def _summary_from_description(text: str, *, max_chars: int = 180) -> str:
     return (clipped or compact[:max_chars]).rstrip() + "..."
 
 
-def _full_catalog_registry() -> ToolRegistry:
+def _full_catalog_registry(
+    *, packs: Iterable[CapabilityPack] | None = None,
+) -> ToolRegistry:
     """EVERY tool's schema, built with gate-satisfying sentinels.
     Mirrors tests/test_tool_manifest.py::_full_registry. Imports the
     transit factories directly so needs_setup transit tools enumerate
@@ -187,14 +165,25 @@ def _full_catalog_registry() -> ToolRegistry:
         wake_event_store=object(),
     )
     reg = ToolRegistry()
-    # Pass disabled=frozenset() so the FULL catalog ignores the user's
-    # disabled-set (status is computed separately below).
-    register_packs(reg, deps, disabled=frozenset())
+    # Pass explicit empty disabled state so the FULL catalog ignores staged
+    # user choices; status is computed separately by build_catalog().
+    register_packs(
+        reg,
+        deps,
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+        packs=packs,
+    )
     return reg
 
 
-def _tool_pack_index(registry: ToolRegistry) -> dict[str, ToolPack]:
-    packs_by_id = {p.name: p for p in TOOL_PACKS}
+def _tool_pack_index(
+    registry: ToolRegistry,
+    *,
+    packs: Iterable[CapabilityPack] | None = None,
+) -> dict[str, CapabilityPack]:
+    selected_packs = TOOL_PACKS if packs is None else tuple(packs)
+    packs_by_id = {p.name: p for p in selected_packs}
     return {
         name: packs_by_id[pack_id]
         for name, pack_id in registry.tool_packs.items()
@@ -208,13 +197,15 @@ def build_catalog(
     *,
     disabled_packs: frozenset[str] = frozenset(),
     prompt_overrides: dict[str, str] | None = None,
+    packs: Iterable[CapabilityPack] | None = None,
 ) -> dict[str, Any]:
     """Compute the catalog payload. `live_registry` is the daemon's REAL
     registry (configured + enabled). `disabled` is the user's set."""
     prompt_overrides = prompt_overrides or {}
-    full = _full_catalog_registry()
+    selected_packs = TOOL_PACKS if packs is None else tuple(packs)
+    full = _full_catalog_registry(packs=selected_packs)
     full.apply_prompt_overrides(prompt_overrides)
-    pack_by_tool = _tool_pack_index(full)
+    pack_by_tool = _tool_pack_index(full, packs=selected_packs)
     live_names = set(live_registry.tools.keys())
     tools = []
     for name, t in full.tools.items():
@@ -223,6 +214,11 @@ def build_catalog(
         pack = pack_by_tool.get(name)
         pack_id = pack.catalog_pack.id if pack and pack.catalog_pack else None
         disabled_by_pack = pack_id in disabled_packs if pack_id else False
+        setup_url = (
+            pack.catalog_pack.setup_url
+            if pack and pack.catalog_pack and pack.catalog_pack.setup_required
+            else None
+        )
         configured = name in live_names or name in disabled or disabled_by_pack
         if not configured:
             status = "needs_setup"
@@ -232,7 +228,7 @@ def build_catalog(
             status = "active"
         description = t.model_facing_description()
         default_description = t.default_model_facing_description()
-        requires_setup = status == "needs_setup" and _SETUP_URLS.get(name) is not None
+        requires_setup = status == "needs_setup" and setup_url is not None
         tools.append({
             "name": t.name,
             "summary": _summary_from_description(description),
@@ -246,7 +242,7 @@ def build_catalog(
             "disabled_by_pack": disabled_by_pack,
             "prompt_customized": t.prompt_customized(),
             "status": status,
-            "setup_url": _SETUP_URLS.get(name),
+            "setup_url": setup_url,
             "requires_setup": requires_setup,
             "parameters": t.parameters,
             "timeout": t.timeout,

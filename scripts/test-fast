@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+base_ref="${TEST_BASE:-origin/main}"
+pytest_bin="${PYTEST:-}"
+ruff_bin="${RUFF:-}"
+
+if [[ -z "${pytest_bin}" ]]; then
+  if [[ -x ".venv/bin/pytest" ]]; then
+    pytest_bin=".venv/bin/pytest"
+  else
+    pytest_bin="pytest"
+  fi
+fi
+
+if [[ -z "${ruff_bin}" ]]; then
+  if [[ -x ".venv/bin/ruff" ]]; then
+    ruff_bin=".venv/bin/ruff"
+  else
+    ruff_bin="ruff"
+  fi
+fi
+
+export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
+
+changed_file_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-files.XXXXXX")"
+selected_test_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-tests.XXXXXX")"
+cleanup() {
+  rm -f "${changed_file_tmp}" "${selected_test_tmp}"
+}
+trap cleanup EXIT
+
+collect_changed_files() {
+  if git rev-parse --verify "${base_ref}" >/dev/null 2>&1; then
+    git diff --name-only --diff-filter=ACMR "${base_ref}...HEAD"
+  fi
+  git diff --name-only --diff-filter=ACMR
+  git diff --cached --name-only --diff-filter=ACMR
+  git ls-files --others --exclude-standard
+}
+
+collect_changed_files | awk 'NF' | sort -u > "${changed_file_tmp}"
+
+add_test_if_present() {
+  local path="$1"
+  if [[ -f "${path}" ]]; then
+    printf '%s\n' "${path}" >> "${selected_test_tmp}"
+  fi
+}
+
+add_globbed_tests() {
+  local pattern="$1"
+  local matched=false
+  local path
+  while IFS= read -r path; do
+    matched=true
+    printf '%s\n' "${path}" >> "${selected_test_tmp}"
+  done < <(find tests -maxdepth 1 -type f -name "${pattern}" | sort)
+  [[ "${matched}" == true ]]
+}
+
+while IFS= read -r changed; do
+  case "${changed}" in
+    tests/test_*.py)
+      add_test_if_present "${changed}"
+      ;;
+    tests/voice_eval/*)
+      ;;
+    jasper/*/*.py)
+      package="${changed#jasper/}"
+      package="${package%%/*}"
+      module="${changed##*/}"
+      module="${module%.py}"
+      add_test_if_present "tests/test_${module}.py"
+      add_test_if_present "tests/test_${package}.py"
+      add_globbed_tests "test_${package}_*.py" >/dev/null || true
+      add_globbed_tests "test_${module}_*.py" >/dev/null || true
+      ;;
+    jasper/*.py)
+      module="${changed#jasper/}"
+      module="${module%.py}"
+      add_test_if_present "tests/test_${module}.py"
+      add_globbed_tests "test_${module}_*.py" >/dev/null || true
+      ;;
+    .github/workflows/tests.yml|pyproject.toml|uv.lock|CONTRIBUTING.md|AGENTS.md|scripts/test-*|scripts/rust-ci-needed)
+      add_test_if_present "tests/test_dependency_groups.py"
+      ;;
+    deploy/assets/*/js/*.js|tests/js/*.mjs)
+      add_test_if_present "tests/test_dialog_helper.py"
+      add_test_if_present "tests/test_local_web_host_js.py"
+      ;;
+  esac
+done < "${changed_file_tmp}"
+
+sort -u "${selected_test_tmp}" -o "${selected_test_tmp}"
+
+echo "==> ruff"
+"${ruff_bin}" check .
+
+echo "==> pytest last failures"
+set +e
+"${pytest_bin}" -q --tb=short --last-failed --last-failed-no-failures none "$@"
+last_failed_status=$?
+set -e
+if [[ "${last_failed_status}" -ne 0 && "${last_failed_status}" -ne 5 ]]; then
+  exit "${last_failed_status}"
+fi
+if [[ "${last_failed_status}" -eq 5 ]]; then
+  echo "no last-failed tests recorded"
+fi
+
+if [[ -s "${selected_test_tmp}" ]]; then
+  echo "==> pytest changed-file selection"
+  sed 's/^/  /' "${selected_test_tmp}"
+  selected_tests=()
+  while IFS= read -r path; do
+    selected_tests+=("${path}")
+  done < "${selected_test_tmp}"
+  "${pytest_bin}" -q --tb=short "${selected_tests[@]}" "$@"
+else
+  echo "==> no direct changed-file test mapping found"
+fi
+
+echo "==> pytest always-on fast guards"
+"${pytest_bin}" -q --tb=short tests/test_dependency_groups.py "$@"
