@@ -402,6 +402,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
+  HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
   HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
@@ -596,6 +597,12 @@ reference. Currently:
   `scripts/chip-aec-*.sh` scripts +
   `jasper/chip_aec_experiment.py` are lab infrastructure, and
   `chip-aec-teardown.sh` fully reverts. **Read the doc before running.**
+- [`HANDOFF-chip-aec-portability.md`](docs/HANDOFF-chip-aec-portability.md) —
+  **Design-of-record (living draft).** Making chip-AEC work across any DAC:
+  the clock-domain decision (digital SRO clock-recovery, *not* a per-period
+  `snd_pcm_delay` delay line), the JTS/JTS3/JTS5 hardware test matrix, and
+  the YAGNI-gated layered roadmap (Layer 0 observe → classify → compensate).
+  Supersedes the `AEC-DIAG-07` draft's §3 mechanism.
 - [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
   Active workstream. The sequencing + lever inventory + decision
   history for getting the mic to work reliably across whisper /

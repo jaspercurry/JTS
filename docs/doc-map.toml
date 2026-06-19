@@ -292,6 +292,7 @@ docs = [
   "docs/HANDOFF-mic-fusion-architecture.md",
   "docs/HANDOFF-usb-mic-wake.md",
   "docs/CHIP-AEC-EXPERIMENT.md",
+  "docs/HANDOFF-chip-aec-portability.md",
   "docs/HANDOFF-audio-capability-platform.md",
 ]
 requires_docs_when = [
