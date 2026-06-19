@@ -99,11 +99,18 @@ class _StereoHostCarrier:
         out_path: str | Path | None = None,
         profile_id: str | None = None,
         output_trim_db: float = 0.0,
+        member_kwargs: dict | None = None,
     ) -> ReemitResult:
         # Grouping member-config policy is owned by member_config and applied
-        # identically on every config path (see its module docstring); the
-        # lazy import keeps the socket-activated wizard process light.
-        from jasper.multiroom.member_config import member_camilla_kwargs
+        # identically on every config path (see its module docstring). The
+        # wizard paths let the carrier read it from grouping state
+        # (member_kwargs=None → member_camilla_kwargs() disk read); the
+        # bonded-leader bake passes its already-resolved cfg kwargs explicitly.
+        # The lazy import keeps the socket-activated wizard process light.
+        if member_kwargs is None:
+            from jasper.multiroom.member_config import member_camilla_kwargs
+
+            member_kwargs = member_camilla_kwargs()
 
         room_peqs = self._resolved_room_peqs()
         yaml = emit_sound_config(
@@ -112,7 +119,7 @@ class _StereoHostCarrier:
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            **member_camilla_kwargs(),
+            **member_kwargs,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
@@ -162,6 +169,7 @@ class _ActiveGraphCarrier:
         out_path: str | Path | None = None,
         profile_id: str | None = None,
         output_trim_db: float = 0.0,
+        member_kwargs: dict | None = None,
     ) -> ReemitResult:
         raise CarrierCannotHostEq(
             "eq_on_active_not_wired",
@@ -186,6 +194,7 @@ class _UnknownCarrier:
         out_path: str | Path | None = None,
         profile_id: str | None = None,
         output_trim_db: float = 0.0,
+        member_kwargs: dict | None = None,
     ) -> ReemitResult:
         raise CarrierCannotHostEq(
             "unknown_config",

@@ -93,12 +93,15 @@ existing layering):
     preference EQ pre-split into the active *baseline* (startup/commissioning
     stay refusing)
   - otherwise → **UnknownCarrier** → `CarrierCannotHostEq("unknown_config", …)`
-- `Carrier.reemit(profile, *, out_path=None, profile_id, output_trim_db) -> str`
+- `Carrier.reemit(profile, *, out_path=None, profile_id, output_trim_db, member_kwargs=None) -> ReemitResult`
   — `out_path=None` returns YAML (live-draft); a path writes the file
-  (durable), exactly like `emit_sound_config`. Each carrier owns its own
-  preservation strategy and its own grouping kwargs (Base/Sound call
-  `member_camilla_kwargs()`; ActiveGraph does not — see grouping
-  boundary below).
+  (durable), exactly like `emit_sound_config`. `ReemitResult` carries the
+  emitted YAML + the preserved room-PEQ count (telemetry). Each carrier owns
+  its own preservation strategy and its grouping kwargs: Base/Sound default to
+  `member_camilla_kwargs()` (a disk read); the bonded-leader bake is the one
+  caller that passes `member_kwargs=member_camilla_kwargs(cfg)` explicitly
+  (its pipe sink + rate_adjust off). ActiveGraph/Unknown ignore it and refuse
+  — see grouping boundary below.
 
 **Concrete dispatcher, not a `Protocol`/registry.** This is a 4-member
 set and only the active carrier needs new behavior; per AGENTS.md
@@ -217,12 +220,17 @@ leaves.
   6, recognizer mutual-exclusivity. Resolve the status.py-vs-`/sound`
   disagreement (the carrier recognizes the active baseline like status.py
   does). Docs: this file + README atlas + doc-map.
-- **PR-1b (fast-follow, behavior-neutral):** migrate the **third** copy of
-  the 3-arm branch — the bonded-leader bake
-  (`leader_config.py:apply_bonded_leader_config`) — onto the carrier. It
-  refuses active configs today with the same "custom config" error, so a
-  box running an active baseline can't form a leader bond; unifying it is
-  the seam where active+leader later becomes possible.
+- **PR-1b (behavior-neutral, DONE):** the **third** copy of the 3-arm branch —
+  the bonded-leader bake (`leader_config.py:apply_bonded_leader_config`) — now
+  routes through the carrier. The leader passes its resolved
+  `member_kwargs=member_camilla_kwargs(cfg)` (the pipe sink); a missing/flat
+  current config is treated as base (no PEQs), preserving the leader's lenient
+  `best_effort` read. An active/custom config now fails closed with the
+  carrier's *typed* reason instead of the old "custom config" string, so a box
+  running an active baseline still can't form a leader bond — the seam where
+  active+leader later becomes possible. (`restore_solo_config` is deliberately
+  NOT migrated: un-bonding must always succeed, so it stays lenient and never
+  refuses.)
 - **PR-2 (behavior-neutral):** extract `build_stereo_prefix`; rewire
   `emit_sound_config` to call it. Golden test.
 - **PR-3 (the capability, hardware-gated on jts3):** `preference_filters`

@@ -1,9 +1,13 @@
 """leader_config — the grouping reconciler's CamillaDSP apply arm
-(Increment 5). Pure parts only: the restore ladder decision + the
-prior-config stash. The async apply flows do real CamillaDSP websocket
-I/O and are validated on hardware (the doctor's `leader pipe` check +
-grouping runtime health are their backstops)."""
+(Increment 5). Pure parts + the fail-closed refusal path (which raises in
+prepare, before any websocket I/O): the restore ladder decision, the
+prior-config stash, and the bonded-leader bake's graph-carrier refusal
+over a roleful/active config. The SUCCESS apply flows do real CamillaDSP
+websocket I/O and are validated on hardware (the doctor's `leader pipe`
+check + grouping runtime health are their backstops)."""
 from __future__ import annotations
+
+import pytest
 
 from jasper.multiroom.leader_config import (
     BONDED_CONFIG_PATH,
@@ -99,3 +103,53 @@ def test_bonded_and_restore_names_are_jts_generated():
 
     assert is_jts_generated_config(BONDED_CONFIG_PATH, config_dir=CONFIG_DIR)
     assert is_jts_generated_config(SOLO_RESTORE_PATH, config_dir=CONFIG_DIR)
+
+
+async def test_apply_bonded_leader_refuses_active_config(tmp_path, monkeypatch):
+    """The leader bake must fail CLOSED over a roleful active-crossover config
+    — never silently rewrite it into the stereo pipe (which would drop the
+    crossover/limiter/HP). The module promises 'the same custom-config refusal
+    as /sound'; this pins it via the carrier's typed reason. The refusal raises
+    in prepare, before any websocket swap, so it is hardware-free."""
+    from jasper.multiroom import leader_config
+    from jasper.multiroom.config import GroupingConfig
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    # Redirect the bonded-config write target off /var/lib (the shared apply
+    # engine mkdir's the candidate's parent before prepare runs).
+    monkeypatch.setattr(leader_config, "CONFIG_DIR", str(tmp_path / "configs"))
+    monkeypatch.setattr(
+        leader_config,
+        "BONDED_CONFIG_PATH",
+        str(tmp_path / "configs" / "grouping_leader.yml"),
+    )
+    active = tmp_path / "active_speaker_baseline.yml"
+    active.write_text(_active_baseline_yaml("mono", 2))
+
+    class _Cam:
+        loaded: str | None = None
+
+        async def get_config_file_path(self, *, best_effort=True):
+            return str(active)
+
+        async def set_config_file_path(self, path, *, best_effort=False):
+            self.loaded = path
+
+    cam = _Cam()
+    cfg = GroupingConfig(
+        enabled=True, role="leader", channel="left", bond_id="b",
+        leader_addr="", buffer_ms=400, codec="flac", error=None,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await leader_config.apply_bonded_leader_config(cfg, camilla_factory=lambda: cam)
+
+    # Surfaced raw, or wrapped as DspApplyError by the shared apply engine.
+    err = excinfo.value
+    refusal = err if isinstance(err, CarrierCannotHostEq) else err.__cause__
+    assert isinstance(refusal, CarrierCannotHostEq)
+    assert refusal.reason_code == "eq_on_active_not_wired"
+    # Fail closed: the leader was never swapped onto the bonded pipe config.
+    assert cam.loaded is None

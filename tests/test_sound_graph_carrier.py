@@ -172,6 +172,37 @@ def test_base_flat_reemits_with_no_room_peqs(tmp_path):
     assert emit.call_args.kwargs["output_trim_db"] == 1.0
 
 
+def test_reemit_forwards_explicit_member_kwargs(tmp_path):
+    # The bonded-leader bake injects its already-resolved cfg kwargs (the pipe
+    # sink + rate_adjust off) rather than the carrier's default disk read.
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
+    ) as emit:
+        carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
+        carrier.reemit(
+            mock.sentinel.profile,
+            profile_id="id",
+            member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
+        )
+    assert emit.call_args.kwargs["playback_pipe_path"] == "/run/snapfifo"
+    assert emit.call_args.kwargs["enable_rate_adjust"] is False
+
+
+def test_reemit_defaults_to_disk_read_member_kwargs(tmp_path):
+    # With no override (the /sound paths), the carrier reads the member policy
+    # from grouping state via member_camilla_kwargs() — unchanged from PR-1.
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
+    ) as emit, mock.patch(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        return_value={"enable_rate_adjust": True, "channel_split": None, "playback_pipe_path": None},
+    ) as disk_read:
+        carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
+        carrier.reemit(mock.sentinel.profile, profile_id="id")
+    disk_read.assert_called_once_with()
+    assert emit.call_args.kwargs["playback_pipe_path"] is None
+
+
 def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
     # The SoundOrCorrection carrier preserves room PEQs by extracting them from
     # the loaded config and forwarding them to the emitter (the verbatim

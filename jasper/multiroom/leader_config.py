@@ -159,13 +159,8 @@ async def apply_bonded_leader_config(
     CamillaDSP's glitch-free config swap.
     """
     from jasper.dsp_apply import apply_dsp_config
-    from jasper.sound.camilla_yaml import (
-        BASE_CONFIG_PATH,
-        emit_sound_config,
-        extract_room_peqs_from_config,
-        is_base_config,
-        is_jts_generated_config,
-    )
+    from jasper.sound.camilla_yaml import BASE_CONFIG_PATH
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.profile import load_profile
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
@@ -175,25 +170,24 @@ async def apply_bonded_leader_config(
     def _prepare() -> dict[str, int]:
         profile = load_profile()
         settings = load_sound_settings()
-        if not current or is_base_config(current):
-            peqs = []
-        elif is_jts_generated_config(current, config_dir=CONFIG_DIR):
-            peqs = extract_room_peqs_from_config(current)
-        else:
-            raise RuntimeError(
-                "CamillaDSP is running a custom config that JTS cannot "
-                f"safely preserve ({current}). Reset to {BASE_CONFIG_PATH} "
-                "or apply room correction before forming a bond."
-            )
-        emit_sound_config(
+        # Same graph-carrier dispatch as /sound, so the three apply paths
+        # cannot drift: preserve a JTS-generated config's room PEQs, refuse a
+        # roleful/custom config (fail closed — never silently rewrite it into
+        # the pipe), and treat a missing/flat current as the base (no PEQs).
+        # The leader is the one caller that overrides the carrier's default
+        # disk read of the member policy, injecting its already-resolved cfg
+        # kwargs (the pipe sink + rate_adjust off).
+        carrier = carrier_for_loaded_config(
+            current or str(BASE_CONFIG_PATH), config_dir=CONFIG_DIR
+        )
+        result = carrier.reemit(
             profile,
-            room_peqs=peqs,
             out_path=BONDED_CONFIG_PATH,
             profile_id=f"grouping-{cfg.bond_id or 'bond'}",
             output_trim_db=output_trim_db(profile, settings),
-            **member_camilla_kwargs(cfg),
+            member_kwargs=member_camilla_kwargs(cfg),
         )
-        return {"room_peq_count": len(peqs)}
+        return {"room_peq_count": result.room_peq_count}
 
     await apply_dsp_config(
         source=REGEN_SOURCE,
