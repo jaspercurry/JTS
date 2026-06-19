@@ -57,7 +57,7 @@ openai==2.39.0
 openwakeword==0.6.0
 packaging==26.2
 proto-plus==1.27.1
-protobuf==4.25.3
+protobuf==7.35.1
 pyalsaaudio==0.11.0
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
