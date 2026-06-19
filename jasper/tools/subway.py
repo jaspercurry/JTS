@@ -5,11 +5,24 @@ import asyncio
 from . import tool
 
 
+GET_SUBWAY_ARRIVALS_LLM_DESCRIPTION = (
+    "Return live NYC subway arrivals at the speaker's configured home station. "
+    "Call fresh for next-train, subway, or 'when is the X coming' questions; "
+    "minutes count down and prior results go stale. line and direction are "
+    "optional; empty strings mean all configured/default lines and directions. "
+    "Speak every arrival returned, naming line and direction when ambiguous. "
+    "On error, speak the error verbatim."
+)
+
+
 def make_subway_tools(subway):
     if subway is None:
         return []
 
-    @tool(labels=("transit", "nyc", "subway"))
+    @tool(
+        labels=("transit", "nyc", "subway"),
+        llm_description=GET_SUBWAY_ARRIVALS_LLM_DESCRIPTION,
+    )
     async def get_subway_arrivals(line: str = "", direction: str = "") -> dict:
         """Return the next subway arrivals at the speaker's home
         station.

@@ -8,6 +8,17 @@ from . import tool
 logger = logging.getLogger(__name__)
 
 
+GET_BUS_ARRIVALS_LLM_DESCRIPTION = (
+    "Return live MTA bus arrivals across the speaker's configured stops, "
+    "sorted by ETA and capped at 4. Call fresh for next-bus or 'when is the "
+    "bus coming' questions; prior results go stale. route is optional; empty "
+    "returns all routes at saved stops. Use minutes_from_now, not distance or "
+    "stops_from_call. Mention stop_label only when multiple stops matter. "
+    "Empty arrivals means no buses in the next half hour; error means the feed "
+    "is unreachable."
+)
+
+
 def make_bus_tools(bus):
     """Build the bus-arrivals tool backed by a BusClient. Returns an
     empty list when buses aren't configured for the speaker (no API
@@ -16,7 +27,10 @@ def make_bus_tools(bus):
     if bus is None or not bus.enabled:
         return []
 
-    @tool(labels=("transit", "nyc", "bus"))
+    @tool(
+        labels=("transit", "nyc", "bus"),
+        llm_description=GET_BUS_ARRIVALS_LLM_DESCRIPTION,
+    )
     async def get_bus_arrivals(route: str = "") -> dict:
         """Return the next bus arrivals across the speaker's
         configured bus stops, sorted by ETA, capped at 4 total.

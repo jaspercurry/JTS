@@ -476,7 +476,7 @@ def test_llm_description_overrides_model_facing_only():
 
     built = build_tool(set_volume)
     assert built.llm_description == "Set volume."
-    # Engineer-facing + manifest description is the full docstring.
+    # Engineer-facing description is the full docstring.
     assert built.description.startswith("Set the speaker volume in dB.")
     assert built.model_facing_description() == "Set volume."
 
@@ -486,6 +486,20 @@ def test_llm_description_overrides_model_facing_only():
     assert reg.openai_tools()[0]["description"] == "Set volume."
     # But the source Tool's description is unchanged.
     assert reg.get("set_volume").description.startswith("Set the speaker volume in dB.")
+
+
+def test_provider_serializers_use_real_tool_model_facing_description():
+    from jasper.tools.weather import make_weather_tools
+
+    reg = ToolRegistry()
+    weather = make_weather_tools(None)[0]
+    reg.register_tool(weather)
+
+    t = reg.get("get_weather")
+    assert t is not None
+    assert t.description != t.model_facing_description()
+    assert reg.function_declarations()[0]["description"] == t.model_facing_description()
+    assert reg.openai_tools()[0]["description"] == t.model_facing_description()
 
 
 def test_user_prompt_override_updates_provider_serializers_only():

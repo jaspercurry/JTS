@@ -12,6 +12,17 @@ from __future__ import annotations
 from jasper.tools import MANIFEST_SCHEMA_VERSION, ToolRegistry
 from tests._tool_pack_contract import full_registry
 
+SELECTED_LLM_DESCRIPTION_TOOLS = {
+    "get_current_time",
+    "get_weather",
+    "get_subway_arrivals",
+    "get_bus_arrivals",
+    "get_citibike_status",
+    "spotify_play",
+    "home_assistant",
+    "flag_recent_issue",
+}
+
 
 def _full_registry() -> ToolRegistry:
     return full_registry()
@@ -42,6 +53,18 @@ def test_manifest_entries_are_no_loss():
             "untrusted_output": t.untrusted_output,
             "consequential": t.consequential,
         }
+
+
+def test_manifest_uses_short_model_descriptions_for_selected_real_tools():
+    reg = _full_registry()
+    by_name = {e["name"]: e for e in reg.to_manifest()}
+
+    for name in SELECTED_LLM_DESCRIPTION_TOOLS:
+        t = reg.get(name)
+        assert t is not None
+        assert t.description != t.model_facing_description()
+        assert by_name[name]["description"] == t.model_facing_description()
+        assert by_name[name]["description"] != t.description
 
 
 def test_manifest_providers_are_sorted_deterministically():

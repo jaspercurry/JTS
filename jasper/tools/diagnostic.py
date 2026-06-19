@@ -30,6 +30,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+FLAG_RECENT_ISSUE_LLM_DESCRIPTION = (
+    "Mark the previous wake-event interaction as problematic for offline "
+    "review. Call only when the user explicitly says the last interaction was "
+    "wrong, cut them off, misheard them, falsely woke, failed to respond, or "
+    "should be flagged. Do NOT call for wrong tool data, undo requests, "
+    "mid-conversation corrections, general complaints, or questions about "
+    "previous queries. Pass the complaint as reason close to the user's words. "
+    "Speak spoken_response exactly and do not apologize or ask a follow-up."
+)
+
+
 def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
     """Build the diagnostic-tool factory.
 
@@ -42,7 +53,10 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
     if wake_event_store is None:
         return []
 
-    @tool(labels=("system", "diagnostic"))
+    @tool(
+        labels=("system", "diagnostic"),
+        llm_description=FLAG_RECENT_ISSUE_LLM_DESCRIPTION,
+    )
     async def flag_recent_issue(reason: str) -> dict:
         """Mark the previous wake-event interaction as problematic
         for later offline review.

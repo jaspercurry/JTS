@@ -54,6 +54,15 @@ _NOT_UNDERSTOOD = (
     "artist, a song, or a playlist?"
 )
 
+SPOTIFY_PLAY_LLM_DESCRIPTION = (
+    "Search Spotify and start playback for the active account. Call for "
+    "music requests like 'play X' or 'shuffle X'. Set kind only from explicit "
+    "phrasing; leave kind='auto' for bare play requests. For playlists, remove "
+    "the word 'playlist' from query. Set shuffle=true only when explicitly "
+    "asked. Speak confirm or error verbatim, skip the preamble, and if nothing "
+    "matches confidently the user must re-issue the wake word and command."
+)
+
 
 def _format_name_list(names: "list[str]") -> str:
     """English list join for spoken output: ['jasper'] → 'jasper';
@@ -502,7 +511,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             dict(getattr(ac.account, "playlists", {}) or {}),
         )
 
-    @tool(labels=("music", "spotify"))
+    @tool(labels=("music", "spotify"), llm_description=SPOTIFY_PLAY_LLM_DESCRIPTION)
     async def spotify_play(
         query: str,
         kind: Literal["auto", "artist", "track", "album", "playlist"] = "auto",

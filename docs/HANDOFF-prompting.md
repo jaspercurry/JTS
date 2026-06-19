@@ -14,14 +14,17 @@ and per-tool conditional rules.
 **Last fetched against provider docs: 2026-05-23.** Re-check the
 linked sources every ~3 months or when a model version bumps.
 
-**Path B applied 2026-05-23; explicit tool definitions added
-2026-06-18.** The LLM sees `Tool.model_facing_description()`:
-user override when present, else `llm_description` when set, else the
-code-owned `ToolDefinition.description` (decorated tools populate that
-from the full cleaned docstring). Per-tool conditional rules live in that
-model-facing description under `jasper/tools/`; Path B moved them out of
-`SYSTEM_INSTRUCTION`. **It did not bring the constant under Gemini's
-oft-cited ~500-token figure:**
+**Path B applied 2026-05-23; explicit tool definitions and the
+`llm_description` split added 2026-06-18.** The LLM sees each tool
+through `Tool.model_facing_description()`: a user override, then a
+shipped `llm_description` when one exists, then the rich
+`ToolDefinition.description`. For decorated `@tool` callables,
+`build_tool()` still captures the full cleaned docstring as
+`ToolDefinition.description`, so maintainer docs stay rich while
+selected tools can ship shorter model-facing text. Per-tool conditional
+rules live in the provider-visible description under `jasper/tools/`;
+Path B moved them out of `SYSTEM_INSTRUCTION`. **It did not bring the
+constant under Gemini's oft-cited ~500-token figure:**
 the static constant measures ~720 words ≈ ~1,000–1,150 tokens
 (2026-06-15), ~2× that figure — and that figure is now flagged as
 an unverified heuristic, not a hard ceiling (see
@@ -548,32 +551,35 @@ nice-to-have):
 ### How tool descriptions are built
 
 [`ToolDefinition`](../jasper/tools/__init__.py) is the explicit
-model-facing boundary. A tool authored explicitly sets
-`ToolDefinition.description` directly; a tool authored with ergonomic
-`@tool(...)` sugar goes through
-[`build_tool`](../jasper/tools/__init__.py), which captures the decorated
-function's cleaned docstring as that same default:
+provider-neutral tool boundary. A tool authored explicitly sets the rich
+human `ToolDefinition.description` directly and may also set a shorter
+`llm_description`. A tool authored with ergonomic `@tool(...)` sugar goes
+through [`build_tool`](../jasper/tools/__init__.py), which captures the
+decorated function's cleaned docstring as the rich description and carries
+any decorator-level `llm_description` alongside it:
 
 ```python
 def build_tool(fn, *, name=None):
     declared = name or getattr(fn, "__jasper_tool_name__", None) or fn.__name__
     desc = (inspect.getdoc(fn) or "").strip() or declared
+    decl_llm_desc = getattr(fn, "__jasper_tool_llm_description__", None)
     ...
 ```
 
-**The tool description is the default LLM-facing surface.** For decorated
-tools, that means the full function docstring. Engineer-only notes (dev
-TODOs, implementation details) belong in `#` comments or the module
-docstring, NOT in model-facing tool descriptions.
+**The rich description is the default LLM-facing surface.** For decorated
+tools without an override, that means the full function docstring. A tool
+may override only the model-facing text with a shorter
+`@tool(llm_description="...")` or explicit `ToolDefinition.llm_description`;
+the rich docstring/description remains the human source of truth.
+Engineer-only notes (dev TODOs, implementation details) belong in `#`
+comments or the module docstring, NOT in text the model sees.
 
-By default, that is — a tool may override the model-facing text with a
-shorter `llm_description` (through `@tool(llm_description="...")` or an
-explicit `ToolDefinition`), and the registry then uses that instead of the
-full description for the code default. The override exists to keep a verbose
-engineer-facing description out of the realtime instructions+tools token
-budget (OpenAI Realtime caps that at 16,384 tokens). Weather is the first
-shipped rich pack using this split; trimming more verbose tools remains an
-eval-gated step.
+The override exists to keep a verbose maintainer-facing docstring out of the
+realtime instructions+tools token budget (OpenAI Realtime caps that at 16,384
+tokens; the 29 shipped descriptions measured ~8.5k before the first trimming
+pass and ~3.9k after the representative Phase 1.6 pass). Add or change
+`llm_description` only with focused tests that preserve routing and safety
+phrases.
 
 There is one runtime layer above the code default: user-edited prompt
 overrides saved by `/tools/`. `jasper-voice` reads
@@ -582,8 +588,10 @@ overrides saved by `/tools/`. `jasper-voice` reads
 uses `Tool.model_facing_description()`. That means the provider sees:
 user override → `llm_description` → `ToolDefinition.description`, in that
 order. For decorated tools, `ToolDefinition.description` is the cleaned
-docstring. The catalog keeps both `description` and `default_description`
-so the UI can mark "Custom prompt" and reset by deleting the override.
+docstring. The catalog's `description` is the current model-facing text,
+`default_description` is the code default model-facing text, and `details`
+is the rich human description, so the UI can mark "Custom prompt" and reset
+by deleting the override.
 
 ### Writing a new tool
 
@@ -670,12 +678,19 @@ so the next author doesn't repeat the bus drift.
 
 ### Worked example: citibike
 
-After Path B (2026-05-23):
-- LLM-facing description: the full
-  [citibike.py docstring](../jasper/tools/citibike.py) — one
-  sentence of purpose + when-to-call + Args + Response shape +
-  ZERO-COUNT / EBIKE_ONLY / STATUS / DOCKS / STALENESS /
-  NO-MATCH rules verbatim.
+After Path B (2026-05-23) and the Phase 1.6 `llm_description` pass
+(2026-06-18):
+- Human source of truth: the full
+  [citibike.py docstring](../jasper/tools/citibike.py) — purpose,
+  when-to-call guidance, Args, response shape, and detailed ZERO-COUNT /
+  EBIKE_ONLY / STATUS / DOCKS / STALENESS / NO-MATCH maintainer notes.
+- LLM-facing description: the shorter
+  `GET_CITIBIKE_STATUS_LLM_DESCRIPTION` in
+  [citibike.py](../jasper/tools/citibike.py). It must preserve the
+  load-bearing model rules: call fresh for Citi Bike availability, pass
+  `station_label`, answer "zero" not "no", respect `ebike_only`, surface
+  `offline` / `missing_bike_data` / `no_match` / `error`, and mention docks
+  only when asked.
 - `SYSTEM_INSTRUCTION` no longer mentions citibike rules at
   all; it only carries the cross-tool meta-rules (`confirm` /
   `error` field handling).
@@ -711,19 +726,21 @@ PR as this doc (2026-05-23). Items 5-6 remain open.
 
 **Path B applied.** `build_tool()` at
 [`jasper/tools/__init__.py`](../jasper/tools/__init__.py) now captures
-the full cleaned decorated-function docstring as the LLM-facing
-`ToolDefinition.description`:
+the full cleaned decorated-function docstring as the rich
+`ToolDefinition.description`. The provider-visible code default is
+`llm_description` when present, else that rich description:
 
 ```python
 desc = (inspect.getdoc(fn) or "").strip() or declared
+decl_llm_desc = getattr(fn, "__jasper_tool_llm_description__", None)
 ```
 
 Per-tool conditional rules (when to call, voice-answer style,
-response-shape handling) live in each tool's description under
-`jasper/tools/`. Engineer-only notes belong in `#` comments or
-the module docstring, not in model-facing tool descriptions — the
-[module docstring at tools/__init__.py](../jasper/tools/__init__.py)
-codifies the convention.
+response-shape handling) live in whichever text the model sees: the
+`llm_description` for shortened tools, else the rich description under
+`jasper/tools/`. Engineer-only notes belong in `#` comments or the module
+docstring, not in model-facing tool descriptions — the [module docstring at
+tools/__init__.py](../jasper/tools/__init__.py) codifies the convention.
 
 ### 2. Resolve the citibike "running low" conflict — ✅ DONE (2026-05-23)
 
