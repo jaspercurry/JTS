@@ -302,10 +302,33 @@ suite green (6539 passed). The baseline-path filter accessors stay on
 `graph_evidence` (the names+scalar-accessor module that overlaps `graph_safety`;
 their reconcile is its own follow-up).
 
-**Next slice (3):** wire the predicates into the `camilla_yaml` emit gate (L0)
-— the last gap, so a flat graph can never be emitted/loaded while a tweeter role
-is assigned. `runtime_contract` is now the proven re-use pattern.
-NB: this worktree has no `.venv`; run tests as
+Phase 1 slice 3 landed (the L0 emit gate): a flat full-range program graph can
+no longer reach disk while the saved topology assigns a protected tweeter role.
+`runtime_contract.assert_program_graph_safe_for_topology` composes the
+tweeter-guard check INLINE from the shared predicates (`filter_param_matches` +
+`pipeline_contains_chain` over `view_from_emitted_text`) — it adds NO new
+`graph_safety` predicate — and is wired at the flat/program emit
+(`jasper.sound.camilla_yaml.emit_sound_config`, which backs `/sound`, correction,
+and the multiroom-leader bake) immediately before its disk write. When the
+topology assigns a protected tweeter role and the emitted graph does not wire the
+protective high-pass + startup limiter on the tweeter outputs, it logs
+`event=active_speaker.program_graph_rejected` and raises
+`FlatGraphForProtectedTopologyError` (fail-closed, never silent); it is a no-op
+for full-range / mono / subwoofer / unconfigured topologies. Scoped deliberately
+to the flat program lane: the statefile *selection* path already refuses
+flat-for-roleful (`safe_graph_for_current_topology`), and an approved active
+*baseline* protects its tweeter via the crossover high-pass under a different
+filter name (validated by `classify_camilla_graph`, not this gate — which would
+otherwise false-reject it). Ruff clean; full suite green (6594 passed).
+On-Pi (jts3) validation owed: deploy, confirm a `/sound` or correction apply
+under the assigned tweeter topology is refused (not a silent flat cut-over),
+with the `program_graph_rejected` event in the journal.
+
+**Next slice (Phase 2 — kernel extraction):** move pure `sweep`/`deconv`/
+`analysis`/`quality` into `jasper/audio_measurement/` behind characterization
+tests; add the parameterized `QualityModel`. `runtime_contract` remains the
+proven graph-safety re-use pattern.
+NB: a worktree may have no `.venv`; run tests as
 `PYTHONPATH=$PWD /Users/jaspercurry/Code/JTS/.venv/bin/python -m pytest …`
 so `import jasper` resolves to the worktree, not the main checkout.
 

@@ -14,6 +14,7 @@ explicit statefile writer helper at the bottom.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any, Iterable
 
 import yaml
 
+from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
     SpeakerChannel,
@@ -46,6 +48,7 @@ from .graph_safety import (
     filter_param_matches,
     pipeline_contains_chain,
     tweeter_guard_present,
+    view_from_emitted_text,
     view_from_yaml_text,
 )
 from .environment import (
@@ -59,6 +62,8 @@ from .path_safety import (
     topology_target_signature,
 )
 from .staging import load_staged_startup_config
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
 DEFAULT_LEGACY_FLAT_CONFIG = Path("/etc/camilladsp/v1.yml")
@@ -336,6 +341,122 @@ def classify_output_contract(topology: OutputTopology) -> OutputContract:
 
 def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
+
+
+class FlatGraphForProtectedTopologyError(RuntimeError):
+    """Refused to emit a flat full-range CamillaDSP graph for a protected topology.
+
+    Fail-closed L0 enforcement (docs/HANDOFF-audio-measurement-core.md): when the
+    saved output topology assigns a protected *tweeter* role, a flat full-range
+    graph (e.g. the stereo ``outputd-cutover``) is illegal — it sends full-range
+    program to a compression-driver tweeter (shrill, and a tweeter-damage risk).
+    Raised *before* the graph reaches disk so it can never be loaded.
+
+    ``reason_code`` is stable for callers; ``message`` is operator-readable.
+    """
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.message = message
+
+
+def _protected_tweeter_outputs(contract: OutputContract) -> set[int]:
+    """Physical output indices the saved topology assigns to a tweeter role."""
+    return {
+        int(item.physical_output_index)
+        for item in contract.protected_assignments
+        if item.role == "tweeter" and item.physical_output_index is not None
+    }
+
+
+def assert_program_graph_safe_for_topology(
+    yaml_text: str,
+    *,
+    topology: OutputTopology | None = None,
+    source: str = "",
+) -> None:
+    """Fail closed before a freshly-emitted *program-lane* graph reaches disk.
+
+    The L0 safety gate for the flat/program emit path
+    (``jasper.sound.camilla_yaml.emit_sound_config`` and the
+    correction/multiroom callers it backs). When the saved output topology
+    assigns a protected tweeter role, the graph being written MUST wire the
+    active-speaker protective Linkwitz-Riley high-pass **and** the startup
+    limiter on the tweeter output channels. A flat full-range program graph
+    (2-channel passthrough) carries neither, so it is rejected rather than
+    emitted — otherwise normal full-range program would drive a
+    compression-driver tweeter.
+
+    **No-op** unless the topology has a protected tweeter role (the common
+    full-range / mono / subwoofer / unconfigured cases), so a non-active
+    speaker's stereo program graph is byte-for-byte unaffected.
+
+    The tweeter check is composed INLINE from the shared ``graph_safety``
+    predicates (:func:`filter_param_matches` + :func:`pipeline_contains_chain`),
+    keyed on the emitter's own filter-name vocabulary so it cannot drift from
+    what the emitter writes. It deliberately verifies the *startup* tweeter
+    guard, which the flat program lane structurally cannot carry — so under a
+    protected topology it always fails closed there. It is **not** a general
+    active-graph validator: an approved active *baseline* protects its tweeter
+    via the crossover high-pass under a different filter name; classifying those
+    is :func:`classify_camilla_graph`'s job, never this gate's.
+
+    Raises :class:`FlatGraphForProtectedTopologyError` (after a structured
+    ``event=`` log) so the rejection is never silent. ``topology`` defaults to
+    the saved topology loaded fail-closed; pass one explicitly in tests.
+    """
+    contract = classify_output_contract(topology or load_output_topology_strict())
+    tweeter_outputs = _protected_tweeter_outputs(contract)
+    if not tweeter_outputs:
+        return
+
+    view = view_from_emitted_text(yaml_text)
+    hp_name = protective_tweeter_hp_name("tweeter")
+    limiter_name = driver_limiter_name("tweeter")
+    guard_present = (
+        filter_param_matches(
+            view,
+            hp_name,
+            filter_type="BiquadCombo",
+            params={"type": "LinkwitzRileyHighpass"},
+        )
+        and filter_param_matches(
+            view,
+            limiter_name,
+            filter_type="Limiter",
+            params={"soft_clip": True},
+        )
+        and pipeline_contains_chain(
+            view,
+            channels=tweeter_outputs,
+            required_names=(hp_name, limiter_name),
+        )
+    )
+    if guard_present:
+        return
+
+    detail = _protected_output_detail(contract)
+    log_event(
+        logger,
+        "active_speaker.program_graph_rejected",
+        level=logging.ERROR,
+        reason="flat_full_range_graph_for_protected_topology",
+        source=source or "unknown",
+        tweeter_outputs=",".join(str(index) for index in sorted(tweeter_outputs)),
+        protected=detail,
+    )
+    raise FlatGraphForProtectedTopologyError(
+        "flat_full_range_graph_for_protected_topology",
+        (
+            "Refused to emit a flat full-range CamillaDSP graph: saved output "
+            f"topology assigns {detail} to a protected tweeter role, but the graph "
+            "being written does not wire the protective high-pass and limiter on "
+            "the tweeter output(s). Loading it would send full-range program to a "
+            "compression driver. Load the active-speaker graph or clear the "
+            "topology."
+        ),
+    )
 
 
 def _statefile_config_path(statefile_path: str | Path | None) -> str | None:
