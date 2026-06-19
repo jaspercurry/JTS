@@ -164,3 +164,26 @@ async def test_openai_client_raises_research_error_on_terminal_failure():
 
     with pytest.raises(research.ResearchError, match="bad request"):
         await client.complete(ResearchRequest(query="x"))
+
+
+@pytest.mark.asyncio
+async def test_openai_client_normalizes_provider_sdk_errors():
+    class FakeOpenAIError(Exception):
+        pass
+
+    class ErrorResponses:
+        async def create(self, **_kwargs):
+            raise FakeOpenAIError("temporary outage")
+
+    class ErrorOpenAI:
+        responses = ErrorResponses()
+
+    client = openai_research.OpenAIResearchClient(
+        api_key="sk-test",
+        client=ErrorOpenAI(),
+        sleep=_no_sleep,
+        provider_error_classes=(FakeOpenAIError,),
+    )
+
+    with pytest.raises(research.ResearchError, match="temporary outage"):
+        await client.complete(ResearchRequest(query="x"))
