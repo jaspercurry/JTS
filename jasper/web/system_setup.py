@@ -7,7 +7,8 @@ diagnostics). Voice spend status and cap settings live on /voice/.
 
 Data comes from jasper-control:
   GET  /system/snapshot     metrics + build (5 s ring buffer)
-  GET  /system/diagnostics  runs jasper-doctor --json (~3-5 s)
+  GET  /system/diagnostics  serves cached jasper-doctor JSON and
+                             refreshes stale snapshots in the background
   POST /system/restart/*    restart voice / audio chain
   POST /system/reboot       full Pi reboot
 

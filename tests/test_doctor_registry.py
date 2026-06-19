@@ -5,7 +5,7 @@ run sequence of the former monolith by giving every check an explicit `order=`
 key and sorting the registry by it. This test pins the invariants that keep
 that deterministic: orders are unique sparse sort keys (gaps allowed so a
 mid-list insert never renumbers — only strictly-increasing + unique matters),
-there is exactly one async check and it sorts last, and the decorator rejects a
+async / exclusive-lane metadata is explicit, and the decorator rejects a
 duplicate order at registration. A future check added with a DUPLICATE order —
 which would silently fall back to import-order tie-breaking, the exact fragility
 the registry exists to remove — fails here.
@@ -31,15 +31,26 @@ def test_registered_check_orders_are_unique_and_strictly_increasing():
     )
 
 
-def test_exactly_one_async_check_and_it_sorts_last():
+def test_async_checks_keep_explicit_registry_metadata():
     checks = registered_checks()
-    async_positions = [i for i, c in enumerate(checks) if c.is_async]
-    assert len(async_positions) == 1, (
-        f"expected exactly one async check, got {len(async_positions)}"
+    async_checks = [c for c in checks if c.is_async]
+    assert async_checks, "expected at least one async check"
+    assert all(c.label for c in async_checks), (
+        "async checks need explicit labels for timeout/crash rows"
     )
-    assert async_positions[0] == len(checks) - 1, (
-        "the single async check must sort last (it is appended after the "
-        "synchronous checks in run_async)"
+
+
+def test_hardware_sensitive_checks_are_marked_exclusive():
+    by_name = {c.func.__name__: c for c in registered_checks()}
+
+    assert by_name["check_mic_capture"].exclusive_group == "audio-probe"
+    assert (
+        by_name["check_aec_bridge_output_health"].exclusive_group
+        == "audio-probe"
+    )
+    assert (
+        by_name["check_renderer_device_resolvable"].exclusive_group
+        == "audio-probe"
     )
 
 

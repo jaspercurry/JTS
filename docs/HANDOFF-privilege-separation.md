@@ -371,11 +371,14 @@ coupled artifacts make the drop work:
     root tool (audio/mixer/journal probes, `sudo -u <renderer> aplay`) — running
     it in-process from the non-root jasper-control made ~7 checks fail on
     permissions (false red). So the report is produced by a root
-    `jasper-doctor-json.service` oneshot that jasper-control `systemctl start`s
-    via its polkit manage-units grant (the unit is in `MANAGED_UNITS`); the
-    doctor's `--json --out PATH` writes the report `0640` and exits 0 so a
-    "report with failures" never flips the oneshot to `failed`. Full fidelity,
-    no new privilege primitive.
+    `jasper-doctor-json.service` oneshot that jasper-control starts with
+    `systemctl --no-block` via its polkit manage-units grant (the unit is in
+    `MANAGED_UNITS`); the doctor's `--json --out PATH` writes the report
+    `0640` and exits 0 so a "report with failures" never flips the oneshot to
+    `failed`. `/system/diagnostics` serves the last cached report immediately
+    and only schedules a background refresh when the snapshot is stale or
+    missing. Full fidelity, no new privilege primitive, no dashboard request
+    blocked on a live doctor run.
   - **`systemd-journal` supplementary group.** Three `/state` cards
     (`airplay_health`, `dial`, `wifi_guardian`'s last-action) read the journal;
     a non-root reader needs the group.
@@ -390,8 +393,8 @@ coupled artifacts make the drop work:
 
 Measured on hardware (jts.local, `systemd-analyze security`): **jasper-control
 6.6 → 2.6 OK** (2.6, not 2.5, for the `systemd-journal` supplementary group).
-Validated, including the self-review fixes: `/system/diagnostics` returns the
-root-fidelity report (0 fails / 93 checks, matching `sudo jasper-doctor`); the
+Validated, including the self-review fixes: `/system/diagnostics` returns a
+root-fidelity cached report and schedules stale refreshes in the background; the
 `/state` wifi-guardian / sound cards populate with **zero** permission-denied
 WARNINGs; the non-root peering-advert write into the setgid `/etc/avahi/services`
 succeeds. And the original matrix:

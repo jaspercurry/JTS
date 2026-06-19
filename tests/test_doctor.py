@@ -9,6 +9,8 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1336,6 +1338,86 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         ("librespot.service", "ok", "ran"),
         ("room correction service", "ok", "ran"),
     ]
+
+
+def test_run_async_parallelizes_blocking_checks_but_preserves_order(
+    monkeypatch,
+):
+    from jasper.cli.doctor._registry import RegisteredCheck
+
+    def make_check(name: str, delay: float):
+        def check():
+            time.sleep(delay)
+            return doctor.CheckResult(name, "ok", "ran")
+        return check
+
+    monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
+    monkeypatch.setenv("JASPER_DOCTOR_MAX_CONCURRENCY", "3")
+    monkeypatch.setattr(doctor, "registered_checks", lambda: [
+        RegisteredCheck(order=0, group="test", func=make_check("a", 0.15)),
+        RegisteredCheck(order=1, group="test", func=make_check("b", 0.15)),
+        RegisteredCheck(order=2, group="test", func=make_check("c", 0.15)),
+        RegisteredCheck(order=3, group="test", func=make_check("d", 0.15)),
+        RegisteredCheck(order=4, group="test", func=make_check("e", 0.15)),
+        RegisteredCheck(order=5, group="test", func=make_check("f", 0.15)),
+    ])
+
+    started = time.perf_counter()
+    results = asyncio.run(doctor.run_async(SimpleNamespace()))
+    elapsed = time.perf_counter() - started
+
+    assert [r.name for r in results] == ["a", "b", "c", "d", "e", "f"]
+    assert elapsed < 0.65, (
+        f"doctor run took {elapsed:.3f}s; expected bounded parallelism, "
+        "not six sequential 150ms checks"
+    )
+
+
+def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
+    from jasper.cli.doctor._registry import RegisteredCheck
+
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def exclusive(name: str):
+        def check():
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return doctor.CheckResult(name, "ok", "ran")
+        return check
+
+    def ordinary():
+        time.sleep(0.05)
+        return doctor.CheckResult("c", "ok", "ran")
+
+    monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
+    monkeypatch.setenv("JASPER_DOCTOR_MAX_CONCURRENCY", "3")
+    monkeypatch.setattr(doctor, "registered_checks", lambda: [
+        RegisteredCheck(
+            order=0,
+            group="test",
+            func=exclusive("a"),
+            exclusive_group="audio-probe",
+        ),
+        RegisteredCheck(
+            order=1,
+            group="test",
+            func=exclusive("b"),
+            exclusive_group="audio-probe",
+        ),
+        RegisteredCheck(order=2, group="test", func=ordinary),
+    ])
+
+    results = asyncio.run(doctor.run_async(SimpleNamespace()))
+
+    assert [r.name for r in results] == ["a", "b", "c"]
+    assert max_active == 1
 
 
 # ------------------------------------------------ ALSA shorthand mic lookup

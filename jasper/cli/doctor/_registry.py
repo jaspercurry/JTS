@@ -35,11 +35,13 @@ Behaviour contract preserved from the old literal list:
   the success path (``CheckResult.name``) and the crash path
   (``_crashed_check_result``) are identical to before.
 
-- **The single async check is modelled as a tail entry.** The
-  CamillaDSP websocket check is the only async check; it is flagged
-  ``is_async=True`` and ``run_async`` invokes it via
-  ``_run_async_doctor_check`` after the synchronous list, so it always
-  lands last — exactly as the old code appended it.
+- **Async and hardware-sensitive checks carry explicit metadata.** A
+  check flagged ``is_async=True`` is awaited directly by the harness.
+  A check with ``exclusive_group=`` may still run while unrelated checks
+  are in flight, but only one check in that group runs at a time. This
+  keeps ALSA/proc evidence probes from observing one another's temporary
+  opens while still allowing the rest of the subprocess-heavy doctor to
+  run concurrently.
 
 ``group=`` is the per-domain dimension. It does not affect order or
 output; it records which subsystem a check belongs to (the same domain
@@ -72,6 +74,7 @@ class RegisteredCheck:
     needs_cfg: bool = False
     is_async: bool = False
     label: str = ""
+    exclusive_group: str = ""
 
 
 _REGISTRY: list[RegisteredCheck] = []
@@ -84,6 +87,7 @@ def doctor_check(
     label: str = "",
     needs_cfg: bool = False,
     is_async: bool = False,
+    exclusive_group: str = "",
 ) -> Callable[[Callable], Callable]:
     """Register a doctor check and return it unchanged.
 
@@ -105,7 +109,11 @@ def doctor_check(
             for bare checks so the label is derived from ``__name__``.
         needs_cfg: True iff the check takes the ``Config`` argument (the
             original tuple-with-cfg-lambda entries).
-        is_async: True for the single async CamillaDSP websocket check.
+        is_async: True for checks implemented as async callables.
+        exclusive_group: Optional serialization key for probes that are
+            individually safe but can perturb one another when run at the
+            same instant (for example, ALSA open probes and `/proc/asound`
+            ownership reads). Empty string means no exclusive lane.
     """
 
     def _register(fn: Callable) -> Callable:
@@ -127,6 +135,7 @@ def doctor_check(
                 needs_cfg=needs_cfg,
                 is_async=is_async,
                 label=label,
+                exclusive_group=exclusive_group,
             )
         )
         return fn
