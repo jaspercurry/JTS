@@ -293,8 +293,10 @@ when the configured AEC mic is present with 6-channel firmware — see
   bounded non-disruptive self-heal before falling back to manual join.
   Connect rolls back to the previous network on failure
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
-  <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
-  case only.
+  <previous>` on non-zero exit). Saved profiles are hardened to keep
+  retrying after router/ISP flaps, and a no-resident-RAM recovery timer
+  nudges scan suppression + guardian activation when Wi-Fi is actually
+  down. WPA-Enterprise deferred — home-network case only.
 - ✅ Persistent live session with sustained-speech VAD
 - ✅ Hardware AEC investigation: the 2026-05-29 Option D lab pass has
   been promoted into the recommended XVF3800 input profile. Fresh
@@ -1001,7 +1003,8 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-voice` (wake + LLM + tools) | Active | ~140-150 MB | ~12% of one core during a session |
 | `jasper-aec-bridge` (software AEC) | **Active** on 6-ch firmware, **disabled** on 2-ch | +85 MB | +3% of one core |
 | `jasper-aec-init` (boot-time chip init) | follows aec-bridge | one-shot, ~0 | ~0 |
-| `jasper-wifi-guardian` (boot-time NM keyfile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
+| `jasper-wifi-guardian` (NM keyfile/profile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
+| `jasper-wifi-recover` (Wi-Fi-down periodic nudge) | Active timer | ~0 resident; one-shot only | healthy tick is one NM read every ~3 min; repair path only when Wi-Fi is down |
 | `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~16 MB | ~0% idle |

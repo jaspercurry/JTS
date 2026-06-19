@@ -76,6 +76,7 @@ def test_connect_new_success_writes_stash(stash_path, monkeypatch):
         _mock_proc(),  # _current_wifi: NAME,UUID,TYPE,DEVICE (empty)
         _mock_proc(),  # _profile_exists: NAME (empty)
         _mock_proc(returncode=0),  # the actual connect
+        _mock_proc(returncode=0),  # _harden_wifi_profile
         # _resolve_key_mgmt → return wpa-psk
         _mock_proc(returncode=0,
                    stdout="802-11-wireless-security.key-mgmt:wpa-psk\n"),
@@ -93,6 +94,98 @@ def test_connect_new_success_writes_stash(stash_path, monkeypatch):
     assert stash.key_mgmt == "wpa-psk"
 
 
+def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
+    """A successful wizard connect should persist NM settings that survive
+    router flaps: retry forever and keep Wi-Fi power-save disabled."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    calls: list[list[str]] = []
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
+            return _mock_proc(
+                returncode=0,
+                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+            )
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(
+             wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect,
+         ):
+        ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
+
+    assert ok is True
+    assert [
+        "nmcli", "connection", "modify", "Home",
+        "connection.autoconnect", "yes",
+        "connection.autoconnect-retries", "0",
+        "802-11-wireless.powersave", "2",
+    ] in calls
+
+
+def test_connect_new_hardening_nonzero_does_not_block_connect(stash_path):
+    """Contract (AGENTS.md): a profile-hardening failure MUST NOT turn a
+    successful user connect into a failed one. nmcli returning non-zero on
+    the `connection modify` hardening call is logged and swallowed."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            return _mock_proc(returncode=1, stderr="Error: hardening failed")
+        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
+            return _mock_proc(
+                returncode=0,
+                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+            )
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
+
+    assert ok is True
+
+
+def test_connect_new_hardening_oserror_does_not_block_connect(stash_path):
+    """Even an exception from the hardening call (e.g. nmcli not on PATH)
+    must not fail the connect — _harden_wifi_profile swallows OSError."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            raise FileNotFoundError("nmcli not found")
+        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
+            return _mock_proc(
+                returncode=0,
+                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+            )
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
+
+    assert ok is True
+
+
+def test_connect_saved_hardening_failure_does_not_block_connect(stash_path):
+    """Same best-effort contract on the saved-profile activation path."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            return _mock_proc(returncode=1, stderr="Error: hardening failed")
+        return _mock_proc(returncode=0)
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_saved("Home")
+
+    assert ok is True
+
+
 def test_connect_new_open_network_writes_stash(stash_path, monkeypatch):
     """Open network: no password arg → stash gets empty PSK +
     key_mgmt=none."""
@@ -102,6 +195,7 @@ def test_connect_new_open_network_writes_stash(stash_path, monkeypatch):
         _mock_proc(),  # _current_wifi
         _mock_proc(),  # _profile_exists
         _mock_proc(returncode=0),  # connect
+        _mock_proc(returncode=0),  # _harden_wifi_profile
         _mock_proc(returncode=0,
                    stdout="802-11-wireless-security.key-mgmt:\n"),
     ])
@@ -216,6 +310,7 @@ def test_connect_new_stash_failure_does_not_block_connect(
         _mock_proc(),  # _current_wifi
         _mock_proc(),  # _profile_exists
         _mock_proc(returncode=0),  # connect
+        _mock_proc(returncode=0),  # _harden_wifi_profile
         _mock_proc(returncode=0,
                    stdout="802-11-wireless-security.key-mgmt:wpa-psk\n"),
     ])
@@ -247,6 +342,7 @@ def test_connect_new_enterprise_skips_stash(stash_path, monkeypatch, caplog):
         _mock_proc(),  # _current_wifi
         _mock_proc(),  # _profile_exists
         _mock_proc(returncode=0),  # connect
+        _mock_proc(returncode=0),  # _harden_wifi_profile
         _mock_proc(returncode=0,
                    stdout="802-11-wireless-security.key-mgmt:wpa-eap\n"),
     ])
@@ -274,6 +370,7 @@ def test_connect_new_psk_never_in_log_records(stash_path, caplog):
         _mock_proc(),
         _mock_proc(),
         _mock_proc(returncode=0),
+        _mock_proc(returncode=0),  # _harden_wifi_profile
         _mock_proc(returncode=0,
                    stdout="802-11-wireless-security.key-mgmt:wpa-psk\n"),
     ])
@@ -298,6 +395,7 @@ def test_connect_saved_refreshes_stash_from_nmcli_secrets(stash_path):
 
     side_effect = _scripted_nmcli([
         _mock_proc(returncode=0),  # connection up
+        _mock_proc(returncode=0),  # _harden_wifi_profile
         # _read_profile_secrets: SSID + PSK + key_mgmt
         _mock_proc(returncode=0, stdout=(
             "802-11-wireless.ssid:HomeRealSSID\n"

@@ -399,6 +399,7 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     ),
     "jasper-dongle-recover": ROOT / "deploy/systemd/jasper-dongle-recover.service",
     "jasper-wifi-guardian": ROOT / "deploy/systemd/jasper-wifi-guardian.service",
+    "jasper-wifi-recover": ROOT / "deploy/systemd/jasper-wifi-recover.service",
     "jasper-grouping-reconcile": (
         ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
     ),

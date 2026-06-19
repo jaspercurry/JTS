@@ -156,3 +156,29 @@ def test_maybe_repair_error_uses_failure_cooldown(tmp_path, monkeypatch):
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["lastAck"] is False
     assert state["nextAllowedAt"] == 190.0
+
+
+def test_cli_json_reports_repair_result(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        wifi_scan_repair,
+        "iface_driver_name",
+        lambda iface: "brcmfmac",
+    )
+    monkeypatch.setattr(
+        wifi_scan_repair,
+        "send_crit_proto_stop",
+        lambda iface: {"iface": iface, "ack": True},
+    )
+
+    rc = wifi_scan_repair.main([
+        "--iface", "wlan0",
+        "--state-path", str(tmp_path / "repair.json"),
+        "--json",
+    ])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["attempted"] is True
+    assert payload["reason"] == "attempted"
+    assert payload["ack"] is True
+    assert payload["iface"] == "wlan0"
