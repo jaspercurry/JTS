@@ -52,6 +52,7 @@ from .camilla_yaml import (
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
 )
+from .graph_evidence import driver_limiter_name
 from .safe_playback import (
     arm_safe_playback_session,
     load_safe_playback_state,
@@ -236,7 +237,7 @@ def _running_role_limiter_ok(
     limit AND wired onto its channels in the RUNNING pipeline."""
     if not channels:
         return False
-    name = f"as_{role}_startup_limiter"
+    name = driver_limiter_name(role)
     filters = config.get("filters")
     entry = filters.get(name) if isinstance(filters, dict) else None
     if not isinstance(entry, dict) or entry.get("type") != "Limiter":

@@ -243,6 +243,22 @@ def _protective_tweeter_hp_name(role: str) -> str:
     return f"as_{_name_token(role)}_protective_hp"
 
 
+# --- public filter-name vocabulary -------------------------------------------
+# The emitter owns the spelling of every filter name it writes. The
+# verification side (runtime_contract / staging / commission_ramp, via
+# graph_evidence) imports THESE aliases rather than hardcoding a literal like
+# "as_tweeter_startup_limiter" or re-deriving the format, so a name change here
+# can never silently desync a safety verifier from the graph it inspects (the
+# verifier would otherwise look for a filter that no longer exists and fail
+# closed, spuriously blocking commissioning). Aliases (not renames) keep the
+# emitter's own call sites — and its emission behaviour — completely untouched.
+driver_mute_name = _driver_mute_name
+driver_limiter_name = _driver_limiter_name
+driver_baseline_gain_name = _driver_baseline_gain_name
+driver_baseline_limiter_name = _driver_baseline_limiter_name
+protective_tweeter_hp_name = _protective_tweeter_hp_name
+
+
 def _protective_tweeter_hp_frequency(
     preset: ActiveSpeakerPreset,
     role: str,
