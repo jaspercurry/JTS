@@ -254,6 +254,7 @@ docs = [
   # Roadmap for the async research tool + the pluggable text-LLM-provider
   # layer.
   "docs/research-tool-plan.md",
+  "docs/conversation-history-plan.md",
   "tests/voice_eval/README.md",
 ]
 requires_docs_when = [
