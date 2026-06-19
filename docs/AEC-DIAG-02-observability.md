@@ -4,6 +4,12 @@ Date: 2026-06-18
 Scope: additive diagnostics for `jasper-outputd` DAC presentation timing and chip-reference writer timing.
 Constraint: no production reference retiming, no delay line, no alternate production reference path.
 
+> **Extended (2026-06-19):** outputd `/state.outputd.reference_outputs` now
+> also carries an `aec_clock` block — a Layer-0 sample-rate-offset (SRO) drift
+> estimate + verdict + latency budget built on the timing fields below (#826),
+> plus the chip-ref **observe mode** that arms it for measurement (#832).
+> Canonical reference: [HANDOFF-chip-aec-portability.md](HANDOFF-chip-aec-portability.md).
+
 ## Summary
 
 This patch extends outputd `STATUS` / `/state.outputd` with timing and health fields for the final DAC writer and the XVF3800 chip-reference writer. The fields are passive observations of the existing outputd-owned path:

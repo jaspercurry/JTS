@@ -15,6 +15,19 @@
 
 ## TL;DR — current state
 
+> **Status (2026-06-19).** Layer 0 (the SRO drift estimator) and **chip-ref
+> observe mode** are shipped — PRs #825 / #826 / #832, merged. The first
+> production-path measurement is in: **JTS3 (HiFiBerry DAC8x) is
+> clock-coherent — 0.157 ppm mean over ~18 min, 36/36 `coherent`** — so the
+> Layer-2 resampler is *not* needed for that DAC. **Chip-AEC is the preferred
+> echo canceller** (a dedicated on-chip DSP doing fixed-beam + AEC, materially
+> better than software AEC3), so the objective is to get *any* suitable DAC
+> onto chip-AEC, not just one. The measurement + safety foundation is the
+> general, DAC-agnostic machinery for that; the next build is the
+> **verdict-driven gate** that turns a good measurement into production
+> chip-AEC automatically. See [Roadmap](#roadmap-productize-chip-aec-across-any-dac)
+> (items 1–3).
+
 - **Today:** `jasper-outputd` is the final audio owner; it already writes
   the 16 kHz chip-ref to the XVF USB-IN and exposes per-endpoint timing
   (`reference_outputs.chip_ref_writer.*`, `dac.snd_pcm_delay_*`). There is
@@ -121,13 +134,13 @@ until such hardware exists.
 | Box | DAC | Clock topology | What it proves |
 |---|---|---|---|
 | **JTS** | Apple USB-C dongle (single) | Coherent — DAC + mic + reference all on USB SOF (~1 ppm) | The coherent path: SRO ≈ 0, loop is a no-op, chip-AEC "just works." Regression guard that we never break the working case. |
-| **JTS3** | HiFiBerry DAC8x (I2S HAT) | Independent crystal vs XVF clock | **The drift box.** Runs the still-`not_run` production-path long-window SRO measurement; decides whether Layer 2 is needed and supplies the servo gains. Also surfaces out-of-window delay + non-48k risks. |
+| **JTS3** | HiFiBerry DAC8x (I2S HAT) | **Measured coherent** — the DAC8x is I2S-clock-coherent with the XVF (shares the Pi clock root), *not* a free-running crystal | **✅ MEASURED 2026-06-19: 0.157 ppm mean, 36/36 `coherent`.** Layer 2 not needed for it. First DAC validated through the general pipeline; production chip-AEC awaits the verdict-driven gate ([Roadmap](#roadmap-productize-chip-aec-across-any-dac) item 1). |
 | **JTS5** | Dual Apple USB-C (composite) | Likely coherent per child (both on USB SOF) + inter-child sync | **The composite box.** Tests the composite *reference fold* and the inter-child delay-divergence guard. Most-likely-coherent composite shape, so it tests fold > drift. Verifies fail-closed when composite can't support chip-AEC. |
 
-Per-box expected verdict (to be confirmed on hardware): JTS → `coherent`;
-JTS3 → `compensable` (or `coherent` if DAC8x drift is negligible — the
-measurement decides); JTS5 → `coherent composite` if both children lock to
-USB SOF, else `fallback` until per-child composite design exists.
+Per-box verdict: **JTS3 → `coherent` (measured, 0.157 ppm).** JTS (Apple) →
+`coherent` (expected ~1 ppm, not yet read); JTS5 (dual Apple) → `coherent
+composite` if both children lock to USB SOF, else `fallback` until per-child
+composite design exists (not yet read).
 
 ## Layered roadmap
 
@@ -136,33 +149,79 @@ is gated; "now" is small.
 
 | Layer | What | Build trigger | Size | User latency |
 |---|---|---|---|---|
-| **0 — Observe (NOW)** | `/state`: chip-ref SRO/drift estimate **+ latency budget**; doctor surface; HW-free tests | Build now — it is the instrument that gates everything above | ~tens of lines, reuses existing counters | neutral; *adds latency visibility* |
-| **1 — Classify + fail-safe (NOW, thin)** | coherent-vs-not verdict + pointer-sanity check, wired to the **existing** reconciler AEC3 fallback; surface the reason | Build now, minimal | small (mostly wiring) | neutral |
-| **2 — Compensate (LATER, gated)** | extract `ChipRefRateController` + sinc resampler + servo; gains tuned **from Layer-0 data**; one-rate-owner test | Only when Layer 0 shows real drift on a real independent-clock DAC (JTS3) | the bulk (~550 lines) | reference branch → neutral |
+| **0 — Observe** | `/state`: chip-ref SRO/drift estimate **+ latency budget**; doctor surface; HW-free tests | ✅ **SHIPPED** (#826) | ~tens of lines, reuses existing counters | neutral; *adds latency visibility* |
+| **1 — Classify + fail-safe** | coherent-vs-not verdict + pointer-sanity check + chip-ref **observe mode**, wired to the reconciler AEC3 fallback; surface the reason | ✅ **SHIPPED** (#826 / #832) | small (mostly wiring) | neutral |
+| **2 — Compensate (DEFERRED, gated)** | extract `ChipRefRateController` + sinc resampler + servo; gains tuned **from Layer-0 data**; one-rate-owner test | ⏸ **Trigger not fired** — JTS3 measured *coherent*, not drifting. Build when a **future** DAC actually measures `compensable` (async USB / crystal-master HAT). Still on the roadmap for the general "any DAC" goal | the bulk (~550 lines) | reference branch → neutral |
 | **3 — Delay trim (LATER, gated)** | one-time `SYS_DELAY` auto-trim at classify time | Only when a DAC's bulk delay lands out of the chip's window | tiny | neutral |
 | **Orthogonal — Playback-latency retune** | outputd `512`-frame profile | Only after content-side xruns solved + a clean 30-min run | config + validation | **this is the Axis-A lever** |
 
 **Layer 0 is the seed and the gatekeeper.** When a new DAC arrives, Layer 0
-tells you instantly whether it is coherent (done, no new code), compensable
-(then — and only then — build Layer 2), or a fallback case (Layer 1 already
-handles it). You never build Layer 2/3 on spec.
+tells you instantly whether it is coherent (arm chip-AEC), compensable (build
+Layer 2 for it), or a fallback case (Layer 1 already handles it). You never
+build Layer 2/3 on spec — and the *measurement* path already handles any DAC.
+
+## Roadmap: productize chip-AEC across any DAC
+
+Chip-AEC is the **preferred** echo canceller, so the product goal is to get
+*any* suitable DAC onto it automatically — present and future. Layer 0 +
+observe mode give us the DAC-agnostic *measurement*; these three increments
+turn that into a self-driving production capability. None is foundational
+rework — each builds on what is already merged.
+
+**1. Verdict-driven gate (the keystone — build next).** Today
+`jasper-aec-reconcile`'s `chip_aec_dac_status()` hard-codes `needs_calibration`
+per DAC, so chip-AEC stays gated off even on a DAC that *measured* coherent
+(JTS3). Make the gate **consume the SRO verdict** — the live
+`/state.outputd.reference_outputs.aec_clock.verdict`, or a persisted
+calibration artifact from item 2 — instead of a per-DAC branch: `coherent` →
+arm production chip-AEC; `compensable` → arm chip-AEC *with* Layer 2;
+`untrusted`/`unsupported` → software AEC3, visibly. This closes the loop from
+"measured" → "running in production" for **every** DAC with no per-device
+code, and flips the posture to **chip-AEC-preferred-when-supported** (software
+AEC3 is the graceful floor, not the default). *This is the step that makes the
+HiFiBerry — and any future coherent DAC — actually run chip-AEC.* **Do not**
+hard-code `hifiberry_dac8x = supported`; that per-DAC hack is the exact
+anti-pattern this gate replaces.
+
+**2. Calibration-artifact persistence + shippable profiles.** Record a DAC's
+measured verdict as a durable per-profile fact (mirror
+[`jasper/audio_validation.py`](../jasper/audio_validation.py)) keyed on stable
+DAC + mic + firmware identity, so it survives reboots *and* ships as
+"known-good" to other units/builders with the same hardware. This is what
+makes a once-validated DAC plug-and-play for everyone instead of re-measured
+each boot, and it is the artifact the gate (item 1) reads when the live
+estimator has not locked yet.
+
+**3. Layer 2 (sinc rate-match) for genuinely drifting DACs.** Deferred, **not
+dead.** The "any DAC" mandate means a future async-USB or crystal-master DAC
+*will* measure `compensable` — and the foundation must bring it onto chip-AEC
+too, via the `content_bridge`-derived resampler (one rate owner; gains tuned
+from real Layer-0 drift data). Build it when a drifting DAC is in hand, or
+proactively since the design is settled. See [Design decision](#design-decision)
+for why a rate-match (not a delay line) is the correct mechanism.
+
+**Then:** read JTS (Apple, expect ~0 ppm) and JTS5 (dual Apple composite) to
+round out the validated set, and surface observe mode on the `/wake/` advanced
+layer so an operator can measure a new DAC without hand-editing env files.
 
 ## What we are NOT building (yet)
 
 YAGNI lines, to resist over-engineering:
 
-- The resampler/servo (Layer 2) before JTS3 measurement proves real drift —
-  it is dead code on the coherent Apple profile.
+- The resampler/servo (Layer 2) until a DAC actually measures `compensable` —
+  JTS3 came back *coherent*, so it is still dead code on every DAC measured so
+  far (Apple + HiFiBerry). Build it for the first genuinely drifting DAC.
 - The full failure-mode taxonomy (composite, non-48k, out-of-window, …) up
   front. Grow one branch as each real DAC hits it.
 - Residual-trim machinery / `SYS_DELAY` auto-trim before a DAC needs it.
 - Any latency auto-tuner.
 - Support for >2 independent DACs (a new sink design, not a config row).
 
-## Build now — Layer 0 + thin Layer 1
+## Layer 0 + observe mode (shipped — reference)
 
-One small PR, reviewable hardware-free, then deployed to JTS/JTS3/JTS5 to
-capture reality.
+> ✅ Shipped in #826 / #832. The detail below is the reference for the `/state`
+> shape, observe mode, and the JTS3 measurement procedure. The **next** build
+> is the verdict-driven gate — see [Roadmap](#roadmap-productize-chip-aec-across-any-dac).
 
 **outputd (`rust/jasper-outputd`):** add an `aec_clock` block under
 `reference_outputs` in `state.rs`, computed from the four existing counters:
@@ -256,9 +315,10 @@ cancels echo *somehow*. Never a brick.
 
 ## Open unknowns / risks
 
-- **Production-path long-window drift is `not_run`.** Every drift number so
-  far is the old feeder harness (37–46 ppm, an artifact) or direct fanout
-  (~1 ppm) — not the production outputd path. Layer 0 on JTS3 closes this.
+- **Production-path long-window drift — measured on JTS3 (0.157 ppm,
+  `coherent`).** Closed for the HiFiBerry via Layer 0 + observe mode. Other
+  DACs (Apple, dual Apple) are not yet read; each new DAC re-opens this until
+  measured.
 - **`snd_pcm_delay` truthfulness** on the XVF USB endpoint is unverified.
   The classifier's pointer-sanity check is a mitigation, not a proof; budget
   a nonzero fallback rate.
