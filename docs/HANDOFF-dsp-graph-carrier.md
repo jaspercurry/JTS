@@ -199,22 +199,41 @@ stays — the carrier emits; the classifier re-proves. Only the
 [`jasper/active_speaker/graph_evidence.py`](../jasper/active_speaker/graph_evidence.py)
 (do not hardcode spellings).
 
-## Sharing — one stereo-domain prefix builder (PR-2)
+## Sharing — one stereo-domain prefix builder (PR-2, DONE)
 
-Today the room-PEQ → preference → headroom assembly lives only in
+The room-PEQ → preference → headroom assembly used to live only in
 `sound/camilla_yaml.py:_emit_filter_definitions` (private, sound-only);
-the active emitter duplicates none of it and shares only leaf primitives
-(`jasper/camilla_emit.py`). To make EQ/room-correction a genuinely shared
-pipeline, extract that assembly into a builder, e.g.
-`build_stereo_prefix(profile, room_peqs, *, room_peqs_right=None,
-output_trim_db=0.0, channel_delays_ms=None) -> (filters_yaml,
-left_chain_names, right_chain_names, trim_db)`, **byte-identical** to
-today's output for the solo case (golden-tested). Reused by: plain
-stereo (`emit_sound_config`), the bonded-leader bake
-([`jasper/multiroom/leader_config.py`](../jasper/multiroom/leader_config.py)),
-and the solo-active pre-split section (PR-3). No new DSP math — it reuses
-`build_sound_filters`, `total_positive_boost_db`, and the `camilla_emit`
-leaves.
+the active emitter duplicated none of it and shared only leaf primitives
+(`jasper/camilla_emit.py`). It is now a single shared builder,
+[`jasper/camilla_stereo_prefix.py`](../jasper/camilla_stereo_prefix.py):
+
+```
+build_stereo_prefix(sound_filters, room_peqs, *, room_peqs_right=None,
+    output_trim_db=0.0, channel_delays_ms=None)
+    -> (filters_yaml, left_chain_names, right_chain_names, trim_db)
+```
+
+`emit_sound_config` calls it (so the bonded-leader bake, which goes through
+`emit_sound_config`, reuses it too); the solo-active pre-split section
+(PR-3) will reuse it next. It returns filter DEFINITIONS + chain NAMES,
+never the mixer/pipeline — there is no master_gain-vs-split coupling, so
+each caller wires the names into its own pipeline. Output is
+**byte-identical** to the prior emitter for every existing case (golden:
+`tests/test_sound_camilla_yaml_golden.py`; builder unit test:
+`tests/test_camilla_stereo_prefix.py`). No new DSP math — it reuses
+`build_sound_filters` (the caller passes the already-built `FilterSpec`
+list — **data**, not a `SoundProfile`), `total_positive_boost_db`, and the
+`camilla_emit` leaves.
+
+**Layering note (why it's a neutral leaf module).** The builder takes the
+preference `FilterSpec` list and emits it, so it needs `FilterSpec` +
+`GAINLESS_BIQUAD_TYPES`. PR-2 promoted those (with `FILTER_EPSILON_DB`) from
+`jasper.sound.profile` into the neutral
+[`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)
+(sibling to `PeqFilter`); `jasper.sound.profile` re-exports them, so every
+existing `from jasper.sound.profile import FilterSpec` keeps working. This
+keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
+`jasper.sound` import — preserving the sound→active one-way direction.
 
 ## Invariants → tests (test real things)
 
@@ -250,8 +269,15 @@ leaves.
   active+leader later becomes possible. (`restore_solo_config` is deliberately
   NOT migrated: un-bonding must always succeed, so it stays lenient and never
   refuses.)
-- **PR-2 (behavior-neutral):** extract `build_stereo_prefix`; rewire
-  `emit_sound_config` to call it. Golden test.
+- **PR-2 (behavior-neutral, DONE):** extracted `build_stereo_prefix` into the
+  neutral [`jasper/camilla_stereo_prefix.py`](../jasper/camilla_stereo_prefix.py)
+  and rewired `emit_sound_config` to call it; promoted the `FilterSpec`
+  contract (`FilterSpec`, `GAINLESS_BIQUAD_TYPES`, `FILTER_EPSILON_DB`) into
+  `jasper/camilla_config_contract.py` (re-exported from `jasper.sound.profile`)
+  so the builder stays import-clean of `jasper.sound`. Byte-identical golden
+  (`tests/test_sound_camilla_yaml_golden.py`) + builder unit test
+  (`tests/test_camilla_stereo_prefix.py`); existing sound tests unchanged. See
+  the "Sharing" section above.
 - **PR-3 (the capability, hardware-gated on jts3):** `preference_filters`
   pre-split + folded headroom; `ActiveGraphCarrier` composes from the
   saved candidate; refuse if bonded-member. Tests 2, 4, 5, 7. Validate
@@ -294,13 +320,19 @@ CamillaDSP). Each item below is a roadmap decision, not in scope here:
 
 ## File map
 
-- New: [`jasper/sound/graph_carrier.py`](../jasper/sound/graph_carrier.py)
+- New (PR-1): [`jasper/sound/graph_carrier.py`](../jasper/sound/graph_carrier.py)
+- New (PR-2): [`jasper/camilla_stereo_prefix.py`](../jasper/camilla_stereo_prefix.py)
+  (`build_stereo_prefix`, `emit_filter_spec` — neutral shared program-domain
+  prefix builder)
+- Shared contract: [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)
+  (`PeqFilter`, `total_positive_boost_db`, and PR-2's promoted `FilterSpec` /
+  `GAINLESS_BIQUAD_TYPES` / `FILTER_EPSILON_DB`)
 - Rewire: [`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py)
   (`_live_draft_profile`, `_load_profile_config`, the `/audition`,
   `/live-draft`, `/apply` POST dispatch)
 - Recognizers/emitter: [`jasper/sound/camilla_yaml.py`](../jasper/sound/camilla_yaml.py)
   (`is_base_config`, `is_jts_generated_config`, `extract_room_peqs_from_config`,
-  `emit_sound_config`, the `room_headroom`/`total_positive_boost_db` block)
+  `emit_sound_config` — now calls `build_stereo_prefix`)
 - Active emitter/candidate: [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py),
   [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)
 - Verifier + vocabulary: [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py)

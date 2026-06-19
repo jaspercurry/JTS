@@ -80,6 +80,42 @@ def total_positive_boost_db(filters: Iterable[PeqFilter]) -> float:
     return max(0.0, sum(f.gain for f in filters if f.gain > 0.0))
 
 
+# Below the simplest |gain| a preference filter is considered "active" — a
+# tiny shelf/peaking gain rounds to a no-op and is dropped before emission.
+FILTER_EPSILON_DB = 0.05
+
+# Cut/notch biquads shape the response without a user gain term. They are
+# "active" by virtue of being enabled, not by a non-zero gain — see
+# FilterSpec.active(). Highpass/Lowpass protect against rumble / tame top
+# end; Notch is a surgical gain-less cut.
+GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
+
+
+@dataclass(frozen=True)
+class FilterSpec:
+    """A bounded CamillaDSP-friendly filter definition (preference EQ band).
+
+    The program-domain (stereo) DSP contract type, sibling to
+    :class:`PeqFilter`. The sound model (``jasper.sound.profile``) builds
+    these from a ``SoundProfile``; the shared stereo-prefix builder
+    (``jasper.camilla_stereo_prefix``) emits them — so this lives in the
+    neutral contract layer, importable by both the sound and active-speaker
+    emitters without a cross-dependency.
+    """
+
+    name: str
+    biquad_type: str
+    freq: float
+    gain: float
+    q: float | None = None
+    slope: float | None = None
+
+    def active(self) -> bool:
+        if self.biquad_type in GAINLESS_BIQUAD_TYPES:
+            return True
+        return abs(self.gain) >= FILTER_EPSILON_DB
+
+
 def _clean_yaml_scalar(value: str) -> str:
     value = value.split("#", 1)[0].strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:

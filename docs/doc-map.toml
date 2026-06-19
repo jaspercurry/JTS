@@ -375,6 +375,7 @@ code = [
   "jasper/volume_coordinator.py",
   "jasper/tools/audio.py",
   "jasper/sound/**",
+  "jasper/camilla_stereo_prefix.py",
   "jasper/web/sound_setup.py",
   "jasper/dsp_apply.py",
 ]

@@ -14,7 +14,6 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Iterable
 
 from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
 from jasper.camilla_config_contract import (
@@ -28,19 +27,11 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
-    total_positive_boost_db,
 )
-from jasper.camilla_emit import (
-    emit_delay_filter,
-    emit_gain_filter,
-    emit_master_gain_pipeline,
-    emit_peaking_biquad,
-    fmt,
-)
+from jasper.camilla_emit import emit_master_gain_pipeline
+from jasper.camilla_stereo_prefix import build_stereo_prefix
 
 from .profile import (
-    FilterSpec,
-    GAINLESS_BIQUAD_TYPES,
     SoundProfile,
     build_sound_filters,
 )
@@ -54,133 +45,6 @@ _JTS_GENERATED_RE = re.compile(
     r"^(?:correction_[A-Za-z0-9]+_\d+|sound_current|sound_audition"
     r"|grouping_leader|grouping_solo_restore)\.yml$"
 )
-
-
-def _emit_filter_spec(spec: FilterSpec) -> list[str]:
-    # Sound-specific: maps a FilterSpec (shelf / gainless / peaking) to a
-    # Biquad. Leaf `fmt`/Peaking emission is shared (jasper.camilla_emit);
-    # this shelf/gainless dispatch is sound's own assembly concern.
-    lines = [
-        f"  {spec.name}:",
-        "    type: Biquad",
-        "    parameters:",
-        f"      type: {spec.biquad_type}",
-        f"      freq: {fmt(spec.freq)}",
-    ]
-    if spec.biquad_type in {"Lowshelf", "Highshelf"}:
-        lines.append(f"      slope: {fmt(spec.slope or 6.0)}")
-        lines.append(f"      gain: {fmt(spec.gain)}")
-    elif spec.biquad_type in GAINLESS_BIQUAD_TYPES:
-        # Highpass/Lowpass/Notch shape the response without a gain term.
-        lines.append(f"      q: {fmt(spec.q or 1.0)}")
-    else:
-        lines.append(f"      q: {fmt(spec.q or 1.0)}")
-        lines.append(f"      gain: {fmt(spec.gain)}")
-    return lines
-
-
-def _emit_filter_definitions(
-    profile: SoundProfile,
-    room_peqs: Iterable[PeqFilter],
-    *,
-    room_peqs_right: Iterable[PeqFilter] | None = None,
-    output_trim_db: float = 0.0,
-    channel_delays_ms: tuple[float, float] | None = None,
-) -> tuple[str, list[str], list[str] | None, float]:
-    """Returns ``(filters_yaml, chain_names, chain_names_right, trim_db)``.
-
-    ``chain_names_right`` is ``None`` when ``room_peqs_right`` is ``None``
-    (solo — channel 1 duplicates channel 0, byte-identical to before this
-    axis existed). When given, only the ROOM-correction segment differs
-    per channel (``room_peq_r*`` — the per-seat part); the preference
-    filters (taste, shared household EQ) and the optional preamp are the
-    SAME named filters referenced by both chains — defined once.
-    """
-    lines: list[str] = []
-    room_names: list[str] = []
-    room_names_right: list[str] | None = None
-    left_delay_ms, right_delay_ms = (
-        (0.0, 0.0) if channel_delays_ms is None else channel_delays_ms
-    )
-
-    lines.extend(emit_gain_filter("flat", 0.0))
-
-    if left_delay_ms > 0.0:
-        lines.extend(emit_delay_filter("room_delay_l", delay_ms=left_delay_ms))
-        room_names.append("room_delay_l")
-
-    room_list = list(room_peqs)
-    for i, peq in enumerate(room_list, start=1):
-        name = f"room_peq_{i}"
-        lines.extend(emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain))
-        room_names.append(name)
-
-    if room_peqs_right is not None:
-        room_names_right = []
-        if right_delay_ms > 0.0:
-            lines.extend(emit_delay_filter("room_delay_r", delay_ms=right_delay_ms))
-            room_names_right.append("room_delay_r")
-        for i, peq in enumerate(room_peqs_right, start=1):
-            name = f"room_peq_r{i}"
-            lines.extend(
-                emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain)
-            )
-            room_names_right.append(name)
-
-    tail_names: list[str] = []
-
-    # Audio-safety: room-correction BOOSTS (the assertive strategy runs
-    # cuts_only=False, up to +3 dB total) raise specific bands with no
-    # compensating attenuation, so a hot note in a boosted band can clip
-    # above full scale. The master `volume_limit` caps the output FADER, not
-    # a per-band filter boost upstream of it. Pull the whole signal down by
-    # the worst-case additive room boost so the corrected response cannot
-    # exceed unity. Cuts-only correction (the default safe/balanced path) has
-    # zero boost, so this emits nothing and the solo config stays
-    # byte-identical. The trim is SHARED across both room chains; for an
-    # asymmetric leader-bake (different per-seat boosts per channel) we trim
-    # by the louder channel so neither can clip.
-    room_headroom_db = max(
-        total_positive_boost_db(room_list),
-        total_positive_boost_db(list(room_peqs_right or [])),
-    )
-    if room_headroom_db > 0.0:
-        lines.extend(emit_gain_filter("room_headroom", -room_headroom_db))
-        tail_names.append("room_headroom")
-        # debug, not info: this emitter is re-run on every /sound/live-draft
-        # slider interaction with the active room correction preserved, so an
-        # info line here would spam the journal during EQ editing whenever an
-        # assertive (boosted) correction is applied. The headroom is also
-        # visible in the emitted YAML and the "wrote sound config" summary.
-        logger.debug(
-            "room-correction boost headroom: -%.2f dB preamp "
-            "(worst-case additive room boost)",
-            room_headroom_db,
-        )
-
-    # Preference boosts apply at unity: a +N dB band raises only that band
-    # and leaves the rest of the spectrum untouched, like a consumer EQ. The
-    # one optional global attenuation is the caller-supplied output trim
-    # (manual headroom and/or loudness matching, both opt-in, both default 0).
-    # With trim 0 there is no preamp at all -- boosts boost. The master
-    # volume_limit ceiling stays the hard clip guard regardless. The trim
-    # only applies when the profile has filters; a flat profile can't clip
-    # from EQ, so it plays at unity even if a headroom trim is configured.
-    sound_filters = build_sound_filters(profile)
-    trim_db = max(0.0, float(output_trim_db)) if sound_filters else 0.0
-    if trim_db > 0.0:
-        lines.extend(emit_gain_filter("sound_preamp", -trim_db))
-        tail_names.append("sound_preamp")
-    for spec in sound_filters:
-        lines.extend(_emit_filter_spec(spec))
-        tail_names.append(spec.name)
-    tail_names.append("flat")
-
-    chain_names = room_names + tail_names
-    chain_names_right = (
-        None if room_names_right is None else room_names_right + tail_names
-    )
-    return "\n".join(lines), chain_names, chain_names_right, round(trim_db, 3)
 
 
 def emit_sound_config(
@@ -312,8 +176,13 @@ def emit_sound_config(
                 "of the stream, never inside it; see "
                 "HANDOFF-multiroom.md §2"
             )
-    filter_yaml, chain_names, chain_names_right, trim_db = _emit_filter_definitions(
-        profile,
+    # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
+    # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
+    # preference filters once and pass them in (it drops inactive specs);
+    # reuse the same list for the summary log below.
+    sound_filters = build_sound_filters(profile)
+    filter_yaml, chain_names, chain_names_right, trim_db = build_stereo_prefix(
+        sound_filters,
         room_peqs or [],
         room_peqs_right=room_peqs_right,
         output_trim_db=output_trim_db,
@@ -406,7 +275,7 @@ pipeline:
             out_path,
             len(room_peqs or []),
             right_note,
-            len(build_sound_filters(profile)),
+            len(sound_filters),
             trim_db,
         )
     return yaml

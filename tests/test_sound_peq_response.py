@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from jasper.sound import GAINLESS_BIQUAD_TYPES, build_sound_filters
-from jasper.sound.camilla_yaml import _emit_filter_spec
+from jasper.camilla_stereo_prefix import emit_filter_spec as _emit_filter_spec
 from jasper.sound.profile import (
     CUT_MAX_Q,
     FilterSpec,
