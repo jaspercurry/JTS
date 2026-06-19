@@ -220,6 +220,13 @@ project that others are trying to build on top of.
 Apache 2.0. See [LICENSE](LICENSE). By contributing you agree your
 contributions will be licensed under the same.
 
+First-party JTS source is Apache-2.0. New files should carry a short
+SPDX license line when practical (`# SPDX-License-Identifier:
+Apache-2.0`, or the language's matching comment style). Do not add JTS
+SPDX headers to vendored, generated, model, data, or third-party files:
+those need an explicit entry in [LICENSE-third-party.md](LICENSE-third-party.md)
+or, if REUSE is enabled later, a scoped `REUSE.toml` annotation instead.
+
 ## Where to start
 
 - **First-timer**: read README.md, then pick something from
