@@ -243,10 +243,16 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
             )
         })?;
         let model = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT model")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing PREPARE_ASSISTANT model",
+            )
         })?;
         let voice = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT voice")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing PREPARE_ASSISTANT voice",
+            )
         })?;
         let silence_target = parts.next().ok_or_else(|| {
             io::Error::new(
@@ -385,5 +391,4 @@ mod tests {
         let mut reader = Cursor::new(Vec::new());
         assert!(matches!(read_command(&mut reader), Ok(None)));
     }
-
 }

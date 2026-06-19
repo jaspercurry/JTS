@@ -127,18 +127,11 @@ impl Mixer {
     /// is required: a missing lane means one renderer silently drops out
     /// of the summed music reference. `xrun_tx` is the
     /// non-blocking channel to the off-thread xrun log writer.
-    pub fn new(
-        config: &Config,
-        xrun_tx: Sender<XrunEvent>,
-        tts: Option<TtsInput>,
-    ) -> Result<Self> {
-        let period_samples =
-            (config.period_frames as usize) * (CHANNELS as usize);
+    pub fn new(config: &Config, xrun_tx: Sender<XrunEvent>, tts: Option<TtsInput>) -> Result<Self> {
+        let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
-        for (label, pcm_name) in
-            config.input_renderers.iter().zip(&config.input_pcms)
-        {
+        for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
             match open_input(pcm_name, label, config) {
                 Ok(input) => {
                     info!(
@@ -170,9 +163,8 @@ impl Mixer {
             );
         }
 
-        let output = open_output(&config.output_pcm, config).with_context(|| {
-            format!("opening output PCM {}", config.output_pcm)
-        })?;
+        let output = open_output(&config.output_pcm, config)
+            .with_context(|| format!("opening output PCM {}", config.output_pcm))?;
         info!(
             "event=fanin.output.opened pcm={} period_frames={} buffer_frames={}",
             config.output_pcm, config.period_frames, config.output_buffer_frames,
@@ -252,11 +244,7 @@ impl Mixer {
     /// non-zero so systemd's `Restart=on-failure` brings us back.
     /// Transient errors (xruns) are handled inside `step()` without
     /// escalation.
-    pub fn run(
-        &mut self,
-        shutdown: &AtomicBool,
-        heartbeat: &Heartbeat,
-    ) -> Result<()> {
+    pub fn run(&mut self, shutdown: &AtomicBool, heartbeat: &Heartbeat) -> Result<()> {
         // Prime the output: write one period of zeros so the kernel
         // ring is non-empty when CamillaDSP / AEC bridge start reading.
         // Without this prime, the first writei could see -EPIPE
@@ -380,19 +368,6 @@ fn mix_into(sum: &mut [i32], input: &[i16]) {
     }
 }
 
-/// Sum input samples into the running i32 accumulator after applying a
-/// period-stable gain. Used for fan-in-owned voice ducking so TTS can
-/// be mixed after program attenuation and still pass through CamillaDSP.
-fn mix_into_with_gain(sum: &mut [i32], input: &[i16], gain: f32) {
-    debug_assert_eq!(sum.len(), input.len());
-    for (s, &i) in sum.iter_mut().zip(input) {
-        let scaled = ((i as f32) * gain)
-            .round()
-            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-        *s = s.saturating_add(scaled as i32);
-    }
-}
-
 /// Apply a period-stable gain to the accumulated program sum. Used
 /// after pre-duck content metering so the assistant loudness baseline
 /// tracks the listener-facing content, not the temporary ducked level.
@@ -412,14 +387,8 @@ fn saturate_to_i16(sum: &[i32], out: &mut [i16]) {
     }
 }
 
-fn input_selected(
-    selected_input: i32,
-    input_index: usize,
-    label: &str,
-) -> bool {
-    selected_input == -1
-        || selected_input == input_index as i32
-        || label == "correction"
+fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
+    selected_input == -1 || selected_input == input_index as i32 || label == "correction"
 }
 
 fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
@@ -434,8 +403,7 @@ fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
     // blocking forever in the PREPARED state.
     pcm.start()
         .with_context(|| format!("starting capture PCM {}", pcm_name))?;
-    let period_samples =
-        (config.period_frames as usize) * (CHANNELS as usize);
+    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
     Ok(Input {
         pcm,
         label: label.to_string(),
@@ -485,13 +453,9 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
         hwp.set_access(Access::RWInterleaved)
             .context("set_access(RWInterleaved)")?;
         hwp.set_period_size(config.period_frames as i64, ValueOr::Nearest)
-            .with_context(|| {
-                format!("set_period_size({})", config.period_frames)
-            })?;
+            .with_context(|| format!("set_period_size({})", config.period_frames))?;
         hwp.set_buffer_size(buffer_frames as i64)
-            .with_context(|| {
-                format!("set_buffer_size({})", buffer_frames)
-            })?;
+            .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }
     Ok(())
@@ -547,8 +511,7 @@ fn read_input(
             } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
                 // Input overrun: renderer produced faster than we
                 // drained. snd_pcm_recover restarts the stream.
-                let count =
-                    input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
                 warn!(
                     "event=fanin.xrun source=input label={} count={}",
                     input.label, count,
@@ -586,9 +549,7 @@ fn write_output(
     xrun_counter: &Arc<AtomicU64>,
     xrun_tx: &Sender<XrunEvent>,
 ) -> Result<()> {
-    let io = pcm
-        .io_i16()
-        .context("getting i16 IO handle for output")?;
+    let io = pcm.io_i16().context("getting i16 IO handle for output")?;
     let frames_total = buf.len() / (CHANNELS as usize);
     let mut frames_done = 0;
     // Limit recovery attempts per period to avoid an infinite loop
@@ -607,17 +568,14 @@ fn write_output(
                     // one iteration via a recovery attempt.
                     recoveries += 1;
                     if recoveries > MAX_RECOVERIES_PER_PERIOD {
-                        anyhow::bail!(
-                            "output writei returned 0 frames repeatedly"
-                        );
+                        anyhow::bail!("output writei returned 0 frames repeatedly");
                     }
                 }
             }
             Err(e) => {
                 let errno = e.errno();
                 if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                    let count =
-                        xrun_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let count = xrun_counter.fetch_add(1, Ordering::Relaxed) + 1;
                     let pending = frames_total - frames_done;
                     warn!(
                         "event=fanin.xrun source=output count={} frames_pending={}",
@@ -629,8 +587,7 @@ fn write_output(
                         frames: pending as u32,
                         count,
                     });
-                    pcm.try_recover(e, true)
-                        .context("recovering output xrun")?;
+                    pcm.try_recover(e, true).context("recovering output xrun")?;
                     recoveries += 1;
                     if recoveries > MAX_RECOVERIES_PER_PERIOD {
                         anyhow::bail!(
@@ -734,13 +691,6 @@ mod tests {
         mix_into(&mut sum, &[5000, -3000]);
         mix_into(&mut sum, &[-5000, 3000]);
         assert_eq!(sum, vec![0, 0]);
-    }
-
-    #[test]
-    fn mix_into_with_gain_ducks_program_lane() {
-        let mut sum = vec![0i32; 4];
-        mix_into_with_gain(&mut sum, &[10_000, -10_000, 1_000, -1_000], 0.1);
-        assert_eq!(sum, vec![1_000, -1_000, 100, -100]);
     }
 
     #[test]

@@ -16,6 +16,7 @@
 //!   - `state`    — UDS STATUS endpoint for /state aggregation.
 //!   - `xrun_log` — append-only ring of xrun events at
 //!                  /var/lib/jasper/fanin/xrun_history.jsonl.
+//!
 //! The mux preempt path means simultaneous sources should not happen
 //! in steady state. If future measurement shows audible source-handover
 //! clicks, add ramping in the mixer with tests and doctor visibility.
@@ -29,16 +30,16 @@ mod watchdog;
 mod xrun_log;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use log::{error, info, warn};
 
 use crate::config::Config;
 use crate::mixer::Mixer;
-use crate::state::StateServer;
+use crate::state::{StateServer, StateServerConfig};
 use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
@@ -50,8 +51,7 @@ fn main() -> Result<()> {
     // journald owns precise timestamps; we just need ordering hints
     // for `cargo run` dev sessions.
     env_logger::Builder::from_env(
-        env_logger::Env::default()
-            .filter_or("JASPER_FANIN_LOG_LEVEL", "info"),
+        env_logger::Env::default().filter_or("JASPER_FANIN_LOG_LEVEL", "info"),
     )
     .format_timestamp_secs()
     .init();
@@ -153,8 +153,7 @@ fn main() -> Result<()> {
     // required in the production fan-in topology; a missing lane means
     // one renderer can silently play without entering the summed music
     // reference.
-    let mut mixer =
-        Mixer::new(&config, xrun_tx, tts_input).context("opening ALSA PCMs")?;
+    let mut mixer = Mixer::new(&config, xrun_tx, tts_input).context("opening ALSA PCMs")?;
     info!(
         "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
         mixer.input_count(),
@@ -183,24 +182,23 @@ fn main() -> Result<()> {
     let state_server = StateServer::new(
         &mixer,
         Arc::clone(&heartbeat),
-        PathBuf::from(&config.control_socket_path),
-        config.sample_rate,
-        config.period_frames,
-        config.input_buffer_frames,
-        config.output_buffer_frames,
-        config.output_pcm.clone(),
-        config.music_output_pcm.clone(),
-        tts_metrics,
+        StateServerConfig {
+            socket_path: PathBuf::from(&config.control_socket_path),
+            sample_rate: config.sample_rate,
+            period_frames: config.period_frames,
+            input_buffer_frames: config.input_buffer_frames,
+            output_buffer_frames: config.output_buffer_frames,
+            output_pcm: config.output_pcm.clone(),
+            music_output_pcm: config.music_output_pcm.clone(),
+            tts_metrics,
+        },
     );
     let state_server_shutdown = Arc::clone(&shutdown);
     let state_thread = std::thread::Builder::new()
         .name("fanin-state-server".into())
         .spawn(move || {
             if let Err(e) = state_server.run(&state_server_shutdown) {
-                error!(
-                    "event=fanin.state_server.failed detail={:#}",
-                    e
-                );
+                error!("event=fanin.state_server.failed detail={:#}", e);
             }
         })
         .context("spawning state-server thread")?;
@@ -252,9 +250,7 @@ fn lock_memory() {
     // It does not dereference Rust pointers or create aliases. We call
     // it after helper threads are spawned so MCL_FUTURE does not try to
     // lock pthread stack mmaps under a small local-dev RLIMIT_MEMLOCK.
-    let rc = unsafe {
-        libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE)
-    };
+    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
     if rc == 0 {
         info!("event=fanin.mlockall_ok");
     } else {

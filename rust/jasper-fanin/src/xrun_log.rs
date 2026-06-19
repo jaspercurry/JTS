@@ -54,16 +54,10 @@ impl XrunLog {
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let path: PathBuf = path.into();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "creating xrun log parent dir {}",
-                    parent.display()
-                )
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating xrun log parent dir {}", parent.display()))?;
         }
-        let cached_size = std::fs::metadata(&path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let cached_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         Ok(Self { path, cached_size })
     }
 
@@ -75,10 +69,7 @@ impl XrunLog {
     pub fn record(&mut self, event: &XrunEvent) {
         let line = serialize_event(event);
         if let Err(e) = self.append_line(&line) {
-            warn!(
-                "event=fanin.xrun_log.append_failed detail={:#}",
-                e
-            );
+            warn!("event=fanin.xrun_log.append_failed detail={:#}", e);
         }
     }
 
@@ -95,9 +86,7 @@ impl XrunLog {
             .create(true)
             .append(true)
             .open(&self.path)
-            .with_context(|| {
-                format!("opening xrun log {}", self.path.display())
-            })?;
+            .with_context(|| format!("opening xrun log {}", self.path.display()))?;
 
         // Write line + newline atomically (single write() syscall on
         // pipes/socks; for files write+sync is the closest equivalent).
@@ -122,9 +111,8 @@ impl XrunLog {
     /// crashes mid-rotation, either the original file is intact or
     /// the new file is in place — never a partial.
     fn rotate(&mut self) -> Result<()> {
-        let raw = std::fs::read(&self.path).with_context(|| {
-            format!("reading xrun log for rotation: {}", self.path.display())
-        })?;
+        let raw = std::fs::read(&self.path)
+            .with_context(|| format!("reading xrun log for rotation: {}", self.path.display()))?;
 
         // Find the line boundary at or just past the rotation point.
         // Keep whole lines only — JSONL parsers expect complete
@@ -144,22 +132,16 @@ impl XrunLog {
         let tail = &raw[keep_from..];
         let tmp_path = self.path.with_extension("jsonl.tmp");
         {
-            let mut tmp = File::create(&tmp_path).with_context(|| {
-                format!("creating xrun log tmp {}", tmp_path.display())
-            })?;
+            let mut tmp = File::create(&tmp_path)
+                .with_context(|| format!("creating xrun log tmp {}", tmp_path.display()))?;
             tmp.write_all(tail)?;
             tmp.sync_data()?;
         }
-        std::fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "renaming xrun log tmp -> {}",
-                self.path.display()
-            )
-        })?;
+        std::fs::rename(&tmp_path, &self.path)
+            .with_context(|| format!("renaming xrun log tmp -> {}", self.path.display()))?;
         self.cached_size = tail.len() as u64;
         Ok(())
     }
-
 }
 
 #[derive(Debug, Clone)]

@@ -40,6 +40,16 @@ are explicit; a regression test pins this command.) `scripts/test-fast` is
 the normal local iteration lane: it runs lint, last-failed tests, a
 changed-file pytest selection, and a small always-on guard set.
 
+Optional local fast checks are available through pre-commit:
+
+```sh
+uv run --with pre-commit pre-commit install
+uv run --with pre-commit pre-commit run --all-files
+```
+
+The hooks mirror the low-noise CI gates contributors most often trip:
+Ruff for Python and `node --check` for the static wizard modules.
+
 If you'd rather not install a new tool, stock pip + venv works too —
 just make sure your python is 3.11+:
 
@@ -77,20 +87,26 @@ blank SD card to working speaker.
    new subsystem ships with hardware-free pytest coverage.
 3. **Run the local test lane**: `scripts/test-fast`. For non-trivial
    work, also run the full Python merge lane: `scripts/test-merge`.
-   Use `ruff check .` and `mypy` for explicit static-check spot runs.
+   Use `ruff check .` and `mypy` for explicit Python static-check spot
+   runs. For JS or Rust edits, run the matching fast lint gate:
+   `scripts/check-js-syntax.sh` or Rustfmt/Clippy. `pre-commit run
+   --all-files` covers the Python and static-JS checks locally.
 4. **Push and open a PR** against `main`. Fill in the template.
 5. **No direct pushes to main** — even one-line fixes go through PR.
 
 ### Branch protection
 
 `main` is protected: the required GitHub Actions checks are `pytest`
-and `rust`. Both **must pass before any PR can merge**, force-pushes
-and branch deletion are blocked, and the rule is enforced for admins too
-— so nobody, including the maintainer, can merge into a red `main`.
-The `rust` job is path-aware on PRs: it exits green quickly for
-unrelated changes, but runs full Cargo when Rust or Rust deploy/CI
-surfaces change and always runs on `main` pushes. There is no required
-reviewer, so you can self-merge your own green PR.
+and `rust`. The visible `pytest` check is an aggregate over the Python
+3.11 / 3.12 / 3.13 matrix; the Python 3.13 leg also runs `ruff check .`
+and lenient `mypy`. Both required checks **must pass before any PR can
+merge**, force-pushes and branch deletion are blocked, and the rule is
+enforced for admins too — so nobody, including the maintainer, can merge
+into a red `main`. The `rust` job is path-aware on PRs: it exits green
+quickly for unrelated changes, but runs Rustfmt, Clippy, and full Cargo
+tests when Rust or Rust deploy/CI surfaces change and always runs on
+`main` pushes. There is no required reviewer, so you can self-merge your
+own green PR.
 
 Two operational notes:
 
@@ -131,9 +147,15 @@ Two operational notes:
   and baselined so existing type debt does not block day-one adoption,
   but new unbaselined errors fail the job.
 - **Rust audio-daemon gate** (`cargo build --release --locked` and
-  `cargo test --locked`) — required green through the `rust` CI job
-  when Rust-relevant surfaces change, and on every `main` push. Covers
-  the production fan-in/outputd daemons and shared protocol crate.
+  `cargo test --locked`, plus `cargo fmt --all -- --check` and
+  `cargo clippy --release --locked --all-targets -- --no-deps
+  -D warnings`) — required green through the `rust` CI job when
+  Rust-relevant surfaces change, and on every `main` push. Covers the
+  production fan-in/outputd daemons and shared protocol crate.
+- **Static JavaScript gate** (`scripts/check-js-syntax.sh`) — CI runs
+  `node --check` over the browser ES modules and Node harnesses, then
+  runs the small JS harnesses for the sound-profile and shared-dialog
+  surfaces.
 - **Shell entry-point gate** (`bash -n` plus `shellcheck
   --severity=warning`) — CI parses and lints the installer, deploy
   helpers, and shell operator scripts that can mutate a live speaker.
@@ -159,6 +181,10 @@ Two operational notes:
 - Lint with `ruff check .` and type-check with `mypy`. Do not run a
   tree-wide `ruff format` as drive-by cleanup; formatting the whole tree is a
   separate, deliberate PR.
+- Rust code is `rustfmt`-formatted and Clippy-clean at default lint
+  levels with `-D warnings`. Do not enable broad Clippy groups
+  (`pedantic`, `restriction`) as a drive-by tightening.
+- Static browser modules should pass `scripts/check-js-syntax.sh`.
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
 - For larger or riskier changes, use the COAH quality bar in

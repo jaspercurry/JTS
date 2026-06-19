@@ -146,10 +146,7 @@ impl Heartbeat {
                         self.pings_sent.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        warn!(
-                            "event=fanin.sd_notify_watchdog_failed detail={}",
-                            e
-                        );
+                        warn!("event=fanin.sd_notify_watchdog_failed detail={}", e);
                     }
                 }
             } else {

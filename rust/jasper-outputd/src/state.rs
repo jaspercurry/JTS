@@ -27,6 +27,17 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const NEVER_MS: u64 = u64::MAX;
 const OPTIONAL_U64_NONE: u64 = u64::MAX;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChipRefWrite {
+    pub frames_written: u64,
+    pub delay_frames: Option<u64>,
+    pub reference_sequence: Option<u64>,
+    pub underruns: u64,
+    pub xruns: u64,
+    pub recoveries: u64,
+    pub write_failed: bool,
+}
+
 pub struct OutputdState {
     started_at: Instant,
     backend: String,
@@ -342,16 +353,16 @@ impl OutputdState {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn mark_chip_ref_write(
-        &self,
-        frames_written: u64,
-        delay_frames: Option<u64>,
-        reference_sequence: Option<u64>,
-        underruns: u64,
-        xruns: u64,
-        recoveries: u64,
-        write_failed: bool,
-    ) {
+    pub fn mark_chip_ref_write(&self, event: ChipRefWrite) {
+        let ChipRefWrite {
+            frames_written,
+            delay_frames,
+            reference_sequence,
+            underruns,
+            xruns,
+            recoveries,
+            write_failed,
+        } = event;
         if frames_written > 0 {
             let uptime_ms = self.uptime_ms();
             self.chip_ref_frames_written
@@ -1691,7 +1702,15 @@ mod tests {
         state.mark_chip_ref_queue_admitted(320);
         state.mark_chip_ref_enqueued(10);
         state.mark_chip_ref_dequeued(320);
-        state.mark_chip_ref_write(320, Some(640), Some(10), 1, 1, 1, false);
+        state.mark_chip_ref_write(ChipRefWrite {
+            frames_written: 320,
+            delay_frames: Some(640),
+            reference_sequence: Some(10),
+            underruns: 1,
+            xruns: 1,
+            recoveries: 1,
+            write_failed: false,
+        });
         state.mark_chip_ref_dropped_full();
         state.mark_chip_ref_dropped_disconnected();
         state.mark_chip_ref_tee_open_error();
@@ -1789,9 +1808,7 @@ mod tests {
         // lock. The DAC runs ~50 ppm fast relative to the 16 kHz chip ref.
         // Round the CUMULATIVE DAC target each step so the integer counter
         // tracks the true ppm (per-step rounding would bias the slope).
-        let mut chip_written: u64 = 0;
         for step in 1..=40u64 {
-            chip_written += 16_000;
             let dac_written = (48_000.0 * step as f64 * (1.0 + 50.0 / 1.0e6)).round() as u64;
             // The DAC counters land via the playback-loop marks...
             state.mark_period(
@@ -1804,7 +1821,11 @@ mod tests {
             );
             state.mark_dac_delay(1024);
             // ...and the chip-ref write ticks the estimator with both pairs.
-            state.mark_chip_ref_write(16_000, Some(320), None, 0, 0, 0, false);
+            state.mark_chip_ref_write(ChipRefWrite {
+                frames_written: 16_000,
+                delay_frames: Some(320),
+                ..ChipRefWrite::default()
+            });
         }
         let j = state.snapshot_json();
         assert!(
@@ -1833,10 +1854,8 @@ mod tests {
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
-        let mut chip: u64 = 0;
         let mut dac: u64 = 0;
         for _ in 0..100u64 {
-            chip += 320; // one ~20 ms chip-ref period
             dac += 960; // 48k/16k ratio, clock-coherent
             state.mark_period(
                 IoCounters {
@@ -1847,7 +1866,11 @@ mod tests {
                 0,
             );
             state.mark_dac_delay(1024);
-            state.mark_chip_ref_write(320, Some(320), None, 0, 0, 0, false);
+            state.mark_chip_ref_write(ChipRefWrite {
+                frames_written: 320,
+                delay_frames: Some(320),
+                ..ChipRefWrite::default()
+            });
         }
         let j = state.snapshot_json();
         assert!(

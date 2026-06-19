@@ -112,7 +112,7 @@ impl FlushSummary {
                 e.local_segment_id.0,
                 e.kind.as_str(),
                 match &e.provider_item_id {
-                    Some(id) => format!("\"{}\"", id.replace('\\', "").replace('"', "")),
+                    Some(id) => format!("\"{}\"", id.replace(['\\', '"'], "")),
                     None => "null".to_string(),
                 },
                 e.queued_frames,
@@ -179,20 +179,20 @@ impl TtsMetrics {
     }
 }
 
-// ---------------------------------------------------------------------
-// Server half — ported from fanin (see module header).
-// ---------------------------------------------------------------------
-
-pub fn tts_channels(
-    max_pending_frames: u64,
-) -> (
+pub type TtsChannelBundle = (
     SyncSender<QueuedTtsCommand>,
     Receiver<QueuedTtsCommand>,
     SyncSender<QueuedFlush>,
     Receiver<QueuedFlush>,
     TtsMetrics,
     Arc<AtomicU64>,
-) {
+);
+
+// ---------------------------------------------------------------------
+// Server half — ported from fanin (see module header).
+// ---------------------------------------------------------------------
+
+pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
     let (tx, rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
     let (flush_tx, flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
     let metrics = TtsMetrics::new(max_pending_frames);
