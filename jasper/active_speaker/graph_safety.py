@@ -258,6 +258,11 @@ def view_from_emitted_text(text: str) -> GraphView:
     for name, spec in pending.items():
         filters[name] = GraphFilter(type=spec["type"], params=spec["parameters"])
 
+    # _emitted_step returns None for non-Filter pipeline steps (e.g. the
+    # master_gain Mixer); skip those at the append sites so `steps` only ever
+    # holds real Filter steps. Filtering at append is narrowing-independent —
+    # a trailing `tuple(s for s in steps if s is not None)` over an Optional
+    # list is narrowed inconsistently by mypy across Python versions.
     steps: list[GraphPipelineStep] = []
     current: dict[str, Any] | None = None
     for line in sections.get("pipeline", []):
@@ -266,7 +271,9 @@ def view_from_emitted_text(text: str) -> GraphView:
             continue
         if stripped.startswith("- "):
             if current is not None:
-                steps.append(_emitted_step(current))
+                step = _emitted_step(current)
+                if step is not None:
+                    steps.append(step)
             current = {}
             stripped = stripped[2:]
         if current is None or ":" not in stripped:
@@ -279,9 +286,11 @@ def view_from_emitted_text(text: str) -> GraphView:
         else:
             current[key] = _parse_scalar(raw_value)
     if current is not None:
-        steps.append(_emitted_step(current))
+        step = _emitted_step(current)
+        if step is not None:
+            steps.append(step)
 
-    return GraphView(True, filters, tuple(s for s in steps if s is not None))
+    return GraphView(True, filters, tuple(steps))
 
 
 def _emitted_step(item: dict[str, Any]) -> GraphPipelineStep | None:
