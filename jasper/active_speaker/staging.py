@@ -35,6 +35,11 @@ from .camilla_yaml import (
 )
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
 from .environment import classify_camilla_config_text
+from .graph_evidence import (
+    driver_limiter_name,
+    float_matches as _float_matches,
+    protective_tweeter_hp_name,
+)
 from .profile import (
     ActiveChannelMap,
     ActiveSpeakerConfigError,
@@ -476,13 +481,6 @@ def _parse_generated_pipeline_filters(text: str) -> list[dict[str, Any]]:
     return [item for item in items if item.get("type") == "Filter"]
 
 
-def _float_matches(value: Any, expected: float) -> bool:
-    try:
-        return abs(float(value) - expected) < 0.0001
-    except (TypeError, ValueError):
-        return False
-
-
 def _filter_param_matches(
     filters: dict[str, dict[str, Any]],
     name: str,
@@ -599,8 +597,8 @@ def _software_guard_evidence(
             pipeline_filters,
             channels=set(tweeter_channels),
             required_names=(
-                "as_tweeter_protective_hp",
-                "as_tweeter_startup_limiter",
+                protective_tweeter_hp_name("tweeter"),
+                driver_limiter_name("tweeter"),
             ),
         )
         and all(
@@ -618,7 +616,7 @@ def _software_guard_evidence(
             protective_hp_hz is not None
             and _filter_param_matches(
                 filters,
-                "as_tweeter_protective_hp",
+                protective_tweeter_hp_name("tweeter"),
                 filter_type="BiquadCombo",
                 params={
                     "type": "LinkwitzRileyHighpass",
@@ -635,7 +633,7 @@ def _software_guard_evidence(
         ),
         "startup_limiter": _filter_param_matches(
             filters,
-            "as_tweeter_startup_limiter",
+            driver_limiter_name("tweeter"),
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
         ),
@@ -727,7 +725,7 @@ def driver_commission_audible_evidence(
     else:
         hp_defined = protective_hp_hz is not None and _filter_param_matches(
             filters,
-            "as_tweeter_protective_hp",
+            protective_tweeter_hp_name("tweeter"),
             filter_type="BiquadCombo",
             params={
                 "type": "LinkwitzRileyHighpass",
@@ -737,7 +735,7 @@ def driver_commission_audible_evidence(
         )
         limiter_defined = _filter_param_matches(
             filters,
-            "as_tweeter_startup_limiter",
+            driver_limiter_name("tweeter"),
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
         )
@@ -745,8 +743,8 @@ def driver_commission_audible_evidence(
             pipeline_filters,
             channels=audible_tweeter,
             required_names=(
-                "as_tweeter_protective_hp",
-                "as_tweeter_startup_limiter",
+                protective_tweeter_hp_name("tweeter"),
+                driver_limiter_name("tweeter"),
             ),
         )
         tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
@@ -923,7 +921,7 @@ def running_commission_evidence(
     else:
         hp_defined = protective_hp_hz is not None and _running_filter_matches(
             config,
-            "as_tweeter_protective_hp",
+            protective_tweeter_hp_name("tweeter"),
             filter_type="BiquadCombo",
             params={
                 "type": "LinkwitzRileyHighpass",
@@ -933,7 +931,7 @@ def running_commission_evidence(
         )
         limiter_defined = _running_filter_matches(
             config,
-            "as_tweeter_startup_limiter",
+            driver_limiter_name("tweeter"),
             filter_type="Limiter",
             params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
         )
@@ -941,8 +939,8 @@ def running_commission_evidence(
             config,
             channels=audible_tweeter,
             required_names=(
-                "as_tweeter_protective_hp",
-                "as_tweeter_startup_limiter",
+                protective_tweeter_hp_name("tweeter"),
+                driver_limiter_name("tweeter"),
             ),
         )
         tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)

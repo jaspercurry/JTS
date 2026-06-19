@@ -30,6 +30,18 @@ from jasper.output_topology import (
 
 from ._common import issue as _issue
 from .camilla_yaml import STARTUP_LIMITER_CLIP_LIMIT_DB, STARTUP_MUTE_GAIN_DB
+from .graph_evidence import (
+    driver_baseline_gain_name as _baseline_gain_name,
+    driver_baseline_limiter_name as _baseline_limiter_name,
+    driver_limiter_name,
+    filter_params as _filter_params,
+    filter_type as _filter_type,
+    float_matches as _float_matches,
+    float_value as _float_value,
+    output_commission_mute_name as _commission_mute_name,
+    protective_tweeter_hp_name,
+    truthy_bool as _truthy_bool,
+)
 from .environment import (
     DEFAULT_CAMILLA_STATEFILE,
     classify_camilla_config_text,
@@ -433,40 +445,6 @@ def _safe_load_yaml(text: str) -> tuple[dict[str, Any] | None, dict[str, str] | 
     return payload, None
 
 
-def _filter(payload: dict[str, Any], name: str) -> dict[str, Any]:
-    filters = payload.get("filters")
-    raw = filters.get(name) if isinstance(filters, dict) else None
-    return raw if isinstance(raw, dict) else {}
-
-
-def _filter_params(payload: dict[str, Any], name: str) -> dict[str, Any]:
-    params = _filter(payload, name).get("parameters")
-    return params if isinstance(params, dict) else {}
-
-
-def _filter_type(payload: dict[str, Any], name: str) -> str | None:
-    raw = _filter(payload, name).get("type")
-    return str(raw) if raw is not None else None
-
-
-def _float_matches(value: Any, expected: float) -> bool:
-    try:
-        return abs(float(value) - expected) < 0.0001
-    except (TypeError, ValueError):
-        return False
-
-
-def _float_value(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _truthy_bool(value: Any) -> bool:
-    return value is True or (isinstance(value, str) and value.lower() == "true")
-
-
 def _pipeline_contains(
     payload: dict[str, Any],
     *,
@@ -521,23 +499,6 @@ def _pipeline_names_for_channels(
             continue
         out.extend(str(name) for name in step.get("names", []) if name is not None)
     return tuple(out)
-
-
-def _commission_mute_name(index: int) -> str:
-    return f"as_out{index}_commission_mute"
-
-
-def _name_token(value: str) -> str:
-    out = "".join(ch if ch.isalnum() else "_" for ch in value).strip("_").lower()
-    return out or "unnamed"
-
-
-def _baseline_gain_name(role: str) -> str:
-    return f"as_{_name_token(role)}_baseline_gain"
-
-
-def _baseline_limiter_name(role: str) -> str:
-    return f"as_{_name_token(role)}_baseline_limiter"
 
 
 def _commission_mutes(payload: dict[str, Any]) -> dict[int, bool]:
@@ -682,20 +643,20 @@ def _active_graph_evidence(
         if item.physical_output_index is not None and item.role == "tweeter"
     }
     if tweeter_outputs and not is_baseline:
-        hp_params = _filter_params(payload, "as_tweeter_protective_hp")
-        limiter_params = _filter_params(payload, "as_tweeter_startup_limiter")
+        hp_params = _filter_params(payload, protective_tweeter_hp_name("tweeter"))
+        limiter_params = _filter_params(payload, driver_limiter_name("tweeter"))
         hp_freq = _float_value(hp_params.get("freq"))
         hp_order = _float_value(hp_params.get("order"))
         limiter_clip = _float_value(limiter_params.get("clip_limit"))
         hp_defined = (
-            _filter_type(payload, "as_tweeter_protective_hp") == "BiquadCombo"
+            _filter_type(payload, protective_tweeter_hp_name("tweeter")) == "BiquadCombo"
             and str(hp_params.get("type") or "") == "LinkwitzRileyHighpass"
             and hp_freq is not None
             and hp_freq > 0.0
             and (hp_order is None or hp_order >= 2.0)
         )
         limiter_defined = (
-            _filter_type(payload, "as_tweeter_startup_limiter") == "Limiter"
+            _filter_type(payload, driver_limiter_name("tweeter")) == "Limiter"
             and limiter_clip is not None
             and limiter_clip <= STARTUP_LIMITER_CLIP_LIMIT_DB
             and _truthy_bool(limiter_params.get("soft_clip"))
@@ -704,8 +665,8 @@ def _active_graph_evidence(
             payload,
             channels=tweeter_outputs,
             required_names=(
-                "as_tweeter_protective_hp",
-                "as_tweeter_startup_limiter",
+                protective_tweeter_hp_name("tweeter"),
+                driver_limiter_name("tweeter"),
             ),
         )
         if not (hp_defined and limiter_defined and guard_wired):
