@@ -68,7 +68,27 @@ def test_active_baseline_resolves_by_source_header_not_path(tmp_path):
     path = config_dir / "sound_current.yml"
     path.write_text(_active_baseline_yaml("mono", 2))
     carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
-    assert carrier.kind == "active_baseline"
+    assert carrier.kind == "active"
+
+
+def test_non_baseline_active_graph_is_content_fenced(tmp_path):
+    # Startup/commissioning graphs are also roleful and must be content-fenced,
+    # not filename-fenced: a commissioning config misnamed like a sound config
+    # must still resolve to the refusing active carrier — never a stereo host.
+    # Closes the non-baseline crossover-drop fence the review flagged.
+    from tests.test_active_speaker_runtime_contract import _active_yaml
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"  # deliberately a sound-like name
+    path.write_text(_active_yaml("mono", 2, {1}))  # a commissioning graph
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == "active"
+    assert carrier.kind not in _STEREO_HOST_KINDS
+    with pytest.raises(CarrierCannotHostEq) as err:
+        carrier.reemit(mock.sentinel.profile, profile_id="x")
+    assert err.value.reason_code == "eq_on_active_not_wired"
 
 
 def test_unknown_or_missing_config_fails_closed_to_unknown(tmp_path):
@@ -98,7 +118,7 @@ def test_active_baseline_is_roleful_and_never_a_stereo_host(tmp_path):
     assert graph.allowed is True
 
     carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
-    assert carrier.kind == "active_baseline"
+    assert carrier.kind == "active"
     assert carrier.kind not in _STEREO_HOST_KINDS
 
 

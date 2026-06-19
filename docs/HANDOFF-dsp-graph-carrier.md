@@ -85,16 +85,19 @@ existing layering):
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two
     arms relocated **verbatim**, including the `member_camilla_kwargs()`
     splat
-  - `# Source: == runtime_contract.ACTIVE_BASELINE_SOURCE` →
-    **ActiveBaselineCarrier** — *PR-1:* raises
+  - `# Source:` from the active-speaker emitter module (baseline, startup, OR
+    commissioning — matched by the module prefix derived from
+    `runtime_contract.ACTIVE_BASELINE_SOURCE`, so **content beats a sound-like
+    filename**) → **ActiveGraphCarrier** — *PR-1:* raises
     `CarrierCannotHostEq("eq_on_active_not_wired", …)`; *PR-3:* folds
-    preference EQ pre-split (below)
+    preference EQ pre-split into the active *baseline* (startup/commissioning
+    stay refusing)
   - otherwise → **UnknownCarrier** → `CarrierCannotHostEq("unknown_config", …)`
 - `Carrier.reemit(profile, *, out_path=None, profile_id, output_trim_db) -> str`
   — `out_path=None` returns YAML (live-draft); a path writes the file
   (durable), exactly like `emit_sound_config`. Each carrier owns its own
   preservation strategy and its own grouping kwargs (Base/Sound call
-  `member_camilla_kwargs()`; ActiveBaseline does not — see grouping
+  `member_camilla_kwargs()`; ActiveGraph does not — see grouping
   boundary below).
 
 **Concrete dispatcher, not a `Protocol`/registry.** This is a 4-member
@@ -140,7 +143,7 @@ makes them safe:
 **Compose, don't text-splice.** Grow `emit_active_speaker_baseline_config`
 / `build_baseline_profile_candidate` an optional `preference_filters`
 param wired pre-split, so all active-graph shape decisions stay in
-`active_speaker.camilla_yaml`. `ActiveBaselineCarrier.reemit` composes
+`active_speaker.camilla_yaml`. `ActiveGraphCarrier.reemit` composes
 from the **saved baseline candidate** (`build_baseline_profile_candidate`),
 not from an extracted running config.
 
@@ -196,20 +199,20 @@ leaves.
 | # | Invariant | PR |
 |---|---|---|
 | 1 | `carrier_for_loaded_config` kind never disagrees with `classify_camilla_graph` on the same bytes (one classifier, no drift); a roleful/active graph is never resolved to Base/Sound | 1 |
-| 3 | `emit_sound_config` is **never** called by ActiveBaseline/Unknown carriers (mock + `assert_not_called`) — proves the crossover can't be silently dropped | 1 |
-| 6 | ActiveBaseline (pre-capability) + Unknown raise `CarrierCannotHostEq` with a **stable `reason_code`**; the route returns **200-with-body**, never 5xx — no silent failure | 1 |
+| 3 | `emit_sound_config` is **never** called by ActiveGraph/Unknown carriers (mock + `assert_not_called`) — proves the crossover can't be silently dropped | 1 |
+| 6 | ActiveGraph (pre-capability) + Unknown raise `CarrierCannotHostEq` with a **stable `reason_code`**; the route returns **200-with-body**, never 5xx — no silent failure | 1 |
 | — | Recognizer mutual-exclusivity incl. an env-overridden baseline path (`JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH`) | 1 |
 | — | Behavior-neutral: existing base / sound / correction apply+draft tests stay green (verbatim relocation) | 1 |
-| 2 | **Keystone:** `ActiveBaselineCarrier.reemit` output, fed back through `classify_camilla_graph` for the same topology, classifies `GRAPH_APPROVED_ACTIVE_RUNTIME` / `allowed=True` — folding EQ never breaks the contract | 3 |
+| 2 | **Keystone:** `ActiveGraphCarrier.reemit` output, fed back through `classify_camilla_graph` for the same topology, classifies `GRAPH_APPROVED_ACTIVE_RUNTIME` / `allowed=True` — folding EQ never breaks the contract | 3 |
 | 4 | Emitter-side: a `+N` dB preference boost reduces pre-split headroom by `≥ total_positive_boost_db(prefs)` and keeps `volume_limit == 0.0`. **Test with a shelf, not just a peak** | 3 |
 | 5 | The preference filter step is wired on the program channels strictly **before** the split mixer (pipeline index of pref step < Mixer step) | 3 |
 | — | `build_stereo_prefix` is byte-identical to today for the solo stereo case (golden) | 2 |
-| 7 | Bonded-member + active baseline → `ActiveBaselineCarrier` refuses with a clear reason (the deferred active×grouping decision) | 3 |
+| 7 | Bonded-member + active baseline → `ActiveGraphCarrier` refuses with a clear reason (the deferred active×grouping decision) | 3 |
 
 ## Rollout
 
 - **PR-1 (behavior-neutral, now):** `graph_carrier.py` (Base/SoundOrCorrection
-  verbatim + ActiveBaseline honest refusal + Unknown); rewire both
+  verbatim + ActiveGraph honest refusal + Unknown); rewire both
   `sound_setup.py` call sites; typed-200 response + UI hint. Tests 1, 3,
   6, recognizer mutual-exclusivity. Resolve the status.py-vs-`/sound`
   disagreement (the carrier recognizes the active baseline like status.py
@@ -223,7 +226,7 @@ leaves.
 - **PR-2 (behavior-neutral):** extract `build_stereo_prefix`; rewire
   `emit_sound_config` to call it. Golden test.
 - **PR-3 (the capability, hardware-gated on jts3):** `preference_filters`
-  pre-split + folded headroom; `ActiveBaselineCarrier` composes from the
+  pre-split + folded headroom; `ActiveGraphCarrier` composes from the
   saved candidate; refuse if bonded-member. Tests 2, 4, 5, 7. Validate
   the program-level EQ placement + headroom math on real hardware before
   ship.

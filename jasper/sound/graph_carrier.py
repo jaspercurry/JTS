@@ -137,16 +137,20 @@ class _SoundOrCorrectionCarrier(_StereoHostCarrier):
         return extract_room_peqs_from_config(self._current_path)
 
 
-class _ActiveBaselineCarrier:
-    """An active-crossover baseline graph.
+class _ActiveGraphCarrier:
+    """Any active-crossover (roleful) graph — baseline, startup, or commissioning.
+
+    All three are roleful (per-driver split + crossover + limiter + tweeter
+    high-pass) and must never be re-emitted through the stereo template.
 
     PR-1: refuses — preference EQ on top of an active crossover is not wired
     yet. PR-3 will fold preference EQ pre-split (upstream of the per-driver
-    split mixer) into this graph. It NEVER re-emits through the stereo
+    split mixer) into the active *baseline*; the transient startup/
+    commissioning graphs keep refusing. It NEVER re-emits through the stereo
     template, which would drop the crossover/limiter/protective high-pass.
     """
 
-    kind = "active_baseline"
+    kind = "active"
 
     def __init__(self, current_path: str | Path | None) -> None:
         self._current_path = current_path
@@ -191,23 +195,32 @@ class _UnknownCarrier:
         )
 
 
-def _loaded_config_is_active_baseline(current_path: str | Path) -> bool:
-    """True when the loaded config is the active-speaker baseline graph.
+def _loaded_config_is_active_speaker_graph(current_path: str | Path) -> bool:
+    """True when the loaded config is any active-speaker (roleful) graph.
 
-    Detected by the emitter's ``# Source:`` header — the SAME signal the
-    runtime safety classifier keys ``is_baseline`` on — so the carrier and the
-    classifier cannot drift (invariant 1). The constant is imported lazily to
-    keep ``runtime_contract``'s heavy transitive imports out of the wizard
-    process. An unreadable config returns False and falls through to the
-    fail-closed unknown carrier.
+    Baseline (steady-state runtime), startup, and commissioning configs are ALL
+    roleful and must never be re-emitted through the stereo template. Detection
+    keys on the active-speaker emitter MODULE in the config's ``# Source:``
+    header, derived from ``ACTIVE_BASELINE_SOURCE`` so it tracks every
+    active-speaker emitter (not just the baseline) and stays single-sourced
+    with the classifier's vocabulary. Content beats name: this fences a roleful
+    graph even if it is misnamed like a sound/correction config. An unreadable
+    config returns False and falls through to the fail-closed unknown carrier.
+    The constant is imported lazily to keep ``runtime_contract``'s heavy
+    transitive imports out of the wizard process.
     """
     from jasper.active_speaker.runtime_contract import ACTIVE_BASELINE_SOURCE
 
+    # ACTIVE_BASELINE_SOURCE is "<module>.emit_active_speaker_baseline_config";
+    # the module prefix is shared by every active-speaker emitter's header
+    # (baseline / startup / commissioning), and never appears in a sound or
+    # correction config (those carry the jasper.sound.camilla_yaml source).
+    module_prefix = ACTIVE_BASELINE_SOURCE.rsplit(".", 1)[0] + "."
     try:
         text = Path(current_path).read_text()
     except OSError:
         return False
-    return f"Source: {ACTIVE_BASELINE_SOURCE}" in text
+    return f"Source: {module_prefix}" in text
 
 
 def carrier_for_loaded_config(current_path, *, config_dir):
@@ -229,8 +242,8 @@ def carrier_for_loaded_config(current_path, *, config_dir):
         return _UnknownCarrier(current_path)
     if is_base_config(current_path):
         return _BaseFlatCarrier(current_path)
-    if _loaded_config_is_active_baseline(current_path):
-        return _ActiveBaselineCarrier(current_path)
+    if _loaded_config_is_active_speaker_graph(current_path):
+        return _ActiveGraphCarrier(current_path)
     if is_jts_generated_config(current_path, config_dir=config_dir):
         return _SoundOrCorrectionCarrier(current_path)
     return _UnknownCarrier(current_path)
