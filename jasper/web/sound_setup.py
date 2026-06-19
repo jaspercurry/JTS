@@ -1214,37 +1214,6 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
     return payload
 
 
-def _active_speaker_commissioning_rehearsal_payload() -> dict[str, Any]:
-    """Return the read-only durable active-speaker commissioning rehearsal."""
-
-    from jasper.active_speaker.commissioning import build_commissioning_rehearsal
-
-    topology = load_output_topology()
-    safe_session = _active_speaker_safe_playback_payload()
-    calibration_level = _active_speaker_calibration_level_payload()
-    payload = build_commissioning_rehearsal(
-        topology,
-        bringup_preflight=_active_speaker_bringup_preflight_payload(),
-        startup_load=_active_speaker_startup_load_payload(),
-        safe_session=safe_session,
-        calibration_level=calibration_level,
-    )
-    logger.info(
-        "event=sound.active_speaker_commissioning_rehearsal status=%s "
-        "durable_ready=%s completed=%s total=%s blockers=%d",
-        payload.get("status"),
-        bool(payload.get("durable_steps_ready")),
-        payload.get("completed_step_count"),
-        payload.get("total_step_count"),
-        sum(
-            1
-            for step in payload.get("steps", [])
-            if isinstance(step, dict) and step.get("status") == "blocked"
-        ),
-    )
-    return payload
-
-
 def _active_speaker_design_draft_payload() -> dict[str, Any]:
     """Return the saved active-speaker design draft, if any."""
 
@@ -3577,7 +3546,6 @@ def _make_handler(
                 "/active-speaker/startup-load",
                 "/active-speaker/commission-state",
                 "/active-speaker/commissioning-view",
-                "/active-speaker/commissioning-rehearsal",
                 "/active-speaker/staged-config",
                 "/active-speaker/channel-identity",
             }:
@@ -3713,16 +3681,6 @@ def _make_handler(
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
                         "event=sound.active_speaker_commissioning_view result=error"
-                    )
-                    self._send_json({"error": str(e)}, status=502)
-                return
-            if path == "/active-speaker/commissioning-rehearsal":
-                try:
-                    self._send_json(_active_speaker_commissioning_rehearsal_payload())
-                except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "event=sound.active_speaker_commissioning_rehearsal "
-                        "result=error"
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return

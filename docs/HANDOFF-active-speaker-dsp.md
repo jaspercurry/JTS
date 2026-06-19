@@ -114,10 +114,11 @@
 > profile, and the current deterministic auto-level decision. Unknown
 > high-frequency style defaults to a conservative 5 kHz high-pass and -65 dBFS
 > closed-loop cap until the driver style is known. The same backend also
-> includes a read-only **Commissioning rehearsal** packet from
-> `jasper.active_speaker.commissioning` and
-> `/sound/active-speaker/commissioning-rehearsal`. It rehearses the durable
-> sequence from saved speaker layout through safe-session/floor readiness without
+> exposes a read-only **Commissioning view** from
+> `jasper.active_speaker.commissioning_coordinator` and
+> `/sound/active-speaker/commissioning-view` (the surface the `/sound/` UI
+> fetches). It composes the durable setup state from saved speaker layout
+> through safe-session/floor readiness into one UI view model without
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > selection, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
@@ -1530,4 +1531,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-18
+Last verified: 2026-06-19

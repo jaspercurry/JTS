@@ -123,10 +123,6 @@ from .staging import (
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
-from .commissioning import (
-    COMMISSIONING_REHEARSAL_KIND,
-    build_commissioning_rehearsal,
-)
 from .design_draft import (
     DESIGN_DRAFT_KIND,
     DESIGN_DRAFT_PATH_ENV,
@@ -299,7 +295,6 @@ __all__ = [
     "ActiveSpeakerPreset",
     "BaselineVerification",
     "BRINGUP_PREFLIGHT_KIND",
-    "COMMISSIONING_REHEARSAL_KIND",
     "GRAPH_ALL_MUTED_ACTIVE_STARTUP",
     "GRAPH_FLAT_FULL_RANGE",
     "GRAPH_GUARDED_COMMISSIONING",
@@ -338,7 +333,6 @@ __all__ = [
     "emit_active_speaker_commissioning_config",
     "build_safe_tone_plan",
     "build_bringup_preflight",
-    "build_commissioning_rehearsal",
     "build_design_draft",
     "build_crossover_preview",
     "build_baseline_profile_candidate",

@@ -310,8 +310,8 @@ present, and the tone plan still enforces role-specific caps and high-pass
 guards.
 
 Lower-level diagnostics still exist for tests and operator debugging:
-`/sound/active-speaker/commissioning-rehearsal` derives a no-audio
-sequence from durable evidence, `/sound/active-speaker/stage-config` stages the
+`/sound/active-speaker/commissioning-view` composes a no-audio setup
+view model from durable evidence, `/sound/active-speaker/stage-config` stages the
 protected startup candidate, `/sound/active-speaker/check-path-safety` writes
 the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
 the protected graph. The normal product UI does not require a user to understand
