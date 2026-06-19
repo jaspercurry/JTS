@@ -36,11 +36,17 @@ from .graph_evidence import (
     driver_limiter_name,
     filter_params as _filter_params,
     filter_type as _filter_type,
-    float_matches as _float_matches,
     float_value as _float_value,
     output_commission_mute_name as _commission_mute_name,
     protective_tweeter_hp_name,
     truthy_bool as _truthy_bool,
+)
+from .graph_safety import (
+    GraphView,
+    filter_param_matches,
+    pipeline_contains_chain,
+    tweeter_guard_present,
+    view_from_yaml_text,
 )
 from .environment import (
     DEFAULT_CAMILLA_STATEFILE,
@@ -427,50 +433,6 @@ def _flat_graph_allowed(
     )
 
 
-def _safe_load_yaml(text: str) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    try:
-        payload = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        return None, _issue(
-            "blocker",
-            "camilla_yaml_unparseable",
-            f"could not parse CamillaDSP YAML: {type(exc).__name__}",
-        )
-    if not isinstance(payload, dict):
-        return None, _issue(
-            "blocker",
-            "camilla_yaml_not_object",
-            "CamillaDSP YAML did not parse to an object",
-        )
-    return payload, None
-
-
-def _pipeline_contains(
-    payload: dict[str, Any],
-    *,
-    channels: set[int],
-    required_names: tuple[str, ...],
-) -> bool:
-    pipeline = payload.get("pipeline")
-    if not isinstance(pipeline, list):
-        return False
-    for raw_step in pipeline:
-        step = raw_step if isinstance(raw_step, dict) else {}
-        if step.get("type") != "Filter":
-            continue
-        raw_channels = step.get("channels")
-        if not isinstance(raw_channels, list):
-            continue
-        try:
-            step_channels = {int(channel) for channel in raw_channels}
-        except (TypeError, ValueError):
-            continue
-        names = tuple(str(name) for name in step.get("names", []) if name is not None)
-        if step_channels == channels and all(name in names for name in required_names):
-            return True
-    return False
-
-
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -501,14 +463,17 @@ def _pipeline_names_for_channels(
     return tuple(out)
 
 
-def _commission_mutes(payload: dict[str, Any]) -> dict[int, bool]:
+def _commission_mute_states(view: GraphView) -> dict[int, bool]:
+    """Map each ``as_out{N}_commission_mute`` filter's output index to its
+    ``mute`` boolean, read from the shared view's parsed filters.
+
+    The ``as_out{N}_commission_mute`` name pattern is runtime_contract-specific
+    (``graph_safety``'s predicates take a single ``mute_name``, never a pattern),
+    so the scan stays here — but it now reads the already-parsed
+    ``GraphView.filters`` instead of re-walking the raw config dict.
+    """
     out: dict[int, bool] = {}
-    filters = payload.get("filters")
-    if not isinstance(filters, dict):
-        return out
-    for name, raw_spec in filters.items():
-        if not isinstance(name, str):
-            continue
+    for name, fdef in view.filters.items():
         if not name.startswith("as_out") or not name.endswith("_commission_mute"):
             continue
         index_s = name.removeprefix("as_out").removesuffix("_commission_mute")
@@ -516,15 +481,8 @@ def _commission_mutes(payload: dict[str, Any]) -> dict[int, bool]:
             index = int(index_s)
         except ValueError:
             continue
-        spec = raw_spec if isinstance(raw_spec, dict) else {}
-        params = spec.get("parameters") if isinstance(spec.get("parameters"), dict) else {}
-        out[index] = bool(params.get("mute"))
+        out[index] = bool(fdef.params.get("mute"))
     return out
-
-
-def _commission_mute_gain_ok(payload: dict[str, Any], index: int) -> bool:
-    params = _filter_params(payload, _commission_mute_name(index))
-    return _float_matches(params.get("gain"), STARTUP_MUTE_GAIN_DB)
 
 
 def _assignment_by_output(contract: OutputContract) -> dict[int, OutputAssignment]:
@@ -549,11 +507,28 @@ def _active_graph_evidence(
     summary: dict[str, Any],
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
-    payload, yaml_issue = _safe_load_yaml(text)
-    if yaml_issue:
-        issues.append(yaml_issue)
+    # Keep the two distinct parse-error codes that view_from_yaml_text collapses
+    # into parsed_ok=False: this module's callers branch on which one fired. We
+    # parse once here for the precise code (and `payload` backs the baseline
+    # path's filter accessors + subset pipeline-name lookup), then take the
+    # normalised view from the shared adapter for the predicate calls below.
+    try:
+        payload = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        issues.append(_issue(
+            "blocker",
+            "camilla_yaml_unparseable",
+            f"could not parse CamillaDSP YAML: {type(exc).__name__}",
+        ))
         return {"issues": issues, "safe": False}
-    assert payload is not None
+    if not isinstance(payload, dict):
+        issues.append(_issue(
+            "blocker",
+            "camilla_yaml_not_object",
+            "CamillaDSP YAML did not parse to an object",
+        ))
+        return {"issues": issues, "safe": False}
+    view = view_from_yaml_text(text)
 
     required_indexes = _required_roleful_indexes(contract)
     by_output = _assignment_by_output(contract)
@@ -576,7 +551,7 @@ def _active_graph_evidence(
             ),
         ))
 
-    mutes = _commission_mutes(payload)
+    mutes = _commission_mute_states(view)
     graph_indexes = (
         set(range(split_channels))
         if isinstance(split_channels, int) and split_channels >= 0
@@ -594,7 +569,13 @@ def _active_graph_evidence(
             ))
     weak_mutes = sorted(
         index for index in required_indexes
-        if mutes.get(index) is True and not _commission_mute_gain_ok(payload, index)
+        if mutes.get(index) is True
+        and not filter_param_matches(
+            view,
+            _commission_mute_name(index),
+            filter_type="Gain",
+            params={"gain": STARTUP_MUTE_GAIN_DB},
+        )
     )
     if weak_mutes:
         issues.append(_issue(
@@ -606,8 +587,8 @@ def _active_graph_evidence(
 
     unwired_mutes = sorted(
         index for index in required_indexes
-        if not _pipeline_contains(
-            payload,
+        if not pipeline_contains_chain(
+            view,
             channels={index},
             required_names=(_commission_mute_name(index),),
         )
@@ -643,33 +624,13 @@ def _active_graph_evidence(
         if item.physical_output_index is not None and item.role == "tweeter"
     }
     if tweeter_outputs and not is_baseline:
-        hp_params = _filter_params(payload, protective_tweeter_hp_name("tweeter"))
-        limiter_params = _filter_params(payload, driver_limiter_name("tweeter"))
-        hp_freq = _float_value(hp_params.get("freq"))
-        hp_order = _float_value(hp_params.get("order"))
-        limiter_clip = _float_value(limiter_params.get("clip_limit"))
-        hp_defined = (
-            _filter_type(payload, protective_tweeter_hp_name("tweeter")) == "BiquadCombo"
-            and str(hp_params.get("type") or "") == "LinkwitzRileyHighpass"
-            and hp_freq is not None
-            and hp_freq > 0.0
-            and (hp_order is None or hp_order >= 2.0)
-        )
-        limiter_defined = (
-            _filter_type(payload, driver_limiter_name("tweeter")) == "Limiter"
-            and limiter_clip is not None
-            and limiter_clip <= STARTUP_LIMITER_CLIP_LIMIT_DB
-            and _truthy_bool(limiter_params.get("soft_clip"))
-        )
-        guard_wired = _pipeline_contains(
-            payload,
+        if not tweeter_guard_present(
+            view,
             channels=tweeter_outputs,
-            required_names=(
-                protective_tweeter_hp_name("tweeter"),
-                driver_limiter_name("tweeter"),
-            ),
-        )
-        if not (hp_defined and limiter_defined and guard_wired):
+            hp_name=protective_tweeter_hp_name("tweeter"),
+            limiter_name=driver_limiter_name("tweeter"),
+            limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
+        ):
             issues.append(_issue(
                 "blocker",
                 "active_graph_tweeter_guard_missing",
@@ -708,8 +669,8 @@ def _active_graph_evidence(
         ))
 
     if is_baseline:
-        if not _pipeline_contains(
-            payload,
+        if not pipeline_contains_chain(
+            view,
             channels={0, 1},
             required_names=("active_baseline_headroom",),
         ):

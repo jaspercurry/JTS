@@ -283,14 +283,28 @@ fresh from `origin/main` — this worktree branch carries unrelated prior commit
 (`staging.py` +197 vs `origin/main`), so the slice must be recreated there to
 PR cleanly.
 
-**Next slice (2b):** migrate `runtime_contract.py`'s `_active_graph_evidence`
-onto the shared predicates — carefully, it has RICHER composition (granular
-issue codes: missing vs weak vs unwired mutes, single-role unmute, etc.) and
-its `_safe_load_yaml` distinguishes `camilla_yaml_unparseable` vs
-`camilla_yaml_not_object`, so preserve those (migrate the predicate calls +
-tweeter-guard in loose mode; keep the issue-code composition local). Gated by
-`tests/test_active_speaker_runtime_contract.py`. Then **slice 3:** wire the
-predicates into the `camilla_yaml` emit gate (L0).
+Phase 1 slice 2b landed: `runtime_contract.py`'s `_active_graph_evidence` now
+builds the shared `GraphView` via the new `view_from_yaml_text` adapter (a
+list-only `yaml.safe_load` reader — no scalar `channel: N` sugar, mirroring the
+deleted `_pipeline_contains`) and proves its invariants through the shared
+predicates (`pipeline_contains_chain`, `filter_param_matches`, and a new
+`tweeter_guard_present` carrying runtime_contract's LOOSE policy: any positive
+Fc, order ≥ 2, soft_clip, clip ≤ ceiling — separate from staging's exact-match
+guard, which is untouched). The duplicated local cluster
+(`_safe_load_yaml`/`_pipeline_contains`/`_commission_mutes`/
+`_commission_mute_gain_ok`) is deleted; the commission-mute scan keeps its
+runtime_contract-specific `as_out{N}_commission_mute` name pattern but reads
+`GraphView.filters`. Behavior-preserving: the granular issue codes and the two
+distinct parse-error codes (`camilla_yaml_unparseable` vs
+`camilla_yaml_not_object`) are preserved — the latter via a local parse, since
+`view_from_yaml_text` collapses both to `parsed_ok=False`. Ruff clean; full
+suite green (6539 passed). The baseline-path filter accessors stay on
+`graph_evidence` (the names+scalar-accessor module that overlaps `graph_safety`;
+their reconcile is its own follow-up).
+
+**Next slice (3):** wire the predicates into the `camilla_yaml` emit gate (L0)
+— the last gap, so a flat graph can never be emitted/loaded while a tweeter role
+is assigned. `runtime_contract` is now the proven re-use pattern.
 NB: this worktree has no `.venv`; run tests as
 `PYTHONPATH=$PWD /Users/jaspercurry/Code/JTS/.venv/bin/python -m pytest …`
 so `import jasper` resolves to the worktree, not the main checkout.

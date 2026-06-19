@@ -274,3 +274,215 @@ def test_none_in_names_is_dropped_not_stringified():
     view = gs.view_from_camilla_dict(camilla)
     assert gs.pipeline_contains_chain(view, channels={0}, required_names=("m",))
     assert not gs.pipeline_contains_chain(view, channels={0}, required_names=("None",))
+
+
+# --------------------------------------------------------------------------- #
+# view_from_yaml_text — the candidate/unknown-graph adapter (runtime_contract)
+# --------------------------------------------------------------------------- #
+
+
+def test_view_from_yaml_text_matches_other_adapters_on_emitted():
+    # The emitted fixture is valid YAML, so yaml.safe_load reads the same graph
+    # the text/dict adapters do. All three agree on the invariants.
+    view = gs.view_from_yaml_text(EMITTED)
+    assert view.parsed_ok
+    assert gs.output_hard_muted_and_wired(
+        view, 0, mute_name="as_out0_commission_mute", mute_gain_db=MUTE_GAIN
+    )
+    assert gs.output_unmuted_and_wired(view, 1, mute_name="as_out1_commission_mute")
+    assert gs.pipeline_contains_chain(
+        view,
+        channels={1},
+        required_names=("as_tweeter_protective_hp", "as_tweeter_startup_limiter"),
+    )
+
+
+def test_view_from_yaml_text_ignores_scalar_channel_sugar():
+    # The candidate adapter reads only `channels: [..]` list form. CamillaDSP's
+    # scalar `channel: N` sugar is a read-back artifact, never present in a
+    # candidate graph, so a scalar-sugar step does NOT satisfy a wiring check
+    # (unlike view_from_camilla_dict, which reads both).
+    sugar = (
+        "filters:\n  m:\n    type: Gain\n    parameters: { gain: 0.0 }\n"
+        "pipeline:\n  - type: Filter\n    channel: 1\n    names: [m]\n"
+    )
+    view = gs.view_from_yaml_text(sugar)
+    assert view.parsed_ok  # the document parses; only the channel form is ignored
+    assert not gs.pipeline_contains_chain(view, channels={1}, required_names=("m",))
+    # the same graph in list form IS read
+    listed = sugar.replace("    channel: 1", "    channels: [1]")
+    assert gs.pipeline_contains_chain(
+        gs.view_from_yaml_text(listed), channels={1}, required_names=("m",)
+    )
+    # contrast: view_from_camilla_dict DOES honour the scalar sugar
+    assert gs.pipeline_contains_chain(
+        gs.view_from_camilla_dict(
+            {"pipeline": [{"type": "Filter", "channel": 1, "names": ["m"]}]}
+        ),
+        channels={1},
+        required_names=("m",),
+    )
+
+
+def test_view_from_yaml_text_fails_closed_on_unparseable():
+    # An unterminated flow mapping raises yaml.YAMLError -> parsed_ok=False, and
+    # every predicate then fails closed against the empty view.
+    view = gs.view_from_yaml_text("filters: { broken\n")
+    assert not view.parsed_ok
+    assert not gs.output_hard_muted_and_wired(
+        view, 0, mute_name="as_out0_commission_mute", mute_gain_db=MUTE_GAIN
+    )
+
+
+def test_view_from_yaml_text_fails_closed_on_non_mapping():
+    assert not gs.view_from_yaml_text("- a\n- b\n").parsed_ok  # a list document
+    assert not gs.view_from_yaml_text("just a scalar\n").parsed_ok  # a scalar
+    assert not gs.view_from_yaml_text("").parsed_ok  # empty -> None
+
+
+def test_view_from_yaml_text_excludes_bool_channels():
+    # Uniform with the other adapters: a `true`/`false` is never a channel.
+    emitted = (
+        "filters:\n  m:\n    type: Gain\n    parameters: { gain: 0.0 }\n"
+        "pipeline:\n  - type: Filter\n    channels: [true]\n    names: [m]\n"
+    )
+    assert not gs.pipeline_contains_chain(
+        gs.view_from_yaml_text(emitted), channels={1}, required_names=("m",)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# tweeter_guard_present — runtime_contract's LOOSE policy
+# --------------------------------------------------------------------------- #
+
+TWEETER_CH = 1
+HP_NAME = "as_tweeter_protective_hp"
+LIMITER_NAME = "as_tweeter_startup_limiter"
+CLIP_CEILING = -12.0
+
+
+def _tweeter_view(
+    *,
+    hp_params: dict | None = None,
+    limiter_params: dict | None = None,
+    include_hp: bool = True,
+    include_limiter: bool = True,
+    wired: bool = True,
+) -> gs.GraphView:
+    """A view with the tweeter HP + limiter wired to channel 1, tunable per test.
+
+    Defaults are the emitter's exact values; tests override params (or drop a
+    filter / the wiring) to probe the loose policy's bounds."""
+    hp_params = (
+        {"type": "LinkwitzRileyHighpass", "freq": 1600.0, "order": 4}
+        if hp_params is None
+        else hp_params
+    )
+    limiter_params = (
+        {"clip_limit": -12.0, "soft_clip": True}
+        if limiter_params is None
+        else limiter_params
+    )
+    filters: dict = {}
+    names: list[str] = []
+    if include_hp:
+        filters[HP_NAME] = {"type": "BiquadCombo", "parameters": hp_params}
+        names.append(HP_NAME)
+    if include_limiter:
+        filters[LIMITER_NAME] = {"type": "Limiter", "parameters": limiter_params}
+        names.append(LIMITER_NAME)
+    pipeline = (
+        [{"type": "Filter", "channels": [TWEETER_CH], "names": names}]
+        if wired and names
+        else []
+    )
+    return gs.view_from_camilla_dict({"filters": filters, "pipeline": pipeline})
+
+
+def _guard(view: gs.GraphView) -> bool:
+    return gs.tweeter_guard_present(
+        view,
+        channels={TWEETER_CH},
+        hp_name=HP_NAME,
+        limiter_name=LIMITER_NAME,
+        limiter_clip_ceiling_db=CLIP_CEILING,
+    )
+
+
+def test_tweeter_guard_accepts_exact_emitter_values():
+    assert _guard(_tweeter_view())
+
+
+def test_tweeter_guard_loose_tolerances_accepted():
+    # Each of these would fail staging's exact-match guard but is fine for the
+    # loose audible-protection policy:
+    assert _guard(  # any positive Fc, not the emitter's exact protective Fc
+        _tweeter_view(hp_params={"type": "LinkwitzRileyHighpass", "freq": 800.0, "order": 4})
+    )
+    assert _guard(  # order >= 2 (not exactly 4)
+        _tweeter_view(hp_params={"type": "LinkwitzRileyHighpass", "freq": 1600.0, "order": 2})
+    )
+    assert _guard(  # order absent entirely
+        _tweeter_view(hp_params={"type": "LinkwitzRileyHighpass", "freq": 1600.0})
+    )
+    assert _guard(  # clip_limit BELOW the ceiling (more aggressive limiting)
+        _tweeter_view(limiter_params={"clip_limit": -20.0, "soft_clip": True})
+    )
+    assert _guard(  # clip_limit exactly at the ceiling
+        _tweeter_view(limiter_params={"clip_limit": -12.0, "soft_clip": True})
+    )
+
+
+def test_tweeter_guard_loose_differs_from_strict():
+    # Pin that loose really is looser than staging's strict composition: a view
+    # the loose guard accepts is rejected by an exact filter_param_matches.
+    view = _tweeter_view(
+        hp_params={"type": "LinkwitzRileyHighpass", "freq": 800.0, "order": 2},
+        limiter_params={"clip_limit": -20.0, "soft_clip": True},
+    )
+    assert _guard(view)
+    assert not gs.filter_param_matches(
+        view,
+        HP_NAME,
+        filter_type="BiquadCombo",
+        params={"type": "LinkwitzRileyHighpass", "freq": 1600.0, "order": 4},
+    )
+
+
+def test_tweeter_guard_rejects_bad_highpass():
+    assert not _guard(  # non-positive Fc
+        _tweeter_view(hp_params={"type": "LinkwitzRileyHighpass", "freq": 0.0, "order": 4})
+    )
+    assert not _guard(
+        _tweeter_view(hp_params={"type": "LinkwitzRileyHighpass", "freq": -100.0, "order": 4})
+    )
+    assert not _guard(  # order below 2
+        _tweeter_view(hp_params={"type": "LinkwitzRileyHighpass", "freq": 1600.0, "order": 1})
+    )
+    assert not _guard(  # wrong biquad sub-type
+        _tweeter_view(hp_params={"type": "LinkwitzRileyLowpass", "freq": 1600.0, "order": 4})
+    )
+    assert not _guard(_tweeter_view(include_hp=False))  # filter absent entirely
+
+
+def test_tweeter_guard_rejects_bad_limiter():
+    assert not _guard(  # clip_limit ABOVE the ceiling
+        _tweeter_view(limiter_params={"clip_limit": -6.0, "soft_clip": True})
+    )
+    assert not _guard(  # soft_clip false
+        _tweeter_view(limiter_params={"clip_limit": -12.0, "soft_clip": False})
+    )
+    assert not _guard(  # soft_clip missing
+        _tweeter_view(limiter_params={"clip_limit": -12.0})
+    )
+    assert not _guard(_tweeter_view(include_limiter=False))  # filter absent entirely
+
+
+def test_tweeter_guard_rejects_unwired():
+    # Both filters defined with correct params, but not wired into the pipeline
+    # for the tweeter channel -> fails closed.
+    assert not _guard(_tweeter_view(wired=False))
+
+
+def test_tweeter_guard_fails_closed_on_unparsed_view():
+    assert not _guard(gs.view_from_camilla_dict(None))
