@@ -2668,12 +2668,15 @@ def _outputd_aec_clock_payload(
     return json.dumps(payload).encode()
 
 
-def _aec_clock_block(*, verdict: str, status: str, ppm) -> dict:
+def _aec_clock_block(
+    *, verdict: str, status: str, ppm, observe: bool = False
+) -> dict:
     return {
         "chip_ref_sro_ppm": ppm,
         "sro_estimator_status": status,
         "verdict": verdict,
         "verdict_reason": f"{verdict}/{status}",
+        "observe": observe,
         "latency": {
             "dac_presentation_ms": 21.3,
             "playback_queue_ms": 64.0,
@@ -2696,7 +2699,26 @@ def test_aec_clock_drift_ok_when_coherent(monkeypatch):
     assert r.status == "ok"
     assert "verdict=coherent" in r.detail
     assert "chip_ref_sro_ppm=1.2" in r.detail
+    assert "observe=False" in r.detail
     assert "playback_queue_ms=64.0" in r.detail
+
+
+def test_aec_clock_drift_surfaces_observe_mode(monkeypatch):
+    """Chip-ref observe mode (writer armed purely to MEASURE drift on the
+    software-AEC3 path) is healthy and surfaced in the detail so an operator
+    can tell why the chip-ref writer is running."""
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(
+            aec_clock=_aec_clock_block(
+                verdict="compensable", status="locked", ppm=42.0, observe=True
+            )
+        ),
+    )
+    r = doctor.check_aec_clock_drift()
+    assert r.status == "ok"
+    assert "observe=True" in r.detail
 
 
 def test_aec_clock_drift_ok_when_compensable(monkeypatch):

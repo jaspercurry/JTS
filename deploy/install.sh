@@ -1239,6 +1239,11 @@ reconcile_aec_state() {
     #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC beam legs (opt-in,
     #                                 hardware-conditional, mutually
     #                                 exclusive with raw/DTLN)
+    #   - JASPER_AEC_CHIP_REF_OBSERVE opt-in: on the software-AEC3 path,
+    #                                 arm outputd's chip-ref writer FOR
+    #                                 MEASUREMENT ONLY so the Layer-0 SRO
+    #                                 drift estimator gets fed (mic path
+    #                                 stays software AEC3). Default off.
     # Defaults: profile auto. On the recommended XVF3800 6-channel
     # hardware that resolves to chip-AEC (no stacked software AEC/raw/DTLN).
     # When chip-AEC is unavailable it falls back to the software-AEC3
@@ -1252,7 +1257,7 @@ reconcile_aec_state() {
     # env vars in /etc/jasper/jasper.env runs separately in
     # migrate_wake_legs_config.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' \
+        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
             > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi

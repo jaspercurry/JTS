@@ -1524,13 +1524,17 @@ def check_aec_clock_drift() -> CheckResult:
     status = aec_clock.get("sro_estimator_status")
     sro_ppm = aec_clock.get("chip_ref_sro_ppm")
     reason = aec_clock.get("verdict_reason")
+    # Observe mode: the chip-ref writer was armed purely to MEASURE drift on
+    # the software-AEC3 mic path (chip-AEC observe mode), not for production
+    # chip-AEC. Surfaced so an operator can tell why the writer is running.
+    observe = aec_clock.get("observe")
     latency = aec_clock.get("latency") or {}
     dac_ms = latency.get("dac_presentation_ms")
     playback_ms = latency.get("playback_queue_ms")
     chip_ref_ms = latency.get("chip_ref_queue_ms")
     detail = (
         f"verdict={verdict}, sro_estimator_status={status}, "
-        f"chip_ref_sro_ppm={sro_ppm}, "
+        f"observe={observe}, chip_ref_sro_ppm={sro_ppm}, "
         f"dac_presentation_ms={dac_ms}, playback_queue_ms={playback_ms}, "
         f"chip_ref_queue_ms={chip_ref_ms}"
     )

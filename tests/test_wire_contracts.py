@@ -119,7 +119,7 @@ OUTPUTD_STATUS_CONSUMERS: dict[str, set[str]] = {
         "udp_target", "chip_ref_pcm",
         # check_aec_clock_drift (Layer 0 observe-only SRO drift)
         "aec_clock", "chip_ref_sro_ppm", "sro_estimator_status",
-        "verdict", "verdict_reason", "latency",
+        "verdict", "verdict_reason", "observe", "latency",
         "dac_presentation_ms", "playback_queue_ms", "chip_ref_queue_ms",
     },
 }

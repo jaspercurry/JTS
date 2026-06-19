@@ -112,6 +112,12 @@ pub struct Config {
     pub chip_ref_sample_rate: u32,
     pub chip_ref_period_frames: u32,
     pub chip_ref_buffer_frames: u32,
+    /// Observe-only label (chip-AEC Layer 0): when the reconciler armed the
+    /// chip-ref writer FOR DRIFT MEASUREMENT on the software-AEC3 path (not
+    /// for production chip-AEC), this is true. It changes NO outputd
+    /// behavior — the chip-ref writer already keys off `chip_ref_pcm`; this
+    /// just lets `/state` self-describe why the writer is running.
+    pub chip_ref_observe: bool,
     pub chip_ref_tee_path: Option<String>,
     pub reference_udp_target: Option<String>,
     pub stream_id: u64,
@@ -442,6 +448,7 @@ impl Config {
             chip_ref_sample_rate,
             chip_ref_period_frames,
             chip_ref_buffer_frames,
+            chip_ref_observe: env_bool("JASPER_OUTPUTD_CHIP_REF_OBSERVE", false),
             chip_ref_tee_path: env_optional("JASPER_OUTPUTD_CHIP_REF_TEE_PATH"),
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
@@ -682,6 +689,8 @@ mod tests {
             assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
             assert!(cfg.chip_ref_pcm.is_none());
+            // Observe mode is opt-in; off by default (zero cost).
+            assert!(!cfg.chip_ref_observe);
             assert!(cfg.chip_ref_tee_path.is_none());
             assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.control_socket_path.is_none());
@@ -781,6 +790,7 @@ mod tests {
                 ("JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE", Some("16000")),
                 ("JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES", Some("320")),
                 ("JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES", Some("1280")),
+                ("JASPER_OUTPUTD_CHIP_REF_OBSERVE", Some("1")),
                 (
                     "JASPER_OUTPUTD_CHIP_REF_TEE_PATH",
                     Some("/tmp/outputd-chip-ref.s16le"),
@@ -801,6 +811,7 @@ mod tests {
                 assert_eq!(cfg.chip_ref_sample_rate, 16_000);
                 assert_eq!(cfg.chip_ref_period_frames, 320);
                 assert_eq!(cfg.chip_ref_buffer_frames, 1280);
+                assert!(cfg.chip_ref_observe);
                 assert_eq!(
                     cfg.chip_ref_tee_path.as_deref(),
                     Some("/tmp/outputd-chip-ref.s16le")
