@@ -58,6 +58,24 @@ CUES: tuple[CueDef, ...] = (
         ),
     ),
     CueDef(
+        slug="internal_error",
+        template=(
+            "Sorry, something went wrong on my end. Please try again."
+        ),
+        description=(
+            "Played when wake fires and turn-open hits an UNEXPECTED "
+            "local/internal error that is NOT a connectivity problem — "
+            "e.g. a failed state write. Distinguished from cant_connect: "
+            "that cue is truthful only when the live backend is genuinely "
+            "down/paused (its own gate handles that). Reaching this means "
+            "the connection looked healthy and something else broke, so "
+            "claiming 'I can't connect' would be a false alarm (the "
+            "2026-06-19 incident). Deliberately honest and low-alarm: it "
+            "makes no false promise to 'keep trying' and names no cause "
+            "it can't stand behind."
+        ),
+    ),
+    CueDef(
         slug="cant_reach_cloud",
         template=(
             "Heads up — I'm having trouble reaching the cloud and "

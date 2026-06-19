@@ -85,3 +85,25 @@ def test_every_played_slug_is_registered():
 def test_registry_slugs_are_unique():
     slugs = [c.slug for c in CUES]
     assert len(slugs) == len(set(slugs)), f"duplicate cue slug in CUES: {slugs}"
+
+
+def test_cues_are_provider_agnostic():
+    """AGENTS.md + the registry docstring: cue text must not name a voice
+    backend. A WAV baked with "Gemini"/"OpenAI"/"Grok" would mislead the
+    household after a provider switch. Pin it so a new cue can't quietly
+    reintroduce a brand name (the internal_error cue added 2026-06-19 is
+    deliberately generic — "something went wrong on my end")."""
+    forbidden = (
+        "google", "gemini", "openai", "chatgpt", "grok", "xai",
+        "anthropic", "claude",
+    )
+    offenders = {
+        c.slug: w
+        for c in CUES
+        for w in forbidden
+        if w in c.template.lower()
+    }
+    assert not offenders, (
+        "cue template(s) name a voice provider (must be provider-agnostic "
+        f"per AGENTS.md / registry docstring): {offenders}"
+    )

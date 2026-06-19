@@ -992,6 +992,8 @@ class WakeLoop:
                 raise AssertionError("WakeLoop.for_tests acquire_turn stub used")
 
         class _TestDucker:
+            is_ducked = False
+
             async def duck(self) -> None:
                 return None
 
@@ -1011,6 +1013,8 @@ class WakeLoop:
                 return None
 
         class _TestUsageStore:
+            write_degraded = False
+
             def open_session(self, *_args, **_kwargs) -> int:
                 return 1
 
@@ -2086,9 +2090,13 @@ class WakeLoop:
            cues across N peers.
         3. **Chirp + begin turn + drain**: existing wake flow.
 
-        On error in step 3: play `cant_connect`, cleanup, clear buffer,
-        return to WAKE. The `_acquiring` flag flips back to False in
-        the finally so the loop returns to wake detection.
+        On error in step 3: play a failure cue, cleanup, clear buffer,
+        return to WAKE. The cue is honest about cause — `cant_connect`
+        only when the live connection is genuinely paused, otherwise
+        `internal_error` (an unexpected throw here is almost always a
+        local problem, not connectivity). The `_acquiring` flag flips
+        back to False in the finally so the loop returns to wake
+        detection.
         """
         try:
             # Step 0: late-cancel gates. mute_mic / measurement_pause
@@ -2186,7 +2194,21 @@ class WakeLoop:
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             await self._telemetry_outcome("session_failed", str(e)[:200])
-            await self._play_cue("cant_connect")
+            # Be honest about WHY we couldn't serve. The conn_paused gate
+            # above already played cant_connect for the expected
+            # connection-down case and returned, so reaching this
+            # catch-all means the connection looked healthy and something
+            # ELSE broke during turn-open — almost always local/internal
+            # (a failed state write, a disk error), NOT connectivity.
+            # Saying "I can't connect, I'll keep trying" there is a false
+            # alarm (the 2026-06-19 incident). Only claim a connection
+            # problem if the connection actually dropped into
+            # paused/failed mid-acquire; otherwise play the honest,
+            # low-alarm internal-error cue.
+            if self._connection.is_paused():
+                await self._play_cue("cant_connect")
+            else:
+                await self._play_cue("internal_error")
             await self._cleanup_after_failed_begin()
             self._acquire_buffer.clear()
         finally:
@@ -2603,6 +2625,12 @@ class WakeLoop:
             "state": self._state.name,
             "input_ended": self._input_ended,
             "spend_allowed": self._spend_cap.allowed(),
+            # Spend accounting is degraded: usage.db writes are failing, so
+            # turns are served but their cost isn't recorded and the spend cap
+            # can't enforce. Surfaced (like spend_allowed) so /state +
+            # jasper-control can show "recorded spend may be stale" instead of
+            # the cap silently flatlining. See UsageStore.write_degraded.
+            "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
             "duck_active": self._ducker.is_ducked,
