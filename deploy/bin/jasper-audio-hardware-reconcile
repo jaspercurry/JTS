@@ -200,12 +200,28 @@ env_file_value() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# Ensure an env file's parent dir exists WITHOUT re-moding it when it already
+# does. The installer owns each dir's canonical mode/group and they are NOT
+# uniform: /var/lib/jasper is root:jasper 0770 (ensure_state_dir, so the
+# now-non-root jasper-voice/-mux can write speaker_volume.json) and /etc/jasper
+# is 0755 (widen_control_secret_env_modes, so the group-jasper doctor-json
+# oneshot can traverse to read jasper.env). A blanket `install -d -m 0750` here
+# re-chmods on every install / boot (Before=jasper-outputd) / udev sound
+# add|remove|change reconcile and strips those bits — the exact trap
+# env-migrations.sh:ensure_state_dir warns about. So only backfill a genuinely
+# absent dir (with a conservative default the next install corrects); never
+# touch an existing one.
+ensure_env_dir() {
+    local dir="$1"
+    [[ -d "$dir" ]] || install -d -m 0750 "$dir"
+}
+
 set_env_var() {
     local key="$1" value="$2"
     local dir tmp quoted
 
     dir="$(dirname "$ENV_FILE")"
-    install -d -m 0750 "$dir"
+    ensure_env_dir "$dir"
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(quote_env_value "$value")"
 
@@ -279,7 +295,7 @@ set_env_file_var() {
     local dir tmp quoted
 
     dir="$(dirname "$file")"
-    install -d -m 0750 "$dir"
+    ensure_env_dir "$dir"
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(quote_env_value "$value")"
 
