@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,7 +65,7 @@ def _run_reconcile(
     source_template = tmp_path / "asoundrc.jasper.source"
     source_template.write_text(
         "__OUTPUTD_DAC_PCM_BLOCK__\n"
-        "ctl.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
+        "__OUTPUTD_DAC_CTL_BLOCK__\n"
         "pcm.jasper_out { card __DONGLE_CARD__ }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n",
         encoding="utf-8",
@@ -115,6 +116,9 @@ def _run_reconcile(
             "JASPER_ENV_FILE_LIB": str(
                 ROOT / "deploy" / "lib" / "jasper-env-file.sh"
             ),
+            "JASPER_ASOUND_RENDER_LIB": str(
+                ROOT / "deploy" / "lib" / "jasper-asound-render.sh"
+            ),
         }
     )
     if extra_env:
@@ -127,6 +131,18 @@ def _run_reconcile(
         text=True,
         capture_output=True,
     )
+
+
+def _assert_no_empty_alsa_card(rendered: str) -> None:
+    assert not re.search(r"(?m)^\s*card\s*$", rendered)
+    assert not re.search(r"\bcard\s+}", rendered)
+
+
+def _assert_parked_outputd_dac_template(rendered: str) -> None:
+    assert "pcm.outputd_dac" in rendered
+    assert "type null" in rendered
+    assert "ctl.outputd_dac" not in rendered
+    _assert_no_empty_alsa_card(rendered)
 
 
 def _fake_sys_output_card(
@@ -323,6 +339,7 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "pcm.outputd_dac" in template
     assert "type hw" in template
     assert "card A" in template
+    _assert_no_empty_alsa_card(template)
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
@@ -408,7 +425,10 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "    card A\n"
         "    device 0\n"
         "}\n"
-        "ctl.outputd_dac { card A }\n"
+        "ctl.outputd_dac {\n"
+        "    type hw\n"
+        "    card A\n"
+        "}\n"
         "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
@@ -485,7 +505,9 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     state_text = (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert '"apple_dac_count": 2' in state_text
-    assert not (tmp_path / "asoundrc.jasper.template").exists()
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    _assert_parked_outputd_dac_template(template)
+    assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
@@ -573,6 +595,11 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "pcm.outputd_dac" in template
+    assert "type null" in template
+    assert "ctl.outputd_dac" not in template
+    _assert_no_empty_alsa_card(template)
     assert "order_source=saved_topology" in result.stderr
 
 
@@ -655,7 +682,9 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert "action=park_until_active_graph" in result.stderr
     assert "reason=camilla_statefile_missing" in result.stderr
-    assert not (tmp_path / "asoundrc.jasper.template").exists()
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    _assert_parked_outputd_dac_template(template)
+    assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
 
@@ -680,6 +709,7 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "type hw" in template
     assert "card sndrpihifiberry" in template
     assert "pcm.jasper_out { card A }" in template
+    _assert_no_empty_alsa_card(template)
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "reset-failed jasper-dac-init.service jasper-headphone-monitor.service" in commands
@@ -753,6 +783,7 @@ def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
     assert "pcm.outputd_dac {\n    type hw\n    card sndrpihifiberry\n" in template
     assert "type route" not in template
     assert "0.4 0.5" not in template
+    _assert_no_empty_alsa_card(template)
     assert "output_dac_route" not in result.stderr
     assert "route_ignored" not in result.stderr
     assert "outputd_active_mode=1 outputd_active_channels=2" in result.stderr
@@ -779,15 +810,16 @@ def test_reconcile_dac8x_active_graph_over_cap_stays_stereo(tmp_path: Path):
     assert "active_graph=active_graph_unsafe:active_graph_output_count_mismatch" in result.stderr
 
 
-def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):
+def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
     result = _run_reconcile(tmp_path, "", "--reason", "test")
 
     assert result.returncode == 0, result.stderr
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
     assert "JASPER_AUDIO_DAC_ID=A" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
-    assert not (tmp_path / "asoundrc.jasper.template").exists()
-    assert _render_log(tmp_path) == ""
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    _assert_parked_outputd_dac_template(template)
+    assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
@@ -812,7 +844,10 @@ def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(
             "    card sndrpihifiberry\n"
             "    device 0\n"
             "}\n"
-            "ctl.outputd_dac { card sndrpihifiberry }\n"
+            "ctl.outputd_dac {\n"
+            "    type hw\n"
+            "    card sndrpihifiberry\n"
+            "}\n"
             "pcm.jasper_out { card A }\n"
             "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
         ),
@@ -839,7 +874,10 @@ def test_reconcile_restarts_when_only_outputd_runtime_env_changes(
         "    card A\n"
         "    device 0\n"
         "}\n"
-        "ctl.outputd_dac { card A }\n"
+        "ctl.outputd_dac {\n"
+        "    type hw\n"
+        "    card A\n"
+        "}\n"
         "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )

@@ -30,7 +30,11 @@
 # install and locally-built bindings as direct references
 # (`jasper-speaker @ file:///opt/jasper`, `-e ...`). Those aren't valid
 # in a pip constraints file (and we never want to pin ourselves), so
-# anything that isn't a plain `name==version` pin is dropped.
+# anything that isn't a plain `name==version` pin is dropped. Debian's
+# python3-flatbuffers package can also leak into the venv as
+# `flatbuffers==20181003210633`; pip cannot replay that non-PyPI version
+# from PyPI, so drop it and let onnxruntime resolve a published
+# flatbuffers wheel.
 #
 # Usage:
 #   bash scripts/generate-pi-constraints.sh
@@ -66,8 +70,13 @@ freeze="$(sed -n '/^FREEZE-BEGIN$/,$p' <<<"${remote_out}" | tail -n +2)"
 
 # Keep only plain `name==version` pins. Editable installs (`-e ...`)
 # and direct references (`pkg @ file://...`) are invalid constraint
-# lines; comments/blank lines carry nothing.
-pins="$(grep -E '^[A-Za-z0-9._-]+==' <<<"${freeze}" | LC_ALL=C sort -f || true)"
+# lines; comments/blank lines carry nothing. Drop known distro-only
+# freeze values that pip cannot install from PyPI.
+pins="$(
+    grep -E '^[A-Za-z0-9._-]+==' <<<"${freeze}" \
+        | grep -v -Fx 'flatbuffers==20181003210633' \
+        | LC_ALL=C sort -f || true
+)"
 
 if [[ -z "${pins}" ]]; then
     echo "error: pip freeze on ${PI_HOST} produced no name==version pins" >&2

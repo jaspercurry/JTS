@@ -1042,10 +1042,10 @@ install_alsa() {
     fi
     install -d -m 0755 "${ENV_DIR}"
     ensure_state_dir
-    jasper_asound_render_template \
-        "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
-        "${ENV_DIR}/asoundrc.jasper.template"
-    chmod 0644 "${ENV_DIR}/asoundrc.jasper.template"
+    install -d -m 0755 /usr/local/lib/jasper
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
+        /usr/local/lib/jasper/jasper-asound-render.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
         /usr/local/sbin/jasper-render-asound-conf
@@ -1059,6 +1059,10 @@ install_alsa() {
     install -m 0644 \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
         "${ENV_DIR}/asoundrc.jasper.source"
+    jasper_asound_render_template \
+        "${ENV_DIR}/asoundrc.jasper.source" \
+        "${ENV_DIR}/asoundrc.jasper.template"
+    chmod 0644 "${ENV_DIR}/asoundrc.jasper.template"
     /usr/local/sbin/jasper-render-asound-conf
     ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf
     chmod 0644 /var/lib/jasper-asound/asound.conf

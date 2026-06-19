@@ -129,6 +129,10 @@ Python dependency determinism is split by runtime target:
   pip via `-c` for open-range runtime installs, replaying a reviewed
   on-device resolve while still letting exact-pinned bootstrap installs
   (`pip`, `wheel`, `openwakeword --no-deps`) stay simple.
+  `scripts/generate-pi-constraints.sh` drops the known Debian-only
+  `flatbuffers==20181003210633` freeze value because PyPI cannot replay
+  it; `onnxruntime` then resolves a published flatbuffers wheel during
+  deploy.
 - **GitHub Actions** still installs from `pyproject.toml` on Ubuntu
   x86_64 with pip. That is intentional for the hardware-free CI slice:
   the Pi constraints file is architecture-specific, and `uv.lock` is
@@ -240,4 +244,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-06-18
+Last verified: 2026-06-19
