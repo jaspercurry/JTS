@@ -2609,6 +2609,7 @@ async def _active_speaker_commission_ramp_ack_payload(
     if (
         outcome == "heard_correct_driver"
         and payload.get("status") == "confirmed"
+        and not payload.get("issues")
         and isinstance(pending, dict)
     ):
         measurements = record_driver_measurement(

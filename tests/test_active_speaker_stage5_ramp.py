@@ -16,6 +16,7 @@ Three layers, all hardware-free:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 import yaml
@@ -620,6 +621,49 @@ def test_operator_ack_confirms_floor_and_records_role(monkeypatch, tmp_path):
     ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
     assert ramp["confirmed_roles"] == ["woofer"]
     assert ramp["pending"] is None
+
+
+def test_operator_ack_rejected_floor_confirm_does_not_record_role(
+    monkeypatch, tmp_path
+):
+    """A 'heard correct' ACK whose floor confirm safe_playback REJECTS must NOT
+    advance confirmed_roles (the woofer-before-tweeter ordering authority).
+
+    Regression for the Stage-5 fail-open: confirmed_roles was appended
+    unconditionally on heard_correct_driver, so a stale playback_id (e.g. a
+    racing auto-retry under the threading HTTP server) could confirm a role the
+    operator never genuinely heard — letting a later tweeter step proceed.
+    """
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    # Simulate a racing newer playback: the safe session now awaits a DIFFERENT
+    # playback_id than the ramp's pending step carries, so the confirm mismatches.
+    safe_path = tmp_path / "safe.json"
+    safe_data = json.loads(safe_path.read_text(encoding="utf-8"))
+    assert safe_data["quiet_start"]["status"] == "floor_pending_operator"
+    safe_data["quiet_start"]["pending_playback_id"] = "stale-other-playback"
+    safe_path.write_text(json.dumps(safe_data), encoding="utf-8")
+
+    ack = asyncio.run(
+        record_ramp_operator_ack(
+            outcome="heard_correct_driver",
+            ramp_state_path_override=tmp_path / "ramp.json",
+            safe_playback_state_path=safe_path,
+            commission_load_state_path=state_path,
+        )
+    )
+
+    assert ack["status"] == "rejected"
+    assert any(
+        issue.get("code") == "playback_id_mismatch"
+        for issue in (ack["issues"] or [])
+    )
+    ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
+    assert ramp["confirmed_roles"] == []  # woofer NOT recorded
+    assert ramp["pending"] is not None  # step left pending for a real re-confirm
 
 
 def test_silent_floor_allows_a_louder_retry(monkeypatch, tmp_path):
