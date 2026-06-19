@@ -400,7 +400,7 @@ class WriteHealth:
 class UsageStore:
     def __init__(
         self, db_path: str, pricing: Pricing | None = None,
-        *, read_only: bool = False,
+        *, read_only: bool = False, pricing_overrides: dict | None = None,
     ) -> None:
         # Status surfaces (the /voice spend-cap card, jasper-doctor) read
         # this DB but run as root, NOT as jasper-voice. They MUST pass
@@ -468,6 +468,7 @@ class UsageStore:
         self._pricing: Pricing = pricing or pricing_for_model(
             _DEFAULT_DISPLAY_MODEL
         )
+        self._pricing_overrides = pricing_overrides or {}
         # Write-failure health — only meaningful on the writable voice store
         # (read-only surfaces never write). Drives the
         # /state.voice.usage_tracking_degraded signal via ``write_degraded``.
@@ -518,13 +519,61 @@ class UsageStore:
         modality-aware billing (OpenAI Realtime). When None, falls back
         to the scalar all-audio estimate via the ``input_tokens`` /
         ``output_tokens`` arguments — this is the path Gemini Live and
-        the legacy unit tests take."""
+        the legacy unit tests take.
+        """
+        return self._close_session_with_pricing(
+            session_id,
+            input_tokens,
+            output_tokens,
+            usage,
+            pricing=self._pricing,
+        )
+
+    def record_background_usage(
+        self,
+        *,
+        provider: str,
+        model: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        usage: dict | None = None,
+    ) -> float:
+        """Record one short-lived non-voice job against the spend ledger.
+
+        Background jobs such as async research do not have a live voice
+        session id to close. Keep that as an explicit API so callers that
+        forget a normal session id fail loudly instead of creating a
+        phantom row.
+        """
+        session_id = self.open_session(provider)
+        pricing = (
+            pricing_for_model(model, overrides=self._pricing_overrides)
+            if model
+            else self._pricing
+        )
+        return self._close_session_with_pricing(
+            session_id,
+            input_tokens,
+            output_tokens,
+            usage,
+            pricing=pricing,
+        )
+
+    def _close_session_with_pricing(
+        self,
+        session_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        usage: dict | None,
+        *,
+        pricing: Pricing,
+    ) -> float:
         if usage is None:
             usage = {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
             }
-        cost = self._pricing.estimate_cost(usage)
+        cost = pricing.estimate_cost(usage)
         # No row to update when open_session's write failed — the cost
         # estimate is still returned for the caller's logging, it just
         # isn't persisted (see _UNRECORDED_SESSION / open_session).

@@ -101,6 +101,7 @@ def _full_catalog_registry(
         volume_coordinator=None, renderer=None, router=None, weather=None,
         spotify_device_name="JTS", spotify_setup_url="",
         transit_tools=transit, ha=object(), timer_scheduler=object(),
+        research_scheduler=object(),
         google_clients=types.SimpleNamespace(list_account_names=lambda: ["seed"]),
         wake_event_store=object(),
     )

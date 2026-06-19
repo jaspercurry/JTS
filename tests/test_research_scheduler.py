@@ -329,3 +329,104 @@ async def test_stop_cancels_in_flight_without_calling_on_done():
     finally:
         if os.path.exists(path):
             os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_set_on_done_wires_callback_after_construction():
+    path = _tmp_db_path()
+    done_jobs: list[ResearchJob] = []
+
+    class Client:
+        async def complete(self, _req):
+            return ResearchResult(text="done")
+
+    async def on_done(job: ResearchJob) -> None:
+        done_jobs.append(job)
+
+    try:
+        sched = ResearchScheduler(Client(), db_path=path)
+        sched.set_on_done(on_done)
+        accepted = sched.submit("late wire")
+        assert accepted.accepted is True
+        assert accepted.job is not None
+
+        await _wait_for(lambda: bool(done_jobs))
+
+        assert done_jobs[0].id == accepted.job.id
+        assert done_jobs[0].status == DONE
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_done_result_is_capped_and_usage_is_recorded():
+    path = _tmp_db_path()
+    done_jobs: list[ResearchJob] = []
+
+    class Client:
+        async def complete(self, _req):
+            return ResearchResult(
+                text="alpha beta gamma delta epsilon zeta eta theta",
+                input_tokens=123,
+                output_tokens=45,
+                usage={
+                    "input_tokens": 123,
+                    "output_tokens": 45,
+                    "input_token_details": {"text_tokens": 123},
+                    "output_token_details": {"text_tokens": 45},
+                },
+            )
+
+    class Usage:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def close_session(self, **kwargs):
+            self.calls.append(kwargs)
+            return 0.001
+
+    async def on_done(job: ResearchJob) -> None:
+        done_jobs.append(job)
+
+    usage = Usage()
+    try:
+        sched = ResearchScheduler(
+            Client(),
+            on_done=on_done,
+            db_path=path,
+            max_result_chars=24,
+            usage_store=usage,  # type: ignore[arg-type]
+            usage_provider="openai",
+            usage_model="gpt-5.4-mini",
+        )
+        accepted = sched.submit("cap it")
+        assert accepted.accepted is True
+        assert accepted.job is not None
+
+        await _wait_for(lambda: bool(done_jobs))
+
+        done = done_jobs[0]
+        assert done.status == DONE
+        assert done.result == "alpha beta gamma..."
+        assert len(done.result or "") <= 24
+        row = ResearchJobStore(path).get(done.id)
+        assert row is not None
+        assert row.result == done.result
+        assert usage.calls == [{
+            "provider": "openai",
+            "model": "gpt-5.4-mini",
+            "input_tokens": 123,
+            "output_tokens": 45,
+            "usage": {
+                "input_tokens": 123,
+                "output_tokens": 45,
+                "input_token_details": {"text_tokens": 123},
+                "output_token_details": {"text_tokens": 45},
+            },
+        }]
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)

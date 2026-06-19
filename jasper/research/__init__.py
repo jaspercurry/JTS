@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .base import (
+    RESEARCH_ANSWER_INSTRUCTIONS,
     ResearchError,
     ResearchRequest,
     ResearchResult,
@@ -22,6 +23,7 @@ from .scheduler import (
     DEFAULT_CONCURRENCY,
     DEFAULT_DB_PATH,
     DEFAULT_MAX_RUNTIME_SEC,
+    DEFAULT_MAX_RESULT_CHARS,
     DONE,
     FAILED,
     RUNNING,
@@ -84,8 +86,10 @@ __all__ = [
     "DEFAULT_CONCURRENCY",
     "DEFAULT_DB_PATH",
     "DEFAULT_MAX_RUNTIME_SEC",
+    "DEFAULT_MAX_RESULT_CHARS",
     "FAILED",
     "PROVIDERS",
+    "RESEARCH_ANSWER_INSTRUCTIONS",
     "RUNNING",
     "ResearchError",
     "ResearchJob",

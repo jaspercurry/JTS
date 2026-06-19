@@ -16,9 +16,12 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from .base import ResearchError, ResearchRequest, TextLLMClient
+from .base import ResearchError, ResearchRequest, ResearchResult, TextLLMClient
+
+if TYPE_CHECKING:
+    from jasper.usage import UsageStore
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +34,13 @@ _RESEARCH_RUNTIME_ERRORS = (
     TypeError,
     ValueError,
 )
+_RESEARCH_USAGE_ERRORS = (sqlite3.Error, *_RESEARCH_RUNTIME_ERRORS)
 
 
 DEFAULT_DB_PATH = "/var/lib/jasper/research_jobs.db"
 DEFAULT_MAX_RUNTIME_SEC = 300.0
 DEFAULT_CONCURRENCY = 2
+DEFAULT_MAX_RESULT_CHARS = 600
 
 ResearchStatus = Literal["running", "done", "failed"]
 RUNNING: ResearchStatus = "running"
@@ -270,16 +275,35 @@ class ResearchScheduler:
         db_path: str = DEFAULT_DB_PATH,
         max_runtime_sec: float = DEFAULT_MAX_RUNTIME_SEC,
         concurrency: int = DEFAULT_CONCURRENCY,
+        max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
+        usage_store: "UsageStore | None" = None,
+        usage_provider: str = "openai",
+        usage_model: str = "",
     ) -> None:
         self._client = client
         self._on_done = on_done
         self._store = store if store is not None else ResearchJobStore(db_path)
         self._max_runtime_sec = float(max_runtime_sec)
         self._concurrency = max(1, int(concurrency))
+        self._max_result_chars = max(1, int(max_result_chars))
+        self._usage_store = usage_store
+        self._usage_provider = usage_provider
+        self._usage_model = usage_model
         self._sem = asyncio.Semaphore(self._concurrency)
         self._jobs: dict[str, ResearchJob] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._started = False
+
+    def set_on_done(
+        self, on_done: Callable[[ResearchJob], Awaitable[None] | None] | None,
+    ) -> None:
+        """Wire the completion callback after construction.
+
+        Mirrors ``TimerScheduler.set_on_fire``: the scheduler must exist
+        before tool registration, while the daemon-side announcer only
+        exists after ``WakeLoop`` is constructed.
+        """
+        self._on_done = on_done
 
     async def start(self) -> None:
         """Restore persisted terminal work without replaying running jobs."""
@@ -355,6 +379,18 @@ class ResearchScheduler:
     def get(self, job_id: str) -> ResearchJob | None:
         return self._jobs.get(job_id) or self._store.get(job_id)
 
+    def mark_announced(self, job_id: str) -> ResearchJob | None:
+        job = self._store.mark_announced(job_id)
+        if job is not None:
+            self._jobs[job.id] = job
+        return job
+
+    def mark_read(self, job_id: str) -> ResearchJob | None:
+        job = self._store.mark_read(job_id)
+        if job is not None:
+            self._jobs[job.id] = job
+        return job
+
     def _running_task_count(self) -> int:
         return sum(
             1
@@ -389,6 +425,7 @@ class ResearchScheduler:
         except _RESEARCH_RUNTIME_ERRORS as e:
             done = self._finish_failed(job, str(e) or type(e).__name__)
         else:
+            self._record_usage(result)
             done = self._finish_done(job, result.text)
         finally:
             self._tasks.pop(job.id, None)
@@ -396,6 +433,7 @@ class ResearchScheduler:
         await self._notify_done(done)
 
     def _finish_done(self, job: ResearchJob, result: str) -> ResearchJob:
+        result = _cap_result_text(result, self._max_result_chars)
         done = ResearchJob(
             id=job.id,
             query=job.query,
@@ -439,6 +477,28 @@ class ResearchScheduler:
         except _RESEARCH_RUNTIME_ERRORS as e:
             logger.warning("research on_done failed (id=%s): %s", job.id, e)
 
+    def _record_usage(self, result: ResearchResult) -> None:
+        if self._usage_store is None:
+            return
+        usage = result.usage
+        if usage is None and (result.input_tokens or result.output_tokens):
+            usage = {
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "input_token_details": {"text_tokens": result.input_tokens},
+                "output_token_details": {"text_tokens": result.output_tokens},
+            }
+        try:
+            self._usage_store.close_session(
+                provider=self._usage_provider,
+                model=self._usage_model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                usage=usage,
+            )
+        except _RESEARCH_USAGE_ERRORS as e:
+            logger.warning("research usage recording failed: %s", e)
+
 
 def _row_values(job: ResearchJob) -> tuple:
     return (
@@ -466,3 +526,15 @@ def _job_from_row(row: tuple) -> ResearchJob:
         announced=bool(row[7]),
         read=bool(row[8]),
     )
+
+
+def _cap_result_text(text: str, max_chars: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    capped = text[: max_chars - 3].rstrip()
+    if " " in capped:
+        capped = capped.rsplit(" ", 1)[0].rstrip() or capped
+    return f"{capped}..."

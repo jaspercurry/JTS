@@ -96,6 +96,7 @@ class _FakeResponse:
     status: str
     output_text: str = ""
     error: str | None = None
+    usage: object | None = None
 
 
 class _FakeResponses:
@@ -114,6 +115,7 @@ class _FakeResponses:
             id=response_id,
             status="completed",
             output_text="Here is the short answer.",
+            usage={"input_tokens": 20, "output_tokens": 7},
         )
 
 
@@ -138,10 +140,21 @@ async def test_openai_client_uses_background_responses_and_polling():
 
     result = await client.complete(ResearchRequest(query="research induction ranges"))
 
-    assert result == ResearchResult(text="Here is the short answer.")
+    assert result == ResearchResult(
+        text="Here is the short answer.",
+        input_tokens=20,
+        output_tokens=7,
+        usage={
+            "input_tokens": 20,
+            "output_tokens": 7,
+            "input_token_details": {"text_tokens": 20},
+            "output_token_details": {"text_tokens": 7},
+        },
+    )
     assert fake.responses.create_kwargs == {
         "model": "gpt-test",
         "input": "research induction ranges",
+        "instructions": research.RESEARCH_ANSWER_INSTRUCTIONS,
         "background": True,
     }
     assert fake.responses.retrieve_calls == 1

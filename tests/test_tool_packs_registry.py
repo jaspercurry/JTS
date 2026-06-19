@@ -42,6 +42,7 @@ from jasper.tools.packs import (
     outcomes_to_state,
     register_packs,
 )
+from jasper.tools.research import make_research_tools
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.time import make_time_tools
 from jasper.tools.timer import make_timer_tools
@@ -82,6 +83,12 @@ def _reference_registry(deps: ToolDeps) -> ToolRegistry:
         _register_tool_or_callable(reg, fn)
     if deps.timer_scheduler is not None:
         for fn in make_timer_tools(deps.timer_scheduler):
+            _register_tool_or_callable(reg, fn)
+    if deps.research_scheduler is not None:
+        for fn in make_research_tools(
+            deps.research_scheduler,
+            spend_cap=deps.spend_cap,
+        ):
             _register_tool_or_callable(reg, fn)
     if deps.google_clients is not None and deps.google_clients.list_account_names():
         for fn in make_calendar_tools(deps.google_clients):
@@ -139,7 +146,7 @@ def test_data_driven_walk_equals_legacy_sequence():
     # Full registry must be the complete shipped set, in order — guards
     # against a stub silently dropping a pack on BOTH sides.
     assert list(walk_reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(walk_reg.tools) == 29
+    assert len(walk_reg.tools) == 30
 
     # Byte-identical ordered serialization (names, descriptions,
     # parameters, providers, timeouts, AND order — all at once).
@@ -398,20 +405,22 @@ def test_real_build_registry_wrapper_produces_full_set():
         None,                     # volume_coordinator
         spotify_router=object(),  # truthy -> skip _build_router(cfg)
         timer_scheduler=object(),
+        research_scheduler=object(),
         google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
         ha=object(),
         wake_event_store=object(),
     )
 
     assert list(reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(reg.tools) == 29
+    assert len(reg.tools) == 30
 
 
 def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
-    """The two lifted inline gates are load-bearing:
+    """The lifted inline gates are load-bearing:
 
     - timer's factory does NOT self-gate on None, so the pack gate must
       drop it (else tools register against a None scheduler).
+    - research follows the same scheduler-gated pattern.
     - calendar/gmail need ≥1 linked account (stricter than the factory's
       own `clients is None`), else the model sees dead tools.
 
@@ -431,6 +440,7 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
 
     gated = {
         "set_timer", "list_timers", "cancel_timer", "update_timer",
+        "research",
         "calendar_today_summary", "calendar_upcoming",
         "gmail_unread_summary", "gmail_read_thread",
         "home_assistant", "flag_recent_issue",
@@ -785,4 +795,4 @@ def test_content_bearing_tools_pin_log_redaction():
         "gmail_unread_summary", "gmail_read_thread",
         "home_assistant", "home_assistant_confirm",
     }
-    assert redact_args == {"home_assistant", "home_assistant_confirm"}
+    assert redact_args == {"home_assistant", "home_assistant_confirm", "research"}
