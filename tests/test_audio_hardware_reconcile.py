@@ -334,6 +334,45 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
+def test_reconcile_preserves_existing_env_dir_modes(tmp_path: Path):
+    """Reconcile must NOT re-chmod an existing env-file parent dir.
+
+    /var/lib/jasper is 0770 root:jasper (ensure_state_dir, so the now-non-root
+    jasper-voice/-mux can write speaker_volume.json) and /etc/jasper is 0755
+    (widen_control_secret_env_modes, so the group-jasper doctor-json oneshot
+    can traverse to read jasper.env). A blanket ``install -d -m 0750`` in
+    set_env_var / set_env_file_var re-stripped those bits on every
+    install / boot / udev-hotplug reconcile. Pin that a pre-created env-file
+    parent dir keeps its mode after a reconcile that writes into it.
+    """
+    state_dir = tmp_path / "var-lib-jasper"
+    etc_dir = tmp_path / "etc-jasper"
+    state_dir.mkdir()
+    etc_dir.mkdir()
+    # Set modes explicitly (mkdir's mode arg is masked by umask).
+    state_dir.chmod(0o770)
+    etc_dir.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_ENV_FILE": str(etc_dir / "jasper.env"),
+            "JASPER_OUTPUTD_ENV_FILE": str(state_dir / "outputd.env"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The reconcile actually wrote both env files into those dirs, so the
+    # mode-preservation assertions below are not vacuous.
+    assert (etc_dir / "jasper.env").exists()
+    assert (state_dir / "outputd.env").exists()
+    assert oct(state_dir.stat().st_mode & 0o777) == "0o770"
+    assert oct(etc_dir.stat().st_mode & 0o777) == "0o755"
+
+
 def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
     tmp_path: Path,
 ):
