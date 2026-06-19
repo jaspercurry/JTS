@@ -3443,6 +3443,30 @@ def test_check_correction_current_config_reports_jts_sound_config(
     assert "no room correction" in r.detail.lower()
 
 
+def test_check_correction_current_config_reports_active_speaker_baseline(
+    monkeypatch, tmp_path,
+):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    generated = config_dir / "active_speaker_baseline.yml"
+    generated.write_text(
+        "# Source: jasper.active_speaker.camilla_yaml."
+        "emit_active_speaker_baseline_config\n"
+        "filters:\n"
+        "  active_baseline_headroom:\n"
+        "    type: Gain\n",
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {generated}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_correction_current_config()
+
+    assert r.status == "ok"
+    assert "JTS active-speaker baseline" in r.detail
+    assert "no room correction" in r.detail.lower()
+
+
 def test_check_correction_current_config_reports_generated_correction(
     monkeypatch, tmp_path,
 ):

@@ -928,11 +928,22 @@ ensure_outputd_camilla_statefile() {
     # This flat graph maps full-range stereo directly to DAC outputs. It is
     # illegal when saved output topology assigns any physical output to
     # tweeter/protected role.
+    local output
     echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
-    /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
+    if ! output="$(/opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/outputd-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
-        --write-statefile
+        --write-statefile 2>&1)"; then
+        printf '%s\n' "${output}"
+        return 1
+    fi
+    printf '%s\n' "${output}"
+    if [[ "${JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR:-0}" == "1" ]] \
+       && [[ "${output}" == *"statefile written: yes"* ]]; then
+        echo "  Restarting jasper-camilla.service after statefile repair"
+        systemctl restart jasper-camilla.service 2>/dev/null || \
+            echo "  WARN: jasper-camilla restart failed after statefile repair. Check logs with: journalctl -u jasper-camilla -e"
+    fi
 }
 
 find_card() {

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,8 @@ from jasper.active_speaker import (
     load_commission_load_state,
     load_ramp_state,
 )
+from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
+from jasper.active_speaker.measurement import record_driver_measurement
 
 from tests.test_active_speaker_cli import _FakeController
 from tests.test_active_speaker_startup_load import _staged, _topology
@@ -85,6 +88,14 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
     )
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", str(tmp_path / "safe.json")
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
+        str(tmp_path / "calibration_level.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements.json"),
     )
     tone_calls: list[dict] = []
 
@@ -629,10 +640,21 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     assert env["tone_calls"][0]["role"] == "woofer"
     assert env["tone_calls"][0]["level_dbfs"] == -80.0
     assert step["safe_playback"]["floor_status"] == "floor_pending_operator"
+    assert step["ramp"]["pending"]["frequency_hz"] == 120.0
     # The running graph now carries the woofer un-muted at the audible floor.
     assert yaml.safe_load(controller.running_raw)["filters"]["as_out0_commission_mute"][
         "parameters"
     ]["mute"] is False
+
+    retry = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "woofer", "auto_retry_pending": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+    assert retry["status"] == "stepped"
+    assert retry["ramp"]["pending"]["frequency_hz"] == 120.0
+    assert env["tone_calls"][1]["level_dbfs"] == -80.0 + AUDIBLE_RAMP_STEP_DB
 
     ack = asyncio.run(
         sound_setup._active_speaker_commission_ramp_ack_payload(
@@ -645,12 +667,22 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
         "status": "stopped",
         "reason": "ack_heard_correct_driver",
     }
+    latest = ack["measurements"]["summary"]["latest_driver_measurements"][
+        "mono:woofer"
+    ]
+    assert latest["captured"] is True
+    assert latest["outcome"] == "heard_correct_driver"
+    assert latest["playback_id"] == retry["ramp"]["pending"]["playback_id"]
+    assert latest["test_level_dbfs"] == -80.0 + AUDIBLE_RAMP_STEP_DB
+    assert ack["measurements"]["summary"]["captured_driver_count"] == 1
     assert tone_stops == ["ack_heard_correct_driver"]
     assert load_ramp_state()["confirmed_roles"] == ["woofer"]
     assert load_commission_load_state()["status"] == "rolled_back"
 
 
 def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+
     controller = _FakeController("placeholder")
     env = _web_commission_env(monkeypatch, tmp_path, controller)
     asyncio.run(
@@ -658,6 +690,12 @@ def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):
             {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
         )
     )
+    step = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert step["status"] == "stepped"
     out = asyncio.run(
         sound_setup._active_speaker_commission_ramp_abort_payload(
             camilla_factory=lambda: controller
@@ -668,6 +706,151 @@ def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):
     assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
         encoding="utf-8"
     )
+    safe = load_safe_playback_state()
+    assert safe["status"] == "stopped"
+    assert safe["quiet_start"]["status"] == "floor_required"
+
+
+def _record_driver_checks_for_summed_test() -> None:
+    topology = _topology()
+    for role, output_index in (("woofer", 0), ("tweeter", 1)):
+        playback_id = f"playback-{role}"
+        target = {
+            "speaker_group_id": "mono",
+            "role": role,
+            "driver_role": role,
+            "output_index": output_index,
+        }
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": role,
+                "outcome": "heard_correct_driver",
+                "observed_mic_dbfs": -42,
+                "playback_id": playback_id,
+            },
+            safe_session={
+                "status": "armed",
+                "quiet_start": {
+                    "status": "floor_confirmed",
+                    "floor_audio_confirmed": True,
+                    "last_operator_result": {
+                        "accepted": True,
+                        "outcome": "heard_correct_driver",
+                        "playback_id": playback_id,
+                        "target": target,
+                    },
+                },
+            },
+        )
+
+
+def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
+    monkeypatch, tmp_path
+):
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "resolve_commission_inputs",
+        lambda preset=None: (_tone_preset(), None),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
+    _record_driver_checks_for_summed_test()
+
+    wav_path = tmp_path / "summed.wav"
+    wav_path.write_bytes(b"fake wav; subprocess.run is faked")
+    requested_wavs: list[dict[str, float]] = []
+
+    def _fake_wav_path(
+        *,
+        frequency_hz: float,
+        duration_s: float = sound_setup.COMMISSION_TONE_DURATION_S,
+    ) -> Path:
+        requested_wavs.append({
+            "frequency_hz": float(frequency_hz),
+            "duration_s": float(duration_s),
+        })
+        return wav_path
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_wav_path",
+        _fake_wav_path,
+    )
+    fanin_actions: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: fanin_actions.append("select") or {
+            "active_source": "correction",
+            "test_source": "correction",
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: fanin_actions.append(f"release:{reason}") or {
+            "active_source": "airplay",
+            "test_source": None,
+        },
+    )
+    aplay_calls: list[list[str]] = []
+
+    def _fake_run(args, **kwargs):
+        if args and Path(str(args[0])).name == "aplay":
+            aplay_calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(sound_setup.subprocess, "run", _fake_run)
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_summed_test_payload(
+            {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert playback["status"] == "completed", json.dumps(
+        playback,
+        indent=2,
+        sort_keys=True,
+        default=str,
+    )
+    assert playback["backend"] == sound_setup.SUMMED_COMMISSION_TONE_BACKEND
+    assert playback["audio_emitted"] is True
+    assert playback["tone"]["level_dbfs"] == -80.0 + AUDIBLE_RAMP_STEP_DB
+    assert payload["calibration_level"]["test_signal"][
+        "requested_level_dbfs"
+    ] == -80.0 + AUDIBLE_RAMP_STEP_DB
+    assert playback["audio_device"]["pcm"] == sound_setup.COMMISSION_TONE_ALSA_DEVICE
+    assert playback["commissioning_load"]["load"]["status"] == "loaded"
+    assert playback["commissioning_load"]["load"]["target"]["role"] == "summed"
+    assert playback["rollback"]["rollback"]["status"] == "rolled_back"
+    assert latest["captured"] is True
+    assert latest["audio_emitted"] is True
+    assert latest["backend"] == sound_setup.SUMMED_COMMISSION_TONE_BACKEND
+    assert latest["target_output_indices"] == [0, 1]
+    assert len(controller.applied_texts) == 2
+    assert "audible_outputs=[0, 1]" in controller.applied_texts[0]
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert fanin_actions == ["select", "release:summed_test"]
+    assert aplay_calls == [[
+        "aplay",
+        "-D",
+        sound_setup.COMMISSION_TONE_ALSA_DEVICE,
+        "-q",
+        str(wav_path),
+    ]]
+    assert requested_wavs and requested_wavs[0]["frequency_hz"] > 0
 
 
 def test_commission_load_repairs_drifted_tweeter_guard(monkeypatch, tmp_path):

@@ -327,6 +327,7 @@ start_streambox_runtime_units() {
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
     require_outputd_ready || \
         echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
+    JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1 ensure_outputd_camilla_statefile
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
@@ -843,6 +844,7 @@ install_systemd_units() {
     # non-fatal jasper-audio-hardware-reconcile handling a few lines above.
     require_outputd_ready || \
         echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
+    JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1 ensure_outputd_camilla_statefile
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service

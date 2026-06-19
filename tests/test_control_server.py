@@ -24,6 +24,7 @@ import pytest
 from jasper.control.server import (
     VOLUME_MAX_DB,
     VOLUME_MIN_DB,
+    _active_speaker_output_safety_snapshot,
     _clamp_db,
     _control_route_allowed_for_install_profile,
     _db_to_percent,
@@ -120,6 +121,41 @@ class FakeCoordinator:
 
     async def aclose(self) -> None:
         return None
+
+
+def test_active_speaker_output_safety_snapshot_classifies_staged_config() -> None:
+    payload = _active_speaker_output_safety_snapshot({
+        "current": {
+            "camilla": {
+                "config_path": (
+                    "/var/lib/camilladsp/configs/"
+                    "active_speaker_staged_startup.yml"
+                ),
+            },
+        },
+    })
+
+    assert payload["safety_muted"] is True
+    assert payload["reason"] == "active_speaker_staged_startup"
+    assert payload["active_config_path"].endswith(
+        "active_speaker_staged_startup.yml"
+    )
+
+
+def test_active_speaker_output_safety_snapshot_allows_baseline_config() -> None:
+    payload = _active_speaker_output_safety_snapshot({
+        "current": {
+            "camilla": {
+                "config_path": (
+                    "/var/lib/camilladsp/configs/"
+                    "active_speaker_baseline.yml"
+                ),
+            },
+        },
+    })
+
+    assert payload["safety_muted"] is False
+    assert payload["reason"] is None
 
 
 @pytest.fixture

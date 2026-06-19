@@ -52,6 +52,10 @@ GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
 GRAPH_UNKNOWN = "unknown"
 GRAPH_UNSAFE = "unsafe"
 
+ACTIVE_BASELINE_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config"
+)
+
 CONTRACT_UNCONFIGURED = "unconfigured"
 CONTRACT_NORMAL_STEREO_FULL_RANGE = "normal_stereo_full_range"
 CONTRACT_NORMAL_MONO_FULL_RANGE = "normal_mono_full_range"
@@ -175,6 +179,7 @@ class SafeGraphDecision:
     reason: str
     topology_contract: OutputContract
     current_graph: GraphSafety | None = None
+    preferred_graph: GraphSafety | None = None
     fallback_graph: GraphSafety | None = None
     issues: tuple[dict[str, str], ...] = ()
 
@@ -191,6 +196,9 @@ class SafeGraphDecision:
             "topology_contract": self.topology_contract.to_dict(),
             "current_graph": (
                 self.current_graph.to_dict() if self.current_graph else None
+            ),
+            "preferred_graph": (
+                self.preferred_graph.to_dict() if self.preferred_graph else None
             ),
             "fallback_graph": (
                 self.fallback_graph.to_dict() if self.fallback_graph else None
@@ -485,8 +493,51 @@ def _pipeline_contains(
     return False
 
 
+def _pipeline_names_for_channels(
+    payload: dict[str, Any],
+    *,
+    channels: set[int],
+) -> tuple[str, ...]:
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ()
+    out: list[str] = []
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") != "Filter":
+            continue
+        raw_channels = step.get("channels")
+        if not isinstance(raw_channels, list):
+            continue
+        try:
+            step_channels = {int(channel) for channel in raw_channels}
+        except (TypeError, ValueError):
+            continue
+        # A Camilla filter step may intentionally apply one role's baseline
+        # chain to multiple outputs at once, for example both stereo woofers.
+        # For per-output evidence we only need to prove that the requested
+        # output is covered by the chain.
+        if not channels.issubset(step_channels):
+            continue
+        out.extend(str(name) for name in step.get("names", []) if name is not None)
+    return tuple(out)
+
+
 def _commission_mute_name(index: int) -> str:
     return f"as_out{index}_commission_mute"
+
+
+def _name_token(value: str) -> str:
+    out = "".join(ch if ch.isalnum() else "_" for ch in value).strip("_").lower()
+    return out or "unnamed"
+
+
+def _baseline_gain_name(role: str) -> str:
+    return f"as_{_name_token(role)}_baseline_gain"
+
+
+def _baseline_limiter_name(role: str) -> str:
+    return f"as_{_name_token(role)}_baseline_limiter"
 
 
 def _commission_mutes(payload: dict[str, Any]) -> dict[int, bool]:
@@ -572,12 +623,14 @@ def _active_graph_evidence(
     )
     missing_mutes = sorted(index for index in required_indexes if index not in mutes)
     if missing_mutes:
-        issues.append(_issue(
-            "blocker",
-            "active_graph_missing_commission_mutes",
-            "active graph is missing per-output mute filters for DAC outputs "
-            + ", ".join(str(index + 1) for index in missing_mutes),
-        ))
+        source = str(summary.get("source") or "")
+        if source != ACTIVE_BASELINE_SOURCE:
+            issues.append(_issue(
+                "blocker",
+                "active_graph_missing_commission_mutes",
+                "active graph is missing per-output mute filters for DAC outputs "
+                + ", ".join(str(index + 1) for index in missing_mutes),
+            ))
     weak_mutes = sorted(
         index for index in required_indexes
         if mutes.get(index) is True and not _commission_mute_gain_ok(payload, index)
@@ -599,17 +652,24 @@ def _active_graph_evidence(
         )
     )
     if unwired_mutes:
-        issues.append(_issue(
-            "blocker",
-            "active_graph_unwired_commission_mutes",
-            "active graph does not wire per-output mutes for DAC outputs "
-            + ", ".join(str(index + 1) for index in unwired_mutes),
-        ))
+        source = str(summary.get("source") or "")
+        if source != ACTIVE_BASELINE_SOURCE:
+            issues.append(_issue(
+                "blocker",
+                "active_graph_unwired_commission_mutes",
+                "active graph does not wire per-output mutes for DAC outputs "
+                + ", ".join(str(index + 1) for index in unwired_mutes),
+            ))
 
-    unmuted_outputs = {
-        index for index in graph_indexes
-        if index in mutes and mutes[index] is False
-    }
+    is_baseline = str(summary.get("source") or "") == ACTIVE_BASELINE_SOURCE
+    unmuted_outputs = (
+        set(graph_indexes)
+        if is_baseline
+        else {
+            index for index in graph_indexes
+            if index in mutes and mutes[index] is False
+        }
+    )
     muted_outputs = {
         index for index in required_indexes
         if index in mutes and mutes[index] is True
@@ -621,7 +681,7 @@ def _active_graph_evidence(
         for item in contract.protected_assignments
         if item.physical_output_index is not None and item.role == "tweeter"
     }
-    if tweeter_outputs:
+    if tweeter_outputs and not is_baseline:
         hp_params = _filter_params(payload, "as_tweeter_protective_hp")
         limiter_params = _filter_params(payload, "as_tweeter_startup_limiter")
         hp_freq = _float_value(hp_params.get("freq"))
@@ -671,7 +731,7 @@ def _active_graph_evidence(
             "active graph unmutes outputs not assigned by the saved topology: "
             + ", ".join(str(index + 1) for index in unknown_unmuted),
         ))
-    if len(unmuted_roles) > 1:
+    if len(unmuted_roles) > 1 and not is_baseline:
         issues.append(_issue(
             "blocker",
             "active_graph_unmutes_multiple_roles",
@@ -686,6 +746,96 @@ def _active_graph_evidence(
             "active graph unmutes a tweeter output without proving software protection",
         ))
 
+    if is_baseline:
+        if not _pipeline_contains(
+            payload,
+            channels={0, 1},
+            required_names=("active_baseline_headroom",),
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_headroom_unwired",
+                "active baseline graph does not wire the shared headroom filter",
+            ))
+        headroom = _float_value(
+            _filter_params(payload, "active_baseline_headroom").get("gain")
+        )
+        if headroom is None or headroom > 0.0:
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_headroom_invalid",
+                "active baseline headroom gain is missing or positive",
+            ))
+        unknown_baseline_outputs = sorted(graph_indexes - required_indexes)
+        if unknown_baseline_outputs:
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_routes_unknown_outputs",
+                "active baseline routes outputs not assigned by the saved topology: "
+                + ", ".join(str(index + 1) for index in unknown_baseline_outputs),
+            ))
+        for index in sorted(required_indexes):
+            assignment = by_output.get(index)
+            if assignment is None:
+                continue
+            role = assignment.role
+            limiter_name = _baseline_limiter_name(role)
+            gain_name = _baseline_gain_name(role)
+            names = _pipeline_names_for_channels(payload, channels={index})
+            if limiter_name not in names or gain_name not in names:
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_driver_chain_missing",
+                    (
+                        "active baseline graph does not wire gain and limiter "
+                        f"filters for DAC output {index + 1} ({role})"
+                    ),
+                ))
+            limiter_params = _filter_params(payload, limiter_name)
+            limiter_clip = _float_value(limiter_params.get("clip_limit"))
+            if (
+                _filter_type(payload, limiter_name) != "Limiter"
+                or limiter_clip is None
+                or limiter_clip > 0.0
+                or not _truthy_bool(limiter_params.get("soft_clip"))
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_limiter_invalid",
+                    (
+                        "active baseline limiter is missing or unsafe for "
+                        f"DAC output {index + 1} ({role})"
+                    ),
+                ))
+            gain = _float_value(_filter_params(payload, gain_name).get("gain"))
+            if gain is None or gain > 0.0:
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_gain_positive",
+                    (
+                        "active baseline driver gain is missing or positive for "
+                        f"DAC output {index + 1} ({role})"
+                    ),
+                ))
+            if index in tweeter_outputs:
+                highpass_names = [
+                    name for name in names
+                    if _filter_type(payload, name) == "BiquadCombo"
+                    and str(_filter_params(payload, name).get("type") or "")
+                    == "LinkwitzRileyHighpass"
+                    and (_float_value(_filter_params(payload, name).get("freq")) or 0.0)
+                    > 0.0
+                ]
+                if not highpass_names:
+                    issues.append(_issue(
+                        "blocker",
+                        "active_baseline_tweeter_highpass_missing",
+                        (
+                            "active baseline tweeter output is missing a "
+                            f"wired high-pass filter on DAC output {index + 1}"
+                        ),
+                    ))
+
     return {
         "safe": not issues,
         "issues": issues,
@@ -693,6 +843,7 @@ def _active_graph_evidence(
         "unmuted_outputs": sorted(unmuted_outputs),
         "muted_outputs": sorted(muted_outputs),
         "all_muted": all_muted,
+        "baseline_candidate": is_baseline,
         "unmuted_roles": sorted(unmuted_roles),
         "tweeter_outputs": sorted(tweeter_outputs),
         "split_channels": split_channels,
@@ -741,7 +892,9 @@ def _active_graph_allowed(
     issues = list(evidence.get("issues") or [])
     classification = GRAPH_UNSAFE
     if evidence.get("safe"):
-        if evidence.get("all_muted"):
+        if evidence.get("baseline_candidate"):
+            classification = GRAPH_APPROVED_ACTIVE_RUNTIME
+        elif evidence.get("all_muted"):
             classification = GRAPH_ALL_MUTED_ACTIVE_STARTUP
         elif evidence.get("unmuted_outputs"):
             classification = GRAPH_GUARDED_COMMISSIONING
@@ -922,6 +1075,7 @@ def safe_graph_for_current_topology(
     *,
     statefile_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
+    preferred_config_path: str | Path | None = None,
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
     staged_config: dict[str, Any] | None = None,
 ) -> SafeGraphDecision:
@@ -939,6 +1093,12 @@ def safe_graph_for_current_topology(
         if current_path
         else None
     )
+    preferred_path = str(preferred_config_path) if preferred_config_path else None
+    preferred_graph = (
+        classify_camilla_graph(preferred_path, topology, staged_config=staged_config)
+        if preferred_path and not _path_matches(preferred_path, current_path)
+        else None
+    )
     if current_graph and current_graph.allowed and not contract.requires_roleful_graph:
         return SafeGraphDecision(
             status="preserve_current",
@@ -946,6 +1106,33 @@ def safe_graph_for_current_topology(
             reason="current CamillaDSP graph is legal for saved topology",
             topology_contract=contract,
             current_graph=current_graph,
+            preferred_graph=preferred_graph,
+        )
+    if (
+        current_graph
+        and current_graph.allowed
+        and current_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    ):
+        return SafeGraphDecision(
+            status="preserve_current",
+            selected_config_path=current_path,
+            reason="current approved active-speaker runtime graph is legal for saved topology",
+            topology_contract=contract,
+            current_graph=current_graph,
+            preferred_graph=preferred_graph,
+        )
+    if (
+        preferred_graph
+        and preferred_graph.allowed
+        and preferred_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    ):
+        return SafeGraphDecision(
+            status="select_active_baseline",
+            selected_config_path=preferred_path,
+            reason="saved applied active-speaker baseline is legal for saved topology",
+            topology_contract=contract,
+            current_graph=current_graph,
+            preferred_graph=preferred_graph,
         )
     if (
         current_graph
@@ -958,6 +1145,7 @@ def safe_graph_for_current_topology(
             reason="current all-muted active startup graph is legal for saved topology",
             topology_contract=contract,
             current_graph=current_graph,
+            preferred_graph=preferred_graph,
         )
 
     if not contract.requires_roleful_graph:
@@ -969,6 +1157,7 @@ def safe_graph_for_current_topology(
                 reason="saved topology has no roleful/protected outputs",
                 topology_contract=contract,
                 current_graph=current_graph,
+                preferred_graph=preferred_graph,
                 fallback_graph=fallback,
             )
         return SafeGraphDecision(
@@ -977,6 +1166,7 @@ def safe_graph_for_current_topology(
             reason="flat outputd fallback is unavailable or invalid",
             topology_contract=contract,
             current_graph=current_graph,
+            preferred_graph=preferred_graph,
             fallback_graph=fallback,
             issues=fallback.issues,
         )
@@ -998,6 +1188,7 @@ def safe_graph_for_current_topology(
             reason="roleful/protected topology requires the all-muted active startup graph",
             topology_contract=contract,
             current_graph=current_graph,
+            preferred_graph=preferred_graph,
             fallback_graph=staged_graph,
         )
 
@@ -1013,6 +1204,8 @@ def safe_graph_for_current_topology(
                 "session, not as a deploy/restart fallback"
             ),
         ))
+    if preferred_graph and preferred_graph.issues:
+        issues.extend(preferred_graph.issues)
     if staged_graph and staged_graph.issues:
         issues.extend(staged_graph.issues)
     if not staged_path:
@@ -1032,6 +1225,7 @@ def safe_graph_for_current_topology(
         ),
         topology_contract=contract,
         current_graph=current_graph,
+        preferred_graph=preferred_graph,
         fallback_graph=staged_graph,
         issues=tuple(issues),
     )
