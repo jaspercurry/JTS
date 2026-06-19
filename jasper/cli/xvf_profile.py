@@ -22,6 +22,11 @@ DEFAULT_STATE_PATH = Path("/run/jasper-mic-profile/xvf3800.json")
 
 
 def _env_lines(payload: dict[str, object]) -> str:
+    chip_beam_plan = payload.get("chip_beam_plan")
+    chip_beam_plan_id = (
+        str(chip_beam_plan.get("id", ""))
+        if isinstance(chip_beam_plan, dict) else ""
+    )
     values = {
         "JASPER_XVF_PRESENT": "1" if payload["present"] else "0",
         "JASPER_XVF_VARIANT": str(payload["variant_id"] or ""),
@@ -32,10 +37,7 @@ def _env_lines(payload: dict[str, object]) -> str:
             "" if payload["capture_channels"] is None
             else str(payload["capture_channels"])
         ),
-        "JASPER_XVF_CHIP_BEAM_PLAN": (
-            str((payload.get("chip_beam_plan") or {}).get("id", ""))
-            if isinstance(payload.get("chip_beam_plan"), dict) else ""
-        ),
+        "JASPER_XVF_CHIP_BEAM_PLAN": chip_beam_plan_id,
         "JASPER_XVF_CHIP_AEC_SUPPORTED": (
             "1" if payload["chip_aec_supported"] else "0"
         ),
