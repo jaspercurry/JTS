@@ -94,6 +94,11 @@ Group=jasper
 SupplementaryGroups=systemd-journal jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
+# UMask=0007 — speaker_volume.json (written by jasper-control AND jasper-voice)
+# and other shared /var/lib/jasper state are created group-writable (0660), not
+# 0644, so the shared `jasper` group can write them. Mirrors jasper-voice/-mux;
+# see docs/HANDOFF-privilege-separation.md (2026-06-19 incident).
+UMask=0007
 
 # WS1 Phase 3 — the privileged restart broker binds a UNIX socket at
 # /run/jasper-control/restart.sock. RuntimeDirectory= makes systemd create

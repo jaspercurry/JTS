@@ -518,3 +518,29 @@ def test_cross_user_ipc_socket_contract(unit, path):
         f"{unit}: RuntimeDirectory must be 0750 (root:jasper) so the `jasper` "
         "group can traverse to the socket."
     )
+
+
+# WS1 — the shared-state writers set UMask=0007 so files they CREATE in
+# /var/lib/jasper are group-`jasper`-writable (0660), not the umask-default 0644.
+# usage.db / wake-events.sqlite3 / timers.db / speaker_volume.json are written by
+# more than one of these same-group daemons; voice & mux co-own
+# StateDirectory=jasper and re-chown the tree to their own user on restart, so a
+# 0644 file the non-owner can't write produced "attempt to write a readonly
+# database" (the 2026-06-19 incident). Same directive as the fanin/outputd socket
+# UMask contract above; here it's about the files, not the socket.
+_SHARED_STATE_WRITERS = {
+    "jasper-voice": TIER_A["jasper-voice"],
+    "jasper-mux": TIER_A["jasper-mux"],
+    "jasper-control": TIER_A["jasper-control"],
+}
+
+
+@pytest.mark.parametrize("unit,path", sorted(_SHARED_STATE_WRITERS.items()))
+def test_shared_state_writers_set_group_write_umask(unit, path):
+    pairs = set(_directives(path))
+    assert ("UMask", "0007") in pairs, (
+        f"{unit}: must set UMask=0007 so files it creates in /var/lib/jasper are "
+        "group-`jasper`-writable (0660). Without it shared state lands 0644 and a "
+        "non-owner same-group daemon hits 'attempt to write a readonly database' "
+        "(the 2026-06-19 incident). docs/HANDOFF-privilege-separation.md."
+    )

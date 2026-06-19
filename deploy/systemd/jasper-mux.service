@@ -51,6 +51,12 @@ StateDirectory=jasper
 # speaker_volume.json here (atomic tempfile+rename needs dir write). Same
 # rationale as jasper-voice.
 StateDirectoryMode=0770
+# UMask=0007 — group-writable (0660) shared state. mux co-owns
+# StateDirectory=jasper with jasper-voice and re-chowns the tree to its own user
+# on restart, so both (same `jasper` group) must be able to write the shared DBs
+# (usage.db etc.). Without it they land 0644 and the non-owner hits a readonly-DB
+# error. Mirrors jasper-voice; see docs/HANDOFF-privilege-separation.md (2026-06-19).
+UMask=0007
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Mux is restartable but now sits on the

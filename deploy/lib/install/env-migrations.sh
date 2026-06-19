@@ -26,6 +26,56 @@ ensure_state_dir() {
         chgrp jasper "${STATE_DIR}" 2>/dev/null || true
         chmod 0770 "${STATE_DIR}" 2>/dev/null || true
     fi
+    heal_shared_state_modes
+}
+
+# WS1 — group-writable heal for the shared, multi-writer state files.
+#
+# The dir mode (0770) + the daemons' UMask=0007 make NEW files group-writable,
+# but files CREATED BEFORE that landed (or by a root writer) can be
+# group-`jasper` yet mode 0644 — group-read-only. Because jasper-voice and
+# jasper-mux both declare StateDirectory=jasper, whichever restarts last
+# re-chowns the tree to its own user; the other daemon (same `jasper` group)
+# then cannot write a 0644 file it no longer owns, and the voice DBs raise
+# "attempt to write a readonly database" (the 2026-06-19 incident). This
+# one-time heal fixes the EXISTING files on upgrade; UMask=0007 keeps new ones
+# correct.
+#
+# Deliberately an ALLOWLIST, not a recursive chmod: a blanket `chmod -R g+w`
+# would also widen single-writer secrets that live in STATE_DIR — notably
+# wifi_guardian.env (mode 0600, the WiFi PSK) — to group-readable. Only the
+# known group-shared, multi-writer state is touched. Fresh installs no-op (the
+# files don't exist until a daemon first creates them).
+heal_shared_state_modes() {
+    getent group jasper >/dev/null 2>&1 || return 0
+    local base sidecar
+    # SQLite stores: the DB file AND any -wal/-shm/-journal sidecars must be
+    # group-writable for a non-owner same-group daemon to open them read-write.
+    for base in \
+        "${STATE_DIR}/usage.db" \
+        "${STATE_DIR}/timers.db" \
+        "${STATE_DIR}/wake-events/wake-events.sqlite3"; do
+        for sidecar in "${base}" "${base}-wal" "${base}-shm" "${base}-journal"; do
+            [[ -e "${sidecar}" ]] || continue
+            chgrp jasper "${sidecar}" 2>/dev/null || true
+            chmod 0660 "${sidecar}" 2>/dev/null || true
+        done
+    done
+    # Plain JSON shared state (single file, no sidecars).
+    for base in \
+        "${STATE_DIR}/speaker_volume.json" \
+        "${STATE_DIR}/mux_mode.json"; do
+        [[ -e "${base}" ]] || continue
+        chgrp jasper "${base}" 2>/dev/null || true
+        chmod 0660 "${base}" 2>/dev/null || true
+    done
+    # The wake-events DIR holds the sqlite + its WAL sidecars; a non-owner
+    # same-group daemon needs dir write to create them (historically root:root
+    # 0755). Owner stays whoever the StateDirectory chown last set.
+    if [[ -d "${STATE_DIR}/wake-events" ]]; then
+        chgrp jasper "${STATE_DIR}/wake-events" 2>/dev/null || true
+        chmod 0770 "${STATE_DIR}/wake-events" 2>/dev/null || true
+    fi
 }
 
 # WS1 Phase 4a — the group-`jasper-secrets` secret compartment (LLM API keys +

@@ -187,6 +187,15 @@ StateDirectory=jasper
 # also read/write. atomic_write_text creates a tempfile in this dir + renames,
 # so group write on the dir is required; per-file modes still gate the rest.
 StateDirectoryMode=0770
+# UMask=0007 makes files this daemon CREATES here group-writable (0660) — the
+# "per-file modes" the dir-mode note above defers. usage.db, wake-events.sqlite3,
+# timers.db and speaker_volume.json are written by jasper-voice but ALSO by
+# jasper-mux/-control (same `jasper` group; mux co-owns StateDirectory=jasper and
+# re-chowns the tree to its own user on restart). Without group write they land
+# 0644 and the non-owner daemon hits "attempt to write a readonly database" (the
+# 2026-06-19 incident). Same directive jasper-fanin/-outputd already use for their
+# group-`jasper` sockets. docs/HANDOFF-privilege-separation.md.
+UMask=0007
 # RuntimeDirectory creates /run/jasper at service start (auto-cleaned
 # at stop). voice_daemon binds /run/jasper/voice.sock there for
 # jasper-control to send dial hold-to-talk triggers via. With Group=jasper

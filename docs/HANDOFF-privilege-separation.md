@@ -274,6 +274,25 @@ control token) keep owner-only modes. Pinned by `tests/test_systemd_hardening.py
 (User/Group/caps/syscall-filter per dropped unit; the deferred daemons stay
 root; the install↔unit user contract).
 
+**Shared files must be group-WRITABLE, not just group-readable (2026-06-19 fix).**
+The paragraph above is about cross-daemon *reads*; the multi-*writer* files are
+the trap. `usage.db`, `wake-events.sqlite3`, `timers.db`, and
+`speaker_volume.json` are written by more than one same-`jasper`-group daemon,
+and the StateDirectory chown flips their *owner* between jasper-voice and
+jasper-mux on restart. A file created at the umask-default `0644` is
+group-read-**only**, so once the owner flips, the non-owner daemon gets
+`sqlite3.OperationalError: attempt to write a readonly database` — and the
+speaker then played the (false) `cant_connect` cue instead of answering.
+Fix: **jasper-voice/-mux/-control set `UMask=0007`** (the same directive the
+fanin/outputd *sockets* use, here applied to *files*) so everything they create
+lands `0660`; `env-migrations.sh`'s `heal_shared_state_modes` repairs
+pre-existing `0644` files on upgrade as a tight **allowlist** (deliberately
+never the `0600` WiFi PSK in `wifi_guardian.env` — a blanket `chmod -R g+w`
+would have leaked it); and `jasper-doctor`'s `check_state_dir_group_writable`
+flags drift before it bites. Pinned by `tests/test_systemd_hardening.py` (the
+UMask contract), `tests/test_install_state_group_write.py` (the heal + the
+PSK-safety property), and `tests/test_doctor_state_files.py`.
+
 **3b-2 (LANDED) — control.** `jasper-control` drops to a non-root
 `jasper-control` user (primary group `jasper`, no supplementary groups —
 no ALSA/input, just TCP + a localhost CamillaDSP WebSocket) with
