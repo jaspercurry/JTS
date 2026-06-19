@@ -463,9 +463,11 @@ def _carrier_refusal(exc: BaseException):
     """Return the ``CarrierCannotHostEq`` behind ``exc`` if the loaded
     CamillaDSP graph refused to host preference EQ, else ``None``.
 
-    The live-draft path raises it directly; the durable apply path wraps it as
-    ``DspApplyError`` (its ``__cause__``). Used to map a carrier refusal to a
-    typed 200 body instead of a 502 — ``jasper/dsp_apply.py`` stays untouched.
+    A refusal arrives RAW from the live-draft path and the durable path's
+    pre-lock fast-check; it arrives wrapped as ``DspApplyError`` (its
+    ``__cause__``) only from the durable path's in-lock re-check in the rare
+    concurrent-swap race. Handling both maps either to a typed 200 body instead
+    of a 502 — ``jasper/dsp_apply.py`` stays untouched.
     """
     from jasper.sound.graph_carrier import CarrierCannotHostEq
 
@@ -783,21 +785,34 @@ async def _load_profile_config(
         else sound_config_path(config_path)
     )
     cam = camilla_factory()
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
-    if not carrier.can_host_eq:
-        # A graph that can't host EQ is a handled "blocked" outcome, not a DSP
-        # apply attempt. Raise the typed refusal BEFORE entering
-        # apply_dsp_config so it records no prepare_failed state — keeping
-        # jasper-doctor and /state honest with the typed-200 the route returns
-        # (this mirrors the live-draft path, which also refuses before any
-        # apply transaction). reemit() with no out_path raises and writes
-        # nothing.
-        carrier.reemit(profile)
 
-    def _prepare_config() -> dict[str, Any]:
+    # Fast pre-check: refuse a non-hostable graph BEFORE the apply transaction
+    # so a STEADY-STATE active speaker's EQ apply records no prepare_failed
+    # state (a refusal is a handled "blocked" outcome, not a DSP failure, and
+    # we don't want a persistent jasper-doctor / /state WARN). This is an
+    # optimization only — the AUTHORITATIVE hostability gate runs under the
+    # dsp-apply lock in _prepare_config, because the loaded config can change
+    # between this read and lock acquisition.
+    pre_path = await cam.get_config_file_path(best_effort=False)
+    if not pre_path:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
+    if not pre_carrier.can_host_eq:
+        pre_carrier.reemit(profile)  # raises CarrierCannotHostEq, writes nothing
+
+    async def _prepare_config() -> dict[str, Any]:
+        # Re-resolve the carrier UNDER the dsp-apply lock against the config
+        # that is actually loaded now. An active-startup load shares this lock
+        # and could have swapped a roleful graph in after the pre-check;
+        # re-asserting here is what guarantees we never re-emit a stereo config
+        # over an active crossover (a TOCTOU crossover-drop). In the rare
+        # genuine race this raises through apply_dsp_config, which records a
+        # real prepare failure and the route still maps it to the typed
+        # "blocked" 200 via the refusal's __cause__.
+        current_path = await cam.get_config_file_path(best_effort=False)
+        if not current_path:
+            raise RuntimeError("CamillaDSP did not report a loaded config path")
+        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
         result = carrier.reemit(
             profile,
             out_path=out_path,

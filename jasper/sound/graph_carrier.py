@@ -234,17 +234,19 @@ def _loaded_config_is_active_speaker_graph(current_path: str | Path) -> bool:
 def carrier_for_loaded_config(current_path, *, config_dir):
     """Resolve the loaded CamillaDSP config to the carrier that can re-emit it.
 
-    Resolution is by path + the ``# Source:`` header — it never guesses, and it
-    fails closed (a missing/unreadable/foreign config → unknown).
+    Resolution is by path + config *content* — it never guesses, and it fails
+    closed (a missing/unreadable/foreign config → unknown).
 
     Order is safety-critical, not cosmetic. The base config is an exact path
     match and is never a roleful graph, so it short-circuits without a read.
-    Then **content beats name**: a graph whose source header marks it an active
-    baseline resolves to the active carrier *even if it is named like a
-    sound/correction config* — otherwise a roleful graph could be re-emitted
-    through the stereo template and lose its crossover/limiter/protective HP.
-    This ordering is what keeps the carrier in agreement with the runtime
-    safety classifier (invariant 1).
+    Then **content beats name**: an active-speaker graph is recognised by the
+    runtime safety classifier's structural signal (its per-driver split mixer —
+    see ``_loaded_config_is_active_speaker_graph``) and routed to the active
+    carrier *even if it is named like a sound/correction config*, so a roleful
+    graph can never be re-emitted through the stereo template and lose its
+    crossover/limiter/protective HP. Keying on the same classifier the verifier
+    uses is what keeps the carrier from drifting (invariant 1). The
+    ``is_jts_generated_config`` name match runs only after the content check.
     """
     if not current_path:
         return _UnknownCarrier(current_path)

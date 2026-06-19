@@ -2893,7 +2893,8 @@ def test_carrier_refusal_unwraps_raw_and_wrapped():
     raw = CarrierCannotHostEq("unknown_config", "m")
     assert sound_setup._carrier_refusal(raw) is raw
 
-    # The durable apply path raises DspApplyError(...) from the refusal.
+    # The durable path's in-lock re-check wraps the refusal as DspApplyError
+    # (...) in the rare concurrent-swap race; the unwrap must still find it.
     try:
         try:
             raise raw
@@ -2962,6 +2963,56 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     # Fail closed (active config never swapped) + SF-2 (no prepare_failed state).
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
+
+
+async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap(
+    tmp_path: Path, monkeypatch
+):
+    # SF-2 TOCTOU guard: the carrier is re-resolved UNDER the dsp-apply writer
+    # lock, so if the loaded config is swapped to an active graph between the
+    # pre-lock fast-check and lock acquisition (a concurrent active-startup load
+    # shares that lock), the durable apply refuses in-lock and NEVER re-emits a
+    # stereo config over the active crossover. Simulated by a fake that reports
+    # a hostable config on the first read (pre-lock) and an active graph on
+    # every read after (in-lock).
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / "sound_current.yml").write_text(_room_config())  # hostable
+    (config_dir / "active_speaker_baseline.yml").write_text(
+        _active_baseline_yaml("mono", 2)
+    )
+
+    class _RacingCamilla:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.loaded_path: str | None = None
+
+        async def get_config_file_path(self, *, best_effort: bool = True):
+            self.calls += 1
+            name = "sound_current.yml" if self.calls == 1 else "active_speaker_baseline.yml"
+            return str(config_dir / name)
+
+        async def set_config_file_path(self, path, *, best_effort: bool = False):
+            self.loaded_path = path
+
+    cam = _RacingCamilla()
+    with pytest.raises(RuntimeError) as excinfo:
+        await sound_setup._apply_profile(
+            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+            camilla_factory=lambda: cam,
+        )
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "eq_on_active_not_wired"
+    # The in-lock re-check fired (pre-check saw the hostable config first).
+    assert cam.calls >= 2
+    # The stereo config was NEVER loaded over the active crossover.
+    assert cam.loaded_path is None
 
 
 async def test_apply_profile_rolls_back_when_reload_fails(

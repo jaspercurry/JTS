@@ -118,15 +118,19 @@ appendix.
 `carrier_for_loaded_config(...).reemit(...)`. Map `CarrierCannotHostEq`
 to a **`200` with `{status:"blocked", reason_code, message}`** (NOT a
 502), so the UI renders an honest hint and the live-draft/active-speaker
-UI's existing `status:"blocked"` vocabulary handles it directly. Both apply
-paths refuse a non-hostable graph **before any apply transaction**: live-draft
-raises directly, and the durable path resolves the carrier and raises *before*
-entering `apply_dsp_config` (a refusal is a handled "blocked" outcome, not a
-DSP failure — so it records no `prepare_failed` state and jasper-doctor /
-`/state` stay clean). The route discriminates `CarrierCannotHostEq` raw or via
-`__cause__` (belt-and-suspenders for the durable-wrap boundary) —
-`jasper/dsp_apply.py`'s contract stays untouched. Collapsing the copy-pasted
-branch (3 copies — see below) is itself a CLEAN win.
+UI's existing `status:"blocked"` vocabulary handles it directly. The carrier
+is resolved **under the dsp-apply writer lock** so it always re-emits against
+the config actually loaded — never a stereo config over an active graph a
+concurrent load swapped in (a TOCTOU crossover-drop). The durable path also
+does a **pre-lock fast-check**: a steady-state non-hostable graph raises
+`CarrierCannotHostEq` before the apply transaction so a household EQ apply on
+an active speaker records no `prepare_failed` state (a refusal is a handled
+"blocked" outcome, not a DSP failure — jasper-doctor / `/state` stay clean);
+live-draft likewise refuses inside its own writer lock. The route discriminates
+`CarrierCannotHostEq` raw (the pre-check / live-draft) or via `__cause__` (the
+in-lock re-check in the rare concurrent-swap race) — `jasper/dsp_apply.py`'s
+contract stays untouched. Collapsing the copy-pasted branch (3 copies — see
+below) is itself a CLEAN win.
 
 The HTTP `/audition` route shares this handler, so it too can return
 `200 {status:"blocked"}`. No HTTP client calls `/audition` today (the
