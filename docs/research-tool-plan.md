@@ -174,7 +174,7 @@ Each phase is independently shippable and hardware-free-testable.
 ### First PR (Phase 1) — `research: text-provider registry + background-job scheduler (HW-free)`
 
 - `jasper/research/` (base / catalog / `__init__` / `providers/openai_research.py`) — Pattern-2 registry, one `complete()` method, fault-isolated `active_research_provider(env)`.
-- `jasper/research.py` — `ResearchScheduler` + `ResearchJobStore` cloned from `jasper/timers.py`: one `asyncio.Task` per job, `on_done` callback, `asyncio.Semaphore` concurrency cap (~2), `asyncio.wait_for(JASPER_RESEARCH_MAX_RUNTIME_SEC ≈ 300 s)` per job, `stop()` cancels in-flight.
+- `jasper/research/scheduler.py` — `ResearchScheduler` + `ResearchJobStore` cloned from `jasper/timers.py`: one `asyncio.Task` per job, `on_done` callback, `asyncio.Semaphore` concurrency cap (~2), `asyncio.wait_for(JASPER_RESEARCH_MAX_RUNTIME_SEC ≈ 300 s)` per job, `stop()` cancels in-flight.
 - `jasper/config.py` — `JASPER_RESEARCH_DB`, `JASPER_RESEARCH_MAX_RUNTIME_SEC`, concurrency cap defaults.
 - Tests: provider resolves with key / `None` without / fault-isolated; store CRUD fail-soft; concurrency cap; runtime-ceiling marks failed; **restart-restore (done-unannounced survives, running marked failed)** — the highest-value test.
 

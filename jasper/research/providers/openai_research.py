@@ -30,32 +30,51 @@ class OpenAIResearchClient:
         model: str = DEFAULT_MODEL,
         client: Any | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        provider_error_classes: tuple[type[Exception], ...] | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self._client = client
         self._sleep = sleep
+        self._provider_error_classes = provider_error_classes
 
     def _openai_client(self) -> Any:
         if self._client is not None:
             return self._client
-        from openai import AsyncOpenAI
+        try:
+            from openai import AsyncOpenAI
+        except ImportError as e:
+            raise ResearchError("OpenAI research provider is missing the openai package") from e
 
         self._client = AsyncOpenAI(api_key=self.api_key)
         return self._client
 
+    def _provider_errors(self) -> tuple[type[Exception], ...]:
+        if self._provider_error_classes is not None:
+            return self._provider_error_classes
+        try:
+            from openai import OpenAIError
+        except ImportError:
+            return ()
+        return (OpenAIError,)
+
     async def complete(self, req: ResearchRequest) -> ResearchResult:
         client = self._openai_client()
-        response = await client.responses.create(
-            model=self.model,
-            input=req.query,
-            background=True,
-        )
-        attempt = 1
-        while getattr(response, "status", None) in _PENDING_STATUSES:
-            await self._sleep(reconnect_backoff_delay(attempt))
-            attempt += 1
-            response = await client.responses.retrieve(response.id)
+        provider_errors = self._provider_errors()
+        try:
+            response = await client.responses.create(
+                model=self.model,
+                input=req.query,
+                background=True,
+            )
+            attempt = 1
+            while getattr(response, "status", None) in _PENDING_STATUSES:
+                await self._sleep(reconnect_backoff_delay(attempt))
+                attempt += 1
+                response = await client.responses.retrieve(response.id)
+        except provider_errors as e:
+            detail = str(e) or type(e).__name__
+            raise ResearchError(f"OpenAI research request failed: {detail}") from e
 
         status = getattr(response, "status", "")
         if status != "completed":
