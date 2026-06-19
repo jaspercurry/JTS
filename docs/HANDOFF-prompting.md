@@ -79,11 +79,10 @@ tool-round watchdog contract
    under what conditions a tool call should be invoked"* (inside
    the tool description). Path B (applied 2026-05-23):
    per-tool conditional rules (when to call, voice-answer style,
-   response-shape handling) live in the tool's model-facing
-   description. Decorated tools derive that from the full cleaned
-   docstring; explicit tools set it on `ToolDefinition`. If a
-   user override exists, it replaces the code default at runtime
-   and carries the same responsibility.
+   response-shape handling) live in the tool's model-facing description.
+   That description is user override → `llm_description` → code-owned
+   `ToolDefinition.description`. If a user override exists, it replaces
+   the code default at runtime and carries the same responsibility.
 4. **Don't ban preambles. List when to skip.** Absolute "never
    preamble" rules get ~33% compliance on gpt-realtime per a
    public community thread. OpenAI's documented suppression
@@ -596,8 +595,9 @@ by deleting the override.
 
 ### Writing a new tool
 
-Recommended structure for a tool description (or a decorated tool
-docstring, which becomes the description):
+Recommended structure for a tool's code-owned description (the docstring by
+default, or `llm_description` when the tool deliberately splits human and
+model-facing text):
 
 ```
 """<One-sentence purpose>.

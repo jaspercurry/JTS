@@ -224,9 +224,10 @@ playing. **I hear the tone** and **Wrong driver** remain visible beside Stop;
 transient "raising" progress copy is not shown, so the card does not flap while
 audio is playing. Passive/full-range layouts render **No active driver test** and
 use the normal listening path; there is no separate direct-DAC driver test in
-the product UI. The tone frequency is planned from the compiled active-speaker
-preset/crossover edges and tweeter-protection policy, not role-hardcoded. If the
-safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
+the product UI. The tone frequency is role-native where that improves operator
+recognition (woofer/subwoofer use normal low test tones), then bounded by the
+compiled active-speaker preset/crossover edges and tweeter-protection policy. If
+the safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
 operator to check amp gain, wiring, and DAC output mapping. Driver-choice buttons
 also refresh a stale no-audio crossover preview when the current working setup
 can produce one. The level state is separate from normal listening volume.
@@ -309,8 +310,8 @@ present, and the tone plan still enforces role-specific caps and high-pass
 guards.
 
 Lower-level diagnostics still exist for tests and operator debugging:
-`/sound/active-speaker/commissioning-rehearsal` derives a no-audio
-sequence from durable evidence, `/sound/active-speaker/stage-config` stages the
+`/sound/active-speaker/commissioning-view` composes a no-audio setup
+view model from durable evidence, `/sound/active-speaker/stage-config` stages the
 protected startup candidate, `/sound/active-speaker/check-path-safety` writes
 the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
 the protected graph. The normal product UI does not require a user to understand
@@ -319,8 +320,15 @@ The same walkthrough then opens **Validate and apply**. That card first runs a
 short combined-speaker test through `/sound/active-speaker/summed-test`; the
 summed crossover validation POST at
 `/sound/active-speaker/summed-validation` must reference the latest audible
-combined-test record for that group. Artifact-only or stale summed-test records
-cannot unlock the active profile. After summed validation,
+combined-test record for that group. The combined-test card has its own bounded
+test-level slider so low-sensitivity drivers can be raised from the safe floor
+without changing normal listening volume; each play request still goes through
+the backend audible-ramp guard. For the current product flow, an explicit
+operator listening result (`operator_listening_check`) can validate **Blend
+sounds right** when no browser microphone reading is captured; mic-backed
+summed captures remain richer acoustic evidence, not the only way to unlock the
+first active profile. Artifact-only or stale summed-test records cannot unlock
+the active profile. After summed validation,
 `/sound/active-speaker/baseline-profile` compiles the saved topology, visible
 crossover settings, fresh crossover preview, driver-check evidence, and summed
 validation into
@@ -676,4 +684,5 @@ can be diagnosed without scraping journal logs.
 
 Last verified: 2026-06-18 (`/sound/` active-speaker UI rechecked after the
 working-setup copy cleanup, continuous commission ramp tone, automatic
-quiet-ramp controls, and removal of the product direct-DAC driver-test flow.)
+quiet-ramp controls, combined-test level control/operator validation, and
+removal of the product direct-DAC driver-test flow.)

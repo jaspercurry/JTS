@@ -21,7 +21,6 @@ fi
 OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
-ACTIVE_SPEAKER_STARTUP_LOAD_STATE="${JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE:-/var/lib/jasper/active_speaker_startup_load.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 REASON="manual"
 PRINT_ENV=0
@@ -201,12 +200,28 @@ env_file_value() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# Ensure an env file's parent dir exists WITHOUT re-moding it when it already
+# does. The installer owns each dir's canonical mode/group and they are NOT
+# uniform: /var/lib/jasper is root:jasper 0770 (ensure_state_dir, so the
+# now-non-root jasper-voice/-mux can write speaker_volume.json) and /etc/jasper
+# is 0755 (widen_control_secret_env_modes, so the group-jasper doctor-json
+# oneshot can traverse to read jasper.env). A blanket `install -d -m 0750` here
+# re-chmods on every install / boot (Before=jasper-outputd) / udev sound
+# add|remove|change reconcile and strips those bits — the exact trap
+# env-migrations.sh:ensure_state_dir warns about. So only backfill a genuinely
+# absent dir (with a conservative default the next install corrects); never
+# touch an existing one.
+ensure_env_dir() {
+    local dir="$1"
+    [[ -d "$dir" ]] || install -d -m 0750 "$dir"
+}
+
 set_env_var() {
     local key="$1" value="$2"
     local dir tmp quoted
 
     dir="$(dirname "$ENV_FILE")"
-    install -d -m 0750 "$dir"
+    ensure_env_dir "$dir"
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(quote_env_value "$value")"
 
@@ -280,7 +295,7 @@ set_env_file_var() {
     local dir tmp quoted
 
     dir="$(dirname "$file")"
-    install -d -m 0750 "$dir"
+    ensure_env_dir "$dir"
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(quote_env_value "$value")"
 
@@ -444,9 +459,10 @@ for child in mapping.child_devices:
 # active_outputd_lane_channels (4 for the dual-Apple composite, 8 for a
 # HiFiBerry DAC8x single). On success prints the loaded active config's ACTUAL
 # playback width W (the number of physical outputs the speaker actually drives,
-# in 2..cap) and returns 0 — ONLY when an active-speaker baseline is the live
-# CamillaDSP config AND its playback width is a valid active width within the
-# cap. A 100-output DAC powering a 2-way drives 2, not 100: outputd opens the
+# in 2..cap) and returns 0 — ONLY when the live CamillaDSP config is legal for
+# the saved output topology, targets outputd's active playback lane, and its
+# playback width is valid within the cap. A 100-output DAC powering a 2-way drives
+# 2, not 100: outputd opens the
 # DAC at W and the reconciler emits W as JASPER_OUTPUTD_ACTIVE_CHANNELS, so we
 # never pump muted channels we are not using. Otherwise it prints a reason and
 # returns non-zero so the caller fails closed: the composite shape parks, a
@@ -459,44 +475,21 @@ active_graph_status() {
         printf 'python_unavailable'
         return 1
     fi
-    JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE="$ACTIVE_SPEAKER_STARTUP_LOAD_STATE" \
     JASPER_CAMILLA_STATEFILE="$CAMILLA_STATEFILE" \
+    JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
     JASPER_ACTIVE_GRAPH_CAP_CHANNELS="$cap_channels" \
     "$OUTPUT_HARDWARE_PYTHON" - <<'PY'
-import json
 import os
 import re
 import sys
 from pathlib import Path
 
-startup_state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE"])
 camilla_statefile = Path(os.environ["JASPER_CAMILLA_STATEFILE"])
+output_topology_path = Path(os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"])
 try:
     cap_channels = int(os.environ["JASPER_ACTIVE_GRAPH_CAP_CHANNELS"])
 except (KeyError, ValueError):
     print("active_graph_cap_channels_invalid")
-    raise SystemExit(1)
-
-try:
-    startup_state = json.loads(startup_state_path.read_text(encoding="utf-8"))
-except FileNotFoundError:
-    print("startup_load_state_missing")
-    raise SystemExit(1)
-except Exception as exc:
-    print(f"startup_load_state_unreadable:{type(exc).__name__}")
-    raise SystemExit(1)
-
-if startup_state.get("status") != "loaded" or startup_state.get("loaded") is not True:
-    print(f"startup_load_not_loaded:{startup_state.get('status') or 'unknown'}")
-    raise SystemExit(1)
-
-active_config = startup_state.get("active_config_path")
-if not isinstance(active_config, str) or not active_config.strip():
-    print("active_config_path_missing")
-    raise SystemExit(1)
-active_path = Path(active_config)
-if not active_path.exists():
-    print("active_config_missing")
     raise SystemExit(1)
 
 try:
@@ -514,32 +507,44 @@ if not match:
     raise SystemExit(1)
 
 current_config = Path(match.group(1).strip())
-if str(current_config) != str(active_path):
-    print("camilla_config_mismatch")
+if not current_config.exists():
+    print("active_config_missing")
     raise SystemExit(1)
 
 try:
-    active_text = active_path.read_text(encoding="utf-8")
+    from jasper.active_speaker.runtime_contract import classify_camilla_graph
+    from jasper.active_speaker.staging import load_staged_startup_config
+    from jasper.output_topology import load_output_topology_strict
+
+    topology = load_output_topology_strict(output_topology_path)
+    graph = classify_camilla_graph(
+        current_config,
+        topology,
+        staged_config=load_staged_startup_config(),
+    )
 except Exception as exc:
-    print(f"active_config_unreadable:{type(exc).__name__}")
+    detail = getattr(exc, "name", None) or type(exc).__name__
+    print(f"active_graph_contract_unavailable:{type(exc).__name__}:{detail}")
     raise SystemExit(1)
 
-if "outputd_active_content_playback" not in active_text:
+if not graph.allowed:
+    issue = graph.issues[0]["code"] if graph.issues else graph.classification
+    print(f"active_graph_unsafe:{issue}")
+    raise SystemExit(1)
+
+if graph.classification not in {
+    "all_muted_active_startup",
+    "guarded_commissioning",
+    "approved_active_runtime",
+}:
+    print(f"active_graph_not_roleful:{graph.classification}")
+    raise SystemExit(1)
+
+if graph.playback_device != "outputd_active_content_playback":
     print("active_outputd_lane_missing")
     raise SystemExit(1)
 
-# The active config's playback width is the number of physical outputs the
-# speaker actually drives. The capture side is always stereo (channels: 2) and
-# the playback block carries the driven-output count, so the widest `channels:`
-# value is the playback/active width on both the real emitter shape (capture +
-# playback blocks) and the device-level shape. DRIVE WHAT WE USE: accept any
-# valid active width within the DAC's cap (2..cap) and report it, rather than
-# forcing the config to fill the DAC's full channel count. A config wider than
-# the cap (more outputs than the DAC has) fails closed.
-channel_values = [
-    int(match) for match in re.findall(r"(?m)^\s*channels:\s*(\d+)\s*$", active_text)
-]
-got = max(channel_values) if channel_values else 0
+got = int(graph.playback_channels or 0)
 if got < 2 or got > cap_channels:
     print(f"active_graph_width_out_of_range got={got} cap={cap_channels}")
     raise SystemExit(1)
@@ -682,8 +687,8 @@ apply_audio_runtime_env() {
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         # A coherent single DAC runs the active lane ONLY when it declares one
         # (DacProfile.active_outputd_lane_channels = the cap) AND an
-        # active-speaker baseline whose playback width fits within that cap is
-        # the loaded CamillaDSP config. We DRIVE WHAT WE USE: the gate returns
+        # legal active-speaker graph whose playback width fits within that cap
+        # is the live CamillaDSP config. We DRIVE WHAT WE USE: the gate returns
         # the config's ACTUAL driven width W (2..cap), and we emit that as
         # JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at exactly W —
         # a DAC8x running a 2-way drives 2 outputs, not 8. Fail-closed: without

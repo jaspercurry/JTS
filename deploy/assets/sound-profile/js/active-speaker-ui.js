@@ -36,24 +36,30 @@ export function activeSpeakerStepState(step, ctx) {
   ctx = ctx || {};
   var hasLayout = !!ctx.hasLayout;
   var dirty = !!ctx.dirty;
+  var driverChecksComplete = !!(
+    ctx.driverChecksComplete || ctx.driverMeasurementsComplete
+  );
   if (step === 'layout') return hasLayout && !dirty ? 'done' : 'active';
   if (step === 'research') return hasLayout && !dirty ?
     (ctx.driverResearchSatisfied ? 'done' : 'active') : 'todo';
   if (step === 'map') return ctx.outputIdentityComplete ? 'done' :
     (hasLayout && !dirty ? 'active' : 'todo');
-  if (step === 'safety') return ctx.driverMeasurementsComplete ? 'done' :
+  if (step === 'safety') return driverChecksComplete ? 'done' :
     (ctx.outputIdentityComplete ? 'active' : 'todo');
   if (step === 'profile') return ctx.baselineProfileApplied ? 'done' :
-    (ctx.driverMeasurementsComplete ? 'active' : 'todo');
+    (driverChecksComplete ? 'active' : 'todo');
   return 'todo';
 }
 
 export function defaultActiveSpeakerStep(ctx) {
   ctx = ctx || {};
+  var driverChecksComplete = !!(
+    ctx.driverChecksComplete || ctx.driverMeasurementsComplete
+  );
   if (!ctx.hasLayout || ctx.dirty) return 'layout';
   if (!ctx.driverResearchSatisfied) return 'research';
   if (!ctx.outputIdentityComplete) return 'map';
-  if (!ctx.driverMeasurementsComplete) return 'safety';
+  if (!driverChecksComplete) return 'safety';
   return 'profile';
 }
 
@@ -71,7 +77,7 @@ export function outputStepTitle(step) {
 // /active-speaker/commission-state payload + the active speaker group. Pure so
 // the step policy (which buttons are live, what the floor state means) is one
 // small testable contract; main.js owns the DOM + fetch.
-export function commissionCardState(commission, group) {
+export function commissionCardState(commission, group, checkedRoles) {
   commission = commission || {};
   var load = commission.commission_load || {};
   var ramp = commission.ramp || {};
@@ -84,12 +90,17 @@ export function commissionCardState(commission, group) {
     (load.runtime_status && load.runtime_status.status === 'stale');
   var floorStatus = floor.status || 'floor_required';
   var awaitingAck = armed && !!pending;
-  var confirmed = Array.isArray(ramp.confirmed_roles) ? ramp.confirmed_roles : [];
+  var confirmed = Array.isArray(checkedRoles) ?
+    checkedRoles :
+    (Array.isArray(ramp.confirmed_roles) ? ramp.confirmed_roles : []);
+  var complete = roles.length > 0 && !pending && roles.every(function(role) {
+    return confirmed.indexOf(role) >= 0;
+  });
   var loadedRole = target.role || null;
   var loadedRoleConfirmed = armed && loadedRole && confirmed.indexOf(loadedRole) >= 0 && !pending;
-  var nextRole = armed && !loadedRoleConfirmed ?
+  var nextRole = complete ? null : (armed && !loadedRoleConfirmed ?
     loadedRole :
-    nextCommissionRole(roles, confirmed);
+    nextCommissionRole(roles, confirmed));
   return {
     available: !!group,
     groupId: group ? (group.id || '') : '',
@@ -102,9 +113,11 @@ export function commissionCardState(commission, group) {
     awaitingAck: awaitingAck,
     pendingRole: pending ? pending.role : null,
     pendingGainDb: pending ? pending.gain_db : null,
+    toneFrequencyHz: pending ? pending.frequency_hz : null,
     confirmedRoles: confirmed,
+    complete: complete,
     canArm: false,
-    canStep: !!group && !!nextRole && !awaitingAck,
+    canStep: !!group && !!nextRole && !awaitingAck && !complete,
     canAck: awaitingAck,
     canRemute: armed
   };
@@ -125,15 +138,7 @@ function nextCommissionRole(roles, confirmed) {
   for (var i = 0; i < roles.length; i += 1) {
     if (confirmed.indexOf(roles[i]) < 0) return roles[i];
   }
-  return roles[0] || null;
-}
-
-export function commissionFloorLabel(floorStatus) {
-  return {
-    floor_required: 'Not yet made audible',
-    floor_pending_operator: 'Audible now — confirm by ear',
-    floor_confirmed: 'Confirmed by ear'
-  }[floorStatus] || 'Idle';
+  return null;
 }
 
 export function activeCommissionGroup(topology) {

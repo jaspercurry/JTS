@@ -109,6 +109,12 @@ class CatalogPack:
     setup_required: bool = False
 
 
+if TYPE_CHECKING:
+    ToolBuildItem = Callable[..., Any] | Tool
+else:
+    ToolBuildItem = Any
+
+
 @dataclass(frozen=True)
 class CapabilityPack:
     """One copyable capability pack.
@@ -125,8 +131,8 @@ class CapabilityPack:
     per-provider build).
     """
     name: str
-    build: Callable[[ToolDeps], Iterable[Callable[..., Any] | "Tool"]]
-    gate: Callable[[ToolDeps], bool] = lambda _d: True
+    build: Callable[[Any], Iterable[ToolBuildItem]]
+    gate: Callable[[Any], bool] = lambda _d: True
     category: str = "Utilities"
     catalog_pack: CatalogPack | None = None
 
@@ -332,7 +338,7 @@ TOOL_PACKS: tuple[CapabilityPack, ...] = (
 
 def register_packs(
     registry: "ToolRegistry",
-    deps: ToolDeps,
+    deps: Any,
     *,
     disabled: "frozenset[str] | None" = None,
     disabled_packs: "frozenset[str] | None" = None,
@@ -372,11 +378,13 @@ def register_packs(
             disabled_packs = state.disabled_packs
     outcomes: list[PackOutcome] = []
     selected_packs = TOOL_PACKS if packs is None else tuple(packs)
+    claimed_names = set(registry.tools)
     for pack in selected_packs:
         if not pack.gate(deps):
             outcomes.append(PackOutcome(pack.name, "skipped"))
             continue
         originals: dict[str, tuple[bool, Any, bool, str | None]] = {}
+        pack_claimed_names: list[str] = []
 
         def remember_original(name: str) -> None:
             if name not in originals:
@@ -397,10 +405,20 @@ def register_packs(
                 and pack.catalog_pack.id in disabled_packs
             )
             registered = 0
+            seen_in_pack: set[str] = set()
             for item in fns:
                 from . import Tool, build_tool
                 t = item if isinstance(item, Tool) else build_tool(item)
-                remember_original(t.name)
+                declared_name = t.name
+                if declared_name in claimed_names or declared_name in seen_in_pack:
+                    raise ValueError(
+                        "duplicate tool name "
+                        f"{declared_name!r} in pack {pack.name!r}",
+                    )
+                seen_in_pack.add(declared_name)
+                claimed_names.add(declared_name)
+                pack_claimed_names.append(declared_name)
+                remember_original(declared_name)
                 registry.register_tool(t)
                 registry.tool_packs[t.name] = pack.name
                 if pack_disabled or t.name in disabled:
@@ -429,6 +447,8 @@ def register_packs(
                     registry.tool_packs[name] = old_pack
                 else:
                     registry.tool_packs.pop(name, None)
+            for name in pack_claimed_names:
+                claimed_names.discard(name)
             logger.exception(
                 "event=tool_pack.build_failed pack=%s", pack.name,
             )

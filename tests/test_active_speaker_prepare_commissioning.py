@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.active_speaker import COMMISSIONING_CONFIG_KIND, prepare_driver_commissioning_config
+from jasper.active_speaker import (
+    COMMISSIONING_CONFIG_KIND,
+    prepare_driver_commissioning_config,
+    prepare_summed_commissioning_config,
+)
 
 # Reuse the canonical staging fixtures (mono 2-way DAC8x topology + a passing
 # CamillaDSP validation stub).
@@ -55,6 +59,28 @@ def test_tweeter_target_prepared_with_protection_intact(tmp_path: Path):
     # The protection-while-audible gate is recorded as a required gate.
     gate_ids = {g["id"] for g in payload["required_gates"]}
     assert "driver_protection_while_audible" in gate_ids
+
+
+def test_summed_target_prepared_with_all_drivers_live_and_protected(tmp_path: Path):
+    payload = prepare_summed_commissioning_config(
+        _topology(),
+        speaker_group_id="mono",
+        config_path=tmp_path / "commission.yml",
+        validate=_valid_config,
+        created_at="2026-06-16T12:00:00Z",
+    )
+
+    assert payload["kind"] == COMMISSIONING_CONFIG_KIND
+    assert payload["status"] == "prepared"
+    assert payload["target"]["role"] == "summed"
+    assert payload["target"]["audible_outputs"] == [0, 1]
+    assert payload["issues"] == []
+    ev = payload["audible_evidence"]
+    assert ev["passed"] is True
+    assert ev["audible_outputs"] == [0, 1]
+    assert ev["muted_outputs"] == []
+    assert ev["audible_tweeter_outputs"] == [1]
+    assert ev["checks"]["tweeter_protected_while_audible"] is True
 
 
 def test_unknown_role_blocks_closed(tmp_path: Path):

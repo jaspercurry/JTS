@@ -371,6 +371,27 @@
   }
   .active-speaker-profile-actions { padding-top: 4px; }
   .active-speaker-level__head { gap: 10px; align-items: center; }
+  .active-speaker-summed-level {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+    max-width: 520px;
+  }
+  .active-speaker-summed-level__head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    font-size: 12px; font-weight: 800; color: var(--muted-foreground);
+    text-transform: uppercase;
+  }
+  .active-speaker-summed-level__head strong {
+    color: var(--foreground);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .active-speaker-summed-level input[type="range"] {
+    width: 100%;
+    accent-color: var(--sage-700);
+  }
   .output-setup { margin-top: 10px; }
   .output-setup__head {
     display: flex; align-items: flex-start; justify-content: space-between;

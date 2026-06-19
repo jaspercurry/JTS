@@ -1129,15 +1129,14 @@ The rules most often violated without it:
 - **Preamble suppression is a conditional skip-list, never a
   ban.** Live version in the `Tools — preambles` section of
   `SYSTEM_INSTRUCTION`; mirrors OpenAI's documented pattern.
-- **Per-tool conditional rules belong in the tool's docstring,
+- **Per-tool conditional rules belong in the tool's description,
   not `SYSTEM_INSTRUCTION`.** `build_tool()` at
-  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends
-  the full cleaned docstring to the LLM (unless a tool sets a
-  shorter `@tool(llm_description=...)` override — none do today).
-  When-to-call,
-  voice-answer style, and response-shape handling live in each
-  tool's docstring. `SYSTEM_INSTRUCTION` keeps only cross-tool
-  meta-rules (`error` / `confirm` field handling, preamble
+  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends the
+  tool's model-facing description to the LLM: user override first,
+  then `llm_description` when set, else the full cleaned docstring.
+  When-to-call, voice-answer style, and response-shape handling live in
+  each tool's code-owned description. `SYSTEM_INSTRUCTION` keeps only
+  cross-tool meta-rules (`error` / `confirm` field handling, preamble
   policy, verbosity, unclear-audio handling, the small set of
   cross-tool routing rules where two similar tools need
   disambiguation).
@@ -2911,6 +2910,20 @@ swap models, change prompts, or refactor without regressions.
   [`tests/voice_eval/regression/`](tests/voice_eval/regression/).
   No exceptions. A tool with no scenario can't be reasoned about
   across model swaps.
+- **A new tool *family* is a capability pack, not a `daemon_main.py`
+  edit.** Add (or extend) a `CapabilityPack` in
+  [`jasper/tools/packs.py`](jasper/tools/packs.py)'s `TOOL_PACKS` —
+  metadata, `gate`, `build`, and catalog grouping live together there,
+  and the daemon walks the registry with zero per-pack knowledge. The
+  `build` factory is still a `make_*_tools(...)` (decorated `@tool`
+  callables) *or* explicit `Tool(ToolDefinition(...), PythonExecutor(...))`
+  objects — both cross the same boundary. Read
+  [`docs/tool-platform-plan.md`](docs/tool-platform-plan.md), copy the
+  starter at [`docs/examples/tool_pack_starter.py`](docs/examples/tool_pack_starter.py),
+  and follow the house style at `http://jts.local/tools/guide/`. A pack
+  that needs a *new* runtime collaborator still adds a field to `ToolDeps`
+  and wires it in `daemon_main._build_registry` — that one central touch is
+  expected.
 - **Every reported behavioural bug** (model hallucinates / skips a
   tool / misroutes / etc.) becomes a regression scenario *before*
   the fix lands. The scenario reproduces the bug; the fix turns it

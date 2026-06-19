@@ -319,8 +319,9 @@ grows.
    honest as tools are added.
 3. **Derived manifest.** `Tool.to_manifest()` and
    `ToolRegistry.to_manifest()` emit a provider-neutral record in
-   registration order. Today it is derived from code; tomorrow it is the
-   review/scaffold seam for contributor packs.
+   registration order, including labels, timeout, compatibility, and risk
+   flags. Today it is derived from code; tomorrow it is the review/scaffold
+   seam for contributor packs.
 4. **Labels and risk flags.** `labels`, `untrusted_output`, and
    `consequential` are declarative metadata that catalog/store/policy
    layers can consume without sending extra text to the model.
@@ -392,11 +393,14 @@ grows.
    explicit reference, and `weather` is the API-backed explicit reference.
 
 **Next boundary slice**
-1. **Keep migrating examples across the complexity ladder.** With `time` and
-   `weather` now covering the simple and API-backed references, the next
-   candidates are `spotify` / `playback` as source-backed references,
-   `transit` as the deep wizard/config/provider-registry reference, and
-   `home_assistant` as the high-risk consequential-action reference.
+1. **Keep migrating examples across the complexity ladder.** The
+   non-production starter at
+   [`docs/examples/tool_pack_starter.py`](examples/tool_pack_starter.py)
+   is the minimal postcard shape. With `time` and `weather` now covering
+   the simple and API-backed production references, the next candidates are
+   `spotify` / `playback` as source-backed references, `transit` as the deep
+   wizard/config/provider-registry reference, and `home_assistant` as the
+   high-risk consequential-action reference.
 2. **Gate every refactor on byte-identical behavior.** Existing 29-tool
    provider schemas, manifest entries, catalog payloads, dispatch behavior,
    and registration order must stay identical unless a change is explicitly
@@ -578,10 +582,11 @@ a Phase-3/untrusted-code problem unless it emits a declarative
 
 ### Tool-authoring guide for jts.local
 
-The `/tools/guide/` page is a lightweight user/developer-facing guide linked
-from `/tools/` and every pack detail page, opened in a new tab
-(`target="_blank" rel="noopener"`). This is not the marketplace. It is the
-house style for first-party and trusted-PR tools:
+**Shipped 2026-06-18.** The `/tools/guide/` page is a lightweight
+user/developer-facing guide linked from `/tools/` and every generated pack
+detail page, opened in a new tab (`target="_blank" rel="noopener"`). This is
+not the marketplace, an install flow, or an in-browser executable tool
+builder. It is the house style for first-party and trusted-PR tools:
 
 - What belongs in a tool vs a pack.
 - When to create a new tool, extend an existing pack, or add a label.
@@ -591,14 +596,15 @@ house style for first-party and trusted-PR tools:
 - How to write model-facing prompt copy: short purpose first, concrete call
   boundaries, "do not call when..." cases, response style, and failure
   contract.
-- Prompt length guidance and why long descriptions matter for realtime
-  providers.
+- `llm_description` guidance: rich docstrings stay useful for humans, while
+  short model-facing descriptions can be used when a tool's full docstring
+  would spend too much realtime instructions+tools budget.
 - Required tests: static manifest/catalog coverage and a regression scenario
   under `tests/voice_eval/regression/`.
-- Safety metadata: `untrusted_output`, `consequential`, logging redaction,
-  setup ownership, and no-silent-failure expectations.
-- Future polish: examples of good and bad tool prompt copy, including
-  Spotify/music, Home Assistant, and transit examples.
+- Safety metadata: `labels`, `untrusted_output`, `consequential`, timeout and
+  logging redaction, setup ownership, and no-silent-failure expectations.
+- Explicit non-goals for this phase: no sandbox, no marketplace, no secret
+  broker, and no untrusted-code runtime.
 
 ### Phase 3 — "champagne problem" (build only if it ever arrives)
 The trigger is one of: you want to run tools you *haven't* personally

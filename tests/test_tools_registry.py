@@ -349,6 +349,46 @@ def test_literal_enum_rides_through_both_serializers():
     assert openai["parameters"]["properties"]["kind"] == expected_kind
 
 
+def test_pep604_optional_unwraps_to_inner_type():
+    """`X | None` (PEP 604) must unwrap to X's schema, exactly like
+    `typing.Optional[X]`. `get_origin` reports a PEP 604 union as
+    `types.UnionType`, a SEPARATE origin from `typing.Union` on Python
+    3.10-3.13 (the Pi runs 3.13) — before the `types.UnionType` branch,
+    `int | None` silently collapsed to `{"type": "string"}`, sending the
+    model a wrong schema for any optional param written in the codebase's
+    `X | None` house style."""
+    assert _annotation_to_schema(int | None) == {"type": "integer"}
+    assert _annotation_to_schema(str | None) == {"type": "string"}
+    assert _annotation_to_schema(float | None) == {"type": "number"}
+    assert _annotation_to_schema(list[str] | None) == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    # The pre-existing typing.Optional / typing.Union branch still works.
+    assert _annotation_to_schema(typing.Optional[int]) == {"type": "integer"}
+
+
+def test_pep604_optional_param_serializes_through_registry():
+    """End-to-end: a tool with `count: int | None = None` reaches the model
+    with an integer schema, not a bare string. This is the
+    `build_tool` -> `_params_schema` -> `typing.get_type_hints` path a
+    copyable contributor pack hits — the one that caught nothing before the
+    `types.UnionType` fix."""
+    @tool()
+    async def search(count: int | None = None,
+                     tags: list[str] | None = None) -> dict:
+        """Search with an optional limit."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(search)
+    props = reg.openai_tools()[0]["parameters"]["properties"]
+    assert props["count"] == {"type": "integer"}
+    assert props["tags"] == {"type": "array", "items": {"type": "string"}}
+    # Both params have defaults, so neither is required.
+    assert "required" not in reg.function_declarations()[0]["parameters"]
+
+
 def test_real_spotify_play_kind_serializes_without_error():
     """Smoke check on the shipped spotify_play tool: its serialized
     schema must always include a `kind` enum, guarding the Literal

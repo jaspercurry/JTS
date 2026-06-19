@@ -242,7 +242,8 @@ def test_sound_module_preserves_editor_behaviour():
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in helper_js
     assert "if (!ctx.outputIdentityComplete) return 'map';" in helper_js
-    assert "if (!ctx.driverMeasurementsComplete) return 'safety';" in helper_js
+    assert "ctx.driverChecksComplete || ctx.driverMeasurementsComplete" in helper_js
+    assert "if (!driverChecksComplete) return 'safety';" in helper_js
     assert "return 'profile';" in helper_js
     assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
@@ -280,8 +281,9 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "'./active-speaker/commission-ramp-step'" in js
     assert "'./active-speaker/commission-ramp-ack'" in js
     assert "'./active-speaker/commission-ramp-abort'" in js
-    assert "fetch('./active-speaker/summed-test'" in js
-    assert "fetch('./active-speaker/summed-validation'" in js
+    assert "'./active-speaker/commissioning-view'" in js
+    assert "action && action.endpoint || './active-speaker/summed-test'" in js
+    assert "action && action.endpoint || './active-speaker/summed-validation'" in js
     assert "fetch('./active-speaker/design-draft'" in js
     assert "fetch('./active-speaker/crossover-preview'" in js
     assert "fetch('./active-speaker/measurements'" in js
@@ -329,8 +331,15 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Normal listening volume is untouched" not in js
     assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" not in js
     assert "level_dbfs: requestedLevel == null ? cfg.value : requestedLevel" not in js
-    assert "requested_level_dbfs" not in js
+    assert "function combinedTestLevelConfig()" in js
+    assert "Combined test level" in js
+    assert "body.level_dbfs = requestedLevel" in js
+    assert "operator_listening_check: true" in js
     assert "Test each driver" in js
+    assert "By-ear" not in js
+    assert "Status" in js
+    assert "auto_retry_pending" in js
+    assert "silentAutoRetry" not in js
     assert "active-speaker/prepare-driver-test" not in js
     assert "syncPreparedOutputTopology(payload)" not in js
     assert "fetch('./active-speaker/stage-config'" not in js
@@ -643,123 +652,6 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     assert stopped["calibration_level"]["status"] == "reset_failed"
 
 
-def test_active_speaker_commissioning_rehearsal_payload_is_no_audio(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_safe_playback_payload",
-        lambda: {
-            "status": "armed",
-            "session_id": "safe-1",
-            "expires_at": "2026-06-09T12:00:00Z",
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_calibration_level_payload",
-        lambda raw=None: {
-            "test_signal": {
-                "requested_level_dbfs": -80.0,
-                "min_level_dbfs": -80.0,
-            }
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_bringup_preflight_payload",
-        lambda: {
-            "status": "manual_ready",
-            "software_guard": {"status": "software_guard_ready"},
-            "modes": {
-                "manual_guarded_bringup": {
-                    "required_gates": [
-                        {"id": "output_topology_present", "passed": True},
-                        {"id": "topology_has_no_unhandled_blockers", "passed": True},
-                        {"id": "physical_identity_verified", "passed": True},
-                        {"id": "protected_startup_config_staged", "passed": True},
-                        {"id": "high_frequency_guard_accepted", "passed": True},
-                    ]
-                }
-            },
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_startup_load_payload",
-        lambda: {
-            "state": {
-                "status": "loaded",
-                "loaded": True,
-                "rollback_available": True,
-                "current_config_matches_loaded": True,
-            },
-            "preflight": {
-                "status": "ready",
-                "path_safety": {"load_gate": "ready"},
-                "required_gates": [
-                    {"id": "path_safety_ready", "passed": True},
-                    {
-                        "id": "path_safety_matches_current_startup_load",
-                        "passed": True,
-                    },
-                ],
-                "issues": [],
-            },
-        },
-    )
-
-    payload = sound_setup._active_speaker_commissioning_rehearsal_payload()
-
-    assert payload["kind"] == "jts_active_speaker_commissioning_rehearsal"
-    assert payload["status"] == "ready_for_target_check"
-    assert payload["no_audio"] is True
-    assert payload["steps"][7]["id"] == "target_readiness_checked"
-    assert payload["steps"][7]["status"] == "next"
-
-
 def _active_speaker_mono_topology_payload(
     *,
     protection_status: str,
@@ -1051,10 +943,13 @@ def test_active_speaker_summed_test_records_current_artifact(
             },
         )
 
-    payload = sound_setup._active_speaker_summed_test_payload({
-        "speaker_group_id": "mono",
-        "audio": False,
-    })
+    payload = asyncio.run(sound_setup._active_speaker_summed_test_payload(
+        {
+            "speaker_group_id": "mono",
+            "audio": False,
+        },
+        camilla_factory=lambda: None,
+    ))
     latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
 
     assert payload["playback"]["status"] == "completed"
@@ -2288,6 +2183,57 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
     finally:
         server.shutdown()
         server.server_close()
+
+
+async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
+    async def fake_apply_baseline_profile(_topology, **_kwargs):
+        return {
+            "status": "applied",
+            "apply": {"result": "success"},
+            "issues": [],
+        }
+
+    mux_commands: list[str] = []
+
+    def fake_mux_command(command: str) -> dict:
+        mux_commands.append(command)
+        return {
+            "mode": "auto",
+            "selected_source": None,
+            "active_source": "airplay",
+            "test_source": None,
+        }
+
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.load_measurement_state",
+        lambda topology: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
+        fake_apply_baseline_profile,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_mux_command",
+        fake_mux_command,
+    )
+
+    payload = await sound_setup._active_speaker_baseline_profile_apply_payload(
+        camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
+    )
+
+    assert mux_commands == ["AUTO"]
+    assert payload["source_selection_restore"]["status"] == "ok"
+    assert payload["source_selection_restore"]["state"]["mode"] == "auto"
 
 
 def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(

@@ -421,7 +421,17 @@ def _quiet_start_after_result(
 
     if completed_audio:
         quiet["last_playback_at"] = _utc_from_epoch(now_epoch)
-        if _level_at_floor(level):
+        if (
+            quiet.get("status") == "floor_pending_operator"
+            and target_sig
+            and quiet.get("current_target") == target_sig
+            and not quiet.get("floor_audio_confirmed")
+        ):
+            quiet["status"] = "floor_pending_operator"
+            quiet["floor_audio_confirmed"] = False
+            quiet["pending_playback_id"] = result.get("playback_id")
+            quiet["last_operator_result"] = None
+        elif _level_at_floor(level):
             quiet["status"] = "floor_pending_operator"
             quiet["floor_audio_confirmed"] = False
             quiet["pending_playback_id"] = result.get("playback_id")

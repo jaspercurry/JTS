@@ -1,4 +1,7 @@
-# JTS — Jasper smart speaker
+# JTS — the Jasper Tech Speaker
+
+JTS is the **J**asper **T**ech **S**peaker — the debut build from the
+[Jasper Tech](https://www.youtube.com/@Jasper_Tech) YouTube channel.
 
 A custom voice-controlled smart speaker on a Raspberry Pi 5 running
 Raspberry Pi OS Lite Trixie, with
@@ -217,7 +220,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   whole pack or a specific child tool. Detail pages expose the full
   model-facing prompt, input schema, and metadata; advanced users can
   override a prompt at their own risk and reset it to the built-in
-  default. Reads the catalog `jasper-voice` writes to
+  default. Each page links a tool-authoring guide at
+  `http://jts.local/tools/guide/` (the house style for first-party and
+  trusted-PR capability packs). Reads the catalog `jasper-voice` writes to
   `/run/jasper/tools.json`; disabled tools/packs persist to
   `/var/lib/jasper/tool_state.env` and prompt overrides persist to
   `/var/lib/jasper/tool_prompt_overrides.json` (fail-safe: missing or
@@ -294,9 +299,10 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ Hardware AEC investigation: the 2026-05-29 Option D lab pass has
   been promoted into the recommended XVF3800 input profile. Fresh
   installs seed `JASPER_AUDIO_INPUT_PROFILE=auto`: on 6-channel XVF3800
-  hardware this resolves to chip-AEC with USB-IN reference + direct
-  source fanout; otherwise it falls back to software AEC3/direct mic as
-  hardware allows. Current findings live at
+  hardware plus a supported/calibrated output DAC profile this resolves
+  to chip-AEC with USB-IN reference + direct source fanout; otherwise it
+  falls back to software AEC3/direct mic as hardware allows. Current
+  findings live at
   [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
@@ -320,9 +326,10 @@ when the configured AEC mic is present with 6-channel firmware — see
 
 Current AEC behavior is profile-driven rather than a separate
 "marginal items" list: `JASPER_AUDIO_INPUT_PROFILE=auto` uses the
-chip-AEC profile on 6-channel XVF3800 hardware, falls back to software
-AEC3/direct mic when needed, and exposes custom raw/DTLN/chip-leg
-switches from `/wake/` for corpus or nonstandard hardware. Resource
+chip-AEC profile on 6-channel XVF3800 hardware with a
+supported/calibrated output DAC profile, falls back to software AEC3/direct
+mic when needed, and exposes custom raw/DTLN/chip-leg switches from `/wake/`
+for corpus or nonstandard hardware. Resource
 costs are in the table below, and the current wake refractory lives as
 `WAKE_REFRACTORY_SEC` in `jasper/voice_daemon.py`.
 
@@ -397,6 +404,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
+  HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
   HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
@@ -504,11 +512,12 @@ steps. Apache 2.0 like the rest of the repo.
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet, pack-first catalog, singleton packs for standalone tools, generated pack detail pages, full prompt override/reset, and the built-in `/tools/` on/off catalog wizard |
+| [docs/examples/tool_pack_starter.py](docs/examples/tool_pack_starter.py) | Trusted tool-pack contributors | Non-production postcard example of a copyable capability pack: `CapabilityPack`, `CatalogPack`, explicit `ToolDefinition`, `PythonExecutor`, labels, timeout, risk flags, and deps/build shape. Tests import it so the example cannot drift from the real boundary. |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, hotspot register, software-only dev-path notes, and deliberate deferrals |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
-| [docs/AEC-DIAG-*.md](docs/AEC-DIAG-04-timing-results.md) | Audio diagnostics | Dated AEC diagnostic notes and active probe runbooks for the outputd/chip-ref/XVF timing investigation. Current entry point: `AEC-DIAG-04-timing-results.md` |
+| [docs/AEC-DIAG-*.md](docs/AEC-DIAG-06-xvf-format-level-profile.md) | Audio diagnostics | Dated AEC diagnostic notes and active probe runbooks for the outputd/chip-ref/XVF timing investigation. Current entry point: `AEC-DIAG-06-xvf-format-level-profile.md` |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up a Zero 2 W streambox | Lab runbook for cheap Zero-class JTS: the streambox install profile (local renderers, DSP, shared capability-gated UI) plus the planned `active_crossover` output topology. "Endpoint behaviour" is now the runtime multiroom follower role, not a separate install tier |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
@@ -590,6 +599,12 @@ reference. Currently:
   `scripts/chip-aec-*.sh` scripts +
   `jasper/chip_aec_experiment.py` are lab infrastructure, and
   `chip-aec-teardown.sh` fully reverts. **Read the doc before running.**
+- [`HANDOFF-chip-aec-portability.md`](docs/HANDOFF-chip-aec-portability.md) —
+  **Design-of-record (living draft).** Making chip-AEC work across any DAC:
+  the clock-domain decision (digital SRO clock-recovery, *not* a per-period
+  `snd_pcm_delay` delay line), the JTS/JTS3/JTS5 hardware test matrix, and
+  the YAGNI-gated layered roadmap (Layer 0 observe → classify → compensate).
+  Supersedes the `AEC-DIAG-07` draft's §3 mechanism.
 - [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
   Active workstream. The sequencing + lever inventory + decision
   history for getting the mic to work reliably across whisper /
@@ -924,12 +939,13 @@ There are three places to address this:
 ### What this project does
 
 Fresh installs default to `JASPER_AUDIO_INPUT_PROFILE=auto`. On the
-recommended 6-channel XVF3800 hardware, `auto` resolves to the chip-AEC
-profile: `jasper-outputd` fans out the final speaker buffer to the
-XVF3800 USB-IN reference, the chip emits fixed 150°/210° AEC beams, and
-the bridge forwards the selected chip beam to `jasper-voice`. If that
-hardware path is unavailable, `auto` falls back to software AEC3 or a
-direct mic path rather than stacking incompatible processing.
+recommended 6-channel XVF3800 hardware plus a supported/calibrated output
+DAC profile, `auto` resolves to the chip-AEC profile: `jasper-outputd`
+fans out the final speaker buffer to the XVF3800 USB-IN reference, the
+chip emits fixed 150°/210° AEC beams, and the bridge forwards the selected
+chip beam to `jasper-voice`. If that hardware path is unavailable or the
+active output DAC still needs calibration, `auto` falls back to software
+AEC3 or a direct mic path rather than stacking incompatible processing.
 
 The chip is still useful — its **beamforming, noise suppression,
 and AGC** all run in the XVF processing pipeline. The key rule is not

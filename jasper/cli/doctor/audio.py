@@ -1450,6 +1450,103 @@ def check_outputd_service() -> CheckResult:
         f"{dual_detail}",
     )
 
+@doctor_check(order=52.6, group="audio")
+def check_aec_clock_drift() -> CheckResult:
+    """Surface the passive chip-AEC clock-drift estimate (Layer 0).
+
+    Reads ``reference_outputs.aec_clock`` from outputd STATUS — the
+    observe-only SRO (sample-rate-offset) estimator's verdict, ppm, and
+    latency budget. This is purely diagnostic; no audio path depends on it.
+
+      - skip (ok + "skipped — …") when outputd is disabled/inactive,
+        STATUS is unreachable or invalid, the chip reference is not
+        configured, or the aec_clock block is absent (pre-Layer-0 builds /
+        no XVF reference). Mirrors the skip-if-not-configured idiom used by
+        the other audio checks — a non-applicable probe is OK, not a fail.
+      - warn only when sro_estimator_status == "untrusted" (the clock
+        signal itself cannot be trusted right now).
+      - ok otherwise: coherent, compensable (a real steady offset a future
+        layer would compensate — the *expected* state on independent-clock
+        DACs like the HiFiBerry), and observing (still measuring) are all
+        healthy. Echoes the estimate and the latency budget.
+    """
+    label = "AEC clock drift"
+    enabled = _run(
+        ["systemctl", "is-enabled", "jasper-outputd.service"]
+    ).stdout.strip()
+    if enabled in {"not-found", "disabled", ""}:
+        return CheckResult(label, "ok", "skipped — jasper-outputd not enabled")
+    active = _run(
+        ["systemctl", "is-active", "jasper-outputd.service"]
+    ).stdout.strip()
+    if active != "active":
+        return CheckResult(label, "ok", "skipped — jasper-outputd not active")
+
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(_OUTPUTD_STATUS_SOCKET)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError as e:
+        return CheckResult(label, "ok", f"skipped — STATUS unreachable: {e}")
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    body = b"".join(chunks).decode("utf-8", errors="replace")
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return CheckResult(label, "ok", "skipped — STATUS returned invalid JSON")
+
+    reference_outputs = data.get("reference_outputs")
+    if not isinstance(reference_outputs, dict):
+        return CheckResult(label, "ok", "skipped — STATUS missing reference_outputs")
+    if reference_outputs.get("chip_ref_pcm") is None:
+        return CheckResult(label, "ok", "skipped — chip reference not configured")
+    aec_clock = reference_outputs.get("aec_clock")
+    if not isinstance(aec_clock, dict):
+        return CheckResult(
+            label, "ok", "skipped — outputd build predates aec_clock observation"
+        )
+
+    verdict = aec_clock.get("verdict")
+    status = aec_clock.get("sro_estimator_status")
+    sro_ppm = aec_clock.get("chip_ref_sro_ppm")
+    reason = aec_clock.get("verdict_reason")
+    latency = aec_clock.get("latency") or {}
+    dac_ms = latency.get("dac_presentation_ms")
+    playback_ms = latency.get("playback_queue_ms")
+    chip_ref_ms = latency.get("chip_ref_queue_ms")
+    detail = (
+        f"verdict={verdict}, sro_estimator_status={status}, "
+        f"chip_ref_sro_ppm={sro_ppm}, "
+        f"dac_presentation_ms={dac_ms}, playback_queue_ms={playback_ms}, "
+        f"chip_ref_queue_ms={chip_ref_ms}"
+    )
+    # Warn only on a genuinely untrusted clock signal. "observing" (still
+    # measuring at startup) and "compensable" (real drift a future layer
+    # handles — expected on independent-clock DACs) are both healthy; warning
+    # on them would cry wolf at boot and on exactly the DACs we target.
+    if status == "untrusted":
+        return CheckResult(
+            label,
+            "warn",
+            f"chip-AEC clock drift cannot be trusted: {reason}. {detail}",
+        )
+    return CheckResult(label, "ok", detail)
+
+
 def _devices_volume_limit_from_text(text: str) -> float | None:
     """``devices.volume_limit`` from a CamillaDSP config, or None if absent /
     null. Raises ValueError on a non-numeric value (the caller surfaces it as a

@@ -164,6 +164,8 @@ def test_get_root_renders_canonical_page(tmp_path):
     assert "/assets/tools/tools.css?v=" in out
     assert 'class="app-header"' in out
     assert 'meta name="jts-csrf"' in out
+    assert 'href="/tools/guide/"' in out
+    assert 'target="_blank" rel="noopener"' in out
     assert '<script type="module" src="/assets/tools/js/main.js">' in out
 
 
@@ -221,13 +223,37 @@ def test_get_tool_authoring_guide_renders(tmp_path):
     _write_catalog(cat, [])
     h = _make_request(
         _handler_cls(str(cat), str(tmp_path / "state.env")),
-        "/guide",
+        "/guide/",
     )
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
     assert "Tool authoring guide" in out
+    assert "/assets/app.css?v=" in out
     assert "/assets/tools/tools.css?v=" in out
+    assert 'class="app-header"' in out
+    assert 'meta name="jts-csrf"' in out
+    assert "<script" not in out
+    assert "CapabilityPack" in out
+    assert "ToolDefinition" in out
+    assert "ToolExecutor" in out
+    assert "llm_description" in out
+    assert "untrusted_output=True" in out
+    assert "consequential=True" in out
+    assert "no marketplace" in out
+    assert "untrusted-code" in out
+
+
+def test_get_tool_authoring_guide_uses_read_guard(tmp_path):
+    cat = tmp_path / "tools.json"
+    _write_catalog(cat, [])
+    h = _make_request(
+        _handler_cls(str(cat), str(tmp_path / "state.env")),
+        "/guide", headers={"Host": "evil.example"},
+    )
+    h.do_GET()
+    assert h.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"host_not_allowed" in h.wfile.getvalue()
 
 
 def test_get_root_rejects_dns_rebinding_host(tmp_path):
@@ -608,6 +634,67 @@ def test_post_prompt_override_and_reset_stage_without_restart(tmp_path, monkeypa
     h = _post_prompt_reset(handler, {"name": "get_weather"})
     h.do_POST()
     assert h.status == 200
+    assert read_prompt_overrides(str(prompts)) == {}
+
+
+def test_post_prompt_equal_to_default_clears_override(tmp_path, monkeypatch):
+    """Editing a prompt back to the exact code default is a reset, not a
+    customization — otherwise prompt_customized() would stay true forever and
+    the 'customized' badge could only be cleared via the explicit Reset."""
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    prompts = tmp_path / "prompts.json"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "get_weather",
+            description="Default prompt",
+            default_description="Default prompt",
+            pack={"id": "weather", "title": "Weather", "summary": ""},
+        )],
+        "packs": [_pack("weather")],
+    })
+    handler = tools_setup._make_handler({
+        "catalog_path": str(cat),
+        "state_path": str(state),
+        "prompt_overrides_path": str(prompts),
+    })
+    # Customize first, then "edit" it back to the exact default.
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": "Custom"})
+    h.do_POST()
+    assert read_prompt_overrides(str(prompts)) == {"get_weather": "Custom"}
+
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": "Default prompt"})
+    h.do_POST()
+    assert h.status == 200
+    assert read_prompt_overrides(str(prompts)) == {}
+
+
+def test_post_prompt_rejects_oversized(tmp_path, monkeypatch):
+    """A pathological prompt paste is bounded so it can't blow the realtime
+    model's instructions+tools token ceiling."""
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    prompts = tmp_path / "prompts.json"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "get_weather",
+            description="Default prompt",
+            default_description="Default prompt",
+            pack={"id": "weather", "title": "Weather", "summary": ""},
+        )],
+        "packs": [_pack("weather")],
+    })
+    handler = tools_setup._make_handler({
+        "catalog_path": str(cat),
+        "state_path": str(state),
+        "prompt_overrides_path": str(prompts),
+    })
+    huge = "x" * (tools_setup.MAX_PROMPT_OVERRIDE_CHARS + 1)
+    h = _post_prompt(handler, {"name": "get_weather", "prompt": huge})
+    h.do_POST()
+    assert h.status == 400
     assert read_prompt_overrides(str(prompts)) == {}
 
 

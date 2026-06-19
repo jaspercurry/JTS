@@ -147,9 +147,8 @@ Avoid:
 - exposing "check readiness" as a user action; the user chooses a driver and
   JTS checks readiness internally
 - forcing the user to raise a level one decibel at a time just to discover
-  audibility; the UI should raise toward audible in meaningful bounded steps,
-  with a future continuous ramp only after the playback backend is cancellable
-  mid-tone
+  audibility; the UI should raise toward audible in meaningful bounded steps
+  while Stop and "I hear the tone" remain live for the continuous tone session
 
 ### 4. Measure Drivers
 
@@ -192,6 +191,7 @@ Good language:
 
 - "Test each driver"
 - "Start quiet woofer test"
+- "Tone playing at 250 Hz"
 - "What did you hear?"
 - "Too loud" as an always-available operator answer
 
@@ -209,9 +209,12 @@ per active speaker group. This is still a guided setup action, not a lab report:
 the UI should say which drivers will be heard together, play the combined test,
 then record the phone-mic capture that proves whether the crossover blends.
 Polarity and delay are technical implementation details, but they can be
-captured as simple problem outcomes when the user hears something wrong. A
-manual success click must not unlock the active profile without current mic
-evidence tied to the latest audible combined test.
+captured as simple problem outcomes when the user hears something wrong. The
+combined test also needs a bounded level control for low-sensitivity drivers:
+the user can raise the next play from the quiet floor, while the backend still
+limits upward motion and logs the emitted level. A manual success click must not
+unlock the active profile without current mic evidence tied to the latest
+audible combined test.
 
 Good language:
 
@@ -234,7 +237,7 @@ user is choosing whether to make it active. The card owns three separate user
 actions:
 
 - **Play combined test** runs a short, quiet combined-driver test from the
-  prepared crossover setup.
+  prepared crossover setup at the selected bounded test level.
 - **Record mic capture** records the combined crossover validation; it must be
   tied to the latest audible combined test and produce usable mic evidence.
 - **Save active profile** writes the candidate CamillaDSP YAML and durable

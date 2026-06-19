@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -102,14 +103,13 @@ def _run_reconcile(
             "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(
                 tmp_path / "output_hardware.json"
             ),
+            "JASPER_OUTPUT_HARDWARE_PYTHON": sys.executable,
             # Hermetic active-graph gate inputs: point the cutover gate's
-            # startup-load + statefile at tmp paths that are ABSENT unless a
-            # test explicitly stages them via _active_graph_env(). Without this
-            # the gate would read the real /var/lib/jasper paths on a dev box.
-            "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": str(
-                tmp_path / "active_speaker_startup_load.json"
-            ),
+            # statefile + topology at tmp paths that are ABSENT unless a test
+            # explicitly stages them via _active_graph_env(). Without this the
+            # gate would read the real /var/lib/jasper paths on a dev box.
             "JASPER_CAMILLA_STATEFILE": str(tmp_path / "outputd-statefile.yml"),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(tmp_path / "output_topology.json"),
             # Hermetic: always source the repo's shared env-file lib, never
             # a (possibly stale) installed copy under /usr/local/lib.
             "JASPER_ENV_FILE_LIB": str(
@@ -177,30 +177,58 @@ def _render_log(tmp_path: Path) -> str:
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-def _active_graph_env(tmp_path: Path, *, channels: int = 4) -> dict[str, str]:
-    """Stage a loaded active-speaker graph at ``channels`` width for the gate.
+def _active_graph_env(
+    tmp_path: Path,
+    *,
+    channels: int = 4,
+    write_topology: bool = True,
+) -> dict[str, str]:
+    """Stage a legal active-speaker graph at ``channels`` width for the gate.
 
-    Default 4 = the dual-Apple composite shape; pass channels=8 for a DAC8x
-    coherent single. The reconciler's width-aware gate compares the loaded
-    config's widest ``channels:`` against the DAC's transport width.
+    Default 4 = the dual-Apple composite shape; pass channels=2 for the
+    currently deployed mono 2-way shape or 6 for a stereo 3-way DAC8x shape.
+    The reconciler's width-aware gate reads the runtime contract's playback
+    width and compares it against the DAC's active-lane cap.
     """
-    # Match the real emitter shape: capture is always stereo (channels: 2) and
-    # playback carries the active width. The gate must read the PLAYBACK width
-    # (the widest channels: line), not the capture's 2.
-    active_config = tmp_path / "active-speaker-startup.yml"
-    active_config.write_text(
-        "devices:\n"
-        "  samplerate: 48000\n"
-        "  capture:\n"
-        "    type: Alsa\n"
-        "    channels: 2\n"
-        "    device: plug:jasper_capture\n"
-        "  playback:\n"
-        "    type: Alsa\n"
-        f"    channels: {channels}\n"
-        "    device: outputd_active_content_playback\n",
-        encoding="utf-8",
+    from jasper.active_speaker import (
+        ActiveSpeakerPreset,
+        emit_active_speaker_baseline_config,
     )
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    if channels == 2:
+        topology = _active_topology("mono", "active_2_way")
+        preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+    elif channels == 4:
+        topology = _active_topology("stereo", "active_2_way")
+        preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo"))
+    elif channels == 6:
+        topology = _active_topology("stereo", "active_3_way")
+        preset = ActiveSpeakerPreset.from_mapping(_three_way_preset("stereo"))
+    else:
+        topology = _active_topology("mono", "active_2_way")
+        preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+
+    active_config = tmp_path / "active_speaker_baseline.yml"
+    active_text = emit_active_speaker_baseline_config(
+        preset,
+        playback_device="outputd_active_content_playback",
+        baseline_id=f"test-{channels}",
+    )
+    if channels not in {2, 4, 6}:
+        active_text = active_text.replace(
+            "channels: { in: 2, out: 2 }",
+            f"channels: {{ in: 2, out: {channels} }}",
+        ).replace(
+            "channels: 2\n    device: \"outputd_active_content_playback\"",
+            f"channels: {channels}\n    device: \"outputd_active_content_playback\"",
+        )
+    active_config.write_text(active_text, encoding="utf-8")
+    topology_path = tmp_path / "output_topology.json"
+    if write_topology:
+        save_output_topology(topology, path=topology_path)
     prior_config = tmp_path / "outputd-cutover.yml"
     prior_config.write_text(
         "devices:\n"
@@ -211,28 +239,14 @@ def _active_graph_env(tmp_path: Path, *, channels: int = 4) -> dict[str, str]:
         "    device: outputd_content_playback\n",
         encoding="utf-8",
     )
-    startup_load = tmp_path / "active_speaker_startup_load.json"
-    startup_load.write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_startup_load_state",
-            "status": "loaded",
-            "loaded": True,
-            "candidate_config_path": str(active_config),
-            "active_config_path": str(active_config),
-            "previous_config_path": str(prior_config),
-            "rollback_available": True,
-            "last_action": "load",
-            "issues": [],
-        }),
-        encoding="utf-8",
-    )
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {active_config}\n", encoding="utf-8")
-    return {
-        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": str(startup_load),
+    out = {
         "JASPER_CAMILLA_STATEFILE": str(statefile),
     }
+    if write_topology:
+        out["JASPER_OUTPUT_TOPOLOGY_PATH"] = str(topology_path)
+    return out
 
 
 APPLE_LISTING = """
@@ -318,6 +332,45 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "reset-failed jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+def test_reconcile_preserves_existing_env_dir_modes(tmp_path: Path):
+    """Reconcile must NOT re-chmod an existing env-file parent dir.
+
+    /var/lib/jasper is 0770 root:jasper (ensure_state_dir, so the now-non-root
+    jasper-voice/-mux can write speaker_volume.json) and /etc/jasper is 0755
+    (widen_control_secret_env_modes, so the group-jasper doctor-json oneshot
+    can traverse to read jasper.env). A blanket ``install -d -m 0750`` in
+    set_env_var / set_env_file_var re-stripped those bits on every
+    install / boot / udev-hotplug reconcile. Pin that a pre-created env-file
+    parent dir keeps its mode after a reconcile that writes into it.
+    """
+    state_dir = tmp_path / "var-lib-jasper"
+    etc_dir = tmp_path / "etc-jasper"
+    state_dir.mkdir()
+    etc_dir.mkdir()
+    # Set modes explicitly (mkdir's mode arg is masked by umask).
+    state_dir.chmod(0o770)
+    etc_dir.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_ENV_FILE": str(etc_dir / "jasper.env"),
+            "JASPER_OUTPUTD_ENV_FILE": str(state_dir / "outputd.env"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The reconcile actually wrote both env files into those dirs, so the
+    # mode-preservation assertions below are not vacuous.
+    assert (etc_dir / "jasper.env").exists()
+    assert (state_dir / "outputd.env").exists()
+    assert oct(state_dir.stat().st_mode & 0o777) == "0o770"
+    assert oct(etc_dir.stat().st_mode & 0o777) == "0o755"
 
 
 def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
@@ -431,39 +484,46 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
         serial="left",
     )
     topology_path = tmp_path / "output_topology.json"
-    topology_path.write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_output_topology",
-            "topology_id": "dual_apple",
-            "name": "Dual Apple",
-            "status": "ready",
-            "hardware": {
-                "device_id": "dual_apple_usb_c_dac_4ch",
-                "device_label": "Dual Apple USB-C DAC 4-channel pair",
-                "physical_output_count": 4,
-                "outputs": [],
-                "child_devices": [
-                    {
-                        "child_id": "left",
-                        "device_id": "apple_usb_c_dongle",
-                        "device_label": "Apple USB-C audio adapter",
-                        "serial": "left",
-                        "physical_output_indexes": [0, 1],
-                    },
-                    {
-                        "child_id": "right",
-                        "device_id": "apple_usb_c_dongle",
-                        "device_label": "Apple USB-C audio adapter",
-                        "serial": "right",
-                        "physical_output_indexes": [2, 3],
-                    },
-                ],
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("stereo", "active_2_way").to_dict()
+    topology["topology_id"] = "dual_apple"
+    topology["name"] = "Dual Apple"
+    topology["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "left",
+                "physical_output_indexes": [0, 1],
             },
-            "speaker_groups": [],
-            "routing": {},
-            "safety": {},
-        }),
+            {
+                "child_id": "right",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "right",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "unit-test-dual-apple-sync",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": 0,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": ["left", "right"],
+        },
+    }
+    topology_path.write_text(
+        json.dumps(topology),
         encoding="utf-8",
     )
 
@@ -476,7 +536,7 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
             "JASPER_SYS_CLASS_SOUND": str(sys_class),
             "JASPER_PROC_ASOUND": str(proc_asound),
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
-            **_active_graph_env(tmp_path),
+            **_active_graph_env(tmp_path, write_topology=False),
         },
     )
 
@@ -568,7 +628,7 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
     state_text = (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert "action=park_until_active_graph" in result.stderr
-    assert "reason=startup_load_state_missing" in result.stderr
+    assert "reason=camilla_statefile_missing" in result.stderr
     assert not (tmp_path / "asoundrc.jasper.template").exists()
     commands = _systemctl_log(tmp_path)
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
@@ -603,15 +663,16 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
-def test_reconcile_dac8x_active_graph_full_width_emits_that_width(tmp_path: Path):
-    # A DAC8x with a loaded active baseline that drives all 8 outputs engages
-    # the active lane at width 8: outputd reads the active content lane at 8.
+def test_reconcile_dac8x_active_graph_wide_profile_emits_that_width(tmp_path: Path):
+    # A DAC8x with a loaded active baseline that drives 6 outputs engages the
+    # active lane at width 6: outputd reads the active content lane at the graph
+    # width, not the DAC's maximum 8-channel capacity.
     result = _run_reconcile(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
         "--reason",
         "test",
-        extra_env=_active_graph_env(tmp_path, channels=8),
+        extra_env=_active_graph_env(tmp_path, channels=6),
     )
 
     assert result.returncode == 0, result.stderr
@@ -621,10 +682,10 @@ def test_reconcile_dac8x_active_graph_full_width_emits_that_width(tmp_path: Path
     assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
-    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=8" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=6" in outputd_env
     assert "JASPER_OUTPUTD_DAC_PCM=outputd_dac" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
-    assert "mode=single_alsa_active active_channels=8 active_lane_cap=8" in result.stderr
+    assert "mode=single_alsa_active active_channels=6 active_lane_cap=8" in result.stderr
 
 
 def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
@@ -689,7 +750,7 @@ def test_reconcile_dac8x_active_graph_over_cap_stays_stereo(tmp_path: Path):
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "single_alsa_active" not in result.stderr
-    assert "active_graph=active_graph_width_out_of_range got=16 cap=8" in result.stderr
+    assert "active_graph=active_graph_unsafe:active_graph_output_count_mismatch" in result.stderr
 
 
 def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):

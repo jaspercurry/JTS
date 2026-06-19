@@ -214,7 +214,8 @@ def test_driver_test_signal_plan_two_way_uses_crossover_and_protection_edges() -
 
     assert woofer["kind"] == DRIVER_TEST_SIGNAL_PLAN_KIND
     assert woofer["status"] == "ready"
-    assert woofer["frequency_hz"] < 2000
+    assert woofer["frequency_hz"] == 250.0
+    assert woofer["selection_reason"] == "role_native_woofer_below_lowpass_edge"
     assert woofer["frequency_hz"] <= woofer["allowed_band"]["maximum_tone_hz"]
     assert woofer["allowed_band"]["lowpass_hz"] == 2000
 
@@ -240,6 +241,7 @@ def test_driver_test_signal_plan_three_way_places_each_role_in_its_band() -> Non
 
     assert woofer["status"] == "ready"
     assert woofer["frequency_hz"] < 300
+    assert woofer["frequency_hz"] == 120.0
     assert woofer["allowed_band"]["lowpass_hz"] == 300
 
     assert mid["status"] == "ready"
@@ -264,7 +266,8 @@ def test_driver_test_signal_plan_subwoofer_stays_above_floor_and_below_lowpass()
     assert plan["allowed_band"]["highpass_hz"] == 25.0
     assert plan["allowed_band"]["lowpass_hz"] == 80.0
     assert 25 < plan["frequency_hz"] < 80
-    assert plan["frequency_hz"] == 44.7
+    assert plan["frequency_hz"] == 50.0
+    assert plan["selection_reason"] == "role_native_subwoofer_tone"
     assert {
         edge["kind"] for edge in plan["allowed_band"]["edges"]
     } == {"subwoofer_subsonic_floor", "crossover_lowpass"}

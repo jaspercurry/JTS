@@ -94,6 +94,10 @@ def _candidate_frequency(
     maximum_tone_hz: float,
 ) -> tuple[float | None, str]:
     if highpass_hz is not None and lowpass_hz is not None:
+        if role == "subwoofer":
+            return min(max(50.0, minimum_tone_hz), maximum_tone_hz), (
+                "role_native_subwoofer_tone"
+            )
         preferred = math.sqrt(highpass_hz * lowpass_hz)
         if minimum_tone_hz < preferred < maximum_tone_hz:
             return preferred, "geometric_mean_of_passband_edges"
@@ -101,6 +105,11 @@ def _candidate_frequency(
             "geometric_mean_of_margin_bounded_band"
         )
     if lowpass_hz is not None:
+        if role == "woofer":
+            preferred = min(max(lowpass_hz / 3.0, 120.0), 250.0)
+            return min(max(preferred, minimum_tone_hz), maximum_tone_hz), (
+                "role_native_woofer_below_lowpass_edge"
+            )
         preferred = lowpass_hz / 2.0
         return min(max(preferred, minimum_tone_hz), maximum_tone_hz), (
             "one_octave_below_lowpass_edge"

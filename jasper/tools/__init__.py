@@ -43,6 +43,7 @@ import inspect
 import logging
 import re
 import time as _time
+import types
 import typing
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
@@ -198,7 +199,7 @@ DEFAULT_TOOL_TIMEOUT_SEC = 12.0
 # detect a breaking change. The manifest is a stable, provider-neutral
 # description built straight from existing Tool fields — additive, with
 # no effect on dispatch or the provider serializers.
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -254,8 +255,9 @@ class ToolDefinition:
     # behavior (today's fencing, taint-marking, and the consequential-action
     # confirmation are wired explicitly inside the tools). A test pins these
     # to current reality so they don't drift; the enforcement layer reads
-    # them when the store lands. (A natural follow-up is surfacing these in
-    # `to_manifest_entry()` below — deferred to keep this change focused.)
+    # them when the store lands. They are also surfaced in `to_manifest_entry()`
+    # below as a `risk_flags` block (manifest schema v2) so the catalog/store
+    # can read them without sending the model extra text.
     #   untrusted_output — the tool's RESULT can contain attacker-controllable
     #     third-party text (an injection SOURCE: gmail, calendar, a future
     #     web-fetch). Such tools fence their output and arm the taint window.
@@ -297,6 +299,10 @@ class ToolDefinition:
             },
             "labels": list(self.labels),
             "timeout": self.timeout,
+            "risk_flags": {
+                "untrusted_output": self.untrusted_output,
+                "consequential": self.consequential,
+            },
         }
 
 
@@ -433,16 +439,26 @@ class ToolRegistry:
 
     def register(
         self,
-        fn: Callable[..., Any],
+        fn: Callable[..., Any] | Tool,
         *,
         name: str | None = None,
         providers: Iterable[str] | None = None,
     ) -> Tool:
-        """Register `fn` as a tool. `providers` overrides any allowlist
-        the `@tool(...)` decorator set on the function — useful when a
-        wiring point needs to gate a generic tool to one backend without
-        editing the tool itself."""
-        tool = build_tool(fn, name=name)
+        """Register a decorated callable or explicit Tool.
+
+        `@tool(...)` callables remain the ergonomic first-party path.
+        Explicit Tool objects are the copyable ToolDefinition +
+        ToolExecutor boundary for richer packs and future non-Python
+        executors. `providers` overrides any allowlist the callable or
+        Tool definition set — useful when a wiring point needs to gate a
+        generic tool to one backend without editing the tool itself.
+        """
+        if isinstance(fn, Tool):
+            tool = fn
+            if name is not None:
+                tool = replace(tool, definition=replace(tool.definition, name=name))
+        else:
+            tool = build_tool(fn, name=name)
         if providers is not None:
             tool = replace(
                 tool,
@@ -691,7 +707,14 @@ def _params_schema(fn: Callable[..., Any]) -> dict[str, Any]:
 
 def _annotation_to_schema(annotation: Any) -> dict[str, Any]:
     origin = typing.get_origin(annotation)
-    if origin is typing.Union:
+    # `typing.Union` matches Optional[X] / Union[...]; `types.UnionType` matches
+    # PEP 604 `X | None` syntax, which get_origin reports as a *separate* origin
+    # on Python 3.10-3.13 (the Pi runs 3.13). Both must unwrap a single non-None
+    # arm — otherwise an `int | None` tool param silently degrades to the
+    # catch-all {"type": "string"}, sending the model a wrong schema. `X | None`
+    # is the codebase's house style, so a copyable contributor pack would hit
+    # this first. (Python 3.14 unifies the two origins; we still support 3.11+.)
+    if origin is typing.Union or origin is types.UnionType:
         args = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(args) == 1:
             return _annotation_to_schema(args[0])

@@ -215,6 +215,60 @@ normalize_audio_input_profile() {
     esac
 }
 
+normalize_output_dac_id() {
+    local dac_id="${1:-unknown}"
+    dac_id="$(printf '%s' "$dac_id" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
+    dac_id="${dac_id//\'/}"
+    dac_id="${dac_id//\"/}"
+    if [[ -z "$dac_id" ]]; then
+        dac_id="unknown"
+    fi
+    echo "$dac_id"
+}
+
+chip_aec_dac_status() {
+    local dac_id
+    dac_id="$(normalize_output_dac_id "${1:-unknown}")"
+    case "$dac_id" in
+        apple_usb_c_dongle)
+            echo "supported"
+            ;;
+        hifiberry_dac8x|hifiberry_dac8x_studio|dual_apple_usb_c_dac_4ch)
+            echo "needs_calibration"
+            ;;
+        *)
+            echo "needs_calibration"
+            ;;
+    esac
+}
+
+chip_aec_dac_detail() {
+    local dac_id status
+    dac_id="$(normalize_output_dac_id "${1:-unknown}")"
+    status="$(chip_aec_dac_status "$dac_id")"
+    case "$status:$dac_id" in
+        supported:apple_usb_c_dongle)
+            echo "Apple USB-C dongle is the measured known-good chip-AEC baseline"
+            ;;
+        needs_calibration:unknown)
+            echo "output DAC profile is unknown; run audio-hardware reconcile and calibrate chip-AEC timing before arming chip AEC"
+            ;;
+        needs_calibration:hifiberry_dac8x|needs_calibration:hifiberry_dac8x_studio)
+            echo "HiFiBerry/DAC8x active profiles need per-profile chip-AEC timing calibration before arming chip AEC"
+            ;;
+        needs_calibration:dual_apple_usb_c_dac_4ch)
+            echo "dual Apple dongle profile has a measured-sync contract and needs calibration before arming chip AEC"
+            ;;
+        *)
+            echo "output DAC profile has no codified chip-AEC calibration"
+            ;;
+    esac
+}
+
+chip_aec_dac_supported() {
+    [[ "$(chip_aec_dac_status "${1:-unknown}")" == "supported" ]]
+}
+
 mode_file_value() {
     local key="$1"
     local default="$2"
@@ -255,13 +309,20 @@ infer_audio_input_profile_from_mode_file() {
 }
 
 apply_audio_input_profile() {
+    local detail
     case "$AUDIO_INPUT_PROFILE" in
         auto)
             AEC_MODE="auto"
-            if aec_ready "$AEC_MIC_DEVICE"; then
+            if aec_ready "$AEC_MIC_DEVICE" && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
+            elif aec_ready "$AEC_MIC_DEVICE"; then
+                detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID")"
+                log "chip-AEC unavailable for output_dac=${AUDIO_DAC_ID}: ${detail}; using software AEC3"
+                LEG_RAW="1"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="0"
             else
                 LEG_RAW="1"
                 LEG_DTLN="0"
@@ -270,9 +331,17 @@ apply_audio_input_profile() {
             ;;
         xvf_chip_aec)
             AEC_MODE="auto"
-            LEG_RAW="0"
-            LEG_DTLN="0"
-            LEG_CHIP_AEC="1"
+            if chip_aec_dac_supported "$AUDIO_DAC_ID"; then
+                LEG_RAW="0"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="1"
+            else
+                detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID")"
+                log "requested xvf_chip_aec but output_dac=${AUDIO_DAC_ID} is not calibrated for chip AEC: ${detail}; using software AEC3"
+                LEG_RAW="1"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="0"
+            fi
             ;;
         xvf_software_aec3)
             AEC_MODE="auto"
@@ -656,6 +725,7 @@ LEG_DTLN="$(normalize_bool "${JASPER_WAKE_LEG_DTLN:-0}")"
 # write_leg_env). Default off; only applied on the 6-channel-present
 # (bridge-running) path, so it's structurally gated on the firmware.
 LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
+AUDIO_DAC_ID="$(normalize_output_dac_id "${JASPER_AUDIO_DAC_ID:-unknown}")"
 AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
 apply_audio_input_profile
 

@@ -300,7 +300,9 @@ function activePayloads() {
       summary: {
         required_driver_count: 0,
         captured_driver_count: 0,
+        driver_checks_complete: false,
         driver_measurements_complete: false,
+        latest_driver_checks: {},
         required_summed_group_count: 0,
         validated_summed_group_count: 0,
         summed_validation_complete: false,
@@ -710,6 +712,17 @@ async function testMeasuredDriversOpenProfileStep() {
           "main:woofer": { captured: true, outcome: "heard_correct_driver" },
           "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
         },
+        latest_summed_tests: {
+          main: {
+            captured: false,
+            audio_emitted: false,
+            issues: [{
+              severity: "blocker",
+              code: "summed_commission_load_failed",
+              message: "could not open the combined active-speaker test path",
+            }],
+          },
+        },
         latest_summed_validations: {},
       },
       permissions: { may_compile_baseline: false },
@@ -724,6 +737,7 @@ async function testMeasuredDriversOpenProfileStep() {
     'data-output-step="profile" open',
     "Validate and apply",
     "Combined crossover check",
+    "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
     "Record mic capture",
     "Save active profile",
   ]) {
@@ -731,10 +745,135 @@ async function testMeasuredDriversOpenProfileStep() {
       fail("Completed driver checks should advance to the profile card", { expected, html });
     }
   }
+  if (html.includes("could not open the combined active-speaker test path")) {
+    fail("Combined-test implementation internals should not be the primary recovery copy", { html });
+  }
   if (html.includes('data-output-step="safety" open')) {
     fail("Completed driver checks should not reopen the driver-test card", { html });
   }
   return { measuredDriversOpenProfileStep: true };
+}
+
+async function testCombinedTestLevelPostsSelectedBoundedLevel() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  confirmedTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 2,
+    verified_channel_count: 2,
+    unverified_channel_count: 0,
+    targets: [],
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "needs_summed_validation",
+      summary: {
+        required_driver_count: 2,
+        captured_driver_count: 2,
+        driver_measurements_complete: true,
+        required_summed_group_count: 1,
+        validated_summed_group_count: 0,
+        summed_validation_complete: false,
+        latest_driver_measurements: {
+          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+        },
+        latest_summed_tests: {},
+        latest_summed_validations: {},
+      },
+      permissions: { may_compile_baseline: false },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "needs_combined_check",
+      test_level: {
+        requested_level_dbfs: -72,
+        min_level_dbfs: -80,
+        max_level_dbfs: -30,
+        step_db: 1,
+        upward_step_limit_db: 6,
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_test",
+        status_label: "next",
+        message: "Run the combined speaker test.",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, duration_ms: 500 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: false,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "" },
+          },
+        },
+      }],
+    })),
+    "./active-speaker/summed-test": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      posts.push(body);
+      return Promise.resolve(response({
+        playback: {
+          status: "completed",
+          audio_emitted: true,
+          confirmable: true,
+          tone: { level_dbfs: body.level_dbfs },
+        },
+        calibration_level: levelPayload(body.level_dbfs),
+        measurements: {
+          status: "needs_summed_validation",
+          summary: {
+            driver_measurements_complete: true,
+            summed_validation_complete: false,
+            latest_summed_tests: {
+              main: {
+                captured: true,
+                audio_emitted: true,
+                summed_test_id: "summed-playback-1",
+                issues: [],
+              },
+            },
+            latest_summed_validations: {},
+          },
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  let html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Combined test level") || !html.includes('max="-66"')) {
+    fail("Combined card should expose a bounded next-play level control", { html });
+  }
+  harness.dispatchInput({ "data-summed-test-level": "main" }, "-66");
+  harness.dispatchClick({
+    "data-act": "prepare-summed-test",
+    "data-group-id": "main",
+    "data-label": "Main speaker",
+  });
+  for (let i = 0; i < 8; i += 1) await harness.flush();
+
+  if (posts.length !== 1) {
+    fail("Playing the combined test should POST once", { posts });
+  }
+  if (posts[0].level_dbfs !== -66) {
+    fail("Combined test should POST the selected bounded level", { posts });
+  }
+  return { combinedTestLevelPostsSelectedBoundedLevel: true };
 }
 
 async function testCompiledProfileApplyBlockStaysUnderstandable() {
@@ -1171,7 +1310,7 @@ async function testCommissionCardArmsAndSteps() {
       const gain = -80 + ((stepCount - 1) * 5);
       commissionState = {
         commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: gain }, rollback_available: true },
-        ramp: { confirmed_roles: [], pending: { role: "woofer", gain_db: gain } },
+        ramp: { confirmed_roles: [], pending: { role: "woofer", gain_db: gain, frequency_hz: 250 } },
         floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
       };
       return Promise.resolve(response({ status: "stepped", next_gain_db: gain }));
@@ -1208,10 +1347,13 @@ async function testCommissionCardArmsAndSteps() {
   // automatic ramp. The card treats the whole ramp as one playing state; "too
   // quiet" is internal, not a visible operator button.
   harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
   await harness.flush(); await harness.flush(); await harness.flush();
   await harness.flush(); await harness.flush(); await harness.flush();
-  if (!posts.some((x) => x.path === "./active-speaker/commission-load" && x.body.role === "woofer")) {
-    fail("commission-load not posted before ramp start", { posts });
+  const loadPosts = posts.filter((x) =>
+    x.path === "./active-speaker/commission-load" && x.body.role === "woofer");
+  if (loadPosts.length !== 1) {
+    fail("rapid Start clicks should open the quiet driver test once", { posts });
   }
   if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
     fail("commission-ramp-step not posted on step", { posts });
@@ -1220,6 +1362,12 @@ async function testCommissionCardArmsAndSteps() {
   let cardHtml = commissionCardHtml(html);
   for (const expected of ["Stop tone", "I hear the tone", "Wrong driver"]) {
     if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
+  }
+  for (const expected of ["Status", "Tone playing", "250 Hz"]) {
+    if (!cardHtml.includes(expected)) fail("playing card should expose stable status and tone frequency", { expected, cardHtml });
+  }
+  if (cardHtml.includes("By-ear") || cardHtml.includes("Not yet made audible")) {
+    fail("playing card should not expose the old flickering by-ear state", { cardHtml });
   }
   if (cardHtml.includes("commission-card__message")) {
     fail("automatic ramp should not render a changing progress line", { cardHtml });
@@ -1247,6 +1395,92 @@ async function testCommissionCardArmsAndSteps() {
     fail("user-visible controls should not post manual silent retries", { posts });
   }
   return { commissionCardArmsAndSteps: true };
+}
+
+async function testCommissionCompleteDoesNotWrapToWoofer() {
+  const commissionState = {
+    commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: ["tweeter", "woofer"], pending: null },
+    floor: { status: "floor_confirmed", floor_audio_confirmed: true },
+  };
+  const measurements = {
+    status: "ready",
+    summary: {
+      required_driver_count: 2,
+      captured_driver_count: 2,
+      driver_checks_complete: true,
+      driver_measurements_complete: true,
+      latest_driver_checks: {
+        "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
+        "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
+      },
+      latest_driver_measurements: {
+        "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
+        "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
+      },
+    },
+    issues: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const cardHtml = commissionCardHtml(html);
+  if (!cardHtml.includes("Complete")) {
+    fail("all confirmed driver roles should render the card complete", { cardHtml });
+  }
+  if (!cardHtml.includes("All drivers are confirmed")) {
+    fail("complete driver test should tell the user to continue", { cardHtml });
+  }
+  if (!cardHtml.includes("Continue to validate")) {
+    fail("complete driver test should provide an explicit next action", { cardHtml });
+  }
+  if (cardHtml.includes("next: Woofer") || cardHtml.includes('data-act="commission-step"')) {
+    fail("complete driver test must not wrap back to woofer", { cardHtml });
+  }
+  return { commissionCompleteDoesNotWrapToWoofer: true };
+}
+
+async function testStaleRampConfirmationsDoNotCompleteDriverChecks() {
+  const commissionState = {
+    commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: ["tweeter", "woofer"], pending: null },
+    floor: { status: "floor_confirmed", floor_audio_confirmed: true },
+  };
+  const measurements = {
+    status: "ready",
+    summary: {
+      required_driver_count: 2,
+      captured_driver_count: 0,
+      driver_checks_complete: false,
+      driver_measurements_complete: false,
+      latest_driver_checks: {},
+      latest_driver_measurements: {},
+    },
+    issues: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const cardHtml = commissionCardHtml(html);
+  if (cardHtml.includes("Complete") || cardHtml.includes("All drivers are confirmed")) {
+    fail("stale ramp roles without measurement-backed checks must not complete the card", { cardHtml });
+  }
+  if (!cardHtml.includes("next: Woofer") || !cardHtml.includes('data-act="commission-step"')) {
+    fail("stale ramp roles should restart visible driver checks from woofer", { cardHtml });
+  }
+  return { staleRampConfirmationsDoNotCompleteDriverChecks: true };
 }
 
 async function testDriverCaptureAfterRampConfirmationPostsMicPayload() {
@@ -1722,6 +1956,7 @@ results.push(await testPassiveLayoutsRenderNoActiveDriverTestCard());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
+results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
@@ -1729,6 +1964,8 @@ results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
 results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testCommissionCardArmsAndSteps());
+results.push(await testCommissionCompleteDoesNotWrapToWoofer());
+results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
 results.push(await testDriverCaptureAfterRampConfirmationPostsMicPayload());
 results.push(await testSummedCapturePostsInsteadOfManualSuccess());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());

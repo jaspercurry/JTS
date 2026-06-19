@@ -47,6 +47,7 @@ from .path_safety import (
 )
 from .safe_playback import load_safe_playback_state
 from .staging import (
+    SUMMED_COMMISSION_TARGET_ROLE,
     load_staged_startup_config,
     prepare_driver_commissioning_config,
     running_commission_evidence,
@@ -1347,6 +1348,7 @@ def build_driver_commission_load_preflight(
     *,
     speaker_group_id: str,
     role: str,
+    calibration_level: dict[str, Any] | None = None,
     staged_config: dict[str, Any] | None = None,
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
@@ -1378,6 +1380,7 @@ def build_driver_commission_load_preflight(
     startup = build_startup_load_preflight(
         topology,
         staged_config=staged,
+        calibration_level=calibration_level,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=current_config_path,
         validate=validate,
@@ -1490,6 +1493,7 @@ async def load_driver_commissioning_config(
     load_config: PathLoader,
     read_running_config: RunningConfigReader,
     get_current_config_path: ConfigPathReader,
+    calibration_level: dict[str, Any] | None = None,
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
@@ -1550,6 +1554,7 @@ async def load_driver_commissioning_config(
         topology,
         speaker_group_id=speaker_group_id,
         role=role,
+        calibration_level=calibration_level,
         staged_config=staged,
         preset=preset,
         crossover_preview=crossover_preview,
@@ -1842,6 +1847,60 @@ async def load_driver_commissioning_config(
         apply_state.op_id,
     )
     return {"preflight": preflight, "load": payload}
+
+
+async def load_summed_commissioning_config(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    load_config: PathLoader,
+    read_running_config: RunningConfigReader,
+    get_current_config_path: ConfigPathReader,
+    calibration_level: dict[str, Any] | None = None,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
+    playback_device: str | None = None,
+    audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    path_safety_evidence_path: str | Path | None = None,
+    staged_config: dict[str, Any] | None = None,
+    config_dir: str | Path | None = None,
+    config_path: str | Path | None = None,
+    statefile_path: str | Path | None = None,
+    state_path: str | Path | None = None,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+) -> dict[str, Any]:
+    """Load the combined-driver commissioning graph into RUNNING CamillaDSP.
+
+    Public semantic wrapper for the validation-card summed check. It reuses the
+    same masked commissioning runtime as per-driver bring-up so rollback,
+    durable all-muted boot anchoring, live graph read-back, and hardware
+    reconcile behavior stay identical.
+    """
+
+    payload = await load_driver_commissioning_config(
+        topology,
+        speaker_group_id=speaker_group_id,
+        role=SUMMED_COMMISSION_TARGET_ROLE,
+        calibration_level=calibration_level,
+        load_config=load_config,
+        read_running_config=read_running_config,
+        get_current_config_path=get_current_config_path,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        playback_device=playback_device,
+        audible_gain_db=audible_gain_db,
+        path_safety_evidence_path=path_safety_evidence_path,
+        staged_config=staged_config,
+        config_dir=config_dir,
+        config_path=config_path,
+        statefile_path=statefile_path,
+        state_path=state_path,
+        validate=validate,
+    )
+    payload["operation"] = "summed_commissioning"
+    return payload
 
 
 async def rollback_driver_commissioning_config(

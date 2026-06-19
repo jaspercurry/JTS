@@ -12,13 +12,8 @@ bounded.
 """
 from __future__ import annotations
 
-import types
-
 from jasper.tools import ToolRegistry
-from jasper.tools.bus import make_bus_tools
-from jasper.tools.citibike import make_citibike_tools
-from jasper.tools.packs import ToolDeps, register_packs
-from jasper.tools.subway import make_subway_tools
+from tests._tool_pack_contract import full_registry
 
 # After the Phase 1.6 representative llm_description pass, the full 29-tool
 # registry should stay around ~3.9k estimated description tokens. 6k leaves
@@ -42,26 +37,7 @@ def _full_registry() -> ToolRegistry:
     """Build the complete 29-tool registry hardware-free — every pack
     gate satisfied with lazy sentinel deps (factories capture deps in
     closures; none are invoked at build time)."""
-    transit = []
-    transit += list(make_subway_tools(object()))
-    transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
-    transit += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    deps = ToolDeps(
-        volume_coordinator=None,
-        renderer=None,
-        router=None,
-        weather=None,
-        spotify_device_name="JTS",
-        spotify_setup_url="",
-        transit_tools=transit,
-        ha=object(),
-        timer_scheduler=object(),
-        google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
-        wake_event_store=object(),
-    )
-    reg = ToolRegistry()
-    register_packs(reg, deps)
-    return reg
+    return full_registry()
 
 
 def test_model_facing_descriptions_stay_under_budget():
@@ -100,9 +76,9 @@ def test_safety_and_routing_phrases_remain_model_facing():
     assert "home_assistant_confirm only after a clear yes" in ha
 
     weather = reg.get("get_weather").model_facing_description()
-    assert "Call for weather, temperature, rain, sunrise, or sunset" in weather
-    assert "Omit location for the speaker's default area" in weather
-    assert "pass the full spoken place with qualifiers" in weather
+    assert "weather, temperature, rain, sunrise, or sunset" in weather
+    assert "omit location or pass an empty string" in weather
+    assert "spoken place text, including qualifiers" in weather
 
     for name in (
         "get_subway_arrivals",

@@ -11,7 +11,20 @@ _CORRECTION_FILENAME_RE = re.compile(
     r"^correction_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
 )
 _SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
+_ACTIVE_SPEAKER_FILENAME_RE = re.compile(r"^active_speaker_.*\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
+
+_ACTIVE_SPEAKER_LABELS = {
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config": (
+        "JTS active-speaker baseline"
+    ),
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_startup_config": (
+        "JTS active-speaker startup"
+    ),
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_commissioning_config": (
+        "JTS active-speaker commissioning"
+    ),
+}
 
 
 def parse_current_correction(
@@ -66,6 +79,24 @@ def describe_current_config(
 
     m = _CORRECTION_FILENAME_RE.match(p.name)
     if not m:
+        if _ACTIVE_SPEAKER_FILENAME_RE.match(p.name):
+            try:
+                text = p.read_text()
+            except OSError:
+                text = ""
+            for source, label in _ACTIVE_SPEAKER_LABELS.items():
+                if f"Source: {source}" in text:
+                    return {
+                        "kind": "active_speaker",
+                        "managed": True,
+                        "path": str(p),
+                        "label": label,
+                        "message": (
+                            "Active-speaker DSP is active; no room "
+                            "correction PEQs are applied by this graph."
+                        ),
+                        "current_correction": None,
+                    }
         if not _SOUND_FILENAME_RE.match(p.name):
             return {
                 "kind": "custom",

@@ -114,10 +114,11 @@
 > profile, and the current deterministic auto-level decision. Unknown
 > high-frequency style defaults to a conservative 5 kHz high-pass and -65 dBFS
 > closed-loop cap until the driver style is known. The same backend also
-> includes a read-only **Commissioning rehearsal** packet from
-> `jasper.active_speaker.commissioning` and
-> `/sound/active-speaker/commissioning-rehearsal`. It rehearses the durable
-> sequence from saved speaker layout through safe-session/floor readiness without
+> exposes a read-only **Commissioning view** from
+> `jasper.active_speaker.commissioning_coordinator` and
+> `/sound/active-speaker/commissioning-view` (the surface the `/sound/` UI
+> fetches). It composes the durable setup state from saved speaker layout
+> through safe-session/floor readiness into one UI view model without
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > selection, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
@@ -142,13 +143,16 @@
 > records stay in the file for audit but stop counting toward readiness. Summed
 > validation is speaker-group-specific and bound to the current set of driver
 > target fingerprints; the product success path requires a current audible
-> combined-driver test plus a phone-mic summed capture analyzed through
-> `commissioning_capture.record_summed_acoustic_capture`. Manual summed outcomes
-> remain only for failure/problem notes and cannot unlock the active profile by
-> clicking a free-floating "sounds good" button. The UI presents this as the next
+> combined-driver test and an explicit result for that same test. A phone-mic
+> summed capture analyzed through
+> `commissioning_capture.record_summed_acoustic_capture` records richer acoustic
+> evidence when available, but the household flow can also accept
+> `operator_listening_check` for **Blend sounds right** after an audible combined
+> test. Artifact-only tests, stale test ids, or free-floating "sounds good"
+> clicks still cannot unlock the active profile. The UI presents this as the next
 > human task after confirming outputs: capture each driver, run the combined
-> test, record the summed mic capture, then save/apply the active profile when
-> backend permissions allow it.
+> test at a bounded selectable level, record what the operator heard, then
+> save/apply the active profile when backend permissions allow it.
 > `/sound/` also includes manual crossover settings for active-crossover
 > planning. The visible fields are the product source of truth: driver
 > names, sensitivity, safe low test limits, per-driver level trim, and active
@@ -201,8 +205,9 @@
 > source comment in the YAML. Summed validation must reference the latest
 > combined-driver test record for the same speaker-group fingerprint; artifact
 > generation alone is not enough to unlock the durable baseline because the
-> accepted result must come from an audible combined-driver test plus mic/user
-> observation. `/sound/active-speaker/baseline-profile/apply`
+> accepted result must come from an audible combined-driver test plus either
+> mic-backed evidence or an explicit operator listening check.
+> `/sound/active-speaker/baseline-profile/apply`
 > is the first user-facing "this is now your active speaker profile" step, but
 > it is currently enabled only when the generated baseline targets an
 > outputd-owned active lane. Today that product handoff is declared by profiles
@@ -382,8 +387,9 @@
 > WAV evidence with bounded raw-file retention, call the
 > `commissioning_capture` bridge, and record real acoustic verdicts into
 > measurement state; the `/sound/` UI uses the shared
-> `measurement-audio.js` recorder for those submissions and no longer offers a
-> manual success click that can bypass summed mic evidence. This is still not a
+> `measurement-audio.js` recorder for those submissions, keeps the bounded
+> combined-test level control, and no longer offers a manual success click that
+> can bypass summed mic evidence. This is still not a
 > JTS3 acoustic validation: the real sweep playback/capture timing, live phone
 > mic behavior, room noise, and driver response must be verified on hardware.
 > Separately,
@@ -671,23 +677,39 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `STARTUP_HEADROOM_DB=40` crash-recovery headroom. The `/sound/` commission
   ramp pairs that graph load with one bounded continuous sine into
   `correction_substream` (currently a 35 s `aplay` session, reused across the
-  browser's ~30 s ramp). The sine frequency is planned by
+  browser's ramp). The sine frequency is planned by
   `active_speaker.test_signal_plan` from the same compiled preset/crossover
-  edges and tweeter-protection policy that emitted the active CamillaDSP graph;
-  if no margin-bounded in-band tone exists, the planner blocks before WAV
-  generation or fan-in selection. The tone enters fan-in and then the protected
-  active CamillaDSP graph; if the tone backend fails, the endpoint rolls back to
-  the all-muted staged config and does not leave a pending by-ear confirmation.
+  edges and tweeter-protection policy that emitted the active CamillaDSP graph,
+  but the identity tone is role-native: a low-pass-only woofer prefers a normal
+  woofer tone derived from roughly one-third of the low-pass edge and clamped to
+  about 120-250 Hz before final band safety clamping, subwoofer prefers 50 Hz,
+  midrange stays near the geometric center of its passband, and tweeter remains
+  above the strictest crossover/protective high-pass edge. If no
+  margin-bounded in-band tone exists, the planner blocks before WAV generation
+  or fan-in selection. The tone enters fan-in and then the protected active
+  CamillaDSP graph; if the tone backend fails, the endpoint rolls back to the
+  all-muted staged config and does not leave a pending by-ear confirmation.
   The gate (`build_stage5_ramp_gate`, fails closed) **re-asserts the protective
   high-pass on the RUNNING graph before any tweeter step** (not just the config
   file, via `running_commission_evidence`), bounds the gain, asserts the 0 dB
   ceiling + the audible driver's limiter, and enforces woofer-before-tweeter.
-  Each step lands the safe_playback floor tri-state at `floor_pending_operator`;
-  the operator confirms by ear (`commission-ramp ack`) → `floor_confirmed`
-  and, in the web flow, the transient graph is re-muted while the role remains
-  confirmed for woofer-before-tweeter ordering (`silent` advances the protected
-  gain while the same tone keeps playing; `too_loud`/`heard_wrong_driver` stop
-  the tone and re-mute). The swept
+  Each step records a `ramp.pending` entry with the active role, gain, playback
+  id, and tone frequency. The browser's automatic louder step does **not** clear
+  pending with a hidden `silent` ACK; it calls `commission-ramp-step` with
+  `auto_retry_pending=true`, and the backend replaces the same-driver pending
+  step in place and updates safe-playback's pending playback id, so "I hear the
+  tone" always confirms the latest audible tone while the tone is playing. The
+  operator confirms by ear (`commission-ramp ack`) → `floor_confirmed`; in the
+  web flow the ACK also writes the durable `measurement.record_driver_measurement`
+  operator-only driver check used by "Validate and apply", then re-mutes the
+  transient graph. The ramp's `confirmed_roles` remains only ordering memory for
+  woofer-before-tweeter; the `/sound/` card treats measurement-backed driver
+  checks as the product truth, so stale ramp state alone cannot complete the
+  card. Start-tone is single-flight in the browser so rapid clicks cannot open
+  duplicate commission loads under one continuous tone. Abort/rollback re-mutes
+  and clears the safe-playback floor-pending state before another driver test
+  begins. `too_loud`/`heard_wrong_driver` stop the tone and re-mute; CLI/lab
+  `silent` remains available for explicit retry flows. The swept
   measurement is Stage 6. **"Subsonic/DC protection present" is satisfied by the
   protections already in the graph** — the bounded commissioning gain envelope,
   the 0 dB ceiling, and the per-driver limiter — **not a dedicated woofer
@@ -1509,4 +1531,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-18
+Last verified: 2026-06-19

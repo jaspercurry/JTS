@@ -222,15 +222,17 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
     # The cutover gate is width-aware and shared by the composite + single
-    # active paths (renamed from dual_apple_active_graph_status). It accepts any
-    # config width within the DAC's cap (drive-what-we-use) and fails closed
-    # when a config exceeds the cap.
+    # active paths (renamed from dual_apple_active_graph_status). It now trusts
+    # the durable runtime contract, not transient startup-load state: a saved
+    # active baseline must stay playable after setup completes.
     assert "active_graph_status()" in reconcile
     assert "active_graph_width_out_of_range" in reconcile
     assert "action=park_until_active_graph" in reconcile
     assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
-    assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" in reconcile
+    assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
     assert "JASPER_CAMILLA_STATEFILE" in reconcile
+    assert "JASPER_OUTPUT_TOPOLOGY_PATH" in reconcile
+    assert "classify_camilla_graph" in reconcile
     assert "outputd_active_content_playback" in reconcile
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
@@ -381,6 +383,9 @@ def test_camilla_outputd_config_is_not_legacy_v1():
 
 def test_install_uses_separate_outputd_statefile():
     install_sh = installer_text()
+    systemd_units = (
+        REPO / "deploy" / "lib" / "install" / "systemd-units.sh"
+    ).read_text()
     camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
     assert "outputd-cutover.yml" in install_sh
     assert "config_path: /etc/camilladsp/v1.yml" in install_sh
@@ -388,6 +393,8 @@ def test_install_uses_separate_outputd_statefile():
     assert "ensure_outputd_camilla_statefile" in install_sh
     assert "--write-statefile" in install_sh
     assert "tweeter/protected role" in install_sh
+    assert "JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1" in systemd_units
+    assert "Restarting jasper-camilla.service after statefile repair" in install_sh
     assert "Reset outputd Camilla statefile" not in install_sh
     assert "--statefile /var/lib/camilladsp/outputd-statefile.yml" in camilla_unit
 

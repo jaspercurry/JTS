@@ -26,11 +26,9 @@ from jasper.tools import (
     ToolRegistry,
     dispatch_tool,
 )
-from jasper.tools.catalog import build_catalog
 from jasper.tools.audio import make_audio_tools
-from jasper.tools.bus import make_bus_tools
 from jasper.tools.calendar import make_calendar_tools
-from jasper.tools.citibike import make_citibike_tools
+from jasper.tools.catalog import build_catalog
 from jasper.tools.diagnostic import make_diagnostic_tools
 from jasper.tools.gmail import make_gmail_tools
 from jasper.tools.home_assistant import make_home_assistant_tools
@@ -45,77 +43,19 @@ from jasper.tools.packs import (
     register_packs,
 )
 from jasper.tools.spotify import make_spotify_tools
-from jasper.tools.subway import make_subway_tools
 from jasper.tools.time import make_time_tools
 from jasper.tools.timer import make_timer_tools
 from jasper.tools.transport import make_transport_tools
 from jasper.tools.weather import make_weather_tools
-
-# The documented legacy registration order — pinned as a literal so a
-# reorder of TOOL_PACKS fails loudly.
-LEGACY_PACK_ORDER = [
-    "audio",
-    "transport",
-    "spotify",
-    "weather",
-    "transit",
-    "home_assistant",
-    "time",
-    "timer",
-    "calendar",
-    "gmail",
-    "diagnostic",
-]
-
-# The full shipped tool set, in registration order. Pinned so a stub that
-# silently drops a pack (e.g. a google stub that fails its gate) trips the
-# count/name assertions instead of passing with under-coverage.
-EXPECTED_TOOL_NAMES = [
-    "get_volume", "set_volume", "adjust_volume", "mute", "unmute",
-    "next_track", "previous_track", "pause", "resume", "get_now_playing",
-    "spotify_play", "spotify_play_latest_by_artist", "spotify_queue",
-    "get_weather",
-    "get_subway_arrivals", "get_bus_arrivals", "get_citibike_status",
-    "home_assistant", "home_assistant_confirm",
-    "get_current_time",
-    "set_timer", "list_timers", "cancel_timer", "update_timer",
-    "calendar_today_summary", "calendar_upcoming",
-    "gmail_unread_summary", "gmail_read_thread",
-    "flag_recent_issue",
-]
-
-
-def _transit_tools():
-    """The 3 shipped transit tools, built hardware-free with lazy stubs.
-
-    subway self-gates on `is None`; bus/citibike on `not dep.enabled`.
-    The tool closures only touch the dep at call time, so a minimal stub
-    that satisfies the gate yields the real tool schemas."""
-    tools = []
-    tools += list(make_subway_tools(object()))
-    tools += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
-    tools += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    return tools
-
-
-def _full_deps():
-    """Deps that satisfy EVERY pack gate, so the full 29-tool registry
-    builds. Each factory captures its dep lazily, so sentinels suffice:
-    timer needs only a non-None scheduler; google needs ≥1 account name."""
-    google = types.SimpleNamespace(list_account_names=lambda: ["jasper"])
-    return ToolDeps(
-        volume_coordinator=None,
-        renderer=None,
-        router=None,
-        weather=None,
-        spotify_device_name="JTS",
-        spotify_setup_url="",
-        transit_tools=_transit_tools(),
-        ha=object(),
-        timer_scheduler=object(),
-        google_clients=google,
-        wake_event_store=object(),
-    )
+from tests._tool_pack_contract import (
+    EXPECTED_TOOL_NAMES,
+    LEGACY_PACK_ORDER,
+    assert_duplicate_pack_fails_without_partial_registration,
+    assert_duplicate_second_pack_fails_without_rolling_back_first,
+    full_tool_deps,
+    minimal_tool_deps,
+    transit_tool_stubs,
+)
 
 
 def _reference_registry(deps: ToolDeps) -> ToolRegistry:
@@ -189,10 +129,10 @@ def test_toolpack_is_compatibility_alias_for_capabilitypack():
 def test_data_driven_walk_equals_legacy_sequence():
     """The core Slice 1 gate: the data-driven walk produces a registry
     byte-identical to the hand-written legacy sequence."""
-    deps = _full_deps()
+    deps = full_tool_deps()
 
     walk_reg = ToolRegistry()
-    register_packs(walk_reg, deps)
+    register_packs(walk_reg, deps, disabled=frozenset(), disabled_packs=frozenset())
 
     ref_reg = _reference_registry(deps)
 
@@ -214,7 +154,7 @@ def test_real_time_pack_uses_explicit_tool_boundary_end_to_end():
 
     outcomes = register_packs(
         reg,
-        _full_deps(),
+        full_tool_deps(),
         disabled=frozenset(),
         disabled_packs=frozenset(),
         packs=(pack,),
@@ -273,20 +213,7 @@ def test_real_weather_pack_uses_explicit_tool_boundary_end_to_end():
 
     weather = FakeWeather()
     pack = _pack_named("weather")
-    deps = _full_deps()
-    deps = ToolDeps(
-        volume_coordinator=deps.volume_coordinator,
-        renderer=deps.renderer,
-        router=deps.router,
-        weather=weather,
-        spotify_device_name=deps.spotify_device_name,
-        spotify_setup_url=deps.spotify_setup_url,
-        transit_tools=deps.transit_tools,
-        ha=deps.ha,
-        timer_scheduler=deps.timer_scheduler,
-        google_clients=deps.google_clients,
-        wake_event_store=deps.wake_event_store,
-    )
+    deps = full_tool_deps(weather=weather)
     reg = _ExplicitOnlyRegistry()
 
     outcomes = register_packs(
@@ -384,7 +311,7 @@ def test_custom_capability_pack_registers_explicit_tool_boundary():
     reg = ToolRegistry()
     outcomes = register_packs(
         reg,
-        _full_deps(),
+        full_tool_deps(),
         disabled=frozenset(),
         disabled_packs=frozenset(),
         packs=(pack,),
@@ -406,7 +333,12 @@ def test_register_packs_records_internal_pack_for_catalog_metadata():
     catalog map tools back to their category/display pack without hardcoding
     per-tool names."""
     reg = ToolRegistry()
-    register_packs(reg, _full_deps(), disabled=frozenset())
+    register_packs(
+        reg,
+        full_tool_deps(),
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+    )
 
     assert reg.tool_packs["spotify_play"] == "spotify"
     assert reg.tool_packs["get_volume"] == "audio"
@@ -417,7 +349,12 @@ def test_register_packs_records_internal_pack_for_catalog_metadata():
 
 def test_disabled_tools_are_removed_from_pack_index_too():
     reg = ToolRegistry()
-    register_packs(reg, _full_deps(), disabled=frozenset({"spotify_play"}))
+    register_packs(
+        reg,
+        full_tool_deps(),
+        disabled=frozenset({"spotify_play"}),
+        disabled_packs=frozenset(),
+    )
 
     assert "spotify_play" not in reg.tools
     assert "spotify_play" not in reg.tool_packs
@@ -427,7 +364,7 @@ def test_disabled_catalog_pack_removes_all_child_tools():
     reg = ToolRegistry()
     register_packs(
         reg,
-        _full_deps(),
+        full_tool_deps(),
         disabled=frozenset(),
         disabled_packs=frozenset({"google"}),
     )
@@ -457,7 +394,7 @@ def test_real_build_registry_wrapper_produces_full_set():
         None,                     # camilla (accepted-but-unused)
         None,                     # renderer
         None,                     # weather
-        _transit_tools(),         # transit_tools
+        transit_tool_stubs(),     # transit_tools
         None,                     # volume_coordinator
         spotify_router=object(),  # truthy -> skip _build_router(cfg)
         timer_scheduler=object(),
@@ -481,22 +418,15 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
     With a minimal deps bundle (no scheduler, no accounts) the walk and
     the reference sequence must both register ZERO timer/calendar/gmail
     tools — and stay identical."""
-    minimal = ToolDeps(
-        volume_coordinator=None,
-        renderer=None,
-        router=None,
-        weather=None,
-        spotify_device_name="JTS",
-        spotify_setup_url="",
-        transit_tools=[],  # no transit configured
-        ha=None,  # home_assistant self-gates -> []
-        timer_scheduler=None,  # gate False -> no timer tools
-        google_clients=types.SimpleNamespace(list_account_names=lambda: []),
-        wake_event_store=None,  # diagnostic self-gates -> []
-    )
+    minimal = minimal_tool_deps()
 
     walk_reg = ToolRegistry()
-    register_packs(walk_reg, minimal)
+    register_packs(
+        walk_reg,
+        minimal,
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+    )
     ref_reg = _reference_registry(minimal)
 
     gated = {
@@ -521,9 +451,14 @@ def test_disabled_set_drops_named_tools_only():
     """`disabled=` filters by registered Tool.name at the single
     registration chokepoint: named tools vanish, all others survive in
     order, and the count drops by exactly the number disabled."""
-    deps = _full_deps()
+    deps = full_tool_deps()
     reg = ToolRegistry()
-    register_packs(reg, deps, disabled=frozenset({"get_weather", "spotify_play"}))
+    register_packs(
+        reg,
+        deps,
+        disabled=frozenset({"get_weather", "spotify_play"}),
+        disabled_packs=frozenset(),
+    )
 
     names = list(reg.tools.keys())
     assert "get_weather" not in names
@@ -540,11 +475,16 @@ def test_explicit_disabled_set_never_reads_the_ssot_file(monkeypatch):
     import jasper.tool_state as tool_state
 
     def _boom(*_a, **_k):
-        raise AssertionError("read_disabled_tools must not be called with explicit disabled=")
+        raise AssertionError("read_tool_state must not be called with explicit state")
 
-    monkeypatch.setattr(tool_state, "read_disabled_tools", _boom)
+    monkeypatch.setattr(tool_state, "read_tool_state", _boom)
     reg = ToolRegistry()
-    register_packs(reg, _full_deps(), disabled=frozenset())
+    register_packs(
+        reg,
+        full_tool_deps(),
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+    )
     assert len(reg.tools) == len(EXPECTED_TOOL_NAMES)
 
 
@@ -552,16 +492,11 @@ def test_default_disabled_is_fail_safe(monkeypatch):
     """With no `disabled=` passed, the walk reads the SSOT fail-safe. A
     reader that returns the empty set (the missing-file case) registers
     the full set — the no-disabled path stays identical to today."""
-    import jasper.tools.packs as packs_mod
-
-    monkeypatch.setattr(packs_mod, "read_disabled_tools", lambda: frozenset(), raising=False)
-    # read_disabled_tools is imported lazily inside register_packs from
-    # jasper.tool_state; patch there to be safe.
     import jasper.tool_state as tool_state
 
-    monkeypatch.setattr(tool_state, "read_disabled_tools", lambda *_a, **_k: frozenset())
+    monkeypatch.setattr(tool_state, "read_tool_state", lambda *_a, **_k: tool_state.ToolState())
     reg = ToolRegistry()
-    register_packs(reg, _full_deps())
+    register_packs(reg, full_tool_deps())
     assert len(reg.tools) == len(EXPECTED_TOOL_NAMES)
     assert list(reg.tools.keys()) == EXPECTED_TOOL_NAMES
 
@@ -580,7 +515,7 @@ def test_broken_pack_is_isolated_other_packs_still_register():
         ToolPack("good_b", lambda _d: make_weather_tools(None)),
     )
 
-    deps = _full_deps()
+    deps = full_tool_deps()
     reg = ToolRegistry()
     # Patch the module-level tuple the walk iterates.
     import jasper.tools.packs as packs_mod
@@ -588,7 +523,12 @@ def test_broken_pack_is_isolated_other_packs_still_register():
     original = packs_mod.TOOL_PACKS
     try:
         packs_mod.TOOL_PACKS = packs
-        register_packs(reg, deps)  # must not raise
+        register_packs(
+            reg,
+            deps,
+            disabled=frozenset(),
+            disabled_packs=frozenset(),
+        )  # must not raise
     finally:
         packs_mod.TOOL_PACKS = original
 
@@ -627,7 +567,7 @@ def test_registration_failure_rolls_back_partial_pack_and_continues():
         ToolPack(
             "broken",
             lambda _d: [
-                explicit_tool("shared_tool", "broken"),
+                explicit_tool("broken_tool", "broken"),
                 object(),  # not callable and not a Tool: registration fails
             ],
         ),
@@ -639,8 +579,9 @@ def test_registration_failure_rolls_back_partial_pack_and_continues():
         o.name: o
         for o in register_packs(
             reg,
-            _full_deps(),
+            full_tool_deps(),
             disabled=frozenset(),
+            disabled_packs=frozenset(),
             packs=packs,
         )
     }
@@ -649,6 +590,7 @@ def test_registration_failure_rolls_back_partial_pack_and_continues():
     assert outcomes["broken"].status == "failed"
     assert outcomes["tail"].status == "registered"
     assert "get_current_time" in reg.tools
+    assert "broken_tool" not in reg.tools
     assert reg.tool_packs["shared_tool"] == "seed"
 
     import asyncio
@@ -656,6 +598,37 @@ def test_registration_failure_rolls_back_partial_pack_and_continues():
     assert asyncio.run(dispatch_tool(reg, "shared_tool", {})) == {
         "value": "seed",
     }
+
+
+def test_duplicate_tool_name_fails_pack_and_rolls_back_partial_registration():
+    """Duplicate names are a pack-contract failure, never last-writer-wins."""
+    duplicate = CapabilityPack(
+        "duplicate",
+        lambda _d: [*make_time_tools(), *make_time_tools()],
+    )
+
+    assert_duplicate_pack_fails_without_partial_registration(
+        pack=duplicate,
+        deps=object(),
+        expected_rolled_back_names={"get_current_time"},
+    )
+
+
+def test_duplicate_tool_name_in_later_pack_preserves_prior_pack():
+    """A later pack collision must fail only that pack and keep earlier tools."""
+    first = CapabilityPack("first_time", lambda _d: make_time_tools())
+    duplicate = CapabilityPack(
+        "duplicate_weather_then_time",
+        lambda _d: [*make_weather_tools(None), *make_time_tools()],
+    )
+
+    assert_duplicate_second_pack_fails_without_rolling_back_first(
+        first_pack=first,
+        duplicate_pack=duplicate,
+        deps=object(),
+        expected_remaining_names={"get_current_time"},
+        expected_rolled_back_names={"get_weather"},
+    )
 
 
 # --------------------------------------------------------------- outcomes
@@ -668,10 +641,15 @@ def test_register_packs_returns_outcome_per_pack_in_order():
     """One PackOutcome per pack, in TOOL_PACKS order. With gate-satisfying
     deps every pack registers (none skipped/failed) and the tool_count sum
     equals the full shipped set."""
-    deps = _full_deps()
+    deps = full_tool_deps()
     reg = ToolRegistry()
     # Explicit empty disabled set keeps the test hermetic (no SSOT file read).
-    outcomes = register_packs(reg, deps, disabled=frozenset())
+    outcomes = register_packs(
+        reg,
+        deps,
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+    )
 
     assert [o.name for o in outcomes] == [p.name for p in TOOL_PACKS]
     assert all(o.status == "registered" for o in outcomes)
@@ -690,17 +668,15 @@ def test_register_packs_marks_gated_off_packs_skipped():
     """A pack whose gate predicate returns False is recorded "skipped"
     (expected, not a fault) with zero tools — distinct from a build
     failure."""
-    minimal = ToolDeps(
-        volume_coordinator=None, renderer=None, router=None, weather=None,
-        spotify_device_name="JTS", spotify_setup_url="",
-        transit_tools=[], ha=None,
-        timer_scheduler=None,  # gate False -> skipped
-        google_clients=types.SimpleNamespace(list_account_names=lambda: []),
-        wake_event_store=None,
-    )
+    minimal = minimal_tool_deps()
     outcomes = {
         o.name: o
-        for o in register_packs(ToolRegistry(), minimal, disabled=frozenset())
+        for o in register_packs(
+            ToolRegistry(),
+            minimal,
+            disabled=frozenset(),
+            disabled_packs=frozenset(),
+        )
     }
     for name in ("timer", "calendar", "gmail"):
         assert outcomes[name].status == "skipped"
@@ -730,7 +706,10 @@ def test_register_packs_marks_failed_pack_with_error():
         outcomes = {
             o.name: o
             for o in register_packs(
-                ToolRegistry(), _full_deps(), disabled=frozenset(),
+                ToolRegistry(),
+                full_tool_deps(),
+                disabled=frozenset(),
+                disabled_packs=frozenset(),
             )
         }
     finally:
@@ -747,13 +726,16 @@ def test_outcome_tool_count_reflects_user_disabled_removals():
     tool_count drops accordingly and the pack still reports "registered"
     (a user choice is not a build failure). Pins the docstring invariant
     sum(tool_count) == len(registry.tools) under the disable feature."""
-    deps = _full_deps()
+    deps = full_tool_deps()
     reg = ToolRegistry()
     # get_weather is the sole tool in the "weather" pack.
     outcomes = {
         o.name: o
         for o in register_packs(
-            reg, deps, disabled=frozenset({"get_weather"}),
+            reg,
+            deps,
+            disabled=frozenset({"get_weather"}),
+            disabled_packs=frozenset(),
         )
     }
     assert outcomes["weather"].status == "registered"
@@ -780,3 +762,27 @@ def test_outcomes_to_state_is_json_shaped():
         {"name": "broken", "status": "failed", "tool_count": 0,
          "error": "RuntimeError('x')"},
     ]
+
+
+def test_content_bearing_tools_pin_log_redaction():
+    """Privacy invariant the byte-identical manifest gate does NOT cover:
+    `to_manifest_entry()` omits `log_payload`/`log_args`, so a regression that
+    started logging an email body or a close-to-verbatim "unlock the front
+    door" utterance at INFO would slip through the equality comparison. Pin the
+    redaction set explicitly instead. `log_payload=False` redacts the tool
+    RESULT preview; `log_args=False` redacts the call ARGS — the home-control
+    tools redact both because their args carry the user's request near-verbatim.
+    Asserting the exact set catches drift in BOTH directions: a content tool
+    silently losing redaction, or an unrelated tool unexpectedly gaining it."""
+    reg = ToolRegistry()
+    register_packs(
+        reg, full_tool_deps(), disabled=frozenset(), disabled_packs=frozenset(),
+    )
+    redact_payload = {n for n, t in reg.tools.items() if not t.log_payload}
+    redact_args = {n for n, t in reg.tools.items() if not t.log_args}
+    assert redact_payload == {
+        "calendar_today_summary", "calendar_upcoming",
+        "gmail_unread_summary", "gmail_read_thread",
+        "home_assistant", "home_assistant_confirm",
+    }
+    assert redact_args == {"home_assistant", "home_assistant_confirm"}

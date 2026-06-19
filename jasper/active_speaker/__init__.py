@@ -118,14 +118,11 @@ from .staging import (
     driver_commission_audible_evidence,
     load_staged_startup_config,
     prepare_driver_commissioning_config,
+    prepare_summed_commissioning_config,
     running_commission_evidence,
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
-from .commissioning import (
-    COMMISSIONING_REHEARSAL_KIND,
-    build_commissioning_rehearsal,
-)
 from .design_draft import (
     DESIGN_DRAFT_KIND,
     DESIGN_DRAFT_PATH_ENV,
@@ -157,6 +154,7 @@ from .startup_load import (
     load_commission_load_state,
     load_driver_commissioning_config,
     load_protected_startup_config,
+    load_summed_commissioning_config,
     load_startup_load_state,
     rollback_driver_commissioning_config,
     rollback_protected_startup_config,
@@ -297,7 +295,6 @@ __all__ = [
     "ActiveSpeakerPreset",
     "BaselineVerification",
     "BRINGUP_PREFLIGHT_KIND",
-    "COMMISSIONING_REHEARSAL_KIND",
     "GRAPH_ALL_MUTED_ACTIVE_STARTUP",
     "GRAPH_FLAT_FULL_RANGE",
     "GRAPH_GUARDED_COMMISSIONING",
@@ -336,7 +333,6 @@ __all__ = [
     "emit_active_speaker_commissioning_config",
     "build_safe_tone_plan",
     "build_bringup_preflight",
-    "build_commissioning_rehearsal",
     "build_design_draft",
     "build_crossover_preview",
     "build_baseline_profile_candidate",
@@ -352,6 +348,7 @@ __all__ = [
     "compile_preset_from_crossover_preview",
     "driver_commission_audible_evidence",
     "prepare_driver_commissioning_config",
+    "prepare_summed_commissioning_config",
     "protective_tweeter_highpass_frequency_hz",
     "running_commission_evidence",
     "enabled_audio_backend",
@@ -365,6 +362,7 @@ __all__ = [
     "load_commission_load_state",
     "load_driver_commissioning_config",
     "load_protected_startup_config",
+    "load_summed_commissioning_config",
     "load_startup_load_state",
     "load_staged_startup_config",
     "RAMP_ROLE_ORDER",

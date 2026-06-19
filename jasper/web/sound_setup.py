@@ -12,6 +12,7 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
   GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/commission-state per-driver commission + Stage-5 ramp state
+  GET  /active-speaker/commissioning-view backend-owned setup view/actions/copy
   GET  /active-speaker/design-draft saved speaker design/research evidence
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/measurements saved driver and summed validation evidence
@@ -65,6 +66,7 @@ import binascii
 import html
 import json
 import logging
+import math
 import os
 import socket
 import subprocess
@@ -1212,37 +1214,6 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
     return payload
 
 
-def _active_speaker_commissioning_rehearsal_payload() -> dict[str, Any]:
-    """Return the read-only durable active-speaker commissioning rehearsal."""
-
-    from jasper.active_speaker.commissioning import build_commissioning_rehearsal
-
-    topology = load_output_topology()
-    safe_session = _active_speaker_safe_playback_payload()
-    calibration_level = _active_speaker_calibration_level_payload()
-    payload = build_commissioning_rehearsal(
-        topology,
-        bringup_preflight=_active_speaker_bringup_preflight_payload(),
-        startup_load=_active_speaker_startup_load_payload(),
-        safe_session=safe_session,
-        calibration_level=calibration_level,
-    )
-    logger.info(
-        "event=sound.active_speaker_commissioning_rehearsal status=%s "
-        "durable_ready=%s completed=%s total=%s blockers=%d",
-        payload.get("status"),
-        bool(payload.get("durable_steps_ready")),
-        payload.get("completed_step_count"),
-        payload.get("total_step_count"),
-        sum(
-            1
-            for step in payload.get("steps", [])
-            if isinstance(step, dict) and step.get("status") == "blocked"
-        ),
-    )
-    return payload
-
-
 def _active_speaker_design_draft_payload() -> dict[str, Any]:
     """Return the saved active-speaker design draft, if any."""
 
@@ -1480,12 +1451,21 @@ COMMISSION_TONE_STARTUP_CHECK_S = 0.08
 COMMISSION_TONE_SAMPLE_RATE = 48000
 COMMISSION_TONE_SOURCE_DBFS = 0.0
 COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
+SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
 COMMISSION_TONE_MUX_SOCKET = os.environ.get(
     "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
 )
 COMMISSION_TONE_FANIN_LABEL = "correction"
 _COMMISSION_TONE_LOCK = threading.Lock()
 _COMMISSION_TONE_SESSION: dict[str, Any] | None = None
+_SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
+    "status": "ready",
+    "load_gate": "ready",
+    "ok_to_load_active_config": True,
+    "camilla_config": {},
+    "safe_playback": {},
+    "issues": [],
+}
 
 
 def _commission_tone_target_key(
@@ -1507,12 +1487,16 @@ def _commission_tone_target_key(
     )
 
 
-def _commission_tone_wav_path(*, frequency_hz: float) -> Path:
+def _commission_tone_wav_path(
+    *,
+    frequency_hz: float,
+    duration_s: float = COMMISSION_TONE_DURATION_S,
+) -> Path:
     from jasper.correction.playback import _ensure_tone_wav
 
     return _ensure_tone_wav(
         freq_hz=frequency_hz,
-        duration_s=COMMISSION_TONE_DURATION_S,
+        duration_s=duration_s,
         dbfs=COMMISSION_TONE_SOURCE_DBFS,
         sample_rate=COMMISSION_TONE_SAMPLE_RATE,
     )
@@ -1568,6 +1552,38 @@ def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
         payload.get("active_source"),
     )
     return payload
+
+
+def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
+    """Best-effort return from setup-only routing to normal latest-source-wins."""
+
+    try:
+        payload = _commission_tone_mux_command("AUTO")
+    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "event=sound.active_speaker_source_auto action=restore reason=%s "
+            "status=failed error=%s",
+            reason,
+            exc,
+        )
+        return {
+            "status": "failed",
+            "reason": reason,
+            "error": str(exc),
+        }
+    logger.info(
+        "event=sound.active_speaker_source_auto action=restore reason=%s "
+        "status=ok mode=%s active_source=%s test_source=%s",
+        reason,
+        payload.get("mode"),
+        payload.get("active_source"),
+        payload.get("test_source"),
+    )
+    return {
+        "status": "ok",
+        "reason": reason,
+        "state": payload,
+    }
 
 
 def _commission_tone_issue(exc: BaseException) -> dict[str, str]:
@@ -1644,7 +1660,7 @@ def _commission_tone_signal_plan(
     if bound_preset is None:
         try:
             bound_preset = load_active_speaker_preset()
-        except Exception as exc:  # noqa: BLE001 - fail closed before playback.
+        except (OSError, ValueError, TypeError) as exc:
             return {
                 "artifact_schema_version": 1,
                 "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
@@ -1963,6 +1979,256 @@ async def _active_speaker_play_commission_tone(
     )
 
 
+def _active_speaker_plan_with_issues(
+    plan: dict[str, Any],
+    issues: list[dict[str, str]],
+) -> dict[str, Any]:
+    if not issues:
+        return plan
+    return {
+        **plan,
+        "status": "blocked",
+        "playback_allowed": False,
+        "would_play": False,
+        "issues": [
+            *(plan.get("issues") if isinstance(plan.get("issues"), list) else []),
+            *issues,
+        ],
+    }
+
+
+async def _active_speaker_load_summed_commissioning_config(
+    *,
+    topology: OutputTopology,
+    speaker_group_id: str,
+    level_dbfs: float,
+    startup_gate_calibration_level: dict[str, Any] | None,
+    preset: Any,
+    crossover_preview: dict[str, Any] | None,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Load the transient all-drivers-live commissioning graph for one check."""
+
+    from jasper.active_speaker.staging import load_staged_startup_config
+    from jasper.active_speaker.startup_load import load_summed_commissioning_config
+
+    cam = camilla_factory()
+    staged = load_staged_startup_config()
+    current_config_path, _ = await read_current_config_path(cam)
+    startup_setup = await _active_speaker_ensure_commission_startup_anchor(
+        group=speaker_group_id,
+        role="summed",
+        staged_config=staged,
+        current_config_path=current_config_path,
+        camilla_factory=camilla_factory,
+    )
+    if startup_setup.get("status") == "blocked":
+        return startup_setup
+
+    staged = load_staged_startup_config()
+    current_config_path, current_config_error = await read_current_config_path(cam)
+    evidence_path = write_commission_path_safety(
+        topology,
+        staged,
+        current_config_path,
+        current_config_error,
+    )
+    load_config, read_running_config, get_current_config_path = commission_seams(cam)
+    payload = await load_summed_commissioning_config(
+        topology,
+        speaker_group_id=speaker_group_id,
+        calibration_level=startup_gate_calibration_level,
+        load_config=load_config,
+        read_running_config=read_running_config,
+        get_current_config_path=get_current_config_path,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        staged_config=staged,
+        audible_gain_db=level_dbfs,
+        path_safety_evidence_path=evidence_path,
+    )
+    payload["startup_setup"] = startup_setup
+    return payload
+
+
+async def _active_speaker_rollback_summed_commissioning_config(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
+
+    cam = camilla_factory()
+    load_config, _, _ = commission_seams(cam)
+    return await rollback_driver_commissioning_config(load_config=load_config)
+
+
+def _summed_playback_with_issue(
+    playback: dict[str, Any],
+    *,
+    issue: dict[str, str],
+    status: str = "failed",
+    commissioning_load: dict[str, Any] | None = None,
+    rollback: dict[str, Any] | None = None,
+    fanin_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    out = dict(playback)
+    out.update({
+        "status": status,
+        "backend": SUMMED_COMMISSION_TONE_BACKEND,
+        "audio_emitted": False,
+        "confirmable": False,
+        "issues": [
+            *(playback.get("issues") if isinstance(playback.get("issues"), list) else []),
+            issue,
+        ],
+    })
+    if commissioning_load is not None:
+        out["commissioning_load"] = commissioning_load
+    if rollback is not None:
+        out["rollback"] = rollback
+    if fanin_gate is not None:
+        out["fanin_gate"] = fanin_gate
+    return out
+
+
+async def _active_speaker_play_summed_commission_tone(
+    plan: dict[str, Any],
+    *,
+    safe_session: dict[str, Any],
+    topology: OutputTopology,
+    speaker_group_id: str,
+    startup_gate_calibration_level: dict[str, Any] | None,
+    preset: Any,
+    crossover_preview: dict[str, Any] | None,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Play one bounded combined-driver tone through the real active graph."""
+
+    from jasper.active_speaker.playback import start_tone_playback
+
+    artifact_playback = start_tone_playback(
+        plan,
+        safe_session=safe_session,
+        backend=None,
+        allow_audio=True,
+    )
+    if artifact_playback.get("status") != "completed":
+        return artifact_playback
+
+    tone = artifact_playback.get("tone") if isinstance(artifact_playback.get("tone"), dict) else {}
+    try:
+        level_dbfs = float(tone.get("level_dbfs"))
+    except (TypeError, ValueError):
+        level_dbfs = -80.0
+    try:
+        frequency_hz = float(tone.get("frequency_hz"))
+        duration_s = max(0.05, float(tone.get("duration_ms")) / 1000.0)
+        wav_path = _commission_tone_wav_path(
+            frequency_hz=frequency_hz,
+            duration_s=duration_s,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return _summed_playback_with_issue(
+            artifact_playback,
+            issue=_commission_tone_issue(exc),
+        )
+
+    load_payload = await _active_speaker_load_summed_commissioning_config(
+        topology=topology,
+        speaker_group_id=speaker_group_id,
+        level_dbfs=level_dbfs,
+        startup_gate_calibration_level=startup_gate_calibration_level,
+        preset=preset,
+        crossover_preview=crossover_preview,
+        camilla_factory=camilla_factory,
+    )
+    load_state = (
+        load_payload.get("load")
+        if isinstance(load_payload.get("load"), dict)
+        else {}
+    )
+    if load_state.get("status") != "loaded":
+        load_issues = [
+            issue for issue in load_state.get("issues", [])
+            if isinstance(issue, dict)
+        ]
+        issue = load_issues[0] if load_issues else _commission_setup_issue(
+            "summed_commission_load_failed",
+            "could not open the combined active-speaker test path",
+        )
+        return _summed_playback_with_issue(
+            artifact_playback,
+            issue=issue,
+            commissioning_load=load_payload,
+        )
+
+    fanin_gate: dict[str, Any] | None = None
+    rollback: dict[str, Any] | None = None
+    rollback_issue: dict[str, str] | None = None
+    playback_result: dict[str, Any]
+    try:
+        fanin_gate = _commission_tone_select_fanin_lane()
+        completed = subprocess.run(
+            ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=duration_s + 1.0,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or "").strip().splitlines()
+            raise RuntimeError(
+                detail[0][:160] if detail else f"aplay exited {completed.returncode}"
+            )
+        playback_result = dict(artifact_playback)
+        playback_result.update({
+            "status": "completed",
+            "backend": SUMMED_COMMISSION_TONE_BACKEND,
+            "audio_emitted": True,
+            "confirmable": True,
+            "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+            "commissioning_load": load_payload,
+            "fanin_gate": fanin_gate,
+            "issues": [],
+        })
+    except Exception as exc:  # noqa: BLE001 - always re-mute below.
+        playback_result = _summed_playback_with_issue(
+            artifact_playback,
+            issue=_commission_tone_issue(exc),
+            commissioning_load=load_payload,
+            rollback=rollback,
+            fanin_gate=fanin_gate,
+        )
+    finally:
+        if fanin_gate is not None:
+            _commission_tone_release_fanin_lane(reason="summed_test")
+        try:
+            rollback = await _active_speaker_rollback_summed_commissioning_config(
+                camilla_factory=camilla_factory,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface but do not mask playback.
+            logger.warning(
+                "event=sound.active_speaker_summed_test action=rollback "
+                "status=failed error=%s",
+                exc,
+            )
+            rollback_issue = _commission_setup_issue(
+                "summed_commission_rollback_failed",
+                "combined test played, but JTS could not re-mute the active-speaker test path",
+            )
+    if rollback is not None:
+        playback_result["rollback"] = rollback
+    if rollback_issue is not None:
+        playback_result["status"] = "failed"
+        playback_result["confirmable"] = False
+        playback_result["issues"] = [
+            *(playback_result.get("issues") if isinstance(playback_result.get("issues"), list) else []),
+            rollback_issue,
+        ]
+    return playback_result
+
+
 def _commission_setup_issue(code: str, message: str) -> dict[str, str]:
     return {"severity": "blocker", "code": code, "message": message}
 
@@ -2208,12 +2474,14 @@ async def _active_speaker_commission_rollback_payload(
 ) -> dict[str, Any]:
     """Roll the running graph back to the all-muted staged config (re-mute)."""
 
+    from jasper.active_speaker.safe_playback import stop_safe_playback_session
     from jasper.active_speaker.startup_load import rollback_driver_commissioning_config
 
     tone_stop = _active_speaker_stop_commission_tone(reason="commission_rollback")
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     payload = await rollback_driver_commissioning_config(load_config=load_config)
+    payload["safe_playback"] = stop_safe_playback_session(reason="commission_rollback")
     payload["tone_stop"] = tone_stop
     logger.info(
         "event=sound.active_speaker_commission action=rollback status=%s",
@@ -2260,6 +2528,7 @@ async def _active_speaker_commission_ramp_step_payload(
         topology,
         speaker_group_id=group,
         role=role,
+        auto_retry_pending=bool(raw.get("auto_retry_pending")),
         load_config=load_config,
         read_running_config=read_running_config,
         get_current_config_path=get_current_config_path,
@@ -2287,9 +2556,18 @@ async def _active_speaker_commission_ramp_ack_payload(
 ) -> dict[str, Any]:
     """Record the operator's verdict for the pending audible step."""
 
-    from jasper.active_speaker.commission_ramp import record_ramp_operator_ack
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.commission_ramp import (
+        load_ramp_state,
+        record_ramp_operator_ack,
+    )
+    from jasper.active_speaker.measurement import record_driver_measurement
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
 
     outcome = str(raw.get("outcome") or "").strip().lower()
+    topology = load_output_topology()
+    ramp_state = load_ramp_state()
+    pending = ramp_state.get("pending")
     tone_stop = None
     if outcome != "silent":
         tone_stop = _active_speaker_stop_commission_tone(reason=f"ack_{outcome}")
@@ -2297,12 +2575,34 @@ async def _active_speaker_commission_ramp_ack_payload(
     # load_config lets any terminal by-ear outcome re-mute the transient graph.
     load_config, _, _ = commission_seams(cam)
     payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
+    if (
+        outcome == "heard_correct_driver"
+        and payload.get("status") == "confirmed"
+        and not payload.get("issues")
+        and isinstance(pending, dict)
+    ):
+        measurements = record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": ramp_state.get("speaker_group_id"),
+                "role": pending.get("role"),
+                "outcome": outcome,
+                "playback_id": pending.get("playback_id"),
+                "test_level_dbfs": pending.get("gain_db"),
+                "notes": "Recorded from active-speaker guarded ramp confirmation.",
+            },
+            calibration_level=load_calibration_level_state(),
+            safe_session=load_safe_playback_state(),
+        )
+        payload["measurements"] = measurements
     if tone_stop is not None:
         payload["tone_stop"] = tone_stop
     logger.info(
-        "event=sound.active_speaker_commission action=ramp_ack outcome=%s status=%s",
+        "event=sound.active_speaker_commission action=ramp_ack outcome=%s status=%s "
+        "measurement_status=%s",
         outcome,
         payload.get("status"),
+        (payload.get("measurements") or {}).get("status"),
     )
     return payload
 
@@ -2390,6 +2690,55 @@ async def _active_speaker_commission_state_payload(
             ),
         },
     }
+
+
+async def _active_speaker_commissioning_view_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Return the backend-owned active-speaker setup view model."""
+
+    from jasper.active_speaker.baseline_profile import (
+        build_baseline_profile_candidate,
+    )
+    from jasper.active_speaker.commissioning_coordinator import (
+        build_commissioning_view,
+    )
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.startup_load import load_startup_load_state
+
+    topology = load_output_topology()
+    design_draft = load_design_draft()
+    preview = load_crossover_preview(current_design_draft=design_draft)
+    measurements = load_measurement_state(topology)
+    calibration_level = load_calibration_level_state()
+    commission = await _active_speaker_commission_state_payload(
+        camilla_factory=camilla_factory,
+    )
+    baseline = build_baseline_profile_candidate(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+    )
+    view = build_commissioning_view(
+        topology,
+        measurements=measurements,
+        commission=commission,
+        startup_load={"state": load_startup_load_state()},
+        baseline_profile=baseline,
+        calibration_level=calibration_level,
+    )
+    logger.info(
+        "event=sound.active_speaker_commissioning_view status=%s next_action=%s",
+        view.get("status"),
+        (view.get("next_action") or {}).get("id"),
+    )
+    return view
 
 
 def _active_speaker_measurements_payload() -> dict[str, Any]:
@@ -2750,18 +3099,103 @@ def _active_speaker_crossover_frequency_for_group(
     return None
 
 
-def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
+def _active_speaker_transient_summed_level(
+    *,
+    calibration_level: dict[str, Any],
+    measurements: dict[str, Any],
+    speaker_group_id: str,
+    requested_level: Any,
+) -> dict[str, Any]:
+    """Return the bounded summed-test level without mutating startup state."""
+
+    from jasper.active_speaker.calibration_level import (
+        AUDIBLE_RAMP_STEP_DB,
+        calibration_level_payload,
+        clamp_test_level_dbfs,
+    )
+
+    def _finite(value: Any) -> float | None:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        return out if math.isfinite(out) else None
+
+    current = _finite(
+        (calibration_level.get("test_signal") or {}).get("requested_level_dbfs")
+    )
+    summary = (
+        measurements.get("summary")
+        if isinstance(measurements.get("summary"), dict)
+        else {}
+    )
+    latest_tests = (
+        summary.get("latest_summed_tests")
+        if isinstance(summary.get("latest_summed_tests"), dict)
+        else {}
+    )
+    latest = latest_tests.get(speaker_group_id)
+    latest_issues = (
+        latest.get("issues")
+        if isinstance(latest, dict) and isinstance(latest.get("issues"), list)
+        else []
+    )
+    latest_ok = (
+        isinstance(latest, dict)
+        and latest.get("captured") is True
+        and latest.get("audio_emitted") is True
+        and not any(
+            isinstance(issue, dict) and issue.get("severity") == "blocker"
+            for issue in latest_issues
+        )
+    )
+    if latest_ok:
+        latest_tone = latest.get("tone") if isinstance(latest.get("tone"), dict) else {}
+        current = _finite(latest_tone.get("level_dbfs")) or current
+    if current is None:
+        current = clamp_test_level_dbfs(None)
+    requested = _finite(requested_level)
+    issues: list[dict[str, str]] = []
+    if requested is None:
+        level = clamp_test_level_dbfs(current)
+    elif requested > current + AUDIBLE_RAMP_STEP_DB:
+        level = clamp_test_level_dbfs(current + AUDIBLE_RAMP_STEP_DB)
+        issues.append({
+            "severity": "warning",
+            "code": "audible_ramp_step_limited",
+            "message": "requested combined-test level exceeded the bounded step",
+        })
+    else:
+        level = clamp_test_level_dbfs(requested)
+    payload = calibration_level_payload(requested_level_dbfs=level)
+    payload["last_action"] = "summed_transient_level"
+    payload["prior_level_dbfs"] = current
+    payload["requested_level_dbfs"] = requested
+    payload["applied_delta_db"] = round(level - current, 3)
+    payload["issues"] = issues
+    return payload
+
+
+async def _active_speaker_summed_test_payload(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
     """Run and record one bounded combined-driver test for validation."""
 
-    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.calibration_level import (
+        calibration_level_payload,
+        load_calibration_level_state,
+    )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import (
         load_measurement_state,
         record_summed_test_artifact,
     )
-    from jasper.active_speaker.playback import enabled_audio_backend, start_tone_playback
+    from jasper.active_speaker.playback import start_tone_playback
     from jasper.active_speaker.safe_playback import (
+        arm_safe_playback_session,
         load_safe_playback_state,
         record_safe_playback_result,
     )
@@ -2774,16 +3208,30 @@ def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
     speaker_group_id = str(raw.get("speaker_group_id") or "").strip()
     design_draft = load_design_draft()
     preview = load_crossover_preview(current_design_draft=design_draft)
-    calibration_level = load_calibration_level_state()
+    requested_level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
     measurements = load_measurement_state(topology)
+    persisted_calibration_level = load_calibration_level_state()
+    calibration_level = (
+        _active_speaker_transient_summed_level(
+            calibration_level=persisted_calibration_level,
+            measurements=measurements,
+            speaker_group_id=speaker_group_id,
+            requested_level=requested_level,
+        )
+        if requested_level is not None
+        else persisted_calibration_level
+    )
+    startup_gate_level = calibration_level_payload()
     safe_session = load_safe_playback_state()
+    wants_audio = bool(raw.get("audio"))
+    if wants_audio and safe_session.get("status") != "armed":
+        safe_session = arm_safe_playback_session(_SUMMED_TEST_ARM_REPORT)
     startup_load = load_startup_load_state()
     protected_loaded = bool(
         startup_load.get("loaded")
         and startup_load.get("rollback_available")
         and startup_load.get("current_config_matches_loaded") is not False
     )
-    wants_audio = bool(raw.get("audio"))
     plan = build_summed_topology_tone_plan(
         topology,
         speaker_group_id=speaker_group_id,
@@ -2809,45 +3257,35 @@ def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     if not summary.get("driver_measurements_complete"):
-        plan = {
-            **plan,
-            "status": "blocked",
-            "playback_allowed": False,
-            "would_play": False,
-            "issues": [
-                *(plan.get("issues") if isinstance(plan.get("issues"), list) else []),
+        plan = _active_speaker_plan_with_issues(
+            plan,
+            [
                 {
                     "severity": "blocker",
                     "code": "summed_test_driver_measurements_missing",
                     "message": "test each driver before running the combined test",
                 },
             ],
-        }
-    backend = enabled_audio_backend() if wants_audio else None
-    if wants_audio and backend is None:
-        plan = {
-            **plan,
-            "status": "blocked",
-            "playback_allowed": False,
-            "would_play": False,
-            "issues": [
-                *(plan.get("issues") if isinstance(plan.get("issues"), list) else []),
-                {
-                    "severity": "blocker",
-                    "code": "audio_backend_not_enabled",
-                    "message": (
-                        "audible combined-driver tests require explicit lab "
-                        "backend enablement"
-                    ),
-                },
-            ],
-        }
-    playback = start_tone_playback(
-        plan,
-        safe_session=safe_session,
-        backend=backend,
-        allow_audio=wants_audio,
-    )
+        )
+    preset, resolved_preview = resolve_commission_inputs()
+    if wants_audio:
+        playback = await _active_speaker_play_summed_commission_tone(
+            plan,
+            safe_session=safe_session,
+            topology=topology,
+            speaker_group_id=speaker_group_id,
+            startup_gate_calibration_level=startup_gate_level,
+            preset=preset,
+            crossover_preview=resolved_preview,
+            camilla_factory=camilla_factory,
+        )
+    else:
+        playback = start_tone_playback(
+            plan,
+            safe_session=safe_session,
+            backend=None,
+            allow_audio=False,
+        )
     session = record_safe_playback_result(playback)
     measurement_payload = record_summed_test_artifact(
         topology,
@@ -2859,11 +3297,12 @@ def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
     )
     logger.info(
         "event=sound.active_speaker_summed_test status=%s group_id=%s "
-        "level_dbfs=%s audio_requested=%s audio_emitted=%s blockers=%d "
+        "level_dbfs=%s requested_level_dbfs=%s audio_requested=%s audio_emitted=%s blockers=%d "
         "artifact=%s",
         playback.get("status"),
         speaker_group_id,
         playback.get("tone", {}).get("level_dbfs"),
+        requested_level,
         wants_audio,
         bool(playback.get("audio_emitted")),
         len(playback.get("issues") or []),
@@ -2873,6 +3312,7 @@ def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
         "plan": plan,
         "playback": playback,
         "session": session,
+        "calibration_level": calibration_level,
         "measurements": measurement_payload,
     }
 
@@ -3043,12 +3483,17 @@ async def _active_speaker_baseline_profile_apply_payload(
         load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
     )
+    if payload.get("status") == "applied":
+        payload["source_selection_restore"] = _active_speaker_restore_auto_source(
+            reason="baseline_apply",
+        )
     logger.info(
         "event=sound.active_speaker_baseline_profile action=apply status=%s "
-        "apply_result=%s issue_count=%d",
+        "apply_result=%s issue_count=%d source_restore=%s",
         payload.get("status"),
         (payload.get("apply") or {}).get("result"),
         len(payload.get("issues") or []),
+        (payload.get("source_selection_restore") or {}).get("status"),
     )
     return payload
 
@@ -3100,7 +3545,7 @@ def _make_handler(
                 "/active-speaker/bringup-preflight",
                 "/active-speaker/startup-load",
                 "/active-speaker/commission-state",
-                "/active-speaker/commissioning-rehearsal",
+                "/active-speaker/commissioning-view",
                 "/active-speaker/staged-config",
                 "/active-speaker/channel-identity",
             }:
@@ -3224,13 +3669,18 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
-            if path == "/active-speaker/commissioning-rehearsal":
+            if path == "/active-speaker/commissioning-view":
                 try:
-                    self._send_json(_active_speaker_commissioning_rehearsal_payload())
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_commissioning_view_payload(
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
-                        "event=sound.active_speaker_commissioning_rehearsal "
-                        "result=error"
+                        "event=sound.active_speaker_commissioning_view result=error"
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -3401,7 +3851,14 @@ def _make_handler(
                     return
                 if path == "/active-speaker/summed-test":
                     try:
-                        self._send_json(_active_speaker_summed_test_payload(raw))
+                        self._send_json(
+                            asyncio.run(
+                                _active_speaker_summed_test_payload(
+                                    raw,
+                                    camilla_factory=camilla_factory,
+                                )
+                            )
+                        )
                     except OSError as e:
                         logger.exception(
                             "event=sound.active_speaker_summed_test "

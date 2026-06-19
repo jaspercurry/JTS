@@ -16,6 +16,7 @@ Three layers, all hardware-free:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 import yaml
@@ -44,6 +45,7 @@ from jasper.active_speaker.camilla_yaml import (
     COMMISSIONING_HEADROOM_DB,
     STARTUP_MUTE_GAIN_DB,
 )
+from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker import ActiveSpeakerConfigError
 
 from tests.test_active_speaker_commission_load import _load
@@ -493,6 +495,114 @@ def test_ramp_step_then_pending_blocks_a_second_step(monkeypatch, tmp_path):
     assert len(cam.loaded_paths) == loads_after_first  # nothing new loaded
 
 
+def test_auto_retry_pending_replaces_same_driver_pending_step(monkeypatch, tmp_path):
+    async def _tone(**kwargs):
+        return {
+            "status": "completed",
+            "audio_emitted": True,
+            "confirmable": True,
+            "playback_id": kwargs["playback_id"],
+            "target": kwargs["target"],
+            "tone": {
+                "frequency_hz": 250.0,
+                "commission_gain_db": kwargs["level_dbfs"],
+            },
+            "issues": [],
+        }
+
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer", play_tone=_tone
+    )
+    assert step["status"] == "stepped"
+    assert step["ramp"]["pending"]["frequency_hz"] == 250.0
+    first_playback_id = step["ramp"]["pending"]["playback_id"]
+
+    louder = asyncio.run(
+        ramp_audible_step(
+            _topology(),
+            role="woofer",
+            auto_retry_pending=True,
+            **common,
+        )
+    )
+
+    assert louder["status"] == "stepped"
+    assert louder["next_gain_db"] == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+    assert louder["ramp"]["pending"]["role"] == "woofer"
+    assert louder["ramp"]["pending"]["playback_id"] != first_playback_id
+    assert louder["ramp"]["pending"]["frequency_hz"] == 250.0
+    quiet = load_safe_playback_state(
+        state_path=tmp_path / "safe.json"
+    )["quiet_start"]
+    assert quiet["status"] == "floor_pending_operator"
+    assert quiet["pending_playback_id"] == louder["ramp"]["pending"]["playback_id"]
+    assert load_ramp_state(state_path=tmp_path / "ramp.json")["pending"] is not None
+
+
+def test_auto_retry_pending_superseded_before_load_does_not_touch_camilla(
+    monkeypatch, tmp_path
+):
+    async def _tone(**kwargs):
+        return {
+            "status": "completed",
+            "audio_emitted": True,
+            "confirmable": True,
+            "playback_id": kwargs["playback_id"],
+            "target": kwargs["target"],
+            "tone": {
+                "frequency_hz": 250.0,
+                "commission_gain_db": kwargs["level_dbfs"],
+            },
+            "issues": [],
+        }
+
+    step, cam, staged_path, state_path, common = _ramp_step(
+        tmp_path, monkeypatch, role="woofer", play_tone=_tone
+    )
+    assert step["status"] == "stepped"
+    loads_after_first_step = len(cam.loaded_paths)
+    original_read_running_config = common["read_running_config"]
+
+    async def _read_running_config_then_supersede_pending():
+        from jasper.active_speaker.commission_ramp import (
+            _ramp_base_state,
+            _record_ramp_state,
+            ramp_state_path,
+        )
+
+        raw = await original_read_running_config()
+        ramp_path = tmp_path / "ramp.json"
+        prior = load_ramp_state(state_path=ramp_path)
+        _record_ramp_state(
+            {
+                **_ramp_base_state(ramp_state_path(ramp_path)),
+                "speaker_group_id": "mono",
+                "confirmed_roles": prior.get("confirmed_roles") or [],
+                "pending": None,
+                "last_action": "ack_heard_correct_driver",
+            },
+            state_path=ramp_path,
+        )
+        return raw
+
+    common["read_running_config"] = _read_running_config_then_supersede_pending
+    stale = asyncio.run(
+        ramp_audible_step(
+            _topology(),
+            role="woofer",
+            auto_retry_pending=True,
+            **common,
+        )
+    )
+
+    assert stale["status"] == "stale_retry"
+    assert stale["load"] is None
+    assert {issue["code"] for issue in stale["issues"]} == {
+        "commission_ramp_retry_superseded"
+    }
+    assert len(cam.loaded_paths) == loads_after_first_step
+
+
 def test_operator_ack_confirms_floor_and_records_role(monkeypatch, tmp_path):
     step, cam, staged_path, state_path, _ = _ramp_step(
         tmp_path, monkeypatch, role="woofer"
@@ -511,6 +621,49 @@ def test_operator_ack_confirms_floor_and_records_role(monkeypatch, tmp_path):
     ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
     assert ramp["confirmed_roles"] == ["woofer"]
     assert ramp["pending"] is None
+
+
+def test_operator_ack_rejected_floor_confirm_does_not_record_role(
+    monkeypatch, tmp_path
+):
+    """A 'heard correct' ACK whose floor confirm safe_playback REJECTS must NOT
+    advance confirmed_roles (the woofer-before-tweeter ordering authority).
+
+    Regression for the Stage-5 fail-open: confirmed_roles was appended
+    unconditionally on heard_correct_driver, so a stale playback_id (e.g. a
+    racing auto-retry under the threading HTTP server) could confirm a role the
+    operator never genuinely heard — letting a later tweeter step proceed.
+    """
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    # Simulate a racing newer playback: the safe session now awaits a DIFFERENT
+    # playback_id than the ramp's pending step carries, so the confirm mismatches.
+    safe_path = tmp_path / "safe.json"
+    safe_data = json.loads(safe_path.read_text(encoding="utf-8"))
+    assert safe_data["quiet_start"]["status"] == "floor_pending_operator"
+    safe_data["quiet_start"]["pending_playback_id"] = "stale-other-playback"
+    safe_path.write_text(json.dumps(safe_data), encoding="utf-8")
+
+    ack = asyncio.run(
+        record_ramp_operator_ack(
+            outcome="heard_correct_driver",
+            ramp_state_path_override=tmp_path / "ramp.json",
+            safe_playback_state_path=safe_path,
+            commission_load_state_path=state_path,
+        )
+    )
+
+    assert ack["status"] == "rejected"
+    assert any(
+        issue.get("code") == "playback_id_mismatch"
+        for issue in (ack["issues"] or [])
+    )
+    ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
+    assert ramp["confirmed_roles"] == []  # woofer NOT recorded
+    assert ramp["pending"] is not None  # step left pending for a real re-confirm
 
 
 def test_silent_floor_allows_a_louder_retry(monkeypatch, tmp_path):
@@ -645,6 +798,7 @@ def test_abort_ramp_rolls_back_and_resets(monkeypatch, tmp_path):
             load_config=cam.apply_running_config,
             commission_load_state_path=state_path,
             ramp_state_path_override=tmp_path / "ramp.json",
+            safe_playback_state_path=tmp_path / "safe.json",
             validate=_valid_config,
         )
     )
@@ -653,6 +807,9 @@ def test_abort_ramp_rolls_back_and_resets(monkeypatch, tmp_path):
     ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
     assert ramp["pending"] is None
     assert ramp["confirmed_roles"] == []
+    safe = load_safe_playback_state(state_path=tmp_path / "safe.json")
+    assert safe["status"] == "stopped"
+    assert safe["quiet_start"]["status"] == "floor_required"
 
 
 def test_ramp_running_graph_carries_the_new_audible_gain(monkeypatch, tmp_path):

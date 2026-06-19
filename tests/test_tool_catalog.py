@@ -8,10 +8,8 @@ neither (needs_setup). Pins the /run JSON shape the /tools/ wizard reads.
 from __future__ import annotations
 
 import json
-import types
 
 from jasper.tools import Tool, ToolDefinition, ToolRegistry
-from jasper.tools.bus import make_bus_tools
 from jasper.tools.catalog import (
     _CATALOG_HIDDEN,
     CATALOG_SCHEMA_VERSION,
@@ -20,80 +18,30 @@ from jasper.tools.catalog import (
     build_catalog,
     write_catalog,
 )
-from jasper.tools.citibike import make_citibike_tools
-from jasper.tools.packs import CapabilityPack, CatalogPack, ToolDeps, register_packs
-from jasper.tools.subway import make_subway_tools
-
-# The always-on tools (no backend gate) — audio + transport + spotify +
-# weather + time. Mirrors test_tool_packs_registry's un-gated survivors.
-ALWAYS_ON = {
-    "get_volume", "set_volume", "adjust_volume", "mute", "unmute",
-    "next_track", "previous_track", "pause", "resume", "get_now_playing",
-    "spotify_play", "spotify_play_latest_by_artist", "spotify_queue",
-    "get_weather", "get_current_time",
-}
-
-# Tools that only register when their backend is configured.
-GATED = {
-    "get_subway_arrivals", "get_bus_arrivals", "get_citibike_status",
-    "home_assistant", "home_assistant_confirm",
-    "set_timer", "list_timers", "cancel_timer", "update_timer",
-    "calendar_today_summary", "calendar_upcoming",
-    "gmail_unread_summary", "gmail_read_thread",
-    "flag_recent_issue",
-}
-
-# Every registered tool, minus the ones hidden from the catalog UI
-# (home_assistant_confirm is an internal companion — see _CATALOG_HIDDEN).
-VISIBLE = (ALWAYS_ON | GATED) - _CATALOG_HIDDEN
-
-
-def _full_live_registry() -> ToolRegistry:
-    """Every tool, configured + enabled (mirrors _full_catalog_registry's
-    sentinel deps)."""
-    transit = []
-    transit += list(make_subway_tools(object()))
-    transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
-    transit += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    deps = ToolDeps(
-        volume_coordinator=None, renderer=None, router=None, weather=None,
-        spotify_device_name="JTS", spotify_setup_url="",
-        transit_tools=transit, ha=object(), timer_scheduler=object(),
-        google_clients=types.SimpleNamespace(list_account_names=lambda: ["seed"]),
-        wake_event_store=object(),
-    )
-    reg = ToolRegistry()
-    register_packs(reg, deps, disabled=frozenset())
-    return reg
-
-
-def _minimal_live_registry() -> ToolRegistry:
-    """Only the always-on tools register — every gated backend absent."""
-    deps = ToolDeps(
-        volume_coordinator=None, renderer=None, router=None, weather=None,
-        spotify_device_name="JTS", spotify_setup_url="",
-        transit_tools=[], ha=None, timer_scheduler=None,
-        google_clients=types.SimpleNamespace(list_account_names=lambda: []),
-        wake_event_store=None,
-    )
-    reg = ToolRegistry()
-    register_packs(reg, deps, disabled=frozenset())
-    return reg
+from jasper.tool_state import ToolState
+from jasper.tools.packs import CapabilityPack, CatalogPack, register_packs
+from tests._tool_pack_contract import (
+    ALWAYS_ON_TOOL_NAMES,
+    GATED_TOOL_NAMES,
+    VISIBLE_TOOL_NAMES,
+    full_registry,
+    minimal_registry,
+)
 
 
 def test_full_registry_empty_disabled_all_active():
-    cat = build_catalog(_full_live_registry(), frozenset())
+    cat = build_catalog(full_registry(), frozenset())
     assert cat["schema_version"] == CATALOG_SCHEMA_VERSION
-    assert len(cat["tools"]) == len(VISIBLE)
+    assert len(cat["tools"]) == len(VISIBLE_TOOL_NAMES)
     assert all(t["status"] == "active" for t in cat["tools"])
     # Hidden companion tools never get a catalog card.
     names = {t["name"] for t in cat["tools"]}
-    assert names == VISIBLE
+    assert names == VISIBLE_TOOL_NAMES
     assert _CATALOG_HIDDEN and not (_CATALOG_HIDDEN & names)
 
 
 def test_catalog_includes_display_metadata_for_pack_first_ui():
-    cat = build_catalog(_full_live_registry(), frozenset())
+    cat = build_catalog(full_registry(), frozenset())
     by_name = {
         t["name"]: t
         for t in cat["tools"]
@@ -165,18 +113,10 @@ def test_explicit_capability_pack_flows_through_catalog():
             setup_required=True,
         ),
     )
-    deps = ToolDeps(
-        volume_coordinator=None, renderer=None, router=None, weather=None,
-        spotify_device_name="JTS", spotify_setup_url="",
-        transit_tools=[], ha=None, timer_scheduler=None,
-        google_clients=types.SimpleNamespace(list_account_names=lambda: []),
-        wake_event_store=None,
-    )
-
     live = ToolRegistry()
     register_packs(
         live,
-        deps,
+        object(),
         disabled=frozenset(),
         disabled_packs=frozenset(),
         packs=(pack,),
@@ -208,7 +148,7 @@ def test_explicit_capability_pack_flows_through_catalog():
 
 def test_disabled_pack_disables_all_child_tools():
     cat = build_catalog(
-        _full_live_registry(),
+        full_registry(),
         frozenset(),
         disabled_packs=frozenset({"spotify"}),
     )
@@ -218,6 +158,31 @@ def test_disabled_pack_disables_all_child_tools():
     assert by_name["spotify_play"]["disabled_by_pack"] is True
     by_pack = {p["id"]: p for p in cat["packs"]}
     assert by_pack["spotify"]["status"] == "off"
+
+
+def test_full_catalog_registry_ignores_staged_disabled_packs(monkeypatch):
+    """Full schema enumeration must keep disabled packs visible to re-enable."""
+    import jasper.tool_state as tool_state
+
+    monkeypatch.setattr(
+        tool_state,
+        "read_tool_state",
+        lambda: ToolState(disabled_packs=frozenset({"weather"})),
+    )
+
+    reg = _full_catalog_registry()
+    assert "get_weather" in reg.tools
+
+    cat = build_catalog(
+        full_registry(disabled_packs=frozenset({"weather"})),
+        frozenset(),
+        disabled_packs=frozenset({"weather"}),
+    )
+    by_name = {t["name"]: t for t in cat["tools"]}
+    by_pack = {p["id"]: p for p in cat["packs"]}
+    assert by_name["get_weather"]["status"] == "off"
+    assert by_name["get_weather"]["disabled_by_pack"] is True
+    assert by_pack["weather"]["status"] == "off"
 
 
 def test_pack_payloads_synthesize_singleton_for_packless_tool():
@@ -249,7 +214,7 @@ def test_pack_payloads_synthesize_singleton_for_packless_tool():
 
 def test_prompt_overrides_surface_with_reset_metadata():
     cat = build_catalog(
-        _full_live_registry(),
+        full_registry(),
         frozenset(),
         prompt_overrides={"get_weather": "Use pirate weather."},
     )
@@ -262,26 +227,26 @@ def test_prompt_overrides_surface_with_reset_metadata():
 
 
 def test_visible_first_party_tools_have_search_labels():
-    cat = build_catalog(_full_live_registry(), frozenset())
+    cat = build_catalog(full_registry(), frozenset())
     missing = [t["name"] for t in cat["tools"] if not t["labels"]]
     assert not missing
 
 
 def test_minimal_registry_gated_tools_need_setup():
-    cat = build_catalog(_minimal_live_registry(), frozenset())
+    cat = build_catalog(minimal_registry(), frozenset())
     by_name = {t["name"]: t for t in cat["tools"]}
-    assert len(by_name) == len(VISIBLE)
-    for name in GATED - _CATALOG_HIDDEN:
+    assert len(by_name) == len(VISIBLE_TOOL_NAMES)
+    for name in GATED_TOOL_NAMES - _CATALOG_HIDDEN:
         assert by_name[name]["status"] == "needs_setup", name
         if by_name[name]["setup_url"]:
             assert by_name[name]["requires_setup"] is True
-    for name in ALWAYS_ON:
+    for name in ALWAYS_ON_TOOL_NAMES:
         assert by_name[name]["status"] == "active", name
         assert by_name[name]["requires_setup"] is False
 
 
 def test_needs_setup_setup_urls_map_to_right_wizard():
-    cat = build_catalog(_minimal_live_registry(), frozenset())
+    cat = build_catalog(minimal_registry(), frozenset())
     by_name = {t["name"]: t for t in cat["tools"]}
     by_pack = {p["id"]: p for p in cat["packs"]}
     assert by_name["gmail_unread_summary"]["setup_url"] == "/google/"
@@ -300,7 +265,7 @@ def test_needs_setup_setup_urls_map_to_right_wizard():
 
 
 def test_setup_required_state_is_owned_by_pack_metadata():
-    cat = build_catalog(_minimal_live_registry(), frozenset())
+    cat = build_catalog(minimal_registry(), frozenset())
     by_name = {t["name"]: t for t in cat["tools"]}
 
     # A future contributor should set CatalogPack(setup_required=True,
@@ -320,7 +285,10 @@ def test_setup_required_state_is_owned_by_pack_metadata():
 
 def test_configured_but_disabled_renders_off():
     disabled = frozenset({"get_weather"})
-    by_name = {t["name"]: t for t in build_catalog(_full_live_registry(), disabled)["tools"]}
+    by_name = {
+        t["name"]: t
+        for t in build_catalog(full_registry(), disabled)["tools"]
+    }
     assert by_name["get_weather"]["status"] == "off"
     assert by_name["spotify_play"]["status"] == "active"
 
@@ -330,7 +298,9 @@ def test_unconfigured_and_disabled_renders_off_edge_case():
     disabled-set renders 'off' — documented edge case."""
     by_name = {
         t["name"]: t
-        for t in build_catalog(_minimal_live_registry(), frozenset({"home_assistant"}))["tools"]
+        for t in build_catalog(minimal_registry(), frozenset({"home_assistant"}))[
+            "tools"
+        ]
     }
     assert by_name["home_assistant"]["status"] == "off"
 
@@ -340,21 +310,24 @@ def test_full_catalog_registry_enumerates_all_tools():
     # UI is what hides some. So the registry count = ALWAYS_ON + GATED, even
     # though build_catalog emits fewer cards.
     reg = _full_catalog_registry()
-    assert len(reg.tools) == len(ALWAYS_ON) + len(GATED)
+    assert len(reg.tools) == len(ALWAYS_ON_TOOL_NAMES) + len(GATED_TOOL_NAMES)
     for hidden in _CATALOG_HIDDEN:
         assert hidden in reg.tools, hidden
 
 
 def test_hidden_tools_are_in_registry_but_not_the_catalog():
     reg = _full_catalog_registry()
-    cat_names = {t["name"] for t in build_catalog(_full_live_registry(), frozenset())["tools"]}
+    cat_names = {
+        t["name"]
+        for t in build_catalog(full_registry(), frozenset())["tools"]
+    }
     for hidden in _CATALOG_HIDDEN:
         assert hidden in reg.tools, f"{hidden} must stay a real registry tool"
         assert hidden not in cat_names, f"{hidden} must be hidden from the catalog"
 
 
 def test_providers_none_for_universal_and_sorted_for_restricted():
-    cat = build_catalog(_full_live_registry(), frozenset())
+    cat = build_catalog(full_registry(), frozenset())
     for t in cat["tools"]:
         # No shipped tool is provider-restricted today, so all are None;
         # but the shape must be `sorted(...)` (a list) or None, never a
@@ -363,7 +336,7 @@ def test_providers_none_for_universal_and_sorted_for_restricted():
 
 
 def test_write_catalog_round_trips_to_build_catalog(tmp_path):
-    reg = _full_live_registry()
+    reg = full_registry()
     disabled = frozenset({"get_weather"})
     path = tmp_path / "tools.json"
     write_catalog(reg, disabled, path=str(path))
@@ -374,7 +347,7 @@ def test_write_catalog_round_trips_to_build_catalog(tmp_path):
 def test_write_catalog_fail_soft_on_unwritable_path(caplog):
     """A write error must NOT raise — the daemon must boot even if /run
     isn't writable in a dev environment."""
-    reg = _minimal_live_registry()
+    reg = minimal_registry()
     bad = "/nonexistent-root-dir-xyz/tools.json"
     with caplog.at_level("WARNING"):
         write_catalog(reg, frozenset(), path=bad)  # must not raise

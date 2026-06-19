@@ -52,6 +52,7 @@ from .camilla_yaml import (
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
 )
+from .graph_evidence import driver_limiter_name
 from .safe_playback import (
     arm_safe_playback_session,
     load_safe_playback_state,
@@ -236,7 +237,7 @@ def _running_role_limiter_ok(
     limit AND wired onto its channels in the RUNNING pipeline."""
     if not channels:
         return False
-    name = f"as_{role}_startup_limiter"
+    name = driver_limiter_name(role)
     filters = config.get("filters")
     entry = filters.get(name) if isinstance(filters, dict) else None
     if not isinstance(entry, dict) or entry.get("type") != "Limiter":
@@ -425,6 +426,7 @@ async def ramp_audible_step(
     config_path: str | Path | None = None,
     validate: Callable[..., Any] | None = None,
     play_tone: ToneEmitter | None = None,
+    auto_retry_pending: bool = False,
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
 
@@ -462,14 +464,20 @@ async def ramp_audible_step(
 
     ramp_state = load_ramp_state(state_path=ramp_state_path_override)
     pending = ramp_state.get("pending")
+    replaced_pending: dict[str, Any] | None = None
     if isinstance(pending, dict):
-        return _blocked(
-            "ramp_step_awaiting_ack",
-            "acknowledge the last audible step (commission-ramp ack) before stepping again",
-            role=role,
-            group_id=group_id,
-            extra={"pending": pending},
-        )
+        pending_role = str(pending.get("role") or "").strip().lower()
+        pending_group = str(ramp_state.get("speaker_group_id") or "").strip()
+        if auto_retry_pending and pending_role == role and pending_group == group_id:
+            replaced_pending = dict(pending)
+        else:
+            return _blocked(
+                "ramp_step_awaiting_ack",
+                "acknowledge the last audible step (commission-ramp ack) before stepping again",
+                role=role,
+                group_id=group_id,
+                extra={"pending": pending},
+            )
 
     try:
         current_gain_db = float(
@@ -528,10 +536,13 @@ async def ramp_audible_step(
     safe_state = load_safe_playback_state(state_path=safe_playback_state_path)
     target = _target(group_id, role, evidence.get("audible_outputs") or [])
     # A louder step may proceed if the operator confirmed the prior step OR
-    # judged it inaudible and asked to retry louder (both are "handled").
-    prior_step_cleared = _floor_confirmed(safe_state, target) or _silent_retry(
+    # judged it inaudible and asked to retry louder (both are "handled"). The web
+    # commissioning surface also runs a same-driver automatic ramp; that may replace
+    # the current pending step in place so a user click can still confirm the tone
+    # at any moment instead of racing through a no-pending gap.
+    prior_step_cleared = bool(replaced_pending) or _floor_confirmed(
         safe_state, target
-    )
+    ) or _silent_retry(safe_state, target)
 
     running_raw = await read_running_config()
     gate = build_stage5_ramp_gate(
@@ -607,6 +618,31 @@ async def ramp_audible_step(
             ],
         }
 
+    if replaced_pending is not None and not _pending_step_still_current(
+        replaced_pending,
+        group_id=group_id,
+        role=role,
+        ramp_state_path_override=ramp_state_path_override,
+    ):
+        log_event(
+            logger,
+            "active_speaker.stage5_ramp",
+            level=logging.INFO,
+            result="stale_auto_retry_pre_load",
+            group=group_id,
+            role=role,
+            replaced_playback_id=replaced_pending.get("playback_id"),
+        )
+        return _stale_retry_payload(
+            role=role,
+            group_id=group_id,
+            current_gain_db=current_gain_db,
+            next_gain_db=next_gain_db,
+            gate=gate,
+            load_payload=None,
+            rollback=None,
+        )
+
     load_kwargs: dict[str, Any] = {}
     if validate is not None:
         load_kwargs["validate"] = validate
@@ -654,6 +690,37 @@ async def ramp_audible_step(
                 )
             ],
         }
+
+    if replaced_pending is not None:
+        if not _pending_step_still_current(
+            replaced_pending,
+            group_id=group_id,
+            role=role,
+            ramp_state_path_override=ramp_state_path_override,
+        ):
+            rollback = await rollback_driver_commissioning_config(
+                load_config=load_config,
+                state_path=commission_load_state_path,
+                **({"validate": validate} if validate is not None else {}),
+            )
+            log_event(
+                logger,
+                "active_speaker.stage5_ramp",
+                level=logging.INFO,
+                result="stale_auto_retry",
+                group=group_id,
+                role=role,
+                replaced_playback_id=replaced_pending.get("playback_id"),
+            )
+            return _stale_retry_payload(
+                role=role,
+                group_id=group_id,
+                current_gain_db=current_gain_db,
+                next_gain_db=next_gain_db,
+                gate=gate,
+                load_payload=load_payload,
+                rollback=rollback.get("rollback"),
+            )
 
     # The driver is now audible at next_gain_db. Record it into the (already-armed)
     # safe_playback tri-state -> floor_pending_operator, and mark the ramp step
@@ -735,6 +802,7 @@ async def ramp_audible_step(
                 "gain_db": next_gain_db,
                 "is_floor_step": gate["at_silent_floor"],
                 "playback_id": playback_id,
+                "frequency_hz": _tone_frequency_hz(tone_payload),
             },
             "last_action": "step",
         },
@@ -820,6 +888,19 @@ def _record_floor_pending(
     )
 
 
+def _tone_frequency_hz(tone_payload: dict[str, Any] | None) -> float | None:
+    if not isinstance(tone_payload, dict):
+        return None
+    tone = tone_payload.get("tone")
+    if not isinstance(tone, dict):
+        return None
+    try:
+        value = float(tone.get("frequency_hz"))
+    except (TypeError, ValueError):
+        return None
+    return value
+
+
 async def record_ramp_operator_ack(
     *,
     outcome: str,
@@ -879,8 +960,20 @@ async def record_ramp_operator_ack(
     confirmed_roles = set(ramp_state.get("confirmed_roles") or [])
     aborted: dict[str, Any] | None = None
 
-    if outcome == "heard_correct_driver":
-        # The driver was heard correctly — record it confirmed for the
+    # A "heard correct" ACK only genuinely confirms the floor when safe_playback
+    # ACCEPTED it: no blocking issues AND the per-driver tri-state actually sits
+    # at ``floor_confirmed`` (it advanced this call, or was already confirmed for
+    # a louder step on the same driver). Without this gate a REJECTED confirm —
+    # e.g. a stale ``playback_id`` from a racing auto-retry — still marked the
+    # role confirmed, and ``confirmed_roles`` is the woofer-before-tweeter
+    # ordering authority, so a tweeter step could proceed before the woofer was
+    # truly heard. Fail closed: anything short of an accepted confirm does NOT
+    # advance the ordering memory.
+    floor_status = (safe.get("quiet_start") or {}).get("status")
+    floor_confirmed_ok = not safe_issues and floor_status == "floor_confirmed"
+
+    if outcome == "heard_correct_driver" and floor_confirmed_ok:
+        # Heard correctly and the floor confirm was accepted — record it for the
         # woofer-before-tweeter ordering, release the per-step gate, and re-mute
         # the transient graph when the operator surface gave us a loader seam.
         confirmed_roles.add(str(pending.get("role")))
@@ -892,9 +985,20 @@ async def record_ramp_operator_ack(
                 state_path=commission_load_state_path,
                 **({"validate": validate} if validate is not None else {}),
             )
+    elif outcome == "heard_correct_driver":
+        # Operator said "heard correct" but safe_playback REJECTED the floor
+        # confirm. Do NOT advance the ordering memory; leave the step pending so
+        # the operator can re-confirm, and surface the safe issues to the caller.
+        new_pending = pending
+        status = "rejected"
     elif outcome in {"too_loud", "heard_wrong_driver"}:
         new_pending = None
         status = "aborted"
+        if outcome == "heard_wrong_driver":
+            # Hearing the WRONG driver at this step casts doubt on the role's
+            # identity — drop it from the ordering memory so a sibling step can't
+            # rely on a now-suspect earlier confirmation.
+            confirmed_roles.discard(str(pending.get("role")))
         if load_config is not None:
             aborted = await rollback_driver_commissioning_config(
                 load_config=load_config,
@@ -943,23 +1047,35 @@ async def abort_ramp(
     load_config: PathLoader,
     ramp_state_path_override: str | Path | None = None,
     commission_load_state_path: str | Path | None = None,
+    safe_playback_state_path: str | Path | None = None,
     validate: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Roll the running graph back to the all-muted staged config and reset the
     ramp. The operator's hard Stop — always available, always re-mutes."""
+    from .safe_playback import stop_safe_playback_session
+
     rollback = await rollback_driver_commissioning_config(
         load_config=load_config,
         state_path=commission_load_state_path,
         **({"validate": validate} if validate is not None else {}),
     )
     ramp_payload = reset_ramp_state(state_path=ramp_state_path_override)
+    safe = stop_safe_playback_session(
+        reason="commission_abort",
+        state_path=safe_playback_state_path,
+    )
     log_event(
         logger,
         "active_speaker.stage5_ramp",
         result="aborted",
         rollback=(rollback.get("rollback") or {}).get("status"),
     )
-    return {"status": "aborted", "rollback": rollback.get("rollback"), "ramp": ramp_payload}
+    return {
+        "status": "aborted",
+        "rollback": rollback.get("rollback"),
+        "ramp": ramp_payload,
+        "safe_playback": _safe_summary(safe),
+    }
 
 
 # --- helpers -----------------------------------------------------------------
@@ -1014,6 +1130,63 @@ def _silent_retry(safe_state: dict[str, Any], target: dict[str, Any]) -> bool:
     from .safe_playback import floor_audio_retry_allowed_for_target
 
     return floor_audio_retry_allowed_for_target(safe_state, target)
+
+
+def _pending_step_still_current(
+    replaced_pending: dict[str, Any],
+    *,
+    group_id: str,
+    role: str,
+    ramp_state_path_override: str | Path | None,
+) -> bool:
+    """Return whether the pending step this retry is replacing still exists.
+
+    The browser's automatic louder retry can race with an operator click. This
+    check is intentionally run immediately before the hardware load so a
+    superseded retry does not briefly reload an old driver after the operator
+    has confirmed, stopped, or changed the test.
+    """
+
+    current_ramp = load_ramp_state(state_path=ramp_state_path_override)
+    current_pending = current_ramp.get("pending")
+    if not isinstance(current_pending, dict):
+        return False
+    pending_role = str(current_pending.get("role") or "").strip().lower()
+    pending_group = str(current_ramp.get("speaker_group_id") or "").strip()
+    return (
+        pending_role == role
+        and pending_group == group_id
+        and current_pending.get("playback_id") == replaced_pending.get("playback_id")
+    )
+
+
+def _stale_retry_payload(
+    *,
+    role: str,
+    group_id: str,
+    current_gain_db: float,
+    next_gain_db: float,
+    gate: dict[str, Any],
+    load_payload: dict[str, Any] | None,
+    rollback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "status": "stale_retry",
+        "role": role,
+        "speaker_group_id": group_id,
+        "current_gain_db": current_gain_db,
+        "next_gain_db": next_gain_db,
+        "gate": gate,
+        "load": load_payload,
+        "rollback": rollback,
+        "issues": [
+            _issue(
+                "info",
+                "commission_ramp_retry_superseded",
+                "the driver test changed while the next louder step was preparing",
+            )
+        ],
+    }
 
 
 def _safe_summary(safe: dict[str, Any]) -> dict[str, Any]:
