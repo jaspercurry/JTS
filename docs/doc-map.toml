@@ -52,6 +52,38 @@ verification = [
 ]
 
 [[subsystem]]
+id = "extensibility-doctrine"
+title = "Extensibility doctrine — the cross-cutting lens for adding modular subsystems"
+safety = "safe-ci"
+# Cross-cutting: the host-mediated-indirection invariant, the five extension
+# contracts (tools / sources / model providers / hardware profiles / features),
+# and the what-kind -> which-pattern decision tree. The per-contract docs
+# (tool-platform-plan, source-capabilities, audio-capability-platform, transit,
+# dac-registry) keep their own subsystems; this routes the SHARED
+# registry/dispatch/reconciler seams + the Config-ownership decision tree to the
+# lens. Overlapping globs are intentional (a change routes to both).
+code = [
+  "jasper/tools/packs.py",
+  "jasper/tools/__init__.py",
+  "jasper/transit/__init__.py",
+  "jasper/music_sources.py",
+  "jasper/voice/catalog.py",
+  "jasper/research/__init__.py",
+  "jasper/audio_hardware/dac.py",
+]
+docs = [
+  "docs/extensibility.md",
+  "AGENTS.md",
+]
+requires_docs_when = [
+  "A new KIND of extension contract is added, or the host-mediated-indirection invariant, the five-contract taxonomy, the what-kind decision tree, or the build-now-vs-defer trust line changes.",
+]
+verification = [
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/extensibility.md",
+]
+
+[[subsystem]]
 id = "deploy-and-onboarding"
 title = "Deploy, install, and first-run onboarding"
 safety = "boot-risk"
@@ -206,6 +238,8 @@ code = [
   "tests/voice_eval/**",
 ]
 docs = [
+  # Cross-cutting extensibility lens (the Tool + Feature contracts live here):
+  "docs/extensibility.md",
   "docs/HANDOFF-voice-providers.md",
   "docs/HANDOFF-pricing-editor.md",
   "docs/HANDOFF-prompting.md",

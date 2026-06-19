@@ -12,6 +12,7 @@ This file is long. Jump to a section (grouped by theme, not
 document order):
 
 **Conventions & quality bars**
+- **Extensibility doctrine — the lens for adding anything modular: [`docs/extensibility.md`](docs/extensibility.md)** (one invariant, five contracts, decision tree)
 - [Agent behavior baseline](#agent-behavior-baseline)
 - [COAH quality bar](#coah-quality-bar)
 - [Config ownership — which pattern for a new DAC / mic / provider / city](#config-ownership--which-pattern-for-a-new-dac--mic--provider--city)
@@ -238,6 +239,19 @@ remaining validation gap explicitly.
 ---
 
 ## Config ownership — which pattern for a new DAC / mic / provider / city
+
+This section is the **pattern-selector** half of JTS's extensibility lens.
+The cross-cutting doctrine — the one invariant (**host-mediated
+indirection**: no extension holds a direct reference to a powerful host
+object), the five extension contracts (tools, sources, model providers,
+hardware profiles, and cross-layer *features*), and the
+*what-kind-of-thing-is-this?* front door — lives in
+[`docs/extensibility.md`](docs/extensibility.md). **Read that first** to
+decide what *kind* of extension you're adding; then use the table below to
+pick who owns its config. (A new cross-layer "feature" vertical — e.g. the
+research tool, the conversation-history page — is the fifth contract and is
+*composed* by the host, not configured the way the four below are; see the
+doctrine.)
 
 When you add a pluggable subsystem (a DAC, a mic array, an LLM voice
 provider, a transit city/mode), the first decision is **who owns its

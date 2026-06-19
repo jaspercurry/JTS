@@ -1,5 +1,10 @@
 # Handoff: audio hardware capability platform
 
+**Part of the JTS extensibility model** — this doc owns the *Hardware
+profiles* contract. The cross-cutting lens (the host-mediated-indirection
+invariant, the five extension contracts, the decision tree) lives in
+[extensibility.md](extensibility.md).
+
 > **Status: living architecture plan, created 2026-06-01.** This doc
 > owns the cross-cutting plan for turning JTS's current AEC/mic/DAC
 > work from hand-tuned lab state into a hardware-capability platform:
