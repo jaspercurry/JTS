@@ -52,7 +52,6 @@ from jasper.cli.aec_bridge import (  # noqa: E402
     _shutdown,
     _validate_mic_device,
 )
-from jasper.mics import xvf3800  # noqa: E402
 
 
 class _AlwaysEmptyQ:
@@ -428,6 +427,7 @@ def test_aec_loop_chip_aec_mode_repoints_primary_and_skips_software_aec(monkeypa
     WebRTC/DTLN software legs."""
     import socket as real_socket
     from jasper.cli.aec_bridge import OUT_PORT_CHIP_AEC_150, OUT_PORT_CHIP_AEC_210
+    from jasper.mics import xvf3800
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)

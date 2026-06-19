@@ -135,9 +135,10 @@ def _caller_command_literals(relpath: str) -> set[str]:
 
 def _aec_init_profile_writes() -> tuple[tuple[str, list[int | float]], ...]:
     from jasper.cli import aec_init
+    from jasper.mics import xvf3800
 
     return (
-        *aec_init._CHIP_CORPUS_PROFILE,
+        *aec_init._chip_corpus_profile(xvf3800.SQUARE_FIXED_150_210_PLAN),
         *aec_init._CHIP_PRODUCTION_PROFILE,
         ("AEC_HPFONOFF", [0]),
     )
