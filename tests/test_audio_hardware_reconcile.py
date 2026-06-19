@@ -373,6 +373,32 @@ def test_reconcile_preserves_existing_env_dir_modes(tmp_path: Path):
     assert oct(etc_dir.stat().st_mode & 0o777) == "0o755"
 
 
+def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
+    """render_asound_if_needed must NOT re-chmod the existing /etc/jasper.
+
+    The asound-template dir create ran `install -d -m 0755 $(dirname
+    $ASOUND_TEMPLATE)` (== /etc/jasper) on EVERY recognized-DAC reconcile,
+    bypassing ensure_env_dir — the same re-mode trap #827 closed for the env
+    writers, one sibling site away. Pin that a pre-created non-0755 dir survives
+    an Apple (recognized-DAC) reconcile that renders the template into it.
+    """
+    etc_dir = tmp_path / "etc-jasper"
+    etc_dir.mkdir()
+    etc_dir.chmod(0o700)  # deliberately not 0755, to prove it is preserved
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_ASOUND_TEMPLATE": str(etc_dir / "asoundrc.jasper.template")},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _render_log(tmp_path) == "render\n"  # the render path (and :602) ran
+    assert oct(etc_dir.stat().st_mode & 0o777) == "0o700"
+
+
 def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
     tmp_path: Path,
 ):

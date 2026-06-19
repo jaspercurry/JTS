@@ -136,7 +136,12 @@ ensure_mode_file() {
         fi
         return
     fi
-    install -d -m 0755 "$(dirname "$MODE_FILE")"
+    # Only create an absent dir; never re-mode /var/lib/jasper (0770 root:jasper)
+    # on a boot/udev reconcile — re-moding it to 0755 strips the group-write bit
+    # the non-root daemons need (same trap as #827).
+    local mode_file_dir
+    mode_file_dir="$(dirname "$MODE_FILE")"
+    [[ -d "$mode_file_dir" ]] || install -d -m 0755 "$mode_file_dir"
     printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$MODE_FILE"
     chmod 0644 "$MODE_FILE"
 }
