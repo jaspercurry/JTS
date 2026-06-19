@@ -205,6 +205,33 @@ def test_rust_ci_router_runs_full_gate_for_non_pr_events(tmp_path: Path) -> None
     }
 
 
+def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
+    """Keep the lenient type-checker wiring intact across packaging surfaces."""
+
+    data = _pyproject()
+    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
+
+    assert [
+        dep for dep in data["dependency-groups"]["dev"] if dep.startswith("mypy")
+    ] == ["mypy>=2.1,<2.2"]
+    assert [
+        dep
+        for dep in data["project"]["optional-dependencies"]["dev"]
+        if dep.startswith("mypy")
+    ] == ["mypy>=2.1,<2.2"]
+    assert data["tool"]["mypy"]["files"] == ["jasper"]
+    assert data["tool"]["mypy"]["ignore_missing_imports"] is True
+    assert {
+        override["follow_imports"]
+        for override in data["tool"]["mypy"]["overrides"]
+        if "dbus_next" in override["module"]
+    } == {"skip"}
+    assert "Type check (mypy; lenient baseline)" in workflow
+    assert "run: mypy" in workflow
+    assert (ROOT / "jasper" / "py.typed").is_file()
+    assert "py.typed" in data["tool"]["setuptools"]["package-data"]["jasper"]
+
+
 def test_python_resolution_artifacts_are_committed_and_documented() -> None:
     """Local dev and Pi deploys intentionally use different Python
     resolution artifacts; keep both present and keep the canonical doc

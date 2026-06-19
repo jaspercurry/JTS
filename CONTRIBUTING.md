@@ -32,13 +32,13 @@ scripts/test-fast
 environments. The `--extra full --extra streambox` flags pull in the
 runtime packages the hardware-free suite imports (`numpy`, `httpx`,
 `scipy`, `spotipy`, …) alongside the default `dev` group
-(`pytest`/`pytest-asyncio`/`ruff`). A bare `uv sync` installs only the
-`dev` group, so pytest would fail collection with missing-module errors —
-the extras carry the code under test. (uv 0.11 has no `default-extras`
-setting to fold these into a bare sync, so the flags are explicit; a
-regression test pins this command.) `scripts/test-fast` is the normal
-local iteration lane: it runs lint, last-failed tests, a changed-file
-pytest selection, and a small always-on guard set.
+(`pytest`/`pytest-asyncio`/`pytest-xdist`/`ruff`/`mypy`). A bare `uv sync`
+installs only the `dev` group, so pytest would fail collection with
+missing-module errors — the extras carry the code under test. (uv 0.11 has
+no `default-extras` setting to fold these into a bare sync, so the flags
+are explicit; a regression test pins this command.) `scripts/test-fast` is
+the normal local iteration lane: it runs lint, last-failed tests, a
+changed-file pytest selection, and a small always-on guard set.
 
 If you'd rather not install a new tool, stock pip + venv works too —
 just make sure your python is 3.11+:
@@ -53,8 +53,9 @@ scripts/test-fast
 That runs the fast local lane without a Pi, mic, or speaker. The audio
 I/O, network calls, and systemd surfaces are mocked in the default suite.
 Before publishing substantial work, run `scripts/test-merge`; that mirrors
-the required Python CI gate and runs the full hardware-free suite in four
-pytest-xdist workers.
+the required hardware-free pytest lane and runs the suite in four
+pytest-xdist workers. The `pytest` CI job also runs `ruff check .` and the
+lenient, baselined `mypy` gate before the suite.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then installs
 `openwakeword==0.6.0` with `--no-deps` plus the supporting packages it
@@ -74,15 +75,16 @@ blank SD card to working speaker.
    new subsystem ships with hardware-free pytest coverage.
 3. **Run the local test lane**: `scripts/test-fast`. For non-trivial
    work, also run the full Python merge lane: `scripts/test-merge`.
+   Use `ruff check .` and `mypy` for explicit static-check spot runs.
 4. **Push and open a PR** against `main`. Fill in the template.
 5. **No direct pushes to main** — even one-line fixes go through PR.
 
 ### Branch protection
 
 `main` is protected: the required GitHub Actions checks are `pytest`
-(which also runs `ruff check .`) and `rust`. Both **must pass before
-any PR can merge**, force-pushes and branch deletion are blocked, and
-the rule is enforced for admins too — so nobody, including the
+(which also runs `ruff check .` and lenient `mypy`) and `rust`. Both **must
+pass before any PR can merge**, force-pushes and branch deletion are blocked,
+and the rule is enforced for admins too — so nobody, including the
 maintainer, can merge into a red `main`. The `rust` job is path-aware
 on PRs: it exits green quickly for unrelated changes, but runs full
 Cargo when Rust or Rust deploy/CI surfaces change and always runs on
@@ -118,6 +120,10 @@ Two operational notes:
 - **Python merge lane** (`scripts/test-merge`) — required green before
   merge through the `pytest` CI job. No SDK auth or network. Runs the
   hardware-free suite in parallel and excludes paid `tests/voice_eval`.
+- **Python static checks** (`ruff check .` and `mypy`) — run in the
+  `pytest` CI job before the test suite. mypy starts permissive and
+  baselined so existing type debt does not block day-one adoption, but
+  new unbaselined errors fail the job.
 - **Rust audio-daemon gate** (`cargo build --release --locked` and
   `cargo test --locked`) — required green through the `rust` CI job
   when Rust-relevant surfaces change, and on every `main` push. Covers
@@ -144,8 +150,9 @@ Two operational notes:
 ## Code style
 
 - Python 3.11+ (Pi runs 3.13).
-- Lint with `ruff check .`. Do not run a tree-wide `ruff format` as drive-by
-  cleanup; formatting the whole tree is a separate, deliberate PR.
+- Lint with `ruff check .` and type-check with `mypy`. Do not run a
+  tree-wide `ruff format` as drive-by cleanup; formatting the whole tree is a
+  separate, deliberate PR.
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
 - For larger or riskier changes, use the COAH quality bar in
