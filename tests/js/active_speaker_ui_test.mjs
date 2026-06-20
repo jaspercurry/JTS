@@ -38,6 +38,8 @@ import {
   assert.equal(s.rows[1].sourceLabel, "Datasheet estimate");
   assert.ok(s.guidance.includes("2–5 cm"));
   assert.ok(/datasheet estimates/i.test(s.note));
+  // The datasheet fallback is framed as a fine, optional-to-improve state.
+  assert.ok(/optional/i.test(s.note));
 }
 
 // Blocked / empty baseline payloads render nothing.
@@ -45,9 +47,12 @@ assert.equal(levelMatchSummary({}).available, false);
 assert.equal(levelMatchSummary(null).available, false);
 assert.equal(levelMatchSummary({ corrections: {} }).available, false);
 
-// Near-field copy.
+// Near-field copy — the level match is OPTIONAL and the copy must say so.
 assert.ok(nearfieldCaptureHint("Tweeter").includes("Tweeter"));
 assert.ok(nearfieldCaptureHint("Tweeter").includes("2–5 cm"));
+assert.ok(/optional/i.test(nearfieldCaptureHint("Tweeter")));
 assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("2–5 cm"));
+assert.ok(/optional/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
+assert.ok(/skip/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 
 console.log(JSON.stringify({ ok: true }));

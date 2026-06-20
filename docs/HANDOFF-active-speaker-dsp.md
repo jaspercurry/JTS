@@ -399,11 +399,14 @@
 > WAV evidence with bounded raw-file retention, call the
 > `commissioning_capture` bridge, and record real acoustic verdicts into
 > measurement state; the `/sound/` UI uses the shared
-> `measurement-audio.js` recorder for those submissions, keeps the bounded
-> combined-test level control, and no longer offers a manual success click that
-> can bypass summed mic evidence. This is still not a
-> JTS3 acoustic validation: the real sweep playback/capture timing, live phone
-> mic behavior, room noise, and driver response must be verified on hardware.
+> `measurement-audio.js` recorder for those submissions and keeps the bounded
+> combined-test level control. (**Superseded 2026-06-20** — see the phone-optional
+> update below: the combined check originally removed the by-ear "manual success"
+> button to force mic evidence; it now re-offers a by-ear "Blend sounds right"
+> gated on an audible combined test, so the whole flow is phone-optional.) This
+> is still not a JTS3 acoustic validation: the real sweep playback/capture timing,
+> live phone mic behavior, room noise, and driver response must be verified on
+> hardware.
 > Separately,
 > the `/sound/` active-crossover setup copy was de-jargoned so no backend
 > vocabulary (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw
@@ -429,6 +432,18 @@
 > per-request flow). Canonical home for the L1 product tier:
 > [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
 > "L1 measured level match". On-Pi (jts3) audible pass still owed.
+> **The whole phone flow is OPTIONAL (decided 2026-06-20).** A household can
+> commission and apply an active baseline with zero phone use: each driver is
+> confirmed by ear (the per-driver level-match mic capture is optional → datasheet
+> trim, marked provisional), and the combined crossover check now offers a by-ear
+> "Blend sounds right" alongside the mic capture. The by-ear positive is still
+> gated on an AUDIBLE combined test (you can't certify a blend you didn't hear),
+> and the mic capture stays offered as the more reliable check for a
+> polarity/delay null. This REVERSES the 2026-06-18 "force summed mic evidence"
+> decision; the guard test (`testSummedOffersByEarAndMicValidation`) now asserts
+> both paths exist + the by-ear gate. Safety is unaffected — a bad blend verdict
+> is a quality issue (a suckout at the crossover), not a hazard: the crossover,
+> tweeter high-pass, limiters, and 0 dB ceiling are in the graph regardless.
 
 ## Current Operational Truth
 
