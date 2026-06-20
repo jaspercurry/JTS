@@ -106,6 +106,16 @@ PROTECTION_STATUSES = {
 DUAL_APPLE_CLOCK_EVIDENCE_STATUSES = {"passed", "failed", "unknown"}
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
 TOPOLOGY_STATUSES = {"draft", "valid", "blocked", "verified"}
+# Pure-data pairing intent recorded at commission time (gap 1 of
+# docs/HANDOFF-distributed-active.md). It answers "is this box meant to run
+# solo, become a wireless follower, or host one?" and seeds later reconciler
+# defaults. It carries NO behavior in this layer: nothing here reads it,
+# evaluate_output_topology ignores it, and the emitted CamillaDSP config is
+# unaffected — the multiroom reconciler keeps the final runtime say (mirrors
+# member_camilla_kwargs). Absent == "solo", so older topology JSON loads
+# unchanged.
+PAIRING_INTENTS = {"solo", "will_be_follower", "has_follower"}
+DEFAULT_PAIRING_INTENT = "solo"
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 
@@ -814,6 +824,7 @@ class OutputTopology:
     speaker_groups: tuple[SpeakerGroup, ...] = field(default_factory=tuple)
     routing: TopologyRouting = field(default_factory=TopologyRouting)
     status: str = "draft"
+    pairing_intent: str = DEFAULT_PAIRING_INTENT
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "OutputTopology":
@@ -833,6 +844,11 @@ class OutputTopology:
             ),
             routing=TopologyRouting.from_mapping(raw.get("routing")),
             status=_enum(raw.get("status", "draft"), "status", TOPOLOGY_STATUSES),
+            pairing_intent=_enum(
+                raw.get("pairing_intent", DEFAULT_PAIRING_INTENT),
+                "pairing_intent",
+                PAIRING_INTENTS,
+            ),
         )
         topology._validate_references()
         return topology
@@ -894,6 +910,7 @@ class OutputTopology:
             "hardware": self.hardware.to_dict(),
             "speaker_groups": [group.to_dict() for group in self.speaker_groups],
             "routing": self.routing.to_dict(),
+            "pairing_intent": self.pairing_intent,
             "safety": evaluation["safety"],
         }
         if include_evaluation:

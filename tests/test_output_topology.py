@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,11 @@ from jasper.output_topology import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     CHANNEL_IDENTITY_REPORT_KIND,
     CLOCK_DOMAIN_REPORT_KIND,
+    DEFAULT_PAIRING_INTENT,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
+    PAIRING_INTENTS,
     OutputTopology,
     OutputTopologyError,
     channel_identity_report,
@@ -761,6 +764,97 @@ def test_save_and_load_output_topology_round_trips(tmp_path: Path) -> None:
     assert loaded.to_dict()["speaker_groups"][0]["channels"][0][
         "human_output_label"
     ] == "DAC output 3"
+
+
+# --- gap 1: pure-data pairing intent (docs/HANDOFF-distributed-active.md) -----
+#
+# Slice 1 invariants 2 and 7 (topology layer): the pairing field round-trips and
+# defaults to solo (absent == solo, non-breaking), and it records design intent
+# ONLY — it must not change any safety/validity behavior the topology drives.
+
+
+def test_pairing_intent_defaults_to_solo_when_absent() -> None:
+    # inv 2: topology JSON written before gap 1 (no pairing_intent key) loads as
+    # "solo", so the new field cannot break an existing speaker's saved topology.
+    raw = {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": _base_hardware(),
+        "speaker_groups": [],
+        "routing": {},
+    }
+    assert "pairing_intent" not in raw
+    assert OutputTopology.from_mapping(raw).pairing_intent == DEFAULT_PAIRING_INTENT
+    assert DEFAULT_PAIRING_INTENT == "solo"
+
+
+@pytest.mark.parametrize("intent", sorted(PAIRING_INTENTS))
+def test_pairing_intent_round_trips_through_to_dict(intent: str) -> None:
+    # inv 2: every supported value survives to_dict -> from_mapping. The field
+    # serializes unconditionally (always-emit), so the key is present even for
+    # the "solo" default.
+    topology = replace(
+        _topology(groups=[
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 2}],
+            }
+        ]),
+        pairing_intent=intent,
+    )
+    payload = topology.to_dict()
+    assert payload["pairing_intent"] == intent
+    assert OutputTopology.from_mapping(payload).pairing_intent == intent
+
+
+def test_pairing_intent_rejects_unknown_value() -> None:
+    raw = {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": _base_hardware(),
+        "speaker_groups": [],
+        "routing": {},
+        "pairing_intent": "bogus",
+    }
+    with pytest.raises(OutputTopologyError):
+        OutputTopology.from_mapping(raw)
+
+
+@pytest.mark.parametrize("intent", sorted(PAIRING_INTENTS))
+def test_pairing_intent_is_inert_for_evaluation(intent: str) -> None:
+    # inv 7 (topology layer): pairing intent is pure design-intent data. It must
+    # not move any safety/validity verdict, so a solo speaker's evaluation is
+    # byte-identical regardless of pairing intent (no behavior yet).
+    groups = [
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        },
+        {
+            "id": "right",
+            "label": "Right speaker",
+            "kind": "right",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 1}],
+        },
+    ]
+    routing = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    solo = _topology(groups=groups, routing=routing)
+    variant = replace(solo, pairing_intent=intent)
+    assert variant.evaluation() == solo.evaluation()
+    assert variant.to_dict()["safety"] == solo.to_dict()["safety"]
 
 
 def test_save_output_topology_cleans_temp_file_on_replace_failure(

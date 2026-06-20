@@ -305,6 +305,59 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
     assert "as_tweeter_baseline_limiter" in yaml
 
 
+def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> None:
+    """Slice 1 inv 1 + inv 7 (config layer): threading the default capture device
+    reproduces today's baseline byte-for-byte, and a follower capture changes
+    EXACTLY the capture device line — relocating where Layer A reads its program
+    never touches the crossover / per-driver limiters / tweeter HP / 0 dB ceiling
+    (docs/HANDOFF-distributed-active.md gap 1).
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+
+    def _emit(suffix: str, capture_device: str | None) -> tuple[dict, str]:
+        kwargs: dict = {}
+        if capture_device is not None:
+            kwargs["capture_device"] = capture_device
+        config_path = tmp_path / f"config_{suffix}.yml"
+        payload = build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            write=True,
+            state_path=tmp_path / f"state_{suffix}.json",
+            config_path=config_path,
+            validate=_valid_config,
+            created_at="2026-06-14T12:20:00Z",
+            **kwargs,
+        )
+        return payload, config_path.read_text(encoding="utf-8")
+
+    implicit, implicit_yaml = _emit("implicit", None)
+    explicit, explicit_yaml = _emit("explicit_default", "plug:jasper_capture")
+    follower, follower_yaml = _emit("follower", "udp:9876")
+
+    # inv 1: passing the default explicitly is byte-identical to not passing it,
+    # and the solo baseline captures from the fan-in tap.
+    assert implicit_yaml == explicit_yaml
+    assert implicit["config"]["sha256"] == explicit["config"]["sha256"]
+    assert 'device: "plug:jasper_capture"' in implicit_yaml
+
+    # A follower's round-trip-loopback capture changes ONLY the capture line.
+    assert 'device: "udp:9876"' in follower_yaml
+    impl_lines = implicit_yaml.splitlines()
+    foll_lines = follower_yaml.splitlines()
+    assert len(impl_lines) == len(foll_lines)
+    diff = [(a, b) for a, b in zip(impl_lines, foll_lines) if a != b]
+    assert len(diff) == 1
+    assert diff[0][0].strip() == 'device: "plug:jasper_capture"'
+    assert diff[0][1].strip() == 'device: "udp:9876"'
+    assert implicit["config"]["sha256"] != follower["config"]["sha256"]
+
+
 def test_baseline_profile_blocks_until_summed_validation_exists(
     tmp_path: Path,
 ) -> None:
@@ -542,6 +595,52 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert payload["profile"]["status"] == "applied"
     assert payload["profile"]["permissions"]["may_apply"] is False
     assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+
+
+async def test_apply_baseline_profile_threads_capture_device(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Slice 1: apply_baseline_profile threads capture_device into the emitted
+    config, so the multiroom reconciler can apply a follower's round-trip-loopback
+    baseline. The default keeps the solo apply byte-identical.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=config_path,
+        capture_device="udp:9876",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "applied"
+    assert 'device: "udp:9876"' in config_path.read_text(encoding="utf-8")
 
 
 # --- Fail-safe level trim derived from the driver sensitivity gap -------------
