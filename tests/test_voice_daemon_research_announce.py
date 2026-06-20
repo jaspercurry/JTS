@@ -156,25 +156,23 @@ async def test_announce_research_ready_reads_done_result_and_marks_announced():
     assert scheduler.read == ["job12345"]
 
 
-async def test_announce_research_ready_failed_job_speaks_one_failure_line():
+async def test_announce_research_ready_failed_job_plays_failure_cue():
     wl = _wake_loop()
-    spoken: list[str] = []
+    cues: list[str] = []
 
-    async def _play(text: str) -> bool:
-        spoken.append(text)
+    async def _play(slug: str) -> bool:
+        cues.append(slug)
         return True
 
     scheduler = _MarkingScheduler()
-    wl._play_dynamic_text = _play
+    wl._play_cue = _play
     wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
 
     await wl.announce_research_ready(
         _job(status=FAILED, result=None, error="provider unavailable"),
     )
 
-    assert spoken == [
-        "Sorry, I couldn't finish that research. Please ask me again.",
-    ]
+    assert cues == ["research_failed"]
     assert scheduler.announced == ["job12345"]
     assert scheduler.read == []
 
@@ -198,6 +196,28 @@ async def test_announce_research_ready_does_not_mark_read_when_playback_fails():
     ]
     assert scheduler.announced == []
     assert scheduler.read == []
+
+
+async def test_failed_research_cue_failure_does_not_mark_announced():
+    wl = _wake_loop()
+    cues: list[str] = []
+
+    async def _play(slug: str) -> bool:
+        cues.append(slug)
+        return False
+
+    scheduler = _MarkingScheduler()
+    wl._play_cue = _play
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    await wl.announce_research_ready(
+        _job(status=FAILED, result=None, error="provider unavailable"),
+    )
+
+    assert cues == ["research_failed"]
+    assert scheduler.announced == []
+    assert scheduler.read == []
+    assert wl._last_research_failure_announce_at is None
 
 
 async def test_research_done_during_session_is_held_then_drained_on_wake():
@@ -251,14 +271,14 @@ async def test_research_drain_never_speaks_while_session():
 
 async def test_failed_research_cooldown_suppresses_burst_and_allows_later():
     wl = _wake_loop()
-    spoken: list[str] = []
+    cues: list[str] = []
 
-    async def _play(text: str) -> bool:
-        spoken.append(text)
+    async def _play(slug: str) -> bool:
+        cues.append(slug)
         return True
 
     scheduler = _MarkingScheduler()
-    wl._play_dynamic_text = _play
+    wl._play_cue = _play
     wl._research_failure_cooldown_sec = 10.0
     wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
 
@@ -279,9 +299,7 @@ async def test_failed_research_cooldown_suppresses_burst_and_allows_later():
         ),
     )
 
-    assert spoken == [
-        "Sorry, I couldn't finish that research. Please ask me again.",
-    ]
+    assert cues == ["research_failed"]
     assert scheduler.announced == ["fail1", "fail2"]
     assert scheduler.read == []
 
@@ -296,11 +314,44 @@ async def test_failed_research_cooldown_suppresses_burst_and_allows_later():
         ),
     )
 
-    assert spoken == [
-        "Sorry, I couldn't finish that research. Please ask me again.",
-        "Sorry, I couldn't finish that research. Please ask me again.",
-    ]
+    assert cues == ["research_failed", "research_failed"]
     assert scheduler.announced == ["fail1", "fail2", "fail3"]
+
+
+async def test_research_announcements_do_not_overlap_during_drain():
+    wl = _wake_loop()
+    wl._pending_research = [_job(id="first", result="First.")]
+    spoken: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        if text.endswith("First."):
+            first_started.set()
+            await release_first.wait()
+        return True
+
+    wl._play_dynamic_text = _play
+
+    drain_task = asyncio.create_task(wl._drain_pending_research())
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+
+    announce_task = asyncio.create_task(
+        wl.announce_research_ready(_job(id="second", result="Second.")),
+    )
+    await asyncio.sleep(0)
+
+    assert spoken == ["Hey, your research is ready. First."]
+
+    release_first.set()
+    await asyncio.wait_for(drain_task, timeout=1.0)
+    await asyncio.wait_for(announce_task, timeout=1.0)
+
+    assert spoken == [
+        "Hey, your research is ready. First.",
+        "Hey, your research is ready. Second.",
+    ]
 
 
 async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
@@ -319,13 +370,19 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
     wl = _wake_loop()
     wl._state = State.SESSION
     spoken: list[str] = []
+    cues: list[str] = []
 
     async def _play(text: str) -> bool:
         spoken.append(text)
         return True
 
+    async def _play_cue(slug: str) -> bool:
+        cues.append(slug)
+        return True
+
     sched = ResearchScheduler(_UnusedClient(), db_path=str(path))
     wl._play_dynamic_text = _play
+    wl._play_cue = _play_cue
     wl.set_research_scheduler(sched)
     sched.set_on_done(wl.announce_research_ready)
 
@@ -338,10 +395,8 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
     wl._state = State.WAKE
     await wl._drain_pending_research()
 
-    assert spoken == [
-        "Hey, your research is ready. Ready.",
-        "Sorry, I couldn't finish that research. Please ask me again.",
-    ]
+    assert spoken == ["Hey, your research is ready. Ready."]
+    assert cues == ["research_failed"]
     rows = {job.id: job for job in ResearchJobStore(str(path)).all()}
     assert rows["done1"].announced is True
     assert rows["done1"].read is True

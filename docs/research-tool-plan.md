@@ -202,7 +202,7 @@ Each phase is independently shippable and hardware-free-testable.
 | Answer length | **≤30 s spoken (~75 words / ~450 chars)** via the prompt to the text model, plus a hard char cap on the stored result | The user asked for a consolidated read-out; instruct the model and guard with a cap. |
 | Spend | Reuse `SpendCap.allowed()` kickoff gate + record cost in `UsageStore` + **add the model's price row to `jasper/data/model_pricing.json`** (load-bearing — without it cost prices as $0 and the cap silently under-counts) | Global daily cap suffices for one paid tool; no per-job budgets, no "quote me a price" dialog (defeats fire-and-forget). |
 | Wizard / `/system/` display | **Defer** | The OpenAI key is present whenever OpenAI voice is. v2's Anthropic key is the natural trigger. If `/system/` ever shows the active text provider, use a fresh-file reader (like `provider_state.py`), never `os.environ`. |
-| Failure speech | Phase 3 speaks one provider-agnostic failure line for runtime failures and restart-interrupted jobs, registers the same `research_failed` cue text, rate-limits proactive failed-job speech to once per hour, and adds a not-configured prompt redirect to `/voice/`. | No-silent-failure: an out-of-band job has no wake event to hang a reactive cue on, so failures must speak. The cooldown prevents a burst of failures from nagging the household. |
+| Failure speech | Phase 3 plays the provider-agnostic `research_failed` cue for runtime failures and restart-interrupted jobs, rate-limits proactive failed-job audio to once per hour, and adds a not-configured prompt redirect to `/voice/`. | No-silent-failure: an out-of-band job has no wake event to hang a reactive cue on, so failures must speak. The cooldown prevents a burst of failures from nagging the household. |
 
 ---
 
@@ -237,10 +237,11 @@ pluggable text LLM running in a bounded background task (OpenAI
 background-mode + poll), then reads a ≤30 s answer back through the
 existing timer-fire announcement path — reusing ~80% of what already
 exists, adding a small `jasper/research/` provider registry, a scheduler,
-a store, usage accounting, and an announce method. Dedicated research
-failure cues, Anthropic, yes/no barge-in confirmation, and an interaction
+a store, usage accounting, and an announce method. Etiquette hardening,
+the `research_failed` cue, and the not-configured prompt redirect are
+implemented; Anthropic, yes/no barge-in confirmation, and an interaction
 history log are deferred, each behind its own trigger.**
 
 ---
 
-Last verified: 2026-06-19
+Last verified: 2026-06-20

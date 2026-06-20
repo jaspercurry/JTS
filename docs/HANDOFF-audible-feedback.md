@@ -74,19 +74,24 @@ they are sub-100 ms sine blips, not phrases worth caching through
        │  - on wake during reconnect → cues.play(...)      │
        │  - on turn-begin failure   → cues.play(...)       │
        │                                                   │
-       │  Proactive (supervisor-driven, via                │
+       │  Proactive supervisor cues (via                   │
        │  WakeLoop.play_supervisor_cue — skips if a turn   │
        │  is in flight to avoid garbling TtsPlayout):      │
        │  - on N identical reconnect failures              │
        │    → connection.set_failure_escalation_cb(...)    │
+       │                                                   │
+       │  Proactive announcement cues (via WakeLoop's       │
+       │  owning path, with path-specific etiquette):       │
+       │  - async research job failure → _play_cue(...)     │
        └───────────────────────────────────────────────────┘
 ```
 
 All cue logic lives in `jasper/cues/`. Adding new cues means
 editing one file (`registry.py`) and wiring either
 `cues.play("<slug>")` (for reactive paths from inside WakeLoop) or
-the relevant supervisor's escalation callback (for proactive
-paths). See "Adding a new cue" below for both patterns.
+the relevant background/proactive owner (for example a supervisor
+escalation callback or the research announcement path). See "Adding
+a new cue" below for both patterns.
 
 ---
 
@@ -97,6 +102,7 @@ paths). See "Adding a new cue" below for both patterns.
 | `spend_cap_reached` | reactive | wake during spend-cap-tripped state | "Hey, I've reached today's spend cap. Visit `{hostname}` to manage." |
 | `cant_connect` | reactive | wake while the voice backend is paused (reconnect/backoff), or the connection drops into paused/failed mid-turn-open | "Hey, sorry, I can't connect right now. I'll keep trying." |
 | `internal_error` | reactive | turn-open hits an unexpected local/internal error (e.g. a failed state write) while the connection looks healthy — NOT a connectivity problem (the 2026-06-19 incident) | "Sorry, something went wrong on my end. Please try again." |
+| `research_failed` | proactive | async research job fails or is interrupted by daemon restart; rate-limited to once per hour | "Sorry, I couldn't finish that research. Please ask me again." |
 | `cant_reach_cloud` | proactive | supervisor sees 5 consecutive identical reconnect failures (~30 s on the default backoff schedule); rate-limited to once per hour | "Heads up — I'm having trouble reaching the cloud and I'll keep trying. You might want to check on me at `{hostname}`." |
 
 Cues are **provider-agnostic** — they don't say "Google" or
@@ -297,4 +303,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-06-19
+Last verified: 2026-06-20

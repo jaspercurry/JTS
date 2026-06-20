@@ -291,9 +291,7 @@ PRE_ROLL_FRAMES = 7
 # cannot grow without bound.
 RESEARCH_PENDING_ANNOUNCE_CAP = 5
 RESEARCH_FAILURE_COOLDOWN_SEC = 60.0 * 60.0
-RESEARCH_FAILED_TEXT = (
-    "Sorry, I couldn't finish that research. Please ask me again."
-)
+RESEARCH_FAILED_CUE_SLUG = "research_failed"
 RESEARCH_EMPTY_RESULT_TEXT = (
     "Sorry, that research finished without a readable answer. "
     "Please ask me again."
@@ -768,6 +766,7 @@ class WakeLoop:
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
         self._last_research_failure_announce_at: float | None = None
+        self._research_announce_lock = asyncio.Lock()
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
@@ -1107,6 +1106,7 @@ class WakeLoop:
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
         self._last_research_failure_announce_at = None
+        self._research_announce_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._volume_coordinator = _TestVolumeCoordinator()
         self._cues = None
@@ -1198,8 +1198,8 @@ class WakeLoop:
         from .cues.registry import find as _find
         if _find(slug) is None:
             return "unknown_slug"
-        await self._play_cue(slug)
-        return "ok"
+        played = await self._play_cue(slug)
+        return "ok" if played else "play_failed"
 
     async def play_supervisor_cue(self, slug: str) -> str:
         """Cue trigger reserved for proactive notifications from
@@ -1257,10 +1257,11 @@ class WakeLoop:
         result that arrives mid-conversation is held until the wake loop
         returns to WAKE, then drained by _end_turn_inner.
         """
-        if self._state is State.SESSION:
-            self._queue_pending_research(job)
-            return
-        await self._speak_research_job(job)
+        async with self._research_announce_lock:
+            if self._state is State.SESSION:
+                self._queue_pending_research(job)
+                return
+            await self._speak_research_job(job)
 
     def _queue_pending_research(self, job: ResearchJob) -> None:
         for idx, pending in enumerate(self._pending_research):
@@ -1292,21 +1293,25 @@ class WakeLoop:
     async def _drain_pending_research(self) -> None:
         if self._state is State.SESSION:
             return
-        while self._pending_research and self._state is State.WAKE:
-            batch = self._pending_research
-            self._pending_research = []
-            for idx, job in enumerate(batch):
-                if self._state is State.SESSION:
-                    self._pending_research = (
-                        batch[idx:] + self._pending_research
-                    )
-                    return
-                await self._speak_research_job(job)
+        async with self._research_announce_lock:
+            if self._state is State.SESSION:
+                return
+            while self._pending_research and self._state is State.WAKE:
+                batch = self._pending_research
+                self._pending_research = []
+                for idx, job in enumerate(batch):
+                    if self._state is State.SESSION:
+                        self._pending_research = (
+                            batch[idx:] + self._pending_research
+                        )
+                        return
+                    await self._speak_research_job(job)
 
     async def _speak_research_job(self, job: ResearchJob) -> None:
         if self._state is State.SESSION:
             self._queue_pending_research(job)
             return
+        text: str | None
         if job.status == DONE and job.result:
             text = f"Hey, your research is ready. {job.result}"
         elif job.status == DONE:
@@ -1316,7 +1321,7 @@ class WakeLoop:
             )
             text = RESEARCH_EMPTY_RESULT_TEXT
         elif job.status == FAILED:
-            text = RESEARCH_FAILED_TEXT
+            text = None
         else:
             logger.warning(
                 "research announce: skipped unexpected status id=%s status=%s",
@@ -1337,13 +1342,23 @@ class WakeLoop:
                 self._mark_research_announced(job, read=False)
                 return
 
-        logger.info(
-            "research announce: id=%s status=%s text=%r",
-            job.id,
-            job.status,
-            text,
-        )
-        played = await self._play_dynamic_text(text)
+        if job.status == FAILED:
+            logger.info(
+                "research announce: id=%s status=%s cue=%s",
+                job.id,
+                job.status,
+                RESEARCH_FAILED_CUE_SLUG,
+            )
+            played = await self._play_cue(RESEARCH_FAILED_CUE_SLUG)
+        else:
+            assert text is not None
+            logger.info(
+                "research announce: id=%s status=%s text=%r",
+                job.id,
+                job.status,
+                text,
+            )
+            played = await self._play_dynamic_text(text)
         if not played:
             logger.warning(
                 "research announce: playback failed id=%s status=%s",
@@ -1416,7 +1431,7 @@ class WakeLoop:
                 return False
         return True
 
-    async def _play_cue(self, slug: str) -> None:
+    async def _play_cue(self, slug: str) -> bool:
         """Best-effort cue playback. Ducks music via CamillaDSP for
         the duration of the cue (same wrapping a normal Jarvis voice
         response uses), then restores. Without ducking, the cue is
@@ -1457,7 +1472,8 @@ class WakeLoop:
                     ),
                     level=logging.WARNING,
                 )
-            return
+            return False
+        played = False
         try:
             try:
                 await self._ducker.duck()
@@ -1467,7 +1483,7 @@ class WakeLoop:
                     slug, e,
                 )
             try:
-                await self._cues.play(slug)
+                played = await self._cues.play(slug)
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue %s play failed: %s", slug, e)
         finally:
@@ -1475,6 +1491,7 @@ class WakeLoop:
                 await self._ducker.restore()
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue %s restore failed: %s", slug, e)
+        return played
 
     async def run(self) -> None:
         # Spawn one wake-only consumer per non-primary leg (off / dtln /
