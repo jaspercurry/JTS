@@ -982,6 +982,96 @@ def test_baseline_provisional_when_no_measured_capture(tmp_path: Path) -> None:
     assert "driver_gain_derived_from_measurement" not in codes
 
 
+def _by_ear_measurements(topology: OutputTopology, tmp_path: Path) -> dict:
+    """A fully by-ear commission: every driver confirmed by ear with NO mic
+    reading, and the combined check recorded via an operator listening check —
+    no phone capture anywhere. This is the path a household takes if they skip
+    the optional level match."""
+    state_path = tmp_path / "measurements.json"
+    for role in ("woofer", "tweeter"):
+        output_index = 0 if role == "woofer" else 1
+        playback_id = f"playback-{role}"
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": role,
+                "outcome": "heard_correct_driver",
+                # No observed_mic_dbfs — by ear only.
+                "playback_id": playback_id,
+            },
+            safe_session=_safe_session(
+                role=role, output_index=output_index, playback_id=playback_id
+            ),
+            state_path=state_path,
+            now=f"2026-06-20T12:0{1 if role == 'woofer' else 2}:00Z",
+        )
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-by-ear",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed.wav",
+                    "metadata_basename": "tone_summed.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2000, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-20T12:02:30Z",
+    )
+    return record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "operator_listening_check": True,  # by ear, no mic reading
+            "summed_test_id": "summed-by-ear",
+        },
+        state_path=state_path,
+        now="2026-06-20T12:03:00Z",
+    )
+
+
+def test_baseline_applies_without_any_phone_level_match(tmp_path: Path) -> None:
+    """The phone level match is OPTIONAL: a fully by-ear commission (no mic
+    capture for any driver or the combined check) still compiles an applicable
+    baseline — it just stays provisional on the datasheet trim."""
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-20T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-20T12:10:00Z")
+    measurements = _by_ear_measurements(topology, tmp_path)
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-20T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["permissions"]["may_apply"] is True
+    assert payload["provisional"] is True
+    assert payload["corrections_source"]["tweeter"] == "sensitivity"
+    assert payload["level_match"]["groups_measured"] == 0
+
+
 def test_baseline_explicit_gain_skips_measured(tmp_path: Path) -> None:
     topology = _dual_apple_topology()
     draft = build_design_draft(

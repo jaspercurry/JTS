@@ -1574,94 +1574,102 @@ async function testDriverCaptureAfterRampConfirmationPostsMicPayload() {
   return { driverCaptureAfterRampConfirmationPostsMicPayload: true };
 }
 
-async function testSummedCapturePostsInsteadOfManualSuccess() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  let measurements = {
-    status: "needs_summed_validation",
-    summary: {
-      required_driver_count: 2,
-      captured_driver_count: 2,
-      driver_measurements_complete: true,
-      required_summed_group_count: 1,
-      validated_summed_group_count: 0,
-      summed_validation_complete: false,
-      latest_driver_measurements: {
-        "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-        "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-      },
-      latest_summed_tests: {
-        main: {
-          captured: true,
-          audio_emitted: true,
-          summed_test_id: "sum-1",
-          playback_id: "sum-1",
-        },
-      },
-      latest_summed_validations: {},
+function summedSummary(latestSummedTests) {
+  return {
+    required_driver_count: 2,
+    captured_driver_count: 2,
+    driver_measurements_complete: true,
+    required_summed_group_count: 1,
+    validated_summed_group_count: 0,
+    summed_validation_complete: false,
+    latest_driver_measurements: {
+      "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+      "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
     },
-    permissions: { may_compile_baseline: false },
-    issues: [],
+    latest_summed_tests: latestSummedTests,
+    latest_summed_validations: {},
   };
-  const summedPosts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/summed-capture": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      summedPosts.push(body);
-      measurements = {
-        ...measurements,
-        status: "ready_for_baseline",
-        summary: {
-          ...measurements.summary,
-          validated_summed_group_count: 1,
-          summed_validation_complete: true,
-          latest_summed_validations: {
-            main: { validated: true, outcome: "blend_ok" },
-          },
-        },
-        permissions: { may_compile_baseline: true },
-      };
-      return Promise.resolve(response({
-        recorded: true,
-        verdict: "blend_ok",
-        outcome: "blend_ok",
-        measurement: measurements,
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  const originalSetTimeout = globalThis.window.setTimeout;
-  globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
-  try {
+}
+
+async function testSummedOffersByEarAndMicValidation() {
+  // The combined crossover check is phone-OPTIONAL: a by-ear "Blend sounds right"
+  // (operator_listening_check) and a mic capture are BOTH offered. The by-ear
+  // positive is still gated on an audible combined test (you can't certify a
+  // blend you didn't hear), and the mic stays available as the more reliable
+  // check for a polarity/delay null.
+  const confirmedTopology = activeTwoWayTopologyPayload();
+
+  // (1) No audible combined test yet -> the by-ear positive must be DISABLED
+  //     (no certify-without-hearing bypass).
+  {
+    const measurements = {
+      status: "needs_summed_validation",
+      summary: summedSummary({}),
+      permissions: {},
+      issues: [],
+    };
+    const harness = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+      "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    }));
+    await loadAndSetActiveState(harness);
     const html = harness.elements.get("view-body").innerHTML;
-    if (!html.includes('data-act="record-summed-capture"')) {
-      fail("summed validation should expose mic-backed capture", { html });
+    if (!/data-outcome="blend_ok"[^>]*\sdisabled/.test(html)) {
+      fail("by-ear blend confirmation must be disabled before an audible test", { html });
     }
-    if (html.includes('data-outcome="blend_ok"')) {
-      fail("summed validation should not expose manual success bypass", { html });
-    }
-
-    harness.dispatchClick({
-      "data-act": "record-summed-capture",
-      "data-group-id": "main",
-      "data-summed-test-id": "sum-1",
-    });
-    await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-    if (summedPosts.length !== 1) fail("summed capture should POST once", { summedPosts });
-    const body = summedPosts[0];
-    if (body.speaker_group_id !== "main" || body.summed_test_id !== "sum-1") {
-      fail("summed capture should bind to the latest combined test", { body });
-    }
-    if (!body.capture || !body.capture.wav_base64) {
-      fail("summed capture should upload a WAV payload", { body });
-    }
-  } finally {
-    globalThis.window.setTimeout = originalSetTimeout;
   }
-  return { summedCapturePostsInsteadOfManualSuccess: true };
+
+  // (2) An audible combined test exists -> by-ear AND mic paths both offered, and
+  //     the by-ear positive POSTs an operator listening check (no WAV).
+  {
+    const measurements = {
+      status: "needs_summed_validation",
+      summary: summedSummary({
+        main: { captured: true, audio_emitted: true, summed_test_id: "sum-1", playback_id: "sum-1" },
+      }),
+      permissions: {},
+      issues: [],
+    };
+    const validationPosts = [];
+    const harness = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+      "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+      "./active-speaker/summed-validation": (_path, options = {}) => {
+        validationPosts.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response(measurements));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    const originalSetTimeout = globalThis.window.setTimeout;
+    globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+    try {
+      const html = harness.elements.get("view-body").innerHTML;
+      if (!html.includes('data-act="record-summed-capture"')) {
+        fail("summed validation should still offer the mic capture", { html });
+      }
+      if (!/data-outcome="blend_ok"(?![^>]*\sdisabled)/.test(html)) {
+        fail("by-ear blend confirmation should be enabled after an audible test", { html });
+      }
+      harness.dispatchClick({
+        "data-act": "record-summed-validation",
+        "data-group-id": "main",
+        "data-summed-test-id": "sum-1",
+        "data-outcome": "blend_ok",
+      });
+      await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+      if (validationPosts.length !== 1) {
+        fail("by-ear blend confirmation should POST once", { validationPosts });
+      }
+      const body = validationPosts[0];
+      if (body.outcome !== "blend_ok" || body.operator_listening_check !== true) {
+        fail("by-ear blend confirmation must post operator_listening_check", { body });
+      }
+      if (body.capture) fail("by-ear path must not upload a WAV", { body });
+    } finally {
+      globalThis.window.setTimeout = originalSetTimeout;
+    }
+  }
+  return { summedOffersByEarAndMicValidation: true };
 }
 
 async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
@@ -1967,7 +1975,7 @@ results.push(await testCommissionCardArmsAndSteps());
 results.push(await testCommissionCompleteDoesNotWrapToWoofer());
 results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
 results.push(await testDriverCaptureAfterRampConfirmationPostsMicPayload());
-results.push(await testSummedCapturePostsInsteadOfManualSuccess());
+results.push(await testSummedOffersByEarAndMicValidation());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());

@@ -264,17 +264,19 @@ export function commissionGateReason(gateId) {
 }
 
 // Near-field placement guidance for the L1 phone level match. The page owns the
-// measurement copy (backend stays vocabulary-free). Holding the mic close and at
-// a CONSISTENT distance for every driver is what makes the per-driver levels
-// comparable, so JTS can level-match them.
+// measurement copy (backend stays vocabulary-free). The level match is OPTIONAL
+// — confirming each driver by ear is enough to finish; the phone capture just
+// refines the per-driver levels with a measurement. Holding the mic close and at
+// a CONSISTENT distance for every driver is what makes the levels comparable.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
-  'Hold your phone’s microphone about 2–5 cm from the centre of the driver, ' +
-  'pointed straight at it, while its tone plays — and keep the same distance ' +
-  'for every driver so JTS can compare their levels.';
+  'Optional: for a measured level match, hold your phone’s microphone about ' +
+  '2–5 cm from the centre of the driver, pointed straight at it, while its tone ' +
+  'plays — keep the same distance for every driver. You can skip this and finish ' +
+  'by ear; JTS then uses the datasheet levels.';
 
 export function nearfieldCaptureHint(roleLabel) {
-  return 'Hold the phone 2–5 cm from the ' + (roleLabel || 'driver') +
-    ', centred, then capture its tone.';
+  return 'Optional — hold the phone 2–5 cm from the ' + (roleLabel || 'driver') +
+    ', centred, to capture its tone for a measured level match.';
 }
 
 function levelMatchSourceLabel(source) {
@@ -318,8 +320,9 @@ export function levelMatchSummary(baseline) {
     provisional: provisional,
     rows: rows,
     note: provisional ?
-      'These per-driver levels are datasheet estimates. Record a phone mic ' +
-        'capture for each driver in “Test each driver” to measure them.' :
+      'These per-driver levels are datasheet estimates — fine to keep. ' +
+        'Optionally record a phone mic capture per driver in “Test each driver” ' +
+        'to measure them instead.' :
       'Per-driver levels are set — the quietest driver is the 0 dB reference.',
     guidance: NEARFIELD_LEVEL_MATCH_GUIDANCE
   };

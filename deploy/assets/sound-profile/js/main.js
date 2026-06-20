@@ -657,16 +657,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var confirmed = c.confirmedRoles.indexOf(role) >= 0;
       var playbackId = floorResult && floorResult.playback_id || '';
       var canCapture = confirmed && playbackId && !measured && !activeSpeaker.captureBusy;
-      var hint = measured ? 'Mic evidence saved for this driver.' :
+      var hint = measured ? 'Measured level match saved for this driver.' :
         (canCapture ? nearfieldCaptureHint(humanRole(role)) :
-          (confirmed ? 'Replay this driver before capturing so the measurement binds to the latest accepted tone.' :
+          (confirmed ? 'Confirmed by ear — that’s enough. To measure it instead, replay this driver, then capture.' :
             'Start the tone and confirm this driver by ear first.'));
       return '<div class="driver-capture-row">' +
         '<div><p class="setting-row__title">' + roleLabel(role) + '</p>' +
           '<p class="setting-row__hint">' + escapeHtml(hint) + '</p></div>' +
         '<div class="active-speaker-actions">' +
-          '<span class="status-pill' + (measured ? ' status-pill--ready' : '') + '">' +
-            escapeHtml(measured ? 'measured' : (confirmed ? 'needs capture' : 'not tested')) +
+          '<span class="status-pill' + (measured || confirmed ? ' status-pill--ready' : '') + '">' +
+            escapeHtml(measured ? 'measured' : (confirmed ? 'confirmed' : 'not tested')) +
           '</span>' +
           '<button type="button" class="btn btn--ghost" data-act="record-driver-capture" ' +
             'data-group-id="' + escapeHtml(group.id || '') + '" ' +
@@ -690,9 +690,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="active-speaker-actions commission-card__actions">' +
         buttons.join('') + '</div>' +
       capturePanel + captureError + captureBusy +
-      '<p class="setting-row__hint commission-card__followup">Confirming a driver ' +
-        'proves it is wired and audible through the crossover and limiter. ' +
-        'The mic capture records the acoustic evidence that unlocks the combined crossover check.</p>' +
+      '<p class="setting-row__hint commission-card__followup">Confirming each driver ' +
+        'by ear proves it is wired and audible through the crossover and limiter — ' +
+        'that’s all you need to continue. The phone mic capture is optional: it ' +
+        'measures the per-driver levels instead of using the datasheet estimates.</p>' +
     '</div>';
   }
   function renderActiveCommissionOnlyCard() {
@@ -2543,12 +2544,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ((startAction ? startAction.enabled === true : canRecord) ? '' : ' disabled') +
         '>' + escapeHtml(startAction && startAction.label || 'Play combined test') +
         '</button>';
-      var captureButton = '<button type="button" class="btn btn--primary" ' +
+      var recordEnabled = recordAction ? recordAction.enabled === true : hasAudibleTest;
+      var summedTestId =
+        recordAction && recordAction.body && recordAction.body.summed_test_id ||
+        latestTest && (latestTest.summed_test_id || latestTest.playback_id) || '';
+      // Positive by-ear path so the whole flow is phone-optional: confirm the
+      // blend by ear (no mic). Still gated on an AUDIBLE combined test
+      // (recordEnabled) — you can't certify a blend you didn't hear — and the
+      // mic capture stays offered as the more reliable check for a polarity/delay
+      // null that is hard to judge by ear.
+      var blendOkButton = '<button type="button" class="btn btn--primary" ' +
+        'data-act="record-summed-validation" data-group-id="' + escapeHtml(group.id) +
+        '" data-summed-test-id="' + escapeHtml(summedTestId) +
+        '" data-outcome="blend_ok"' + (recordEnabled ? '' : ' disabled') +
+        '>Blend sounds right</button>';
+      var captureButton = '<button type="button" class="btn btn--ghost" ' +
         'data-act="record-summed-capture" data-group-id="' + escapeHtml(group.id) +
         '" data-summed-test-id="' + escapeHtml(
           latestTest && (latestTest.summed_test_id || latestTest.playback_id) || ''
         ) + '"' +
-        (hasAudibleTest ? '' : ' disabled') + '>Record mic capture</button>';
+        (hasAudibleTest ? '' : ' disabled') + '>Measure with mic (optional)</button>';
       var buttons = [
         ['needs_adjustment', 'Needs adjustment', 'btn--ghost'],
         ['polarity_or_delay_problem', 'Sounds hollow or thin', 'btn--ghost'],
@@ -2556,16 +2571,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ].map(function(item) {
         return '<button type="button" class="btn ' + escapeHtml(item[2]) +
           '" data-act="record-summed-validation" data-group-id="' + escapeHtml(group.id) +
-          '" data-summed-test-id="' + escapeHtml(
-            recordAction && recordAction.body && recordAction.body.summed_test_id ||
-            latestTest && (latestTest.summed_test_id || latestTest.playback_id) || ''
-          ) +
+          '" data-summed-test-id="' + escapeHtml(summedTestId) +
           '" data-outcome="' + escapeHtml(item[0]) + '"' +
-          ((recordAction ? recordAction.enabled === true : hasAudibleTest) ? '' : ' disabled') +
+          (recordEnabled ? '' : ' disabled') +
           '>' + escapeHtml(item[1]) + '</button>';
       }).join('');
       var hint = groupView && groupView.message ? groupView.message : (hasAudibleTest ?
-        'After the combined test, record the phone-mic capture for the blend check.' :
+        'After the combined test, say whether the blend sounds right by ear — or optionally measure it with the phone mic (more reliable for a hollow/thin crossover).' :
         (canRecord ?
           'Run the combined speaker test first. It uses the prepared crossover setup and starts at the quiet test level.' :
           'Test each driver first, then test the combined speaker.'));
@@ -2585,7 +2597,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             escapeHtml(statusText) + '</span>' +
         '</div>' +
         renderSummedLevelControl(group.id) +
-        '<div class="active-speaker-actions">' + testButton + captureButton + buttons + '</div>' +
+        '<div class="active-speaker-actions">' + testButton + blendOkButton +
+          captureButton + buttons + '</div>' +
       '</div>';
     }).join('');
     return '<div class="output-card output-card--summed-validation">' +
