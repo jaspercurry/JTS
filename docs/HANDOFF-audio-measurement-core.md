@@ -326,10 +326,20 @@ leaf placement missed the live-draft SetConfig path, raised a
 non-`CarrierCannotHostEq` type the `/sound` route couldn't map to an honest
 blocked-200, and broke the multiroom never-refuse invariant — so the gate moved
 to the caller boundaries, reusing `CarrierCannotHostEq`.) Contract doc updated:
-[HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md). On-Pi (jts3)
-validation owed: deploy, confirm a `/sound` apply (live preview AND persist) and
-a correction apply under the assigned tweeter topology are refused (honest
-blocked, not a silent flat cut-over), and that un-bonding still succeeds.
+[HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md). On-Pi (jts3) status
+(2026-06-20): the refusal LOGIC is validated on jts3's real topology
+(`active_mono_2way`, tweeter @ DAC output 2), running the merged code on-device
+(non-destructively, via a temp tree — not deployed): the verdict blocks a flat
+program graph, the stereo-host carrier refuses the live-draft path
+(`can_host_eq=False` + `CarrierCannotHostEq("flat_graph_protected_tweeter")`),
+correction apply refuses, multiroom solo-restore stays lenient, and the live
+active baseline still resolves to the active carrier (unaffected). STILL OWED:
+the full DEPLOYED HTTP end-to-end (a real `/sound` request returning
+blocked-200), which requires jts3 to actually be in the flat-graph state — not
+induced on a wired compression tweeter, since that is the hazard the gate
+prevents; confirm opportunistically when jts3 is transiently flat under the
+tweeter topology (e.g. right after a fresh topology assignment, before the
+active graph is staged), and that un-bonding still succeeds.
 
 **Next slice (Phase 2 — kernel extraction):** move pure `sweep`/`deconv`/
 `analysis`/`quality` into `jasper/audio_measurement/` behind characterization
@@ -379,4 +389,4 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-06-19
+Last verified: 2026-06-20
