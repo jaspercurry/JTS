@@ -385,6 +385,13 @@ class _SingleFlightTTLCache:
 
         Only successful computations are cached. If the compute raises,
         waiters are released and the next caller may retry.
+
+        `wait()` is intentionally un-timed: a waiter blocks only for as
+        long as the single in-flight `compute()` runs, so the caller is
+        responsible for passing a self-bounding `compute` (the /state
+        aggregate enforces its own liveness budget). An unbounded compute
+        would otherwise park every waiter — and, on the bounded request
+        pool, the whole control plane — so keep that contract intact.
         """
         while True:
             with self._cond:
