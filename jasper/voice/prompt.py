@@ -241,6 +241,7 @@ def _build_system_instruction(
     google_accounts: list[str] | None = None,
     default_google_account: str = "",
     transit_configured: bool = True,
+    research_configured: bool = True,
     ha_configured: bool = True,
     hostname: str = "jts.local",
     provider: str = "",
@@ -326,6 +327,20 @@ def _build_system_instruction(
             f"isn't set up yet — visit {hostname}/transit to configure it.' "
             "Don't promise to check or look it up; the data source is "
             "genuinely absent."
+        )
+    if not research_configured:
+        # Conditional setup redirect for the gated research pack. When
+        # no text provider resolves, the research tool is absent from
+        # the model-visible registry, so the model needs a truthful
+        # fallback instead of improvising a web-search promise.
+        addendum += (
+            " Background research isn't set up on this speaker yet — no "
+            "research tool is available. If the user asks you to research "
+            "something, look something up and report back later, or tell "
+            "them later when you find an answer, briefly say: 'Research "
+            f"isn't set up yet — visit {hostname}/voice to add a research "
+            "provider.' Don't promise to research it, check later, or look "
+            "it up in the background; the research tool is genuinely absent."
         )
     if not ha_configured:
         # Same conditional pattern as transit above. Critical that the

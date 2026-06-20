@@ -207,8 +207,9 @@ Mode in the consumer apps and dictation in Claude Code.
   are filtered out of the per-provider declaration list, so a model
   literally can't see what it can't call.
 - **Audible feedback cues** ([`jasper/cues/registry.py`](../jasper/cues/registry.py)):
-  the same three slugs (`spend_cap_reached`, `cant_connect`,
-  `cant_reach_cloud`) cover every provider's failure modes. Cue text
+  shared slugs (`spend_cap_reached`, `cant_connect`,
+  `cant_reach_cloud`, `research_failed`) cover provider-independent
+  failure modes. Cue text
   is provider-agnostic by design — no "Google" or "Gemini" or
   "OpenAI" mentions ever bake into the audio.
 - **Spend-cap pricing** ([`jasper/usage.py`](../jasper/usage.py)):

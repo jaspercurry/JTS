@@ -93,6 +93,18 @@ CUES: tuple[CueDef, ...] = (
             "Rate-limited to once per hour to avoid spamming."
         ),
     ),
+    CueDef(
+        slug="research_failed",
+        template=(
+            "Sorry, I couldn't finish that research. Please ask me again."
+        ),
+        description=(
+            "Provider-agnostic proactive cue text for async research jobs "
+            "that fail after the user has already been promised a later "
+            "answer. WakeLoop rate-limits failed research announcements to "
+            "once per hour to avoid nagging during bursts."
+        ),
+    ),
 )
 
 

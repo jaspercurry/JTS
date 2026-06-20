@@ -655,6 +655,7 @@ async def run() -> None:
             usage_provider=active_research.provider_id,
             usage_model=str(getattr(active_research.client, "model", "")),
         )
+    research_configured = research_scheduler is not None
 
     # Cue manager — built early so timer tools can pre-render their
     # fire announcements at set_timer time. The TtsPlayout isn't open
@@ -805,6 +806,7 @@ async def run() -> None:
                 google_accounts=google_account_names,
                 default_google_account=google_default_account,
                 transit_configured=transit_configured,
+                research_configured=research_configured,
                 ha_configured=ha_configured,
                 hostname=cfg.hostname,
                 provider=cfg.voice_provider,

@@ -324,7 +324,7 @@ class ResearchScheduler:
                             name=f"research-resurface-{failed.id}",
                         )
                 continue
-            if job.status == DONE and not job.announced:
+            if job.status in (DONE, FAILED) and not job.announced:
                 self._jobs[job.id] = job
                 self._tasks[job.id] = asyncio.create_task(
                     self._resurface(job),
