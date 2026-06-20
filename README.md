@@ -874,6 +874,15 @@ reference. Currently:
   model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
   near-field/null-depth/gated measurement triad, LR/IIR-first default,
   and delay/null verification.
+- [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
+  **Design-of-record (proposed 2026-06-20)** for running an active
+  speaker's driver-domain crossover (Layer A) as a wireless **follower**,
+  while the leader owns the program domain (room correction + preference
+  EQ) and streams the corrected stereo program. Owns the
+  distributed-active boundary the graph-carrier doc defers: the
+  CamillaDSP-re-entry follower engine, the role/capture contract, the
+  follower-409 narrowing, the local-vs-wireless subwoofer split, the
+  fail-closed/clock-domain safety story, and the safest-first slice plan.
 - [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
   — Working product-design note for the active crossover setup flow:
   first-time user journey, card hierarchy, warning-vs-blocker language,

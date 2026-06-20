@@ -547,6 +547,7 @@ docs = [
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
   "docs/HANDOFF-dsp-graph-carrier.md",
+  "docs/HANDOFF-distributed-active.md",
   "docs/active-crossover-information-design.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
@@ -686,10 +687,12 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-multiroom.md",
+  "docs/HANDOFF-distributed-active.md",
   "docs/dumb-endpoint-bringup.md",
 ]
 requires_docs_when = [
   "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
+  "The follower/leader Layer-A path (active crossover across a wireless pair): member-config role resolution, the round-trip capture repoint, outputd dac_content lane vs CamillaDSP re-entry, or the active-follower fail-closed/clock contract changes (see HANDOFF-distributed-active.md).",
   "The Zero 2 W streambox bring-up path, the full/streambox install profile boundary, streambox DAC assumptions, or the lab spike invocation changes.",
   "The /rooms/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
   "The shared mDNS browse (jasper/mdns.py), the Avahi *.service renderer (jasper/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
