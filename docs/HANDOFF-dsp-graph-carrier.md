@@ -362,37 +362,39 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
 
 ## Deferred — distributed active (separate design increment)
 
-These are unbuilt/undesigned today; the active and multiroom subsystems
-have **zero cross-references**. Solo-active EQ (PR-1→3) is safe in
-isolation precisely because active configs are currently *fenced off*
-from grouping (the leader bake refuses them; a follower parks its
-CamillaDSP). Each item below is a roadmap decision, not in scope here:
+**Design-of-record:
+[HANDOFF-distributed-active.md](HANDOFF-distributed-active.md).** That doc
+now OWNS this boundary; this section is a pointer + the terse index. The
+active and multiroom subsystems have **zero cross-references** today, and
+solo-active EQ (PR-1→3) is safe in isolation precisely because active
+configs are *fenced off* from grouping (the leader bake refuses them; a
+follower parks its CamillaDSP). The increment relocates Layer A onto the
+follower's bonded path via **CamillaDSP re-entry** (`snapclient → loopback
+→ follower camilla [Layer A only] → outputd`), reusing the shipped emitter
++ `classify_camilla_graph` re-proof. The gaps it resolves:
 
-1. **Commissioning role capture.** `OutputTopology`/commissioning have no
-   solo / will-be-follower / has-a-follower field; the active baseline's
-   *capture* is hard-defaulted to the solo fan-in (`plug:jasper_capture`)
-   and no caller can override it. Distributed-active needs this bit
-   (it gates capture device + host-B/C-vs-delegate). **Slice 1** of this
-   increment.
-2. **Active follower.** The streamed program reaches a follower at
-   `jasper-outputd`'s `dac_content` lane (post-CamillaDSP), where the only
-   transform is `ChannelPick` (no filtering). Running Layer A on a
-   follower needs either a per-driver split *in outputd* (Rust) or
-   re-entry of streamed PCM into the follower's CamillaDSP (capture
-   repoint), plus role-aware emission and reconsidering the blanket
-   follower-409 (which currently also blocks follower-*local*
-   crossover/driver edits).
-3. **Active leader.** A leader that is *also* an active speaker must both
-   bake B/C into the streamed program and run a local split for its own
-   drivers — two emitters that don't compose today.
-4. **Sub as 4th driver role.** Data-modeled and protection-bounded, but
-   the active compiler hard-blocks it (`baseline_subwoofer_not_supported`).
-5. **Wireless sub crossover.** `sub` currently → `ChannelPick::Mono`
-   (full-range mono, no LF crossover); the 80 Hz LR4 lowpass exists only
-   in the dead `channel_split` recipe. Undecided which box applies it.
-6. **Doc↔code gap:** the follower delegation page promises "local
-   crossover and driver-protection work stays with the speaker that owns
-   the DAC path" — a promise no code keeps yet. Align when (2) lands.
+1. **Role / capture contract** — `OutputTopology`/commissioning gain a
+   pure-data pairing-intent field; the reconciler resolves capture device
+   + domain-mode per runtime role (the active emitter's `capture_device`
+   param already exists; the compiler just threads it). *Slice 1.*
+2. **Active follower** — the reconciler points the follower's CamillaDSP
+   capture at the round-trip loopback, emits a driver-domain-only Layer-A
+   graph, and disables outputd's `dac_content` `ChannelPick` on that box.
+   *Slices 2–3.*
+3. **Active leader** — a leader that is *also* active needs a **second**
+   CamillaDSP (bake B/C → pipe; split for its own drivers), RAM-gated.
+   *Slice 5.*
+4. **Local sub driver** — unblock `baseline_subwoofer_not_supported` for a
+   sub that is one of a single box's drivers (orthogonal to wireless).
+   *Slice 6a.*
+5. **Wireless sub member** — a separate bonded sub; where the LF crossover
+   lives is tier-dependent (leader pre-bake for a dumb sub vs local Layer A
+   for a brainy one). Its own design. *Slice 6b.*
+6. **Follower-409 / delegation promise** — the POST block is already
+   content-DSP-only; the gap is the page-level short-circuit hiding the
+   local driver UI. Allow the active-speaker endpoints on a follower +
+   render the local crossover UI so "local crossover stays with the DAC
+   owner" becomes true. *Slice 4.*
 
 ## File map
 
