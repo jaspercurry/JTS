@@ -15,6 +15,7 @@ protection:
 """
 from __future__ import annotations
 
+import json
 from unittest import mock
 
 import pytest
@@ -208,6 +209,57 @@ def test_reemit_forwards_explicit_member_kwargs(tmp_path):
         )
     assert emit.call_args.kwargs["playback_pipe_path"] == "/run/snapfifo"
     assert emit.call_args.kwargs["enable_rate_adjust"] is False
+
+
+# --- L0: a stereo-host graph can't host EQ under a protected-tweeter topology -
+
+def _persist_topology(topology, tmp_path, monkeypatch):
+    path = tmp_path / "output_topology.json"
+    path.write_text(json.dumps(topology.to_dict()), encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+
+
+def test_stereo_host_refuses_eq_under_protected_tweeter_topology(tmp_path, monkeypatch):
+    # The L0 fix: a flat 2-channel program graph carries no per-driver
+    # protection, so the stereo-host carrier refuses (typed) when the saved
+    # topology assigns a protected tweeter. It refuses in reemit() BEFORE
+    # emitting — covering both the live-draft SetConfig path (no out_path, which
+    # skips the durable pre-check) and the durable write — so a flat graph can
+    # never reach the DAC under a protected-tweeter topology. The route maps the
+    # CarrierCannotHostEq to an honest blocked-200 (inv 6).
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_active_topology("stereo", "active_2_way"), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(_flat_yaml())
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind in _STEREO_HOST_KINDS
+    # can_host_eq=False makes the durable pre-check refuse early (no spurious
+    # prepare_failed); reemit re-asserts for the pre-check-less live-draft path.
+    assert carrier.can_host_eq is False
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        carrier.reemit(SoundProfile(enabled=False), member_kwargs={})  # live-draft shape
+    assert exc.value.reason_code == "flat_graph_protected_tweeter"
+
+
+def test_stereo_host_hosts_eq_under_full_range_topology(tmp_path, monkeypatch):
+    # The common passive-stereo speaker: no protected tweeter -> the stereo host
+    # still hosts EQ exactly as before (no regression for non-active speakers).
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(_flat_yaml())
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.can_host_eq is True
+    result = carrier.reemit(SoundProfile(enabled=False), member_kwargs={})
+    assert isinstance(result, ReemitResult)
 
 
 def test_reemit_defaults_to_disk_read_member_kwargs(tmp_path):

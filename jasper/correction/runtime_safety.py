@@ -15,6 +15,7 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_FLAT_FULL_RANGE,
     classify_camilla_graph,
     classify_output_contract,
+    flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
 )
 from jasper.output_topology import (
@@ -47,6 +48,28 @@ def _load_topology_for_correction() -> OutputTopology:
         raise CorrectionRuntimeSafetyError(
             f"saved output topology is unavailable or invalid: {exc}"
         ) from exc
+
+
+def assert_flat_apply_safe(topology: OutputTopology | None = None) -> None:
+    """Refuse to apply a flat room-correction graph under a protected topology.
+
+    Room correction emits a flat 2-channel program graph (sweep PEQs over the
+    base path). The sweep ENTRY already refuses a roleful/protected topology
+    (:func:`flat_measurement_config_path`), so the common flow can't even
+    measure on an active speaker. This is the apply-time backstop for the one
+    gap that leaves open: measurements taken on a full-range topology, then
+    APPLIED after a driver was reassigned to an active tweeter role — which
+    would otherwise send full-range program to a compression driver. Fail
+    closed (the runtime contract owns the L0 judgement); the corrupt-topology
+    case blocks too, since :func:`flat_program_graph_blocked_reason` is itself
+    fail-closed.
+    """
+    reason = flat_program_graph_blocked_reason(topology)
+    if reason is not None:
+        raise CorrectionRuntimeSafetyError(
+            "room-correction apply would send full-range program to a protected "
+            f"tweeter: {reason}"
+        )
 
 
 def flat_measurement_config_path(

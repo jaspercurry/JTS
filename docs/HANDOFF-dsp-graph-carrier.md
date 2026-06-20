@@ -119,6 +119,26 @@ existing layering):
   (its pipe sink + rate_adjust off). The active/unknown carriers ignore it and
   refuse — see grouping boundary below.
 
+**Stereo hosts refuse a protected-tweeter topology (L0).** Both stereo-host
+carriers (base-flat + sound/correction) emit a 2-channel program graph with no
+per-driver crossover/protection, so a flat graph must never go live when the
+saved output topology assigns a protected **tweeter** role — full-range program
+would reach a compression driver (shrill + driver-damage risk; see
+[HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md) L0). The
+judgement is
+[`runtime_contract.flat_program_graph_blocked_reason()`](../jasper/active_speaker/runtime_contract.py)
+— a *topology* predicate, since the program lane is structurally flat — and
+`_StereoHostCarrier` reads it at construction, so `can_host_eq` is `False` (the
+durable pre-check refuses early, no spurious `prepare_failed`) AND `reemit`
+re-asserts before emitting, so the pre-check-less **live-draft** SetConfig path
+is covered too — a flat graph can never reach the DAC under a protected-tweeter
+topology. Refusal is `CarrierCannotHostEq("flat_graph_protected_tweeter", …)`
+(a 200-with-body blocked outcome like the others); fail-closed on a corrupt /
+unreadable topology. The refusal lives at the carrier (and, for the direct
+correction caller, at `correction.runtime_safety.assert_flat_apply_safe`),
+**never** on the shared `emit_sound_config` leaf — the multiroom solo-restore
+emit must stay lenient (un-bonding must always succeed).
+
 **Concrete dispatcher, not a `Protocol`/registry.** This is a 4-member
 set and only the active carrier needs new behavior; per AGENTS.md
 (avoid single-use abstractions) the dispatcher + recognizer is the

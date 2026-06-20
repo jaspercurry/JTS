@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from pathlib import Path
@@ -10,7 +8,6 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_startup_config,
 )
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -24,17 +21,14 @@ from jasper.active_speaker.runtime_contract import (
     CONTRACT_NORMAL_MONO_FULL_RANGE,
     CONTRACT_NORMAL_STEREO_FULL_RANGE,
     CONTRACT_SUBWOOFER_PRESENT,
-    FlatGraphForProtectedTopologyError,
-    assert_program_graph_safe_for_topology,
     classify_camilla_graph,
     classify_output_contract,
     apply_safe_graph_decision_to_statefile,
+    flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
 )
 from jasper.camilla_config_contract import FilterSpec
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.sound.camilla_yaml import emit_sound_config
-from jasper.sound.profile import SoundProfile
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
@@ -674,127 +668,57 @@ def test_statefile_repair_preserves_existing_volume_and_mute(tmp_path: Path) -> 
 
 
 # --------------------------------------------------------------------------- #
-# L0 fail-closed emit gate: a flat full-range program graph must never reach
-# disk while the saved topology assigns a protected tweeter role.
+# L0 verdict: a flat full-range *program* graph is illegal when the saved
+# topology assigns a protected tweeter role. This is the shared topology
+# predicate; the refuse POLICY lives at the callers (graph_carrier raises
+# CarrierCannotHostEq, correction raises CorrectionRuntimeSafetyError), pinned
+# by tests in test_sound_graph_carrier.py / test_correction_*.py /
+# test_multiroom_leader_config.py.
 # --------------------------------------------------------------------------- #
 
 
-def _flat_program_yaml() -> str:
-    """A real flat full-range stereo program graph (the dangerous shape)."""
-    return emit_sound_config(SoundProfile(enabled=False), room_peqs=[])
+def test_flat_program_graph_blocked_for_stereo_active_tweeter() -> None:
+    reason = flat_program_graph_blocked_reason(
+        _active_topology("stereo", "active_2_way")
+    )
+    assert reason is not None
+    # The reason names the protected output(s) so callers surface an honest hint.
+    assert "tweeter" in reason
 
 
-def _persist_topology(topology: OutputTopology, tmp_path: Path, monkeypatch) -> Path:
-    path = tmp_path / "output_topology.json"
-    path.write_text(json.dumps(topology.to_dict()), encoding="utf-8")
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    return path
-
-
-def test_program_graph_gate_rejects_flat_with_tweeter_role(caplog) -> None:
-    topology = _active_topology("stereo", "active_2_way")
-
-    with caplog.at_level("ERROR"):
-        with pytest.raises(FlatGraphForProtectedTopologyError) as exc:
-            assert_program_graph_safe_for_topology(
-                _flat_program_yaml(),
-                topology=topology,
-                source="test",
-            )
-
-    assert exc.value.reason_code == "flat_full_range_graph_for_protected_topology"
-    # The rejection is surfaced honestly, never silent: a structured event line
-    # naming the protected outputs.
-    assert "event=active_speaker.program_graph_rejected" in caplog.text
-    assert "tweeter_outputs=1,3" in caplog.text
-
-
-def test_program_graph_gate_rejects_minimal_flat_cutover_with_tweeter_role() -> None:
-    # The literal outputd-cutover shape (a bare full-range passthrough) is also
-    # rejected, not just a fully-built sound config.
-    topology = _active_topology("mono", "active_2_way")
-
-    with pytest.raises(FlatGraphForProtectedTopologyError):
-        assert_program_graph_safe_for_topology(_flat_yaml(), topology=topology)
-
-
-def test_program_graph_gate_noop_for_full_range_stereo() -> None:
-    # No protected tweeter role -> the flat program graph is legal and the gate
-    # is a no-op (the common passive-stereo speaker is unaffected).
-    assert_program_graph_safe_for_topology(
-        _flat_program_yaml(),
-        topology=_full_range_stereo(),
+def test_flat_program_graph_blocked_for_mono_active_tweeter() -> None:
+    assert (
+        flat_program_graph_blocked_reason(_active_topology("mono", "active_2_way"))
+        is not None
     )
 
 
-def test_program_graph_gate_noop_for_unconfigured_topology() -> None:
-    assert_program_graph_safe_for_topology(_flat_program_yaml(), topology=_topology([]))
+def test_flat_program_graph_allowed_for_full_range_stereo() -> None:
+    # The common passive-stereo speaker: no protected tweeter -> not blocked.
+    assert flat_program_graph_blocked_reason(_full_range_stereo()) is None
 
 
-def test_program_graph_gate_noop_for_subwoofer_only_topology() -> None:
-    # The emit gate is scoped to the tweeter-damage hazard (role == "tweeter").
-    # A subwoofer is roleful but not a protected tweeter, so this gate is a
-    # no-op; the broader "flat illegal for any roleful topology" rule is
-    # enforced separately at graph selection (safe_graph_for_current_topology).
-    assert_program_graph_safe_for_topology(
-        _flat_program_yaml(),
-        topology=_subwoofer_topology(),
-    )
+def test_flat_program_graph_allowed_for_unconfigured_topology() -> None:
+    assert flat_program_graph_blocked_reason(_topology([])) is None
 
 
-def test_program_graph_gate_passes_active_startup_graph() -> None:
-    # A legitimate active graph wires the protective high-pass + startup limiter
-    # on the tweeter channels, so it passes the gate unchanged.
-    topology = _active_topology("stereo", "active_2_way")
-    startup = emit_active_speaker_startup_config(
-        ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo")),
-        playback_device=ACTIVE_PCM,
-    )
-
-    assert_program_graph_safe_for_topology(startup, topology=topology)
+def test_flat_program_graph_allowed_for_subwoofer_only_topology() -> None:
+    # Scope: the verdict targets the tweeter-damage hazard (role == "tweeter").
+    # A subwoofer is roleful but not a protected tweeter, so a flat program graph
+    # is not blocked on its account; the broader "flat illegal for any roleful
+    # topology" rule is enforced separately at graph selection
+    # (safe_graph_for_current_topology).
+    assert flat_program_graph_blocked_reason(_subwoofer_topology()) is None
 
 
-def test_program_graph_gate_passes_active_commissioning_graph() -> None:
-    topology = _active_topology("stereo", "active_2_way")
-
-    assert_program_graph_safe_for_topology(
-        _active_yaml("stereo", 2, frozenset()),
-        topology=topology,
-    )
-
-
-def test_emit_sound_config_write_blocked_under_tweeter_topology(
+def test_flat_program_graph_fail_closed_on_corrupt_topology(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _persist_topology(_active_topology("stereo", "active_2_way"), tmp_path, monkeypatch)
-    out = tmp_path / "sound_current.yml"
+    # Fail-closed: an unreadable/corrupt saved topology blocks (returns a reason)
+    # rather than raising or reading "safe", so a caller can never emit a flat
+    # graph over a topology it could not load.
+    corrupt = tmp_path / "output_topology.json"
+    corrupt.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(corrupt))
 
-    with pytest.raises(FlatGraphForProtectedTopologyError):
-        emit_sound_config(SoundProfile(enabled=False), out_path=out)
-
-    # Fail-closed: the unsafe graph never reached disk.
-    assert not out.exists()
-
-
-def test_emit_sound_config_write_allowed_under_full_range_topology(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
-    out = tmp_path / "sound_current.yml"
-
-    emit_sound_config(SoundProfile(enabled=False), out_path=out)
-
-    assert out.exists()
-
-
-def test_emit_sound_config_build_without_out_path_unaffected_under_tweeter(
-    tmp_path: Path, monkeypatch
-) -> None:
-    # The gate is on the disk WRITE only. Building the YAML in memory (no
-    # out_path) is not a hazard and stays unaffected even under a tweeter
-    # topology, so callers can still inspect/transform a candidate.
-    _persist_topology(_active_topology("stereo", "active_2_way"), tmp_path, monkeypatch)
-
-    text = emit_sound_config(SoundProfile(enabled=False), room_peqs=[])
-
-    assert "devices:" in text
+    assert flat_program_graph_blocked_reason() is not None
