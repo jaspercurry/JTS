@@ -111,6 +111,8 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ("JASPER_DAILY_SPEND_CAP_USD", "daily_spend_cap_usd", "float"),
     ("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", "daily_spend_cap_safety_multiplier", "float"),
     ("JASPER_USAGE_DB", "usage_db", "str"),
+    # Conversation history.
+    ("JASPER_CONVERSATION_DB", "conversation_db_path", "str"),
     # Async research scheduler.
     ("JASPER_RESEARCH_DB", "research_db_path", "str"),
     ("JASPER_RESEARCH_MAX_RUNTIME_SEC", "research_max_runtime_sec", "float"),

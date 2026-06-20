@@ -260,6 +260,10 @@ class OpenAIRealtimeTurn:
         # journal needs a durable "what did it say?" line next to the
         # user transcript and tool-call logs.
         self._assistant_transcript_parts: list[str] = []
+        # Text transcript of the input audio as heard by OpenAI's
+        # transcription model. Kept on the turn for opt-in conversation
+        # history capture; never logged verbatim.
+        self._user_transcript: str | None = None
         # Polyphase resampler state, persists across send_audio calls.
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
@@ -502,6 +506,9 @@ class OpenAIRealtimeTurn:
     def assistant_transcript(self) -> str:
         return "".join(self._assistant_transcript_parts)
 
+    def user_transcript(self) -> str | None:
+        return self._user_transcript
+
     def interrupted(self) -> bool:
         return self._interrupted
 
@@ -664,6 +671,10 @@ class OpenAIRealtimeTurn:
                 self._assistant_transcript_parts = [text]
             return
         self._assistant_transcript_parts = [text]
+
+    def _on_user_text_done(self, text: str) -> None:
+        text = text.strip()
+        self._user_transcript = text or None
 
     def _on_connection_lost(self) -> None:
         if self._released or self._turn_lost:
@@ -1735,6 +1746,8 @@ class OpenAIRealtimeConnection:
             transcript = _event_field(event, "transcript")
             if isinstance(transcript, str):
                 text = transcript.strip()
+                if turn is not None:
+                    turn._on_user_text_done(text)
                 log_event(
                     logger,
                     "openai.user_transcript",

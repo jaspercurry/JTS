@@ -511,6 +511,35 @@ async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
         await conn.stop()
 
 
+async def test_turn_exposes_user_and_assistant_transcripts():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        sess.feed({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "turn on the kitchen lights",
+        })
+        sess.feed({
+            "type": "response.output_audio_transcript.delta",
+            "delta": "Turning on ",
+        })
+        sess.feed({
+            "type": "response.output_audio_transcript.delta",
+            "delta": "the kitchen lights.",
+        })
+
+        await _wait_until(
+            lambda: turn.user_transcript() == "turn on the kitchen lights",
+            timeout=2.0,
+        )
+        assert turn.assistant_transcript() == "Turning on the kitchen lights."
+    finally:
+        await conn.stop()
+
+
 async def test_audio_chunks_include_openai_provider_item_id():
     conn, factory = _make_conn()
     registry = ToolRegistry()

@@ -7,6 +7,7 @@ from . import home_assistant as _ha_env
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
+from . import conversation_history as _conversation_history
 from .speaker_name import runtime_name as _speaker_runtime_name
 from .usage import (
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
@@ -23,6 +24,9 @@ from .voice.input_policy import (
     normalize_openai_noise_reduction,
     validate_openai_noise_reduction,
 )
+
+CONVERSATION_HISTORY_ENV_FILE = _conversation_history.DEFAULT_CAPTURE_ENV_PATH
+DEFAULT_CONVERSATION_DB = _conversation_history.DEFAULT_DB_PATH
 
 
 class VoiceProviderNotConfigured(RuntimeError):
@@ -363,6 +367,7 @@ class Config:
     # Async research persistence and bounds. The text-provider key/model
     # config is deliberately Pattern 2 under jasper.research.providers;
     # only the cross-cutting scheduler limits live on Config.
+    conversation_db_path: str
     research_db_path: str
     research_max_runtime_sec: float
     research_concurrency: int
@@ -814,6 +819,9 @@ class Config:
             ),
             timer_db_path=_env(
                 "JASPER_TIMER_DB", "/var/lib/jasper/timers.db",
+            ),
+            conversation_db_path=_env(
+                "JASPER_CONVERSATION_DB", DEFAULT_CONVERSATION_DB,
             ),
             research_db_path=_env(
                 "JASPER_RESEARCH_DB", "/var/lib/jasper/research_jobs.db",

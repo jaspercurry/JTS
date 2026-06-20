@@ -8,9 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from .env_load import read_env_file_state
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "/var/lib/jasper/conversation_history.db"
+DEFAULT_CAPTURE_ENV_PATH = "/var/lib/jasper/conversation_history.env"
+CAPTURE_ENV_KEY = "JASPER_CONVERSATION_CAPTURE"
 _STORE_ERRORS = (OSError, sqlite3.Error)
 _TURN_COLUMNS = (
     "id",
@@ -220,6 +224,39 @@ class ConversationStore:
 def make_turn_id(ts_utc: str, seq: int) -> str:
     """Return a deterministic, sortable turn id from a caller-provided timestamp."""
     return f"{_compact_utc(ts_utc)}-{seq:03d}"
+
+
+def read_capture_enabled(path: str | os.PathLike = DEFAULT_CAPTURE_ENV_PATH) -> bool:
+    """Read the opt-in conversation-capture flag fresh from the wizard env file.
+
+    Missing, unreadable, absent, or malformed values fail safe to OFF.
+    Capture stores household-visible transcripts, so only an explicit
+    true-ish value enables writes.
+    """
+    state = read_env_file_state(os.fspath(path))
+    if not state.loaded:
+        if state.status == "unreadable":
+            logger.warning(
+                "conversation capture: read %s failed (%s); treating as disabled",
+                state.path,
+                state.error,
+            )
+        return False
+    raw = state.values.get(CAPTURE_ENV_KEY)
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if value in {"0", "false", "no", "off", "disabled", ""}:
+        return False
+    logger.warning(
+        "conversation capture: %s has unrecognised %s=%r; treating as disabled",
+        state.path,
+        CAPTURE_ENV_KEY,
+        raw,
+    )
+    return False
 
 
 def _compact_utc(ts_utc: str) -> str:

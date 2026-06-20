@@ -7,6 +7,7 @@ import socket
 import time
 from collections import deque
 from collections.abc import Coroutine
+from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
 
@@ -37,7 +38,13 @@ from .wake_condition_context import classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
-from .config import Config
+from .config import CONVERSATION_HISTORY_ENV_FILE, Config
+from .conversation_history import (
+    ConversationStore,
+    ConversationTurn,
+    make_turn_id,
+    read_capture_enabled,
+)
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
 from .research import DONE, FAILED, ResearchJob, ResearchScheduler
@@ -70,6 +77,9 @@ logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
+# Conversation capture is a privacy-adjacent best-effort sidecar. The
+# contract is deliberately broad: capture must never change turn behavior.
+_CONVERSATION_CAPTURE_ERRORS = (Exception,)
 
 
 def _synthetic_audio_profile(
@@ -748,6 +758,8 @@ class WakeLoop:
         self._camilla = camilla
         self._content_activity = content_activity
         self._usage_store = usage_store
+        self._conversation_store = ConversationStore(cfg.conversation_db_path)
+        self._conversation_capture_path = CONVERSATION_HISTORY_ENV_FILE
         self._spend_cap = spend_cap
         self._research_scheduler: ResearchScheduler | None = None
         self._stop_event = stop_event
@@ -1083,6 +1095,8 @@ class WakeLoop:
         self._camilla = None
         self._content_activity = _TestContentActivity()
         self._usage_store = _TestUsageStore()
+        self._conversation_store = None
+        self._conversation_capture_path = "/tmp/jasper-conversation-history-test.env"
         self._spend_cap = _TestSpendCap()
         self._research_scheduler = None
         self._stop_event = asyncio.Event()
@@ -1619,6 +1633,62 @@ class WakeLoop:
             silence_target_lufs=silence_target,
         )
 
+    def _capture_conversation_turn(
+        self,
+        turn: LiveTurn,
+        session_id: int,
+        *,
+        reason: str,
+    ) -> None:
+        try:
+            if self._mic_muted or reason == "mic_muted":
+                return
+            if not read_capture_enabled(self._conversation_capture_path):
+                return
+            user_text = _optional_turn_text(turn, "user_transcript")
+            assistant_text = _optional_turn_text(turn, "assistant_transcript")
+            if user_text is None and assistant_text is None:
+                return
+            store = self._conversation_store
+            if store is None or not getattr(store, "available", True):
+                log_event(
+                    logger,
+                    "conversation.capture_failed",
+                    reason="store_unavailable",
+                    level=logging.WARNING,
+                )
+                return
+            ts_utc = (
+                datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            added = store.add(ConversationTurn(
+                id=make_turn_id(ts_utc, session_id),
+                ts_utc=ts_utc,
+                provider=self._cfg.voice_provider,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                tool_calls_json=None,
+                data_json=None,
+                session_id=session_id,
+            ))
+            if not added:
+                log_event(
+                    logger,
+                    "conversation.capture_failed",
+                    reason="store_write_rejected",
+                    level=logging.WARNING,
+                )
+        except _CONVERSATION_CAPTURE_ERRORS as e:
+            log_event(
+                logger,
+                "conversation.capture_failed",
+                error=f"{type(e).__name__}: {e}",
+                level=logging.WARNING,
+            )
+
     async def mute_mic(self) -> str:
         """Stop listening: drop mic frames at the wake-loop gate. If a
         voice session is currently active, end the turn first so the
@@ -1631,7 +1701,7 @@ class WakeLoop:
             return "ok"
         if self._state is State.SESSION:
             try:
-                await self._end_turn()
+                await self._end_turn("mic_muted")
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
         self._mic_muted = True
@@ -3094,6 +3164,11 @@ class WakeLoop:
                 paced_part,
                 ", turn_lost" if self._turn.turn_lost() else "",
             )
+            self._capture_conversation_turn(
+                self._turn,
+                self._session_id,
+                reason=reason,
+            )
 
         # "Done listening" chirp — bookends the wake chirp. Awaited so
         # it lands in the TTS queue before the unduck below; queueing
@@ -3118,6 +3193,18 @@ class WakeLoop:
         # buffer start filling immediately when refractory expires,
         # which keeps post-turn wake responsiveness fast.
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
+
+
+def _optional_turn_text(turn: LiveTurn, method_name: str) -> str | None:
+    getter = getattr(turn, method_name, None)
+    if not callable(getter):
+        return None
+    text = getter()
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    return text or None
+
 
 def _active_model(*args, **kwargs):
     from .voice.daemon_main import _active_model as impl

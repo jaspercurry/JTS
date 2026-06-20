@@ -140,6 +140,25 @@ class LiveTurn(Protocol):
         """
         ...
 
+    def user_transcript(self) -> str | None:
+        """Optional perceived user command text for this turn.
+
+        This is the provider's ASR of what the user said, not a local
+        recording or a second transcription pass. Adapters may omit this
+        method; production callers must probe with ``getattr`` and treat
+        absent/empty values as unavailable.
+        """
+        ...
+
+    def assistant_transcript(self) -> str | None:
+        """Optional assistant reply text for this turn.
+
+        This is the provider-emitted transcript of the spoken response.
+        Adapters may omit this method; production callers must probe with
+        ``getattr`` and treat absent/empty values as unavailable.
+        """
+        ...
+
     def turn_lost(self) -> bool:
         """True if the underlying connection dropped mid-turn (e.g. the
         WebSocket closed, GoAway timed out before audio finished). The

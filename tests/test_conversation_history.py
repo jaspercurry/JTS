@@ -6,6 +6,7 @@ from jasper.conversation_history import (
     ConversationStore,
     ConversationTurn,
     make_turn_id,
+    read_capture_enabled,
 )
 
 
@@ -181,3 +182,22 @@ def test_methods_fail_soft_when_sqlite_connection_errors(tmp_path):
     assert store.prune(max_rows=1) == 0
     assert store.prune(older_than_ts="2026-06-19T20:00:00Z") == 0
     store.close()
+
+
+def test_capture_flag_reader_is_explicit_opt_in(tmp_path):
+    p = tmp_path / "conversation_history.env"
+
+    assert read_capture_enabled(p) is False
+
+    p.write_text("JASPER_CONVERSATION_CAPTURE=1\n")
+    assert read_capture_enabled(p) is True
+
+    p.write_text("JASPER_CONVERSATION_CAPTURE=0\n")
+    assert read_capture_enabled(p) is False
+
+
+def test_capture_flag_reader_fails_safe_on_malformed_value(tmp_path):
+    p = tmp_path / "conversation_history.env"
+    p.write_text("JASPER_CONVERSATION_CAPTURE=maybe\n")
+
+    assert read_capture_enabled(p) is False
