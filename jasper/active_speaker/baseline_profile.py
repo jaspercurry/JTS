@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
-from jasper.camilla_config_contract import FilterSpec
+from jasper.camilla_config_contract import DEFAULT_CAPTURE_DEVICE, FilterSpec
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -494,12 +494,22 @@ def build_baseline_profile_candidate(
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
     playback_device: str | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build or write a baseline candidate from current accepted evidence."""
+    """Build or write a baseline candidate from current accepted evidence.
+
+    ``capture_device`` is the CamillaDSP capture source the emitted baseline
+    reads from. The default (``DEFAULT_CAPTURE_DEVICE`` = ``plug:jasper_capture``,
+    the solo fan-in tap) keeps the solo baseline byte-identical; the multiroom
+    reconciler passes a round-trip loopback device for a wireless follower (gap 1
+    of ``docs/HANDOFF-distributed-active.md``). The graph shape — crossover,
+    per-driver limiters, tweeter high-pass, 0 dB ceiling — is unaffected; only
+    the capture source line changes.
+    """
 
     state_target = baseline_profile_state_path(state_path)
     config_target = baseline_config_path(config_path)
@@ -638,6 +648,7 @@ def build_baseline_profile_candidate(
             preset,
             playback_device=resolved_playback_device,
             corrections=corrections,
+            capture_device=capture_device,
             out_path=config_target,
             baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
         )
@@ -746,6 +757,7 @@ def recompose_baseline_yaml(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     playback_device: str | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
     out_path: str | Path | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the active-speaker baseline YAML for the current accepted
@@ -824,6 +836,7 @@ def recompose_baseline_yaml(
         preset,
         playback_device=resolved_device,
         corrections=corrections,
+        capture_device=capture_device,
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         out_path=out_path,
@@ -842,11 +855,17 @@ async def apply_baseline_profile(
     get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
 ) -> dict[str, Any]:
-    """Apply the saved baseline candidate through the shared DSP transaction."""
+    """Apply the saved baseline candidate through the shared DSP transaction.
+
+    ``capture_device`` is threaded to :func:`build_baseline_profile_candidate`
+    so the reconciler can apply a follower's round-trip-loopback baseline; the
+    default keeps the solo apply byte-identical.
+    """
 
     state_target = baseline_profile_state_path(state_path)
     candidate = build_baseline_profile_candidate(
@@ -857,6 +876,7 @@ async def apply_baseline_profile(
         write=True,
         state_path=state_target,
         config_path=config_path,
+        capture_device=capture_device,
         validate=validate,
     )
     if not candidate.get("permissions", {}).get("may_apply"):
