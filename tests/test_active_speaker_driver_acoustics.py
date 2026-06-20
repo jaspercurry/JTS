@@ -258,3 +258,95 @@ def test_summed_rejects_bad_fc(tmp_path):
     path = _write_capture(tmp_path, "x.wav", sig.astype(np.float64))
     with pytest.raises(da.DriverAcousticsError):
         da.analyze_summed_crossover(path, meta, crossover_fc_hz=0.0)
+
+
+# ---------- overlap-band level (L1 phone level matching) ---------------------
+
+
+def test_overlap_band_level_recorded_for_crossover_fc(tmp_path):
+    sig, meta = _reference_sweep()
+    # Woofer low-passed at the 2 kHz crossover; overlap_fcs asks for the level
+    # at that handoff.
+    ir = firwin(1023, 2000, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,)
+    )
+    assert len(result.overlap_levels) == 1
+    entry = result.overlap_levels[0]
+    assert entry["fc_hz"] == 2000.0
+    assert entry["usable"] is True
+    assert entry["bins"] >= da.OVERLAP_MIN_BINS
+    assert np.isfinite(entry["level_db"])
+    # The confidence neighbourhood is one octave centred (geometrically) on Fc.
+    assert entry["lo_hz"] == pytest.approx(2000.0 / da.OVERLAP_BAND_RATIO)
+    assert entry["hi_hz"] == pytest.approx(2000.0 * da.OVERLAP_BAND_RATIO)
+    # to_dict round-trips the new evidence.
+    assert result.to_dict()["overlap_levels"][0]["fc_hz"] == 2000.0
+
+
+def test_overlap_band_delta_recovers_relative_driver_level(tmp_path):
+    """The overlap-band delta between a low-passed woofer and a high-passed
+    tweeter (sharing one Fc) recovers their relative level — the basis for the
+    measured level-match trim. The matched −6 dB crossover shoulder cancels, so
+    a 12 dB-hotter tweeter reads ~12 dB above the woofer at Fc. (The woofer is
+    attenuated rather than the tweeter boosted, so the high-passed capture stays
+    below full scale instead of clipping into an unusable verdict.)"""
+    sig, meta = _reference_sweep()
+    fc = 2000.0
+    woofer_gain = 10 ** (-12.0 / 20)  # tweeter 12 dB hotter than the woofer
+    woofer_ir = (firwin(1023, fc, fs=SR) * woofer_gain).astype(np.float64)
+    tweeter_ir = firwin(1023, fc, fs=SR, pass_zero=False).astype(np.float64)
+    w_path = _write_capture(tmp_path, "w.wav", fftconvolve(sig.astype(np.float64), woofer_ir))
+    t_path = _write_capture(tmp_path, "t.wav", fftconvolve(sig.astype(np.float64), tweeter_ir))
+
+    woofer = da.analyze_driver_capture(
+        w_path, meta, passband_hz=(40.0, fc), overlap_fcs=(fc,)
+    )
+    tweeter = da.analyze_driver_capture(
+        t_path, meta, passband_hz=(fc, 18000.0), overlap_fcs=(fc,)
+    )
+    assert woofer.overlap_levels[0]["usable"] is True
+    assert tweeter.overlap_levels[0]["usable"] is True
+    delta = tweeter.overlap_levels[0]["level_db"] - woofer.overlap_levels[0]["level_db"]
+    assert delta == pytest.approx(12.0, abs=1.5)
+
+
+def test_overlap_band_unusable_when_silent(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = (firwin(1023, 2000, fs=SR) * 0.002).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "silent.wav", captured)
+
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,)
+    )
+    assert result.verdict == "silent"
+    assert result.overlap_levels[0]["usable"] is False
+
+
+def test_overlap_band_unusable_when_capture_unusable(tmp_path):
+    sig, meta = _reference_sweep()
+    captured = np.ones(len(sig) + 2000, dtype=np.float64)  # clipped
+    path = _write_capture(tmp_path, "clip.wav", captured)
+
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,)
+    )
+    assert result.verdict == "unusable_capture"
+    # Even when the capture fails quality gating the fc is reported, marked
+    # unusable so the trim math fails closed.
+    assert result.overlap_levels[0]["fc_hz"] == 2000.0
+    assert result.overlap_levels[0]["usable"] is False
+
+
+def test_overlap_band_no_entries_when_no_fcs(tmp_path):
+    sig, meta = _reference_sweep()
+    ir = firwin(1023, 2000, fs=SR).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "woofer.wav", captured)
+
+    result = da.analyze_driver_capture(path, meta, passband_hz=(40.0, 2000.0))
+    assert result.overlap_levels == ()

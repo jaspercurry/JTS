@@ -2367,9 +2367,26 @@ async def _active_speaker_commission_load_payload(
         mark_commission_load_state_stale,
     )
 
+    from .active_speaker_flow import blocking_measurement_phase
+
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     force = bool(raw.get("force"))
+    # Serialize against the other measurement flows (room correction / pair
+    # balance / pair sync) — all play sweeps through the production graph, and
+    # commissioning does not hold the measurement window, so this cooperative
+    # check is the exclusion (see jasper.web.active_speaker_flow).
+    blocking = blocking_measurement_phase()
+    if blocking is not None:
+        return {
+            "status": "refused",
+            "reason": "measurement_in_progress",
+            "blocking_phase": blocking,
+            "next_step": (
+                "Another measurement (room correction, balance, or sync) is "
+                "running. Finish or stop it before commissioning a driver."
+            ),
+        }
     if force:
         _active_speaker_stop_commission_tone(reason="commission_load_force")
     existing = load_commission_load_state()

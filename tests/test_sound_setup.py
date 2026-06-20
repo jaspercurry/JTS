@@ -120,7 +120,24 @@ _SOUND_CSS = (
     / "deploy" / "assets" / "sound-profile" / "sound.css"
 )
 _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
+_ACTIVE_SPEAKER_UI_TEST = (
+    Path(__file__).resolve().parent / "js" / "active_speaker_ui_test.mjs"
+)
 _NODE = shutil.which("node")
+
+
+def test_active_speaker_ui_level_match_helpers():
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_ACTIVE_SPEAKER_UI_TEST)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["ok"] is True
 
 
 def _start_sound_server(tmp_path: Path):

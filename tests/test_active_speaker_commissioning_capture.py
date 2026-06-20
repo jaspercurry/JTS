@@ -132,8 +132,9 @@ def _capture_driver(
 ):
     seen: dict = {}
 
-    def fake_analyze(wav, meta, *, passband_hz, has_mic_calibration):
+    def fake_analyze(wav, meta, *, passband_hz, overlap_fcs=(), has_mic_calibration):
         seen["passband_hz"] = passband_hz
+        seen["overlap_fcs"] = tuple(overlap_fcs)
         seen["wav"] = wav
         return result
 
@@ -158,8 +159,10 @@ def test_present_records_heard_correct_driver_and_acoustic_block(tmp_path: Path)
     out, seen = _capture_driver(tmp_path, _driver_result("present", present=True))
     assert out["recorded"] is True
     assert out["outcome"] == "heard_correct_driver"
-    # The woofer passband was derived from the preset and handed to analyze.
+    # The woofer passband + its crossover Fc (for the overlap-band level match)
+    # were derived from the preset and handed to analyze.
     assert seen["passband_hz"] == (40.0, 1600.0)
+    assert seen["overlap_fcs"] == (1600.0,)
     record = out["measurement"]["driver_measurements"][-1]
     assert record["outcome"] == "heard_correct_driver"
     assert record["observed_mic_dbfs"] == -32.0

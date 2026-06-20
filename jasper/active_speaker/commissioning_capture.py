@@ -50,6 +50,23 @@ from .driver_acoustics import (
 from .measurement import record_driver_measurement, record_summed_validation
 from .profile import ActiveSpeakerPreset, crossover_edges_for_role
 
+
+def driver_crossover_fcs(preset: ActiveSpeakerPreset, role: str) -> tuple[float, ...]:
+    """The crossover frequencies ``role`` participates in (for overlap matching).
+
+    A role's crossover edges (from :func:`crossover_edges_for_role`) ARE the Fcs
+    where it hands off to an adjacent driver: a woofer has one (its upper
+    low-pass edge), a tweeter one (its lower high-pass edge), a 3-way mid two.
+    These feed ``analyze_driver_capture(overlap_fcs=...)`` so the measured
+    overlap-band level can refine the datasheet sensitivity trim.
+    """
+    lower_edge, upper_edge = crossover_edges_for_role(preset, role)
+    fcs: list[float] = []
+    for edge in (lower_edge, upper_edge):
+        if edge is not None and edge > 0:
+            fcs.append(float(edge))
+    return tuple(fcs)
+
 # Acoustic verdict -> measurement outcome, keyed on driver_acoustics' verdict
 # constants (one source). ``unusable_capture`` has no entry: DRIVER_OUTCOMES /
 # SUMMED_OUTCOMES have no "unusable" member, and recording a pass/fail from a
@@ -140,6 +157,7 @@ def record_driver_acoustic_capture(
         captured_wav,
         sweep_meta,
         passband_hz=passband,
+        overlap_fcs=driver_crossover_fcs(preset, role),
         has_mic_calibration=has_mic_calibration,
     )
     acoustic = result.to_dict()

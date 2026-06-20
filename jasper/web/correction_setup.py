@@ -128,6 +128,16 @@ def _active_state_for_session(sess: Any | None) -> str | None:
     return state if state in _ACTIVE_SESSION_STATES else None
 
 
+def active_correction_phase() -> str | None:
+    """Read-only: the active room-correction session state, or None.
+
+    The counterpart to balance/sync ``active_phase()`` so another measurement
+    flow (active-speaker commissioning) can exclude correction without the side
+    effect of ``_reserve_start_slot`` (which reserves /start)."""
+    with _session_lock:
+        return _active_state_for_session(_session)
+
+
 def _reserve_start_slot() -> str | None:
     """Atomically reserve /start or return the state blocking it.
 
@@ -139,8 +149,11 @@ def _reserve_start_slot() -> str | None:
     # The pair-balance and pair-sync flows share this process precisely so the
     # measurement surfaces can exclude each other here (both open
     # measurement_window; concurrent windows would interleave the
-    # renderer stop/start). Lazy imports: these modules never import
-    # this module back.
+    # renderer stop/start). Active-speaker commissioning excludes the same way
+    # (it plays sweeps through the production graph) but participates
+    # cooperatively rather than holding a window — see active_speaker_flow.
+    # Lazy imports: these modules never import this module back at import time.
+    from .active_speaker_flow import active_phase as _active_speaker_phase
     from .balance_flow import active_phase as _balance_phase
     from .sync_flow import active_phase as _sync_phase
     balance_active = _balance_phase()
@@ -149,6 +162,9 @@ def _reserve_start_slot() -> str | None:
     sync_active = _sync_phase()
     if sync_active is not None:
         return f"sync:{sync_active}"
+    commissioning = _active_speaker_phase()
+    if commissioning is not None:
+        return f"active_speaker:{commissioning}"
     with _session_lock:
         if _start_in_progress:
             return "starting"

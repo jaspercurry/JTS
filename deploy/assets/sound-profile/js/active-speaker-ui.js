@@ -263,6 +263,68 @@ export function commissionGateReason(gateId) {
   }[gateId] || 'A setup step still needs finishing before this driver can be tested.';
 }
 
+// Near-field placement guidance for the L1 phone level match. The page owns the
+// measurement copy (backend stays vocabulary-free). Holding the mic close and at
+// a CONSISTENT distance for every driver is what makes the per-driver levels
+// comparable, so JTS can level-match them.
+export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
+  'Hold your phone’s microphone about 2–5 cm from the centre of the driver, ' +
+  'pointed straight at it, while its tone plays — and keep the same distance ' +
+  'for every driver so JTS can compare their levels.';
+
+export function nearfieldCaptureHint(roleLabel) {
+  return 'Hold the phone 2–5 cm from the ' + (roleLabel || 'driver') +
+    ', centred, then capture its tone.';
+}
+
+function levelMatchSourceLabel(source) {
+  return {
+    measured: 'Measured',
+    sensitivity: 'Datasheet estimate',
+    explicit: 'Manual',
+    none: '—'
+  }[source] || source || '—';
+}
+
+// Summarise the per-driver level trim from the baseline-profile payload for the
+// "Validate and apply" card: each driver's attenuation and where it came from
+// (measured phone level-match vs datasheet estimate vs manual), plus whether the
+// config is provisional (datasheet estimate in effect, pending a measurement).
+// Pure: main.js owns the DOM. The speaker is attenuation-only and safe either
+// way; "provisional" is a quality signal, not a safety one.
+export function levelMatchSummary(baseline) {
+  baseline = baseline || {};
+  var corrections = baseline.corrections && typeof baseline.corrections === 'object' ?
+    baseline.corrections : {};
+  var sources = baseline.corrections_source && typeof baseline.corrections_source === 'object' ?
+    baseline.corrections_source : {};
+  var rows = [];
+  ['woofer', 'mid', 'tweeter'].forEach(function(role) {
+    if (!Object.prototype.hasOwnProperty.call(corrections, role)) return;
+    var entry = corrections[role] || {};
+    var gain = typeof entry.gain_db === 'number' ? entry.gain_db : 0;
+    var source = sources[role] || 'none';
+    rows.push({
+      role: role,
+      label: humanRole(role),
+      trimDb: gain,
+      source: source,
+      sourceLabel: levelMatchSourceLabel(source)
+    });
+  });
+  var provisional = !!baseline.provisional;
+  return {
+    available: rows.length > 0,
+    provisional: provisional,
+    rows: rows,
+    note: provisional ?
+      'These per-driver levels are datasheet estimates. Record a phone mic ' +
+        'capture for each driver in “Test each driver” to measure them.' :
+      'Per-driver levels are set — the quietest driver is the 0 dB reference.',
+    guidance: NEARFIELD_LEVEL_MATCH_GUIDANCE
+  };
+}
+
 export function playbackResultMessage(playback, fallback, normalizeMessage) {
   playback = playback || {};
   var issues = Array.isArray(playback.issues) ? playback.issues : [];

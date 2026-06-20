@@ -23,6 +23,7 @@ import {
   float32ToWavBlob
 } from "/assets/shared/js/measurement-audio.js";
 import {
+  NEARFIELD_LEVEL_MATCH_GUIDANCE,
   activeCommissionGroup,
   activeSpeakerStepState,
   commissionCardState,
@@ -30,6 +31,8 @@ import {
   defaultActiveSpeakerStep,
   humanMode,
   humanRole,
+  levelMatchSummary,
+  nearfieldCaptureHint,
   outputStatusClass,
   outputStepTitle,
   playbackResultMessage
@@ -655,7 +658,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var playbackId = floorResult && floorResult.playback_id || '';
       var canCapture = confirmed && playbackId && !measured && !activeSpeaker.captureBusy;
       var hint = measured ? 'Mic evidence saved for this driver.' :
-        (canCapture ? 'Use the phone mic to capture the acoustic sweep for this driver.' :
+        (canCapture ? nearfieldCaptureHint(humanRole(role)) :
           (confirmed ? 'Replay this driver before capturing so the measurement binds to the latest accepted tone.' :
             'Start the tone and confirm this driver by ear first.'));
       return '<div class="driver-capture-row">' +
@@ -674,6 +677,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }).join('');
     var capturePanel = captureRows ?
+      '<p class="setting-row__hint driver-capture-guidance">' +
+        escapeHtml(NEARFIELD_LEVEL_MATCH_GUIDANCE) + '</p>' +
       '<div class="driver-capture-list">' + captureRows + '</div>' : '';
     var captureError = activeSpeaker.captureError ?
       '<p class="commission-card__error">' + escapeHtml(activeSpeaker.captureError) + '</p>' : '';
@@ -2610,6 +2615,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     return 'The active profile is not ready yet.';
   }
+  function renderLevelMatchSummary(profile) {
+    var summary = levelMatchSummary(profile);
+    if (!summary.available) return '';
+    var rows = summary.rows.map(function(row) {
+      var trim = row.trimDb === 0 ? '0 dB (reference)' :
+        (row.trimDb.toFixed(1) + ' dB');
+      return '<div><dt>' + escapeHtml(row.label) + '</dt><dd>' +
+        escapeHtml(trim) + ' · ' + escapeHtml(row.sourceLabel) + '</dd></div>';
+    }).join('');
+    var badge = summary.provisional ? ' status-pill' : ' status-pill status-pill--ready';
+    return '<div class="active-speaker-level-match">' +
+      '<div class="output-card__head"><div>' +
+        '<p class="setting-row__title">Driver levels</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(summary.note) + '</p></div>' +
+        '<span class="' + badge + '">' +
+          escapeHtml(summary.provisional ? 'estimate' : 'measured') + '</span></div>' +
+      '<dl class="active-speaker-facts">' + rows + '</dl>' +
+      (summary.provisional ?
+        '<p class="setting-row__hint">' + escapeHtml(summary.guidance) + '</p>' : '') +
+    '</div>';
+  }
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
     var statusValue = profile.status || 'not_saved';
@@ -2650,6 +2676,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
       body +
+      renderLevelMatchSummary(profile) +
       (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +
     '</div>';

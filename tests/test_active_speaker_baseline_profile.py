@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.active_speaker.baseline_profile import (
     apply_baseline_profile,
     build_baseline_profile_candidate,
@@ -793,3 +795,223 @@ def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
     assert any(
         issue["code"] == "baseline_crossover_preview_not_ready" for issue in issues
     )
+
+
+# --- MEASURED level-match trim refines / overrides the datasheet trim ---------
+#
+# End-to-end: a phone near-field capture per driver through the production
+# crossover produces an overlap-band level, and the measured driver-to-driver
+# delta OVERRIDES the interim datasheet sensitivity trim. When no usable capture
+# exists the datasheet trim is kept and the config is marked provisional.
+
+
+def _driver_capture_wav(
+    tmp_path: Path,
+    name: str,
+    *,
+    kind: str,
+    fc: float,
+    gain_db: float,
+    sr: int = 48000,
+):
+    """Synthesize a near-field driver capture through a crossover at ``fc``.
+
+    A low-passed (woofer) or high-passed (tweeter) sweep at a relative level, the
+    way the production graph would excite one driver. Returns ``(path, meta)``.
+    """
+    import numpy as np
+    from scipy.signal import fftconvolve, firwin
+
+    from jasper.active_speaker import driver_acoustics as da
+    from jasper.correction import sweep as sweep_mod
+
+    sig, meta = sweep_mod.synchronized_swept_sine(
+        f1=da.DEFAULT_F1_HZ,
+        f2=da.DEFAULT_F2_HZ,
+        duration_approx_s=1.0,
+        sample_rate=sr,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    gain = 10 ** (gain_db / 20)
+    if kind == "lowpass":
+        ir = (firwin(1023, fc, fs=sr) * gain).astype(np.float64)
+    else:
+        ir = (firwin(1023, fc, fs=sr, pass_zero=False) * gain).astype(np.float64)
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = tmp_path / name
+    sweep_mod.write_sweep_wav(path, captured.astype(np.float32), sr)
+    return path, meta.to_dict()
+
+
+def _acoustic_measurements(
+    topology: OutputTopology,
+    preview: dict,
+    tmp_path: Path,
+    *,
+    fc: float,
+    tweeter_hotter_db: float,
+) -> dict:
+    """Record real per-driver acoustic captures + a summed validation.
+
+    The tweeter is measured ``tweeter_hotter_db`` hotter than the woofer at the
+    handoff (the woofer is attenuated so the tweeter capture does not clip).
+    """
+    from jasper.active_speaker.commissioning_capture import (
+        record_driver_acoustic_capture,
+    )
+    from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, dict(preview))
+    assert preset is not None, issues
+    state_path = tmp_path / "measurements.json"
+
+    for role, kind, output_index, gain_db in (
+        ("woofer", "lowpass", 0, -tweeter_hotter_db),
+        ("tweeter", "highpass", 1, 0.0),
+    ):
+        wav, meta = _driver_capture_wav(
+            tmp_path, f"{role}.wav", kind=kind, fc=fc, gain_db=gain_db
+        )
+        playback_id = f"playback-{role}"
+        out = record_driver_acoustic_capture(
+            topology,
+            preset,
+            speaker_group_id="mono",
+            role=role,
+            captured_wav=wav,
+            sweep_meta=meta,
+            playback_id=playback_id,
+            safe_session=_safe_session(
+                role=role, output_index=output_index, playback_id=playback_id
+            ),
+            state_path=state_path,
+            now=f"2026-06-19T12:0{1 if role == 'woofer' else 2}:00Z",
+        )
+        assert out["recorded"] is True, out
+        assert out["verdict"] == "present", out
+
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-audible",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed.wav",
+                    "metadata_basename": "tone_summed.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": fc, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-19T12:02:30Z",
+    )
+    return record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40.0,
+            "polarity": "normal",
+            "delay_ms": 0.0,
+            "summed_test_id": "summed-playback-audible",
+        },
+        state_path=state_path,
+        now="2026-06-19T12:03:00Z",
+    )
+
+
+def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    # Datasheet says the horn is 25.2 dB hotter; the MEASURED capture says 18 dB.
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),  # fc 2000, 25.2 dB gap
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    # The MEASURED ~18 dB trim is used, not the 25.2 dB datasheet estimate.
+    tweeter_trim = payload["corrections"]["tweeter"]["gain_db"]
+    assert tweeter_trim == pytest.approx(-18.0, abs=1.5)
+    assert abs(tweeter_trim - (-25.2)) > 3.0
+    assert payload["corrections"]["woofer"]["gain_db"] == 0.0
+    assert payload["corrections_source"]["tweeter"] == "measured"
+    assert payload["provisional"] is False
+    assert payload["safety"]["positive_gain_allowed"] is False
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_gain_derived_from_measurement" in codes
+    assert "driver_gain_derived_from_sensitivity" not in codes
+    assert "baseline_level_match_provisional" not in codes
+
+
+def test_baseline_provisional_when_no_measured_capture(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    # Operator-only records (no acoustic overlap evidence) + a sensitivity gap:
+    # the datasheet trim is kept and the config is marked provisional.
+    payload = _baseline_payload(topology, _research_with_sensitivity(), tmp_path)
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["corrections"]["tweeter"]["gain_db"] == -25.2  # datasheet
+    assert payload["corrections_source"]["tweeter"] == "sensitivity"
+    assert payload["provisional"] is True
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_gain_derived_from_sensitivity" in codes
+    assert "baseline_level_match_provisional" in codes
+    assert "driver_gain_derived_from_measurement" not in codes
+
+
+def test_baseline_explicit_gain_skips_measured(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(tweeter_gain_db=-15.0),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    # Even with usable measured captures, an explicit operator gain wins and the
+    # measured chain is skipped (its reference assumption would be inconsistent).
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == -15.0
+    assert payload["corrections_source"]["tweeter"] == "explicit"
+    assert payload["provisional"] is False
+    assert payload["level_match"]["skipped_reason"] == "explicit_gain"
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_gain_derived_from_measurement" not in codes
+    assert "driver_gain_derived_from_sensitivity" not in codes
