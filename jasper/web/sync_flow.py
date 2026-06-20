@@ -151,6 +151,8 @@ async def _watch_playback(proc) -> None:
 
 
 def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
+    from .active_speaker_flow import active_phase as _active_speaker_phase
+
     own, peer, err = resolve_pair()
     if err:
         return {"ok": False, "error": err}, HTTPStatus.CONFLICT
@@ -159,6 +161,14 @@ def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
         return {
             "ok": False,
             "error": "pair channels are not one left + one right",
+        }, HTTPStatus.CONFLICT
+    # Active-speaker commissioning measures through the production graph too;
+    # refuse so the two measurement flows can't run at once (see
+    # active_speaker_flow — it participates cooperatively, not via the window).
+    if _active_speaker_phase() is not None:
+        return {
+            "ok": False,
+            "error": "active-speaker commissioning is in progress on this speaker",
         }, HTTPStatus.CONFLICT
 
     with _lock:

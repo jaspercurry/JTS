@@ -108,11 +108,140 @@ def _finite_float(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _overlap_level_at(
+    record: Any, fc: float, *, tol_hz: float = 1.0
+) -> float | None:
+    """A usable measured overlap-band level (dB) for ``fc``, or None (fail-closed).
+
+    Requires the driver's acoustic verdict to be ``present`` (the driver actually
+    produced in-band sound) and an overlap entry around ``fc`` flagged ``usable``
+    (good SNR, not silent, not clipped, enough bins). Anything else returns None,
+    so a missing / low-SNR / clipped capture cannot contribute a measured trim.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    acoustic = record.get("acoustic")
+    if not isinstance(acoustic, Mapping) or acoustic.get("verdict") != "present":
+        return None
+    for entry in acoustic.get("overlap_levels") or ():
+        if not isinstance(entry, Mapping) or not entry.get("usable"):
+            continue
+        entry_fc = _finite_float(entry.get("fc_hz"))
+        if entry_fc is None:
+            continue
+        if abs(entry_fc - fc) <= max(tol_hz, fc * 0.01):
+            return _finite_float(entry.get("level_db"))
+    return None
+
+
+def _measured_level_trims(
+    preset: ActiveSpeakerPreset,
+    measurements: Mapping[str, Any],
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Per-role attenuation-only trim from the MEASURED overlap-band level deltas.
+
+    For each adjacent-driver crossover, both drivers' near-field captures through
+    the production graph give their level in a band centred on the shared Fc; the
+    driver-to-driver delta is the relative sensitivity at the handoff (the −6 dB
+    Linkwitz-Riley shoulder cancels). We chain those deltas into a per-driver
+    attenuation (quietest driver = reference, 0 dB), so the acoustic sum is level
+    across every crossover — the MEASURED refinement of the datasheet sensitivity
+    trim ``_derive_corrections`` otherwise seeds.
+
+    Returns ``(trims_by_role, meta)``. ``trims_by_role`` is empty (fail-closed)
+    unless at least one speaker group has a usable overlap level for BOTH drivers
+    of EVERY crossover — any silent / clipped / low-SNR / missing capture drops
+    that group, and if no group qualifies the caller keeps the datasheet trim and
+    marks the config provisional. Magnitude only: never a phase/delay decision.
+    """
+    latest = measurements.get("latest_by_target")
+    if not isinstance(latest, Mapping):
+        summary = measurements.get("summary")
+        latest = (
+            summary.get("latest_driver_measurements")
+            if isinstance(summary, Mapping)
+            else None
+        )
+    records = [
+        record
+        for record in (latest.values() if isinstance(latest, Mapping) else [])
+        if isinstance(record, Mapping)
+    ]
+
+    roles = required_driver_roles(preset.way_count)
+    regions = sorted(preset.crossover_regions, key=lambda region: region.fc_hz)
+
+    by_group: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for record in records:
+        group_id = record.get("speaker_group_id")
+        role = record.get("role")
+        if (
+            isinstance(group_id, str)
+            and group_id
+            and isinstance(role, str)
+            and role in roles
+        ):
+            by_group.setdefault(group_id, {})[role] = record
+
+    per_group_trims: list[dict[str, float]] = []
+    deltas: list[dict[str, Any]] = []
+    for group_id, group_records in sorted(by_group.items()):
+        raw: dict[str, float] = {roles[0]: 0.0}
+        group_deltas: list[dict[str, Any]] = []
+        usable = True
+        for region in regions:
+            lo_role = region.lower_driver
+            up_role = region.upper_driver
+            fc = float(region.fc_hz)
+            level_lo = _overlap_level_at(group_records.get(lo_role), fc)
+            level_up = _overlap_level_at(group_records.get(up_role), fc)
+            if level_lo is None or level_up is None or lo_role not in raw:
+                usable = False
+                break
+            # effective[U] == effective[L]  =>  trim[U] = trim[L] + L_lo - L_up
+            raw[up_role] = raw[lo_role] + level_lo - level_up
+            group_deltas.append({
+                "speaker_group_id": group_id,
+                "crossover_fc_hz": fc,
+                "lower_role": lo_role,
+                "upper_role": up_role,
+                "delta_db": round(level_up - level_lo, 1),  # + => upper hotter
+            })
+        if not usable or set(raw) != set(roles):
+            continue
+        offset = max(raw.values())  # quietest driver becomes the 0 dB reference
+        per_group_trims.append({
+            role: max(round(raw[role] - offset, 1), _MAX_ATTENUATION_DB)
+            for role in roles
+        })
+        deltas.extend(group_deltas)
+
+    meta: dict[str, Any] = {
+        "groups_total": len(by_group),
+        "groups_measured": len(per_group_trims),
+        "deltas": deltas,
+    }
+    if not per_group_trims:
+        return {}, meta
+
+    averaged = {
+        role: sum(group[role] for group in per_group_trims) / len(per_group_trims)
+        for role in roles
+    }
+    offset = max(averaged.values())
+    trims = {
+        role: max(round(averaged[role] - offset, 1), _MAX_ATTENUATION_DB)
+        for role in roles
+    }
+    meta["trims"] = dict(trims)
+    return trims, meta
+
+
 def _derive_corrections(
     preset: ActiveSpeakerPreset,
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
-) -> tuple[dict[str, dict[str, float | bool]], list[dict[str, str]]]:
+) -> tuple[dict[str, dict[str, float | bool]], list[dict[str, str]], dict[str, Any]]:
     issues: list[dict[str, str]] = []
     corrections: dict[str, dict[str, float | bool]] = {
         role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
@@ -148,37 +277,85 @@ def _derive_corrections(
             corrections[str(role)]["gain_db"] = gain
             explicit_gain_roles.add(str(role))
 
-    # Fail-safe sensitivity trim. When research declares no explicit
-    # gain_offset_db for a driver but the sensitivities are known, attenuate the
-    # hotter drivers down to the least-sensitive (reference) driver so a
-    # high-sensitivity compression/horn driver can never start at full level
-    # relative to the woofer (the shrill / horn-dominant failure mode, and a
-    # diaphragm hazard). An explicit gain_offset_db always wins; on-axis
-    # measurement refines this interim trim later.
+    # Interim datasheet trim. When research declares no explicit gain_offset_db
+    # for a driver but the sensitivities are known, attenuate the hotter drivers
+    # down to the least-sensitive (reference) driver so a high-sensitivity
+    # compression/horn driver can never start at full level relative to the
+    # woofer (the shrill / horn-dominant failure mode, and a diaphragm hazard).
+    # These are computed but NOT yet committed: a usable MEASURED phone level
+    # match overrides them below, falling back to this datasheet estimate (marked
+    # provisional) when no measurement is available.
+    datasheet_trims: dict[str, float] = {}
     derivable_roles = [
         role for role in sensitivities if role not in explicit_gain_roles
     ]
     if len(sensitivities) >= 2 and derivable_roles:
         reference_db = min(sensitivities.values())
-        derived_notes: list[str] = []
         for role in derivable_roles:
             trim_db = reference_db - sensitivities[role]  # <= 0 by construction
             if trim_db >= -_SENSITIVITY_TRIM_EPS_DB:
                 continue  # reference driver and ties stay at unity
-            if trim_db < _MAX_ATTENUATION_DB:
-                trim_db = _MAX_ATTENUATION_DB
-            corrections[role]["gain_db"] = round(trim_db, 1)
-            derived_notes.append(f"{role} {round(trim_db, 1):.1f} dB")
-        if derived_notes:
-            issues.append(_issue(
-                "warning",
-                "driver_gain_derived_from_sensitivity",
-                (
-                    "applied an interim level trim from the sensitivity gap ("
-                    + ", ".join(derived_notes)
-                    + "); confirm against measurement before final tuning"
-                ),
-            ))
+            datasheet_trims[role] = max(round(trim_db, 1), _MAX_ATTENUATION_DB)
+
+    # MEASURED refinement: a usable phone near-field level match OVERRIDES the
+    # datasheet trim. Only when there are no explicit operator gains — an explicit
+    # gain_offset_db is the operator's deliberate choice and shifts the chain's
+    # reference, so we never mix it with a measured chain (explicit > measured >
+    # datasheet).
+    measured_trims, level_match = _measured_level_trims(preset, measurements)
+    if explicit_gain_roles and measured_trims:
+        level_match["applied"] = False
+        level_match["skipped_reason"] = "explicit_gain"
+        measured_trims = {}
+
+    sources: dict[str, str] = {}
+    measured_notes: list[str] = []
+    datasheet_notes: list[str] = []
+    for role in corrections:
+        if role in explicit_gain_roles:
+            sources[role] = "explicit"
+        elif role in measured_trims:
+            corrections[role]["gain_db"] = measured_trims[role]
+            sources[role] = "measured"
+            measured_notes.append(f"{role} {measured_trims[role]:.1f} dB")
+        elif role in datasheet_trims:
+            corrections[role]["gain_db"] = datasheet_trims[role]
+            sources[role] = "sensitivity"
+            datasheet_notes.append(f"{role} {datasheet_trims[role]:.1f} dB")
+        else:
+            sources[role] = "none"
+    level_match["applied"] = bool(measured_notes)
+
+    if measured_notes:
+        issues.append(_issue(
+            "info",
+            "driver_gain_derived_from_measurement",
+            (
+                "applied a measured phone level match ("
+                + ", ".join(measured_notes)
+                + ")"
+            ),
+        ))
+    if datasheet_notes:
+        issues.append(_issue(
+            "warning",
+            "driver_gain_derived_from_sensitivity",
+            (
+                "applied an interim level trim from the sensitivity gap ("
+                + ", ".join(datasheet_notes)
+                + "); confirm against measurement before final tuning"
+            ),
+        ))
+    provisional = any(source == "sensitivity" for source in sources.values())
+    if provisional:
+        issues.append(_issue(
+            "warning",
+            "baseline_level_match_provisional",
+            (
+                "per-driver level match is a datasheet estimate; run the guided "
+                "phone level-match to measure it"
+            ),
+        ))
 
     latest_summed = measurements.get("latest_summed_by_group")
     summed_records = [
@@ -204,7 +381,12 @@ def _derive_corrections(
             role = polarity.removeprefix("invert_")
             if role in corrections:
                 corrections[role]["inverted"] = True
-    return corrections, issues
+    meta = {
+        "sources": sources,
+        "provisional": provisional,
+        "level_match": level_match,
+    }
+    return corrections, issues, meta
 
 
 def _blocked_payload(
@@ -234,6 +416,9 @@ def _blocked_payload(
         },
         "verification": {},
         "corrections": {},
+        "corrections_source": {},
+        "level_match": {"groups_total": 0, "groups_measured": 0, "applied": False},
+        "provisional": False,
         "validation": {"status": "skipped", "reason": status},
         "permissions": {
             "may_compile": False,
@@ -439,12 +624,13 @@ def build_baseline_profile_candidate(
             playback_device_source=playback_device_source,
         )
 
-    corrections, correction_issues = _derive_corrections(
+    corrections, correction_issues, correction_meta = _derive_corrections(
         preset,
         crossover_preview,
         measurements,
     )
     issues.extend(correction_issues)
+    provisional = bool(correction_meta.get("provisional"))
     validation = {"status": "skipped", "reason": "not_written"}
     if write:
         config_target.parent.mkdir(parents=True, exist_ok=True)
@@ -516,6 +702,12 @@ def build_baseline_profile_candidate(
             ),
         },
         "corrections": corrections,
+        "corrections_source": correction_meta["sources"],
+        "level_match": correction_meta["level_match"],
+        # The per-driver level trim is a datasheet ESTIMATE, not a measured one.
+        # Surfaced in /state + the wizard so a household knows to run the guided
+        # phone level-match; the speaker is safe (attenuation-only) either way.
+        "provisional": provisional,
         "validation": validation,
         "permissions": {
             "may_compile": status in {
@@ -623,7 +815,7 @@ def recompose_baseline_yaml(
             "baseline_preset_unavailable",
             "active profile compiler could not build speaker preset intent",
         )])
-    corrections, _correction_issues = _derive_corrections(
+    corrections, _correction_issues, _correction_meta = _derive_corrections(
         preset,
         crossover_preview,
         measurements,

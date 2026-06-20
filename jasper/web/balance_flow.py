@@ -258,6 +258,7 @@ def handle_start(
     """POST /balance/start — gate, then open the session window.
     ``schedule`` fires a coroutine on the correction service's
     background loop without blocking."""
+    from .active_speaker_flow import active_phase as _active_speaker_phase
     from .pair_flow import members_by_channel, resolve_pair
 
     own, peer, err = resolve_pair()
@@ -268,6 +269,13 @@ def handle_start(
         return {"ok": False, "error": (
             "pair channels are not one left + one right — repair via "
             "the swap control on jts.local/rooms"
+        )}, HTTPStatus.CONFLICT
+    # Active-speaker commissioning also measures through the production graph;
+    # refuse so the two measurement flows can't run at once (it doesn't hold the
+    # measurement window, so the mutex can't catch it — see active_speaker_flow).
+    if _active_speaker_phase() is not None:
+        return {"ok": False, "error": (
+            "active-speaker commissioning is in progress on this speaker"
         )}, HTTPStatus.CONFLICT
 
     with _lock:

@@ -33,9 +33,10 @@ system volume and CamillaDSP at play time.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 # Default swept-sine parameters. Shorter than room correction's 10 s — a single
 # driver needs far less SNR than a multi-position room average — but the same
@@ -60,6 +61,21 @@ SILENT_PEAK_DBFS = -45.0  # at/below this the capture is effectively silent
 PRESENT_MIN_SEPARATION_DB = 0.0  # in-band must be at least as strong as out
 OUT_OF_BAND_SEPARATION_DB = -3.0  # clearly more energy outside the band
 DEFAULT_NULL_THRESHOLD_DB = 6.0  # crossover suckout that flags polarity/delay
+
+# Overlap-band level (L1 phone level matching). For a per-driver near-field
+# capture taken THROUGH the production crossover, the level each driver produces
+# in a band centred on a shared crossover Fc is the physically-correct quantity
+# to level-match: both adjacent drivers are rolling off symmetrically there
+# (Linkwitz-Riley), so the matched −6 dB shoulder bias cancels in the
+# driver-to-driver delta, leaving the relative driver sensitivity at Fc — exactly
+# what makes the acoustic sum flat across the handoff. We average the deconvolved
+# magnitude over one octave centred (geometrically) on Fc:
+# ``[Fc / OVERLAP_BAND_RATIO, Fc * OVERLAP_BAND_RATIO]``.
+OVERLAP_BAND_RATIO = 2.0 ** 0.5  # half-octave each side → one octave total
+# A band needs at least this many FFT bins for a stable mean. Below this (a very
+# low Fc on a short sweep) the overlap reading is marked unusable and the trim
+# math fails closed to the datasheet sensitivity trim.
+OVERLAP_MIN_BINS = 4
 
 DRIVER_ACOUSTIC_KIND = "jts_active_speaker_driver_acoustics"
 SUMMED_ACOUSTIC_KIND = "jts_active_speaker_summed_acoustics"
@@ -122,6 +138,12 @@ class DriverAcousticResult:
     passband_hz: tuple[float, float]
     mic_clipping: bool
     quality: dict[str, Any]
+    # Per-crossover overlap-band levels for L1 phone level matching. One entry
+    # per crossover Fc this driver participates in, each
+    # ``{fc_hz, lo_hz, hi_hz, level_db, bins, usable}``. ``usable`` is False when
+    # the capture was silent/clipped/unusable or the band had too few bins, so
+    # the trim math (jasper.active_speaker.baseline_profile) can fail closed.
+    overlap_levels: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -136,6 +158,7 @@ class DriverAcousticResult:
             "passband_hz": list(self.passband_hz),
             "mic_clipping": self.mic_clipping,
             "quality": self.quality,
+            "overlap_levels": [dict(entry) for entry in self.overlap_levels],
         }
 
 
@@ -282,11 +305,77 @@ def _band_mean_db(freqs, mag_db, lo_hz: float, hi_hz: float) -> float | None:
     return float(np.mean(mag_db[mask]))
 
 
+def _overlap_band_levels(
+    freqs,
+    mag_db,
+    overlap_fcs,
+    *,
+    capture_usable: bool,
+    silent: bool,
+    mic_clipping: bool,
+) -> tuple[dict[str, Any], ...]:
+    """Mean deconvolved magnitude in a one-octave band centred on each Fc.
+
+    Returns one entry per crossover ``Fc`` (``{fc_hz, lo_hz, hi_hz, level_db,
+    bins, usable}``). An entry is ``usable`` only when the capture passed quality
+    gating, was not silent, the mic did not clip, and the band held at least
+    ``OVERLAP_MIN_BINS`` bins — otherwise ``level_db`` is NaN and ``usable`` is
+    False so the level-match trim math can fail closed to the datasheet trim.
+    """
+    import numpy as np
+
+    entries: list[dict[str, Any]] = []
+    for raw_fc in overlap_fcs:
+        try:
+            fc = float(raw_fc)
+        except (TypeError, ValueError):
+            continue
+        if not (fc > 0) or not math.isfinite(fc):
+            continue
+        lo = max(fc / OVERLAP_BAND_RATIO, ANALYSIS_LO_HZ)
+        hi = min(fc * OVERLAP_BAND_RATIO, ANALYSIS_HI_HZ)
+        level_db = float("nan")
+        bins = 0
+        in_range = False
+        if capture_usable and freqs is not None and lo < hi:
+            mask = (freqs >= lo) & (freqs <= hi)
+            bins = int(np.count_nonzero(mask))
+            in_range = bool(freqs[0] <= fc <= freqs[-1])
+            if in_range:
+                # Level AT fc from the 1/24-octave-smoothed magnitude. At the
+                # crossover both adjacent drivers sit at their matched −6 dB
+                # shoulder, so the driver-to-driver delta is exactly their
+                # relative sensitivity. Taken as a point (not a linear-bin band
+                # mean, which would skew a sloped response — the lower driver
+                # rolls off while the upper rises); the smoothing is the
+                # log-symmetric SNR averaging, and the [lo, hi] octave is the
+                # confidence neighbourhood that must hold enough bins.
+                level_db = float(np.interp(fc, freqs, mag_db))
+        usable = (
+            capture_usable
+            and not silent
+            and not mic_clipping
+            and in_range
+            and bins >= OVERLAP_MIN_BINS
+            and math.isfinite(level_db)
+        )
+        entries.append({
+            "fc_hz": fc,
+            "lo_hz": lo,
+            "hi_hz": hi,
+            "level_db": level_db,
+            "bins": bins,
+            "usable": usable,
+        })
+    return tuple(entries)
+
+
 def analyze_driver_capture(
     captured_wav: str | Path,
     sweep_meta: Mapping[str, Any],
     *,
     passband_hz: tuple[float, float],
+    overlap_fcs: Sequence[float] = (),
     has_mic_calibration: bool = False,
 ) -> DriverAcousticResult:
     """Classify whether a driver is producing sound in its expected band.
@@ -297,6 +386,12 @@ def analyze_driver_capture(
     sits clearly outside its band (mis-wired output, swapped driver) is flagged
     ``out_of_band``. ``observed_mic_dbfs`` is the capture RMS — the value
     ``measurement.record_driver_measurement`` already consumes.
+
+    ``overlap_fcs`` are the crossover frequencies this driver participates in
+    (from :func:`jasper.active_speaker.profile.crossover_edges_for_role`); each
+    yields an overlap-band level entry (see :data:`OVERLAP_BAND_RATIO`) used to
+    refine the datasheet sensitivity trim with a MEASURED level match. Magnitude
+    only — never used to authorise a phase or delay decision.
     """
     import numpy as np
 
@@ -309,6 +404,7 @@ def analyze_driver_capture(
     )
     quality_dict = report.to_dict()
     mic_clipping = report.clipped_fraction >= 1e-4
+    silent = report.peak_dbfs <= SILENT_PEAK_DBFS
 
     if freqs is None:
         return DriverAcousticResult(
@@ -322,6 +418,10 @@ def analyze_driver_capture(
             passband_hz=(lo, hi),
             mic_clipping=mic_clipping,
             quality=quality_dict,
+            overlap_levels=_overlap_band_levels(
+                None, None, overlap_fcs,
+                capture_usable=False, silent=silent, mic_clipping=mic_clipping,
+            ),
         )
 
     band_lo = max(lo, ANALYSIS_LO_HZ)
@@ -344,7 +444,7 @@ def analyze_driver_capture(
         out_of_band = in_band
     separation = in_band - out_of_band
 
-    if report.peak_dbfs <= SILENT_PEAK_DBFS:
+    if silent:
         verdict, present = VERDICT_SILENT, False
     elif separation < OUT_OF_BAND_SEPARATION_DB:
         verdict, present = VERDICT_OUT_OF_BAND, False
@@ -366,6 +466,10 @@ def analyze_driver_capture(
         passband_hz=(lo, hi),
         mic_clipping=mic_clipping,
         quality=quality_dict,
+        overlap_levels=_overlap_band_levels(
+            freqs, mag_db, overlap_fcs,
+            capture_usable=True, silent=silent, mic_clipping=mic_clipping,
+        ),
     )
 
 

@@ -256,6 +256,30 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
 })
 
 
+def _active_speaker_level_match_provisional() -> bool | None:
+    """Whether the APPLIED active-speaker baseline's per-driver level match is a
+    datasheet estimate rather than a phone measurement.
+
+    Read off-disk (jasper-control runs non-root, group `jasper`) and fail-soft:
+    None when no active baseline is applied or the file is missing/unreadable;
+    the persisted `provisional` flag otherwise. Lets `/state` (and the landing
+    page) flag a provisional level match without importing the active-speaker
+    package onto the hot `/state` path.
+    """
+    path = (
+        os.environ.get("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE")
+        or "/var/lib/jasper/active_speaker_baseline_profile.json"
+    )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("status") != "applied":
+        return None
+    return bool(raw.get("provisional"))
+
+
 def _active_speaker_output_safety_snapshot(
     airplay_health: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -277,6 +301,11 @@ def _active_speaker_output_safety_snapshot(
         "safety_muted": safety_muted,
         "reason": "active_speaker_staged_startup" if safety_muted else None,
         "active_config_path": config_path or None,
+        # None unless an active-speaker baseline is applied; True when its
+        # per-driver level match is still a datasheet estimate (run the guided
+        # phone level-match to measure it). The speaker is attenuation-only and
+        # safe either way — this is a quality signal, not a safety one.
+        "level_match_provisional": _active_speaker_level_match_provisional(),
         "source": "airplay_health.camilla_config_path",
     }
 

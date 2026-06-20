@@ -26,6 +26,7 @@ import pytest
 from jasper.control.server import (
     VOLUME_MAX_DB,
     VOLUME_MIN_DB,
+    _active_speaker_level_match_provisional,
     _active_speaker_output_safety_snapshot,
     _clamp_db,
     _control_route_allowed_for_install_profile,
@@ -158,6 +159,45 @@ def test_active_speaker_output_safety_snapshot_allows_baseline_config() -> None:
 
     assert payload["safety_muted"] is False
     assert payload["reason"] is None
+
+
+def test_level_match_provisional_none_when_no_applied_baseline(
+    tmp_path, monkeypatch,
+) -> None:
+    state = tmp_path / "active_speaker_baseline_profile.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(state)
+    )
+    # Missing file -> None (not applicable).
+    assert _active_speaker_level_match_provisional() is None
+    # Saved but not applied -> None.
+    state.write_text(
+        json.dumps({"status": "ready_to_apply", "provisional": True}),
+        encoding="utf-8",
+    )
+    assert _active_speaker_level_match_provisional() is None
+
+
+def test_level_match_provisional_reads_applied_baseline(
+    tmp_path, monkeypatch,
+) -> None:
+    state = tmp_path / "active_speaker_baseline_profile.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(state)
+    )
+    state.write_text(
+        json.dumps({"status": "applied", "provisional": True}), encoding="utf-8"
+    )
+    assert _active_speaker_level_match_provisional() is True
+    state.write_text(
+        json.dumps({"status": "applied", "provisional": False}), encoding="utf-8"
+    )
+    assert _active_speaker_level_match_provisional() is False
+    # Snapshot surfaces it on /state.
+    payload = _active_speaker_output_safety_snapshot({
+        "current": {"camilla": {"config_path": "/var/lib/camilladsp/configs/x.yml"}},
+    })
+    assert payload["level_match_provisional"] is False
 
 
 @pytest.fixture

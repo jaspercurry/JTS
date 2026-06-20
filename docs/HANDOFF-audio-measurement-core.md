@@ -77,17 +77,24 @@ The product is three tiers:
   already there — that's why the refactor is low-risk.
 
 ### The gaps (worktree-confirmed)
-- **Active-speaker measurement loop is built but UNWIRED.**
-  `driver_acoustics.py` (`analyze_driver_capture`, `analyze_summed_crossover`)
-  and `commissioning_capture.py` (`record_driver_acoustic_capture`) are
-  fully coded and unit-tested, but referenced **only** by themselves,
-  `__init__.py`, and tests — **no production caller** (`commissioning.py`,
-  `measurement.py`, a web endpoint, or any daemon) invokes them. The
-  acoustic-verdict field stays `None` in production records.
-- **`DriverSpec.sensitivity_db` is stored but never read to set gain.**
-  Per-driver gain comes only from a caller-supplied corrections dict,
-  default 0 dB. There is no sensitivity-delta → trim path. (This is why a
-  ~25 dB woofer/tweeter sensitivity gap is not auto-compensated.)
+- ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**
+  The measurement loop *is* wired: `/sound/active-speaker/driver-capture` and
+  `/summed-capture` call `commissioning_capture.record_driver_acoustic_capture`
+  / `record_summed_acoustic_capture`, which run `driver_acoustics` and persist
+  the real acoustic verdict block into measurement state (the 2026-06-19 audit
+  inspected a pre-wiring snapshot — the wiring landed 2026-06-18). **L1 then
+  closed the level-match loop (2026-06-20):** each per-driver capture also
+  records an **overlap-band level** at the crossover Fc, and
+  `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
+  deltas into a per-driver attenuation that **overrides** the datasheet
+  sensitivity trim (fail-closed to the datasheet, marked *provisional*, when a
+  capture is silent/clipped/low-SNR/missing). See "L1 measured level match" below.
+- ~~**`DriverSpec.sensitivity_db` is stored but never read to set gain.**~~
+  **CLOSED.** `baseline_profile._derive_corrections` derives an interim per-driver
+  trim from the declared sensitivities (the ~25 dB woofer/horn gap is
+  attenuated), and the L1 measured overlap-band trim refines/overrides it. (The
+  schema field carrying the datasheet sensitivity is `sensitivity_db_2v83_1m` on
+  the crossover-preview drivers, not `DriverSpec.sensitivity_db`.)
 - **Duplicated graph-safety parsing.** The same CamillaDSP-graph
   invariants (per-output commission mute at −120 dB + wired; tweeter
   outputs wrapped by protective HP + limiter; fail-closed on parse error)
@@ -99,9 +106,17 @@ The product is three tiers:
   `driver_commission_audible_evidence` — that each re-parse), with a live
   read-back variant too. ≈4 parallel paths. (Matches the prior staff
   review's P1.)
-- **Active-speaker commissioning does not use `measurement_window`** — it
-  drives CamillaDSP load/unload directly, so it isn't serialized against
-  room correction / balance / sync.
+- ~~**Active-speaker commissioning does not use `measurement_window`**~~
+  **CLOSED (cooperatively, 2026-06-20).** Commissioning can't *hold* a
+  `measurement_window` the way correction/balance/sync do — it spans many
+  `/active-speaker/*` requests (each on its own per-request `asyncio.run` loop)
+  with the ramp tone continuous across them, so there is no persistent loop to
+  own the context manager. Instead [`jasper/web/active_speaker_flow.py`](../jasper/web/active_speaker_flow.py)
+  derives a self-expiring commission `active_phase()` from the safe-playback
+  session; `correction._reserve_start_slot` + `balance_flow`/`sync_flow`
+  `handle_start` consult it (refuse while commissioning), and `commission-load`
+  refuses while any of the three is active. Same guarantee (never two
+  measurement flows at once), self-healing via the safe-playback TTL.
 - **Confidence/quality thresholds are hard-coded per domain** (room:
   `acoustic_quality.py`; driver: `driver_acoustics.py`
   `SILENT_PEAK_DBFS=-45`, `NULL_THRESHOLD_DB=6`, …) with no shared,
@@ -235,6 +250,49 @@ datasheet sensitivity (or a conservative tweeter trim) and mark the config
 **provisional** in `/state` + UI; never emit a graph that sends full-level
 signal to a compression driver.
 
+### L1 measured level match (landed 2026-06-20)
+
+The phone level match refines the datasheet sensitivity trim with a measured
+one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
+
+1. **Capture (near-field, per driver).** The existing "Test each driver" card
+   ramps one driver audible through the production crossover
+   (`commission_ramp.build_stage5_ramp_gate`), the household holds the phone
+   ~2–5 cm from that driver, and the browser records the sweep with
+   [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js).
+   Placement copy lives on the page (`active-speaker-ui.js`
+   `NEARFIELD_LEVEL_MATCH_GUIDANCE`).
+2. **Overlap-band level.** `driver_acoustics.analyze_driver_capture(overlap_fcs=…)`
+   records, per crossover Fc the driver touches, the deconvolved magnitude **at
+   Fc** (the 1/24-octave-smoothed point, not a linear-bin band mean which would
+   skew a sloped response). Both adjacent drivers sit at their matched −6 dB
+   Linkwitz-Riley shoulder there, so the driver-to-driver delta is their relative
+   sensitivity. Each entry carries a `usable` flag (capture not
+   silent/clipped/unusable, ≥ `OVERLAP_MIN_BINS` bins) so the trim fails closed.
+3. **Trim chain → override.** `baseline_profile._measured_level_trims` reads those
+   overlap levels from measurement state, requires BOTH drivers of EVERY
+   crossover in a group to be `present` + `usable`, chains the deltas into a
+   per-driver attenuation (quietest driver = 0 dB reference), averages usable
+   groups, and clamps to the −60 dB floor. `_derive_corrections` then applies it
+   **over** the datasheet trim. Precedence: explicit operator gain > measured >
+   datasheet.
+4. **Fail-closed + provisional.** No usable measurement ⇒ keep the datasheet
+   trim, set `provisional=True` + `corrections_source[role]="sensitivity"` and the
+   `baseline_level_match_provisional` issue. Surfaced in the baseline payload, the
+   `/sound/` card ("Driver levels"), and jasper-control `/state`
+   (`active_speaker_output_safety.level_match_provisional`, read off the applied
+   baseline). Attenuation-only + the 0 dB ceiling hold either way; the emitted
+   baseline still re-proves the runtime_contract tweeter guard.
+5. **Serialization.** Commissioning excludes room correction / balance / sync
+   cooperatively — see the closed measurement-window gap above.
+
+Tests: `tests/test_active_speaker_level_match.py` (trim math + fail-closed),
+overlap-band cases in `tests/test_active_speaker_driver_acoustics.py`, and
+end-to-end override/provisional in `tests/test_active_speaker_baseline_profile.py`.
+**Owed: on-Pi (jts3) audible pass** — run the guided flow with a phone near each
+driver and confirm the measured trim lands near the datasheet ~25 dB delta and
+the speaker is audibly level-matched.
+
 ---
 
 ## Refactor roadmap (strangler-fig, regression-safe)
@@ -247,7 +305,7 @@ gate**; no big-bang. "Extract/move" ≠ "net-new".
 | **0. Spike** | ~150-line CLI: route a band-limited sweep to one driver through the production graph → capture via existing pipeline → print proposed trim | ~1 day | net-new (throwaway) | a real "tweeter +25 dB" number from JTS3 hardware |
 | **1. GraphValidator** | Extract one `graph_safety.GraphValidator`; call it at the `camilla_yaml` emit gate; replace the ≈4 parsers; add `test_graph_validator_rejects_flat_with_tweeter_role` | M | extract + 1 net-new gate | parsers deduped, all old safety tests pass, flat-with-tweeter is rejected (fixes JTS3 L0) |
 | **2. Kernel extraction** | Move pure `sweep/deconv/analysis/quality` into `jasper/audio_measurement/`; wrap with characterization tests (pass unchanged); add parameterized `QualityModel` | M | extract | correction + active-speaker import the kernel; behavior identical |
-| **3. Close Stage 6** | Wire `commissioning_capture` into a production caller + `/sound/` UI card; read `DriverSpec.sensitivity_db` → propose per-driver trim; register commissioning into `measurement_window`; `measurement_mode` enum | L | net-new wiring | L0+L1 ship: a user level-matches a 2-way and hears it; trim persists + re-freezes |
+| **3. Close Stage 6** | Wire `commissioning_capture` into a production caller + `/sound/` UI card; read `DriverSpec.sensitivity_db` → propose per-driver trim; register commissioning into `measurement_window`; `measurement_mode` enum | L | net-new wiring | L0+L1 ship: a user level-matches a 2-way and hears it; trim persists + re-freezes — **mostly landed (2026-06-20), see "L1 measured level match"; on-Pi (jts3) audible pass owed** |
 | **4. Balance/sync as 3rd consumer** | Reuse the kernel + bundles for pair level-match (and Delay/Snapcast for sync); persist durable bundles | M | net-new adapter | leader-measured pair balance rides the core with no forked DSP |
 
 **Progress (2026-06-19):** Phase 1 slice 1 landed (additive, no caller

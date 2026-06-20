@@ -409,6 +409,26 @@
 > vocabulary (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw
 > snake_case codes) reaches the household; `friendlySetupReason` now collapses
 > unmapped code-like strings to one actionable sentence instead of echoing them.
+> **Update, 2026-06-20 (L1 measured level match):** the per-driver near-field
+> capture now refines the datasheet sensitivity trim with a MEASURED one.
+> `driver_acoustics.analyze_driver_capture(overlap_fcs=…)` records each driver's
+> deconvolved level **at** the crossover Fc (the matched −6 dB Linkwitz-Riley
+> shoulder cancels, leaving the relative driver sensitivity), and
+> `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
+> deltas into a per-driver attenuation that OVERRIDES `_derive_corrections`'
+> interim datasheet trim (precedence: explicit gain > measured > datasheet).
+> Magnitude only — never a phase/delay decision. Fail-closed: a
+> silent/clipped/low-SNR/missing capture keeps the datasheet trim and marks the
+> baseline `provisional` (`corrections_source`, `level_match`, and `provisional`
+> on the baseline payload; `active_speaker_output_safety.level_match_provisional`
+> on jasper-control `/state`). Attenuation-only + the 0 dB ceiling are preserved,
+> so the emitted baseline still passes the runtime_contract tweeter guard.
+> Commissioning serializes against room correction / balance / sync cooperatively
+> via [`jasper/web/active_speaker_flow.py`](../jasper/web/active_speaker_flow.py)'s
+> self-expiring `active_phase()` (it can't hold `measurement_window` across its
+> per-request flow). Canonical home for the L1 product tier:
+> [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
+> "L1 measured level match". On-Pi (jts3) audible pass still owed.
 
 ## Current Operational Truth
 
