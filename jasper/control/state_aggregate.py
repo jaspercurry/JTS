@@ -20,6 +20,7 @@ from ..audio_quality import (
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
+from ..log_event import log_event
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
@@ -43,6 +44,22 @@ SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
 OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
+
+# Per-probe ceiling for the CamillaDSP /state probe. Every other probe in
+# _get_state already self-bounds (voice/mpris 2 s, mux 1 s, dial 0.5 s,
+# fan-in/outputd 2 s); the CamillaDSP probe did not, so a wedged-but-
+# listening DSP — TCP accepted, websocket read stalled — could hang the
+# whole aggregate indefinitely. On timeout the probe fails soft to its
+# all-None section, exactly like its siblings.
+_CAMILLA_PROBE_TIMEOUT_SEC = 2.0
+
+# Liveness backstop for the entire cross-daemon fan-out. This is NOT a
+# latency control — the normal path completes in ~200 ms, with HA's cached
+# network probe (~8 s worst case) the slow outlier. It only fires if a
+# probe blows past its own ceiling (e.g. a future probe added without
+# one), converting an unbounded hang into a logged, bounded failure so the
+# bounded-worker control plane can never be parked indefinitely on /state.
+_STATE_AGGREGATE_BUDGET_SEC = 20.0
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -347,12 +364,15 @@ async def _get_state(
                 if hasattr(cam, "get_config_file_path")
                 else _no_config_path()
             )
-            vol, rms, peak, clipped, active_config_path = await asyncio.gather(
-                cam.get_volume_db(best_effort=True),
-                cam.get_playback_rms(best_effort=True),
-                cam.get_playback_peak(best_effort=True),
-                cam.get_clipped_samples(best_effort=True),
-                config_path_probe,
+            vol, rms, peak, clipped, active_config_path = await asyncio.wait_for(
+                asyncio.gather(
+                    cam.get_volume_db(best_effort=True),
+                    cam.get_playback_rms(best_effort=True),
+                    cam.get_playback_peak(best_effort=True),
+                    cam.get_clipped_samples(best_effort=True),
+                    config_path_probe,
+                ),
+                timeout=_CAMILLA_PROBE_TIMEOUT_SEC,
             )
             status["main_volume_db"] = _round_db(vol)
             status["playback_rms_dbfs"] = _round_pair(rms)
@@ -437,27 +457,43 @@ async def _get_state(
             logger.exception("AEC/profile state probe failed")
             return None
 
-    (
-        camilla_st,
-        airplay,
-        voice_st,
-        ha_status,
-        dial_online,
-        fanin_st,
-        outputd_st,
-        mux_st,
-        aec_status,
-    ) = await asyncio.gather(
-        _camilla_status(),
-        _airplay_playing(),
-        _voice_status(),
-        _ha_status(),
-        _dial_online(),
-        _fanin_status(),
-        _outputd_status(local_status_json=local_status_json),
-        _mux_status(),
-        _aec_status(),
-    )
+    try:
+        (
+            camilla_st,
+            airplay,
+            voice_st,
+            ha_status,
+            dial_online,
+            fanin_st,
+            outputd_st,
+            mux_st,
+            aec_status,
+        ) = await asyncio.wait_for(
+            asyncio.gather(
+                _camilla_status(),
+                _airplay_playing(),
+                _voice_status(),
+                _ha_status(),
+                _dial_online(),
+                _fanin_status(),
+                _outputd_status(local_status_json=local_status_json),
+                _mux_status(),
+                _aec_status(),
+            ),
+            timeout=_STATE_AGGREGATE_BUDGET_SEC,
+        )
+    except asyncio.TimeoutError:
+        # A probe blew past its own ceiling. Fail loud (the handler turns
+        # this into a 502) rather than hang a bounded worker forever; the
+        # cheap /healthz probe stays answerable so this can't manufacture a
+        # T5.2 reboot. Greppable so the offending probe is diagnosable.
+        log_event(
+            logger,
+            "state.aggregate_timeout",
+            budget_sec=_STATE_AGGREGATE_BUDGET_SEC,
+            level=logging.WARNING,
+        )
+        raise
 
     spotify_blob = librespot_state.read(
         os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),

@@ -7,6 +7,7 @@ coordinator that records calls.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -2222,6 +2223,151 @@ def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
     assert len(results) == 2
     assert all(item == (200, {"ok": True, "calls": 1}) for item in results)
     assert calls == 1
+
+
+def test_single_flight_cache_recomputes_after_ttl_expiry():
+    """Within the TTL the cached value is reused; once it expires the
+    next caller recomputes. Uses an injected clock so the assertion is
+    deterministic, not wall-clock timed."""
+    from jasper.control.server import _SingleFlightTTLCache
+
+    now = {"t": 1000.0}
+    calls = {"n": 0}
+
+    def compute():
+        calls["n"] += 1
+        return calls["n"]
+
+    cache = _SingleFlightTTLCache(ttl_sec=1.0, clock=lambda: now["t"])
+
+    assert cache.get_or_compute(compute) == 1
+    now["t"] = 1000.9  # still inside the 1 s TTL -> served from cache
+    assert cache.get_or_compute(compute) == 1
+    assert calls["n"] == 1
+    now["t"] = 1001.1  # TTL elapsed -> recompute
+    assert cache.get_or_compute(compute) == 2
+    assert calls["n"] == 2
+
+
+def test_single_flight_cache_does_not_cache_failures():
+    """A raising compute propagates, is not cached, and clears the
+    in-flight flag so the next caller retries cleanly rather than
+    inheriting a stuck in-flight state."""
+    from jasper.control.server import _SingleFlightTTLCache
+
+    cache = _SingleFlightTTLCache(ttl_sec=60.0)
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return "ok"
+
+    with pytest.raises(RuntimeError, match="boom"):
+        cache.get_or_compute(flaky)
+    # Failure not cached + in-flight released -> retry succeeds.
+    assert cache.get_or_compute(flaky) == "ok"
+    assert calls["n"] == 2
+
+
+def test_state_camilla_probe_times_out_fail_soft(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """A wedged-but-listening CamillaDSP (TCP accepted, websocket read
+    stalled) must not hang /state: the camilla probe self-bounds and its
+    section reports null, while the rest of the aggregate still resolves
+    — the same fail-soft contract its sibling probes already honor."""
+    import jasper.camilla as camilla_mod
+    import jasper.control.state_aggregate as sa
+
+    class HangingCamilla:
+        def __init__(self, *a, **k):
+            pass
+
+        async def _hang(self, *, best_effort=False):
+            await asyncio.sleep(5)
+
+        get_volume_db = _hang
+        get_playback_rms = _hang
+        get_playback_peak = _hang
+        get_clipped_samples = _hang
+        get_config_file_path = _hang
+
+    async def _no_airplay(**kwargs):
+        return None
+
+    monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
+    monkeypatch.setattr(sa.mpris, "shairport_playing", _no_airplay)
+    monkeypatch.setattr(sa, "_CAMILLA_PROBE_TIMEOUT_SEC", 0.05)
+    monkeypatch.delenv("JASPER_HA_URL", raising=False)
+    monkeypatch.delenv("JASPER_HA_TOKEN", raising=False)
+    base, _ = server_with_coordinator
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"))
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    audio = body["audio"]
+    assert audio["main_volume_db"] is None
+    assert audio["playback_rms_dbfs"] is None
+    assert audio["clipped_samples"] is None
+    # Fail-soft: the camilla stall didn't take down the whole snapshot.
+    assert "renderers" in body
+
+
+async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
+    monkeypatch, caplog,
+):
+    """If a probe blows past its own ceiling, the aggregate liveness
+    budget converts the hang into a logged failure (the handler turns it
+    into a 502) rather than parking a bounded worker forever — so an
+    overload can't manufacture a T5.2 reboot via a wedged /state."""
+    import jasper.camilla as camilla_mod
+    import jasper.control.state_aggregate as sa
+    from jasper import home_assistant
+
+    class HangingCamilla:
+        def __init__(self, *a, **k):
+            pass
+
+        async def _hang(self, *, best_effort=False):
+            await asyncio.sleep(5)
+
+        get_volume_db = _hang
+        get_playback_rms = _hang
+        get_playback_peak = _hang
+        get_clipped_samples = _hang
+        get_config_file_path = _hang
+
+    async def _fast_ha(*a, **k):
+        return {"configured": False, "connected": False}
+
+    async def _no_airplay(**kwargs):
+        return None
+
+    monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
+    monkeypatch.setattr(home_assistant, "probe_status_from_env", _fast_ha)
+    monkeypatch.setattr(sa.mpris, "shairport_playing", _no_airplay)
+    # Camilla's own ceiling is high, so the OUTER aggregate budget is what
+    # fires — that's the path under test.
+    monkeypatch.setattr(sa, "_CAMILLA_PROBE_TIMEOUT_SEC", 30.0)
+    monkeypatch.setattr(sa, "_STATE_AGGREGATE_BUDGET_SEC", 0.1)
+
+    with caplog.at_level("WARNING", logger="jasper.control.state_aggregate"):
+        with pytest.raises(asyncio.TimeoutError):
+            await sa._get_state(
+                camilla_host="127.0.0.1",
+                camilla_port=1234,
+                voice_socket_path="/nonexistent.sock",
+                dial_heartbeat={},
+            )
+
+    assert any(
+        "event=state.aggregate_timeout" in r.getMessage()
+        for r in caplog.records
+    ), "aggregate timeout must emit a greppable event= line"
 
 
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):

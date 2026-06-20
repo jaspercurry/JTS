@@ -377,7 +377,11 @@ focused day of work. Build it in `jasper-control` mirroring
 - TCP connect 127.0.0.1:22 (sshd accepting)
 - HTTP GET 127.0.0.1:8780/healthz (control alive — yes, the
   supervisor probes itself, which catches the "we're hung in
-  asyncio" case)
+  asyncio" case). A `429` from jasper-control's request-admission
+  gate counts as alive-but-shedding, not dead — see the liveness
+  contract in [HANDOFF-resilience.md](HANDOFF-resilience.md) (the
+  canonical T5.2 operational reference) for why overload shedding
+  must not manufacture a reboot.
 - `cat /proc/loadavg` reads in <1 s (catches kernel I/O stall)
 
 Threshold: 3 consecutive failures, 30 s cadence with ±3 s
