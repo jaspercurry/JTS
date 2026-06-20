@@ -207,7 +207,9 @@ class _ActiveGraphCarrier:
                 "ungroup it first. Your crossover and driver protection are "
                 "unchanged.",
             )
-        yaml = _recompose_active_baseline_with_eq(profile, out_path=out_path)
+        yaml = _recompose_active_baseline_with_eq(
+            profile, output_trim_db=output_trim_db, out_path=out_path
+        )
         return ReemitResult(yaml=yaml, room_peq_count=0)
 
 
@@ -248,7 +250,9 @@ def _bonded_active_member() -> bool:
     return is_active_member(load_config())
 
 
-def _recompose_active_baseline_with_eq(profile, *, out_path: str | Path | None):
+def _recompose_active_baseline_with_eq(
+    profile, *, output_trim_db: float = 0.0, out_path: str | Path | None = None
+):
     """Recompose the SOLO active baseline with ``profile``'s preference EQ folded
     in pre-split, returning the emitted YAML (written to ``out_path`` when given).
 
@@ -256,9 +260,12 @@ def _recompose_active_baseline_with_eq(profile, *, out_path: str | Path | None):
     emitter (``recompose_baseline_yaml``) rather than parsing the running config
     — so the crossover/limiter/protective-HP come from the canonical builder,
     not a lossy round-trip — and raises :class:`CarrierCannotHostEq` if that
-    evidence can no longer produce a baseline. All imports are lazy: this only
-    runs for a speaker that already IS an active baseline, so the
-    active-speaker + sound-profile deps stay out of the base wizard path.
+    evidence can no longer produce a baseline. ``output_trim_db`` (the
+    household's manual headroom + loudness-match attenuation) is folded into the
+    active headroom so the active path honours it like the stereo path. All
+    imports are lazy: this only runs for a speaker that already IS an active
+    baseline, so the active-speaker + sound-profile deps stay out of the base
+    wizard path.
     """
     from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
     from jasper.active_speaker.crossover_preview import load_crossover_preview
@@ -277,6 +284,7 @@ def _recompose_active_baseline_with_eq(profile, *, out_path: str | Path | None):
         crossover_preview=crossover_preview,
         measurements=measurements,
         preference_filters=preference_filters,
+        output_trim_db=output_trim_db,
         out_path=out_path,
     )
     if yaml is None:

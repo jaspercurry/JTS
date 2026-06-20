@@ -180,12 +180,14 @@ def _active_baseline_yaml(
     way: int,
     *,
     preference_filters: tuple[FilterSpec, ...] = (),
+    output_trim_db: float = 0.0,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_baseline_config(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
         preference_filters=preference_filters,
+        output_trim_db=output_trim_db,
         baseline_id=f"baseline-{layout}-{way}way",
     )
 
@@ -297,19 +299,32 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
 
 # --- PR-3: preference EQ folds into the active baseline, pre-split -------
 
-def test_baseline_with_preference_eq_stays_approved() -> None:
+@pytest.mark.parametrize(
+    "layout,mode,way",
+    [
+        ("mono", "active_2_way", 2),
+        ("mono", "active_3_way", 3),
+        ("stereo", "active_2_way", 2),
+        ("stereo", "active_3_way", 3),
+    ],
+)
+def test_baseline_with_preference_eq_stays_approved(layout, mode, way) -> None:
     # Keystone (invariant 2), emitter-level: emit the real active baseline with a
     # preference SHELF folded in, feed it back through the SAME classifier for the
     # SAME topology -> still GRAPH_APPROVED_ACTIVE_RUNTIME. Folding EQ never breaks
-    # the protection contract.
-    topology = _active_topology("mono", "active_2_way")
+    # the protection contract. Cover stereo + 3-way because the classifier's
+    # per-output name collection gathers the pre-split [0,1] pref names into
+    # outputs 0/1 but not the right-channel/higher outputs — an asymmetry that
+    # only manifests beyond mono-2-way.
+    topology = _active_topology(layout, mode)
     prefs = (
         FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
+        FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=3.0, q=1.0),
     )
 
     graph = classify_camilla_graph(
         topology=topology,
-        text=_active_baseline_yaml("mono", 2, preference_filters=prefs),
+        text=_active_baseline_yaml(layout, way, preference_filters=prefs),
     )
 
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
@@ -346,6 +361,41 @@ def test_baseline_preference_boost_folds_into_headroom() -> None:
     assert _headroom_db(flat) - _headroom_db(boosted) >= 8.0 - 1e-6
     assert _headroom_db(boosted) <= 0.0
     assert "volume_limit: 0.0" in boosted
+
+
+def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
+    # output_trim_db (manual headroom + loudness match) folds into the SAME
+    # active_baseline_headroom gain as the boost, so the active path honours the
+    # household's loudness setting exactly like emit_sound_config. It applies
+    # ONLY when the profile has EQ (mirrors the stereo path): a flat profile
+    # plays at unity and ignores the trim.
+    import re
+
+    def _headroom_db(text: str) -> float:
+        match = re.search(
+            r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
+            text,
+        )
+        assert match is not None
+        return float(match.group(1))
+
+    prefs = (
+        FilterSpec(name="pref_pk", biquad_type="Peaking", freq=2000.0, gain=2.0, q=1.0),
+    )
+    # With EQ: -(12 baseline + 2 boost + 4 trim) = -18.
+    with_eq = _active_baseline_yaml("mono", 2, preference_filters=prefs, output_trim_db=4.0)
+    assert _headroom_db(with_eq) == -18.0
+    assert _headroom_db(with_eq) <= 0.0
+    assert classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=with_eq
+    ).allowed is True
+
+    # Flat profile: the trim is ignored (can't clip from EQ), headroom stays -12
+    # and the config is byte-identical to no-trim — preserves the no-EQ contract.
+    flat_no_trim = _active_baseline_yaml("mono", 2)
+    flat_with_trim = _active_baseline_yaml("mono", 2, output_trim_db=4.0)
+    assert _headroom_db(flat_with_trim) == -12.0
+    assert flat_with_trim == flat_no_trim
 
 
 def test_baseline_preference_step_is_before_split_mixer() -> None:

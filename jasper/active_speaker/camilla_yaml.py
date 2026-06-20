@@ -374,6 +374,7 @@ def _emit_baseline_filter_definitions(
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
     preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
 ) -> str:
     lines: list[str] = []
     # Program-domain headroom for the pre-split preference EQ (Layer C). The
@@ -384,9 +385,20 @@ def _emit_baseline_filter_definitions(
     # mechanism emit_sound_config uses for room boosts (total_positive_boost_db).
     # The fold keeps the emitted gain <= -boost_sum, so the runtime classifier's
     # "headroom present and non-positive" baseline invariant holds by construction.
+    #
+    # output_trim_db (the household's manual headroom + loudness-match attenuation)
+    # folds into the SAME gain so the active path honours it exactly like the
+    # stereo emit_sound_config path. Like the stereo path it applies ONLY when the
+    # profile actually has EQ: a flat profile can't clip from EQ and plays at
+    # unity, so a configured trim is ignored (keeps the no-EQ baseline
+    # byte-identical). A trim is a (non-negative) attenuation, clamped here.
     boost_db = total_positive_boost_db(preference_filters)
+    trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
     lines.extend(
-        emit_gain_filter("active_baseline_headroom", -(baseline_headroom_db + boost_db))
+        emit_gain_filter(
+            "active_baseline_headroom",
+            -(baseline_headroom_db + boost_db + trim_db),
+        )
     )
     for region in _ordered_regions(preset):
         lines.extend(emit_linkwitz_riley(
@@ -899,6 +911,7 @@ def emit_active_speaker_baseline_config(
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -917,6 +930,13 @@ def emit_active_speaker_baseline_config(
     corrected program cannot exceed unity at the split input (see the placement
     + headroom rationale in ``docs/HANDOFF-dsp-graph-carrier.md``). The empty
     default keeps every existing caller byte-identical.
+
+    ``output_trim_db`` is the household's manual headroom + loudness-match
+    attenuation (``jasper.sound.settings.output_trim_db``), folded into the same
+    ``active_baseline_headroom`` gain so the active path honours it exactly like
+    ``emit_sound_config``. It is applied only when ``preference_filters`` is
+    non-empty (a flat profile can't clip from EQ and plays at unity), so the
+    default keeps the no-EQ baseline byte-identical.
     """
 
     preset.validate()
@@ -939,6 +959,7 @@ def emit_active_speaker_baseline_config(
         limiter_clip_limit_db,
         "limiter_clip_limit_db",
     )
+    output_trim_db = _finite_float(output_trim_db, "output_trim_db")
     if volume_limit_db > 0:
         raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
     if baseline_headroom_db < 0 or baseline_headroom_db > 40:
@@ -984,6 +1005,7 @@ def emit_active_speaker_baseline_config(
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
         preference_filters=active_preference_filters,
+        output_trim_db=output_trim_db,
     )
     mixer_yaml = _emit_split_mixer(preset)
     pipeline_yaml = _emit_baseline_pipeline(

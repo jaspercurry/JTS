@@ -171,7 +171,10 @@ makes them safe:
    gain**, not added as a sibling pre-split attenuation. Reduce available
    pre-split headroom by `total_positive_boost_db(preference + room)`
    (the exact mechanism `emit_sound_config` uses for room boosts), so the
-   corrected program cannot exceed unity before the split.
+   corrected program cannot exceed unity before the split. The household's
+   `output_trim_db` (manual headroom + loudness match) folds into the SAME gain
+   — gated on the profile actually having EQ, exactly like the stereo path — so
+   the active EQ apply honours it rather than silently dropping it.
 
 **Compose, don't text-splice.** `emit_active_speaker_baseline_config` grew an
 optional `preference_filters` param wired pre-split (a separate Filter step on

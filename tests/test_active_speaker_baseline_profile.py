@@ -759,6 +759,24 @@ def test_recompose_baseline_yaml_folds_preference_eq_and_stays_approved(
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True
 
+    # output_trim_db (manual headroom + loudness match) threads through recompose
+    # and folds into the SAME headroom gain (12 baseline + 6 boost + 4 trim = 22),
+    # so the active EQ apply honours the household's loudness setting; still APPROVED.
+    trimmed_yaml, trim_issues = recompose_baseline_yaml(
+        topology,
+        crossover_preview=preview,
+        measurements=measurements,
+        preference_filters=prefs,
+        output_trim_db=4.0,
+    )
+    assert trim_issues == []
+    trim_match = re.search(
+        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
+        trimmed_yaml,
+    )
+    assert trim_match is not None and float(trim_match.group(1)) == -22.0
+    assert classify_camilla_graph(topology=topology, text=trimmed_yaml).allowed is True
+
 
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
     # When the saved evidence can no longer produce a baseline, recompose returns

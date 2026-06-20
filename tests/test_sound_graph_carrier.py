@@ -280,11 +280,16 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
         return_value="eqd-active-yaml",
     ) as recompose:
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
-        result = carrier.reemit(mock.sentinel.profile, out_path=out, profile_id="id")
+        result = carrier.reemit(
+            mock.sentinel.profile, out_path=out, profile_id="id", output_trim_db=3.0
+        )
     assert isinstance(result, ReemitResult)
     assert result.yaml == "eqd-active-yaml"
     assert result.room_peq_count == 0
     assert recompose.call_args.kwargs["out_path"] == out
+    # The household's manual headroom / loudness-match trim is forwarded to the
+    # active emitter, not silently dropped.
+    assert recompose.call_args.kwargs["output_trim_db"] == 3.0
 
 
 def test_bonded_active_baseline_refuses_with_stable_reason(tmp_path):

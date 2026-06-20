@@ -280,6 +280,25 @@ def _load_saved_state(path: Path) -> dict[str, Any] | None:
     return raw
 
 
+def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
+    """True when the saved crossover preview is a fresh, staging-ready artifact.
+
+    The single source of the preview-readiness gate, shared by
+    :func:`build_baseline_profile_candidate` (compile/apply) and
+    :func:`recompose_baseline_yaml` (the carrier's EQ re-emit) so the two cannot
+    drift on what "ready" means.
+    """
+    return (
+        crossover_preview.get("kind") == "jts_active_speaker_crossover_preview"
+        and crossover_preview.get("status") == "ready_for_protected_staging"
+        and bool(
+            (crossover_preview.get("permissions") or {}).get(
+                "may_prepare_protected_startup_config"
+            )
+        )
+    )
+
+
 def build_baseline_profile_candidate(
     topology: OutputTopology,
     *,
@@ -345,15 +364,7 @@ def build_baseline_profile_candidate(
         return out
 
     issues: list[dict[str, str]] = []
-    preview_ready = (
-        crossover_preview.get("kind") == "jts_active_speaker_crossover_preview"
-        and crossover_preview.get("status") == "ready_for_protected_staging"
-        and bool(
-            (crossover_preview.get("permissions") or {}).get(
-                "may_prepare_protected_startup_config"
-            )
-        )
-    )
+    preview_ready = _crossover_preview_ready(crossover_preview)
     if not preview_ready:
         issues.append(_issue(
             "blocker",
@@ -541,6 +552,7 @@ def recompose_baseline_yaml(
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
     preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
     playback_device: str | None = None,
     out_path: str | Path | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
@@ -555,9 +567,26 @@ def recompose_baseline_yaml(
     (``resolve_active_playback_device`` → ``compile_preset_from_crossover_preview``
     → ``_derive_corrections`` → ``emit_active_speaker_baseline_config``) — rather
     than parsing the running config (the explicit anti-pattern). Only the
-    ``preference_filters`` differ from the durable baseline; the crossover,
-    per-driver limiters, tweeter high-pass, and 0 dB ceiling are identical, so
-    the emitted YAML re-proves as ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
+    ``preference_filters`` (and the ``output_trim_db`` they ride with) differ
+    from the durable baseline; the crossover, per-driver limiters, tweeter
+    high-pass, and 0 dB ceiling are identical, so the emitted YAML re-proves as
+    ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
+
+    ``output_trim_db`` is the household's manual headroom + loudness-match
+    attenuation; the emitter folds it into ``active_baseline_headroom`` so the
+    active EQ apply honours it exactly like the stereo path.
+
+    **Gate scope (intentionally a subset of the candidate builder).** This only
+    re-checks what it needs to EMIT a structurally-valid baseline — playback
+    device, preview-readiness (the shared :func:`_crossover_preview_ready`
+    predicate), and a compilable preset. It deliberately does NOT re-run the
+    candidate builder's *readiness/quality* gates (driver-measurement /
+    summed-validation completeness, route width, subwoofer-block): the carrier
+    only reaches this for an already-APPLIED baseline that passed all of those
+    at apply time, and the protective invariants are re-proven structurally by
+    ``classify_camilla_graph`` + CamillaDSP ``--check`` downstream — not by these
+    gates. So a quality-degraded (but still structurally-safe) re-emit is
+    preferred over refusing a household's EQ change.
 
     Returns ``(yaml, [])`` on success (writing to ``out_path`` when given, at the
     same group-readable mode the emitter uses), or ``(None, issues)`` when the
@@ -577,16 +606,7 @@ def recompose_baseline_yaml(
             "baseline_playback_device_missing",
             "active profile compiler needs an explicit active playback device",
         )]
-    preview_ready = (
-        crossover_preview.get("kind") == "jts_active_speaker_crossover_preview"
-        and crossover_preview.get("status") == "ready_for_protected_staging"
-        and bool(
-            (crossover_preview.get("permissions") or {}).get(
-                "may_prepare_protected_startup_config"
-            )
-        )
-    )
-    if not preview_ready:
+    if not _crossover_preview_ready(crossover_preview):
         return None, [_issue(
             "blocker",
             "baseline_crossover_preview_not_ready",
@@ -613,6 +633,7 @@ def recompose_baseline_yaml(
         playback_device=resolved_device,
         corrections=corrections,
         preference_filters=preference_filters,
+        output_trim_db=output_trim_db,
         out_path=out_path,
         baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
     )
