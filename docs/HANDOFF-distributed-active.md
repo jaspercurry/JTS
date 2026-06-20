@@ -455,16 +455,96 @@ speakers, one as leader:
   [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md),
   [HANDOFF-multiroom.md](HANDOFF-multiroom.md)
 
+## Q2 spike — active-leader (and solo-active) TTS band-limiting
+
+> **Status: open — this spike GATES Slice 5 (and informs Slice 3's
+> fail-closed cue). It does NOT gate the follower core (Slices 1–4): a
+> follower is voice/TTS-parked, so it has no TTS to band-limit. Direction
+> leaning (owner, 2026-06-20): ratify *leader-only voice* (already de-facto
+> true) + the cheapest tweeter-safe LOCAL band-limit. The snapcast round-trip
+> is NOT in the tweeter-safe options — measure the DSP-only delta on `jts3`.**
+
+**Rules today (verified — `rust/jasper-outputd/src/config.rs`, multiroom
+inv-A).** TTS is mixed at `jasper-outputd` (final stage), **low-latency** (past
+the snapcast round-trip) and **upstream of the AEC-reference publish tap** —
+inv-A: the reference must `== final DAC content`, TTS-inclusive, or the speaker
+wakes on / talks over its own voice. The outputd TTS mixer is **2-channel
+`single_alsa`-only**, so it does not apply to an active (N-channel) sink as-is.
+
+**The trilemma.** Tweeter-safe TTS on an active speaker wants three things that
+fight on a leader: **P1** through Layer A (tweeter-safe); **P2** no snapcast
+round-trip (low-latency); **P3** summed before the outputd publish tap (in the
+AEC reference — non-negotiable). Today's outputd mix = P2+P3, not P1; the fan-in
+"upstream" path = P1+P3, not P2 on a leader.
+
+**Latency — the part that actually matters, and the key clarification.** The big
+latency (the snapcast round-trip, ~hundreds of ms) is incurred **only** by
+sending TTS *upstream of the bake* (Option 1). The tweeter-safe options do
+**not** put TTS through snapcast: outputd is past the round-trip, and camilla#2
+(the crossover) is *fed by* the round-trip loopback but mixing TTS **into** that
+loopback enters **after** snapclient — so TTS traverses only the crossover DSP,
+not snapcast. The incremental latency of tweeter-safe leader TTS is therefore
+**DSP latency, not round-trip latency**: ~the crossover instance's chunk (tens
+of ms, tunable — the same a *solo* active speaker already pays) for the camilla
+path, or ~one biquad pass (sub-ms) for a protective filter at outputd. **The
+spike measures these on `jts3` and confirms the round-trip is out of the TTS
+path for the chosen option.**
+
+**Options.**
+
+| # | Where TTS is band-limited | P1 | P2 | P3 | Cost |
+|---|---|---|---|---|---|
+| 1 | upstream at fan-in (before the bake) | ✅ | ✗ round-trip | ✅ | laggy; also streams TTS to the follower (inv-A forbids) |
+| 2 | at outputd, add per-driver protection to the TTS lane | ✅ | ✅ | ✅ | safety-critical DSP in the reboot-on-fail Rust daemon; "minimal" = either skip-tweeter (muffled voice) or reimplement the crossover (the thing Option-B avoided) |
+| 3 | into camilla#2's input (post-round-trip, pre-crossover) | ✅ | ✅ | ✅ | reuses the **verified** crossover + `classify_camilla_graph` re-proof, outputd stays dumb; cost = a new TTS mix point on the loopback + the content-duck must follow + the crossover chunk latency |
+| 4 | **leader-only voice** (product decision) | — | — | — | see below |
+
+**Option 4 — leader-only voice (likely yes).** TTS is **already** leader-local
+(the follower is voice-parked; inv-A keeps TTS out of the stream), so "voice
+plays only from the leader" is de-facto true — ratify it. You don't need stereo
+voice; this **removes any need to stream TTS / sync it**, killing the
+round-trip-latency worry outright. It does **not** by itself make the *leader's
+own* TTS tweeter-safe (the leader is still active), so it **combines with**
+Option 2 or 3 for the leader's own drivers. UX: the assistant "lives" on the
+leader — fine in one room.
+
+**Solo active is the simpler half and the foundation.** A *solo* active speaker
+has no round-trip, so "TTS at fan-in → the one CamillaDSP (which contains Layer
+A) → outputd" is P1+P2+P3 for free — and the model the leader case extends. But
+the outputd-2ch-only constraint means solo-active TTS can't use the outputd
+mixer either, so confirm solo-active TTS actually works today (it may itself be
+an unverified gap). Fix solo first.
+
+**The spike — answer in this order, then write the decision back here:**
+
+1. **Solo-active TTS today** *(HW-light)* — trace the TTS transport on a solo
+   active speaker: does it route fan-in → CamillaDSP (Layer A) → outputd
+   (band-limited, in-reference), or is the 2ch-only constraint silently dropping
+   it? Fix if broken. This is the foundation for everything below.
+2. **Ratify leader-only voice** *(product)* — follower stays voice-and-TTS-parked.
+3. **Measure the latency delta on `jts3`** for (a) today's outputd mix
+   [baseline, unsafe], (b) Option 3 camilla#2-input [+crossover chunk],
+   (c) Option 2 outputd protective filter [+~one biquad]. Confirm none routes
+   TTS through the snapcast round-trip. Set the conversational-latency budget.
+4. **Pick the leader mechanism** — Option 3 (verified crossover, +chunk, dumb
+   outputd) vs Option 2 (cheapest latency but muffled-or-reimplemented). Weigh
+   fidelity vs latency vs "no DSP in outputd."
+5. **Resolve the follower fail-closed cue** — same injection-point class, but
+   follower-local (no round-trip), so the solo answer from (1) applies: the
+   cue must pass through the follower's Layer A, not be injected post-camilla.
+6. **Ratify** — replace this "open" status with the decision; update Slice 5
+   (and Slice 3's cue handling) scope before building.
+
 ## Open questions
 
 1. **Active-leader RAM** — does a second (driver-DSP) CamillaDSP fit
    alongside the bake + snapserver + snapclient on a 1 GB Pi 5 leader?
    Measure on `jts3` before Slice 5.
-2. **Active-leader TTS band-limiting** — inv-A mixes leader TTS at outputd
-   *after* the round-trip (after the crossover instance). On an active
-   leader that bypasses Layer A: route TTS through the crossover (adds
-   latency, fights inv-A) or band-limit at the outputd mix point (a minimal
-   per-driver HP in outputd just for TTS)? Resolve before Slice 5.
+2. **Active-leader TTS band-limiting** — gates Slice 5. Full analysis, the
+   P1/P2/P3 trilemma, the four options, and the ordered spike checklist are in
+   the **"Q2 spike"** section above. Direction leaning: ratify leader-only voice
+   + the cheapest tweeter-safe local band-limit; the snapcast round-trip is NOT
+   in the tweeter-safe options (it's DSP latency, not round-trip latency).
 3. **Mixed-bond latency** — an active follower (camilla latency) + a dumb
    follower (bare ChannelPick) in one bond: confirm `--latency` nulls the
    delta to within the sync target.
