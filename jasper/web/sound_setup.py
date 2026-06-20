@@ -797,7 +797,15 @@ async def _load_profile_config(
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
-    if not pre_carrier.can_host_eq:
+    # Dry-run (out_path=None -> writes nothing) any carrier that could refuse, so
+    # a blocked EQ apply records NO prepare_failed state (SF-2). Structurally
+    # unhostable carriers (startup/commissioning/bonded/unknown) refuse cheaply;
+    # the SOLO active baseline can host EQ but still refuses if its saved
+    # crossover/measurement evidence has gone missing — both must surface BEFORE
+    # the apply transaction. A stereo host always succeeds, so it is skipped (no
+    # double emit). The authoritative re-emit to out_path runs under the
+    # dsp-apply lock in _prepare_config.
+    if not pre_carrier.can_host_eq or pre_carrier.kind == "active":
         pre_carrier.reemit(profile)  # raises CarrierCannotHostEq, writes nothing
 
     async def _prepare_config() -> dict[str, Any]:

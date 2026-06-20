@@ -108,9 +108,11 @@ def test_bonded_and_restore_names_are_jts_generated():
 async def test_apply_bonded_leader_refuses_active_config(tmp_path, monkeypatch):
     """The leader bake must fail CLOSED over a roleful active-crossover config
     — never silently rewrite it into the stereo pipe (which would drop the
-    crossover/limiter/HP). The module promises 'the same custom-config refusal
-    as /sound'; this pins it via the carrier's typed reason. The refusal raises
-    in prepare, before any websocket swap, so it is hardware-free."""
+    crossover/limiter/HP). PR-3 lets a SOLO active baseline host preference EQ,
+    but an active baseline forming a bond is the deferred active×grouping case,
+    so the leader bake still refuses — now with the typed bonded-member reason
+    (it passes member_kwargs, the bonded-bake signal). The refusal raises in
+    prepare, before any websocket swap, so it is hardware-free."""
     from jasper.multiroom import leader_config
     from jasper.multiroom.config import GroupingConfig
     from jasper.sound.graph_carrier import CarrierCannotHostEq
@@ -150,6 +152,6 @@ async def test_apply_bonded_leader_refuses_active_config(tmp_path, monkeypatch):
     err = excinfo.value
     refusal = err if isinstance(err, CarrierCannotHostEq) else err.__cause__
     assert isinstance(refusal, CarrierCannotHostEq)
-    assert refusal.reason_code == "eq_on_active_not_wired"
+    assert refusal.reason_code == "eq_on_active_bonded_member"
     # Fail closed: the leader was never swapped onto the bonded pipe config.
     assert cam.loaded is None

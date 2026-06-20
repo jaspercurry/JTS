@@ -11,6 +11,7 @@ import logging
 import math
 import re
 from pathlib import Path
+from typing import Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
@@ -22,6 +23,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
+    FilterSpec,
+    total_positive_boost_db,
 )
 from jasper.camilla_emit import (
     emit_gain_filter,
@@ -29,6 +32,7 @@ from jasper.camilla_emit import (
     emit_mixer,
     fmt,
 )
+from jasper.camilla_stereo_prefix import emit_filter_spec
 
 from .profile import (
     ADJACENT_PAIRS_BY_WAY,
@@ -369,9 +373,33 @@ def _emit_baseline_filter_definitions(
     baseline_headroom_db: float,
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
+    preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
 ) -> str:
     lines: list[str] = []
-    lines.extend(emit_gain_filter("active_baseline_headroom", -baseline_headroom_db))
+    # Program-domain headroom for the pre-split preference EQ (Layer C). The
+    # preference filters sit DOWNSTREAM of this gain (see _emit_baseline_pipeline),
+    # so folding their worst-case additive boost into this single attenuation
+    # guarantees the corrected program stays <= unity at the split input: a
+    # +B dB band lands at -(headroom) regardless of B. This reuses the exact
+    # mechanism emit_sound_config uses for room boosts (total_positive_boost_db).
+    # The fold keeps the emitted gain <= -boost_sum, so the runtime classifier's
+    # "headroom present and non-positive" baseline invariant holds by construction.
+    #
+    # output_trim_db (the household's manual headroom + loudness-match attenuation)
+    # folds into the SAME gain so the active path honours it exactly like the
+    # stereo emit_sound_config path. Like the stereo path it applies ONLY when the
+    # profile actually has EQ: a flat profile can't clip from EQ and plays at
+    # unity, so a configured trim is ignored (keeps the no-EQ baseline
+    # byte-identical). A trim is a (non-negative) attenuation, clamped here.
+    boost_db = total_positive_boost_db(preference_filters)
+    trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
+    lines.extend(
+        emit_gain_filter(
+            "active_baseline_headroom",
+            -(baseline_headroom_db + boost_db + trim_db),
+        )
+    )
     for region in _ordered_regions(preset):
         lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),
@@ -400,6 +428,12 @@ def _emit_baseline_filter_definitions(
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ))
+    # Program-domain preference EQ (Layer C) definitions. Emitted via the shared
+    # leaf emit_filter_spec (the same one emit_sound_config uses), so the active
+    # and stereo paths spell a preference band identically. They are wired
+    # pre-split — see _emit_baseline_pipeline.
+    for spec in preference_filters:
+        lines.extend(emit_filter_spec(spec))
     return "\n".join(lines)
 
 
@@ -422,14 +456,33 @@ def _emit_pipeline(preset: ActiveSpeakerPreset) -> str:
     return "\n".join(lines)
 
 
-def _emit_baseline_pipeline(preset: ActiveSpeakerPreset) -> str:
+def _emit_baseline_pipeline(
+    preset: ActiveSpeakerPreset,
+    *,
+    preference_filter_names: Sequence[str] = (),
+) -> str:
     lines = [
         "  - type: Filter",
         "    channels: [0, 1]",
         "    names: [active_baseline_headroom]",
+    ]
+    # Preference EQ (Layer C) is a PROGRAM-domain transform: it rides the
+    # stereo bus on channels [0, 1] strictly BEFORE the split mixer, so it is
+    # upstream of every per-driver crossover, limiter, and tweeter high-pass.
+    # That placement is what makes a preference boost safe — it can neither
+    # move a crossover corner nor bypass a driver limiter. Emitted only when
+    # present, so a flat profile is byte-identical to the pre-PR-3 baseline.
+    if preference_filter_names:
+        names = ", ".join(preference_filter_names)
+        lines.extend([
+            "  - type: Filter",
+            "    channels: [0, 1]",
+            f"    names: [{names}]",
+        ])
+    lines.extend([
         "  - type: Mixer",
         f"    name: split_active_{preset.way_count}way",
-    ]
+    ])
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
         chain = ", ".join(_driver_baseline_filter_chain(preset, role))
@@ -857,6 +910,8 @@ def emit_active_speaker_baseline_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
+    preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -866,6 +921,22 @@ def emit_active_speaker_baseline_config(
     the JTS 0 dB volume ceiling, includes conservative headroom, keeps
     per-driver limiters, and refuses positive per-driver correction gain.
     Callers own the acceptance evidence and explicit CamillaDSP apply step.
+
+    ``preference_filters`` (Layer C) is the program-domain preference EQ band
+    list — the same ``FilterSpec`` objects ``build_sound_filters`` produces for
+    the stereo emitter. When non-empty, each ``.active()`` band is emitted on
+    the program channels [0, 1] strictly *before* the split mixer, and its
+    worst-case additive boost is folded into ``active_baseline_headroom`` so the
+    corrected program cannot exceed unity at the split input (see the placement
+    + headroom rationale in ``docs/HANDOFF-dsp-graph-carrier.md``). The empty
+    default keeps every existing caller byte-identical.
+
+    ``output_trim_db`` is the household's manual headroom + loudness-match
+    attenuation (``jasper.sound.settings.output_trim_db``), folded into the same
+    ``active_baseline_headroom`` gain so the active path honours it exactly like
+    ``emit_sound_config``. It is applied only when ``preference_filters`` is
+    non-empty (a flat profile can't clip from EQ and plays at unity), so the
+    default keeps the no-EQ baseline byte-identical.
     """
 
     preset.validate()
@@ -888,6 +959,7 @@ def emit_active_speaker_baseline_config(
         limiter_clip_limit_db,
         "limiter_clip_limit_db",
     )
+    output_trim_db = _finite_float(output_trim_db, "output_trim_db")
     if volume_limit_db > 0:
         raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
     if baseline_headroom_db < 0 or baseline_headroom_db > 40:
@@ -919,15 +991,27 @@ def emit_active_speaker_baseline_config(
             "inverted": bool(values.get("inverted")),
         }
 
+    # Drop inactive bands (a near-zero gain rounds to a no-op) exactly like the
+    # stereo emitter's build_sound_filters does, so an "all flat" preference
+    # profile emits nothing and stays byte-identical to the pre-PR-3 baseline.
+    active_preference_filters = tuple(
+        spec for spec in preference_filters if spec.active()
+    )
+
     output_count = _output_count(preset)
     filter_yaml = _emit_baseline_filter_definitions(
         preset,
         baseline_headroom_db=baseline_headroom_db,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
+        preference_filters=active_preference_filters,
+        output_trim_db=output_trim_db,
     )
     mixer_yaml = _emit_split_mixer(preset)
-    pipeline_yaml = _emit_baseline_pipeline(preset)
+    pipeline_yaml = _emit_baseline_pipeline(
+        preset,
+        preference_filter_names=[spec.name for spec in active_preference_filters],
+    )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")

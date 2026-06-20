@@ -900,6 +900,22 @@ source/renderers
   -> physical outputs
 ```
 
+**Implementation status (PR-3, solo speaker).** Layer C preference EQ now
+lands on the active graph for a SOLO active baseline. `/sound` preference apply
+recomposes the baseline (via
+[`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py)) with
+the preference bands wired on the program channels `[0, 1]` **strictly before
+the split mixer** — upstream of every per-driver crossover, limiter, and
+tweeter high-pass — and folds their worst-case additive boost into the single
+`active_baseline_headroom` gain so the corrected program cannot exceed unity at
+the split input. The recomposed graph re-proves as
+`GRAPH_APPROVED_ACTIVE_RUNTIME` (the protection contract is independently
+re-verified — see
+[HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)). Layer B room
+correction for active speakers is the same pre-split slot but has no measurement
+producer yet, so it rides as an empty room-PEQ set today. The active×grouping
+case (a bonded active speaker) is deferred — the graph carrier refuses it.
+
 The speaker baseline is the thing that makes the box a coherent
 speaker. It should be commissioned once per hardware build and changed
 deliberately. Room correction is re-run for a room/listening area.
