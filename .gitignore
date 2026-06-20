@@ -67,3 +67,8 @@ reference-conditions/
 # AEC3 v2.1 deep-tune spike — locally-built pybind11 extension
 experiments/aec3-v2-deep-tune-spike/*.so
 experiments/aec3-v2-deep-tune-spike/*.dylib
+
+# S0-sync de-risk bench run artifacts (soak logs + acoustic WAVs) —
+# large/throwaway, regenerate via scripts/s0-sync-bench.sh. The harness
+# itself is tracked; only its captured run output is ignored.
+s0-sync-bench/
