@@ -359,11 +359,20 @@ Both paths reuse the LR4 primitive (`emit_linkwitz_riley`); they differ in
 - **Self-recovery (AGENTS.md resilience).** Unplug / brief WiFi loss /
   power cycle: un-bond → follower returns to solo active and plays local
   content; no silent restart loop. The reconciler owns the transition.
-- **Clock domains.** snapclient stuffs to the server clock; camilla
-  rate-tracks the loopback *capture* only (no resampler); outputd's DAC
-  paces. snapclient `--latency` nulls camilla's fixed pipeline latency so
-  the active follower stays sample-locked with a dumb follower in the same
-  bond. Honor the `rate_adjust`+`AsyncSinc` trap.
+- **Clock domains + the bit-perfect config (pin these on the follower
+  crossover instance).** snapclient stuffs to the server clock; camilla
+  rate-tracks the loopback *capture* only (no resampler); outputd's DAC paces.
+  For the bit-perfect virtual-clock path the instance MUST set **real DAC =
+  playback (clock master), loopback = capture (slaved)** — invert it and you
+  lose bit-perfect and fall back to resampling. `enable_rate_adjust: true`,
+  **resampler null** (no AsyncSinc when capture rate == playback rate — the
+  documented `rate_adjust`+resampler oscillation, CamillaDSP #207), **chunksize
+  ≥ 1024** (512 → EPIPE underruns on a Pi) and a fixed `target_level`.
+  snapclient `--latency` nulls camilla's fixed pipeline latency so an active
+  follower stays sample-locked with a dumb follower — but only if that latency
+  is **truly constant**: **forbid SIGHUP config reloads during playback** on the
+  crossover instance, and validate the nulling **acoustically** (the S0-sync
+  gate below), never trust the nominal `--latency` number alone.
 
 ## Layering (preserve the one-way direction)
 
@@ -376,6 +385,25 @@ ignorant of grouping — it accepts a capture device and a domain mode; the
 multiroom reconciler decides them per role. This preserves the invariant
 that makes solo-active EQ safe in isolation.
 
+## External validation (2026-06-20)
+
+A source-cited external design review pressure-tested the load-bearing claims and
+**confirmed** the engine decision (CamillaDSP bit-perfect loopback rate-tracking;
+the `rate_adjust`+resampler oscillation trap — CamillaDSP #207) and every safety
+building block (LR4 sums flat; sub+mains = one crossover; clock drift ~1 ms/min,
+audible within ~1 min). It sharpened two seams this doc now reflects: (1) the
+snapclient→loopback→downstream-CamillaDSP sync seam is the #1 risk and must pass
+the **S0-sync de-risk gate** before Slice 3 (builders report failing exactly this
+shape); (2) the 1 GB-RAM question is really **CPU + thermal** (active cooling) —
+Q1 reframed. It also pinned the follower crossover config (clock-master direction,
+`chunksize ≥ 1024`, no SIGHUP during playback — folded into "Clock domain").
+
+**Physical tweeter protection (hardware high-pass / amp mute-on-fault) is
+owner-handled offline and is OUT OF SCOPE for these slices** — do not add it as a
+code requirement. The software fail-closed (graph-resident protection +
+stall→silence) remains the in-band behavior; hardware backstops are the owner's
+domain.
+
 ## Slice plan
 
 **v1 = Slices 1–5** (the follower core **plus** the matched-pair leader —
@@ -385,11 +413,12 @@ slices land safest-first; each is independently mergeable.
 | Slice | v1? | Scope | HW? |
 |---|---|---|---|
 | **0** | — | This design-of-record + README atlas + doc-map wiring | no |
+| **S0-sync** | ✅ | **De-risk gate** — bench the snapclient→loopback→CamillaDSP sync seam with 2 throwaway active followers; acceptance = p99 < 5 ms over 2 h (two-mic acoustic), no audible resync, + ≥24 h `snd-aloop` xrun soak. **Gates Slice 3** | **yes** (2 Pis) |
 | **1** | ✅ | Role/capture: thread `capture_device`; pure-data `OutputTopology` pairing field. Golden byte-identical solo | no |
 | **2** | ✅ | Driver-domain-only active emit variant + `classify_camilla_graph` arm + keystone round-trip test | no |
-| **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed + cue); lift `non_single_alsa_sink` | **yes** (2 Pis) |
+| **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed + cue); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / chunksize≥1024 / no-SIGHUP-during-playback | **yes** (2 Pis) |
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
-| **5** | ✅ | Active **leader** (2nd light CamillaDSP; TTS band-limiting; inv-B-through-Layer-A) — **the v1 gate**; RAM + TTS measured on `jts3` | yes |
+| **5** | ✅ | Active **leader** (2nd light CamillaDSP; TTS band-limiting; inv-B-through-Layer-A) — **the v1 gate**; **CPU/thermal** + TTS measured on `jts3` (active cooling assumed) | yes |
 | **6a** | — | Local sub driver — unblock `baseline_subwoofer_not_supported` (solo-active) | mixed |
 | **6b** | — | Wireless sub member + bass management (receiver-side LP/HP, unified leader config) | yes |
 
@@ -397,6 +426,17 @@ Slices 1–2 are hardware-free and independently shippable; 3 is where
 on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
 
 ## Multi-Pi validation (Slice 3+)
+
+**S0-sync de-risk gate — run BEFORE Slice 3.** The snapclient→loopback→
+downstream-CamillaDSP seam is the single hardest part: Snapcast/CamillaDSP
+builders report failing to sync exactly this shape. Before investing in the
+Slice-3 reconciler, bench it with two throwaway "active followers"
+(snapclient → loopback → a crossover-only CamillaDSP → DAC), two-mic acoustic
+capture. **Acceptance: p99 inter-speaker offset < 5 ms over a 2-hour run, no
+audible resync**, plus a ≥24 h `snd-aloop` xrun soak. **If this gate fails, an
+active wireless *follower* is not viable** — fall back to active-stays-solo-or-
+leader (the leader runs its own crossover locally on the round-trip; followers
+stay dumb/passive). Do not build Slice 3 until S0-sync passes.
 
 Two Pis: leader = `jts3.local`, a second as follower (commissioned active
 2-way). Deploy with `PI_HOST=jts3.local bash scripts/deploy-to-pi.sh`.
@@ -414,8 +454,11 @@ Gates:
 **Slice 5 (the v1 gate) adds the matched-pair gates** — two *active*
 speakers, one as leader:
 
-- **Leader RAM:** two CamillaDSP (bake + driver crossover) + snapserver +
-  snapclient fit a 1 GB Pi 5 with headroom (Pss measured on `jts3`).
+- **Leader CPU/thermal (the real limit, not RAM):** two CamillaDSP (bake +
+  driver crossover) + snapserver + snapclient on a 1 GB Pi 5 — RAM has big
+  headroom, so gate on **sustained CPU < ~70%, zero xruns over 2 h, and no
+  thermal throttling** (the uncooled Pi 5 drops 2.4→1.5 GHz — **active cooling
+  assumed**). Capture real `htop`/temp under load on `jts3`.
 - **Leader TTS:** "Hey Jarvis" replies on the leader reach the tweeter
   **band-limited** (routed through Layer A or HP'd at the outputd mix) —
   no full-range speech to the tweeter.
@@ -537,9 +580,11 @@ an unverified gap). Fix solo first.
 
 ## Open questions
 
-1. **Active-leader RAM** — does a second (driver-DSP) CamillaDSP fit
-   alongside the bake + snapserver + snapclient on a 1 GB Pi 5 leader?
-   Measure on `jts3` before Slice 5.
+1. **Active-leader CPU/thermal** (reframed from "RAM" per the 2026-06-20
+   external review) — RAM has big headroom; the binding limit is CPU jitter +
+   Pi 5 thermal throttling under a sustained two-CamillaDSP + server + client
+   load. Measure sustained CPU + temp + xruns on `jts3` (active cooling) before
+   Slice 5.
 2. **Active-leader TTS band-limiting** — gates Slice 5. Full analysis, the
    P1/P2/P3 trilemma, the four options, and the ordered spike checklist are in
    the **"Q2 spike"** section above. Direction leaning: ratify leader-only voice
@@ -555,4 +600,5 @@ an unverified gap). Fix solo first.
    target sub hardware; both reuse `channel_split.py`'s sub fragment.
    Decide in 6b — no need to lock it before the follower core ships.
 
-Last verified: 2026-06-20
+Last verified: 2026-06-20 (external design review folded in: S0-sync gate,
+CPU/thermal reframe, clock-master / chunksize≥1024 / no-SIGHUP pins)
