@@ -155,3 +155,30 @@ async def test_apply_bonded_leader_refuses_active_config(tmp_path, monkeypatch):
     assert refusal.reason_code == "eq_on_active_bonded_member"
     # Fail closed: the leader was never swapped onto the bonded pipe config.
     assert cam.loaded is None
+
+
+def test_solo_restore_emit_is_lenient_under_protected_tweeter(tmp_path, monkeypatch):
+    # Un-bonding must ALWAYS succeed. The solo-restore emit is deliberately NOT
+    # routed through the graph carrier (a refusal there would strand the speaker
+    # on the bonded pipe config), so it must stay lenient even under a
+    # protected-tweeter topology — the program-graph guard lives at the /sound
+    # carrier and correction, never on the shared emit_sound_config leaf. This
+    # pins that the solo-restore emit is never gated (the regression a leaf-level
+    # gate would have introduced).
+    import json
+
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topo = tmp_path / "output_topology.json"
+    topo.write_text(json.dumps(_active_topology("stereo", "active_2_way").to_dict()))
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo))
+
+    out = tmp_path / "grouping_solo_restore.yml"
+    emit_sound_config(
+        SoundProfile(enabled=False),
+        out_path=out,
+        profile_id="grouping-solo-restore",
+    )
+    assert out.exists()

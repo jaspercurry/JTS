@@ -1650,6 +1650,7 @@ class MeasurementSession:
                 PEQ(freq=p.freq_hz, q=p.q, gain=p.gain_db)
                 for p in self.peqs
             ]
+            from jasper.correction.runtime_safety import assert_flat_apply_safe
             from jasper.multiroom.member_config import member_camilla_kwargs
             from jasper.sound.camilla_yaml import (
                 emit_sound_config,
@@ -1661,6 +1662,13 @@ class MeasurementSession:
             raise
 
         def _prepare_config() -> dict[str, int]:
+            # L0 backstop: a flat 2-channel correction graph must not go live
+            # under a protected-tweeter topology (stale measurements applied
+            # after a driver was reassigned to an active role). The sweep entry
+            # gates the common path; this covers measure-then-reassign. Raised
+            # inside prepare so apply_dsp_config records a clean prepare_failed
+            # and the session fails honestly (no silent flat apply).
+            assert_flat_apply_safe()
             profile = load_profile()
             # A bonded member correcting its own seat (/correction) needs the
             # SAME grouping transforms as /sound — inv-5 rate_adjust off + its

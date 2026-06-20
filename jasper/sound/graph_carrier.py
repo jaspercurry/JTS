@@ -80,11 +80,24 @@ class _StereoHostCarrier:
     arms of the former ``/sound`` 3-arm branch.
     """
 
-    can_host_eq = True
-
     def __init__(self, kind: str, current_path: str | Path | None) -> None:
         self.kind = kind
         self._current_path = current_path
+        # L0 safety (docs/HANDOFF-audio-measurement-core.md): a stereo-host graph
+        # is a 2-channel passthrough with no per-driver crossover/protection, so
+        # it cannot host EQ for a topology that assigns a protected tweeter role —
+        # full-range program would reach a compression driver. The runtime
+        # contract owns that judgement; read it once here so the existing
+        # `can_host_eq` pre-check refuses early (no spurious prepare_failed), and
+        # re-assert in reemit() for the live-draft path that skips the pre-check.
+        # Lazy import keeps the base wizard path light (the one allowed
+        # sound->active_speaker bridge, like _classify_loaded_config below).
+        from jasper.active_speaker.runtime_contract import (
+            flat_program_graph_blocked_reason,
+        )
+
+        self._eq_block_reason = flat_program_graph_blocked_reason()
+        self.can_host_eq = self._eq_block_reason is None
 
     def _compute_room_peqs(self) -> list:
         raise NotImplementedError
@@ -98,6 +111,22 @@ class _StereoHostCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
     ) -> ReemitResult:
+        # Refuse (typed, honest) before emitting/loading a flat program graph
+        # when the saved topology assigns a protected tweeter. This is the
+        # authoritative gate for the live-draft SetConfig path (which bypasses
+        # the pre-check), and a backstop for the durable path. Covers BOTH the
+        # in-memory live preview and the on-disk write, so a flat graph can never
+        # reach the DAC under a protected-tweeter topology.
+        if self._eq_block_reason is not None:
+            raise CarrierCannotHostEq(
+                "flat_graph_protected_tweeter",
+                "This speaker is running a flat full-range setup with no "
+                f"crossover, so it can't safely host sound EQ: "
+                f"{self._eq_block_reason}. Adjusting EQ would send full-range "
+                "audio to a protected tweeter, so it's blocked until the active "
+                "crossover is applied (or the speaker layout is cleared). Your "
+                "driver protection is unchanged.",
+            )
         # Grouping member-config policy is owned by member_config and applied
         # identically on every config path (see its module docstring). The
         # wizard paths let the carrier read it from grouping state

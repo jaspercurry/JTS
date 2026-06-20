@@ -264,23 +264,6 @@ pipeline:
             raise FileNotFoundError(
                 f"parent directory does not exist: {out_path.parent}"
             )
-        # L0 fail-closed gate (docs/HANDOFF-audio-measurement-core.md): this is
-        # the flat/program emit path — a 2-channel passthrough that cannot carry
-        # per-driver crossover/protection. If the saved output topology assigns a
-        # protected tweeter role, writing it here would let a flat full-range
-        # graph reach the DAC and drive a compression driver full-range. Refuse
-        # before the write (no-op for the common full-range/no-tweeter case).
-        # Lazy import keeps this sound module light and routes the one allowed
-        # sound->active_speaker safety bridge through a single call site
-        # (mirrors jasper.sound.graph_carrier).
-        from jasper.active_speaker.runtime_contract import (
-            assert_program_graph_safe_for_topology,
-        )
-
-        assert_program_graph_safe_for_topology(
-            yaml,
-            source="jasper.sound.camilla_yaml.emit_sound_config",
-        )
         _atomic_write_text(out_path, yaml)
         right_note = (
             f" room_peqs_right={len(room_peqs_right)}"
