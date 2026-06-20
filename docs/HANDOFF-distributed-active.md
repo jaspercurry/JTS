@@ -195,12 +195,23 @@ Two facts, both verified:
   owns the DAC path" — a promise no code keeps, because (a) the UI is
   hidden and (b) the bonded audio bypasses where that crossover lives.
 
-The fix makes the promise true: explicitly **allow** the active-speaker
-commissioning/crossover endpoints on a follower (local driver work), keep
-content-DSP POSTs 409'd, and **render the local driver/crossover UI** on a
-follower's `/sound/` instead of only the delegation card. Combined with
-the follower audio path above, "local crossover stays with the DAC owner"
-becomes literally true.
+**Slice 4 (this increment) ships the web half** — the HW-free surface; the
+runtime audio path that actually relocates Layer A is Slice 3. `_index_html`
+still renders the delegation card on a follower, but the follower page now also
+mounts the **same** active-speaker setup UI `main.js` renders on a solo box: the
+shell emits a `sound-follower-data` island, and `main.js` boots in *follower
+mode* — it renders only the local driver/crossover/commissioning surface
+(expanded as the primary content) and omits the Off/Saved/Draft content-EQ
+editor + now-playing plot, which stay the leader's job. The active-speaker
+commissioning/crossover endpoints are allowed (they were never in the block
+set); content-DSP POSTs still 409. So the delegation card's "local crossover and
+driver-protection work stays with the speaker that owns the DAC path" is now
+literally true **at the UI** (Slice 4); combined with the follower audio path
+above (Slice 3) it is true end-to-end. Invariant 6 is pinned by
+[test_sound_setup.py](../tests/test_sound_setup.py) (content POST → 409,
+active-speaker POST → reaches its handler, block-set disjoint from
+`/active-speaker/*`) and the follower-render path by the sound-profile JS
+harness ([sound_profile_harness.mjs](../tests/js/sound_profile_harness.mjs)).
 
 ## The active leader (gap 3) — brains + an endpoint (not a harder design)
 

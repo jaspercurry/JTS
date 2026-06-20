@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -38,7 +39,36 @@ from jasper.sound.profile import (
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.web import sound_setup
 
-from ._web_test_helpers import json_post_with_csrf, request_with_csrf
+from ._web_test_helpers import (
+    json_post_with_csrf,
+    make_csrf_session,
+    request_with_csrf,
+)
+
+
+def _follower_post_status(base: str, path: str, session: dict) -> int:
+    """POST an empty JSON body to ``path`` and return the HTTP status code.
+
+    Unlike ``json_post_with_csrf`` (which asserts an exact status), this returns
+    the code so a test can assert on the follower gate alone — whether the route
+    was blocked (409) vs reached its handler (200/502) — independent of backend
+    state the active-speaker handlers touch."""
+    req = urllib.request.Request(
+        base + path,
+        data=b"{}",
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-CSRF-Token": session["token"],
+        },
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(session["jar"]),
+    )
+    try:
+        return opener.open(req).status
+    except urllib.error.HTTPError as e:
+        return e.code
 
 
 def _room_config(peqs: list[PeqFilter] | None = None) -> str:
@@ -206,9 +236,22 @@ def test_index_html_delegates_content_dsp_when_bonded_follower(monkeypatch):
 
     html = sound_setup._index_html("csrf-token").decode()
 
+    # The delegation card stays: content EQ / room correction / volume shaping
+    # are the leader's job while paired.
     assert "Sound is controlled by the pair leader" in html
     assert "http://jts3.local/sound/" in html
-    assert "/assets/sound-profile/js/main.js" not in html
+    # Distributed-active Slice 4: the local driver/crossover/commissioning UI now
+    # mounts on the follower too — main.js boots in follower mode via the island,
+    # making the card's "local crossover ... stays with the DAC owner" promise true.
+    assert "/assets/sound-profile/js/main.js" in html
+    assert 'id="sound-follower-data"' in html
+    assert '"follower"' in html
+    assert 'id="view-body"' in html
+    # The content-EQ editor chrome (Off/Saved/Draft tabs) stays delegated to the
+    # leader — it is not rendered on the follower page.
+    assert 'id="tab-off"' not in html
+    assert 'id="tab-saved"' not in html
+    assert 'id="tab-draft"' not in html
     assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
@@ -227,6 +270,44 @@ def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Pa
         )
         payload = json.loads(resp.read().decode("utf-8"))
         assert "controlled on the pair leader" in payload["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_follower_block_set_is_content_dsp_only():
+    """Invariant 6 (static): the follower POST gate covers only content-DSP
+    endpoints. The active-speaker commissioning/crossover endpoints are local
+    driver work and must never be in the block set."""
+    blocked = sound_setup._FOLLOWER_BLOCKED_CONTENT_DSP_POSTS
+    assert blocked == frozenset({
+        "/apply",
+        "/audition",
+        "/live-draft",
+        "/settings",
+        "/profiles/save",
+        "/profiles/rename",
+        "/profiles/delete",
+    })
+    assert not any(path.startswith("/active-speaker/") for path in blocked)
+
+
+def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: Path):
+    """Invariant 6 (live): the follower gate 409s content-DSP POSTs but lets an
+    active-speaker commissioning/crossover POST reach its handler (200/502 — never
+    404/409). Local driver work stays with the speaker that owns the DAC path."""
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        session = make_csrf_session(base, "/")
+        assert _follower_post_status(base, "/settings", session) == 409
+        active_status = _follower_post_status(
+            base, "/active-speaker/stage-config", session,
+        )
+        assert active_status not in (404, 409), active_status
     finally:
         server.shutdown()
         server.server_close()
@@ -2419,6 +2500,9 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     assert out["liveDraftRequests"] == 1
     assert out["liveDraftEpoch"] == "apply-1"
     assert out["liveTabMarked"] is True
+    # Distributed-active Slice 4: the module boots in follower mode (tabs + plot
+    # absent) and renders the local driver/crossover UI without fetching /state.
+    assert {"followerModeRendersLocalDriverUi": True} in out["results"]
 
 
 def test_sound_module_renders_first_active_crossover_step_without_scary_copy():

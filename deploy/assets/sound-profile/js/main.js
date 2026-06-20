@@ -120,6 +120,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
+  // Distributed-active Slice 4: a bonded active follower's /sound/ page mounts
+  // this same module but emits a "sound-follower-data" island. In follower mode
+  // the leader owns the program domain (content EQ / room correction / volume),
+  // so we render ONLY the local active-speaker driver/crossover surface and skip
+  // the content-EQ editor (its tabs + now-playing plot are absent from the page).
+  var followerMode = (function() {
+    try {
+      var node = document.getElementById('sound-follower-data');
+      if (!node) return false;
+      return !!JSON.parse(node.textContent || '{}').follower;
+    } catch (e) { return false; }
+  })();
   function csrfHeaders(headers) {
     var out = headers || {};
     var tokenEl = document.querySelector('meta[name=jts-csrf]');
@@ -460,12 +472,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
   }
   function render() {
+    if (followerMode) {
+      renderFollower();
+      status(statusText, statusErr);
+      return;
+    }
     renderTabs();
     renderLiveGraph();
     if (view === 'off') renderOff();
     else if (view === 'saved') renderSaved();
     else renderDraft();
     status(statusText, statusErr);
+  }
+
+  // Follower mode renders the local driver/crossover/commissioning surface as the
+  // page's primary content (expanded, not behind the "Advanced speaker setup"
+  // disclosure a solo box tucks it under). No EQ tabs/plot exist on a follower.
+  function renderFollower() {
+    el('view-body').innerHTML =
+      '<div class="saved-stack"><section class="active-speaker-setup">' +
+      renderOutputTopologySetup() +
+      '</section></div>';
   }
 
   function renderOff() {
@@ -3064,9 +3091,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
 
   // ---- events ---------------------------------------------------------
-  ['off', 'saved', 'draft'].forEach(function(v) {
-    el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
-  });
+  // The Off/Saved/Draft tabs only exist on the solo page; a follower omits them.
+  if (!followerMode) {
+    ['off', 'saved', 'draft'].forEach(function(v) {
+      el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
+    });
+  }
   el('back').addEventListener('click', function(e) { e.preventDefault(); window.location.href = '/'; });
 
   el('view-body').addEventListener('click', function(ev) {
@@ -4577,5 +4607,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Could not load sound profile: ' + e.message, true);
     }
   }
-  loadState();
+  // Follower boot: no content-EQ /state fetch (the leader owns the program
+  // domain). Paint the local active-speaker shell, then load its hardware state.
+  function loadFollowerActive() {
+    render();
+    refreshOutputTopology({silent: true});
+  }
+  if (followerMode) loadFollowerActive();
+  else loadState();
 })();

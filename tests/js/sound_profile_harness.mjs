@@ -341,17 +341,32 @@ function levelPayload(value) {
   };
 }
 
-function setupHarness(fetchHandler) {
+function setupHarness(fetchHandler, options = {}) {
   const elements = new Map();
+  const absent = new Set();
   for (const id of [
     "tab-off", "tab-saved", "tab-draft", "back", "view-body",
     "plot", "plot-summary", "live-label", "status",
   ]) {
     elements.set(id, makeEl(id));
   }
+  if (options.follower) {
+    // Reproduce the bonded-follower /sound/ DOM: the follower island is present,
+    // and the content-EQ chrome (Off/Saved/Draft tabs + now-playing plot) is
+    // omitted from the page. Making those ids resolve to null exercises the
+    // module's follower-mode guards exactly as the browser would.
+    const island = makeEl("sound-follower-data");
+    island.textContent = JSON.stringify({ follower: true });
+    elements.set("sound-follower-data", island);
+    for (const id of ["tab-off", "tab-saved", "tab-draft", "plot", "plot-summary", "live-label"]) {
+      elements.delete(id);
+      absent.add(id);
+    }
+  }
 
   globalThis.document = {
     getElementById(id) {
+      if (absent.has(id)) return null;
       if (!elements.has(id)) elements.set(id, makeEl(id));
       return elements.get(id);
     },
@@ -1956,6 +1971,54 @@ async function testCommissionRampLimitStopsAutoRamp() {
   return { commissionRampLimitStopsAutoRamp: true };
 }
 
+// Distributed-active Slice 4: a bonded active follower's /sound/ renders the
+// LOCAL driver/crossover/commissioning surface (the leader owns content EQ), and
+// the module must boot cleanly even though the Off/Saved/Draft tabs + plot are
+// absent from the follower page.
+async function testFollowerModeRendersLocalDriverUi() {
+  const fetched = [];
+  const fallback = baseFetch();
+  const harness = setupHarness((path, options = {}) => {
+    fetched.push(path);
+    if (path === "./output-topology") {
+      return Promise.resolve(response(activeTwoWayTopologyPayload()));
+    }
+    return fallback(path, options);
+  }, { follower: true });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  // The local driver/crossover/commissioning surface renders as primary content,
+  // expanded (not tucked behind the solo box's "Advanced speaker setup" disclosure).
+  for (const expected of ["Active crossover setup", "Test each driver"]) {
+    if (!html.includes(expected)) {
+      fail("follower /sound/ should render the local active-speaker UI", { expected, html });
+    }
+  }
+  for (const forbidden of [
+    "Create custom profile",
+    "Try a stock profile",
+    "data-act=\"new-draft\"",
+    "Advanced speaker setup",
+  ]) {
+    if (html.includes(forbidden)) {
+      fail("follower /sound/ should not render the content-EQ editor", { forbidden, html });
+    }
+  }
+  // The leader owns the program domain: a follower must not fetch content-EQ /state,
+  // but must load the local active-speaker hardware surface.
+  if (fetched.includes("./state")) {
+    fail("follower mode must not fetch the content-EQ /state", { fetched });
+  }
+  if (!fetched.includes("./output-topology")) {
+    fail("follower mode should load the local active-speaker topology", { fetched });
+  }
+  return { followerModeRendersLocalDriverUi: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -1982,5 +2045,6 @@ results.push(await testCommissionActiveGraphBlockSurfacesReason());
 results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
 results.push(await testCommissionRampLimitStopsAutoRamp());
+results.push(await testFollowerModeRendersLocalDriverUi());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));
