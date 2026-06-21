@@ -170,10 +170,22 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     assert cam.loaded == []
 
 
+def _patch_restore_reproof(monkeypatch, *, allowed: bool):
+    """Stub the topology load + the graph re-proof for restore tests."""
+    monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: object())
+    monkeypatch.setattr(
+        runtime_contract_mod, "classify_camilla_graph",
+        lambda *a, **k: SimpleNamespace(
+            allowed=allowed, classification="x" if allowed else "unsafe", issues=[],
+        ),
+    )
+
+
 def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    _patch_restore_reproof(monkeypatch, allowed=True)
     solo = tmp_path / "active_speaker_baseline.yml"
     solo.write_text("# solo active baseline\n", encoding="utf-8")
     fc._write_stash(str(solo), path=fc.FOLLOWER_PRIOR_STASH)
@@ -184,6 +196,34 @@ def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     assert restored == str(solo)
     assert cam.loaded == [str(solo)]
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) is None  # cleared on success
+
+
+def test_restore_refuses_unprovable_candidate_never_loads_passive(
+    monkeypatch, tmp_path,
+) -> None:
+    """The 'never a passive graph' promise enforced AT LOAD: if the stashed /
+    durable candidate cannot be re-proven (corrupt / replaced with a flat
+    config — the filesystem-loss class), restore REFUSES to load it onto the
+    active sink and leaves CamillaDSP on its current safe graph."""
+    monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    # No durable baseline on disk → only the (unprovable) stash candidate.
+    from jasper.active_speaker import baseline_profile as bp_mod
+    monkeypatch.setattr(
+        bp_mod, "baseline_config_path",
+        lambda *a, **k: tmp_path / "no_durable_baseline.yml",
+    )
+    _patch_restore_reproof(monkeypatch, allowed=False)  # candidate fails re-proof
+    corrupt = tmp_path / "active_speaker_baseline.yml"
+    corrupt.write_text("# a flat/passive config that slipped onto disk\n", encoding="utf-8")
+    fc._write_stash(str(corrupt), path=fc.FOLLOWER_PRIOR_STASH)
+
+    cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
+    restored = asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
+
+    assert restored is None
+    assert cam.loaded == []  # NEVER loaded the unprovable config onto the active sink
 
 
 def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:

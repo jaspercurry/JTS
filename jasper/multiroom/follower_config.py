@@ -270,12 +270,20 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
     Returns the applied path, or None when there is nothing to restore (the
     common reconcile on a solo-active box — no follower stash, CamillaDSP not on
     the follower config). Restore order: the stashed prior config, else the
-    durable solo active baseline YAML on disk. **Never a passive graph** — a
-    flat config on an active sink is the full-range-to-tweeter hazard. Raises on
-    a failed apply (stash kept; the next reconcile retries).
+    durable solo active baseline YAML on disk — and each candidate is
+    RE-PROVEN with ``classify_camilla_graph`` against the saved topology before
+    it is loaded. **Never a passive graph** — a flat config on an active sink is
+    the full-range-to-tweeter hazard — and that promise is enforced AT LOAD, not
+    by trusting the stash + on-disk integrity (a durable baseline could be
+    corrupted/replaced — the 2026-05-23 filesystem-loss class). A candidate that
+    cannot be re-proven is skipped; if none is provable, CamillaDSP is left on
+    its current (safe) graph. Raises on a failed apply (stash kept; the next
+    reconcile retries).
     """
     from jasper.active_speaker.baseline_profile import baseline_config_path
+    from jasper.active_speaker.runtime_contract import classify_camilla_graph
     from jasper.dsp_apply import apply_dsp_config
+    from jasper.output_topology import load_output_topology
 
     cam = camilla_factory()
     current = await cam.get_config_file_path(best_effort=True)
@@ -285,16 +293,39 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
         # Solo-active box that was never an active follower — no churn.
         return None
 
+    # Candidate order: the stashed prior solo config, then the durable solo
+    # active baseline YAML on disk. Both must be a genuinely different config
+    # (never the follower config itself).
+    options: list[tuple[str, str]] = []
+    if stash and stash != FOLLOWER_CONFIG_PATH and Path(stash).exists():
+        options.append((stash, "stash"))
+    durable = baseline_config_path()
+    if durable.exists() and str(durable) != FOLLOWER_CONFIG_PATH:
+        options.append((str(durable), "durable_baseline"))
+
+    # Re-prove each candidate against the saved topology and load the FIRST that
+    # classifies as a safe active graph. This is the "never a passive graph"
+    # guarantee made good at load time: a flat/corrupt config under a tweeter
+    # topology fails classify_camilla_graph and is refused here.
+    topology = load_output_topology()
     candidate: str | None = None
     via = ""
-    if stash and stash != FOLLOWER_CONFIG_PATH and Path(stash).exists():
-        candidate, via = stash, "stash"
-    else:
-        # Stash missing/gone: fall back to the durable solo active baseline YAML
-        # (the commissioned config; it persists on disk). Still an ACTIVE graph.
-        durable = baseline_config_path()
-        if durable.exists():
-            candidate, via = str(durable), "durable_baseline"
+    for cand, cand_via in options:
+        graph = classify_camilla_graph(config_path=cand, topology=topology)
+        if graph.allowed:
+            candidate, via = cand, cand_via
+            break
+        codes = [i.get("code") for i in graph.issues if isinstance(i, dict)]
+        log_event(
+            logger,
+            "multiroom.camilla_apply",
+            result="active_follower_restore_skip_unsafe",
+            candidate=cand,
+            via=cand_via,
+            classification=graph.classification,
+            issues=codes,
+            level=logging.WARNING,
+        )
 
     if candidate is None:
         # Nothing safe-and-active to restore. Do NOT downgrade to a passive
