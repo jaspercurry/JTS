@@ -677,7 +677,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }).join('');
     var capturePanel = captureRows ?
-      '<p class="setting-row__hint driver-capture-guidance">' +
+      '<p class="setting-row__hint">' +
         escapeHtml(NEARFIELD_LEVEL_MATCH_GUIDANCE) + '</p>' +
       '<div class="driver-capture-list">' + captureRows + '</div>' : '';
     var captureError = activeSpeaker.captureError ?

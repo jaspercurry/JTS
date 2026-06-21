@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import {
   NEARFIELD_LEVEL_MATCH_GUIDANCE,
+  commissionPayloadFailure,
   levelMatchSummary,
   nearfieldCaptureHint,
 } from "../../deploy/assets/sound-profile/js/active-speaker-ui.js";
@@ -46,6 +47,20 @@ import {
 assert.equal(levelMatchSummary({}).available, false);
 assert.equal(levelMatchSummary(null).available, false);
 assert.equal(levelMatchSummary({ corrections: {} }).available, false);
+
+// A measurement-in-progress refusal must NOT show the "another driver" message;
+// it has its own distinct, actionable copy naming room correction / balance / sync.
+{
+  const measurementRefusal = commissionPayloadFailure({
+    status: "refused",
+    reason: "measurement_in_progress",
+  });
+  assert.ok(/room correction|balance|sync/i.test(measurementRefusal));
+  assert.ok(!/another driver/i.test(measurementRefusal));
+  // The pre-existing "another driver armed" refusal keeps its own message.
+  const driverRefusal = commissionPayloadFailure({ status: "refused" });
+  assert.ok(/another driver/i.test(driverRefusal));
+}
 
 // Near-field copy — the level match is OPTIONAL and the copy must say so.
 assert.ok(nearfieldCaptureHint("Tweeter").includes("Tweeter"));

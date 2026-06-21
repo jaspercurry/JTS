@@ -140,6 +140,30 @@ def test_active_speaker_ui_level_match_helpers():
     assert out["ok"] is True
 
 
+def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
+    """commission-load serializes against room correction / balance / sync: when
+    one is active it refuses with a distinct reason (not a camilla touch) so the
+    UI shows the correct message instead of "another driver is being tested"."""
+    from jasper.web import active_speaker_flow
+
+    monkeypatch.setattr(
+        active_speaker_flow, "blocking_measurement_phase", lambda: "correction:sweeping"
+    )
+
+    def _camilla_must_not_be_called():
+        raise AssertionError("camilla_factory must not run when the load is refused")
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "main", "role": "woofer"},
+            camilla_factory=_camilla_must_not_be_called,
+        )
+    )
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "measurement_in_progress"
+    assert payload["blocking_phase"] == "correction:sweeping"
+
+
 def _start_sound_server(tmp_path: Path):
     server = sound_setup.make_server(
         ("127.0.0.1", 0),

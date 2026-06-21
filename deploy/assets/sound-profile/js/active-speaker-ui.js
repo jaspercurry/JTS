@@ -160,6 +160,10 @@ export function activeCommissionGroup(topology) {
 export function commissionPayloadFailure(payload) {
   if (!payload || typeof payload !== 'object') return '';
   if (payload.status === 'refused') {
+    if (payload.reason === 'measurement_in_progress') {
+      return 'Another measurement (room correction, balance, or sync) is running. ' +
+        'Finish or stop it before testing a driver.';
+    }
     return 'Another driver is already being tested. Stop it first, then try again.';
   }
   if (payload.status === 'no_pending_step') {
