@@ -10,6 +10,7 @@ WIZARD_UNITS=(
     jasper-correction-web
     jasper-dial-web
     jasper-system-web
+    jasper-chat-web
 )
 
 install_jasper_support_files() {
@@ -386,7 +387,7 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
         "${SYSTEMD_DIR}/jasper-voice.service"
-    # The 5 wizard daemons are SOCKET-ACTIVATED (each .service is paired
+    # The wizard daemons are SOCKET-ACTIVATED (each .service is paired
     # with a .socket unit that holds the port and re-spawns the daemon
     # on demand). systemd binds the listener; the daemon adopts the fd
     # via LISTEN_FDS and exits after 10 min idle, saving ~60-90 MB Pss
@@ -430,6 +431,15 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.socket" \
         "${SYSTEMD_DIR}/jasper-system-web.socket"
+    # /chat/ conversation-history dashboard. Read-only; socket-activated
+    # like /system/ so opening the history page does not keep a resident
+    # web process forever.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.service" \
+        "${SYSTEMD_DIR}/jasper-chat-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.socket" \
+        "${SYSTEMD_DIR}/jasper-chat-web.socket"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
@@ -802,7 +812,7 @@ install_systemd_units() {
     systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
         >/dev/null 2>&1 || true
 
-    # Migrate the 5 wizard services from always-on to socket-activated.
+    # Migrate wizard services from always-on to socket-activated.
     # Older installs had jasper-X-web.service enabled directly; the new
     # topology enables the .socket instead, which pulls in the .service
     # on demand. Idempotent: re-running install.sh after migration is
@@ -873,7 +883,7 @@ install_systemd_units() {
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
-    # The 5 wizard services are socket-activated now. Any currently-
+    # The wizard services are socket-activated now. Any currently-
     # running instance is on the old code; stop it so the next incoming
     # request brings up the new code via the .socket. Idempotent: if the
     # service is already inactive (post-idle-exit or never started), the

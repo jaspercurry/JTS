@@ -1,0 +1,31 @@
+[Unit]
+Description=Jasper conversation-history dashboard (web at /chat/)
+# Socket-activated — exits after 30 min idle. Mirrors /system/: users
+# may leave a read-only dashboard open in a tab.
+Requires=jasper-chat-web.socket
+After=jasper-chat-web.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WatchdogSec=30s
+EnvironmentFile=-/etc/jasper/jasper.env
+# Args ignored when socket-activated (the daemon adopts the inherited
+# fd) but kept for direct CLI invocation in dev.
+ExecStart=/opt/jasper/.venv/bin/jasper-chat-web --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=2
+
+# Hardening — reads /etc/jasper/jasper.env plus the conversation-history
+# state file / SQLite DB under /var/lib/jasper. The web process is read-only.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Small process: stdlib http.server + read-only SQLite queries.
+MemoryHigh=60M
+MemoryMax=90M
+
+[Install]
+# Enable the .socket, not the .service.

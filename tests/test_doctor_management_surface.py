@@ -13,6 +13,13 @@ import urllib.error
 from contextlib import contextmanager
 from unittest.mock import patch
 
+from jasper.conversation_history import (
+    CAPTURE_ENABLED_ENV,
+    ConversationStore,
+    ConversationTurn,
+    DB_PATH_ENV,
+    make_turn_id,
+)
 from jasper.cli.doctor import web as doctor_web
 
 
@@ -93,3 +100,59 @@ def test_connection_refused_fails_naming_nginx(monkeypatch, tmp_path):
         r = doctor_web.check_management_surface()
     assert r.status == "fail"
     assert "nginx" in r.detail
+
+
+def test_conversation_history_skips_when_capture_disabled(monkeypatch, tmp_path):
+    settings = tmp_path / "conversation_history.env"
+    settings.write_text(f"{CAPTURE_ENABLED_ENV}=0\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings))
+
+    r = doctor_web.check_conversation_history()
+
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
+def test_conversation_history_warns_when_enabled_db_missing(monkeypatch, tmp_path):
+    settings = tmp_path / "conversation_history.env"
+    db_path = tmp_path / "missing.db"
+    settings.write_text(
+        f"{CAPTURE_ENABLED_ENV}=1\n{DB_PATH_ENV}={db_path}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings))
+
+    r = doctor_web.check_conversation_history()
+
+    assert r.status == "warn"
+    assert "capture enabled" in r.detail
+    assert str(db_path) in r.detail
+
+
+def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
+    db_path = tmp_path / "conversation_history.db"
+    settings = tmp_path / "conversation_history.env"
+    settings.write_text(
+        f"{CAPTURE_ENABLED_ENV}=1\n{DB_PATH_ENV}={db_path}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings))
+    store = ConversationStore(str(db_path))
+    store.add(
+        ConversationTurn(
+            id=make_turn_id("2026-06-19T20:15:00Z", 1),
+            ts_utc="2026-06-19T20:15:00Z",
+            provider="gemini",
+            user_text="hello",
+            assistant_text="hi",
+            tool_calls_json=None,
+            data_json=None,
+            session_id=1,
+        ),
+    )
+    store.close()
+
+    r = doctor_web.check_conversation_history()
+
+    assert r.status == "ok"
+    assert "1 turns" in r.detail

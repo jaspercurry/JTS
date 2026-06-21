@@ -110,11 +110,10 @@ def test_vad_file_routes_to_voice_and_vad_docs():
 
 def test_state_aggregate_routes_to_resilience_docs():
     """The /state.resilience producer must route to HANDOFF-resilience.md (the
-    doc that describes the /state.resilience.* keys), and to that subsystem
-    only — the existing `jasper/control/system_*.py` glob does not extend to
-    `state_aggregate.py`, so the doc-map carries it as an explicit route. Pins
-    the routing intent: the stale-glob guard only catches a rename, not a
-    re-route of this path to the wrong subsystem."""
+    doc that describes the /state.resilience.* keys). /state.chat also lives
+    in this file, so the path intentionally maps to conversation-history too.
+    Pins the routing intent: the stale-glob guard only catches a rename, not
+    a re-route of this path to the wrong subsystem."""
 
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
@@ -123,8 +122,12 @@ def test_state_aggregate_routes_to_resilience_docs():
         subsystems, ("jasper/control/state_aggregate.py",)
     )
 
-    assert [item["id"] for item in report] == ["resilience-and-system-dashboard"]
-    assert "docs/HANDOFF-resilience.md" in report[0]["docs"]
+    assert [item["id"] for item in report] == [
+        "conversation-history",
+        "resilience-and-system-dashboard",
+    ]
+    assert "docs/conversation-history-plan.md" in report[0]["docs"]
+    assert "docs/HANDOFF-resilience.md" in report[1]["docs"]
 
 
 def test_voice_service_unit_does_not_trigger_global_deploy_docs():

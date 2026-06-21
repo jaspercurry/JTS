@@ -86,6 +86,50 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
+def _conversation_history_state() -> dict[str, Any] | None:
+    """Read /state.chat fresh from the conversation-history SSOT + store."""
+    from datetime import datetime, timezone
+
+    from ..conversation_history import ConversationStore, read_settings
+
+    settings = read_settings()
+    store = ConversationStore(
+        settings.db_path,
+        read_only=True,
+        warn_unavailable=False,
+    )
+    try:
+        stats = store.stats()
+        if stats is None:
+            if settings.capture_enabled:
+                return None
+            return {
+                "capture_enabled": False,
+                "turn_count": None,
+                "last_write_age_seconds": None,
+                "retention": settings.retention,
+            }
+        age_seconds = None
+        if stats.last_write_ts_utc:
+            raw = stats.last_write_ts_utc.strip()
+            parse_value = f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
+            try:
+                ts = datetime.fromisoformat(parse_value)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age_seconds = max(0.0, round(time.time() - ts.timestamp(), 1))
+            except ValueError:
+                age_seconds = None
+        return {
+            "capture_enabled": settings.capture_enabled,
+            "turn_count": stats.turn_count,
+            "last_write_age_seconds": age_seconds,
+            "retention": settings.retention,
+        }
+    finally:
+        store.close()
+
+
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
@@ -636,6 +680,15 @@ async def _get_state(
         logger.exception("tool catalog state read failed")
         tools_state = None
 
+    # Conversation history is a read-only Feature surface. Settings are
+    # wizard-owned and read fresh; the SQLite store is opened read-only so
+    # jasper-control cannot create or mutate jasper-voice's DB.
+    try:
+        chat_state = _conversation_history_state()
+    except (ImportError, OSError, RuntimeError, ValueError):
+        logger.exception("conversation history state read failed")
+        chat_state = None
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -775,4 +828,8 @@ async def _get_state(
         # tool_state.env by jasper.tool_catalog_view (never os.environ).
         # jasper-doctor's check_tool_catalog owns the actionable warn.
         "tools": tools_state,
+        # Conversation-history summary. null only if the read-side store
+        # is unavailable while capture is enabled, or if the state read
+        # itself fails. See jasper.conversation_history.
+        "chat": chat_state,
     }

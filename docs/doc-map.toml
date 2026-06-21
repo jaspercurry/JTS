@@ -241,6 +241,12 @@ title = "Conversation history storage and capture plan"
 safety = "voice-runtime"
 code = [
   "jasper/conversation_history.py",
+  "jasper/web/chat_setup.py",
+  "jasper/control/state_aggregate.py",
+  "jasper/cli/doctor/web.py",
+  "deploy/jasper-chat-web.*",
+  "deploy/nginx-jasper.conf",
+  "deploy/index.html",
 ]
 docs = [
   "docs/extensibility.md",
