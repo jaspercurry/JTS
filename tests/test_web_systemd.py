@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.web._systemd socket-activation helper.
 
 Stdlib-only — runs in any Python 3.10+ environment, no Pi needed.

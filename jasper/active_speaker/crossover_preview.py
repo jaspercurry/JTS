@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Build a no-audio active-speaker crossover preview.
 
 The preview is the deterministic bridge from a saved design draft to a future

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The single speaker-identity reader.
 
 One place that assembles "who is this speaker" — display name, room,

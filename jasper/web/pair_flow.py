@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared stereo-pair helpers for measurement flows.
 
 Balance and acoustic-sync both need the same leader-gated pair context:

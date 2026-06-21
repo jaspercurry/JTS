@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Exercises a JTS dialog implementation against a minimal DOM shim, simulating
 // the <dialog> `close` event that headless Chrome won't fire — so the
 // Promise-resolve contract of jtsConfirm/jtsAlert gets real automated coverage.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for deploy/bin/jasper-camilla-pipe-guard.
 
 The ExecStartPre chain-breaker for the bonded reboot loop

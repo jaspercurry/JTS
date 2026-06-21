@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure ranking function for multi-device wake arbitration.
 
 Given a list of WakeReport messages (one per peer that heard the

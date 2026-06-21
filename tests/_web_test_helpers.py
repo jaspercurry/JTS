@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Helpers for end-to-end web wizard tests.
 
 The wizards now require a CSRF token on every mutating POST

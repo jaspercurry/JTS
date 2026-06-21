@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Sweep + deconvolution math: synthetic-IR roundtrips.
 
 These tests validate the load-bearing audio math: if the sweep we

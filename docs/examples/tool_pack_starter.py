@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Copyable starter for a trusted in-repo JTS capability pack.
 
 This is documentation-by-example, not a shipped capability. It is not imported

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Run an ad-hoc Pi diagnostic inside a bounded transient systemd unit.
 #
 # This is the safe lane for memory-heavy or open-ended operator/Codex

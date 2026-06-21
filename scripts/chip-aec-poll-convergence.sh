@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Phase 3: poll AEC_AECCONVERGED while music plays.
 #
 # The chip's AEC adaptive filter is expected to set this flag to 1 once it

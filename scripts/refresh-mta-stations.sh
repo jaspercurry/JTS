@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Refresh jasper/data/mta_stations.csv from MTA's "Subway Stations" dataset
 # on data.ny.gov (dataset id 39hk-dx4f). The dataset is updated by MTA
 # whenever stations open/close/rename; run this script ~yearly or after

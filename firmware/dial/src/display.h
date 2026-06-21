@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Jasper Curry
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 // Display driver layer: LovyanGFX (GC9A01) + LVGL framework. Owns
 // the global gfx object and the LVGL draw buffer; everything else
 // (scene graph) lives in scenes.h/cpp.

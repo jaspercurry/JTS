@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-wake-enroll — Active wake-word sample collection for training.
 
 Run on the Pi with a household member present. The CLI walks them

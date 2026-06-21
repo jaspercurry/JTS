@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Install-profile guardrails after the endpoint tier was removed.
 
 There are now exactly TWO install profiles — ``full`` and ``streambox``.

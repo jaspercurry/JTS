@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Run the thin Phase 0 custom wake-word training workflow.
 #
 # This is an off-Pi operator runner. It orchestrates the existing corpus export,

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Lock down the jasper-fanin.service systemd unit shape.
 
 The unit's resilience-contract fields are load-bearing — they're

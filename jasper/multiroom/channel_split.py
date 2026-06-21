@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure CamillaDSP channel-split fragment generator for bonded speakers.
 
 A speaker in a bond plays only its assigned channel of the stereo

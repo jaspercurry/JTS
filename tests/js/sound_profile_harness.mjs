@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Minimal DOM harness for the /sound/ static module. It exercises the
 // live-source tab state machine plus active-speaker guards without needing a
 // browser or CamillaDSP.

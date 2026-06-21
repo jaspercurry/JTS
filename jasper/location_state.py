@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared default-location state for weather and transit.
 
 Weather and transit intentionally keep separate wizard-owned env files,

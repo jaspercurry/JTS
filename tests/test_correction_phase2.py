@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Phase 2 — multi-position averaging + verify pass.
 
 Extends Phase 1 single-position session tests with:

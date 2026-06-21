@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free behaviour tests for the privsep readability check core.
 
 The check runs as root on the Pi (so it can't use os.access — that would read

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Publish jasper-usbsink's playing state to /run/jasper-usbsink/state.json.
 
 State shape (read by jasper.source_state.usbsink_playing, the

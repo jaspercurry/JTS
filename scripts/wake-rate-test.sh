@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Wake-rate test harness: captures the bridge's AEC output while the
 # operator plays a wake-rate test track on their phone, then runs
 # openWakeWord OFFLINE on the captured audio to count detections.

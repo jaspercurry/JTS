@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The privsep read manifest must mirror the systemd units it reasons about.
 
 ``jasper.cli.doctor.privsep.MANIFEST`` hardcodes each non-root daemon's runtime

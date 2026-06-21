@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for GeminiLiveConnection / GeminiLiveTurn.
 
 These tests construct a real GeminiLiveConnection (no network calls — the

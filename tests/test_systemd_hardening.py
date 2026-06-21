@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Drift guard: the Tier-A daemons keep their WS1 phase-1 hardening stanza.
 
 A compromise of an always-on, network-facing `jasper-*` daemon is a full-root

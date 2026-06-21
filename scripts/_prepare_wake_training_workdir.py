@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Prepare a trainer workdir from JTS wake real-positive feature banks.
 
 This is the third Phase 0 slice for custom wake-word training. It consumes

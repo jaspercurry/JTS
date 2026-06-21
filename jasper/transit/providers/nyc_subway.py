@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """NYC Subway transit provider — keyless, CSV-backed.
 
 Loads `jasper/data/mta_stations.csv` (496 stations, ~32 KB) once at

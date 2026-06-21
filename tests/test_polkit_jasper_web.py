@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """WS1 Phase 3b-3 — pin the polkit rule that authorizes the non-root
 `jasper-web` service user's NetworkManager access.
 

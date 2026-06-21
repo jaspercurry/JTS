@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared contracts for async text research providers.
 
 This is intentionally smaller than the realtime voice provider layer:

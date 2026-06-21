@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the triple-stream wake-word OR-gate.
 
 Extends the dual-stream test patterns from

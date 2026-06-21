@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared browser-side normalization for links to another JTS speaker's
 // management surface. Raw IPs are intentionally rejected: pair/directory links
 // should use the stable mDNS name, not whichever address discovery last saw.

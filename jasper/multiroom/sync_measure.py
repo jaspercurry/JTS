@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Stereo-pair acoustic sync measurement primitives.
 
 This module is intentionally independent of the web wizard and Snapcast

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Doctor checks for the /var/lib/jasper persisted-state files.
 
 `check_supervisor_reboot_state` (resilience) and `check_mux_mode_state`

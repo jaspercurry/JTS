@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard against drift between the bash AEC reconciler and its Python SSOT.
 
 deploy/bin/jasper-aec-reconcile is bash and cannot import Python, so it

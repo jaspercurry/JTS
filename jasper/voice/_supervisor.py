@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Provider-agnostic helpers for the voice connection reconnect supervisor.
 
 Each `LiveConnection` implementation runs its own reconnect supervisor

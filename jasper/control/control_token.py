@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Opt-in shared "control token" for jasper-control's high-impact mutations.
 
 JTS runs on a trusted household LAN with no auth on ``jasper-control``

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the /rooms/ wizard — the multi-room directory.
 
 /rooms/ renders client-side: the GET / body is a static canonical

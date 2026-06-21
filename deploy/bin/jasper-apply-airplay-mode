@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
 # template at /etc/shairport-sync.conf.template, substituting:
 #   - disable_synchronization based on /var/lib/jasper/airplay_mode.env

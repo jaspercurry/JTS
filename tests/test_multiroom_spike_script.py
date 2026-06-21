@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Behavioural pins for scripts/multiroom-spike.sh (lab harness).
 
 The spike harness needs real Pis + snapcast to do anything useful, so

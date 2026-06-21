@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Active-speaker commissioning ↔ measurement mutual exclusion.
 
 The active-crossover commission flow (the per-driver ramp + near-field

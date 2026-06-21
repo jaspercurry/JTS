@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Drift guard for the NetworkManager profile-hardening contract.
 
 The same resilience triple — autoconnect on, retry forever, power-save off —

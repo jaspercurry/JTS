@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Per-session artifact and bundle persistence for room correction.
 
 `MeasurementSession` owns the state machine and DSP decisions. This module

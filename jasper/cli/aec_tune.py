@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Calibrate XVF3800 AEC bulk delay — `jasper-aec-tune`.
 
 Round-trip latency from the host writing reference audio to the

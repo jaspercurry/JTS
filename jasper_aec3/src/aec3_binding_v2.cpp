@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // pybind11 binding for WebRTC AEC3 vendored as webrtc-audio-processing v2.1
 // (Pulseaudio's upstream fork: gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing).
 //

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the shared active-voice-provider SSOT reader.
 
 These encode the contract that bit us on /system/: the active provider

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Runtime acoustic-condition estimator for wake fusion (Phase 1).
 
 Turns the two cheap runtime signals the daemon already has at a wake fire

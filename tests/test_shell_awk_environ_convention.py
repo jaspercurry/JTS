@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Repo-wide drift guard: env-file *values* go into awk via ENVIRON, never -v.
 
 POSIX leaves ``awk -v var=value`` free to process escape sequences in the

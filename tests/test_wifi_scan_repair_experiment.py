@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the operator-only Wi-Fi scan repair experiment script."""
 from __future__ import annotations
 

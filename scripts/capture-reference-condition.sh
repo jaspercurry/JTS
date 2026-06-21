@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Capture one reference voice condition for the mic-quality-v2
 # baseline (`reference-conditions/<condition>/`). Lands three
 # time-aligned WAVs per condition (named to match the convention

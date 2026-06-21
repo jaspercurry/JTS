@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unix-domain socket server: voice ↔ peering RPC.
 
 Mirrors the existing voice_daemon.py UDS pattern (newline-delimited

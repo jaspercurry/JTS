@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """OpenAI Realtime API adapter for jasper-voice.
 
 Mirrors the Gemini Live adapter (gemini_session.py): same

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Emit CamillaDSP configs for sound curves and preference EQ.
 
 The generated config preserves the base JTS audio path and any existing

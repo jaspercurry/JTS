@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Current-correction visibility + per-session debug bundles.
 
 Two features land in this PR. Both are exercised here:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Fresh-read state reader for multiroom grouping — the ONE place that
 resolves "what is the grouping config right now" for *display/aggregation*
 consumers, chiefly ``jasper-control``'s ``/state`` aggregator.

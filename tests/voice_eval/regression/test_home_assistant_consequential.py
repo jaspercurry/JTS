@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Consequential-action confirmation regression — the gate that protects
 the household from an unintended (e.g. prompt-injected) smart-home action.
 

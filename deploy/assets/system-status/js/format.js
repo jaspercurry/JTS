@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // format.js — value humanisation + status-tone helpers.
 //
 // Ported verbatim from the previous inline /system/ script: same

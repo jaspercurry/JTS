@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Live tail of cross-daemon "event=" log lines from the Pi. Streams
 # one event per line, timestamp + unit + message, until Ctrl-C.
 #

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bus regression scenarios.
 
 `test_next_bus_default_stop` — same three-assertion shape as the

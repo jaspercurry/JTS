@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper.chip_aec_experiment — chip-AEC test daemon (EXPERIMENTAL).
 
 Branch: chip-aec-experiment. Not for production.

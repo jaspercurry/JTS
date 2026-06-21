@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guarded per-driver commissioning load (gap-1 slice 2b-ii).
 
 `load_driver_commissioning_config` loads a per-driver commissioning config into

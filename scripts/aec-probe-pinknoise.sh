@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Run the AEC bridge with stationary pink noise as the far-end signal,
 # log RMS attenuation per 5-sec window. Pink noise is AEC3's best case
 # (stationary, broad-spectrum) — plateau attenuation here is the

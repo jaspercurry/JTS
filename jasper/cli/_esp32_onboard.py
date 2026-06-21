@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared ESP32 accessory onboarding flow for JTS USB satellites."""
 from __future__ import annotations
 

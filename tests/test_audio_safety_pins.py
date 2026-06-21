@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin the loud-output safety literals documented in HANDOFF-volume.md.
 
 Two documented hardware-safety claims (docs/HANDOFF-volume.md,

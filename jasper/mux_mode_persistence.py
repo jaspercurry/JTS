@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Persist + restore jasper-mux's source-selection mode across restarts.
 
 The landing page's Source selector can pin the speaker to one renderer

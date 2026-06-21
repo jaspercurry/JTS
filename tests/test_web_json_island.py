@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The shared JSON data-island helper + its conventions guard.
 
 `jasper.web._common.json_island` is the way a wizard page hands data to

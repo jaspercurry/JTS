@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: launch-blocker governance docs must physically exist in the repo.
 
 PRIVACY.md was authored (#636) but a merge silently dropped it from `main`, so

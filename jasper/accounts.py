@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Multi-user Spotify account registry.
 
 The speaker is a household device. More than one person may want to

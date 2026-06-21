@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Comprehensive XVF3800 chip + Pi-side diagnostic capture for
 # cross-Pi or cross-chip diff workflows.
 #

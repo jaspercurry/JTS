@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Registry of DTLN-aec ONNX model bundles + download metadata.
 
 DTLN-aec ships as a pair of ONNX files per model size (the network

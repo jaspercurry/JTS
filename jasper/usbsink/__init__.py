@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """USB gadget audio source for JTS.
 
 Surfaces a connected host computer as a fourth music source alongside

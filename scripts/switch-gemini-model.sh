@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Flip the Gemini Live model the daemon talks to. Use when 3.1 Live
 # Preview is silently failing on Google's side and you need a working
 # backend, or to switch back once 3.1 unsticks.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for `jasper.tools.diagnostic.make_diagnostic_tools`.
 
 Covers the LLM-facing tool shape (factory gating, spoken-response

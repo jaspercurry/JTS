@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.mux — the renderer source-arbiter.
 
 Tests focus on the transition-detection state machine, which is the

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Small HTTP guardrails for JTS' LAN-local management surfaces.
 
 JTS intentionally runs on a trusted household LAN, but browsers make

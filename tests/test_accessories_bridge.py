@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tap counter state-machine coverage for the HID accessory bridge.
 
 We exercise `_TapCounter` directly with a fake async poster so the test

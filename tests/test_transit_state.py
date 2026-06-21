@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper.transit.state.read_state — fresh SSOT read for /state surfaces.
 
 The load-bearing property is that this reader agrees with the voice daemon's

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.tools.gmail.
 
 Same pattern as test_tools_calendar: build a GoogleClients with a

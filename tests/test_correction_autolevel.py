@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Auto-level state machine + stale-state race fix.
 
 The autolevel function ramps CamillaDSP main_volume while a continuous

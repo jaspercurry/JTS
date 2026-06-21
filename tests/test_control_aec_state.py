@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the per-leg + threshold helpers in
 jasper.control.server. These are the Python-side counterpart to
 tests/test_aec_reconcile.py (which covers the bash mapping from

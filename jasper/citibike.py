@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Citi Bike (NYC + Jersey City + Hoboken) GBFS client.
 
 Two public-CDN feeds, no API key (https://gbfs.citibikenyc.com/gbfs/gbfs.json):

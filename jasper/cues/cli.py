@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """`jasper-cues` — operator CLI for the audio-cue subsystem.
 
 Subcommands:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Wake-event telemetry store — SQLite + audio capture + retention.
 
 PR 3 of the wake-telemetry series. The architectural spec and the

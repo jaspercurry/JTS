@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.control.debug_control — the write/restart/expiry side
 of the debug toggle. The real systemctl restart and the threading.Timer
 are stubbed so the logic is exercised without side effects.

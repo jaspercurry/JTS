@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the shared env-file quoting/writer lib
 (deploy/lib/jasper-env-file.sh) and the drift guard that keeps both
 reconcilers on it.

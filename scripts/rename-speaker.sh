@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Rename a speaker — the supported way to change a JTS hostname.
 #
 # A speaker's name fans out into the OS hostname, Avahi's mDNS

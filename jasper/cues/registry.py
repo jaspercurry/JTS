@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Static registry of all audio cues. Add new cues here.
 
 A cue is a named, pre-rendered audio file the daemon plays when it

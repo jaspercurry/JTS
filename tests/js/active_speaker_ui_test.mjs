@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the pure active-speaker level-match UI helpers.
 //
 // active-speaker-ui.js is a dependency-free ES module, so node can import it

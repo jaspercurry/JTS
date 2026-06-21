@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Jasper Curry
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #pragma once
 
 // Pin definitions and constants for the Waveshare ESP32-S3-Touch-AMOLED-1.8.

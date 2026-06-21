@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Privileged restart broker — the single mediated systemctl boundary (WS1 Phase 3).
 
 Background: jasper-web's ~13 wizard restart sites, jasper-mux's librespot

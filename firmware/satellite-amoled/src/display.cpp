@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // SH8601 AMOLED bring-up + status indicator. Phase 1.2 scope: just
 // "draw a colored circle and a label so the user can see what state
 // the satellite is in." Direct Arduino_GFX draws — no LVGL yet.

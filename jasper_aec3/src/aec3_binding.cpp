@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // pybind11 binding for WebRTC AEC3 from libwebrtc-audio-processing-1.
 //
 // Exposes a single Aec3 class with a process(mic, ref) method.

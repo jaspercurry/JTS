@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """snapcast_rpc — the group→stream binding pin + the health probe.
 
 The 2026-06-11 silent-bond incident class: snapcast persists

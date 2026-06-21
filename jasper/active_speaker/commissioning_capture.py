@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bridge: mic-backed acoustic verdict -> commissioning measurement record.
 
 [`driver_acoustics`](driver_acoustics.py)'s ``analyze_driver_capture`` /

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Byte-identity golden for ``emit_sound_config``.
 
 PR-2 (docs/HANDOFF-dsp-graph-carrier.md "Sharing — one stereo-domain

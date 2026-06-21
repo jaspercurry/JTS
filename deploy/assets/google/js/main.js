@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /google/ wizard behaviour.
 //
 // The Google OAuth wizard is server-rendered request/response (forms POST

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fake transports for outputd unit tests and safe developer runs.
 
 use std::collections::VecDeque;

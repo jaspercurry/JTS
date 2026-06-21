@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Build phase-1 dial firmware and stage it where jasper-dial-onboard
 # expects to find the bin. Idempotent. Safe to re-run.
 #

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Per-device-class post-pair handlers.
 
 Adding a new device class is one file: implement the `BluetoothHandler`

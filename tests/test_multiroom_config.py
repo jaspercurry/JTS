@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.multiroom.config.
 
 Pure logic — no I/O beyond the env file the loader reads. Exercises the

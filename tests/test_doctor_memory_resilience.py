@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Coverage for the 5 doctor checks added by Stage 1 of the
 memory-resilience plan (docs/HANDOFF-resilience.md).
 

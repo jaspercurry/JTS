@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Lightweight CamillaDSP config contract shared by DSP config emitters.
 
 Keep this module import-cheap. Socket-activated web surfaces use these

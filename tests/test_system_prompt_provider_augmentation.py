@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for per-provider SYSTEM_INSTRUCTION augmentation.
 
 The voice prompt is a shared base + a thin per-provider delta (NOT

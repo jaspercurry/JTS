@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Measured per-driver level-match trim (L1 phone level matching).
 
 These pin the heart of the measured refinement of the datasheet sensitivity

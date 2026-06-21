@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """NYC MTA Bus transit provider — requires a BusTime API key.
 
 Uses three BusTime endpoints:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-airplay-mode — toggle shairport's drift-correction mode.
 
 Synced (default) keeps AirPlay video A/V sync and multi-room timing

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Room correction v2 — sweep generation, deconvolution, PEQ design,
 and CamillaDSP YAML rewrite.
 

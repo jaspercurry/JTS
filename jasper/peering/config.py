@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Peering configuration — env-file loader.
 
 Persisted at /var/lib/jasper/peering.env, mode 0644 (no secrets).

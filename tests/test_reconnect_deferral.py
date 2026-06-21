@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for `DeferredReconnect` — the shared mid-turn reconnect-deferral
 primitive in `jasper.voice._supervisor`.
 

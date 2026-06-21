@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.flight_recorder — the Tier C log flight recorder.
 
 Exercises the ring buffer, the auto-flush-on-WARNING + explicit-dump

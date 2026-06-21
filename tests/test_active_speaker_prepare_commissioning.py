@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """prepare_driver_commissioning_config: emit + safety-assert the per-driver config.
 
 The per-driver commissioning step emits the production graph with only the target

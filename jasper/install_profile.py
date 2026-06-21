@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Install-profile helpers shared by deploy/runtime code.
 
 Small Pi installs have two product axes:

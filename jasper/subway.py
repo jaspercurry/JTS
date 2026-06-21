@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """NYC MTA real-time subway arrivals.
 
 Two data paths, primary + fallback:

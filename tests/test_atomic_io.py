@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.atomic_io.atomic_write_text — the canonical atomic
 text-write helper that ~39 hand-rolled tempfile+chmod+os.replace sites are
 being consolidated onto.

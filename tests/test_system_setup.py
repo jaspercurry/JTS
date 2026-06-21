@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the /system/ dashboard server (jasper.web.system_setup).
 
 The page itself is mostly client-side JS so server-side tests focus

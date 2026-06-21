@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Google OAuth setup wizard at /google/.
 
 Multi-account, household-aware — mirrors `jasper.web.spotify_setup` but

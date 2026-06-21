@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free guard for the voice-eval tool-registry builder.
 
 `tests/voice_eval/harness.py::_build_test_registry` mirrors the daemon's

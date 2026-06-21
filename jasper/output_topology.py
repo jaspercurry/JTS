@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Versioned speaker output topology contract.
 
 This module is the product-grade boundary between physical DAC lanes and the

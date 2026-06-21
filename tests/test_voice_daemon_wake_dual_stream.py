@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the dual-stream wake-word OR-gate.
 
 WakeLoop's `_handle_wake_frame(frame, leg)` is the single entry point

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Watch the Apple dongle's Headphone mixer control and ACTIVELY
 # self-heal it back to 100% when something drives it down.
 #

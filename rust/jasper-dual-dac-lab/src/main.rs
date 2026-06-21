@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Lab-only dual Apple USB-C DAC validation runner.
 //!
 //! This binary is intentionally outside the product output path. It opens

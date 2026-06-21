@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.wifi_guardian_persistence.
 
 Covers the storage layer for the WiFi profile guardian:

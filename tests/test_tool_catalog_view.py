@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper.tool_catalog_view — the light read/overlay side of the catalog.
 
 The wizard (and /state) read voice's /run/jasper/tools.json and overlay the

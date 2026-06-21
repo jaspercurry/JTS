@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Auto-load the systemd-equivalent env files into `os.environ` so
 CLI tools see the same vars the daemons see, even when the user invokes
 them without sourcing `/etc/jasper/jasper.env` into their shell first.

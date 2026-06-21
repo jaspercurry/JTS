@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Home Assistant regression scenario — the `home_assistant` relay tool.
 
 Pins the LLM-visible routing for smart-home control: a device-control

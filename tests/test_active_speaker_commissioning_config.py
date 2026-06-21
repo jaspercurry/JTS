@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Single-audio-path commissioning config emission.
 
 The active-crossover flow validates THROUGH the production graph, not a

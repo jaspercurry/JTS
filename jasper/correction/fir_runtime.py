@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """FIR coefficient runtime substrate.
 
 This module does not design room-correction FIR filters. It provides

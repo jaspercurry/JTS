@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Modular transit-provider registry, grouped into toggleable city packs.
 
 A "transit provider" is one source of stop + arrival data — NYC Subway,

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! jasper-outputd - final-output owner.
 //!
 //! The default binary mode remains fake so `jasper-outputd --once` is

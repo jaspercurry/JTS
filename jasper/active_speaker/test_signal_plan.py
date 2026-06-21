@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Preset-derived driver test signal selection for active speakers.
 
 This module owns the acoustic-band policy for quiet commissioning tones. It is

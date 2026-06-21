@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Stage 5: the per-driver floor-unmute gain ramp (the first AUDIBLE step).
 
 A commission load (``startup_load.load_driver_commissioning_config``) arms one

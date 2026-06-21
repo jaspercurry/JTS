@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """DTLN-aec streaming engine for jasper-aec-bridge.
 
 Wraps breizhn/DTLN-aec (converted to ONNX via tf2onnx, see

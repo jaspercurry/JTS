@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.mdns — the ONE one-shot mDNS-SD browse primitive.
 
 ``browse_once`` is the shared, fail-soft browse+resolve+parse moved out of

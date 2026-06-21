@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Diagnostic-tool regression scenario — `flag_recent_issue`.
 
 Pins the LLM-visible contract for the "flag that" surface: when the

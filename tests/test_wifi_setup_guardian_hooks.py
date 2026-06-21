@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the WiFi profile guardian hooks in jasper.web.wifi_setup.
 
 The wizard's connect_new / connect_saved / forget code paths each call

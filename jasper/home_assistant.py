@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Home Assistant conversation-API client.
 
 Thin async wrapper around HA's `POST /api/conversation/process` endpoint.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """graph_evidence single-source agreement.
 
 The active-speaker safety verifiers used to each hardcode/re-derive the filter

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Host/Origin guard on the shared wizard mutating chokepoint.
 
 The nginx-fronted setup wizards under `jasper/web/` write WiFi PSKs, HA

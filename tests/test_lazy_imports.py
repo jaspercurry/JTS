@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guards that the memory-diet lazy-imports stay lazy.
 
 Each test runs in its own Python subprocess so module-cache state

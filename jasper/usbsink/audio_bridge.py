@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Audio bridge: UAC2Gadget capture → fan-in renderer lane.
 
 Two sounddevice streams connected by a bounded queue:

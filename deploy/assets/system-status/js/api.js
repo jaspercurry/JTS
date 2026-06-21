@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // api.js — CSRF-aware fetch helpers for the /system/ dashboard.
 //
 // These helpers are now the shared cross-page module

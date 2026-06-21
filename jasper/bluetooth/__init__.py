@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Generic Bluetooth control for JTS — adapter ops, scan, pair, connect.
 
 Mirrors the iPhone Settings → Bluetooth model: live device list, pair

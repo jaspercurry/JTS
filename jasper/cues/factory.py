@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Factory: pick the TTS backend that matches the active voice
 provider so cues sound in the same voice the assistant uses for
 live replies.

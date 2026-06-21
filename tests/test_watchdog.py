@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for `jasper.watchdog.Heartbeat`.
 
 The progress-sentinel pattern is load-bearing for the JTS

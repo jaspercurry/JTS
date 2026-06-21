@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration for the outputd daemon.
 //!
 //! Defaults keep `jasper-outputd --once` safe in a developer shell:

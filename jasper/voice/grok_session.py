@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """xAI Grok Voice Agent adapter.
 
 Per xAI's docs (https://docs.x.ai/docs/guides/voice/agent), the Grok

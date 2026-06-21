@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Correction session-bundle helpers.
 
 Session bundles are the replay boundary for future FIR and agent work.

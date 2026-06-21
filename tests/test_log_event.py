@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.log_event — the canonical structured-log emitter.
 
 Pins the logfmt rendering (so the on-the-wire `event=` shape stays

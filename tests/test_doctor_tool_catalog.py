@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper-doctor's tool-catalog check.
 
 check_tool_catalog has three branches: skip-if-no-provider (ok), configured

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Opt-in model-call adapter for the calibration advisor harness.
 
 The model is a suggestion engine, not an execution engine. This module

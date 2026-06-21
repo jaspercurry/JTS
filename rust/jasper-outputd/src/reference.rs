@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bounded speaker-reference fanout.
 //!
 //! Side consumers are intentionally lossy. The DAC path publishes the

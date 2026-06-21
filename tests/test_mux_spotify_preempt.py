@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the two-tier Spotify-preempt escalation in jasper.mux.
 
 Tier 1 (existing): Spotify Web API `PUT /me/player/pause` via spotipy.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed client for the jasper-control daemon (the local control service).
 
 jasper-control runs at ``http://127.0.0.1:8780`` and owns the household's

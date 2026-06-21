@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Sound-curve and preference-EQ model.
 
 This module is intentionally pure Python and import-cheap. The web

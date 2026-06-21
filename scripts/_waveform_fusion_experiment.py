@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Offline waveform-fusion experiment for wake-corpus legs.
 
 This is a research harness, not a production audio path. It takes paired

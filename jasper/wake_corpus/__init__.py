@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Wake-word corpus recorder — backend + bridge orchestration.
 
 This package holds the engine behind the operator-only `/wake-corpus/`

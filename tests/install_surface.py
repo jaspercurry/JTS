@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Helpers for assertions over deploy/install.sh plus sourced install libs."""
 from __future__ import annotations
 

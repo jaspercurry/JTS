@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Sound profile — parametric EQ editor.
 //
 // Static ES module served from /assets/sound-profile/js/ (revalidated by

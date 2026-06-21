@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Report HANDOFF docs overdue for a freshness check.
 #
 # A doc is "stale" if its `Last verified: YYYY-MM-DD` footer (or, when

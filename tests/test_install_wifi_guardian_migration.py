@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test the install.sh `migrate_wifi_guardian` shell helper.
 
 The helper seeds /var/lib/jasper/wifi_guardian.env from the currently-

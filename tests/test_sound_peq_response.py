@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """PEQ magnitude response, new cut/notch band types, and JS↔Python parity.
 
 The drawn /sound/ curve is real RBJ biquad magnitude (jasper.sound.profile)

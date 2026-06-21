@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Conventions guard: a wizard handler that restarts a daemon must emit `event=`.
 
 A web-wizard POST handler that triggers a daemon restart is, by construction,

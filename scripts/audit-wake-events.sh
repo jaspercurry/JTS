@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Forensic audit of the wake-event corpus — sanity-check that
 # captured audio is what we think it is + the SQLite columns are
 # being populated as expected.

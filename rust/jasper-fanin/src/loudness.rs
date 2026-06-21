@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compatibility shim for the shared assistant/content loudness policy.
 //!
 //! Fan-in still owns pre-DSP TTS mixing. The K-weighted loudness engine

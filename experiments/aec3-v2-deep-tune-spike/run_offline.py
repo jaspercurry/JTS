@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Process all 10 reference-conditions cells through AEC3 v2.1 with
 the research-report-recommended starting config, and score the
 output with jarvis_v2. Compare to AEC3-stock, DTLN-128, DTLN-256.

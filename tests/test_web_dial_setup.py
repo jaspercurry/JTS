@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free tests for the /dial/ rotary-dial onboarding wizard.
 
 Mirrors the structure of the other ``tests/test_web_*_setup.py`` suites:

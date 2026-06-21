@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /transit/ wizard behaviour.
 //
 // The page is server-rendered: the address / save / clear forms POST and the

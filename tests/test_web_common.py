@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.web._common helpers.
 
 The infrastructure tested here (flash cookies, CSRF tokens, the unified

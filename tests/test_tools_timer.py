@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for `jasper.tools.timer.make_timer_tools`.
 
 Covers the LLM-facing response shapes for `update_timer`. The

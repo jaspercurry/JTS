@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Single source of truth reader for the *active voice provider*.
 
 The active provider is persisted by the ``/voice`` wizard to

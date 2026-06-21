@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Emit commissioning-safe CamillaDSP templates for active speakers.
 
 This module is intentionally side-effect-light: it can build or write a

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the OpenAI Realtime adapter.
 
 Mirrors test_gemini_connection.py: a fake ``connect_factory`` stands in

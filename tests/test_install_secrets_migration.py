@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the WS1 Phase 4 secret-compartment migrations in
 deploy/lib/install/env-migrations.sh — `migrate_secrets_phase4a` (moves the
 Google token tree + rewrites accounts.json) and `migrate_voice_keys_split`

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Per-turn structured tracing for the voice loop.
 
 The voice-eval harness records what happened during a turn — every tool

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Resolve-path contract coverage for the <dialog> confirm/alert helper.
 
 The dialog resolves its Promise on the native <dialog> `close` event, which

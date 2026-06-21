@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only tools for calibration-agent intake.
 
 These functions are deliberately deterministic. The future LLM layer

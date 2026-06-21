@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic evidence packets for correction-bundle review.
 
 The calibration agent should reason from facts JTS collected, not from

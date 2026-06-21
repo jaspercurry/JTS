@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Curated voice-provider model and voice catalog.
 
 The catalog powers the /voice setup wizard. It is intentionally not a

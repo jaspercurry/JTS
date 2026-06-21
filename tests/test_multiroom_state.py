@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.multiroom.state.read_grouping_state.
 
 The state reader is the fresh-read SSOT projection consumed by

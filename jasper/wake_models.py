@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Curated catalogue of wake-word models the speaker can run.
 
 One source of truth, consumed by three callers:

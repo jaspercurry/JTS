@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: .env.example literals must equal the jasper/config.py defaults.
 
 install.sh seeds /etc/jasper/jasper.env from .env.example on a fresh

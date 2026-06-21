@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! jasper-fanin — JTS renderer fan-in daemon.
 //!
 //! Reads N snd-aloop substream pairs (one per music renderer), sums

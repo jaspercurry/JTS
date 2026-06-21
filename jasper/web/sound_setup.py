@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Sound curve and preference-EQ page at /sound/.
 
 URL surface (after nginx strips /sound/):

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Score a wake-word ONNX model offline against the 10-condition reference
 baseline (`reference-conditions/`, see docs/HANDOFF-mic-quality-v2.md).
 

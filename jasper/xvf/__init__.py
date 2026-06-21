@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """JTS-owned XMOS XVF3800 control interface.
 
 `xvf_host.py` implements the small USB vendor-control command surface

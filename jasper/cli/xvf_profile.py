@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Emit the resolved XVF3800 mic runtime profile.
 
 This is the bridge between the Python single source of truth in

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Ordered registry for jasper-doctor checks.
 
 This is the *re-homing* layer for ``jasper-doctor``'s decomposition: the

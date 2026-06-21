@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the WS1 Phase 3 privileged restart broker.
 
 Pins the closed verb vocabulary, the unit allowlist, SO_PEERCRED peer-uid

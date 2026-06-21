@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Sweep playback through the JTS music chain.
 
 Plays a sweep WAV via `aplay -D correction_substream`, a dedicated

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared diagnostics vocabulary for the active-speaker commissioning flow.
 
 `issue` and `gate` were duplicated byte-for-byte across the active_speaker

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression: _end_turn must finalize the assistant TTS segment.
 
 The passive assistant-loudness profile (the per-provider source-LUFS

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.usbsink.audio_bridge.AudioBridge callbacks.
 
 The callbacks are pure functions over (bytes in, bytes out + stats

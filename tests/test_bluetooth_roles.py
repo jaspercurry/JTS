@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """bt_roles persistence — pin the group-readable mode under the WS1 non-root drop."""
 from __future__ import annotations
 

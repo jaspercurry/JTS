@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.bus.BusClient — mocked HTTP, no network.
 
 v2 shape: BusClient holds a list of configured stops; every

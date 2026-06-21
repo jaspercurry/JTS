@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: only jasper-voice may read JASPER_VOICE_PROVIDER from the env.
 
 AGENTS.md ("Reading the active provider in code — one reader, never

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for migrate_voice_provider in deploy/lib/install/env-migrations.sh."""
 from __future__ import annotations
 

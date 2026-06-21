@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.avahi_service — the ONE Avahi *.service renderer.
 
 This is the shared render+guard+atomic-write+reload body that both

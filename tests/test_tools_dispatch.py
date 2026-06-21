@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the cross-provider tool-dispatch contract.
 
 `jasper.tools.dispatch_tool` is the single home for what every

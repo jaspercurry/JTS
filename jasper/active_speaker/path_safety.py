@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic safety gates for active-speaker audible paths.
 
 Before JTS can load an active crossover onto real hardware, every

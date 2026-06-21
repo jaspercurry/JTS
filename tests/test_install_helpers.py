@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for bash helpers in deploy/install.sh.
 
 The helpers can be sourced cleanly because install.sh's `main` call

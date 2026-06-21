@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reconcile JTS mic/AEC state with the audio hardware currently present.
 #
 # This is intentionally a small policy layer around /etc/jasper/jasper.env

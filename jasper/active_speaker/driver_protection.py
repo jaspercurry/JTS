@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Driver-aware protection and closed-loop level policy.
 
 This module is intentionally deterministic and side-effect free. It decides

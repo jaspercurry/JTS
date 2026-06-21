@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared operator-surface wiring for per-driver commissioning + the Stage-5 ramp.
 
 The ``jasper-active-speaker`` CLI and the ``/sound/`` commission card drive the

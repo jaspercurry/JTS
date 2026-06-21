@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper-doctor's env loading, provider-aware key
 check, and ALSA mic-card lookup. Hardware-side checks (sounddevice,
 systemctl, arecord, etc) are exercised on the Pi via

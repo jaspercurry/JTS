@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Playback lifecycle for active-speaker tone plans.
 
 The normal artifact backend never emits audio. Product commissioning routes

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """One-time Spotify OAuth bootstrap for headless Pi (CLI flavour).
 
 Most users go through the web wizard at http://jts.local/spotify/. This

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """City-pack model + self-contained provider runtime.
 
 Covers the toggleable city-pack layer (jasper.transit.CityPack /

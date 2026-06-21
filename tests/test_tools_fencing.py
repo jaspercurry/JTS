@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the untrusted-content fencing seam.
 
 `jasper.tools.fence_untrusted` is the shared baseline defense against

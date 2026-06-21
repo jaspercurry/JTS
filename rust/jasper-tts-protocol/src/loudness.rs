@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared assistant/content loudness policy.
 //!
 //! The control target is K-weighted loudness, not raw PCM RMS. The

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper.tools.catalog — full catalog enumeration + status computation.
 
 The catalog lists EVERY first-party tool (needs_setup ones via

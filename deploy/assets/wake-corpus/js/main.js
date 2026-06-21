@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /wake-corpus/ wake-word corpus recorder.
 //
 // The browser half of the multi-leg UDP wake-capture recorder: it polls

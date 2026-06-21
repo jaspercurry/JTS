@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Pin the Apple USB-C dongle Headphone mixer control to 100%.
 #
 # Usage: jasper-dac-init [card|auto] [control]

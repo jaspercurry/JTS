@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """ALSA sample-rate-converter quality preference.
 
 The global ALSA ``defaults.pcm.rate_converter`` setting controls the

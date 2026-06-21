@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-wake-corpus-web — Browser-based corpus recording UI.
 
 Open-ended recording (click to start, click to stop) for building the

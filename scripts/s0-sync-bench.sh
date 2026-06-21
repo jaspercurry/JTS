@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # =============================================================================
 # s0-sync-bench.sh — S0-SYNC de-risk gate BENCH harness (THROWAWAY)
 # =============================================================================

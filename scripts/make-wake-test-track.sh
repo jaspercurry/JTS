@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Generate a wake-rate test audio track on the Pi (uses OpenAI TTS via
 # the API key already in /etc/jasper/jasper.env), pull it back to the
 # laptop for AirDrop to your phone.

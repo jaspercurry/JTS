@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.home_assistant.HAClient — mock HTTP, no network.
 
 Uses httpx.MockTransport (the same pattern as tests/test_bus.py) so the

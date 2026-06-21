@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the shared Improv-over-Serial protocol bits.
 
 The packet framing and SUBMIT_SETTINGS layout are easy to get wrong and

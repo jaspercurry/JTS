@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # =============================================================================
 # s0-sync-measure.py — analyzer for the S0-SYNC de-risk BENCH (THROWAWAY)
 # =============================================================================

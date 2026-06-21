@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.control.system_supervisor (T5.2).
 
 Drives `_tick` directly with a probe/reboot trio overridden on a

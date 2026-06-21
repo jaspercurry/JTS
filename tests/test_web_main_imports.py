@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression tests for the 'lost edit' bug class.
 
 PR #146 (multi-device peering) added a new wizard but lost two lines during an

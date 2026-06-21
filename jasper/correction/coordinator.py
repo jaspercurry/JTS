@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Measurement-window coordinator.
 
 `measurement_window()` is an async context manager that pauses

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // views.js — builds the dashboard structure once, then refreshes the live
 // sections each poll. Two design choices worth knowing:
 //

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Invariants for the shared canonical design system.
 
 The redesigned management UI shares one stylesheet — deploy/assets/app.css —

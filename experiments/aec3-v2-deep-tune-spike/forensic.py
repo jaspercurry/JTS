@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Forensic audio analysis comparing raw / AEC3 / V2tune across cells.
 
 Quantifies: clipping, peak/RMS, AGC pumping (variance of moving-window

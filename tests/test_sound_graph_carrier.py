@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Graph-carrier dispatch invariants for preference-EQ apply (PR-1).
 
 Design-of-record: docs/HANDOFF-dsp-graph-carrier.md. These tests pin the

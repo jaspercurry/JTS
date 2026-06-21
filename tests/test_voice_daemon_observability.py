@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from types import SimpleNamespace
 
 from jasper.voice_daemon import _tts_ready_detail

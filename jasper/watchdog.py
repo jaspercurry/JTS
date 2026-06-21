@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """systemd watchdog heartbeat with progress-sentinel guard.
 
 This is Tier 1 of the JTS resilience ladder. Pairs with
