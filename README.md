@@ -675,10 +675,16 @@ reference. Currently:
   Also documents the new debug-WAV recording instrumentation
   (`JASPER_DEBUG_RECORD_OPENAI_AUDIO`).
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) —
-  Historical costing record for robust barge-in options under the
-  earlier measure-first policy. Useful archaeology, but superseded
-  as the current recommendation by
-  [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md).
+  Live implementation plan & current-code gap analysis for robust
+  assistant-speech barge-in (provider-agnostic spine + per-provider
+  packs). The contract itself lives in
+  [`HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md) and
+  [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md);
+  the 2026-05-23 option-costing record is a tagged historical appendix.
+- [`barge-in-build-prompts.md`](docs/barge-in-build-prompts.md) —
+  Execution artifact (session handoff): the step sequencing + copy-paste
+  per-window agent prompts for building barge-in against the plan in
+  `HANDOFF-barge-in.md`. Retire once barge-in has shipped.
 - [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md)
   — Chosen architecture direction for moving from today's split
   music/TTS output paths to a JTS-native output owner that publishes

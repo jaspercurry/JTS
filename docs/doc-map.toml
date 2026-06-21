@@ -15,6 +15,9 @@
 # hw-validation runbooks there).
 session_artifacts = [
   "docs/AEC-DIAG-01-baseline.md",
+  # Execution artifact: per-window build prompts for the barge-in plan in
+  # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
+  "docs/barge-in-build-prompts.md",
 ]
 
 [[subsystem]]
