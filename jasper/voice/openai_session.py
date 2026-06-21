@@ -523,6 +523,32 @@ class OpenAIRealtimeTurn:
         self._interrupted = False
         self._interrupt_event.clear()
 
+    # ---- Barge-in capability seam (behaviour-neutral stubs) ----
+    #
+    # Reconciliation kind for OpenAI is `needs_client_truncate` (catalog).
+    # The wire calls these will make in a later PR already exist privately:
+    # `OpenAIRealtimeConnection._cancel_response()` (response.cancel) and a
+    # conversation.item.truncate using `self._last_assistant_item_id` plus
+    # the final playout ledger's played-ms. They stay no-ops here so this
+    # PR is behaviour-neutral — nothing in the daemon calls them yet.
+
+    async def cancel_response(self, reason: str) -> None:
+        # No-op stub: the barge-in packs (later PRs) wire this to
+        # `self._conn._cancel_response()`. `reason` is reserved for the
+        # structured-log line the real implementation will emit.
+        return None
+
+    async def truncate_assistant_audio(
+        self, provider_item_id: str | None, audio_played_ms: int,
+    ) -> None:
+        # No-op stub. The real call (later PRs) sends
+        # conversation.item.truncate(item_id=provider_item_id,
+        # audio_end_ms=audio_played_ms). `provider_item_id` MUST be
+        # tolerated as None — the ledger may not have observed
+        # `self._last_assistant_item_id` yet — in which case the real
+        # implementation skips the truncate rather than send an invalid id.
+        return None
+
     # ---- Server VAD ----
 
     def server_vad_active(self) -> bool:
@@ -981,6 +1007,14 @@ class OpenAIRealtimeConnection:
         )
 
     def supports_server_vad(self) -> bool:
+        return True
+
+    def supports_provider_vad(self) -> bool:
+        # OpenAI Realtime exposes native server-side VAD (`server_vad`) — the
+        # same engine `supports_server_vad()` lets the daemon switch to
+        # mid-session. Capability, not current config: production runs manual
+        # VAD. Grok inherits this (xAI is OpenAI-compatible). Separate from
+        # barge-in support — see the LiveConnection docstring.
         return True
 
     # ------------------------------------------------------------------

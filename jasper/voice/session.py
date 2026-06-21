@@ -217,6 +217,69 @@ class LiveTurn(Protocol):
         flushed its output in response."""
         ...
 
+    # ---- Barge-in capability seam (provider-pack reconciliation) ----
+    #
+    # ``interrupted()`` / ``wait_for_interrupt()`` / ``clear_interrupted()``
+    # above stay the daemon-facing EVENT: "the provider reported (or the
+    # daemon observed) that the user interrupted." The two methods below are
+    # the matching ACTIONS the daemon takes to reconcile *provider* state
+    # after it has already flushed local TTS playback. They are capability-
+    # based, not provider-name-based: which reconciliation a provider needs
+    # is declared by its ``interrupt_reconcile`` kind in
+    # ``jasper/voice/catalog.py`` (``needs_client_truncate`` /
+    # ``server_self_truncates`` / ``inherits``), so the barge-in packs branch
+    # on the registry, never on ``isinstance``/provider id. Both are safe
+    # no-ops in adapters that do not need them, so a single daemon code path
+    # works across providers. See the "Provider Interruption Contract" in
+    # docs/HANDOFF-voice-providers.md.
+
+    async def cancel_response(self, reason: str) -> None:
+        """Explicitly tell the provider to stop generating the in-progress
+        response for this turn — the *local/manual* cancel path.
+
+        Called when JTS itself decides to stop the model: a barge-in the
+        provider's own VAD did not initiate, a push-to-talk release, an
+        operator/manual interrupt. It maps to the provider's "stop now"
+        control where one exists (OpenAI/Grok ``response.cancel``).
+
+        This is the inverse direction of ``wait_for_interrupt()`` /
+        ``clear_interrupted()``: those observe a provider-*reported*
+        interruption; ``cancel_response`` is JTS telling the provider to
+        stop, not the provider telling JTS it stopped. Local TTS flush is a
+        separate daemon-layer step that does not depend on this call —
+        cancelling provider generation never makes the already-queued DAC
+        audio stop on its own.
+
+        ``reason`` is for the structured-log line only. Must be idempotent
+        and must never raise on an already-complete or absent response.
+        Providers with no client cancel mechanism (Gemini) implement this
+        as a no-op."""
+        ...
+
+    async def truncate_assistant_audio(
+        self, provider_item_id: str | None, audio_played_ms: int,
+    ) -> None:
+        """Align the provider's conversation history to what the listener
+        actually heard, after a barge-in cut local playback short.
+
+        On WebSocket transports the server keeps the *entire* generated
+        assistant turn in conversation history even though JTS aborted the
+        DAC queue mid-sentence. Left unaligned, the model believes it said
+        more than the user heard and later turns reference unspoken words.
+        Providers that need it (OpenAI/Grok ``conversation.item.truncate``)
+        use the *final playout ledger's* accounting — ``provider_item_id``
+        and ``audio_played_ms`` (how much actually left the speaker) — to
+        truncate history at the heard boundary.
+
+        ``provider_item_id`` MUST be tolerated as ``None``. Gemini has no
+        OpenAI-style per-response audio item id, and even an OpenAI turn may
+        not have observed one yet; in that case (and for providers that
+        reconcile server-side) this is a no-op. The caller does not branch
+        on provider — whether a client truncate is needed is the registry's
+        ``interrupt_reconcile`` declaration's job. Must be idempotent and
+        must never raise."""
+        ...
+
 
 @runtime_checkable
 class ConversationTranscriptTurn(Protocol):
@@ -290,6 +353,33 @@ class LiveConnection(Protocol):
         """Whether this provider supports mid-session switching to
         server-side VAD via set_turn_detection(). Default False —
         adapters that support it override to return True."""
+        ...
+
+    def supports_provider_vad(self) -> bool:
+        """Whether the provider's API has native voice-activity detection
+        that can *detect or commit* user turns on its own.
+
+        Deliberately a different axis from both barge-in support and
+        ``supports_server_vad()``:
+
+        - ``supports_server_vad()`` is narrow: can the daemon switch THIS
+          connection to provider-driven endpointing *mid-session* via
+          ``set_turn_detection()`` (the server-VAD experiment). Gemini is
+          False there because its activity detection is fixed at connect.
+        - ``supports_provider_vad()`` is broad: does the provider have a VAD
+          engine at all. It describes API capability, not current config —
+          JTS runs all three providers with manual VAD in production, and a
+          ``True`` here does not mean provider VAD is enabled or that it will
+          handle barge-in.
+
+        It is "separate from barge-in support" on purpose: even when this is
+        ``True``, the daemon STILL flushes local TTS playback itself, because
+        provider VAD never knows JTS's DAC queue depth and so cannot stop
+        audible audio. Packs must not use this to decide whether to flush or
+        cancel — that is the ``interrupt_reconcile`` declaration's job.
+
+        Default False — adapters whose API exposes VAD override to return
+        True."""
         ...
 
     async def set_turn_detection(self, mode: dict | None) -> None:
