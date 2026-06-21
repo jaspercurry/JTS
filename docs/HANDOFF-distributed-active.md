@@ -507,10 +507,12 @@ risk: the snd-aloop re-entry + the `rate_adjust`/no-resampler capture-from-
 loopback clock seam against the DAC.) Harness (throwaway, no product code):
 [`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) +
 [`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py). Topology:
-snapserver + follower#1 on `jts3` (HifiBerry DAC8x), follower#2 on `jts.local`
-(USB dongle); each `snapclient → hw:Loopback → camilla [crossover-only,
-`volume_limit:0`, `enable_rate_adjust`, no resampler, chunksize 1024, fixed
-`target_level`] → DAC`, with `snapclient --latency`.
+snapserver + follower#1 on `jts3` (HifiBerry DAC8x), follower#2 on `jts4`
+(Pi Zero 2 W, USB dongle — the cheap-follower tier, so a stricter soak); each
+`snapclient → hw:Loopback → camilla [crossover-only, `volume_limit:0`,
+`enable_rate_adjust`, no resampler, chunksize 1024, fixed `target_level`] →
+DAC`, with `snapclient --latency`. (`jts.local` was briefly used as the second
+box to try its onboard mic for the acoustic gate — see below.)
 
 **Method.** The seam's clock-lock is measured **directly** from camilla's
 websocket (state + `buffer_level` vs target + `rate_adjust` + raw capture rate
@@ -519,20 +521,23 @@ the DAC — alongside a **≥24 h snd-aloop xrun soak** (journal-clean gate) and
 CPU/temp/Pss. snapcast's per-client offset is the inter-client sync proxy.
 
 **Result (provisional — telemetry basis; 24 h soak in progress):**
-- **Clock-lock: PASS (LOCKED, both followers).** `state=RUNNING` throughout;
-  `buffer_level` holds target (mean ≈ 1021/1024 jts.local, 1021/1024 jts3);
-  `rate_adjust` tight and stable (~0.99989–0.99998, i.e. < ±0.02 %). camilla
-  logs `Capture device supports rate adjust` — HEnquist's bit-perfect loopback
-  method engages (no resampler). **0 xruns.**
-- **snd-aloop xrun soak: clean so far,** monitor running since 2026-06-20
-  ~01:08 UTC (`RuntimeMaxSec` 24 h); **final 24 h xrun + thermal numbers to be
-  appended on completion.** Steady-state: camilla ≈ 5.5 MB Pss, snapclient
-  ≈ 5 MB, temps 37–42 °C, no throttling.
+- **Clock-lock: PASS (LOCKED, both followers, on every pair exercised —
+  jts3+jts4 and jts3+jts.local).** `state=RUNNING` throughout; `buffer_level`
+  holds target (jts3 ≈ 1021/1024, jts4 ≈ 1051/1024); `rate_adjust` tight and
+  stable (~0.99989–1.00002, i.e. < ±0.02 %). camilla logs `Capture device
+  supports rate adjust` — HEnquist's bit-perfect loopback method engages (no
+  resampler). **0 xruns.** Notably the weak Zero 2 W (`jts4`) locks as cleanly
+  as the Pi 5s.
+- **snd-aloop xrun soak: clean so far,** monitor running on jts3+jts4 since
+  2026-06-20 ~01:54 UTC (`RuntimeMaxSec` 24 h); **final 24 h xrun + thermal
+  numbers to be appended on completion.** Steady-state: camilla ≈ 5.5 MB Pss,
+  snapclient ≈ 5 MB; temps jts3 ~40 °C, jts4 ~53 °C (Zero 2 W), no throttling.
 - **Inter-client sync:** snapclient `diff to server` ≈ 0 ms steady-state
   (sub-ms) — necessary-not-sufficient (does not see camilla's contribution;
   the clock-lock telemetry above does).
-- **Acoustic p99: DEFERRED.** The onboard mics (jts3 XVF, jts.local XVF + USB
-  PnP) **cannot** measure the inter-speaker offset — each is dominated by its
+- **Acoustic p99: DEFERRED.** The onboard mics (jts3 XVF; and jts.local's
+  XVF + USB-PnP, tried as a mic-equipped second box) **cannot** measure the
+  inter-speaker offset — each is dominated by its
   own close speaker, so the autocorrelation can't resolve the faint far
   speaker (it returns "no clean peak"; an earlier constant ~0.29 ms read was an
   analyzer artifact = the search-window floor, since fixed). The acoustic p99
