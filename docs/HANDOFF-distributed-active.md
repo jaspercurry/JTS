@@ -520,18 +520,21 @@ via `pycamilladsp`) — the most direct signal that the loopback holds against
 the DAC — alongside a **≥24 h snd-aloop xrun soak** (journal-clean gate) and
 CPU/temp/Pss. snapcast's per-client offset is the inter-client sync proxy.
 
-**Result (provisional — telemetry basis; 24 h soak in progress):**
+**Result (telemetry basis the owner accepted; ~0.65 h xrun-clean — full ≥24 h
+durability soak TODO, boxes reclaimed early):**
 - **Clock-lock: PASS (LOCKED, both followers, on every pair exercised —
-  jts3+jts4 and jts3+jts.local).** `state=RUNNING` throughout; `buffer_level`
-  holds target (jts3 ≈ 1021/1024, jts4 ≈ 1051/1024); `rate_adjust` tight and
-  stable (~0.99989–1.00002, i.e. < ±0.02 %). camilla logs `Capture device
-  supports rate adjust` — HEnquist's bit-perfect loopback method engages (no
-  resampler). **0 xruns.** Notably the weak Zero 2 W (`jts4`) locks as cleanly
-  as the Pi 5s.
-- **snd-aloop xrun soak: clean so far,** monitor running on jts3+jts4 since
-  2026-06-20 ~01:54 UTC (`RuntimeMaxSec` 24 h); **final 24 h xrun + thermal
-  numbers to be appended on completion.** Steady-state: camilla ≈ 5.5 MB Pss,
-  snapclient ≈ 5 MB; temps jts3 ~40 °C, jts4 ~53 °C (Zero 2 W), no throttling.
+  jts3+jts4 and jts3+jts.local).** Over the ~0.65 h run, `state=RUNNING`
+  throughout; `buffer_level` holds target (jts3 999–1055, mean 1025/1024; jts4
+  964–1109, mean 1032/1024); `rate_adjust` tight and stable (~0.99980–1.00007,
+  i.e. < ±0.03 %). camilla logs `Capture device supports rate adjust` —
+  HEnquist's bit-perfect loopback method engages (no resampler). **0 xruns.**
+  Notably the weak Zero 2 W (`jts4`) locks as cleanly as the Pi 5s.
+- **snd-aloop xrun soak: clean over ~0.65 h, then the lab boxes were reclaimed
+  — the full ≥24 h durability soak is NOT yet run** (re-run via
+  `s0-sync-bench.sh --soak 24` on a dedicable Pi to catch slow thermal/drift/
+  leak failures the short run can't). Steady-state cost: camilla ≈ 5.5 MB Pss,
+  snapclient ≈ 5 MB; temps jts3 ~40 °C, jts4 52–55 °C (Zero 2 W), load < 1.1,
+  no throttling.
 - **Inter-client sync:** snapclient `diff to server` ≈ 0 ms steady-state
   (sub-ms) — necessary-not-sufficient (does not see camilla's contribution;
   the clock-lock telemetry above does).
@@ -560,12 +563,15 @@ CPU/temp/Pss. snapcast's per-client offset is the inter-client sync proxy.
   sidesteps this.
 
 **Verdict + consequence.** On the telemetry basis the owner accepted, the
-**clock seam holds — the active wireless follower stays sample-locked.**
-Provisional **PASS → Slice 3 is GO**, with two confirmations outstanding: the
-≥24 h xrun soak completing journal-clean (running; append numbers), and the
-acoustic end-to-end p99 < 5 ms once a between-speakers mic is placed. (A later
-xrun-soak failure would downgrade to "retry a constructed/hardware loopback per
-the prior-art note" before shelving.)
+**clock seam holds — the active wireless follower stays sample-locked** (both
+followers lock with a tight, stable `rate_adjust` and 0 xruns; snapcast sub-ms
+inter-client sync). Provisional **PASS → Slice 3 is GO**, with two
+confirmations outstanding before it's unconditional: the **≥24 h durability
+xrun soak** (only ~0.65 h run so far, clean — re-run on a dedicated Pi to catch
+slow thermal/drift/leak failures), and the **acoustic end-to-end p99 < 5 ms**
+once a between-speakers mic is placed. (A later xrun-soak failure would
+downgrade to "retry a constructed/hardware loopback per the prior-art note"
+before shelving.)
 
 **Slice 5 (the v1 gate) adds the matched-pair gates** — two *active*
 speakers, one as leader:
