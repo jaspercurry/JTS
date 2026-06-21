@@ -813,4 +813,77 @@ For future Tier-B slices, do not compensate for failed hardware validation by
 granting broad sudo, adding the units to `MANAGED_UNITS`, or weakening the
 hotplug recovery path.
 
-Last verified: 2026-06-19
+### Always-on core-audio daemons (`jasper-camilla` / `jasper-outputd` / `jasper-fanin`) — the un-tiered root surface
+
+The Tier A/B split above does not name these three. They are **always-on** (like
+Tier A) but **not network-facing** (unlike Tier A — Tier A *is* the RCE surface),
+and they are long-running daemons, **not** the boot/udev one-shots of Tier B. So
+they fall through the taxonomy and run as root unaddressed: `jasper-camilla` as
+`root:root`; `jasper-outputd` / `jasper-fanin` as `root:jasper` (group-joined for
+the cross-user TTS/control sockets — §3b-1, **not** a user drop). All three carry
+`StartLimitAction=reboot` (verified on `jts.local`, 2026-06-21). This is the last
+structural root surface in an otherwise-dropped system. Whether to drop it is a
+**deliberate decision, not an oversight** — recorded here so it is considered,
+with an honest account of what it buys.
+
+**What dropping them buys — be honest (low direct, real second-order):**
+
+- **They are not the RCE attack surface.** Unlike the Tier-A daemons (which parse
+  untrusted SSIDs, form input, OAuth callbacks, mic audio, third-party LLM
+  responses), the core-audio daemons read **local ALSA** + **JTS-written config
+  files** — trusted local inputs, not network data. An attacker does not reach
+  camilla/outputd/fanin *first*. So the **direct** marginal risk reduction is
+  **low**, and dropping the network daemons first (Phase 3, done) was the right
+  priority.
+- **The benefit is second-order, and real:**
+  - **Blast-radius containment.** Today a bug *in* camilladsp (a third-party Rust
+    binary) or outputd reachable via a crafted config/audio, **or** a pivot from a
+    compromised Tier-A daemon into the root audio stack, is **full-root device
+    compromise** — read every secret, rewrite any file, persist, pivot to the LAN
+    (the same lateral-movement risk this whole effort exists to contain — see the
+    threat model). Non-root bounds it to the audio pipeline.
+  - **Completeness / auditability.** "Every daemon is least-privilege **except**
+    two always-on root holdouts" is the coherence gap where reasoning breaks — the
+    false-degraded `/state` bug (PR #900) lived *exactly* at a root-writer /
+    non-root-reader seam. "No `jasper-*` daemon runs as root" is a defensible,
+    auditable posture; the holdouts are what an external pentest flags.
+- **Bottom line: this is defense-in-depth + posture, NOT a correctness fix.** The
+  active read-permission bug class (root-writes / non-root-reads) is closed by the
+  group-readable config writers (PR #900 `sound/camilla_yaml`, PR #901
+  `bluetooth/roles`) + the doctor permissions check — **without** touching these
+  daemons. So this is "reach for it for completeness," not "must-fix."
+
+**Why it is gated and high-risk — do NOT do it early:**
+
+- **It depends on the read-permission work landing first.** Dropping camilla to
+  non-root makes it a **new non-root reader** of every config it loads — so the
+  group-readable-writer burn-down (the `test_atomic_io_conventions` allowlist) and
+  the doctor permissions check (verifying each non-root daemon can read its
+  declared inputs) **must be airtight first**, or camilla cannot open its config
+  and the speaker plays **no audio**.
+- **Reboot hazard.** All three carry `StartLimitAction=reboot` — a misconfigured
+  drop (wrong `/dev/snd` ACL, denied real-time scheduling) does not degrade, it
+  **reboot-loops the box**. Needs the `jasper-bootloop-guard` armed + on-device
+  validation, exactly like the DAC-init slice above.
+- **Critical path.** These *are* the audio path; a regression is "no sound" — the
+  most user-visible failure mode.
+
+**Design sketch (for when it is done):** a dedicated non-root audio user (extend
+`jasper-recon`, or a new `jasper-audio`) with primary group `jasper` (config
+read) + supplementary `audio` (`/dev/snd/*`), real-time scheduling via `rtprio`
+limits + `CAP_SYS_NICE` instead of full root, and the configs already
+group-readable (the prerequisite above). Sequence **camilla first** — it is the
+least hardware-entangled (a config reader + ALSA, no XVF/USB control writes) and
+its `systemd-analyze security` score is the easy win — then `outputd` / `fanin`
+(more entangled with the loopback/DAC topology, though their socket group is
+already set up). Validate on a bench / `jts3`, never the household box first.
+
+**Decision trigger.** Do this when the goal is a *fully* defensible least-
+privilege posture (e.g. external security-audit readiness); defer indefinitely if
+the goal is closing *known* risk — that is already done by the phases above.
+Either way it is the **last** WS1 phase and **must follow** the doctor
+permissions check.
+
+Last verified: 2026-06-19 (core-audio daemon root-surface section added
+2026-06-21; the daemons' root + `StartLimitAction=reboot` status verified on
+`jts.local` that day)
