@@ -489,6 +489,7 @@ async def run() -> None:
             logger,
             "pricing.unpriced",
             model=active_model,
+            surface="voice",
             note=(
                 "no rate available; cost estimates will be $0 and the "
                 "spend cap cannot bound this model until you set a rate "
@@ -651,10 +652,32 @@ async def run() -> None:
             max_runtime_sec=cfg.research_max_runtime_sec,
             concurrency=cfg.research_concurrency,
             max_result_chars=cfg.research_max_result_chars,
+            retention=cfg.research_retention,
             usage_store=usage_store,
             usage_provider=active_research.provider_id,
             usage_model=str(getattr(active_research.client, "model", "")),
         )
+        # Mirror the voice-model unpriced guard: if JASPER_RESEARCH_OPENAI_MODEL
+        # is overridden to a model with no rate, research cost records $0 and
+        # the daily spend cap silently under-counts. Make it observable.
+        research_model = str(getattr(active_research.client, "model", ""))
+        research_pricing = pricing_for_model(
+            research_model, overrides=pricing_overrides,
+        )
+        if research_pricing.label.startswith("unpriced:"):
+            log_event(
+                logger,
+                "pricing.unpriced",
+                model=research_model,
+                surface="research",
+                note=(
+                    "no rate for the research model; research cost will read "
+                    "$0 and the daily spend cap cannot bound it until you add a "
+                    "jasper/data/model_pricing.json row (or a "
+                    "/var/lib/jasper/pricing.json override)"
+                ),
+                level=logging.WARNING,
+            )
     research_configured = research_scheduler is not None
 
     # Cue manager — built early so timer tools can pre-render their

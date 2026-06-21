@@ -116,6 +116,7 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ("JASPER_RESEARCH_MAX_RUNTIME_SEC", "research_max_runtime_sec", "float"),
     ("JASPER_RESEARCH_CONCURRENCY", "research_concurrency", "int"),
     ("JASPER_RESEARCH_MAX_RESULT_CHARS", "research_max_result_chars", "int"),
+    ("JASPER_RESEARCH_RETENTION", "research_retention", "int"),
     # Misc paths / feature defaults with a real shipped value.
     ("JASPER_WEATHER_UNITS", "weather_units", "str"),
     ("JASPER_VOICE_CONTROL_SOCKET", "voice_control_socket", "str"),

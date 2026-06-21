@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
@@ -200,3 +201,113 @@ async def test_openai_client_normalizes_provider_sdk_errors():
 
     with pytest.raises(research.ResearchError, match="temporary outage"):
         await client.complete(ResearchRequest(query="x"))
+
+
+class _ClosableOpenAI:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_openai_client_aclose_closes_underlying_client():
+    # The SDK exposes async close(); aclose() must actually drain it so the
+    # httpx pool/FDs don't leak across daemon restarts (cf. transit BusClient).
+    fake = _ClosableOpenAI()
+    client = openai_research.OpenAIResearchClient(api_key="sk-test", client=fake)
+    await client.aclose()
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_active_research_provider_aclose_forwards_to_client():
+    # The registry wrapper duck-types aclose; the OpenAI client fulfills it now
+    # (previously a no-op because the SDK has close(), not aclose()).
+    fake = _ClosableOpenAI()
+    client = openai_research.OpenAIResearchClient(api_key="sk-test", client=fake)
+    active = research.ActiveResearchProvider(provider_id="openai", client=client)
+    await active.aclose()
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_openai_client_aclose_is_noop_when_client_never_built():
+    # Lazy client never constructed -> nothing to close, must not raise.
+    await openai_research.OpenAIResearchClient(api_key="sk-test").aclose()
+
+
+def test_default_research_model_is_priced():
+    # Load-bearing: the default research model MUST have a model_pricing.json
+    # row, or research cost records $0 and the daily spend cap can't see it.
+    from jasper.usage import pricing_for_model
+
+    priced = pricing_for_model(openai_research.DEFAULT_MODEL)
+    assert not priced.label.startswith("unpriced:"), openai_research.DEFAULT_MODEL
+    assert priced.text_input_per_million_usd > 0
+    assert priced.text_output_per_million_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_complete_cancellation_best_effort_cancels_background_job():
+    # The scheduler's runtime ceiling cancels complete(); the server-side
+    # background job keeps billing, so we best-effort cancel it.
+    cancelled: list[str] = []
+    polling = asyncio.Event()
+
+    class _SlowResponses:
+        async def create(self, **_kwargs):
+            class _R:
+                id = "resp_abc"
+                status = "in_progress"
+
+            return _R()
+
+        async def retrieve(self, _rid):
+            polling.set()
+            await asyncio.Event().wait()  # block until cancelled
+
+        async def cancel(self, rid):
+            cancelled.append(rid)
+
+    class _SlowOpenAI:
+        responses = _SlowResponses()
+
+    client = openai_research.OpenAIResearchClient(
+        api_key="sk-test", client=_SlowOpenAI(), sleep=_no_sleep,
+    )
+    task = asyncio.create_task(client.complete(ResearchRequest(query="x")))
+    await asyncio.wait_for(polling.wait(), timeout=1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # The detached best-effort cancel is tracked in _cleanup_tasks; drain it.
+    await asyncio.gather(*client._cleanup_tasks, return_exceptions=True)
+    assert cancelled == ["resp_abc"]
+
+
+@pytest.mark.asyncio
+async def test_complete_cancellation_before_create_spawns_no_cancel():
+    cancelled: list[str] = []
+
+    class _BlockingResponses:
+        async def create(self, **_kwargs):
+            await asyncio.Event().wait()  # cancelled before we get an id
+
+        async def cancel(self, rid):
+            cancelled.append(rid)
+
+    class _BlockingOpenAI:
+        responses = _BlockingResponses()
+
+    client = openai_research.OpenAIResearchClient(
+        api_key="sk-test", client=_BlockingOpenAI(), sleep=_no_sleep,
+    )
+    task = asyncio.create_task(client.complete(ResearchRequest(query="x")))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.gather(*client._cleanup_tasks, return_exceptions=True)
+    assert cancelled == []  # no response id yet -> nothing to cancel

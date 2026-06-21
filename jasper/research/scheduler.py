@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from ..log_event import log_event
 from .base import ResearchError, ResearchRequest, ResearchResult, TextLLMClient
 
 if TYPE_CHECKING:
@@ -41,6 +42,10 @@ DEFAULT_DB_PATH = "/var/lib/jasper/research_jobs.db"
 DEFAULT_MAX_RUNTIME_SEC = 300.0
 DEFAULT_CONCURRENCY = 2
 DEFAULT_MAX_RESULT_CHARS = 600
+# Cap retained terminal jobs (in-memory + on disk) so an always-on speaker
+# doesn't accumulate rows forever — mirrors the timer subsystem's bound (timers
+# delete on fire). RUNNING jobs are never pruned (restart-restore needs them).
+DEFAULT_RETENTION = 200
 
 ResearchStatus = Literal["running", "done", "failed"]
 RUNNING: ResearchStatus = "running"
@@ -94,7 +99,10 @@ class ResearchJobStore:
                 ")"
             )
         except (OSError, sqlite3.Error) as e:
-            logger.warning("research store unavailable (%s): %s", db_path, e)
+            log_event(
+                logger, "research.store_unavailable",
+                level=logging.WARNING, db_path=db_path, err=str(e),
+            )
             if conn is not None:
                 try:
                     conn.close()
@@ -179,6 +187,31 @@ class ResearchJobStore:
             logger.warning("research store all failed: %s", e)
             return []
         return [_job_from_row(row) for row in rows]
+
+    def prune_terminal(self, keep: int) -> int:
+        """Delete ANNOUNCED terminal (done/failed) rows beyond the newest
+        `keep`, bounding the table on a long-running speaker. RUNNING rows AND
+        done/failed-but-UNANNOUNCED rows are never pruned — restart-restore
+        re-announces unannounced terminal jobs, so deleting one would silently
+        drop a result the user was promised. Returns rows deleted. Fail-soft."""
+        conn = self._conn
+        if conn is None or keep < 0:
+            return 0
+        try:
+            cur = conn.execute(
+                "DELETE FROM research_jobs "
+                "WHERE status IN ('done', 'failed') AND announced = 1 "
+                "AND id NOT IN ("
+                "  SELECT id FROM research_jobs "
+                "  WHERE status IN ('done', 'failed') AND announced = 1 "
+                "  ORDER BY created_at DESC LIMIT ?"
+                ")",
+                (keep,),
+            )
+            return max(0, cur.rowcount or 0)
+        except sqlite3.Error as e:
+            logger.warning("research store prune failed: %s", e)
+            return 0
 
     def mark_done(self, job_id: str, result: str, *, finished_at: float | None = None) -> ResearchJob | None:
         job = self.get(job_id)
@@ -276,6 +309,7 @@ class ResearchScheduler:
         max_runtime_sec: float = DEFAULT_MAX_RUNTIME_SEC,
         concurrency: int = DEFAULT_CONCURRENCY,
         max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
+        retention: int = DEFAULT_RETENTION,
         usage_store: "UsageStore | None" = None,
         usage_provider: str = "openai",
         usage_model: str = "",
@@ -286,6 +320,7 @@ class ResearchScheduler:
         self._max_runtime_sec = float(max_runtime_sec)
         self._concurrency = max(1, int(concurrency))
         self._max_result_chars = max(1, int(max_result_chars))
+        self._retention = max(0, int(retention))
         self._usage_store = usage_store
         self._usage_provider = usage_provider
         self._usage_model = usage_model
@@ -330,6 +365,8 @@ class ResearchScheduler:
                     self._resurface(job),
                     name=f"research-resurface-{job.id}",
                 )
+        self._store.prune_terminal(self._retention)
+        self._trim_memory()
 
     async def stop(self) -> None:
         """Cancel all in-flight jobs. Running rows remain for restart restore."""
@@ -372,6 +409,8 @@ class ResearchScheduler:
             self._run(job),
             name=f"research-{job.id}",
         )
+        # Query text is deliberately omitted — it can carry personal content.
+        log_event(logger, "research.submit", job_id=job.id)
         return ResearchStartResult(
             accepted=True,
             job=job,
@@ -388,6 +427,10 @@ class ResearchScheduler:
         job = self._store.mark_announced(job_id)
         if job is not None:
             self._jobs[job.id] = job
+            # An announced job is fully handled — bound retention now so the
+            # store and the in-memory map don't grow without limit.
+            self._store.prune_terminal(self._retention)
+            self._trim_memory()
         return job
 
     def mark_read(self, job_id: str) -> ResearchJob | None:
@@ -403,7 +446,19 @@ class ResearchScheduler:
             if (job := self._jobs.get(job_id)) is not None and job.status == RUNNING
         )
 
+    def _trim_memory(self) -> None:
+        """Keep all RUNNING jobs plus the newest `_retention` terminal jobs in
+        the in-memory map; older terminal jobs stay readable via the store's
+        get()."""
+        terminal = sorted(
+            (j for j in self._jobs.values() if j.status != RUNNING),
+            key=lambda j: j.created_at,
+        )
+        for job in terminal[: max(0, len(terminal) - self._retention)]:
+            self._jobs.pop(job.id, None)
+
     async def _resurface(self, job: ResearchJob) -> None:
+        log_event(logger, "research.resurfaced", job_id=job.id, status=job.status)
         try:
             await self._notify_done(job)
         except asyncio.CancelledError:
@@ -432,6 +487,13 @@ class ResearchScheduler:
         else:
             self._record_usage(result)
             done = self._finish_done(job, result.text)
+            log_event(
+                logger, "research.done", job_id=done.id,
+                runtime_s=round((done.finished_at or 0.0) - done.created_at, 2),
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                chars=len(done.result or ""),
+            )
         finally:
             self._tasks.pop(job.id, None)
 
@@ -468,6 +530,11 @@ class ResearchScheduler:
         )
         self._jobs[done.id] = done
         self._store.update(done)
+        log_event(
+            logger, "research.failed", job_id=done.id,
+            runtime_s=round((done.finished_at or 0.0) - done.created_at, 2),
+            reason=(error or "")[:120],
+        )
         return done
 
     async def _notify_done(self, job: ResearchJob) -> None:

@@ -496,10 +496,13 @@ def write_dynamic_text(
     if os.path.isfile(path):
         return path
     os.makedirs(sounds_dir, exist_ok=True)
+    # Log shape, not content: dynamic text (research results, timer labels) can
+    # be personal and the journal is persistent. Full text only at DEBUG.
     logger.info(
-        "cue: synthesising dynamic text=%r voice=%s model=%s hash=%s",
-        text, voice, model, dynamic_text_hash(text, voice, model),
+        "cue: synthesising dynamic text (%d chars) voice=%s model=%s hash=%s",
+        len(text), voice, model, dynamic_text_hash(text, voice, model),
     )
+    logger.debug("cue: synthesising dynamic text=%r", text)
     result = backend.synthesise(text)
     _write_wav_atomic(path, result.pcm_24k)
     logger.info("cue: wrote %s (%d bytes pcm @ 24kHz)", path, len(result.pcm_24k))
