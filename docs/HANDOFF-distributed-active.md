@@ -209,9 +209,27 @@ driver-protection work stays with the speaker that owns the DAC path" is now
 literally true **at the UI** (Slice 4); combined with the follower audio path
 above (Slice 3) it is true end-to-end. Invariant 6 is pinned by
 [test_sound_setup.py](../tests/test_sound_setup.py) (content POST → 409,
-active-speaker POST → reaches its handler, block-set disjoint from
-`/active-speaker/*`) and the follower-render path by the sound-profile JS
-harness ([sound_profile_harness.mjs](../tests/js/sound_profile_harness.mjs)).
+active-speaker read → 200, active-speaker POST → reaches its handler, block-set
+disjoint from `/active-speaker/*`) and the follower-render path by the
+sound-profile JS harness
+([sound_profile_harness.mjs](../tests/js/sound_profile_harness.mjs)).
+
+**Cross-slice contract — Slice 4 surfaces the controls; Slice 3 owns the
+runtime fail-closed.** Because the active-speaker endpoints are (correctly,
+per invariant 6) reachable on a follower, Slice 4 makes the commissioning /
+baseline-apply controls *discoverable* on a follower before Slice 3 wires the
+follower audio path. The actions are graph-protected today (commission-load arms
+"the protected floor (silent)" through the per-driver crossover/limiter graph
+with the `0 dB` ceiling — [sound_setup.py](../jasper/web/sound_setup.py)
+`_active_speaker_commission_load_payload`) and fail to a surfaced status, not a
+silent no-op. But the **bonded-follower audio topology** (does the loaded config
+reach the DACs? does a commission tone interfere with the bonded stream? what
+happens across bond/unbond?) is **Slice 3's responsibility**, and Slice 3 MUST
+land an on-device contract proving the follower commission/apply path is
+**fail-closed** (no full-range to a tweeter, no interference with the bonded
+program) before the matched-pair gate (Slice 5). This is the active-crossover
+analogue of the "Clock domain + fail-closed" invariants below — owned there, not
+at the web layer.
 
 ## The active leader (gap 3) — brains + an endpoint (not a harder design)
 

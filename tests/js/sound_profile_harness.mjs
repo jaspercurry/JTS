@@ -354,9 +354,12 @@ function setupHarness(fetchHandler, options = {}) {
     // Reproduce the bonded-follower /sound/ DOM: the follower island is present,
     // and the content-EQ chrome (Off/Saved/Draft tabs + now-playing plot) is
     // omitted from the page. Making those ids resolve to null exercises the
-    // module's follower-mode guards exactly as the browser would.
+    // module's follower-mode guards exactly as the browser would. islandText lets
+    // a test inject a malformed island to prove the safe (follower) fallback.
     const island = makeEl("sound-follower-data");
-    island.textContent = JSON.stringify({ follower: true });
+    island.textContent = options.islandText !== undefined
+      ? options.islandText
+      : JSON.stringify({ follower: true });
     elements.set("sound-follower-data", island);
     for (const id of ["tab-off", "tab-saved", "tab-draft", "plot", "plot-summary", "live-label"]) {
       elements.delete(id);
@@ -2019,6 +2022,32 @@ async function testFollowerModeRendersLocalDriverUi() {
   return { followerModeRendersLocalDriverUi: true };
 }
 
+// A malformed island must fall to the SAFE side (follower), never solo: the
+// follower page has no Off/Saved/Draft tabs or plot, so a solo fallback would
+// dereference absent elements and blank the page. (json_island always emits
+// valid JSON; this guards the fallback direction, not a real server output.)
+async function testFollowerModeSafeFallbackOnMalformedIsland() {
+  const fallback = baseFetch();
+  const harness = setupHarness((path, options = {}) => {
+    if (path === "./output-topology") {
+      return Promise.resolve(response(activeTwoWayTopologyPayload()));
+    }
+    return fallback(path, options);
+  }, { follower: true, islandText: "{not valid json" });
+  // Reaching here means the module booted without throwing on the absent tabs —
+  // i.e. it resolved to follower mode and skipped the solo tab/plot wiring.
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Active crossover setup")) {
+    fail("a malformed island must still render the local active-speaker UI", { html });
+  }
+  return { followerModeSafeFallbackOnMalformedIsland: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -2046,5 +2075,6 @@ results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
 results.push(await testCommissionRampLimitStopsAutoRamp());
 results.push(await testFollowerModeRendersLocalDriverUi());
+results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

@@ -71,6 +71,17 @@ def _follower_post_status(base: str, path: str, session: dict) -> int:
         return e.code
 
 
+def _follower_get_status(base: str, path: str, session: dict) -> int:
+    """GET ``path`` (no follower gate exists for GETs) and return the status."""
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(session["jar"]),
+    )
+    try:
+        return opener.open(base + path).status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
 def _room_config(peqs: list[PeqFilter] | None = None) -> str:
     return emit_sound_config(
         SoundProfile(enabled=False),
@@ -247,11 +258,15 @@ def test_index_html_delegates_content_dsp_when_bonded_follower(monkeypatch):
     assert 'id="sound-follower-data"' in html
     assert '"follower"' in html
     assert 'id="view-body"' in html
-    # The content-EQ editor chrome (Off/Saved/Draft tabs) stays delegated to the
-    # leader — it is not rendered on the follower page.
+    # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented tablist,
+    # and the now-playing EQ plot) stays delegated to the leader — none of it is
+    # rendered on the follower page.
     assert 'id="tab-off"' not in html
     assert 'id="tab-saved"' not in html
     assert 'id="tab-draft"' not in html
+    assert 'id="plot"' not in html
+    assert 'class="now-playing"' not in html
+    assert 'role="tablist"' not in html
     assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
@@ -293,9 +308,9 @@ def test_follower_block_set_is_content_dsp_only():
 
 
 def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: Path):
-    """Invariant 6 (live): the follower gate 409s content-DSP POSTs but lets an
-    active-speaker commissioning/crossover POST reach its handler (200/502 — never
-    404/409). Local driver work stays with the speaker that owns the DAC path."""
+    """Invariant 6 (live): on a follower an active-speaker read returns 200 and a
+    commissioning/crossover POST reaches its handler (never 404/409), while a
+    content-DSP POST still 409s. Local driver work stays with the DAC owner."""
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     try:
         server, base = _start_sound_server(tmp_path)
@@ -303,7 +318,14 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
         pytest.skip("environment does not allow loopback test server bind")
     try:
         session = make_csrf_session(base, "/")
+        # A content-DSP mutation is delegated to the leader.
         assert _follower_post_status(base, "/settings", session) == 409
+        # An active-speaker read is served (200) — the GET path has no follower gate.
+        assert (
+            _follower_get_status(base, "/active-speaker/safe-playback", session) == 200
+        )
+        # An active-speaker mutation reaches its handler (200/502), never the
+        # follower 409 nor a 404 — the gate is content-DSP only.
         active_status = _follower_post_status(
             base, "/active-speaker/stage-config", session,
         )

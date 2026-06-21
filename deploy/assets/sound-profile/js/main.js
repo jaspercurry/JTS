@@ -125,12 +125,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // the leader owns the program domain (content EQ / room correction / volume),
   // so we render ONLY the local active-speaker driver/crossover surface and skip
   // the content-EQ editor (its tabs + now-playing plot are absent from the page).
+  //
+  // The signal is the island's NON-EMPTY content — only the follower page emits
+  // it; the solo page never does. Keying on content (not a bare presence check)
+  // keeps a malformed island in the SAFE direction: a follower page has no tabs
+  // or plot, so falling back to the solo render path would dereference absent
+  // elements and blank the page. So: empty/absent → solo; present with content →
+  // follower (even if the flag can't be parsed).
   var followerMode = (function() {
+    var node = document.getElementById('sound-follower-data');
+    var text = node && node.textContent ? node.textContent.trim() : '';
+    if (!text) return false;
     try {
-      var node = document.getElementById('sound-follower-data');
-      if (!node) return false;
-      return !!JSON.parse(node.textContent || '{}').follower;
-    } catch (e) { return false; }
+      return JSON.parse(text).follower !== false;
+    } catch (e) {
+      return true;
+    }
   })();
   function csrfHeaders(headers) {
     var out = headers || {};
