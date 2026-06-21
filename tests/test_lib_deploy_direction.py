@@ -158,3 +158,122 @@ def test_manifest_value_absent_key_is_empty_and_exits_zero():
     # pipefail-safety: an absent key must yield "" with rc 0, or the
     # deploy script's `set -euo pipefail` would abort on fresh Pis.
     assert _manifest_value("JASPER_GIT_SHA=abc\n", "JASPER_GIT_SHA_FULL") == ""
+
+
+# ── classify_installed_vs_main — the binary behind-origin/main advisory ──
+#
+# Bench/test Pis silently drift far behind origin/main (one was found 117
+# commits behind), and a stale build misses newer safety gates. The deploy
+# preflight now warns BINARY: is the Pi's installed commit current with
+# origin/main (its tip or a descendant) or behind it? No commit count.
+# These tests pin that pure decision against a scratch repo with a faked
+# origin/main ref (the git I/O — fetch, manifest read — stays in the
+# deploy script).
+
+
+@pytest.fixture
+def main_history(tmp_path):
+    """Scratch repo with an origin/main ref to compare installed builds.
+
+        A ── B ── C      (main; origin/main → B, the "remote tip")
+         \\
+          ── D           (sibling forked from A, lacking B)
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "f").write_text("a\n")
+    _git(repo, "add", "f")
+    _git(repo, "commit", "-qm", "A")
+    sha_a = _git(repo, "rev-parse", "HEAD")
+    (repo / "f").write_text("b\n")
+    _git(repo, "commit", "-qam", "B")
+    sha_b = _git(repo, "rev-parse", "HEAD")
+    (repo / "f").write_text("c\n")
+    _git(repo, "commit", "-qam", "C")
+    sha_c = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-qc", "sibling", sha_a)
+    (repo / "g").write_text("d\n")
+    _git(repo, "add", "g")
+    _git(repo, "commit", "-qm", "D")
+    sha_d = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-q", "main")
+    # origin/main points at B — the remote tip a current box should match.
+    _git(repo, "update-ref", "refs/remotes/origin/main", sha_b)
+    return repo, sha_a, sha_b, sha_c, sha_d
+
+
+def _classify_vs_main(repo: Path, installed_sha: str, main_ref: str = "origin/main") -> str:
+    script = (
+        f'source "{LIB}"; '
+        f'classify_installed_vs_main "$1" "$2"'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", installed_sha, main_ref],
+        capture_output=True, text=True, timeout=30, cwd=repo,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def test_installed_equals_main_tip_is_current(main_history):
+    repo, _a, b, _c, _d = main_history
+    assert _classify_vs_main(repo, b) == "current"
+
+
+def test_installed_descendant_of_main_is_current(main_history):
+    # The box is AHEAD of origin/main's tip (e.g. an unmerged build) —
+    # still "current": it already contains the tip, nothing to update to.
+    repo, _a, _b, c, _d = main_history
+    assert _classify_vs_main(repo, c) == "current"
+
+
+def test_installed_ancestor_of_main_is_behind(main_history):
+    # The headline case: the Pi runs an OLD commit that predates the
+    # origin/main tip. This is the stale bench Pi the advisory targets.
+    repo, a, _b, _c, _d = main_history
+    assert _classify_vs_main(repo, a) == "behind"
+
+
+def test_installed_diverged_from_main_is_behind(main_history):
+    # A box on a sibling branch that forked before the tip does not
+    # contain origin/main — it needs updating, so it reads "behind".
+    repo, _a, _b, _c, d = main_history
+    assert _classify_vs_main(repo, d) == "behind"
+
+
+def test_dirty_suffix_stripped_before_main_comparison(main_history):
+    # build.txt records "-dirty" for uncommitted-tree deploys; ancestry
+    # math must run on the underlying commit, same as the direction guard.
+    repo, a, _b, c, _d = main_history
+    assert _classify_vs_main(repo, f"{c}-dirty") == "current"
+    assert _classify_vs_main(repo, f"{a}-dirty") == "behind"
+
+
+def test_empty_installed_vs_main_is_unknown(main_history):
+    # No manifest / unreadable SHA → skip the advisory, never guess.
+    repo, *_ = main_history
+    assert _classify_vs_main(repo, "") == "unknown"
+
+
+def test_unresolvable_installed_vs_main_is_unknown(main_history):
+    repo, *_ = main_history
+    assert _classify_vs_main(repo, "f" * 40) == "unknown"
+
+
+def test_unresolvable_main_ref_is_unknown(main_history):
+    # No origin/main (offline / no remote / never fetched) → graceful skip.
+    repo, _a, _b, c, _d = main_history
+    assert _classify_vs_main(repo, c, "origin/does-not-exist") == "unknown"
+
+
+def test_default_main_ref_is_origin_main(main_history):
+    # Called with one arg, the helper defaults the ref to origin/main.
+    repo, _a, _b, c, _d = main_history
+    script = f'source "{LIB}"; classify_installed_vs_main "$1"'
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", c],
+        capture_output=True, text=True, timeout=30, cwd=repo,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "current"
