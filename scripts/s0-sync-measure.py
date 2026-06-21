@@ -107,30 +107,43 @@ def offset_for_onset(x, sr, onset):
     """Autocorrelation secondary-peak lag (ms) = inter-speaker offset |t_A-t_B|.
 
     The window after the onset holds both speakers' copies of the same click.
-    Autocorrelation peaks at lag 0 and at the inter-speaker spacing; we return
-    the strongest peak in [LAG_MIN_MS, LAG_MAX_MS], plus a sharpness ratio
-    (peak / median) so callers can reject windows with no clean secondary peak.
+    A real second speaker shows up as an INTERIOR local maximum in the
+    autocorrelation at the inter-speaker spacing (the cross term ab*Rc(τ-Δ)).
+    Returns (lag_ms, sharpness) for such a peak, else None.
+
+    Two artifacts this MUST reject (both observed on hardware):
+      - the click's OWN autocorrelation decay shoulder, which is monotonically
+        decreasing from lag 0, so np.argmax lands on the search-window FLOOR
+        (lag == LAG_MIN_MS, ~0.29 ms) — a boundary, not a peak. A single
+        speaker, or a dominant near speaker burying a faint far one, yields
+        exactly this. Rejecting boundary maxima kills the false ~0.29 ms read.
+      - a peak that is not a strict local maximum (not > both neighbours).
     """
     n = int(CLICK_WINDOW_MS / 1000.0 * sr)
     seg = x[onset:onset + n]
     if seg.size < n // 2:
         return None
     seg = seg - seg.mean()
-    # FFT autocorrelation.
+    # FFT autocorrelation, normalised so ac[0] == 1 (peaks are correlation coeffs).
     m = 1 << int(np.ceil(np.log2(2 * seg.size)))
     f = np.fft.rfft(seg, m)
     ac = np.fft.irfft(f * np.conj(f), m)[: seg.size]
+    ac = ac / (ac[0] + 1e-12)
     lag_lo = int(LAG_MIN_MS / 1000.0 * sr)
-    lag_hi = min(int(LAG_MAX_MS / 1000.0 * sr), seg.size - 1)
-    if lag_hi <= lag_lo:
+    lag_hi = min(int(LAG_MAX_MS / 1000.0 * sr), seg.size - 2)
+    if lag_hi <= lag_lo + 1:
         return None
     window = ac[lag_lo:lag_hi]
     k = int(np.argmax(window))
-    peak_lag = lag_lo + k
+    # Reject boundary maxima (the decay-shoulder artifact) and non-peaks.
+    if k == 0 or k == window.size - 1:
+        return None
+    if not (window[k] > window[k - 1] and window[k] > window[k + 1]):
+        return None
     peak_val = float(window[k])
-    med = float(np.median(np.abs(ac[lag_lo:lag_hi]))) + 1e-9
-    sharpness = peak_val / med
-    return peak_lag / sr * 1000.0, sharpness
+    floor = float(np.median(np.abs(window))) + 1e-12
+    sharpness = peak_val / floor
+    return (lag_lo + k) / sr * 1000.0, sharpness
 
 
 def offsets_in_wav(path, min_sharpness=4.0):
