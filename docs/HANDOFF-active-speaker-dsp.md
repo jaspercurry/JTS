@@ -300,6 +300,23 @@
 > full-range graph. Correction reset/start paths ask
 > `jasper.correction.runtime_safety`, which delegates roleful graph policy back
 > to this runtime contract.
+> **Recovery — drift back to a passive speaker.** A saved topology can drift
+> from physical reality: e.g. a physically passive single-DAC box left carrying
+> a leftover `active_2_way` (roleful/tweeter-protected) topology from an old
+> experiment. That stale topology makes this fail-closed gate correctly refuse a
+> flat graph and can BLOCK a deploy at the install-time outputd-statefile
+> contract check. The blessed one-command fix is
+> `sudo /opt/jasper/.venv/bin/jasper-output-topology-reset` (add `--yes` for
+> non-interactive use, `--dry-run` to preview). It rewrites
+> `/var/lib/jasper/output_topology.json` to a clean passive draft built by
+> `output_topology.new_topology_draft()` from the **detected** hardware
+> (`speaker_groups=[]` → `requires_roleful_graph` false), then kicks
+> `jasper-audio-hardware-reconcile` so the running graph converges to the
+> flat/passive path — leaving a consistent passive-topology + flat-graph box the
+> L0 gate accepts. It uses only the supported generator/persistence functions
+> (never hand-edited JSON) and is safe-by-construction: it never produces the
+> dangerous roleful-topology + flat-graph combination. Implementation:
+> `jasper/cli/output_topology_reset.py`.
 > `jasper.active_speaker.bringup` and
 > `/sound/active-speaker/bringup-preflight` now make the product fork explicit:
 > **manual guarded bring-up** can continue without a microphone for an operator
