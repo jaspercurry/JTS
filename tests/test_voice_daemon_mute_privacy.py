@@ -105,3 +105,16 @@ async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
     assert len(warns) == 1  # once per daemon run, not per cue
     assert "cues_unconfigured" in warns[0].getMessage()
     assert "cant_connect" in warns[0].getMessage()
+
+
+async def test_public_play_cue_reports_playback_failure() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    class _FakeCues:
+        async def play(self, _slug: str) -> bool:
+            return False
+
+    wl = WakeLoop.for_tests()
+    wl._cues = _FakeCues()
+
+    assert await wl.play_cue("cant_connect") == "play_failed"

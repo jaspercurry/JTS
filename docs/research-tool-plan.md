@@ -8,10 +8,11 @@ extension contracts, the decision tree) lives in
 
 > **Status: living plan.** Forward-looking roadmap for the async
 > "research this and tell me later" capability and the modular
-> text-LLM-provider layer it rides on. Phase 1 foundation and Phase 2
-> voice wiring are implemented; Phase 3+ remains roadmap. Grounded in a
+> text-LLM-provider layer it rides on. Phase 1 foundation, Phase 2
+> voice wiring, and Phase 3 etiquette/failure hardening are implemented;
+> Phase 4 remains roadmap. Grounded in a
 > 6-agent research pass (web-verified API capabilities + codebase reads)
-> on 2026-06-19. **Last updated: 2026-06-19.**
+> on 2026-06-19. **Last updated: 2026-06-20.**
 
 ---
 
@@ -115,8 +116,10 @@ a new `WakeLoop.announce_research_ready(job)` thin-wraps
 `announce_timer`. The new bits are small (§6): the announcement is
 triggered by a **job completing** instead of a timer deadline, and it
 only marks a report read after dynamic TTS reports successful playback.
-Phase 2 still reuses the timer's "skip after 5 s in an active session"
-gate; Phase 3 upgrades that etiquette to hold-and-read-when-idle.
+Phase 3 upgrades the timer's "skip after 5 s in an active session" gate
+to hold-and-read-when-idle: results that finish during a voice session
+are kept in a small bounded wake-loop queue and drained only after the
+state returns to WAKE.
 
 ### 3.4 Persistence — a small SQLite job store
 
@@ -178,7 +181,7 @@ Each phase is independently shippable and hardware-free-testable.
 |---|---|---|
 | **1 — Foundation** | `jasper/research/` provider registry + `ResearchScheduler` + store as pure pytest-covered units. No daemon wiring, no tool, no audio. Mergeable, registers nothing. **Implemented.** | ~1 day |
 | **2 — Wire + demo** | `research(query)` tool, `ToolDeps.research_scheduler`, one `CapabilityPack`, `announce_research_ready`, OpenAI call (≤30 s prompt + char cap), spend integration, regression scenario. **Implemented; earliest the headline UX works.** | ~1–1.5 days |
-| **3 — Etiquette + dedicated failure cues** | Hold-and-read-when-idle (don't drop mid-conversation like a timer); rate-limited `research_failed` cue; not-configured kickoff decline; tests pinning retry/deferral semantics. Production-safe after this. | ~1 day |
+| **3 — Etiquette + dedicated failure cues** | Hold-and-read-when-idle (don't drop mid-conversation like a timer); rate-limited `research_failed` cue; not-configured kickoff decline; tests pinning retry/deferral semantics. **Implemented; production-safe after this.** | ~1 day |
 | **4 — Anthropic (v2, deferred)** | One module + one registry entry + `anthropic` dep + key line. Build only when you add an Anthropic key. | ~½ day |
 
 ### First PR (Phase 1) — `research: text-provider registry + background-job scheduler (HW-free)`
@@ -199,7 +202,7 @@ Each phase is independently shippable and hardware-free-testable.
 | Answer length | **≤30 s spoken (~75 words / ~450 chars)** via the prompt to the text model, plus a hard char cap on the stored result | The user asked for a consolidated read-out; instruct the model and guard with a cap. |
 | Spend | Reuse `SpendCap.allowed()` kickoff gate + record cost in `UsageStore` + **add the model's price row to `jasper/data/model_pricing.json`** (load-bearing — without it cost prices as $0 and the cap silently under-counts) | Global daily cap suffices for one paid tool; no per-job budgets, no "quote me a price" dialog (defeats fire-and-forget). |
 | Wizard / `/system/` display | **Defer** | The OpenAI key is present whenever OpenAI voice is. v2's Anthropic key is the natural trigger. If `/system/` ever shows the active text provider, use a fresh-file reader (like `provider_state.py`), never `os.environ`. |
-| Failure speech | Phase 2 speaks one provider-agnostic failure line through dynamic TTS for runtime failures and restart-interrupted jobs. Dedicated rate-limited `research_failed` cues and a not-configured kickoff decline are deferred to Phase 3. | No-silent-failure: an out-of-band job has no wake event to hang a reactive cue on, so failures must speak. Keep the Phase 2 surface small while avoiding silent drops. |
+| Failure speech | Phase 3 plays the provider-agnostic `research_failed` cue for runtime failures and restart-interrupted jobs, rate-limits proactive failed-job audio to once per hour, and adds a not-configured prompt redirect to `/voice/`. | No-silent-failure: an out-of-band job has no wake event to hang a reactive cue on, so failures must speak. The cooldown prevents a burst of failures from nagging the household. |
 
 ---
 
@@ -234,10 +237,11 @@ pluggable text LLM running in a bounded background task (OpenAI
 background-mode + poll), then reads a ≤30 s answer back through the
 existing timer-fire announcement path — reusing ~80% of what already
 exists, adding a small `jasper/research/` provider registry, a scheduler,
-a store, usage accounting, and an announce method. Dedicated research
-failure cues, Anthropic, yes/no barge-in confirmation, and an interaction
+a store, usage accounting, and an announce method. Etiquette hardening,
+the `research_failed` cue, and the not-configured prompt redirect are
+implemented; Anthropic, yes/no barge-in confirmation, and an interaction
 history log are deferred, each behind its own trigger.**
 
 ---
 
-Last verified: 2026-06-19
+Last verified: 2026-06-20

@@ -285,6 +285,18 @@ HARD_RECORDING_CAP_SEC = 30.0
 # command for fast speakers.
 PRE_ROLL_FRAMES = 7
 
+# Research results are a "tell me later" promise, unlike timer chimes:
+# completing during a voice session must defer, not disappear. Keep the
+# in-memory hold queue small so a long session plus a burst of completions
+# cannot grow without bound.
+RESEARCH_PENDING_ANNOUNCE_CAP = 5
+RESEARCH_FAILURE_COOLDOWN_SEC = 60.0 * 60.0
+RESEARCH_FAILED_CUE_SLUG = "research_failed"
+RESEARCH_EMPTY_RESULT_TEXT = (
+    "Sorry, that research finished without a readable answer. "
+    "Please ask me again."
+)
+
 # Silero speech-probability threshold for marking "the user has
 # actually spoken" within a turn. Decoupled from
 # JASPER_VAD_BARGE_IN_THRESHOLD (default 0.5) — that one is tuned
@@ -750,6 +762,11 @@ class WakeLoop:
         self._usage_store = usage_store
         self._spend_cap = spend_cap
         self._research_scheduler: ResearchScheduler | None = None
+        self._pending_research: list[ResearchJob] = []
+        self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
+        self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
+        self._last_research_failure_announce_at: float | None = None
+        self._research_announce_lock = asyncio.Lock()
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
@@ -1085,6 +1102,11 @@ class WakeLoop:
         self._usage_store = _TestUsageStore()
         self._spend_cap = _TestSpendCap()
         self._research_scheduler = None
+        self._pending_research = []
+        self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
+        self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
+        self._last_research_failure_announce_at = None
+        self._research_announce_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._volume_coordinator = _TestVolumeCoordinator()
         self._cues = None
@@ -1176,8 +1198,8 @@ class WakeLoop:
         from .cues.registry import find as _find
         if _find(slug) is None:
             return "unknown_slug"
-        await self._play_cue(slug)
-        return "ok"
+        played = await self._play_cue(slug)
+        return "ok" if played else "play_failed"
 
     async def play_supervisor_cue(self, slug: str) -> str:
         """Cue trigger reserved for proactive notifications from
@@ -1231,26 +1253,75 @@ class WakeLoop:
     async def announce_research_ready(self, job: "ResearchJob") -> None:
         """Public hook called by `ResearchScheduler` when a job finishes.
 
-        Phase 2 intentionally mirrors `announce_timer`: defer briefly
-        while a voice session is active, then either read the short result
-        or speak one honest failure line. The later hold-and-drain queue is
-        Phase 3, not here.
+        Research is a "tell me later" promise. Unlike timer chimes, a
+        result that arrives mid-conversation is held until the wake loop
+        returns to WAKE, then drained by _end_turn_inner.
         """
-        deadline = asyncio.get_event_loop().time() + 5.0
-        while self._state is State.SESSION:
-            if asyncio.get_event_loop().time() >= deadline:
-                logger.warning(
-                    "research announce: skipped (id=%s) — session still "
-                    "active after 5s grace window",
+        async with self._research_announce_lock:
+            if self._state is State.SESSION:
+                self._queue_pending_research(job)
+                return
+            await self._speak_research_job(job)
+
+    def _queue_pending_research(self, job: ResearchJob) -> None:
+        for idx, pending in enumerate(self._pending_research):
+            if pending.id == job.id:
+                self._pending_research[idx] = job
+                logger.info(
+                    "research announce: coalesced pending job id=%s status=%s",
                     job.id,
+                    job.status,
                 )
                 return
-            await asyncio.sleep(0.5)
+        self._pending_research.append(job)
+        if len(self._pending_research) > self._research_pending_cap:
+            dropped = self._pending_research.pop(0)
+            logger.warning(
+                "research announce: dropped pending job id=%s status=%s "
+                "after pending queue exceeded cap=%d",
+                dropped.id,
+                dropped.status,
+                self._research_pending_cap,
+            )
+        logger.info(
+            "research announce: held until idle id=%s status=%s pending=%d",
+            job.id,
+            job.status,
+            len(self._pending_research),
+        )
 
+    async def _drain_pending_research(self) -> None:
+        if self._state is State.SESSION:
+            return
+        async with self._research_announce_lock:
+            if self._state is State.SESSION:
+                return
+            while self._pending_research and self._state is State.WAKE:
+                batch = self._pending_research
+                self._pending_research = []
+                for idx, job in enumerate(batch):
+                    if self._state is State.SESSION:
+                        self._pending_research = (
+                            batch[idx:] + self._pending_research
+                        )
+                        return
+                    await self._speak_research_job(job)
+
+    async def _speak_research_job(self, job: ResearchJob) -> None:
+        if self._state is State.SESSION:
+            self._queue_pending_research(job)
+            return
+        text: str | None
         if job.status == DONE and job.result:
             text = f"Hey, your research is ready. {job.result}"
+        elif job.status == DONE:
+            logger.warning(
+                "research announce: done job missing result id=%s",
+                job.id,
+            )
+            text = RESEARCH_EMPTY_RESULT_TEXT
         elif job.status == FAILED:
-            text = "Sorry, I couldn't finish that research. Please ask me again."
+            text = None
         else:
             logger.warning(
                 "research announce: skipped unexpected status id=%s status=%s",
@@ -1259,13 +1330,35 @@ class WakeLoop:
             )
             return
 
-        logger.info(
-            "research announce: id=%s status=%s text=%r",
-            job.id,
-            job.status,
-            text,
-        )
-        played = await self._play_dynamic_text(text)
+        if job.status == FAILED:
+            remaining = self._research_failure_cooldown_remaining()
+            if remaining > 0:
+                logger.warning(
+                    "research announce: suppressed failed job id=%s by "
+                    "cooldown remaining=%.1fs",
+                    job.id,
+                    remaining,
+                )
+                self._mark_research_announced(job, read=False)
+                return
+
+        if job.status == FAILED:
+            logger.info(
+                "research announce: id=%s status=%s cue=%s",
+                job.id,
+                job.status,
+                RESEARCH_FAILED_CUE_SLUG,
+            )
+            played = await self._play_cue(RESEARCH_FAILED_CUE_SLUG)
+        else:
+            assert text is not None
+            logger.info(
+                "research announce: id=%s status=%s text=%r",
+                job.id,
+                job.status,
+                text,
+            )
+            played = await self._play_dynamic_text(text)
         if not played:
             logger.warning(
                 "research announce: playback failed id=%s status=%s",
@@ -1273,9 +1366,26 @@ class WakeLoop:
                 job.status,
             )
             return
+        if job.status == FAILED:
+            self._last_research_failure_announce_at = (
+                asyncio.get_event_loop().time()
+            )
+        self._mark_research_announced(
+            job,
+            read=job.status == DONE and bool(job.result),
+        )
+
+    def _research_failure_cooldown_remaining(self) -> float:
+        last = self._last_research_failure_announce_at
+        if last is None:
+            return 0.0
+        elapsed = asyncio.get_event_loop().time() - last
+        return max(0.0, self._research_failure_cooldown_sec - elapsed)
+
+    def _mark_research_announced(self, job: ResearchJob, *, read: bool) -> None:
         if self._research_scheduler is not None:
             self._research_scheduler.mark_announced(job.id)
-            if job.status == DONE:
+            if read:
                 self._research_scheduler.mark_read(job.id)
 
     async def _play_dynamic_text(self, text: str) -> bool:
@@ -1321,7 +1431,7 @@ class WakeLoop:
                 return False
         return True
 
-    async def _play_cue(self, slug: str) -> None:
+    async def _play_cue(self, slug: str) -> bool:
         """Best-effort cue playback. Ducks music via CamillaDSP for
         the duration of the cue (same wrapping a normal Jarvis voice
         response uses), then restores. Without ducking, the cue is
@@ -1362,7 +1472,8 @@ class WakeLoop:
                     ),
                     level=logging.WARNING,
                 )
-            return
+            return False
+        played = False
         try:
             try:
                 await self._ducker.duck()
@@ -1372,7 +1483,7 @@ class WakeLoop:
                     slug, e,
                 )
             try:
-                await self._cues.play(slug)
+                played = await self._cues.play(slug)
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue %s play failed: %s", slug, e)
         finally:
@@ -1380,6 +1491,7 @@ class WakeLoop:
                 await self._ducker.restore()
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue %s restore failed: %s", slug, e)
+        return played
 
     async def run(self) -> None:
         # Spawn one wake-only consumer per non-primary leg (off / dtln /
@@ -3118,6 +3230,8 @@ class WakeLoop:
         # buffer start filling immediately when refractory expires,
         # which keeps post-turn wake responsiveness fast.
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
+        await self._drain_pending_research()
+
 
 def _active_model(*args, **kwargs):
     from .voice.daemon_main import _active_model as impl

@@ -241,6 +241,14 @@ async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_fai
         store = ResearchJobStore(path)
         assert store.add(_job("done1", status=DONE, result="Ready", announced=False))
         assert store.add(_job("done2", status=DONE, result="Read", announced=True))
+        assert store.add(
+            _job(
+                "failed1",
+                status=FAILED,
+                error="playback failed before restart",
+                announced=False,
+            )
+        )
         assert store.add(_job("run1", status=RUNNING))
         store.close()
 
@@ -251,14 +259,19 @@ async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_fai
         )
         await sched.start()
 
-        await _wait_for(lambda: {job.id for job in surfaced} == {"done1", "run1"})
+        await _wait_for(
+            lambda: {job.id for job in surfaced}
+            == {"done1", "failed1", "run1"}
+        )
 
         rows = {job.id: job for job in ResearchJobStore(path).all()}
         assert rows["done1"].status == DONE
         assert rows["done1"].announced is False
         assert rows["done2"].status == DONE
+        assert rows["failed1"].status == FAILED
         assert rows["run1"].status == FAILED
         assert "interrupted by a restart" in (rows["run1"].error or "")
+        assert [job.status for job in surfaced if job.id == "failed1"] == [FAILED]
         assert [job.status for job in surfaced if job.id == "run1"] == [FAILED]
         await sched.stop()
     finally:
