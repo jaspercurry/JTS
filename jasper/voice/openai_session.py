@@ -255,11 +255,12 @@ class OpenAIRealtimeTurn:
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
-        # Text transcript of the assistant audio streamed by Realtime.
-        # This is diagnostic only: production still plays audio, but the
-        # journal needs a durable "what did it say?" line next to the
-        # user transcript and tool-call logs.
+        # Text transcript of the user audio / assistant audio streamed by
+        # Realtime. Production still uses audio for interaction; the strings
+        # are retained on the turn only so WakeLoop can write opt-in
+        # conversation history without logging transcript content.
         self._assistant_transcript_parts: list[str] = []
+        self._user_transcript_parts: list[str] = []
         # Polyphase resampler state, persists across send_audio calls.
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
@@ -502,6 +503,9 @@ class OpenAIRealtimeTurn:
     def assistant_transcript(self) -> str:
         return "".join(self._assistant_transcript_parts)
 
+    def user_transcript(self) -> str:
+        return " ".join(self._user_transcript_parts)
+
     def interrupted(self) -> bool:
         return self._interrupted
 
@@ -664,6 +668,11 @@ class OpenAIRealtimeTurn:
                 self._assistant_transcript_parts = [text]
             return
         self._assistant_transcript_parts = [text]
+
+    def _on_user_text_done(self, text: str) -> None:
+        text = text.strip()
+        if text:
+            self._user_transcript_parts.append(text)
 
     def _on_connection_lost(self) -> None:
         if self._released or self._turn_lost:
@@ -1735,6 +1744,8 @@ class OpenAIRealtimeConnection:
             transcript = _event_field(event, "transcript")
             if isinstance(transcript, str):
                 text = transcript.strip()
+                if turn is not None:
+                    turn._on_user_text_done(text)
                 log_event(
                     logger,
                     "openai.user_transcript",

@@ -511,6 +511,27 @@ async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
         await conn.stop()
 
 
+async def test_user_audio_transcript_is_exposed_on_active_turn(caplog):
+    caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        sess.feed({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "turn on the kitchen lights",
+        })
+        await _wait_until(
+            lambda: turn.user_transcript() == "turn on the kitchen lights",
+            timeout=2.0,
+        )
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_audio_chunks_include_openai_provider_item_id():
     conn, factory = _make_conn()
     registry = ToolRegistry()

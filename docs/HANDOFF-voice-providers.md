@@ -84,6 +84,14 @@ speak only to those interfaces; the per-provider adapters are:
 - [`jasper/voice/openai_session.py`](../jasper/voice/openai_session.py) — `OpenAIRealtimeConnection`
 - [`jasper/voice/grok_session.py`](../jasper/voice/grok_session.py) — `GrokRealtimeConnection` (subclass of the OpenAI adapter)
 
+Conversation-history capture is an optional turn capability, not a provider
+branch in WakeLoop. Providers that natively receive text transcripts expose
+`ConversationTranscriptTurn.user_transcript()` / `assistant_transcript()` on
+their turn objects; WakeLoop probes those methods at teardown and writes
+through the daemon-held `ConversationStore` only when the opt-in capture gate is
+enabled. Providers without native transcript support can omit the capability and
+still satisfy `LiveTurn`; the `/chat/` page renders the missing side honestly.
+
 The single switch point is `_make_connection(cfg)` in
 [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py). Provider session
 preprocessing is resolved through

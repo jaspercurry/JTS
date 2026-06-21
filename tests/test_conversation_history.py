@@ -5,6 +5,7 @@ import sqlite3
 
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
+    CAPTURE_ALIAS_ENV,
     ConversationStore,
     ConversationTurn,
     DB_PATH_ENV,
@@ -194,6 +195,30 @@ def test_read_settings_merges_process_env_and_fresh_wizard_file(tmp_path):
     assert settings.capture_enabled is True
     assert settings.db_path == str(db_path)
     assert settings.retention == {"days": 14, "max_rows": 250}
+
+
+def test_read_settings_supports_capture_alias(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text("", encoding="utf-8")
+
+    settings = read_settings(
+        path=str(settings_file),
+        environ={CAPTURE_ALIAS_ENV: "1"},
+    )
+
+    assert settings.capture_enabled is True
+
+
+def test_read_settings_wizard_file_capture_flag_wins_over_env_alias(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(f"{CAPTURE_ENABLED_ENV}=1\n", encoding="utf-8")
+
+    settings = read_settings(
+        path=str(settings_file),
+        environ={CAPTURE_ALIAS_ENV: "0"},
+    )
+
+    assert settings.capture_enabled is True
 
 
 def test_prune_by_max_rows_keeps_newest_rows(tmp_path):

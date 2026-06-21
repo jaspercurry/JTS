@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import socket
 import time
 from collections import deque
 from collections.abc import Coroutine
+from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
 
@@ -38,6 +40,13 @@ from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
+from .conversation_history import (
+    ConversationSettings,
+    ConversationStore,
+    ConversationTurn,
+    make_turn_id,
+    read_settings as read_conversation_settings,
+)
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
 from .research import DONE, FAILED, ResearchJob, ResearchScheduler
@@ -684,6 +693,7 @@ class WakeLoop:
         heartbeat: "Heartbeat | None" = None,
         wake_event_store: WakeEventStore | None = None,
         tool_packs: list[dict] | None = None,
+        conversation_store: ConversationStore | None = None,
     ) -> None:
         self._cfg = cfg
         self._tts = tts
@@ -761,6 +771,11 @@ class WakeLoop:
         self._content_activity = content_activity
         self._usage_store = usage_store
         self._spend_cap = spend_cap
+        self._conversation_store = conversation_store
+        self._conversation_store_path = (
+            conversation_store.db_path if conversation_store is not None else None
+        )
+        self._conversation_turn_seq = 0
         self._research_scheduler: ResearchScheduler | None = None
         self._pending_research: list[ResearchJob] = []
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
@@ -1101,6 +1116,9 @@ class WakeLoop:
         self._content_activity = _TestContentActivity()
         self._usage_store = _TestUsageStore()
         self._spend_cap = _TestSpendCap()
+        self._conversation_store = None
+        self._conversation_store_path = None
+        self._conversation_turn_seq = 0
         self._research_scheduler = None
         self._pending_research = []
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
@@ -1169,6 +1187,11 @@ class WakeLoop:
         self._peering_current_epoch = ""
         for key, value in overrides.items():
             setattr(self, key if key.startswith("_") else f"_{key}", value)
+        if "conversation_store" in overrides or "_conversation_store" in overrides:
+            store = self._conversation_store
+            self._conversation_store_path = (
+                store.db_path if store is not None else None
+            )
         return self
 
     def _create_fire_and_forget_task(
@@ -1390,6 +1413,106 @@ class WakeLoop:
             self._research_scheduler.mark_announced(job.id)
             if read:
                 self._research_scheduler.mark_read(job.id)
+        if read:
+            self._record_conversation_turn(
+                job.query,
+                job.result,
+                data_json={"kind": "research", "job_id": job.id},
+            )
+
+    def _conversation_store_for_settings(
+        self,
+        settings: ConversationSettings,
+    ) -> ConversationStore | None:
+        if not settings.capture_enabled:
+            return None
+        store = self._conversation_store
+        if (
+            store is not None
+            and self._conversation_store_path == settings.db_path
+            and store.available
+        ):
+            return store
+        if store is not None:
+            store.close()
+            self._conversation_store = None
+            self._conversation_store_path = None
+        store = ConversationStore(settings.db_path)
+        self._conversation_store = store
+        self._conversation_store_path = settings.db_path
+        return store if store.available else None
+
+    def close_conversation_store(self) -> None:
+        store = self._conversation_store
+        self._conversation_store = None
+        self._conversation_store_path = None
+        if store is None:
+            return
+        store.close()
+
+    def _record_conversation_turn(
+        self,
+        user_text: str | None,
+        assistant_text: str | None,
+        *,
+        data_json: dict | str | None = None,
+        provider: str | None = None,
+    ) -> None:
+        """Persist one conversation-history row.
+
+        This is the single write path for ordinary wake turns and feature-fed
+        entries such as research delivery. It is intentionally fail-soft:
+        capture must never block turn teardown or a proactive announcement.
+        """
+        if self._mic_muted:
+            return
+        if user_text is None and assistant_text is None:
+            return
+        try:
+            settings = read_conversation_settings()
+        except (OSError, TypeError, ValueError) as e:
+            logger.warning(
+                "conversation capture: settings unavailable (%s: %s)",
+                type(e).__name__,
+                e,
+            )
+            return
+        if not settings.capture_enabled:
+            return
+        store = self._conversation_store_for_settings(settings)
+        if store is None:
+            logger.debug("conversation capture: skipped (store unavailable)")
+            return
+        data_text: str | None = None
+        if isinstance(data_json, dict):
+            try:
+                data_text = json.dumps(data_json, separators=(",", ":"))
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    "conversation capture: data_json encode failed (%s: %s)",
+                    type(e).__name__,
+                    e,
+                )
+                data_text = None
+        elif data_json is not None:
+            data_text = str(data_json)
+
+        ts_utc = _conversation_ts_utc()
+        self._conversation_turn_seq = (
+            (self._conversation_turn_seq % 999) + 1
+        )
+        session_id = getattr(self, "_session_id", None)
+        turn = ConversationTurn(
+            id=make_turn_id(ts_utc, self._conversation_turn_seq),
+            ts_utc=ts_utc,
+            provider=provider or self._cfg.voice_provider,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            tool_calls_json=None,
+            data_json=data_text,
+            session_id=session_id,
+        )
+        store.add(turn)
 
     async def _play_dynamic_text(self, text: str) -> bool:
         """Speak arbitrary `text` through the cue manager, with
@@ -3151,6 +3274,10 @@ class WakeLoop:
                 tokens["output_tokens"],
                 usage=breakdown,
             )
+            self._record_conversation_turn(
+                _optional_turn_text(self._turn, "user_transcript"),
+                _optional_turn_text(self._turn, "assistant_transcript"),
+            )
             # Per-turn no-audio detection. Splits into two distinct
             # phenomena, gated on whether the wake loop explicitly ended
             # the user's input (silence detector / hard cap / manual
@@ -3239,6 +3366,30 @@ class WakeLoop:
 def _active_model(*args, **kwargs):
     from .voice.daemon_main import _active_model as impl
     return impl(*args, **kwargs)
+
+
+def _conversation_ts_utc() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _optional_turn_text(turn: object, method_name: str) -> str | None:
+    getter = getattr(turn, method_name, None)
+    if not callable(getter):
+        return None
+    try:
+        text = getter()
+    except (RuntimeError, TypeError, ValueError) as e:
+        logger.debug("conversation capture: %s failed: %s", method_name, e)
+        return None
+    if text is None:
+        return None
+    text = str(text).strip()
+    return text or None
 
 
 def _active_voice(*args, **kwargs):

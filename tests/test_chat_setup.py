@@ -5,6 +5,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -97,10 +98,34 @@ def test_root_serves_canonical_shell(chat_server) -> None:
     assert "/assets/app.css?v=" in text
     assert 'name="jts-csrf"' in text
     assert 'id="icon-back"' in text
+    assert '/assets/chat/chat.css?v=' in text
     assert '<div id="app"' in text
     assert "Loading conversation history..." in text
     assert '<script type="module" src="/assets/chat/js/main.js">' in text
     assert "<style>" not in text
+
+
+def test_chat_static_modules_follow_frontend_contract() -> None:
+    asset_root = (
+        Path(chat_setup.__file__).resolve().parents[2]
+        / "deploy"
+        / "assets"
+        / "chat"
+    )
+    main = (asset_root / "js" / "main.js").read_text(encoding="utf-8")
+    views = (asset_root / "js" / "views.js").read_text(encoding="utf-8")
+    components = (asset_root / "js" / "components.js").read_text(encoding="utf-8")
+
+    assert 'meta[name="jts-csrf"]' in main
+    assert "function dataPath()" in main
+    assert "getJSON(requestedPath)" in main
+    assert 'from "/assets/shared/js/dialog.js"' in main
+    assert 'JSON.parse(raw)' in views
+    assert 'parsed.kind === "research"' in views
+    assert "No transcript for this turn." in views
+
+    combined = "\n".join([main, views, components])
+    assert ".innerHTML" not in combined
 
 
 def test_data_json_returns_recent_turns_with_limit_and_since(chat_server) -> None:

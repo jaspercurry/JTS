@@ -43,6 +43,18 @@ Spend accounting lives in `/var/lib/jasper/usage.db` by default
 and time-billed connection intervals. It does not store speech audio or
 transcripts.
 
+Conversation history is separate from spend accounting. When
+`JASPER_CONVERSATION_CAPTURE=1` (or the matching wizard-owned
+conversation-history env file enables capture), JTS stores text-only turns in
+`/var/lib/jasper/conversation_history.db` by default
+(`JASPER_CONVERSATION_HISTORY_DB`): the perceived user command transcript, the
+assistant transcript or research report, provider/session metadata, and optional
+feature metadata such as a research job id. It never stores speech audio in this
+database, and capture is skipped while mic mute is active. Capture is
+default-off; until retention/delete controls ship, retained rows stay on the
+speaker unless an operator removes the database or changes it with maintenance
+tooling.
+
 System logs stay in journald on the speaker unless an operator exports them,
 for example with `scripts/fetch-pi-logs.sh`. OpenAI transcript events log
 metadata such as character counts, not transcript text; that keeps both normal

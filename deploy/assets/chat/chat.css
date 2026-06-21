@@ -1,0 +1,189 @@
+/* Conversation history dashboard — page-specific styles.
+   Shared tokens, sticky header, cards, badges, buttons, and form vocabulary
+   live in /assets/app.css. This file owns the chat table, paired transcript
+   layout, filter row, and polling affordance. */
+
+.app-main {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1rem 1.5rem 6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+@media (min-width: 768px) {
+  .app-main { padding-left: 2.5rem; padding-right: 2.5rem; }
+}
+
+body.stale { opacity: 0.72; }
+
+.boot-note {
+  padding: 3rem 1.5rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+.live-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+.live-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--primary);
+  animation: jts-chat-pulse 1.6s ease-in-out infinite;
+}
+@keyframes jts-chat-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-filter {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.chat-filter__field { min-width: min(100%, 12rem); }
+.chat-filter input[type="date"] {
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  color: var(--text);
+}
+.chat-filter__actions { padding-bottom: 0; }
+
+.table-wrap { overflow-x: auto; }
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.table th {
+  padding-bottom: 8px;
+  text-align: left;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.table td {
+  padding: 14px 16px 14px 0;
+  vertical-align: top;
+  border-top: 1px solid var(--border);
+}
+.table td:last-child,
+.table th:last-child { padding-right: 0; }
+.table--chat { min-width: 680px; }
+.table--chat th:first-child,
+.table--chat td:first-child { width: 8.5rem; }
+.table--chat th:nth-child(2),
+.table--chat td:nth-child(2) { width: 8rem; }
+
+.chat-provider {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-provider__name {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.chat-pair__connector {
+  margin-top: 22px;
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chat-transcript {
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--secondary) 42%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.chat-transcript--missing {
+  background: color-mix(in oklab, var(--status-idle) 8%, transparent);
+}
+.chat-transcript__label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.chat-transcript__text {
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-transcript--missing .chat-transcript__text {
+  color: var(--muted);
+  font-style: italic;
+}
+
+time {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-strong);
+}
+
+@media (max-width: 720px) {
+  .table--chat { min-width: 0; }
+  .table--chat thead { display: none; }
+  .table--chat,
+  .table--chat tbody,
+  .table--chat tr,
+  .table--chat td {
+    display: block;
+    width: 100%;
+  }
+  .table--chat tr {
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+  }
+  .table--chat tr:first-child { border-top: 0; }
+  .table--chat td {
+    padding: 4px 0;
+    border-top: 0;
+  }
+  .chat-provider {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .chat-pair {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .chat-pair__connector { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-pill__dot { animation: none; }
+}
