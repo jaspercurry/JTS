@@ -32,6 +32,7 @@ processes that are **not** restarted.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -41,6 +42,11 @@ from .catalog import (
     default_model_id,
     provider_by_id,
 )
+
+# Values that count as "on" for a boolean selector in the SSOT file.
+# Mirrors jasper.config._env_bool so the wizard / operator-edited file
+# and the typed Config agree on what "enabled" means.
+_TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
 
 # The wizard-owned single source of truth for active-provider state. The
 # path (not the provider value) may be overridden with
@@ -205,3 +211,49 @@ def read_active_provider_and_model(
     or the catalog default for that provider."""
     state = read_active_provider_state(path)
     return state.provider, state.model
+
+
+# --- Per-provider barge-in enable flag ---------------------------------
+#
+# Full-duplex barge-in (the user talking over the assistant flushes local
+# TTS) is opt-in **per provider** and DEFAULTS OFF. It is a provider
+# selector, so it lives alongside JASPER_VOICE_PROVIDER + the model/voice
+# selectors in the broad-group SSOT file (read fresh on every call), NOT
+# in the typed ``Config``: a long-lived reader that is not restarted on a
+# wizard toggle (jasper-control's ``/state``) would otherwise show a stale
+# value. jasper-voice IS restarted on a *provider* switch, but the
+# barge-in toggle can change without one, so jasper-voice also resolves it
+# fresh (once per turn) rather than from its start-time ``Config``.
+
+
+def barge_in_env_key(provider: str) -> str:
+    """The SSOT env key carrying ``provider``'s barge-in enable flag,
+    e.g. ``JASPER_BARGE_IN_GEMINI``."""
+    return f"JASPER_BARGE_IN_{provider.upper()}"
+
+
+def resolve_barge_in_enabled(provider: str, env: Mapping[str, str]) -> bool:
+    """Whether barge-in is enabled for ``provider`` per an already-parsed
+    env mapping. Pure (no IO) so the wizard and the file reader below
+    share one rule. Default OFF: unset / falsey / unknown provider all
+    read as disabled — never a guessed-on default."""
+    if provider not in VALID_PROVIDER_IDS:
+        return False
+    raw = (env.get(barge_in_env_key(provider)) or "").strip().lower()
+    return raw in _TRUTHY
+
+
+def read_barge_in_enabled(provider: str, path: str | None = None) -> bool:
+    """Read ``provider``'s barge-in enable flag fresh from the SSOT file.
+
+    Default OFF for an unset flag, an unknown provider, or a
+    missing/unreadable file — mirrors :func:`read_active_provider`'s
+    fail-soft contract. Re-reads the file on every call so a wizard /
+    operator toggle takes effect without restarting a long-lived reader.
+    """
+    if provider not in VALID_PROVIDER_IDS:
+        return False
+    file_state = read_env_file_state(_resolve_path(path))
+    if not file_state.loaded:
+        return False
+    return resolve_barge_in_enabled(provider, file_state.values)

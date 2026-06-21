@@ -313,7 +313,10 @@ async def _get_state(
     from ..camilla import CamillaController
     from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
-    from ..voice.provider_state import read_active_provider_state
+    from ..voice.provider_state import (
+        read_active_provider_state,
+        read_barge_in_enabled,
+    )
 
     # Provider + model: re-read the wizard-owned SSOT file fresh on every
     # call. jasper-control is NOT restarted on a provider switch (only
@@ -720,6 +723,22 @@ async def _get_state(
             # explicitly here like the other voice fields, so a new
             # session_status field must be pulled through.
             "tool_packs": (voice_st or {}).get("tool_packs"),
+            # In-session barge-in (full-duplex). `enabled` is read FRESH
+            # per active provider here (same rationale as provider/model
+            # above): jasper-control is NOT restarted on a barge-in toggle,
+            # so an os.environ/Config cache would show a stale value. The
+            # firing stats are curated pull-through from jasper-voice's
+            # session_status (like wake_legs / tool_packs) — null when
+            # voice is unreachable.
+            "barge_in": {
+                "enabled": (
+                    read_barge_in_enabled(active_provider.provider)
+                    if active_provider.provider else False
+                ),
+                "last_at": (voice_st or {}).get("barge_in_last_at"),
+                "count_session": (voice_st or {}).get("barge_in_count_session"),
+                "last_leg": (voice_st or {}).get("barge_in_last_leg"),
+            },
             "reachable": voice_st is not None,
         },
         "audio": {

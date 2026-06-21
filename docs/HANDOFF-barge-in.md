@@ -55,6 +55,15 @@ an interrupt event, a fast local-flush primitive, and the Protocol
 slots. What is missing is a **trigger**, three concrete **blockers**,
 and on-hardware **AEC proof**. Cells: ✅ done / ⚠️ partial / ❌ missing.
 
+> **Update (PR 2 landed, default OFF):** the core spine now exists — the
+> trigger (`_handle_playback_frame` → `request_local_interrupt()`), the
+> drain-tail race, and the wired `vad_barge_in_threshold` — so the first
+> two ❌ Core cells below and blockers #1/#2 are addressed behind the
+> per-provider flag. Blockers #3 (production playout ledger) and #4
+> (on-hardware AEC proof) still gate the per-provider truncate packs
+> (PRs 4–6) and default-on (PR 7); the table below is the pre-PR-2
+> snapshot, kept for the still-open cells.
+
 | Capability | Core | OpenAI | Gemini | Grok |
 |---|---|---|---|---|
 | Mic stays live during TTS | ❌ `_handle_session_frame` early-returns once `_input_ended` is set (drops mic during playback) | ❌ `send_audio` also no-ops after `_committed` | ❌ daemon stops forwarding | ❌ inherits OpenAI |
@@ -180,7 +189,7 @@ row is an independently-mergeable PR.
 | PR | Scope | Verification (one line) |
 |---|---|---|
 | 1. Playout ledger → fan-in ack | Wire DAC-clock `audio_played_ms` from the outputd core into the fan-in `FLUSH_SYNC` ack (blocker #3) | `FLUSH_SYNC` ack returns nonzero `max_audio_played_ms` within one output period of the real played duration (the test #532 specifies) |
-| 2. Core spine + drain-tail fix | `_handle_playback_frame` branch off `_handle_session_frame` (behind flag) runs Silero on the AEC leg → sets interrupt event; extend the `_play_responses` interrupt race to cover `wait_drained`; wire `vad_barge_in_threshold` (blockers #1, #2) | Flag OFF → byte-identical old behavior (pinning test on the `_input_ended` drop); flag ON + synthetic high-Silero frames → event fires & playback flushes |
+| 2. Core spine + drain-tail fix **(✅ landed, default OFF)** | `_handle_playback_frame` branch off `_handle_session_frame` (behind flag) runs Silero on the AEC leg → `LiveTurn.request_local_interrupt()` sets the interrupt event; the `_play_responses` interrupt race now also covers `wait_drained`; `vad_barge_in_threshold` is wired (blockers #1, #2). Enable is the per-provider `JASPER_BARGE_IN_<PROVIDER>` flag read fresh via `provider_state.read_barge_in_enabled`; a turn-start guard hard-disables + WARNs (`barge.disabled_no_reference`) on a no-AEC-reference profile. Provider truncate/forward stays for PRs 4–6. | Flag OFF → byte-identical old behavior (pinning test on the `_input_ended` drop); flag ON + synthetic high-Silero frames → event fires & playback flushes (incl. the drain-tail window) |
 | 3. Contract alignment | Add `cancel_response`/`truncate_assistant_audio`/`supports_provider_vad` to `session.py`; tolerate missing item ids | Session-contract test; `scripts/test-merge` green |
 | 4. OpenAI pack *(reference — most-used; depends on PR 1 ledger)* | `cancel_response`→`response.cancel`; `truncate_assistant_audio`→`conversation.item.truncate(audio_end_ms = ledger played-ms)`; relax `send_audio` post-commit guard only for forward-during-playback (narrow predicate; keep `_released`/`_turn_lost` guards); truncate **no-ops + WARNs if the ledger ack reports `max_audio_played_ms==0`** (never truncate on bytes-received) | `event=barge.truncate` logged with correct `audio_end_ms`; next turn's context matches the truncated transcript |
 | 5. Gemini pack | Obey `interrupted` (already coded) + set event from local gate; decide server-VAD-on vs manual-VAD; **no truncate** (server self-truncates) | `tests/voice_eval/regression/` "interrupt mid-TTS" scenario; on-device: speak over Gemini TTS → quiet < ~400 ms |
@@ -209,8 +218,12 @@ hardware measurement that might say "chip-AEC only").
   (`provider=`, `audio_end_ms=`), `barge.server_only` (server fired but
   local didn't — false-barge suspect), `barge.flush_failed` (WARN).
   Reuse the existing `event=tts_flush.playout_ack`.
-- **`/state.voice.barge_in`**: `enabled` (per active provider),
-  `last_at`, `count_session`, `last_leg`.
+- **`/state.voice.barge_in`** *(✅ landed PR-2)*: `enabled` (per active
+  provider, read **fresh** in jasper-control's aggregator via
+  `provider_state.read_barge_in_enabled` — not jasper-voice's
+  session_status, since the daemon's `Config` is stale on a toggle),
+  plus `last_at` / `count_session` / `last_leg` pulled through from the
+  daemon's session_status firing counters.
 - **Doctor:** one `@doctor_check` `check_barge_in_config` — warn if a
   provider has barge-in enabled while the active AEC profile is
   `direct_mic` (no reference → guaranteed self-interruption) or the

@@ -67,6 +67,7 @@ from .voice.prompt import (  # noqa: F401
     SYSTEM_INSTRUCTION,
     _build_system_instruction,
 )
+from .voice.provider_state import read_barge_in_enabled
 from .voice.turn_playback import (  # noqa: F401
     _idle_watchdog,
     _play_responses,
@@ -404,6 +405,28 @@ SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 # "turn aborts and user re-wakes," vs the silent failure of "model
 # hallucinates a response while user is still trying to start."
 SPEECH_RUN_PEAK_MIN = 0.60
+
+# In-session barge-in: how long the user must speak continuously (each
+# frame >= JASPER_VAD_BARGE_IN_THRESHOLD) before we flush local TTS.
+# Reuses the wake-tail arming duration so a real spoken interruption
+# clears it within ~200 ms while a single bleed transient cannot. The
+# per-frame bar is the (stricter) barge-in threshold, not the loose
+# wake-tail 0.15 — bleed false-positives are the failure mode here.
+BARGE_IN_SUSTAINED_SPEECH_SEC = SUSTAINED_SPEECH_TO_ARM_SEC
+
+
+def _aec_reference_available(mic_device: str) -> bool:
+    """True when the primary session mic leg is fed by the AEC bridge over
+    UDP (``udp:<port>``), i.e. its signal has the speaker's own output
+    (music AND TTS) cancelled against the final-output reference. That is
+    the precondition for in-session barge-in detection: a direct ALSA
+    device (the ``direct_mic`` profile, e.g. ``Array`` / ``hw:...``)
+    carries un-cancelled TTS bleed, so VAD would self-trip the gate every
+    turn — the self-interrupt loop the barge-in guard refuses to enter.
+
+    This is leg/profile *selection*, not an AEC topology change: the "on"
+    leg is the same stream the live session already consumes."""
+    return mic_device.strip().lower().startswith("udp:")
 
 
 class State(Enum):
@@ -941,6 +964,32 @@ class WakeLoop:
         self._max_silero_raw_in_turn: float = 0.0
         self._silero_raw_armed_at_ms: int | None = None
         self._silero_aec_armed_at_ms: int | None = None
+
+        # In-session barge-in (full-duplex). DEFAULT OFF: resolved fresh
+        # per turn in _begin_turn from the per-provider SSOT flag, then
+        # gated by AEC-reference availability. While the assistant is
+        # speaking (_input_ended set), _handle_playback_frame runs Silero
+        # on the AEC-cleaned "on" leg and flushes local TTS on a sustained
+        # speech run. `_barge_in_reference_available` is constant for the
+        # daemon (mic_device is frozen Config); the no-reference WARN is
+        # one-shot per daemon to avoid per-turn log spam on a misconfigured
+        # direct_mic + barge-in-on install.
+        self._barge_in_reference_available: bool = _aec_reference_available(
+            cfg.mic_device,
+        )
+        self._barge_in_no_ref_warned: bool = False
+        self._barge_in_active: bool = False
+        self._barge_in_run_started_at: float = 0.0
+        self._barge_in_run_peak: float = 0.0
+        self._barge_in_signalled_this_run: bool = False
+        # Firing telemetry surfaced through session_status -> /state.voice.
+        # `count` is a daemon-lifetime running total (NOT per-turn — a
+        # per-turn counter reads 0 between turns, exactly when /state is
+        # polled), so "is barge-in firing a lot?" is answerable from the
+        # dashboard, complementing the per-fire event=barge.detected line.
+        self._barge_in_count: int = 0
+        self._barge_in_last_at: str | None = None
+        self._barge_in_last_leg: str | None = None
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -1099,6 +1148,7 @@ class WakeLoop:
         cfg = SimpleNamespace(
             duck_db=0.0,
             idle_timeout_sec=10.0,
+            mic_device="udp:9876",
             mic_mute_state_path="/tmp/jasper-voice-daemon-test-mute.env",
             peering_enabled=False,
             peering_uds_socket="/tmp/jasper-peering-test.sock",
@@ -1107,6 +1157,7 @@ class WakeLoop:
             server_vad_prefix_ms=300,
             server_vad_silence_ms=500,
             server_vad_threshold=0.5,
+            vad_barge_in_threshold=0.5,
             voice_provider="test",
             wake_model="test_model",
         )
@@ -1205,6 +1256,17 @@ class WakeLoop:
         self._max_silero_raw_in_turn = 0.0
         self._silero_raw_armed_at_ms = None
         self._silero_aec_armed_at_ms = None
+        self._barge_in_reference_available = _aec_reference_available(
+            cfg.mic_device,
+        )
+        self._barge_in_no_ref_warned = False
+        self._barge_in_active = False
+        self._barge_in_run_started_at = 0.0
+        self._barge_in_run_peak = 0.0
+        self._barge_in_signalled_this_run = False
+        self._barge_in_count = 0
+        self._barge_in_last_at = None
+        self._barge_in_last_leg = None
         self._pre_roll = deque(maxlen=PRE_ROLL_FRAMES)
         self._wake_event_store = None
         self._current_event_id = None
@@ -2843,6 +2905,100 @@ class WakeLoop:
             f"SESSION_ENDED {self._peering_current_epoch} {reason}",
         )
 
+    def _resolve_barge_in_for_turn(self) -> None:
+        """Decide whether in-session barge-in is active for the turn about
+        to open, and reset its per-turn run state.
+
+        Reads the per-provider enable flag FRESH from the SSOT file every
+        turn (not the start-time ``Config``) so a wizard / operator toggle
+        takes effect without a daemon restart — jasper-voice is restarted
+        on a *provider* switch but not on a barge-in toggle. DEFAULT OFF.
+
+        Self-interrupt-loop guard: when barge-in is requested but the
+        primary mic leg has no AEC reference (the ``direct_mic`` profile),
+        hard-disable it for the turn and WARN once per daemon, rather than
+        let un-cancelled TTS bleed self-trip the gate every turn."""
+        self._barge_in_run_started_at = 0.0
+        self._barge_in_run_peak = 0.0
+        self._barge_in_signalled_this_run = False
+        want = read_barge_in_enabled(self._cfg.voice_provider)
+        if want and not self._barge_in_reference_available:
+            if not self._barge_in_no_ref_warned:
+                self._barge_in_no_ref_warned = True
+                log_event(
+                    logger,
+                    "barge.disabled_no_reference",
+                    provider=self._cfg.voice_provider,
+                    mic_device=self._cfg.mic_device,
+                    level=logging.WARNING,
+                )
+            want = False
+        self._barge_in_active = want
+
+    async def _handle_playback_frame(self, frame) -> None:
+        """In-session barge-in detection while the assistant is speaking.
+
+        Reached from ``_handle_session_frame`` once ``_input_ended`` is set
+        AND barge-in is active for the turn. Runs local Silero VAD on the
+        AEC-cleaned "on" leg — the same ``frame`` the live session consumed
+        (leg selection, NOT an AEC topology change) — and, on a sustained
+        speech run at or above ``JASPER_VAD_BARGE_IN_THRESHOLD``, sets the
+        turn's interrupt event so ``_play_responses`` flushes local TTS
+        immediately. The felt experience: the user talks over the assistant
+        and the speaker goes quiet.
+
+        This is the provider-agnostic detection + local-flush spine. It
+        does NOT truncate / cancel the provider response (a later increment
+        owns that), so a real-time provider may resume after the flush.
+
+        Runs INLINE (never a ``_bg_task``): ``_handle_session_frame`` ends
+        the turn the moment any ``_bg_tasks`` entry completes, so a
+        fire-once detector task would race turn-end."""
+        if self._turn is None:
+            return
+        # Same primary-leg Silero the in-session EOU detector scores; a
+        # predict error propagates exactly as it does there (unguarded)
+        # rather than being silently swallowed here.
+        speech_prob = self._vad.predict(frame)
+        now = asyncio.get_event_loop().time()
+        if speech_prob < self._cfg.vad_barge_in_threshold:
+            # Sub-threshold frame breaks the run. A fresh continuous run
+            # must re-accumulate from zero (and may re-trigger), mirroring
+            # the wake-tail arming reset.
+            self._barge_in_run_started_at = 0.0
+            self._barge_in_run_peak = 0.0
+            self._barge_in_signalled_this_run = False
+            return
+        if self._barge_in_run_started_at == 0.0:
+            self._barge_in_run_started_at = now
+            self._barge_in_run_peak = speech_prob
+        else:
+            self._barge_in_run_peak = max(self._barge_in_run_peak, speech_prob)
+        if self._barge_in_signalled_this_run:
+            return
+        sustained = now - self._barge_in_run_started_at
+        if sustained < BARGE_IN_SUSTAINED_SPEECH_SEC:
+            return
+        self._barge_in_signalled_this_run = True
+        self._barge_in_count += 1
+        self._barge_in_last_leg = "on"
+        self._barge_in_last_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds",
+        )
+        log_event(
+            logger,
+            "barge.detected",
+            leg="on",
+            silero=f"{self._barge_in_run_peak:.2f}",
+            sustained_ms=int(sustained * 1000),
+        )
+        # Set the turn's interrupt event (provider-agnostic; getattr so an
+        # adapter without the capability degrades to no local flush rather
+        # than crashing). _play_responses is awaiting wait_for_interrupt.
+        trigger = getattr(self._turn, "request_local_interrupt", None)
+        if callable(trigger):
+            trigger()
+
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
         # this frame is silently consumed (no double-dispatch into detector).
@@ -2853,6 +3009,12 @@ class WakeLoop:
         assert self._turn is not None
 
         if self._input_ended:
+            # Input closed: the assistant is (or is about to be) speaking.
+            # With barge-in active, score this frame for an interruption;
+            # otherwise drop it exactly as before (mic ignored during
+            # playback).
+            if self._barge_in_active:
+                await self._handle_playback_frame(frame)
             return
 
         # ---- Server-side VAD branch ----
@@ -3130,6 +3292,13 @@ class WakeLoop:
             # silently failed to build (event=tool_pack.build_failed) is
             # visible in /state.voice + jasper-doctor, not only the journal.
             "tool_packs": self._tool_packs,
+            # In-session barge-in firing telemetry → /state.voice.barge_in
+            # (the `enabled` flag is read fresh in jasper-control's
+            # aggregator, not here — it can change without restarting this
+            # daemon). count is daemon-lifetime; last_at is UTC ISO.
+            "barge_in_count_session": self._barge_in_count,
+            "barge_in_last_at": self._barge_in_last_at,
+            "barge_in_last_leg": self._barge_in_last_leg,
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:
@@ -3195,6 +3364,7 @@ class WakeLoop:
         self._max_silero_raw_in_turn = 0.0
         self._silero_raw_armed_at_ms = None
         self._silero_aec_armed_at_ms = None
+        self._resolve_barge_in_for_turn()
         if self._vad_off is not None:
             self._vad_off.reset()
         t_after_state = _time.monotonic()
@@ -3288,7 +3458,9 @@ class WakeLoop:
                 len(pre_roll_frames), len(pre_roll_frames) * 80.0,
             )
         playback = asyncio.create_task(
-            _play_responses(self._turn, self._tts)
+            _play_responses(
+                self._turn, self._tts, barge_in_enabled=self._barge_in_active,
+            )
         )
         idle = asyncio.create_task(
             _idle_watchdog(

@@ -549,6 +549,15 @@ class OpenAIRealtimeTurn:
         # implementation skips the truncate rather than send an invalid id.
         return None
 
+    def request_local_interrupt(self) -> None:
+        # Local barge-in (PR-2 spine): flush playout without an OpenAI-side
+        # conversation.item.truncate / response.cancel (the seam above owns
+        # provider cancellation in a later PR). OpenAI/Grok never set
+        # _interrupt_event from the server side, so this is the only path
+        # that arms the playback flush race for these providers.
+        self._interrupted = True
+        self._interrupt_event.set()
+
     # ---- Server VAD ----
 
     def server_vad_active(self) -> bool:
