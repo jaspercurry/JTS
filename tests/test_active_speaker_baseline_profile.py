@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -338,7 +339,7 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
 
     implicit, implicit_yaml = _emit("implicit", None)
     explicit, explicit_yaml = _emit("explicit_default", "plug:jasper_capture")
-    follower, follower_yaml = _emit("follower", "udp:9876")
+    follower, follower_yaml = _emit("follower", "hw:CARD=Loopback,DEV=1")
 
     # inv 1: passing the default explicitly is byte-identical to not passing it,
     # and the solo baseline captures from the fan-in tap.
@@ -347,15 +348,90 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
     assert 'device: "plug:jasper_capture"' in implicit_yaml
 
     # A follower's round-trip-loopback capture changes ONLY the capture line.
-    assert 'device: "udp:9876"' in follower_yaml
+    assert 'device: "hw:CARD=Loopback,DEV=1"' in follower_yaml
     impl_lines = implicit_yaml.splitlines()
     foll_lines = follower_yaml.splitlines()
     assert len(impl_lines) == len(foll_lines)
     diff = [(a, b) for a, b in zip(impl_lines, foll_lines) if a != b]
     assert len(diff) == 1
     assert diff[0][0].strip() == 'device: "plug:jasper_capture"'
-    assert diff[0][1].strip() == 'device: "udp:9876"'
+    assert diff[0][1].strip() == 'device: "hw:CARD=Loopback,DEV=1"'
     assert implicit["config"]["sha256"] != follower["config"]["sha256"]
+
+
+def test_pairing_intent_does_not_change_emitted_baseline_config(
+    tmp_path: Path,
+) -> None:
+    """Slice 1 inv 7 (config layer): pairing intent is commission-time design
+    intent and never reaches the emitter, so the emitted CamillaDSP config is
+    byte-identical (same sha256) across every pairing value. Pins the
+    output_topology.py claim "the emitted CamillaDSP config is unaffected".
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+
+    def _sha(intent: str) -> str:
+        payload = build_baseline_profile_candidate(
+            replace(topology, pairing_intent=intent),
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            write=True,
+            state_path=tmp_path / f"state_{intent}.json",
+            config_path=tmp_path / f"config_{intent}.yml",
+            validate=_valid_config,
+            created_at="2026-06-14T12:20:00Z",
+        )
+        return payload["config"]["sha256"]
+
+    shas = {_sha(intent) for intent in ("solo", "will_be_follower", "has_follower")}
+    assert len(shas) == 1
+
+
+def test_pairing_intent_change_does_not_invalidate_baseline_cache(
+    tmp_path: Path,
+) -> None:
+    """Slice 1 inv 7: because pairing intent does not determine the emitted
+    config, toggling it must NOT invalidate the durable baseline cache. A
+    write=False read after a pairing change still returns the cached
+    ready-to-apply state instead of dropping to ready_to_compile (which would
+    surface as a spurious "needs recompile" on the /sound/ wizard). Also guards
+    the magic-string exclusion in _source_payload against a silent field rename.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+
+    first = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        created_at="2026-06-14T12:20:00Z",
+    )
+    assert first["status"] == "ready_to_apply"
+
+    cached = build_baseline_profile_candidate(
+        replace(topology, pairing_intent="has_follower"),
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    assert cached["status"] == "ready_to_apply"
+    assert cached["permissions"]["may_apply"] is True
 
 
 def test_baseline_profile_blocks_until_summed_validation_exists(
@@ -635,12 +711,12 @@ async def test_apply_baseline_profile_threads_capture_device(
         get_current_config_path=current_config_path,
         state_path=tmp_path / "baseline_profile.json",
         config_path=config_path,
-        capture_device="udp:9876",
+        capture_device="hw:CARD=Loopback,DEV=1",
         validate=_valid_config,
     )
 
     assert payload["status"] == "applied"
-    assert 'device: "udp:9876"' in config_path.read_text(encoding="utf-8")
+    assert 'device: "hw:CARD=Loopback,DEV=1"' in config_path.read_text(encoding="utf-8")
 
 
 # --- Fail-safe level trim derived from the driver sensitivity gap -------------
