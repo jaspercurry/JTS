@@ -360,6 +360,31 @@ class GeminiLiveTurn:
         self._interrupted = False
         self._interrupt_event.clear()
 
+    # ---- Barge-in capability seam (behaviour-neutral stubs) ----
+    #
+    # Reconciliation kind for Gemini is `server_self_truncates` (catalog):
+    # START_OF_ACTIVITY_INTERRUPTS drops the unspoken tail server-side, and
+    # Gemini has no OpenAI-style per-response audio item id to truncate
+    # against. Both methods are therefore genuine no-ops for Gemini, not
+    # just deferred wiring — they exist so the daemon's barge-in path stays
+    # one code path across providers. Local TTS flush still happens at the
+    # daemon layer.
+
+    async def cancel_response(self, reason: str) -> None:
+        # No-op: Gemini interruption is provider-side generation state;
+        # there is no client cancel call to synthesize. `reason` reserved
+        # for a future structured-log line.
+        return None
+
+    async def truncate_assistant_audio(
+        self, provider_item_id: str | None, audio_played_ms: int,
+    ) -> None:
+        # No-op: no conversation.item.truncate equivalent. `provider_item_id`
+        # is expected to be None for Gemini (no per-response audio item id);
+        # arguments are accepted and ignored so callers need no provider
+        # branch.
+        return None
+
     # Internal — called by the connection's receive loop when it routes
     # an incoming server message to this active turn.
     async def _on_response(self, response) -> None:
@@ -796,6 +821,15 @@ class GeminiLiveConnection:
 
     def supports_server_vad(self) -> bool:
         return False
+
+    def supports_provider_vad(self) -> bool:
+        # Gemini Live HAS native VAD — its default ActivityHandling is
+        # START_OF_ACTIVITY_INTERRUPTS. This is a different axis from
+        # supports_server_vad() (False for Gemini: the daemon cannot switch
+        # endpointing mode mid-session via set_turn_detection). Capability,
+        # not current config — JTS runs Gemini with manual VAD. Separate from
+        # barge-in support — see the LiveConnection docstring.
+        return True
 
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
