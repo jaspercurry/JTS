@@ -157,6 +157,20 @@ migrate_secrets_phase4a() {
 
     migrate_voice_keys_split
 
+    # Re-tighten voice_keys.env's MODE on every deploy. migrate_voice_keys_split
+    # chmods 0640 only when it WRITES the file; on the idempotent re-run (the key
+    # already split) it doesn't, so a manual `chmod o+r voice_keys.env` (or a
+    # backup restore) would survive — a silent CONFIDENTIALITY regression that puts
+    # the LLM keys back within reach of any reader, exactly the drift
+    # jasper-doctor's check_jasper_secrets_compartment FAILs on. The `chown -R`
+    # above already re-groups the whole compartment to jasper-secrets every run;
+    # this is the matching mode re-narrow (google_credentials.env / accounts.json /
+    # tokens are re-chmod'd just above; voice_keys.env was the one gap because its
+    # only chmod lived inside the conditional split). Owner left as-is.
+    if [[ -f "${SECRETS_DIR}/voice_keys.env" ]]; then
+        chmod 0640 "${SECRETS_DIR}/voice_keys.env" 2>/dev/null || true
+    fi
+
     # Reconcile against the tmpfiles spec (also surfaces a syntax error early).
     systemd-tmpfiles --create --prefix="${SECRETS_DIR}" 2>/dev/null || true
 }
