@@ -458,16 +458,44 @@ slices land safest-first; each is independently mergeable.
 Slices 1–2 are hardware-free and independently shippable; 3 is where
 on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
 
-**Landed so far:** **Slice 1** — the compile/apply seam
-(`build_baseline_profile_candidate`, `apply_baseline_profile`) threads
-`capture_device` into `emit_active_speaker_baseline_config` (default
-`plug:jasper_capture` keeps the solo baseline byte-identical;
-`recompose_baseline_yaml` deliberately keeps the default — program-domain EQ
-always captures from fan-in), and `OutputTopology` carries a pure-data
-`pairing_intent` (`solo | will_be_follower | has_follower`, absent == `solo`).
-Invariants 1, 2, and 7 are pinned by
-[`tests/test_active_speaker_baseline_profile.py`](../tests/test_active_speaker_baseline_profile.py)
-and [`tests/test_output_topology.py`](../tests/test_output_topology.py).
+**Landed so far:**
+
+- **Slice 1** — the compile/apply seam (`build_baseline_profile_candidate`,
+  `apply_baseline_profile`) threads `capture_device` into
+  `emit_active_speaker_baseline_config` (default `plug:jasper_capture` keeps the
+  solo baseline byte-identical; `recompose_baseline_yaml` deliberately keeps the
+  default — program-domain EQ always captures from fan-in), and `OutputTopology`
+  carries a pure-data `pairing_intent` (`solo | will_be_follower | has_follower`,
+  absent == `solo`). Invariants 1, 2, and 7 are pinned by
+  [`tests/test_active_speaker_baseline_profile.py`](../tests/test_active_speaker_baseline_profile.py)
+  and [`tests/test_output_topology.py`](../tests/test_output_topology.py).
+
+- **Slice 2** — the **driver-domain-only emit variant** + the **verifier arm**.
+  `emit_active_speaker_driver_domain_config`
+  ([camilla_yaml.py](../jasper/active_speaker/camilla_yaml.py)) composes the
+  follower's Layer-A graph — `channel_select (2->2 pick L/R/mono) ->
+  split_active_<way>way (2->N) -> per-driver [crossover, delay, non-positive
+  gain, soft-clip limiter]` (tweeter band-limited by its crossover high-pass),
+  with **no** program-domain headroom and **no** preference EQ (the leader baked
+  Layer B/C). It reuses the baseline emitter's per-driver definitions verbatim
+  (the relocated Layer A is byte-for-byte the solo chain), and the channel-select
+  recipe is now the shared `jasper.camilla_emit.emit_channel_select_mixer` so the
+  follower and the multiroom member-config path can't drift. `classify_camilla_graph`
+  ([runtime_contract.py](../jasper/active_speaker/runtime_contract.py)) grows a
+  `GRAPH_DRIVER_DOMAIN_BASELINE` arm keyed on the new `# Source:` marker: Layer A
+  present (crossover HP + per-driver limiter `clip<=0` + gain `<=0` + `volume_limit
+  == 0.0`), channel-select present **and preceding the split**, program prefix
+  absent. Emitter↔verifier stay independent. It is **not** wired into
+  `safe_graph_for_current_topology` selection (that is Slice 3) — keeps invariant 7.
+  Invariants 3 (keystone round-trip) and 4 are pinned by
+  [`tests/test_active_speaker_runtime_contract.py`](../tests/test_active_speaker_runtime_contract.py)
+  and [`tests/test_active_speaker_driver_domain.py`](../tests/test_active_speaker_driver_domain.py).
+
+- **Slice 4** — the HW-free web half: a bonded follower's `/sound/` renders the
+  local driver/crossover/commissioning UI (the active-speaker endpoints were
+  never in the content-DSP 409 block); invariant 6 is pinned by
+  [`tests/test_sound_setup.py`](../tests/test_sound_setup.py). (Slice 3 still owns
+  the runtime audio path that makes the delegation promise true end-to-end.)
 
 ## Multi-Pi validation (Slice 3+)
 

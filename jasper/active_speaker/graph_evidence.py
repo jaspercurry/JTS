@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any
 
 from .camilla_yaml import (
+    channel_select_mixer_name,
     driver_baseline_gain_name,
     driver_baseline_limiter_name,
     driver_limiter_name,
@@ -41,6 +42,7 @@ from .camilla_yaml import (
 
 __all__ = [
     # Canonical filter names (re-exported from the emitter, the single owner).
+    "channel_select_mixer_name",
     "driver_baseline_gain_name",
     "driver_baseline_limiter_name",
     "driver_limiter_name",

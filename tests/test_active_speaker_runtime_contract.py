@@ -8,10 +8,13 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
+    emit_active_speaker_driver_domain_config,
 )
 from jasper.active_speaker.runtime_contract import (
+    ACTIVE_DRIVER_DOMAIN_SOURCE,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_DRIVER_DOMAIN_BASELINE,
     GRAPH_FLAT_FULL_RANGE,
     GRAPH_GUARDED_COMMISSIONING,
     CONTRACT_ACTIVE_MONO_2WAY,
@@ -183,6 +186,16 @@ def _active_baseline_yaml(
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         baseline_id=f"baseline-{layout}-{way}way",
+    )
+
+
+def _driver_domain_yaml(layout: str, way: int, *, channel: str = "left") -> str:
+    raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
+    return emit_active_speaker_driver_domain_config(
+        ActiveSpeakerPreset.from_mapping(raw),
+        playback_device=ACTIVE_PCM,
+        program_channel=channel,
+        baseline_id=f"follower-{layout}-{way}way",
     )
 
 
@@ -722,3 +735,98 @@ def test_flat_program_graph_fail_closed_on_corrupt_topology(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(corrupt))
 
     assert flat_program_graph_blocked_reason() is not None
+
+
+# --- Slice 2 keystone (invariant 3): the driver-domain-only follower graph ----
+# Relocating Layer A onto a follower (channel-select prefix instead of the
+# program-domain headroom/EQ) re-proves as its own allowed classification, and
+# the verifier still REJECTS the ways it can be made unsafe. emitter<->verifier
+# stay independent: the emitter writes the graph, the classifier re-derives the
+# verdict from the text.
+
+_DRIVER_DOMAIN_CASES = [
+    (layout, way, channel)
+    for layout in ("mono", "stereo")
+    for way in (2, 3)
+    for channel in ("left", "right", "mono")
+]
+
+
+@pytest.mark.parametrize("layout,way,channel", _DRIVER_DOMAIN_CASES)
+def test_driver_domain_baseline_allowed(layout: str, way: int, channel: str) -> None:
+    topology = _active_topology(layout, f"active_{way}_way")
+    graph = classify_camilla_graph(
+        topology=topology, text=_driver_domain_yaml(layout, way, channel=channel)
+    )
+    assert graph.allowed, graph.issues
+    assert graph.classification == GRAPH_DRIVER_DOMAIN_BASELINE
+    assert graph.details["driver_domain_candidate"] is True
+
+
+def test_driver_domain_source_marker_matches_verifier() -> None:
+    # The cross-module routing contract: the emitter's `# Source:` header must be
+    # the exact string the verifier independently names, or the driver-domain arm
+    # never fires (the round-trip above IS the live pin; this asserts it directly
+    # so a rename fails loudly here too).
+    text = _driver_domain_yaml("mono", 2)
+    source_line = next(
+        line for line in text.splitlines() if line.startswith("# Source:")
+    )
+    assert source_line.split("# Source:")[1].strip() == ACTIVE_DRIVER_DOMAIN_SOURCE
+
+
+def test_driver_domain_rejects_injected_program_prefix() -> None:
+    text = _driver_domain_yaml("mono", 2)
+    bad = text.replace(
+        "filters:\n",
+        "filters:\n"
+        "  active_baseline_headroom:\n"
+        "    type: Gain\n"
+        "    parameters: { gain: -12.0000, inverted: false, mute: false }\n",
+    ).replace(
+        "pipeline:\n",
+        "pipeline:\n"
+        "  - type: Filter\n    channels: [0, 1]\n    names: [active_baseline_headroom]\n",
+    )
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=bad)
+    assert not graph.allowed
+    assert "active_driver_domain_program_prefix_present" in {i["code"] for i in graph.issues}
+
+
+def test_driver_domain_rejects_channel_select_after_split() -> None:
+    text = _driver_domain_yaml("mono", 2)
+    swapped = text.replace(
+        "  - type: Mixer\n    name: channel_select\n"
+        "  - type: Mixer\n    name: split_active_2way\n",
+        "  - type: Mixer\n    name: split_active_2way\n"
+        "  - type: Mixer\n    name: channel_select\n",
+    )
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=swapped)
+    assert not graph.allowed
+    assert "active_driver_domain_channel_select_after_split" in {i["code"] for i in graph.issues}
+
+
+def test_driver_domain_rejects_missing_channel_select() -> None:
+    text = _driver_domain_yaml("mono", 2)
+    missing = text.replace("  - type: Mixer\n    name: channel_select\n", "")
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=missing)
+    assert not graph.allowed
+    assert "active_driver_domain_channel_select_missing" in {i["code"] for i in graph.issues}
+
+
+def test_driver_domain_not_persistable_as_solo_fallback(tmp_path: Path) -> None:
+    # Slice 2 does NOT wire the driver-domain graph into safe_graph_for_current_topology
+    # selection (that is Slice 3, gated by S0-sync). Even when a driver-domain graph is
+    # the current/preferred candidate for a roleful solo topology, the selector leaves
+    # it BLOCKED rather than persisting it as a deploy/restart fallback — keeps
+    # invariant 7 (no new solo selection path). staged_config={} keeps this hermetic.
+    config = tmp_path / "follower.yml"
+    config.write_text(_driver_domain_yaml("mono", 2), encoding="utf-8")
+    decision = safe_graph_for_current_topology(
+        _active_topology("mono", "active_2_way"),
+        current_config_path=str(config),
+        preferred_config_path=str(config),
+        staged_config={},
+    )
+    assert decision.status == "blocked"
+    assert decision.selected_config_path is None

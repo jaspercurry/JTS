@@ -137,12 +137,17 @@ Increment 6 (per-follower calibration). What exists:
   (separate PRs) — `atomic_io` is purely additive.
 - **`jasper/camilla_emit.py`** — shared CamillaDSP YAML *emission*
   primitives (`fmt`, `emit_gain_filter`, `emit_peaking_biquad`,
-  `emit_linkwitz_riley`, `emit_mixer`): the single home for *how* a
-  gain/biquad/crossover/mixer is spelled in YAML. Extracted from the
-  correction / sound / active-speaker / multi-room generators, which had
-  each hand-rolled (and re-derived) these — 3 copies of `_fmt`, 4 mixer
-  emitters. All four now consume it; high-level config *assembly* stays
-  per-subsystem. The shipped generators are byte-identical post-migration
+  `emit_linkwitz_riley`, `emit_mixer`, `emit_channel_select_mixer`): the
+  single home for *how* a gain/biquad/crossover/mixer is spelled in YAML.
+  Extracted from the correction / sound / active-speaker / multi-room
+  generators, which had each hand-rolled (and re-derived) these — 3 copies
+  of `_fmt`, 4 mixer emitters. All four now consume it; high-level config
+  *assembly* stays per-subsystem. The inter-speaker channel-select recipe
+  (the `channel_select` mixer name + the clip-safe −6.02 dB mono sum) also
+  lives here (`emit_channel_select_mixer` / `channel_select_sources`,
+  promoted from `channel_split.py` in distributed-active Slice 2) so the
+  multi-room member-config path and the active-speaker follower's
+  driver-domain graph spell the pick one canonical way. The shipped generators are byte-identical post-migration
   (golden-diffed); multi-room's sub crossover upgraded to CamillaDSP's
   native `BiquadCombo LinkwitzRileyLowpass`.
 - **`jasper/multiroom/channel_split.py`** — pure channel-split DSP

@@ -74,15 +74,24 @@ household wants true bass management.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
-from jasper.camilla_emit import emit_linkwitz_riley, emit_mixer
+from jasper.camilla_emit import (
+    CHANNEL_SELECT_MIXER,
+    emit_channel_select_mixer,
+    emit_linkwitz_riley,
+)
+from jasper.camilla_emit import (
+    MONO_SUM_GAIN_DB as MONO_SUM_GAIN_DB,  # re-export for this module's importers
+)
 from jasper.multiroom.config import ALLOWED_CHANNELS
 
-# The split mixer's name. Distinct from `master_gain` on purpose — see
-# the Ducker invariant in the module docstring.
-CHANNEL_SELECT_MIXER = "channel_select"
+# ``CHANNEL_SELECT_MIXER`` (the mixer name) and ``MONO_SUM_GAIN_DB`` (the
+# clip-safe -6.02 dB mono-sum gain) are owned by the shared leaf
+# ``jasper.camilla_emit`` and re-exported here so this module's existing
+# importers/tests keep working; the channel-select *recipe* (sources + the 2->2
+# mixer) is now the shared ``emit_channel_select_mixer`` so the active-speaker
+# follower path and this member-config path can never drift apart.
 
 # Sub crossover corner. 80 Hz is the standard consumer crossover (THX /
 # most AV receivers default here). Tunable via build_channel_split(...).
@@ -95,15 +104,6 @@ DEFAULT_CROSSOVER_HZ = 80.0
 # pair of Biquad Lowpass sections.
 _CROSSOVER_ORDER = 4
 SUB_CROSSOVER_FILTER = "sub_crossover"
-
-# Per-source gain for a 2-channel mono sum. 20*log10(0.5) = -6.0206 dB:
-# identical L==R inputs sum to exactly 0 dBFS, so a mono track played
-# through a mono/sub speaker cannot clip under volume_limit: 0.0.
-MONO_SUM_GAIN_DB = 20.0 * math.log10(0.5)  # -6.020599913…
-
-# Unity route gain (dB). Selecting a channel onto an output is a plain
-# copy — no attenuation, no boost.
-_ROUTE_GAIN_DB = 0.0
 
 
 @dataclass(frozen=True)
@@ -145,23 +145,6 @@ class ChannelSplit:
         return self.mixer_name is None
 
 
-def _channel_sources(channel: str) -> list[tuple[int, float, bool]]:
-    """The (input_channel, gain_db, inverted) sources mixed onto EACH
-    output channel for a non-stereo assignment.
-
-    One source for a left/right route; two clip-safe -6.02 dB sources for
-    a mono/sub L+R sum. Both outputs get the SAME content, so the assigned
-    channel reaches the driver regardless of how the physical speaker taps
-    the stereo DAC (output 0, output 1, or a passive L+R sum).
-    """
-    if channel == "left":
-        return [(0, _ROUTE_GAIN_DB, False)]
-    if channel == "right":
-        return [(1, _ROUTE_GAIN_DB, False)]
-    # mono / sub: clip-safe L+R sum
-    return [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
-
-
 def _pipeline_mixer_step() -> str:
     """The pipeline step that applies `channel_select` after master_gain."""
     return f"  - type: Mixer\n    name: {CHANNEL_SELECT_MIXER}"
@@ -198,14 +181,8 @@ def build_channel_split(
             pipeline_mixer_step="",
         )
 
-    # Both output channels carry the same content (see _channel_sources).
-    sources = _channel_sources(channel)
-    mixer_block = emit_mixer(
-        CHANNEL_SELECT_MIXER,
-        channels_in=2,
-        channels_out=2,
-        mapping=[(0, sources), (1, sources)],
-    )
+    # Both output channels carry the same content (see channel_select_sources).
+    mixer_block = emit_channel_select_mixer(channel)
 
     filter_block = ""
     filter_chain_names: tuple[str, ...] = ()

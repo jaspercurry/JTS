@@ -27,6 +27,8 @@ from jasper.camilla_config_contract import (
     total_positive_boost_db,
 )
 from jasper.camilla_emit import (
+    CHANNEL_SELECT_MIXER,
+    emit_channel_select_mixer,
     emit_gain_filter,
     emit_linkwitz_riley,
     emit_mixer,
@@ -58,6 +60,13 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     "jasper_out",
 )
+
+# Driver-domain-only (active follower) emit. A follower picks ONE inter-speaker
+# channel of the leader's already-corrected stereo program, so the valid
+# program-channel selections are left / right / a clip-safe mono sum. ``stereo``
+# is passthrough (not a single-box pick) and ``sub`` is the wireless-sub member
+# (gap 5) — both are out of scope for the follower driver-domain emit.
+DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 
@@ -262,6 +271,14 @@ driver_baseline_gain_name = _driver_baseline_gain_name
 driver_baseline_limiter_name = _driver_baseline_limiter_name
 protective_tweeter_hp_name = _protective_tweeter_hp_name
 
+# The inter-speaker channel-select mixer name — emitter-owned graph vocabulary
+# the verification side re-imports (via graph_evidence) rather than hardcoding,
+# so a rename can never silently desync the runtime_contract driver-domain arm
+# from the graph it inspects. The name is owned by the shared leaf
+# (jasper.camilla_emit) and re-exported here so the active-speaker verifier has
+# one import point.
+channel_select_mixer_name = CHANNEL_SELECT_MIXER
+
 
 def _protective_tweeter_hp_frequency(
     preset: ActiveSpeakerPreset,
@@ -367,6 +384,54 @@ def _correction_bool(
     return bool(corrections.get(role, {}).get(field))
 
 
+def _emit_baseline_driver_definitions(
+    preset: ActiveSpeakerPreset,
+    *,
+    limiter_clip_limit_db: float,
+    corrections: dict[str, dict[str, float | bool]],
+) -> list[str]:
+    """The driver-domain (Layer A) filter definitions shared by the solo/leader
+    baseline and the follower's driver-domain-only graph.
+
+    Emits the per-region Linkwitz-Riley crossover pair, then each driver's
+    [delay, non-positive baseline gain, soft-clip limiter] chain. This is the
+    *intra-speaker* half — it has no program-domain headroom and no preference
+    EQ (those are program-domain, wired only by the baseline caller). The
+    follower's driver-domain emit reuses this verbatim so the relocated Layer A
+    is byte-for-byte the same protective chain a solo speaker runs.
+    """
+    lines: list[str] = []
+    for region in _ordered_regions(preset):
+        lines.extend(emit_linkwitz_riley(
+            _crossover_filter_name(region.lower_driver, region, highpass=False),
+            highpass=False,
+            freq_hz=region.fc_hz,
+            order=region.order,
+        ))
+        lines.extend(emit_linkwitz_riley(
+            _crossover_filter_name(region.upper_driver, region, highpass=True),
+            highpass=True,
+            freq_hz=region.fc_hz,
+            order=region.order,
+        ))
+    for role in required_driver_roles(preset.way_count):
+        delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
+        gain_db = _correction_value(corrections, role, "gain_db", 0.0)
+        inverted = _correction_bool(corrections, role, "inverted")
+        lines.extend(_emit_delay_filter(_driver_delay_name(role), delay_ms=delay_ms))
+        lines.extend(emit_gain_filter(
+            _driver_baseline_gain_name(role),
+            gain_db,
+            inverted=inverted,
+        ))
+        lines.extend(_emit_limiter_filter(
+            _driver_baseline_limiter_name(role),
+            clip_limit_db=limiter_clip_limit_db,
+            soft_clip=True,
+        ))
+    return lines
+
+
 def _emit_baseline_filter_definitions(
     preset: ActiveSpeakerPreset,
     *,
@@ -400,34 +465,11 @@ def _emit_baseline_filter_definitions(
             -(baseline_headroom_db + boost_db + trim_db),
         )
     )
-    for region in _ordered_regions(preset):
-        lines.extend(emit_linkwitz_riley(
-            _crossover_filter_name(region.lower_driver, region, highpass=False),
-            highpass=False,
-            freq_hz=region.fc_hz,
-            order=region.order,
-        ))
-        lines.extend(emit_linkwitz_riley(
-            _crossover_filter_name(region.upper_driver, region, highpass=True),
-            highpass=True,
-            freq_hz=region.fc_hz,
-            order=region.order,
-        ))
-    for role in required_driver_roles(preset.way_count):
-        delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
-        gain_db = _correction_value(corrections, role, "gain_db", 0.0)
-        inverted = _correction_bool(corrections, role, "inverted")
-        lines.extend(_emit_delay_filter(_driver_delay_name(role), delay_ms=delay_ms))
-        lines.extend(emit_gain_filter(
-            _driver_baseline_gain_name(role),
-            gain_db,
-            inverted=inverted,
-        ))
-        lines.extend(_emit_limiter_filter(
-            _driver_baseline_limiter_name(role),
-            clip_limit_db=limiter_clip_limit_db,
-            soft_clip=True,
-        ))
+    lines.extend(_emit_baseline_driver_definitions(
+        preset,
+        limiter_clip_limit_db=limiter_clip_limit_db,
+        corrections=corrections,
+    ))
     # Program-domain preference EQ (Layer C) definitions. Emitted via the shared
     # leaf emit_filter_spec (the same one emit_sound_config uses), so the active
     # and stereo paths spell a preference band identically. They are wired
@@ -483,6 +525,33 @@ def _emit_baseline_pipeline(
         "  - type: Mixer",
         f"    name: split_active_{preset.way_count}way",
     ])
+    for role in required_driver_roles(preset.way_count):
+        channels = _channels_for_role(preset, role)
+        chain = ", ".join(_driver_baseline_filter_chain(preset, role))
+        lines.extend([
+            "  - type: Filter",
+            f"    channels: [{', '.join(str(ch) for ch in channels)}]",
+            f"    names: [{chain}]",
+        ])
+    return "\n".join(lines)
+
+
+def _emit_driver_domain_pipeline(preset: ActiveSpeakerPreset) -> str:
+    # Driver-domain-only (follower) pipeline. The inter-speaker channel-select
+    # runs FIRST (a 2->2 Mixer that picks L/R/mono from the leader's corrected
+    # stereo program), THEN the intra-speaker 2->N split, THEN each driver's
+    # crossover/delay/gain/limiter chain — exactly channel_split.py's documented
+    # composition order (inter-speaker axis before intra-speaker axis). There is
+    # NO program-domain (channels [0, 1]) Filter step: the leader baked Layer
+    # B/C, so this graph carries no headroom gain and no preference EQ — only
+    # the protective driver chain. Both stages are Mixer steps, so the [0, 1]
+    # bus is never the target of a Filter step here.
+    lines = [
+        "  - type: Mixer",
+        f"    name: {CHANNEL_SELECT_MIXER}",
+        "  - type: Mixer",
+        f"    name: split_active_{preset.way_count}way",
+    ]
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
         chain = ", ".join(_driver_baseline_filter_chain(preset, role))
@@ -1068,6 +1137,185 @@ pipeline:
             preset.preset_id,
             preset.way_count,
             output_count,
+        )
+    return yaml
+
+
+def emit_active_speaker_driver_domain_config(
+    preset: ActiveSpeakerPreset,
+    *,
+    playback_device: str,
+    program_channel: str,
+    corrections: dict[str, dict[str, float | bool]] | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int = DEFAULT_CHUNKSIZE,
+    target_level: int = DEFAULT_TARGET_LEVEL,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
+    limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
+    out_path: str | Path | None = None,
+    baseline_id: str | None = None,
+) -> str:
+    """Build a **driver-domain-only** active-speaker graph for a wireless follower.
+
+    This is the active-crossover analogue of the dumb follower's channel-pick: an
+    *endpoint-crossover* graph that runs only **Layer A** (the ``2->N`` split plus
+    each driver's crossover / delay / non-positive gain / soft-clip limiter, with
+    the tweeter band-limited by its crossover high-pass) on a stereo program the
+    **leader already corrected** (Layer B room PEQ + Layer C preference EQ baked
+    into the streamed program). It therefore emits **no** program-domain prefix —
+    no ``active_baseline_headroom`` gain and no preference-EQ band — because that
+    domain belongs to the leader's bake instance.
+
+    The pipeline is ``channel_select (2->2 pick L/R/mono) -> split_active_<way>way
+    (2->N) -> per-driver chain``: the inter-speaker channel-select runs FIRST
+    (which channel of the pair this box plays), THEN the intra-speaker driver
+    split — exactly ``jasper.multiroom.channel_split``'s documented composition
+    order. ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``
+    (``left`` / ``right`` / ``mono``); the channel-select mixer is the shared
+    ``emit_channel_select_mixer`` primitive, so a follower and a bonded member
+    spell the pick identically.
+
+    Like the baseline emitter it keeps the JTS 0 dB volume ceiling, per-driver
+    soft-clip limiters, and non-positive per-driver correction gain, and it
+    refuses the existing stereo outputd lane as a playback device. It does NOT
+    load or reload CamillaDSP — the reconciler (gap 3, a later slice) owns
+    pointing the capture at the round-trip loopback and the apply. ``corrections``
+    carries the same commissioned per-driver delay/gain/polarity as the solo
+    baseline (hardware truth, role-independent — gap 1), so the relocated Layer A
+    is the same protective chain the speaker runs solo.
+    """
+
+    preset.validate()
+    playback_device = _yaml_string(playback_device, "playback_device")
+    forbidden_token = _forbidden_playback_token(playback_device)
+    if forbidden_token:
+        raise ActiveSpeakerConfigError(
+            "active-speaker baselines require an explicit active playback "
+            f"device, not the existing {forbidden_token} lane"
+        )
+    if program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
+        raise ActiveSpeakerConfigError(
+            f"program_channel must be one of {DRIVER_DOMAIN_PROGRAM_CHANNELS}, "
+            f"not {program_channel!r}"
+        )
+    capture_device = _yaml_string(capture_device, "capture_device")
+    capture_format = _yaml_string(capture_format, "capture_format")
+    playback_format = _yaml_string(playback_format, "playback_format")
+    sample_rate = _positive_int(sample_rate, "sample_rate")
+    chunksize = _positive_int(chunksize, "chunksize")
+    target_level = _positive_int(target_level, "target_level")
+    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
+    limiter_clip_limit_db = _finite_float(
+        limiter_clip_limit_db,
+        "limiter_clip_limit_db",
+    )
+    if volume_limit_db > 0:
+        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
+        raise ActiveSpeakerConfigError(
+            "limiter_clip_limit_db must be between -120 and 0 dB"
+        )
+
+    safe_corrections: dict[str, dict[str, float | bool]] = {}
+    for role, values in (corrections or {}).items():
+        if role not in required_driver_roles(preset.way_count):
+            continue
+        if not isinstance(values, dict):
+            continue
+        gain_db = _correction_value({role: values}, role, "gain_db", 0.0)
+        delay_ms = _correction_value({role: values}, role, "delay_ms", 0.0)
+        if gain_db > 0:
+            raise ActiveSpeakerConfigError(
+                f"baseline correction gain for {role} must not be positive"
+            )
+        if delay_ms < 0 or delay_ms > 20:
+            raise ActiveSpeakerConfigError(
+                f"baseline delay for {role} must be between 0 and 20 ms"
+            )
+        safe_corrections[role] = {
+            "gain_db": gain_db,
+            "delay_ms": delay_ms,
+            "inverted": bool(values.get("inverted")),
+        }
+
+    output_count = _output_count(preset)
+    filter_yaml = "\n".join(_emit_baseline_driver_definitions(
+        preset,
+        limiter_clip_limit_db=limiter_clip_limit_db,
+        corrections=safe_corrections,
+    ))
+    # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
+    mixer_yaml = "\n".join((
+        emit_channel_select_mixer(program_channel),
+        _emit_split_mixer(preset),
+    ))
+    pipeline_yaml = _emit_driver_domain_pipeline(preset)
+    metadata_comments = [
+        f"# preset_id={preset.preset_id}",
+        f"# program_channel={program_channel}",
+    ]
+    if baseline_id:
+        baseline_id = _yaml_string(baseline_id, "baseline_id")
+        metadata_comments.append(f"# baseline_id={baseline_id}")
+    metadata_yaml = "\n".join(metadata_comments)
+
+    yaml = f"""---
+# Auto-generated active-speaker driver-domain config.
+# Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config
+{metadata_yaml}
+# This is a wireless follower's driver-domain-only Layer-A graph: it picks one
+# inter-speaker channel of the leader's already-corrected stereo program, then
+# runs the per-driver crossover/limiter chain. There is no program-domain
+# headroom or preference EQ (the leader baked Layer B/C); outputs are not
+# startup-muted, per-driver correction gain is non-positive, and the software
+# volume ceiling remains 0 dB.
+
+devices:
+  samplerate: {sample_rate}
+  chunksize: {chunksize}
+  queuelimit: 4
+  target_level: {target_level}
+  volume_limit: {volume_limit_db:.1f}
+  enable_rate_adjust: true
+  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}
+  playback:
+    type: Alsa
+    channels: {output_count}
+    device: "{playback_device}"
+    format: {playback_format}
+
+filters:
+{filter_yaml}
+
+mixers:
+{mixer_yaml}
+
+pipeline:
+{pipeline_yaml}
+"""
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+        logger.info(
+            "event=active_speaker_driver_domain_config_written "
+            "path=%s preset_id=%s way_count=%d outputs=%d program_channel=%s",
+            out_path,
+            preset.preset_id,
+            preset.way_count,
+            output_count,
+            program_channel,
         )
     return yaml
 
