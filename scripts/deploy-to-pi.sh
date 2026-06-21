@@ -169,6 +169,21 @@ EOF
     SUDO_INTERACTIVE=1
 }
 
+# Fetch origin at most once per run so origin/main is fresh for both the
+# deploy-direction reclassification and the behind-origin/main advisory,
+# without paying for a second network round-trip. Best-effort: a failure
+# (offline, or no `origin` remote) leaves whatever ref we already have,
+# and the callers degrade gracefully — the advisory skips, the direction
+# guard keeps its pre-fetch classification.
+ORIGIN_FETCHED=0
+ensure_origin_fetched() {
+    if [[ "$ORIGIN_FETCHED" == "1" ]]; then
+        return 0
+    fi
+    ORIGIN_FETCHED=1
+    git fetch --quiet origin >/dev/null 2>&1 || true
+}
+
 # Direction guard: never move the Pi's code BACKWARDS silently.
 # Multiple checkouts/worktrees (and multiple agent sessions) deploy to
 # the same Pi. On 2026-06-11 a stale parallel checkout deployed four
@@ -201,7 +216,7 @@ preflight_deploy_direction() {
     direction="$(classify_deploy_direction "$SHA_FULL" "$installed_sha")"
     if [[ "$direction" == "unknown_installed" ]]; then
         # The installed commit may simply be newer than our last fetch.
-        git fetch --quiet origin >/dev/null 2>&1 || true
+        ensure_origin_fetched
         direction="$(classify_deploy_direction "$SHA_FULL" "$installed_sha")"
     fi
     installed_short="${installed_sha:0:8}"
@@ -254,6 +269,29 @@ EOF
       is not in this checkout's history even after fetch; cannot compare
       (deployed from an un-pushed or foreign checkout?). Proceeding.
 EOF
+            ;;
+    esac
+
+    # Binary staleness advisory, separate from the blocking direction
+    # guard above: is the build the Pi runs current with origin/main, or
+    # behind it? The guard above only compares against THIS checkout; a
+    # checkout that is itself current can still be deploying onto a box
+    # whose installed build drifted far behind main. The signal is
+    # BINARY (behind vs current) — never a commit count — because the
+    # action is identical whether it is 1 or 120 commits behind: update
+    # it. Advisory only: it never blocks the deploy (we are usually about
+    # to update the box anyway) and degrades to a quiet skip when
+    # origin/main cannot be resolved (offline, no remote).
+    ensure_origin_fetched
+    case "$(classify_installed_vs_main "$installed_sha" origin/main)" in
+        behind)
+            echo "    ⚠ ${PI_HOST} is behind origin/main (installed ${installed_short}) — update it." >&2
+            ;;
+        unknown)
+            echo "    behind origin/main: skipped (origin/main unavailable to compare)"
+            ;;
+        current)
+            : # up to date — stay quiet
             ;;
     esac
     return 0

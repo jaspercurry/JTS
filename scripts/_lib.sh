@@ -255,3 +255,49 @@ classify_deploy_direction() {
     echo "diverged"
     return 0
 }
+
+# classify_installed_vs_main <installed_sha> [main_ref]
+#
+# Binary staleness check for the deploy preflight: is the commit the Pi
+# currently runs (from its build manifest) current relative to
+# origin/main, or behind it? Bench/test Pis silently drift far behind
+# main, and a stale build misses newer safety gates.
+#
+# The signal is intentionally BINARY (current vs behind), NEVER a commit
+# count: whether a box is 1 or 120 commits behind, the action is the same
+# — update it. "Current" means the installed commit IS origin/main's tip
+# OR a descendant of it (`git merge-base --is-ancestor <main_ref>
+# <installed>`); anything else is "behind".
+#
+# `-dirty` suffixes (build.txt records them for uncommitted-tree deploys)
+# are stripped before comparison. Echoes one token:
+#
+#   current   installed is origin/main's tip or a descendant — up to date
+#   behind    installed predates origin/main's tip — stale, advise update
+#   unknown   cannot compare — empty SHA, origin/main does not resolve (no
+#             remote / never fetched), or the installed commit is absent
+#             from this checkout. The caller skips the advisory rather
+#             than guessing; this never blocks a deploy.
+#
+# Always returns 0: this drives an advisory print, not a deploy abort.
+classify_installed_vs_main() {
+    local installed_sha="${1%-dirty}" main_ref="${2:-origin/main}"
+    if [[ -z "$installed_sha" ]]; then
+        echo "unknown"
+        return 0
+    fi
+    if ! git rev-parse --verify --quiet "${main_ref}^{commit}" >/dev/null 2>&1; then
+        echo "unknown"
+        return 0
+    fi
+    if ! git cat-file -e "${installed_sha}^{commit}" 2>/dev/null; then
+        echo "unknown"
+        return 0
+    fi
+    if git merge-base --is-ancestor "$main_ref" "$installed_sha" 2>/dev/null; then
+        echo "current"
+        return 0
+    fi
+    echo "behind"
+    return 0
+}

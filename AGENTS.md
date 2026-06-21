@@ -705,6 +705,22 @@ work matters, coordinate before redeploying. Helpers
 `tests/test_lib_deploy_direction.py`. `SKIP_INSTALL=1` (rsync-only)
 deploys skip the guard: they never touch the `/opt/jasper` runtime.
 
+**Behind-`origin/main` advisory:** the same preflight also prints a
+BINARY warning when the Pi's *installed* build is not current with
+`origin/main` — the installed commit is neither the tip nor a descendant
+of it. Bench/test Pis silently drift far behind `main`, and a stale build
+misses newer safety gates. The signal is intentionally binary (behind vs
+current), never a commit count: a Pi 1 or 120 commits behind needs the
+same action — update it. It is advisory only (it never blocks the
+deploy — you are usually about to update the box anyway) and degrades to
+a quiet skip when `origin/main` cannot be resolved (offline / no remote),
+so it is only as fresh as the last successful `git fetch`. Like the
+direction guard it shares the manifest read, so `SKIP_INSTALL=1` and
+interactive-sudo deploys skip it too. The helper
+(`classify_installed_vs_main`) lives in
+[`scripts/_lib.sh`](scripts/_lib.sh) and is pinned by
+`tests/test_lib_deploy_direction.py`.
+
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
 `SKIP_RESTART=1` (install but don't restart/reconcile),
 `JTS_ACCEPT_NEW_IDENTITY=1` (accept a changed deploy-target peer_id),
