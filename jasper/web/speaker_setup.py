@@ -2,7 +2,9 @@
 
 Single setting: the name shown in AirPlay, Spotify Connect, Bluetooth,
 and USB Audio pickers. This is deliberately separate from
-``JASPER_HOSTNAME``; the URL remains ``jts.local``.
+``JASPER_HOSTNAME``; renaming the speaker does not change the address
+(``JASPER_HOSTNAME``, e.g. ``jts.local``) used to reach it. The hint
+shows this speaker's actual configured hostname, not a hardcoded one.
 
 URL surface (after nginx strips /speaker/):
   GET  /         page render
@@ -197,6 +199,7 @@ def _index_html(
     *,
     current_name: str,
     current_room: str,
+    hostname: str,
     csrf_token: str,
     status_msg: str = "",
 ) -> bytes:
@@ -204,12 +207,13 @@ def _index_html(
     room_value = html.escape(current_room, quote=True)
     default_attr = html.escape(DEFAULT_SPEAKER_NAME, quote=True)
     default_text = html.escape(DEFAULT_SPEAKER_NAME)
+    host_text = html.escape(hostname)
     body = f"""
 {canonical_header("Speaker name")}
 <main class="page">
   {canonical_banner(status_msg)}
   <p class="form-hint">Change the name shown in AirPlay, Spotify Connect,
-  Bluetooth, and USB Audio. The address stays <code>jts.local</code>.</p>
+  Bluetooth, and USB Audio. The address stays <code>{host_text}</code>.</p>
 
   <form method="post" action="./save" id="speaker-name-form"
         data-default="{default_attr}">
@@ -256,6 +260,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_html_response(self, _index_html(
                     current_name=state.name,
                     current_room=state.room,
+                    hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
                     csrf_token=ctx["csrf_token"],
                     status_msg=ctx["flash"],
                 ))
