@@ -53,7 +53,6 @@ _ALLOWLIST = {
     "jasper/correction/replay_artifacts.py",
     "jasper/output_hardware.py",
     "jasper/output_topology.py",
-    "jasper/sound/camilla_yaml.py",
     "jasper/sound/profile.py",
 }
 

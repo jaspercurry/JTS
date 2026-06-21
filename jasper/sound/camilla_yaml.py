@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import re
-import tempfile
 from pathlib import Path
 
+from jasper.atomic_io import atomic_write_text
 from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -282,16 +281,17 @@ pipeline:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as f:
-        f.write(text)
-        tmp_name = f.name
-    os.replace(tmp_name, path)
+    # Sound configs (including the bonded-leader pipe config grouping_leader.yml)
+    # are read off-disk by the non-root jasper-control /state leader-pipe health
+    # check (active_leader_pipe_path scans the active config for the snapserver
+    # pipe sink). Keep them group-readable (0640, group jasper via the setgid
+    # configs dir) or that check goes blind under the WS1 non-root drop and the
+    # leader falsely reports the bond "degraded — stream is silent" while audio
+    # flows. Mirrors jasper.active_speaker.camilla_yaml._atomic_write_text (the
+    # active-speaker emitter already widens for the same non-root reason); this
+    # is the sibling writer that was missed. The canonical atomic_write_text also
+    # replaces the hand-rolled tempfile+rename (no wider-permission window).
+    atomic_write_text(path, text, mode=0o640)
 
 
 def sound_config_path(config_dir: str | Path) -> Path:
