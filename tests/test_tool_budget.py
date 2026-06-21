@@ -42,7 +42,7 @@ def _full_registry() -> ToolRegistry:
 
 def test_model_facing_descriptions_stay_under_budget():
     reg = _full_registry()
-    assert len(reg.tools) == 30, "full registry should hold all 30 shipped tools"
+    assert len(reg.tools) == 31, "full registry should hold all 31 shipped tools"
 
     total_chars = sum(len(t.model_facing_description()) for t in reg.tools.values())
     est_tokens = total_chars // 4

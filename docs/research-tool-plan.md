@@ -12,7 +12,7 @@ extension contracts, the decision tree) lives in
 > voice wiring, and Phase 3 etiquette/failure hardening are implemented;
 > Phase 4 remains roadmap. Grounded in a
 > 6-agent research pass (web-verified API capabilities + codebase reads)
-> on 2026-06-19. **Last updated: 2026-06-20.**
+> on 2026-06-19. **Last updated: 2026-06-21.**
 
 ---
 
@@ -46,7 +46,7 @@ reuses both. The genuinely new code is small.
 
 ---
 
-## 2. v1 product shape — "Research" that reads you a 30-second answer
+## 2. v1 product shape — "Research" that offers to read a 30-second answer
 
 The v1 flow, end to end:
 
@@ -60,15 +60,23 @@ The v1 flow, end to end:
    less** (~75 words / ~450 characters), so the result is already
    consolidated. A hard character cap on the stored result is the
    backstop.
-4. **Perk up + read it.** When the answer is ready (and the speaker is
-   idle — not mid-conversation, see §6 etiquette), JTS announces and
-   **reads the summary aloud**: "Hey — your research is ready." then the
-   ≤30 s answer.
+4. **Perk up + ask.** When the answer is ready (and the speaker is
+   idle — not mid-conversation, see §6 etiquette), JTS announces:
+   "Your research is ready — want me to read it now?"
+5. **Open a short confirmation window.** After the announcement TTS
+   drains and the speaker is silent, JTS opens a no-wake-word
+   `WakeLoop._begin_turn` window with no pre-roll. Silence for the
+   normal no-speech timeout dismisses without committing audio to the
+   model. A yes calls `read_research_result(..., decision="yes")` and
+   reads the ≤30 s answer. A no calls
+   `read_research_result(..., decision="no")` and speaks the dismiss
+   line. If mic mute, measurement, spend cap, or provider pause would
+   block the confirmation window, JTS reads immediately so the result is
+   never silently lost.
 
-**v1 reads the summary directly. No "do you want me to read it?"** —
-that yes/no confirmation needs reliable barge-in (so the user can
-interrupt), which is **future work** (§7). Until then, a short answer
-read once when the room is idle is the right default.
+This is **not barge-in**: the confirmation window opens only after the
+announcement has fully drained. A real wake during the window cancels
+the confirmation and wins, mirroring the normal wake/acquire shape.
 
 The full result text is **stored** (not just spoken) — the seed of the
 future interaction history log (§7), and the recovery path if the
@@ -110,12 +118,12 @@ no clean server-side equivalent — see §4.
 
 ### 3.3 Proactive announcement — reuse timer-fire
 
-The "your research is ready" speech reuses the timer-fire path verbatim:
+The "your research is ready" speech reuses the timer-fire path:
 a new `WakeLoop.announce_research_ready(job)` thin-wraps
 `_play_dynamic_text` (cue-bake → duck → `cues.speak_text`), modeled on
 `announce_timer`. The new bits are small (§6): the announcement is
 triggered by a **job completing** instead of a timer deadline, and it
-only marks a report read after dynamic TTS reports successful playback.
+only opens the confirmation window after dynamic TTS reports successful playback.
 Phase 3 upgrades the timer's "skip after 5 s in an active session" gate
 to hold-and-read-when-idle: results that finish during a voice session
 are kept in a small bounded wake-loop queue and drained only after the
@@ -198,21 +206,21 @@ Each phase is independently shippable and hardware-free-testable.
 | Decision | v1 default | Why |
 |---|---|---|
 | Execution mode | **OpenAI background mode + poll** | Survives WiFi blips/restart; no inbound exposure; answers the "polling vs webhook" question — polling, server-side job. (v1 answers are short, so latency is modest either way; the interface is identical to an awaited call, so it's a within-adapter choice.) |
-| Restart while a job is mid-flight | **Mark failed + say so** ("Sorry, I couldn't finish that research. Please ask me again.") | Re-dispatch risks double-charging; silent drop breaks the promise. **Companion rule:** a job that *finished* before the restart **survives and is read** — do NOT copy the timer's drop-if-expired logic for finished reports. This asymmetry has a scheduler test and a wake-loop announce test. |
+| Restart while a job is mid-flight | **Mark failed + say so** ("Sorry, I couldn't finish that research. Please ask me again.") | Re-dispatch risks double-charging; silent drop breaks the promise. **Companion rule:** a job that *finished* before the restart **survives and is offered for reading** — do NOT copy the timer's drop-if-expired logic for finished reports. This asymmetry has a scheduler test and a wake-loop announce test. |
 | Answer length | **≤30 s spoken (~75 words / ~450 chars)** via the prompt to the text model, plus a hard char cap on the stored result | The user asked for a consolidated read-out; instruct the model and guard with a cap. |
 | Spend | Reuse `SpendCap.allowed()` kickoff gate + record cost in `UsageStore` + **add the model's price row to `jasper/data/model_pricing.json`** (load-bearing — without it cost prices as $0 and the cap silently under-counts) | Global daily cap suffices for one paid tool; no per-job budgets, no "quote me a price" dialog (defeats fire-and-forget). |
 | Wizard / `/system/` display | **Defer** | The OpenAI key is present whenever OpenAI voice is. v2's Anthropic key is the natural trigger. If `/system/` ever shows the active text provider, use a fresh-file reader (like `provider_state.py`), never `os.environ`. |
 | Failure speech | Phase 3 plays the provider-agnostic `research_failed` cue for runtime failures and restart-interrupted jobs, rate-limits proactive failed-job audio to once per hour, and adds a not-configured prompt redirect to `/voice/`. | No-silent-failure: an out-of-band job has no wake event to hang a reactive cue on, so failures must speak. The cooldown prevents a burst of failures from nagging the household. |
+| Ready-result confirmation | **Ask after TTS drains, then open a ~5 s no-wake-word yes/no window.** | Avoids unsolicited read-outs while keeping the result available. Silence dismisses without a model commit; real wake cancels the window and wins. |
 
 ---
 
 ## 7. Future vision (build when the trigger fires)
 
-- **Barge-in confirmation.** When reliable barge-in lands, the
-  announcement becomes "Your research report is ready — want me to read
-  it now?" and the user answers yes/no (a normal wake-driven turn calling
-  a `read_research_result` tool). v1 reads directly because there's no
-  reliable interrupt yet.
+- **Full barge-in.** The current confirmation is deliberately
+  post-announcement, speaker-silent, and one-shot. A future version can
+  let the user interrupt the announcement itself once the robust
+  barge-in contract is ready for proactive TTS.
 - **Interaction history log.** A household-visible log of all speaker
   interactions — the natural home for research reports, **links, and
   longer material the speaker won't read aloud** ("the full list is in
@@ -234,14 +242,15 @@ Each phase is independently shippable and hardware-free-testable.
 
 **`research(query)` is a fast tool that hands the question to a
 pluggable text LLM running in a bounded background task (OpenAI
-background-mode + poll), then reads a ≤30 s answer back through the
-existing timer-fire announcement path — reusing ~80% of what already
+background-mode + poll), then announces readiness through the existing
+timer-fire announcement path and opens a short no-wake-word confirmation
+window before reading the ≤30 s answer — reusing ~80% of what already
 exists, adding a small `jasper/research/` provider registry, a scheduler,
 a store, usage accounting, and an announce method. Etiquette hardening,
 the `research_failed` cue, and the not-configured prompt redirect are
-implemented; Anthropic, yes/no barge-in confirmation, and an interaction
-history log are deferred, each behind its own trigger.**
+implemented; Anthropic, full barge-in, and an interaction history log
+are deferred, each behind its own trigger.**
 
 ---
 
-Last verified: 2026-06-20
+Last verified: 2026-06-21

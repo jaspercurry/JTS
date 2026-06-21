@@ -89,6 +89,7 @@ class ToolDeps:
     # home_assistant always confirms). The daemon passes a real one.
     untrusted_monitor: UntrustedContentMonitor | None = None
     spend_cap: SpendCap | None = None
+    research_delivery_recorder: Callable[..., None] | None = None
 
 
 @dataclass(frozen=True)
@@ -325,6 +326,7 @@ TOOL_PACKS: tuple[CapabilityPack, ...] = (
         lambda d: make_research_tools(
             d.research_scheduler,
             spend_cap=d.spend_cap,
+            record_delivery=d.research_delivery_recorder,
         ),
         gate=lambda d: d.research_scheduler is not None,
         category="Productivity",

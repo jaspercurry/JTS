@@ -99,6 +99,18 @@ def _synthetic_audio_profile(
     )
 
 
+def _research_confirmation_instruction(job: ResearchJob) -> str:
+    return (
+        "For this turn only, the user is answering yes or no about whether "
+        f"to read research result {job.id}. If the answer is yes or an "
+        f"affirmative, call read_research_result(job_id='{job.id}', "
+        "decision='yes'). If the answer is no or a negative, call "
+        f"read_research_result(job_id='{job.id}', decision='no'). Speak "
+        "only the tool's returned text field. Do not answer from memory, "
+        "summarize, ask a follow-up, or start new research."
+    )
+
+
 def _track_task(
     task: asyncio.Task,
     task_set: set[asyncio.Task],
@@ -301,6 +313,11 @@ PRE_ROLL_FRAMES = 7
 RESEARCH_PENDING_ANNOUNCE_CAP = 5
 RESEARCH_FAILURE_COOLDOWN_SEC = 60.0 * 60.0
 RESEARCH_FAILED_CUE_SLUG = "research_failed"
+RESEARCH_READY_CONFIRMATION_TEXT = (
+    "Your research is ready — want me to read it now?"
+)
+RESEARCH_CONFIRMATION_REFRACTORY_SEC = 0.35
+RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC = 20.0
 RESEARCH_EMPTY_RESULT_TEXT = (
     "Sorry, that research finished without a readable answer. "
     "Please ask me again."
@@ -782,6 +799,11 @@ class WakeLoop:
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
         self._last_research_failure_announce_at: float | None = None
         self._research_announce_lock = asyncio.Lock()
+        self._research_window_active: bool = False
+        self._research_window_job: ResearchJob | None = None
+        self._research_window_decided: bool = False
+        self._research_window_cancelled_by_wake: bool = False
+        self._research_window_opening_done: asyncio.Event | None = None
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
@@ -1125,6 +1147,11 @@ class WakeLoop:
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
         self._last_research_failure_announce_at = None
         self._research_announce_lock = asyncio.Lock()
+        self._research_window_active = False
+        self._research_window_job = None
+        self._research_window_decided = False
+        self._research_window_cancelled_by_wake = False
+        self._research_window_opening_done = None
         self._stop_event = asyncio.Event()
         self._volume_coordinator = _TestVolumeCoordinator()
         self._cues = None
@@ -1336,7 +1363,7 @@ class WakeLoop:
             return
         text: str | None
         if job.status == DONE and job.result:
-            text = f"Hey, your research is ready. {job.result}"
+            text = RESEARCH_READY_CONFIRMATION_TEXT
         elif job.status == DONE:
             logger.warning(
                 "research announce: done job missing result id=%s",
@@ -1396,9 +1423,130 @@ class WakeLoop:
             self._last_research_failure_announce_at = (
                 asyncio.get_event_loop().time()
             )
+        elif job.status == DONE and job.result:
+            self._mark_research_announced(job, read=False)
+            self._refractory_until = max(
+                self._refractory_until,
+                (
+                    asyncio.get_event_loop().time()
+                    + RESEARCH_CONFIRMATION_REFRACTORY_SEC
+                ),
+            )
+            await self._open_confirmation_window(job)
+            return
         self._mark_research_announced(
             job,
             read=job.status == DONE and bool(job.result),
+        )
+
+    async def _open_confirmation_window(self, job: ResearchJob) -> None:
+        reason = self._research_confirmation_guard_reason()
+        if reason is not None:
+            log_event(
+                logger,
+                "research.confirmation_window_skipped",
+                job_id=job.id,
+                reason=reason,
+            )
+            await self._read_research_job_immediately(job)
+            return
+
+        self._research_window_active = True
+        self._research_window_job = job
+        self._research_window_decided = False
+        self._research_window_cancelled_by_wake = False
+        opening_done = asyncio.Event()
+        self._research_window_opening_done = opening_done
+        try:
+            await self._begin_turn(
+                pre_roll=False,
+                text_context=_research_confirmation_instruction(job),
+            )
+            if self._research_window_cancelled_by_wake:
+                await self._end_turn("research_window_wake")
+                return
+            log_event(logger, "research.confirmation_window_opened", job_id=job.id)
+        except (
+            asyncio.TimeoutError,
+            ConnectionError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as e:
+            if self._research_window_cancelled_by_wake:
+                logger.info(
+                    "research confirmation window cancelled while opening "
+                    "(id=%s): %s",
+                    job.id,
+                    e,
+                )
+                await self._cleanup_after_failed_begin()
+                self._research_window_active = False
+                self._research_window_job = None
+                self._research_window_decided = False
+                self._research_window_cancelled_by_wake = False
+                return
+            logger.exception(
+                "research confirmation window failed; reading immediately "
+                "(id=%s): %s",
+                job.id,
+                e,
+            )
+            self._research_window_active = False
+            self._research_window_job = None
+            self._research_window_decided = False
+            self._research_window_cancelled_by_wake = False
+            await self._cleanup_after_failed_begin()
+            await self._read_research_job_immediately(job)
+        finally:
+            if self._research_window_opening_done is opening_done:
+                self._research_window_opening_done = None
+            opening_done.set()
+
+    def _research_confirmation_guard_reason(self) -> str | None:
+        if self._state is State.SESSION:
+            return "session_active"
+        if self._mic_muted:
+            return "mic_muted"
+        if self._measurement_active.is_set():
+            return "measurement_active"
+        if not self._spend_cap.allowed():
+            return "spend_cap_reached"
+        if self._connection.is_paused():
+            return "connection_paused"
+        return None
+
+    async def _read_research_job_immediately(self, job: ResearchJob) -> None:
+        text = (job.result or "").strip()
+        if not text:
+            text = RESEARCH_EMPTY_RESULT_TEXT
+        played = await self._play_dynamic_text(text)
+        if not played:
+            logger.warning(
+                "research immediate readback failed id=%s status=%s",
+                job.id,
+                job.status,
+            )
+            return
+        self._mark_research_announced(job, read=bool(job.result))
+
+    def record_research_delivery(
+        self,
+        job: ResearchJob,
+        assistant_text: str | None,
+        decision: str,
+    ) -> None:
+        if (
+            self._research_window_active
+            and self._research_window_job is not None
+            and self._research_window_job.id == job.id
+        ):
+            self._research_window_decided = True
+        self._record_conversation_turn(
+            job.query,
+            assistant_text,
+            data_json={"kind": "research", "job_id": job.id},
         )
 
     def _research_failure_cooldown_remaining(self) -> float:
@@ -1414,11 +1562,7 @@ class WakeLoop:
             if read:
                 self._research_scheduler.mark_read(job.id)
         if read:
-            self._record_conversation_turn(
-                job.query,
-                job.result,
-                data_json={"kind": "research", "job_id": job.id},
-            )
+            self.record_research_delivery(job, job.result, "yes")
 
     def _conversation_store_for_settings(
         self,
@@ -1691,6 +1835,10 @@ class WakeLoop:
                 if self._state is State.WAKE:
                     await self._handle_wake_frame(frame, leg="on")
                 else:
+                    if self._research_window_active:
+                        await self._handle_wake_frame(frame, leg="on")
+                        if self._acquiring or self._state is State.WAKE:
+                            continue
                     await self._handle_session_frame(frame)
         finally:
             # Cancel + join every leg loop before sweeping tracked side-work.
@@ -1747,6 +1895,8 @@ class WakeLoop:
             if self._acquiring:
                 continue
             if self._state is State.WAKE:
+                await self._handle_wake_frame(frame, leg=leg_name)
+            elif self._state is State.SESSION and self._research_window_active:
                 await self._handle_wake_frame(frame, leg=leg_name)
             elif self._state is State.SESSION and rt.shadow_vad is not None:
                 await self._shadow_vad_score_raw(frame)
@@ -2057,6 +2207,33 @@ class WakeLoop:
                 threshold=f"{firing_threshold:.2f}",
             )
             return
+
+        if self._research_window_active:
+            self._research_window_cancelled_by_wake = True
+            log_event(
+                logger,
+                "research.confirmation_window_cancelled",
+                reason="wake_detected",
+                job_id=(
+                    self._research_window_job.id
+                    if self._research_window_job is not None else ""
+                ),
+            )
+            opening_done = self._research_window_opening_done
+            if opening_done is not None:
+                try:
+                    await asyncio.wait_for(
+                        opening_done.wait(),
+                        timeout=RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "research confirmation window cancellation timed out "
+                        "while opening; dropping wake to avoid turn collision"
+                    )
+                    return
+            elif self._state is State.SESSION:
+                await self._end_turn("research_window_wake")
 
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()
@@ -2984,7 +3161,12 @@ class WakeLoop:
         except Exception:  # noqa: BLE001
             pass
 
-    async def _begin_turn(self) -> None:
+    async def _begin_turn(
+        self,
+        *,
+        pre_roll: bool = True,
+        text_context: str | None = None,
+    ) -> None:
         import time as _time
         # Anchor on the actual wake-fire moment (set in
         # _handle_wake_frame) so sched_lag captures the gap between
@@ -3032,6 +3214,14 @@ class WakeLoop:
         )
         self._turn = await self._connection.acquire_turn()
         t_after_acquire = _time.monotonic()
+
+        if text_context:
+            send_text_context = getattr(self._turn, "send_text_context", None)
+            if not callable(send_text_context):
+                raise RuntimeError("live turn cannot accept text context")
+            await send_text_context(text_context)
+            if self._turn.turn_lost():
+                raise RuntimeError("live turn lost while sending text context")
 
         self._server_vad_this_turn = False
         if (
@@ -3083,7 +3273,7 @@ class WakeLoop:
         # the user's first phoneme (which preceded the wake firing)
         # reaches the model. The frame that fired the wake itself is
         # the most-recently-appended entry and is included.
-        pre_roll_frames = list(self._pre_roll)
+        pre_roll_frames = list(self._pre_roll) if pre_roll else []
         for f in pre_roll_frames:
             try:
                 await self._turn.send_audio(f.tobytes())
@@ -3179,6 +3369,11 @@ class WakeLoop:
             drain_wait_sec = max(
                 0.0, time.monotonic() - self._turn.last_activity_at(),
             )
+        research_window_job = (
+            self._research_window_job if self._research_window_active else None
+        )
+        research_window_decided = self._research_window_decided
+        research_window_cancelled_by_wake = self._research_window_cancelled_by_wake
         # Wake-event telemetry: record the terminal state of the
         # in-flight event. `_user_speech_seen` tells us whether the
         # session got real user input — if not, the wake was likely
@@ -3248,10 +3443,11 @@ class WakeLoop:
             logger.warning("teardown end_segment failed: %s", e)
 
         if self._turn is not None:
-            try:
-                await asyncio.wait_for(self._turn.end_input(), timeout=2.0)
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug("end_input ignored: %s", e)
+            if self._input_ended or self._user_speech_seen:
+                try:
+                    await asyncio.wait_for(self._turn.end_input(), timeout=2.0)
+                except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+                    logger.debug("end_input ignored: %s", e)
             try:
                 await self._turn.release()
             except Exception as e:  # noqa: BLE001
@@ -3274,24 +3470,36 @@ class WakeLoop:
                 tokens["output_tokens"],
                 usage=breakdown,
             )
-            self._record_conversation_turn(
-                _optional_turn_text(self._turn, "user_transcript"),
-                _optional_turn_text(self._turn, "assistant_transcript"),
-            )
+            if research_window_job is None:
+                self._record_conversation_turn(
+                    _optional_turn_text(self._turn, "user_transcript"),
+                    _optional_turn_text(self._turn, "assistant_transcript"),
+                )
             # Per-turn no-audio detection. Splits into two distinct
             # phenomena, gated on whether the wake loop explicitly ended
             # the user's input (silence detector / hard cap / manual
             # end). The old combined "SILENT FAILURE" label conflated
             # both, which masked the more common case: idle watchdog
             # times out before the silence detector ever trips, and the
-            # only `commit + response.create` is the belated one issued
-            # by _end_turn itself — by then the turn is being released,
-            # so any audio chunks arrive too late and are dropped (see
-            # openai_session._dispatch_event's audio.delta branch and
-            # the orphan-response warning in _handle_response_done).
+            # teardown now releases no-speech turns without committing;
+            # if bytes were sent but `_input_ended` never flipped, the
+            # model never got a clean end-of-utterance signal before the
+            # watchdog closed the turn.
             bytes_sent = self._turn.bytes_sent()
             chunks_received = self._turn.chunks_received()
-            if bytes_sent > 0 and chunks_received == 0 and not self._turn.turn_lost():
+            expected_research_silence_dismiss = (
+                research_window_job is not None
+                and not research_window_decided
+                and not research_window_cancelled_by_wake
+                and not self._user_speech_seen
+                and not self._input_ended
+            )
+            if (
+                bytes_sent > 0
+                and chunks_received == 0
+                and not self._turn.turn_lost()
+                and not expected_research_silence_dismiss
+            ):
                 model = _active_model(self._cfg)
                 if self._input_ended:
                     logger.warning(
@@ -3310,13 +3518,10 @@ class WakeLoop:
                         "RECORDING TIMEOUT: sent %d bytes of audio to %s "
                         "but the silence detector never tripped — idle "
                         "watchdog ended the turn before the wake loop "
-                        "asked for a response. _end_turn issued a "
-                        "belated commit, so any %s output arrives after "
-                        "turn release and is dropped. Common cause: "
-                        "low-confidence wake firing on background audio, "
-                        "or user speaking continuously past the idle "
-                        "window without a pause.",
-                        bytes_sent, model, model,
+                        "asked for a response. Common cause: low-confidence "
+                        "wake firing on background audio, or user speaking "
+                        "continuously past the idle window without a pause.",
+                        bytes_sent, model,
                     )
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
@@ -3352,6 +3557,22 @@ class WakeLoop:
         self._turn = None
         self._session_id = None
         self._state = State.WAKE
+        if research_window_job is not None:
+            self._research_window_active = False
+            self._research_window_job = None
+            self._research_window_decided = False
+            self._research_window_cancelled_by_wake = False
+            if (
+                not research_window_decided
+                and not research_window_cancelled_by_wake
+            ):
+                self._mark_research_announced(research_window_job, read=False)
+                log_event(
+                    logger,
+                    "research.confirmation_window_dismissed",
+                    reason="silence",
+                    job_id=research_window_job.id,
+                )
         # No detector.reset() here. The detector was already reset in
         # _handle_wake_frame the moment the wake fired (line ~622),
         # and it has not been fed any frames since (state was SESSION

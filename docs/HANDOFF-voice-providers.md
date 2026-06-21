@@ -92,6 +92,12 @@ through the daemon-held `ConversationStore` only when the opt-in capture gate is
 enabled. Providers without native transcript support can omit the capability and
 still satisfy `LiveTurn`; the `/chat/` page renders the missing side honestly.
 
+Daemon-initiated confirmation windows use the provider-neutral
+`LiveTurn.send_text_context()` hook. It adds a text-only routing instruction to
+an already-acquired turn without asking the provider to generate yet, so the
+normal user-audio VAD path still decides whether to commit input. The research
+ready yes/no window is the first caller.
+
 The single switch point is `_make_connection(cfg)` in
 [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py). Provider session
 preprocessing is resolved through
@@ -404,8 +410,9 @@ should be:
 6. New branch in `_make_connection(cfg)` in `jasper/voice/daemon_main.py`.
 7. New contract test in `tests/test_<provider>_session.py` modeled on
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
-   reconnect → manual-VAD payload shape → tool round advances the
-   turn's idle anchor (see "Idle anchor + tool rounds" below).
+   reconnect → manual-VAD payload shape → text-context injection does
+   not request generation → tool round advances the turn's idle anchor
+   (see "Idle anchor + tool rounds" below).
 8. No provider-list edit in `scripts/switch-voice-provider.sh`: it
    reads provider IDs, key env vars, and model env vars from the
    installed runtime catalog on the Pi.
