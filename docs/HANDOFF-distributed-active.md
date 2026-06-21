@@ -136,10 +136,12 @@ Two enabling facts make this cheap:
   [camilla_yaml.py](../jasper/active_speaker/camilla_yaml.py)); the
   compiler `build_baseline_profile_candidate`
   ([baseline_profile.py](../jasper/active_speaker/baseline_profile.py))
-  **now threads it** (Slice 1, landed) — as do the sibling emit entry
-  points `apply_baseline_profile` / `recompose_baseline_yaml`, so the whole
-  compile/apply/re-emit seam takes a capture device. Default
-  (`plug:jasper_capture`) unchanged, golden byte-identical.
+  **now threads it** (Slice 1, landed) — as does `apply_baseline_profile`, so
+  the compile/apply seam takes a capture device. (`recompose_baseline_yaml`,
+  the program-domain Layer-C EQ re-emit, deliberately does **not** — it only
+  runs on the fan-in-fed program domain, so it always uses the default
+  capture; see its docstring.) Default (`plug:jasper_capture`) unchanged,
+  golden byte-identical.
 - The playback device is already role/topology-resolved
   (`resolve_active_playback_device`).
 
@@ -427,11 +429,12 @@ slices land safest-first; each is independently mergeable.
 Slices 1–2 are hardware-free and independently shippable; 3 is where
 on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
 
-**Landed so far:** **Slice 1** — the compile/apply/re-emit seam
-(`build_baseline_profile_candidate`, `apply_baseline_profile`,
-`recompose_baseline_yaml`) threads `capture_device` into
-`emit_active_speaker_baseline_config` (default `plug:jasper_capture` keeps the
-solo baseline byte-identical), and `OutputTopology` carries a pure-data
+**Landed so far:** **Slice 1** — the compile/apply seam
+(`build_baseline_profile_candidate`, `apply_baseline_profile`) threads
+`capture_device` into `emit_active_speaker_baseline_config` (default
+`plug:jasper_capture` keeps the solo baseline byte-identical;
+`recompose_baseline_yaml` deliberately keeps the default — program-domain EQ
+always captures from fan-in), and `OutputTopology` carries a pure-data
 `pairing_intent` (`solo | will_be_follower | has_follower`, absent == `solo`).
 Invariants 1, 2, and 7 are pinned by
 [`tests/test_active_speaker_baseline_profile.py`](../tests/test_active_speaker_baseline_profile.py)

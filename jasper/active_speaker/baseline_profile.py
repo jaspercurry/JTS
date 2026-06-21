@@ -84,9 +84,25 @@ def _source_payload(
         if isinstance(measurements.get("summary"), Mapping)
         else {}
     )
+    # The baseline config cache invalidates whenever this source fingerprint
+    # changes, so the topology fingerprint must cover ONLY fields that determine
+    # the emitted CamillaDSP config. `pairing_intent` is commission-time design
+    # intent that, by contract, drives no config (the multiroom reconciler
+    # resolves the runtime role from grouping.env, not from this field — see
+    # output_topology.py and docs/HANDOFF-distributed-active.md gap 1), so it is
+    # excluded: toggling it must not force a needless baseline recompile, and
+    # excluding it keeps the fingerprint stable across the field's introduction.
+    # The "pairing field never changes the cache" contract is pinned by
+    # test_pairing_intent_change_does_not_invalidate_baseline_cache, which fails
+    # if this key is ever renamed without updating the exclusion here.
+    topology_config_view = {
+        key: value
+        for key, value in topology.to_dict().items()
+        if key != "pairing_intent"
+    }
     source = {
         "topology_id": topology.topology_id,
-        "topology_fingerprint": _fingerprint(topology.to_dict()),
+        "topology_fingerprint": _fingerprint(topology_config_view),
         "design_draft_updated_at": design_draft.get("updated_at"),
         "crossover_preview_updated_at": crossover_preview.get("updated_at"),
         "crossover_preview_fingerprint": (
@@ -757,7 +773,6 @@ def recompose_baseline_yaml(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     playback_device: str | None = None,
-    capture_device: str = DEFAULT_CAPTURE_DEVICE,
     out_path: str | Path | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the active-speaker baseline YAML for the current accepted
@@ -779,6 +794,16 @@ def recompose_baseline_yaml(
     ``output_trim_db`` is the household's manual headroom + loudness-match
     attenuation; the emitter folds it into ``active_baseline_headroom`` so the
     active EQ apply honours it exactly like the stereo path.
+
+    Unlike :func:`build_baseline_profile_candidate` /
+    :func:`apply_baseline_profile`, this re-emit takes no ``capture_device``: it
+    folds program-domain (Layer C) preference EQ, which only ever runs on the
+    fan-in-fed program domain — a solo speaker's single graph and a pair
+    leader's bake instance (``camilla#1``). A wireless follower (and a leader's
+    own-driver instance, ``camilla#2``) is Layer-A-only and never recomposes
+    preference EQ, so this seam always captures from the default fan-in tap. The
+    role-varying capture (the round-trip loopback) belongs to the driver-domain
+    emit on build/apply, where ``capture_device`` lives.
 
     **Gate scope (intentionally a subset of the candidate builder).** This only
     re-checks what it needs to EMIT a structurally-valid baseline — playback
@@ -836,7 +861,6 @@ def recompose_baseline_yaml(
         preset,
         playback_device=resolved_device,
         corrections=corrections,
-        capture_device=capture_device,
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         out_path=out_path,
