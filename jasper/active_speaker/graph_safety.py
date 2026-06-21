@@ -29,12 +29,14 @@ legitimately different ways and that difference must be preserved —
    that the text parser cannot read. The caller ``yaml.safe_load``s the
    read-back and hands the dict here.
 
-3. ``view_from_yaml_text`` — for ``runtime_contract``'s candidate/unknown graph:
-   ``yaml.safe_load`` of an emitted active config, accepting only the
-   ``channels: [..]`` list form (no scalar ``channel: N`` sugar). It collapses
-   the two parse-error states ``runtime_contract`` reports separately
-   (``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object``) into
-   ``parsed_ok=False``, so that caller re-derives the precise code.
+3. ``view_from_yaml_dict`` — for ``runtime_contract``'s candidate/unknown graph:
+   a ``yaml.safe_load``ed emitted active config, accepting only the
+   ``channels: [..]`` list form (no scalar ``channel: N`` sugar). Dict-taking
+   like ``view_from_camilla_dict`` — ``runtime_contract`` ``yaml.safe_load``s the
+   text itself (it needs the raw dict for its two distinct parse-error codes,
+   ``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object``, which this view
+   collapses to ``parsed_ok=False``) and hands the dict here, so the text is
+   parsed once.
 
 All normalise to one :class:`GraphView`; the predicates run on the view, so the
 logic is shared while each source keeps its own parsing semantics.
@@ -42,17 +44,24 @@ logic is shared while each source keeps its own parsing semantics.
 Everything here is pure and **fail-closed**: an unparseable graph, a missing
 filter, or a mismatched wiring yields ``parsed_ok=False`` / ``False`` so a
 caller can never read "safe" out of a graph it could not prove safe. The
-module is a leaf (stdlib + ``yaml`` only); active-speaker constants and filter
-names (``STARTUP_MUTE_GAIN_DB``, ``output_commission_mute_name``, …) are passed
-in by callers so the primitives stay reusable.
+module is a leaf (stdlib only — callers own the ``yaml.safe_load``);
+active-speaker constants and filter names (``STARTUP_MUTE_GAIN_DB``,
+``output_commission_mute_name``, …) are passed in by callers so the primitives
+stay reusable.
+
+As the leaf, this module also OWNS the shared scalar matchers
+(``float_matches`` / ``float_value`` / ``truthy_bool``) the predicates here run
+on. They are the single home: this module's predicates and the raw-dict
+verifiers (``runtime_contract``'s baseline path) both import them from here, so
+no verifier re-implements them. The sibling ``graph_evidence`` owns the
+complementary, emitter-coupled half (filter names + raw-dict accessors); the two
+modules are independent.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-
-import yaml
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
@@ -110,7 +119,11 @@ def _top_level_sections(text: str) -> dict[str, list[str]]:
 
 
 # --------------------------------------------------------------------------- #
-# Scalar matchers (identical across all prior paths).
+# Scalar matchers — the shared scalar vocabulary, owned HERE (the leaf).
+#
+# The single home for the active-speaker scalar matchers: the predicates below
+# need them, and the raw-dict verifiers (``runtime_contract``'s baseline path)
+# import them from here too. Do not re-implement them in a verifier.
 # --------------------------------------------------------------------------- #
 
 
@@ -126,11 +139,7 @@ def float_value(value: Any) -> float | None:
     """``value`` as a float, or ``None`` if it does not parse.
 
     For threshold predicates (``freq > 0``, ``clip <= ceiling``) where a missing
-    or unparseable value must fail the check rather than raise. Mirrors
-    ``graph_evidence.float_value`` / ``truthy_bool`` — the two modules' shared
-    scalar vocabulary is slated to reconcile, but ``graph_safety`` stays a leaf
-    (stdlib + ``yaml`` only), so the helpers are duplicated here rather than
-    importing ``graph_evidence`` (which pulls in the emitter's filter names)."""
+    or unparseable value must fail the check rather than raise."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -238,30 +247,30 @@ def _running_step_channels(step: dict[str, Any]) -> frozenset[int]:
     return frozenset()
 
 
-def view_from_yaml_text(text: str) -> GraphView:
-    """Adapter for a candidate/unknown graph parsed via ``yaml.safe_load``.
+def view_from_yaml_dict(config: Any) -> GraphView:
+    """Adapter for ``runtime_contract``'s candidate/unknown graph (already parsed).
 
     The dialect ``runtime_contract`` verifies: a JTS-emitted active-speaker
-    candidate config, re-parsed from its text with ``yaml.safe_load`` (so inline
-    ``parameters: {..}`` / ``channels: [..]`` arrive as real typed values, unlike
-    the line/indent ``view_from_emitted_text`` parser). It accepts ONLY the
-    ``channels: [..]`` list form — NOT CamillaDSP's scalar ``channel: N``
-    single-channel sugar that ``view_from_camilla_dict`` reads. The sugar is a
-    read-back artifact never present in a candidate graph, so a list-only reader
-    keeps candidate verification from silently accepting it (and matches the
-    deleted ``runtime_contract._pipeline_contains``, which was list-only too).
+    candidate config, ``yaml.safe_load``ed (so inline ``parameters: {..}`` /
+    ``channels: [..]`` arrive as real typed values, unlike the line/indent
+    ``view_from_emitted_text`` parser). It accepts ONLY the ``channels: [..]``
+    list form — NOT CamillaDSP's scalar ``channel: N`` single-channel sugar that
+    ``view_from_camilla_dict`` reads. The sugar is a read-back artifact never
+    present in a candidate graph, so a list-only reader keeps candidate
+    verification from silently accepting it (and matches the deleted
+    ``runtime_contract._pipeline_contains``, which was list-only too).
 
-    Fails closed: a YAML error or a non-mapping document yields
-    ``parsed_ok=False``. The two *distinct* parse-error codes ``runtime_contract``
-    reports — ``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object`` — are a
-    caller concern this collapses; the caller parses once more to distinguish
-    them. ``bool`` channels and ``None`` names are dropped, uniform with the
-    other adapters (the protective direction — a wiring check only gets stricter).
+    Dict-taking like ``view_from_camilla_dict`` — the caller owns the
+    ``yaml.safe_load``. ``runtime_contract`` already parses the candidate text
+    once (it needs the raw dict for its two distinct parse-error codes,
+    ``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object``, and for the
+    baseline path's raw-dict filter accessors) and hands that dict here rather
+    than re-parsing.
+
+    Fails closed: a non-mapping object yields ``parsed_ok=False``. ``bool``
+    channels and ``None`` names are dropped, uniform with the other adapters (the
+    protective direction — a wiring check only gets stricter).
     """
-    try:
-        config = yaml.safe_load(text)
-    except yaml.YAMLError:
-        return GraphView(parsed_ok=False)
     if not isinstance(config, dict):
         return GraphView(parsed_ok=False)
     steps: list[GraphPipelineStep] = []

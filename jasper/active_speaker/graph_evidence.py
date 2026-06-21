@@ -16,10 +16,27 @@ single name change in the emitter could then silently desync a verifier — it
 would look for a filter that no longer exists and fail closed, spuriously
 blocking commissioning.
 
-This module is the verification side's single import point. It re-exposes the
-emitter's canonical filter names (``camilla_yaml`` owns the spellings — see the
-public aliases there) and owns the shared predicates/accessors. The graph shape
-both consume is a parsed CamillaDSP config mapping::
+Ownership boundary (this module vs the sibling ``graph_safety`` leaf)
+--------------------------------------------------------------------
+This module owns the verifier's two emitter-coupled vocabularies:
+
+* **Canonical filter names** — re-exposed from the emitter (``camilla_yaml``
+  owns the spellings; see the public aliases there). Importing ``camilla_yaml``
+  is exactly why this module is NOT a leaf.
+* **Raw-dict accessors** (``filter_spec`` / ``filter_params`` / ``filter_type``)
+  that pull one field straight out of an already-parsed CamillaDSP config
+  mapping — for ``runtime_contract``'s baseline path, which works on the raw
+  ``payload`` rather than a normalized view.
+
+The complementary half — the normalized ``GraphView``, the parse adapters, the
+fail-closed wiring predicates (``output_hard_muted_and_wired``,
+``tweeter_guard_present``, …), and the shared scalar matchers (``float_matches``
+/ ``float_value`` / ``truthy_bool``) — lives in the sibling ``graph_safety``
+leaf; import those from there. The two modules are independent:
+``graph_safety`` has no emitter dependency and stays promotable to a top-level
+shared module.
+
+The raw config mapping these accessors read::
 
     {"filters": {name: {"type": ..., "parameters": {...}}},
      "pipeline": [{"type": "Filter", "channels": [...]|"channel": N,
@@ -49,13 +66,10 @@ __all__ = [
     "driver_mute_name",
     "output_commission_mute_name",
     "protective_tweeter_hp_name",
-    # Shared accessors / predicates.
+    # Raw-dict accessors (owned here).
     "filter_spec",
     "filter_params",
     "filter_type",
-    "float_matches",
-    "float_value",
-    "truthy_bool",
 ]
 
 
@@ -76,24 +90,3 @@ def filter_type(payload: dict[str, Any], name: str) -> str | None:
     """The ``filters[name].type`` as a string, or ``None``."""
     raw = filter_spec(payload, name).get("type")
     return str(raw) if raw is not None else None
-
-
-def float_matches(value: Any, expected: float) -> bool:
-    """True when ``value`` parses to a float within 1e-4 of ``expected``."""
-    try:
-        return abs(float(value) - expected) < 0.0001
-    except (TypeError, ValueError):
-        return False
-
-
-def float_value(value: Any) -> float | None:
-    """``value`` as a float, or ``None`` if it does not parse."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def truthy_bool(value: Any) -> bool:
-    """CamillaDSP YAML booleans read back as ``True`` or the string ``"true"``."""
-    return value is True or (isinstance(value, str) and value.lower() == "true")
