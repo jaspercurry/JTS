@@ -1978,6 +1978,22 @@ def save_output_topology(
         ) as handle:
             tmp_name = handle.name
             handle.write(data)
+        # Publish under the state directory's group (jasper) before the rename,
+        # mirroring atomic_io's group_from_parent. /var/lib/jasper is group
+        # jasper but NOT setgid, so a root-run write (the
+        # jasper-output-topology-reset recovery CLI runs as root) would
+        # otherwise land root:root 0640 — unreadable by the non-root
+        # jasper-group management daemons that read this file, leaving
+        # jasper-control/-web silently falling back to a detected draft.
+        # Best-effort: a chgrp failure must never lose the topology write.
+        try:
+            os.chown(tmp_name, -1, target.parent.stat().st_gid)
+        except OSError as exc:
+            logger.warning(
+                "event=output_topology.group_publish_failed path=%s error=%s",
+                tmp_name,
+                exc,
+            )
         os.chmod(tmp_name, 0o640)
         os.replace(tmp_name, target)
     except Exception:  # noqa: BLE001

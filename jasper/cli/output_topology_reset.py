@@ -189,7 +189,7 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
         print(f"  reconcile: skipped (--no-reconcile); start "
               f"{RECONCILE_UNIT} to converge the running graph")
     elif reconcile.get("ok"):
-        print(f"  reconcile: kicked {RECONCILE_UNIT} (running graph converged)")
+        print(f"  reconcile: kicked {RECONCILE_UNIT}")
     else:
         print(
             f"  reconcile: FAILED to kick {RECONCILE_UNIT}: "

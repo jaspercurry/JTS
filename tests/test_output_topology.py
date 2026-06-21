@@ -884,6 +884,67 @@ def test_save_output_topology_cleans_temp_file_on_replace_failure(
     assert list(tmp_path.glob(".output_topology.json.*.tmp")) == []
 
 
+def test_save_output_topology_publishes_parent_group(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # /var/lib/jasper is group jasper but not setgid, so a root-run write must
+    # chgrp the file to the directory's group; otherwise it lands root:root and
+    # the non-root jasper-group management daemons can't read it. Pin the
+    # contract: the tempfile is chowned to the parent dir's gid before rename.
+    path = tmp_path / "output_topology.json"
+    topology = _topology(groups=[
+        {
+            "id": "mono",
+            "label": "Mono speaker",
+            "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 2}],
+        }
+    ])
+    chown_calls: list[tuple[int, int]] = []
+    real_chown = __import__("os").chown
+
+    def record_chown(target, uid, gid, *args, **kwargs):
+        chown_calls.append((uid, gid))
+        return real_chown(target, uid, gid, *args, **kwargs)
+
+    monkeypatch.setattr("jasper.output_topology.os.chown", record_chown)
+
+    save_output_topology(topology, path)
+
+    parent_gid = path.parent.stat().st_gid
+    assert chown_calls == [(-1, parent_gid)]
+    assert json.loads(path.read_text(encoding="utf-8"))["kind"] == OUTPUT_TOPOLOGY_KIND
+
+
+def test_save_output_topology_survives_group_publish_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # A chgrp failure (caller not a member of the dir's group) must never lose
+    # the topology write — best-effort, the file is still persisted.
+    path = tmp_path / "output_topology.json"
+    topology = _topology(groups=[
+        {
+            "id": "mono",
+            "label": "Mono speaker",
+            "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }
+    ])
+
+    def fail_chown(*args, **kwargs):
+        raise PermissionError("simulated chgrp denial")
+
+    monkeypatch.setattr("jasper.output_topology.os.chown", fail_chown)
+
+    save_output_topology(topology, path)
+
+    assert load_output_topology(path).speaker_groups[0].id == "mono"
+
+
 def test_load_output_topology_fails_soft_to_detected_draft(tmp_path: Path) -> None:
     path = tmp_path / "output_topology.json"
     path.write_text("{not json", encoding="utf-8")
