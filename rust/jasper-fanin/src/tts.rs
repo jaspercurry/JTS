@@ -25,10 +25,15 @@ use crate::loudness::{
     AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, SegmentKind, MAX_TTS_GAIN_DB,
 };
 use crate::mixer::CHANNELS;
+use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
+/// Fan-in's assistant wire protocol is contractually 48 kHz stereo
+/// (`OutputdTtsPlayout` rejects any other rate) and matches the snd-aloop
+/// mix rate, so the playout ledger's frames->ms math is fixed at 48 kHz.
+const TTS_SAMPLE_RATE: u32 = 48_000;
 // Keep this above voice's `JASPER_IDLE_TIMEOUT_SEC` default (20 s):
 // fan-in only sees the one-shot duck IPC, not the provider turn state, so
 // a shorter TTL could un-duck program audio during a legitimate quiet turn.
@@ -53,6 +58,9 @@ pub struct FlushSummary {
     requests: usize,
     pending_frames: u64,
     flushed_frames: u64,
+    segments: usize,
+    max_audio_played_ms: u64,
+    events_json: String,
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +338,9 @@ pub struct TtsMixer {
     content_meter_paused: bool,
     active_segment_gain_db: Option<f32>,
     loudness: AssistantLoudness,
+    /// Per-segment playout accounting behind the FLUSH_SYNC ack. Drained at
+    /// the mix-commit point (see [`crate::playout`]).
+    ledger: PlayoutLedger,
 }
 
 impl TtsMixer {
@@ -349,6 +360,7 @@ impl TtsMixer {
             content_meter_paused: false,
             active_segment_gain_db: None,
             loudness: AssistantLoudness::new(input.assistant_loudness),
+            ledger: PlayoutLedger::new(TTS_SAMPLE_RATE),
         }
     }
 
@@ -375,12 +387,20 @@ impl TtsMixer {
     }
 
     pub fn mix_period(&mut self, sum: &mut [i32]) {
+        let queued_samples_before = self.queue.len();
         for sample_sum in sum.iter_mut() {
             let Some(sample) = self.queue.pop_front() else {
                 break;
             };
             *sample_sum = sample_sum.saturating_add(sample as i32);
         }
+        // Frames popped into the program this period are committed downstream
+        // toward the DAC; advance the playout watermark by them. This pop is
+        // paced by the blocking snd-aloop write, so the count is DAC-rate-
+        // paced, not a queued-frame estimate (see [`crate::playout`]).
+        let popped_samples = queued_samples_before - self.queue.len();
+        self.ledger
+            .advance_played((popped_samples / (CHANNELS as usize)) as u64);
         self.metrics
             .mark_pending((self.queue.len() / (CHANNELS as usize)) as u64);
     }
@@ -436,6 +456,9 @@ impl TtsMixer {
                     for sample in samples {
                         self.queue.push_back(apply_gain_i16(sample, gain));
                     }
+                    // Only accounted after the budget check above passes, so
+                    // the ledger total tracks exactly what is on the queue.
+                    self.ledger.note_queued(incoming_frames);
                     if self.program_duck_active {
                         self.refresh_program_duck();
                     }
@@ -443,6 +466,11 @@ impl TtsMixer {
                 TtsCommand::Flush | TtsCommand::FlushSync => {
                     let frames = self.clear_queue();
                     self.active_segment_gain_db = None;
+                    // Defensive: flushes are normally intercepted before the
+                    // command channel (see `handle_tts_client`) and handled by
+                    // `drain_flushes`. If one ever reaches here, keep the
+                    // ledger consistent with the now-cleared queue.
+                    self.ledger.flush();
                     self.metrics.mark_flush(1, frames);
                     info!(
                         "event=fanin.tts_flush requests=1 pending_frames={} flushed_frames={}",
@@ -494,11 +522,17 @@ impl TtsMixer {
                         self.loudness.last_decision(),
                     );
                 }
-                TtsCommand::SegmentStart { kind, profile, .. } => {
+                TtsCommand::SegmentStart {
+                    kind,
+                    provider_item_id,
+                    profile,
+                } => {
+                    self.ledger.start_segment(provider_item_id, kind);
                     self.decide_segment_gain(kind, profile);
                 }
                 TtsCommand::SegmentEnd => {
                     self.active_segment_gain_db = None;
+                    self.ledger.end_segment();
                 }
                 TtsCommand::Close => {}
             }
@@ -561,19 +595,25 @@ impl TtsMixer {
         }
         self.active_epoch = newest_epoch;
         let pending = self.pending_frames();
+        // Snapshot the ledger BEFORE clearing the queue: the events carry the
+        // per-segment played/flushed split and provider item ids barge-in
+        // truncation needs. `flushed` (cleared-queue frames) equals the
+        // per-segment flushed total in normal operation.
+        let events = self.ledger.flush();
         let flushed = self.clear_queue();
+        debug_assert_eq!(
+            flushed,
+            events.iter().map(|e| e.flushed_frames).sum::<u64>(),
+            "ledger flushed-frame total must equal the cleared audio queue depth"
+        );
         self.active_segment_gain_db = None;
         self.metrics.mark_flush(requests, flushed);
         self.metrics.mark_pending(0);
+        let summary = FlushSummary::from_parts(requests, pending, flushed, &events);
         info!(
-            "event=fanin.tts_flush requests={} pending_frames={} flushed_frames={}",
-            requests, pending, flushed
+            "event=fanin.tts_flush requests={} pending_frames={} flushed_frames={} segments={} max_audio_played_ms={}",
+            requests, pending, flushed, summary.segments, summary.max_audio_played_ms
         );
-        let summary = FlushSummary {
-            requests,
-            pending_frames: pending,
-            flushed_frames: flushed,
-        };
         for ack in ack_txs {
             let _ = ack.send(summary.clone());
         }
@@ -775,12 +815,71 @@ fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
 }
 
 impl FlushSummary {
+    /// Build the ack from the ledger's flush events. `flushed_frames` is the
+    /// mixer's cleared-queue count (kept for backward-compatible metrics); in
+    /// normal operation it equals the per-segment flushed total, asserted in
+    /// debug builds at the call site.
+    fn from_parts(
+        requests: usize,
+        pending_frames: u64,
+        flushed_frames: u64,
+        events: &[PlayoutEvent],
+    ) -> Self {
+        let segments = events.len();
+        let max_audio_played_ms = events.iter().map(|e| e.audio_played_ms).max().unwrap_or(0);
+        Self {
+            requests,
+            pending_frames,
+            flushed_frames,
+            segments,
+            max_audio_played_ms,
+            events_json: render_events_json(events),
+        }
+    }
+
     fn to_json_line(&self) -> String {
         format!(
-            "{{\"ok\":true,\"requests\":{},\"pending_frames\":{},\"segments\":0,\"flushed_frames\":{},\"max_audio_played_ms\":0,\"events\":[]}}\n",
-            self.requests, self.pending_frames, self.flushed_frames
+            "{{\"ok\":true,\"requests\":{},\"pending_frames\":{},\"segments\":{},\"flushed_frames\":{},\"max_audio_played_ms\":{},\"events\":{}}}\n",
+            self.requests,
+            self.pending_frames,
+            self.segments,
+            self.flushed_frames,
+            self.max_audio_played_ms,
+            self.events_json,
         )
     }
+}
+
+/// Render the ledger flush events as the ack's `events` JSON array. Field
+/// names mirror `jasper-outputd`'s ack (`segment`, `written_frames`,
+/// `drained_frames`) so barge-in consumes one shape regardless of which
+/// daemon owns playout; at fan-in's single mix-commit point written ==
+/// drained == played. `provider_item_id` is escaped (the upstream protocol
+/// already restricts it to graphic ASCII, but strip quote/backslash as
+/// defense in depth so a value can never break the JSON).
+fn render_events_json(events: &[PlayoutEvent]) -> String {
+    let mut json = String::from("[");
+    for (i, e) in events.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let provider_item_id = match &e.provider_item_id {
+            Some(id) => format!("\"{}\"", id.replace(['\\', '"'], "")),
+            None => "null".to_string(),
+        };
+        json.push_str(&format!(
+            "{{\"segment\":{},\"kind\":\"{}\",\"provider_item_id\":{},\"queued_frames\":{},\"written_frames\":{},\"drained_frames\":{},\"flushed_frames\":{}}}",
+            e.local_segment_id,
+            e.kind.as_str(),
+            provider_item_id,
+            e.queued_frames,
+            e.played_frames,
+            e.played_frames,
+            e.flushed_frames,
+        ));
+    }
+    json.push(']');
+    json
 }
 
 fn fetch_max(cell: &AtomicU64, value: u64) {
@@ -1094,6 +1193,82 @@ mod tests {
         let ack = ack_rx.try_recv().unwrap();
         assert_eq!(ack.pending_frames, 2);
         assert_eq!(ack.flushed_frames, 2);
+    }
+
+    #[test]
+    fn flush_sync_ack_reports_audio_played_ms_for_mid_segment_barge_in() {
+        // 4800-frame period = 100 ms at 48 kHz, so the barge-in "within one
+        // output period of the real played duration" criterion is 100 ms.
+        const PERIOD_FRAMES: usize = 4800;
+        const PERIOD_MS: u64 = 100;
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(96_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 96_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+
+        // One assistant segment carrying 1000 ms (48000 frames) of audio.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("item-7".to_string()),
+                profile: None,
+            },
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![6000i16; 48_000 * (CHANNELS as usize)]),
+        })
+        .unwrap();
+
+        // Commit exactly three periods (300 ms) downstream before barge-in.
+        let mut sum = vec![0i32; PERIOD_FRAMES * (CHANNELS as usize)];
+        for _ in 0..3 {
+            assert!(mixer.prepare_period());
+            sum.iter_mut().for_each(|s| *s = 0);
+            mixer.mix_period(&mut sum);
+        }
+
+        // Barge-in: synchronous flush mid-segment.
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 1,
+                ack: Some(ack_tx),
+            })
+            .unwrap();
+        mixer.prepare_period(); // drains the flush and answers the ack
+
+        let ack = ack_rx.try_recv().expect("flush ack");
+        // 3 periods x 4800 frames = 14400 frames committed = 300 ms heard.
+        let expected_ms = 300u64;
+        assert!(
+            ack.max_audio_played_ms > 0,
+            "barge-in needs a nonzero played-ms (was the hardcoded 0)"
+        );
+        assert!(
+            ack.max_audio_played_ms.abs_diff(expected_ms) <= PERIOD_MS,
+            "played-ms {} not within one {PERIOD_MS}ms period of {expected_ms}",
+            ack.max_audio_played_ms,
+        );
+        assert_eq!(ack.max_audio_played_ms, expected_ms);
+        assert_eq!(ack.segments, 1);
+        // 48000 queued - 14400 heard = 33600 frames dropped unheard.
+        assert_eq!(ack.flushed_frames, 33_600);
+
+        // The ack JSON carries the per-segment provider item id and real
+        // played-ms, and is no longer the hardcoded empty/zero shape.
+        let line = ack.to_json_line();
+        assert!(line.contains("\"provider_item_id\":\"item-7\""), "{line}");
+        assert!(line.contains("\"max_audio_played_ms\":300"), "{line}");
+        assert!(!line.contains("\"events\":[]"), "{line}");
+        assert!(!line.contains("\"max_audio_played_ms\":0"), "{line}");
     }
 
     #[test]
