@@ -8,15 +8,24 @@ broken. deploy-to-pi.sh now classifies the deploy direction against the
 Pi's installed build manifest BEFORE rsync and aborts downgrades unless
 JASPER_DEPLOY_ALLOW_DOWNGRADE=1.
 
-These tests pin the two pure helpers that decision rests on, sourced
-under bash against a scratch git repo:
+These tests pin the pure helpers those decisions rest on, sourced under
+bash against a scratch git repo:
 
 * ``classify_deploy_direction`` outcome tokens for every history shape
   (same / forward / downgrade / diverged / unknown), including the
   ``-dirty`` suffix build.txt records for uncommitted-tree deploys;
 * ``build_manifest_value`` parsing of build.txt read over ssh,
   including the CRLF line endings ``ssh -tt`` (interactive sudo)
-  produces.
+  produces;
+* ``classify_installed_vs_main`` — the BINARY behind-origin/main
+  staleness check (current / behind / unknown), against a faked
+  ``origin/main`` ref.
+
+The final section is an *integration* test: it drives the real
+``preflight_deploy_direction`` body out of deploy-to-pi.sh (stubbing only
+the ssh manifest read and the network fetch) to pin the advisory wiring —
+which stream each message lands on — and the documented promise that the
+advisory never blocks a deploy.
 """
 from __future__ import annotations
 
@@ -28,6 +37,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
+DEPLOY = ROOT / "scripts" / "deploy-to-pi.sh"
 
 _GIT_ID = ["-c", "user.email=t@test", "-c", "user.name=t"]
 
@@ -277,3 +287,114 @@ def test_default_main_ref_is_origin_main(main_history):
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "current"
+
+
+# ── Integration: the deploy preflight advisory wiring ────────────────────
+#
+# classify_installed_vs_main (above) pins the DECISION; this section pins
+# the WIRING in deploy-to-pi.sh: which stream each advisory lands on (a
+# behind warning to stderr, a skip note to stdout, silence when current)
+# and the documented promise that the advisory NEVER blocks a deploy. We
+# drive the real preflight_deploy_direction body — extracted from the
+# script and sourced — stubbing only its two external seams: the ssh
+# build-manifest read (run_remote_sudo) and the network fetch
+# (ensure_origin_fetched). The DECISION stays real, against scratch refs.
+
+
+@pytest.fixture
+def deploy_history(tmp_path):
+    """Linear repo A -> B -> C on main, with origin/main pinned at tip C.
+
+    Individual tests re-point or delete refs/remotes/origin/main to model
+    a current Pi, a behind Pi, and an offline checkout.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "f").write_text("a\n")
+    _git(repo, "add", "f")
+    _git(repo, "commit", "-qm", "A")
+    sha_a = _git(repo, "rev-parse", "HEAD")
+    (repo / "f").write_text("b\n")
+    _git(repo, "commit", "-qam", "B")
+    (repo / "f").write_text("c\n")
+    _git(repo, "commit", "-qam", "C")
+    sha_c = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", sha_c)
+    return repo, sha_a, sha_c
+
+
+# Raw string: the awk regex backslashes and bash ${...} must survive
+# verbatim. Placeholders are @NAME@ (no shell metachars in SHAs/hostnames)
+# so we never fight Python str.format against bash braces.
+_PREFLIGHT_HARNESS = r"""
+set -o pipefail
+source "@LIB@"
+# Extract the real preflight_deploy_direction() — its def line through the
+# first column-0 '}'. Eval defines it; nothing else in the script runs.
+eval "$(awk '/^preflight_deploy_direction\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
+declare -F preflight_deploy_direction >/dev/null || { echo "harness: extraction failed" >&2; exit 99; }
+# Stub the two external seams only: the ssh manifest read and the fetch.
+ensure_origin_fetched() { :; }
+run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
+SUDO_INTERACTIVE=0; DIRTY=""; BRANCH=main
+PI_HOST="@HOST@"; SHA_FULL="@LOCAL@"; SHA="${SHA_FULL:0:8}"
+MANIFEST="JASPER_GIT_SHA_FULL=@INSTALLED@
+JASPER_GIT_BRANCH=main
+JASPER_INSTALL_AT=2026-01-01T00:00:00-00:00"
+preflight_deploy_direction
+"""
+
+
+def _run_preflight(repo, *, installed, local, host="bench-pi.local"):
+    """Run the real preflight against a stubbed manifest; return the proc.
+
+    stdout/stderr are captured separately so a test can assert which
+    stream a message landed on. preflight_deploy_direction is the last
+    command, so the script's exit status IS the function's return code —
+    returncode == 0 proves the advisory did not abort the deploy.
+    """
+    script = (
+        _PREFLIGHT_HARNESS
+        .replace("@LIB@", str(LIB))
+        .replace("@DEPLOY@", str(DEPLOY))
+        .replace("@HOST@", host)
+        .replace("@LOCAL@", local)
+        .replace("@INSTALLED@", installed)
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True, text=True, timeout=30, cwd=repo,
+    )
+
+
+def test_preflight_warns_on_stderr_when_pi_is_behind(deploy_history):
+    # origin/main = C; the Pi runs A (behind). Local checkout is current.
+    repo, sha_a, sha_c = deploy_history
+    proc = _run_preflight(repo, installed=sha_a, local=sha_c)
+    assert proc.returncode == 0, proc.stderr        # advisory never blocks
+    assert "is behind origin/main" in proc.stderr
+    assert "bench-pi.local" in proc.stderr
+    assert sha_a[:8] in proc.stderr                 # installed short-SHA
+    # It is a warning: it must not leak onto stdout.
+    assert "is behind origin/main" not in proc.stdout
+
+
+def test_preflight_quiet_when_pi_is_current(deploy_history):
+    # installed == origin/main tip → no advisory on either stream.
+    repo, _sha_a, sha_c = deploy_history
+    proc = _run_preflight(repo, installed=sha_c, local=sha_c)
+    assert proc.returncode == 0
+    assert "behind origin/main" not in proc.stdout
+    assert "behind origin/main" not in proc.stderr
+
+
+def test_preflight_skips_gracefully_when_origin_main_absent(deploy_history):
+    # No origin/main (offline / never fetched) → a stdout skip note, no
+    # warning, deploy still proceeds.
+    repo, sha_a, sha_c = deploy_history
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    proc = _run_preflight(repo, installed=sha_a, local=sha_c)
+    assert proc.returncode == 0
+    assert "skipped (origin/main unavailable" in proc.stdout
+    assert "is behind origin/main" not in proc.stderr
