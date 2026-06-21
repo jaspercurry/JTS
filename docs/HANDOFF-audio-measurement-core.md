@@ -217,7 +217,8 @@ have the second instance, so a thin shared kernel is justified.)
   accepted/rejected and weaken the drift guard. So the module owns: one
   normalized `GraphView` (`filters: {name→{type,parameters}}`,
   `pipeline_steps: [{channels:set, names:[]}]`); three thin **adapters**
-  (`view_from_emitted_text`, `view_from_camilla_dict`, `view_from_yaml_text`)
+  (`view_from_emitted_text`, `view_from_camilla_dict`, `view_from_yaml_dict` —
+  the last two dict-taking, the caller owning the `yaml.safe_load`)
   that preserve each source's parsing semantics; and the shared **predicates**
   (`output_hard_muted_and_wired`, `output_unmuted_and_wired`,
   `tweeter_guard_present`, `startup_headroom_ok`, …), fail-closed. The ≈4
@@ -342,9 +343,10 @@ fresh from `origin/main` — this worktree branch carries unrelated prior commit
 PR cleanly.
 
 Phase 1 slice 2b landed: `runtime_contract.py`'s `_active_graph_evidence` now
-builds the shared `GraphView` via the new `view_from_yaml_text` adapter (a
-list-only `yaml.safe_load` reader — no scalar `channel: N` sugar, mirroring the
-deleted `_pipeline_contains`) and proves its invariants through the shared
+builds the shared `GraphView` via a new shared list-only adapter (no scalar
+`channel: N` sugar, mirroring the deleted `_pipeline_contains`; see the
+follow-up below for its current dict-taking shape) and proves its invariants
+through the shared
 predicates (`pipeline_contains_chain`, `filter_param_matches`, and a new
 `tweeter_guard_present` carrying runtime_contract's LOOSE policy: any positive
 Fc, order ≥ 2, soft_clip, clip ≤ ceiling — separate from staging's exact-match
@@ -355,10 +357,40 @@ runtime_contract-specific `as_out{N}_commission_mute` name pattern but reads
 `GraphView.filters`. Behavior-preserving: the granular issue codes and the two
 distinct parse-error codes (`camilla_yaml_unparseable` vs
 `camilla_yaml_not_object`) are preserved — the latter via a local parse, since
-`view_from_yaml_text` collapses both to `parsed_ok=False`. Ruff clean; full
-suite green (6539 passed). The baseline-path filter accessors stay on
-`graph_evidence` (the names+scalar-accessor module that overlaps `graph_safety`;
-their reconcile is its own follow-up).
+the shared view collapses both to `parsed_ok=False`. Ruff clean; full
+suite green (6539 passed).
+
+Phase 1 slice 2b-follow-up landed (`graph_evidence`/`graph_safety` reconcile +
+the `runtime_contract` double-parse). The two modules now have one crisp,
+independent ownership split. `graph_safety` (the leaf — **stdlib only**; callers
+own the `yaml.safe_load`) owns the normalized `GraphView`, the parse adapters,
+the fail-closed wiring predicates, AND the shared scalar matchers
+(`float_matches`/`float_value`/`truthy_bool`) those predicates run on — the
+single home, with the byte-identical copies removed. `graph_evidence` owns the
+complementary, emitter-coupled half: the canonical filter NAMES (re-exported from
+`camilla_yaml`, which is why it is *not* a leaf) plus the raw-dict accessors
+(`filter_spec`/`filter_params`/`filter_type`) for `runtime_contract`'s baseline
+path. There is **no re-export** between them — consumers import names+accessors
+from `graph_evidence` and the GraphView/predicates/scalars from their owner
+`graph_safety`, so every symbol has exactly one home and one import path, and the
+leaf stays promotable to a top-level shared module.
+
+The yaml-dialect adapter is `view_from_yaml_dict(config)` — dict-taking like
+`view_from_camilla_dict`, so the caller owns the parse.
+`runtime_contract._active_graph_evidence` already `yaml.safe_load`s the candidate
+text once (for its two distinct parse-error codes + the baseline raw-dict
+accessors) and builds the shared view from that same `payload`, so the text is
+parsed once. The `view_from_camilla_dict` swap was **rejected** (it honors the
+scalar `channel: N` sugar; `runtime_contract` deliberately stays list-only),
+pinned by `test_view_from_yaml_dict_is_list_only_unlike_camilla_dict`. Other new
+`view_from_yaml_dict` cases pin the emitted-graph invariants, fail-closed on
+non-dict, and bool-channel exclusion. `classify_camilla_graph`'s two distinct
+candidate parse-error codes (`camilla_yaml_unparseable` vs
+`camilla_yaml_not_object`) are now pinned too (`test_active_speaker_runtime_contract.py`)
+— reachable through the public API because `classify_camilla_config_text` routes
+on a substring marker, not a full parse, so a malformed/non-mapping body still
+reaches the runtime contract's own parse. Behavior-preserving; full
+active-speaker suite green.
 
 Phase 1 slice 3 landed (the L0 program-graph gate): a flat full-range program
 graph can no longer go live (emitted *or* loaded) to the DAC while the saved

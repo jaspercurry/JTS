@@ -38,17 +38,17 @@ from .graph_evidence import (
     driver_limiter_name,
     filter_params as _filter_params,
     filter_type as _filter_type,
-    float_value as _float_value,
     output_commission_mute_name as _commission_mute_name,
     protective_tweeter_hp_name,
-    truthy_bool as _truthy_bool,
 )
 from .graph_safety import (
     GraphView,
     filter_param_matches,
+    float_value as _float_value,
     pipeline_contains_chain,
+    truthy_bool as _truthy_bool,
     tweeter_guard_present,
-    view_from_yaml_text,
+    view_from_yaml_dict,
 )
 from .environment import (
     DEFAULT_CAMILLA_STATEFILE,
@@ -605,11 +605,14 @@ def _active_graph_evidence(
     summary: dict[str, Any],
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
-    # Keep the two distinct parse-error codes that view_from_yaml_text collapses
-    # into parsed_ok=False: this module's callers branch on which one fired. We
-    # parse once here for the precise code (and `payload` backs the baseline
-    # path's filter accessors + subset pipeline-name lookup), then take the
-    # normalised view from the shared adapter for the predicate calls below.
+    # Parse the text ONCE. `payload` gives the two distinct parse-error codes
+    # this module's callers branch on (camilla_yaml_unparseable vs
+    # camilla_yaml_not_object — which the shared view collapses to
+    # parsed_ok=False) AND backs the baseline path's raw-dict filter accessors +
+    # subset pipeline-name lookup. The normalised view for the predicate calls
+    # below is built from that SAME dict via view_from_yaml_dict (list-only, like
+    # the candidate dialect — not the sugar-reading view_from_camilla_dict), so
+    # the same text is never yaml.safe_load-ed twice.
     try:
         payload = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -626,7 +629,7 @@ def _active_graph_evidence(
             "CamillaDSP YAML did not parse to an object",
         ))
         return {"issues": issues, "safe": False}
-    view = view_from_yaml_text(text)
+    view = view_from_yaml_dict(payload)
 
     required_indexes = _required_roleful_indexes(contract)
     by_output = _assignment_by_output(contract)

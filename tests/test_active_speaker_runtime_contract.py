@@ -459,6 +459,34 @@ def test_tweeter_commissioning_requires_protective_limiter() -> None:
     }
 
 
+def test_unparseable_active_candidate_is_rejected() -> None:
+    # A config that classifies as an active-speaker startup candidate (it carries
+    # the recognised marker, here in a comment) but is not parseable YAML must
+    # fail closed — never read as "safe" — with the precise camilla_yaml_unparseable
+    # code. classify_camilla_config_text keys on a substring marker, not a full
+    # parse, so a malformed body still reaches the runtime contract's own parse.
+    topology = _active_topology("mono", "active_2_way")
+    text = "# Auto-generated active-speaker startup config\nfilters: {unterminated\n"
+
+    graph = classify_camilla_graph(topology=topology, text=text)
+
+    assert graph.allowed is False
+    assert "camilla_yaml_unparseable" in {issue["code"] for issue in graph.issues}
+
+
+def test_non_object_active_candidate_is_rejected() -> None:
+    # A candidate that parses but to a non-mapping (here a YAML list) fails closed
+    # with camilla_yaml_not_object — kept DISTINCT from the unparseable code so the
+    # caller can report which one fired.
+    topology = _active_topology("mono", "active_2_way")
+    text = "# Auto-generated active-speaker startup config\n- a\n- b\n"
+
+    graph = classify_camilla_graph(topology=topology, text=text)
+
+    assert graph.allowed is False
+    assert "camilla_yaml_not_object" in {issue["code"] for issue in graph.issues}
+
+
 def test_active_graph_rejects_unassigned_unmuted_output() -> None:
     topology = _active_topology("mono", "active_2_way")
     unsafe = _active_yaml("mono", 2, frozenset()).replace(

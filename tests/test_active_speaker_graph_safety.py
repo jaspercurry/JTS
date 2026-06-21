@@ -9,6 +9,8 @@ agree on a graph regardless of which dialect it arrived in.
 
 from __future__ import annotations
 
+import yaml
+
 from jasper.active_speaker import graph_safety as gs
 
 MUTE_GAIN = -120.0
@@ -247,13 +249,13 @@ def test_flat_graph_with_no_mutes_fails_closed():
 
 
 # --------------------------------------------------------------------------- #
-# Intentional hardening vs the deleted parsers (uniform across both adapters)
+# Intentional hardening vs the deleted parsers (uniform across the adapters)
 # --------------------------------------------------------------------------- #
 
 
 def test_bool_is_never_a_channel_in_any_adapter():
     # `bool` subclasses `int`; the deleted emitted-text parser counted
-    # `true`/`false` as channels 1/0. Both adapters now exclude them — the
+    # `true`/`false` as channels 1/0. Every adapter now excludes them — the
     # protective direction (a wiring check can only get stricter).
     emitted = (
         "filters:\n  m:\n    type: Gain\n    parameters: { gain: 0.0 }\n"
@@ -262,9 +264,12 @@ def test_bool_is_never_a_channel_in_any_adapter():
     assert not gs.pipeline_contains_chain(
         gs.view_from_emitted_text(emitted), channels={1}, required_names=("m",)
     )
-    camilla = {"pipeline": [{"type": "Filter", "channels": [True], "names": ["m"]}]}
+    bool_channel = {"pipeline": [{"type": "Filter", "channels": [True], "names": ["m"]}]}
     assert not gs.pipeline_contains_chain(
-        gs.view_from_camilla_dict(camilla), channels={1}, required_names=("m",)
+        gs.view_from_camilla_dict(bool_channel), channels={1}, required_names=("m",)
+    )
+    assert not gs.pipeline_contains_chain(
+        gs.view_from_yaml_dict(bool_channel), channels={1}, required_names=("m",)
     )
 
 
@@ -277,14 +282,17 @@ def test_none_in_names_is_dropped_not_stringified():
 
 
 # --------------------------------------------------------------------------- #
-# view_from_yaml_text — the candidate/unknown-graph adapter (runtime_contract)
+# view_from_yaml_dict — runtime_contract's candidate/unknown-graph adapter.
+# Dict-taking (the caller owns the yaml.safe_load, like view_from_camilla_dict);
+# list-only, unlike the sugar-reading view_from_camilla_dict.
 # --------------------------------------------------------------------------- #
 
 
-def test_view_from_yaml_text_matches_other_adapters_on_emitted():
-    # The emitted fixture is valid YAML, so yaml.safe_load reads the same graph
-    # the text/dict adapters do. All three agree on the invariants.
-    view = gs.view_from_yaml_text(EMITTED)
+def test_view_from_yaml_dict_matches_other_adapters_on_emitted():
+    # The emitted fixture, yaml.safe_load-ed, reads the same graph the emitted/
+    # camilla adapters do — and runtime_contract feeds exactly this (its own
+    # safe_load of the candidate text). The invariants hold on the result.
+    view = gs.view_from_yaml_dict(yaml.safe_load(EMITTED))
     assert view.parsed_ok
     assert gs.output_hard_muted_and_wired(
         view, 0, mute_name="as_out0_commission_mute", mute_gain_db=MUTE_GAIN
@@ -297,58 +305,37 @@ def test_view_from_yaml_text_matches_other_adapters_on_emitted():
     )
 
 
-def test_view_from_yaml_text_ignores_scalar_channel_sugar():
-    # The candidate adapter reads only `channels: [..]` list form. CamillaDSP's
-    # scalar `channel: N` sugar is a read-back artifact, never present in a
-    # candidate graph, so a scalar-sugar step does NOT satisfy a wiring check
-    # (unlike view_from_camilla_dict, which reads both).
-    sugar = (
-        "filters:\n  m:\n    type: Gain\n    parameters: { gain: 0.0 }\n"
-        "pipeline:\n  - type: Filter\n    channel: 1\n    names: [m]\n"
+def test_view_from_yaml_dict_is_list_only_unlike_camilla_dict():
+    # List-only semantics: scalar `channel: N` sugar is ignored, NOT honoured.
+    # The contrast with view_from_camilla_dict (which DOES read the sugar) is
+    # exactly why runtime_contract must keep using this list-only adapter and not
+    # switch to the camilla-dict one.
+    sugar = {
+        "filters": {"m": {"type": "Gain", "parameters": {"gain": 0.0}}},
+        "pipeline": [{"type": "Filter", "channel": 1, "names": ["m"]}],
+    }
+    assert not gs.pipeline_contains_chain(
+        gs.view_from_yaml_dict(sugar), channels={1}, required_names=("m",)
     )
-    view = gs.view_from_yaml_text(sugar)
-    assert view.parsed_ok  # the document parses; only the channel form is ignored
-    assert not gs.pipeline_contains_chain(view, channels={1}, required_names=("m",))
-    # the same graph in list form IS read
-    listed = sugar.replace("    channel: 1", "    channels: [1]")
+    listed = {
+        "filters": {"m": {"type": "Gain", "parameters": {"gain": 0.0}}},
+        "pipeline": [{"type": "Filter", "channels": [1], "names": ["m"]}],
+    }
     assert gs.pipeline_contains_chain(
-        gs.view_from_yaml_text(listed), channels={1}, required_names=("m",)
+        gs.view_from_yaml_dict(listed), channels={1}, required_names=("m",)
     )
     # contrast: view_from_camilla_dict DOES honour the scalar sugar
     assert gs.pipeline_contains_chain(
-        gs.view_from_camilla_dict(
-            {"pipeline": [{"type": "Filter", "channel": 1, "names": ["m"]}]}
-        ),
-        channels={1},
-        required_names=("m",),
+        gs.view_from_camilla_dict(sugar), channels={1}, required_names=("m",)
     )
 
 
-def test_view_from_yaml_text_fails_closed_on_unparseable():
-    # An unterminated flow mapping raises yaml.YAMLError -> parsed_ok=False, and
-    # every predicate then fails closed against the empty view.
-    view = gs.view_from_yaml_text("filters: { broken\n")
-    assert not view.parsed_ok
-    assert not gs.output_hard_muted_and_wired(
-        view, 0, mute_name="as_out0_commission_mute", mute_gain_db=MUTE_GAIN
-    )
-
-
-def test_view_from_yaml_text_fails_closed_on_non_mapping():
-    assert not gs.view_from_yaml_text("- a\n- b\n").parsed_ok  # a list document
-    assert not gs.view_from_yaml_text("just a scalar\n").parsed_ok  # a scalar
-    assert not gs.view_from_yaml_text("").parsed_ok  # empty -> None
-
-
-def test_view_from_yaml_text_excludes_bool_channels():
-    # Uniform with the other adapters: a `true`/`false` is never a channel.
-    emitted = (
-        "filters:\n  m:\n    type: Gain\n    parameters: { gain: 0.0 }\n"
-        "pipeline:\n  - type: Filter\n    channels: [true]\n    names: [m]\n"
-    )
-    assert not gs.pipeline_contains_chain(
-        gs.view_from_yaml_text(emitted), channels={1}, required_names=("m",)
-    )
+def test_view_from_yaml_dict_fails_closed_on_non_dict():
+    # runtime_contract pre-validates the dict, but the adapter still fails closed
+    # on a non-mapping — defence in depth for any other caller.
+    assert not gs.view_from_yaml_dict(None).parsed_ok
+    assert not gs.view_from_yaml_dict(["a", "b"]).parsed_ok  # a list document
+    assert not gs.view_from_yaml_dict("scalar").parsed_ok
 
 
 # --------------------------------------------------------------------------- #
