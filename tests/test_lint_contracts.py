@@ -15,13 +15,13 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 
 # Ratchet counts after enabling Ruff's BLE rules on 2026-06-18. Lowering
 # either number is welcome; raising one means new suppression debt landed.
-# 2026-06-20 (+2 suppression markers / +4 blind-except suppressions):
-# distributed-active Slice 3 added fail-soft boundaries to the grouping
-# reconcile path (the active-follower readiness gate, the active-solo restore,
-# the CamillaDSP swap, and the defensive is_active_speaker_box topology probe) —
-# each is a "never crash the reconcile / fail safe to solo" handler matching the
-# existing reconciler idiom.
-MAX_NOQA_MARKERS = 795
+# 2026-06-20 (+4 suppression markers, all blind-except): distributed-active
+# Slice 3 added fail-soft boundaries to the grouping reconcile path (the
+# active-follower readiness gate, the active-solo restore, the CamillaDSP swap,
+# and the defensive is_active_speaker_box topology probe) — each is a "never
+# crash the reconcile / fail safe to solo" handler matching the existing
+# reconciler idiom.
+MAX_NOQA_MARKERS = 797
 MAX_BLE001_MARKERS = 617
 
 _BROAD_EXCEPT = re.compile(

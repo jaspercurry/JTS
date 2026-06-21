@@ -116,7 +116,7 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
     assert "emit_active_speaker_driver_domain_config" in yaml
     assert "# program_channel=left" in yaml
-    assert 'device: "hw:Loopback,1,8"' in yaml  # the dedicated round-trip loopback capture
+    assert 'device: "hw:Loopback,1,6"' in yaml  # the round-trip loopback capture (shared pair 6)
     assert "active_baseline_headroom" not in yaml  # no leader-baked program domain
     # The prior solo-active config was stashed for the unbond restore.
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == (

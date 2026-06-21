@@ -434,49 +434,6 @@ def check_grouping_household_credential() -> CheckResult:
     )
 
 
-@doctor_check(order=75.9, group="grouping")
-def check_grouping_active_follower_loopback() -> CheckResult:
-    """The active-follower grouping round-trip rides a DEDICATED snd-aloop
-    substream (``GROUPING_LOOPBACK_CAPTURE``, pair 8). ``pcm_substreams`` was
-    raised 8→9 for it, which only takes effect on REBOOT. Warn an active speaker
-    when the 9th pair is not live yet — until then an active-follower bond
-    fails-closed at the CamillaDSP apply (the box stays solo), which would
-    otherwise be a confusing silent no-op (distributed-active Slice 3)."""
-    import glob
-    import re as _re
-
-    from ...multiroom.reconcile import (
-        GROUPING_LOOPBACK_CAPTURE,
-        is_active_speaker_box,
-    )
-
-    label = "grouping: active-follower loopback"
-    if not is_active_speaker_box():
-        return CheckResult(label, "ok", "not an active speaker (n/a)")
-
-    subs = glob.glob("/proc/asound/Loopback/pcm0p/sub*")
-    if not subs:
-        return CheckResult(
-            label, "ok", "snd-aloop Loopback card not present (n/a)",
-        )
-
-    m = _re.search(r",(\d+)\s*$", GROUPING_LOOPBACK_CAPTURE)
-    needed = int(m.group(1)) if m else 8
-    live = len(subs)
-    if live <= needed:
-        return CheckResult(
-            label, "warn",
-            f"snd-aloop has {live} substreams but the active-follower grouping "
-            f"round-trip needs pair {needed} ({GROUPING_LOOPBACK_CAPTURE}); "
-            "REBOOT to apply pcm_substreams=9 from snd-aloop.conf. Until then an "
-            "active-follower bond fails-closed (stays solo).",
-        )
-    return CheckResult(
-        label, "ok",
-        f"{live} snd-aloop substreams — grouping round-trip pair {needed} present",
-    )
-
-
 # NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED
 # 2026-06-11 with the rest of the retired outputd-as-producer machinery
 # (`SnapfifoSink` / `SNAPFIFO_PRODUCER_WIRED` / the reconciler tap limb): the

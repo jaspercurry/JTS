@@ -137,28 +137,29 @@ MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 # (not the inv-2 FIFO): the active follower needs the loopback's clock for
 # CamillaDSP's `rate_adjust` to track, and the fixed CamillaDSP pipeline
 # latency is nulled by snapclient `--latency` (HANDOFF-distributed-active.md
-# "Clock domain"). It rides a DEDICATED snd-aloop substream (8). An active
-# follower runs TWO loopback hops that must NOT collide: (1) snapclient ->
-# camilla [this grouping round-trip], and (2) camilla -> outputd's
-# active-content lane, which is substream 5 (`outputd_active_content_*` in
-# deploy/alsa/asoundrc.jasper). The full allocation on an active box is:
-# 0-4 renderers, 5 active-content, 6 passive-content (`outputd_content_*`),
-# 7 fan-in summed stream — so the stock `pcm_substreams=8` (pairs 0-7) is fully
-# taken and the round-trip needs a 9th pair. `deploy/modprobe.d/snd-aloop.conf`
-# therefore sets `pcm_substreams=9` and this uses pair 8. NOTE: a
-# `pcm_substreams` change only takes effect on REBOOT (snd-aloop loads at
-# boot); until then pair 8 does not exist and the bond's CamillaDSP apply
-# fails-closed (the box stays on its safe solo graph). `jasper-doctor`'s
-# snd-aloop check warns when the live substream count is below the configured
-# one. Both sides are env-overridable for on-device tuning.
+# "Clock domain"). An active follower runs TWO loopback hops that must NOT
+# collide: (1) snapclient -> camilla [this grouping round-trip], and (2) camilla
+# -> outputd's active-content lane = substream 5 (`outputd_active_content_*`).
+# So the round-trip must use a DIFFERENT pair from 5. snd_aloop caps
+# `pcm_substreams` at 8 (pairs 0-7 — a 9th is silently clamped, verified on
+# jts3), so a dedicated extra pair is impossible without a second card (which
+# reintroduces the removed-LoopbackAEC wedge risk). The round-trip therefore
+# rides pair 6 — the PASSIVE stereo content lane (`outputd_content_*`). That is
+# safe to share by a hard hardware-mode invariant: an active follower's outputd
+# is ALWAYS Composite (active topology -> Composite sink -> it reads the
+# active-content lane on pair 5) and NEVER opens the passive content lane on
+# pair 6; a passive box that DOES use pair 6 is never an active follower. The
+# full allocation: 0-4 renderers, 5 active-content, 6 passive-content / active-
+# follower round-trip, 7 fan-in. No reboot needed (pair 6 always exists). Both
+# sides are env-overridable for on-device tuning.
 #
-#   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,8
-#   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,8
+#   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,6
+#   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,6
 GROUPING_LOOPBACK_PLAYBACK = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_PLAYBACK", "hw:Loopback,0,8",
+    "JASPER_GROUPING_LOOPBACK_PLAYBACK", "hw:Loopback,0,6",
 )
 GROUPING_LOOPBACK_CAPTURE = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_CAPTURE", "hw:Loopback,1,8",
+    "JASPER_GROUPING_LOOPBACK_CAPTURE", "hw:Loopback,1,6",
 )
 # snapclient decodes to the snapserver-pinned 48 kHz / S16 / stereo, so the
 # follower's CamillaDSP captures the loopback as S16_LE (the S0-sync bench

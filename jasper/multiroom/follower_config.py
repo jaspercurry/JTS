@@ -11,8 +11,8 @@ relocates **Layer A** (the ``2->N`` split + per-driver crossover / limiter /
 tweeter high-pass) onto the follower's own CamillaDSP, fed by the round-trip
 loopback:
 
-    snapclient --player alsa -> hw:Loopback,0,8   (snapclient writes)
-    CamillaDSP captures           hw:Loopback,1,8  (rate-tracked, bit-perfect)
+    snapclient --player alsa -> hw:Loopback,0,6   (snapclient writes)
+    CamillaDSP captures           hw:Loopback,1,6  (rate-tracked, bit-perfect)
       -> driver-domain Layer A (channel-select -> split -> per-driver chain)
       -> outputd active sink -> DACs
 
