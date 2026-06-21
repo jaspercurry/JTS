@@ -13,6 +13,10 @@ import math
 import pytest
 
 from jasper.camilla_emit import (
+    CHANNEL_SELECT_MIXER,
+    MONO_SUM_GAIN_DB,
+    channel_select_sources,
+    emit_channel_select_mixer,
     emit_gain_filter,
     emit_linkwitz_riley,
     emit_master_gain_pipeline,
@@ -101,6 +105,39 @@ def test_mixer_matches_multiroom_channel_select():
         "        sources:\n"
         "          - { channel: 0, gain: 0.0000, inverted: false }"
     )
+
+
+def test_channel_select_sources_left_right_are_unity_routes():
+    assert channel_select_sources("left") == [(0, 0.0, False)]
+    assert channel_select_sources("right") == [(1, 0.0, False)]
+
+
+def test_channel_select_sources_mono_is_clip_safe_sum():
+    # Two -6.02 dB feeds so identical L==R sum to exactly 0 dBFS (no clip).
+    sources = channel_select_sources("mono")
+    assert sources == [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
+    assert sum(10 ** (g / 20.0) for _, g, _ in sources) == pytest.approx(1.0)
+    assert channel_select_sources("sub") == sources  # sub shares the mono sum
+
+
+@pytest.mark.parametrize("bad", ["stereo", "", "garbage"])
+def test_channel_select_sources_rejects_passthrough_or_unknown(bad):
+    with pytest.raises(ValueError):
+        channel_select_sources(bad)
+
+
+def test_emit_channel_select_mixer_matches_hand_built_block():
+    # emit_channel_select_mixer("right") == the equivalent emit_mixer call, so
+    # the shared follower/member recipe spells the pick one canonical way: both
+    # output channels carry the picked source.
+    right = [(1, 0.0, False)]
+    assert emit_channel_select_mixer("right") == emit_mixer(
+        CHANNEL_SELECT_MIXER,
+        channels_in=2,
+        channels_out=2,
+        mapping=[(0, right), (1, right)],
+    )
+    assert emit_channel_select_mixer("left", name="cs2").startswith("  cs2:\n")
 
 
 def test_mixer_matches_active_speaker_split_with_description_and_labels():

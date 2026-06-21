@@ -26,11 +26,14 @@ from .camilla_yaml import (
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     COMMISSIONING_HEADROOM_DB,
+    DRIVER_DOMAIN_PROGRAM_CHANNELS,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     audible_outputs_for_role,
+    channel_select_mixer_name,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
+    emit_active_speaker_driver_domain_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -161,6 +164,7 @@ from .startup_load import (
 )
 from .runtime_contract import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_DRIVER_DOMAIN_BASELINE,
     GRAPH_FLAT_FULL_RANGE,
     GRAPH_GUARDED_COMMISSIONING,
     OutputContract,
@@ -296,8 +300,10 @@ __all__ = [
     "BaselineVerification",
     "BRINGUP_PREFLIGHT_KIND",
     "GRAPH_ALL_MUTED_ACTIVE_STARTUP",
+    "GRAPH_DRIVER_DOMAIN_BASELINE",
     "GRAPH_FLAT_FULL_RANGE",
     "GRAPH_GUARDED_COMMISSIONING",
+    "DRIVER_DOMAIN_PROGRAM_CHANNELS",
     "CrossoverRegion",
     "DriverSpec",
     "OutputChannel",
@@ -353,6 +359,8 @@ __all__ = [
     "running_commission_evidence",
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
+    "emit_active_speaker_driver_domain_config",
+    "channel_select_mixer_name",
     "load_active_speaker_preset",
     "load_design_draft",
     "load_crossover_preview",

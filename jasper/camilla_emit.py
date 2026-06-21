@@ -40,6 +40,7 @@ build/inspect CamillaDSP YAML without dragging NumPy/SciPy in.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Sequence
 
 
@@ -182,6 +183,83 @@ def emit_mixer(
                 f"inverted: {_bool(inverted)} }}"
             )
     return "\n".join(lines)
+
+
+# --- channel-select (inter-speaker pick) vocabulary --------------------------
+# The 2->2 mixer that picks WHICH channel of the stereo program a whole speaker
+# plays in a bond (left / right / a clip-safe mono+sub sum). This is the
+# INTER-speaker axis; it composes BEFORE any intra-speaker driver split. It is a
+# pure format/routing primitive (the "how"), so it lives here in the shared leaf
+# rather than in either caller — the two consumers are
+# ``jasper.multiroom.channel_split`` (weaves it into a 2-ch member config) and
+# ``jasper.active_speaker.camilla_yaml`` (prepends it to a follower's
+# driver-domain-only crossover graph). Sharing one definition keeps the mixer
+# name + the clip-safe mono-sum gain from drifting between them.
+
+# The split mixer's name. Distinct from ``master_gain`` on purpose: the Ducker
+# drives CamillaDSP's global ``main_volume`` fader and relies on ``master_gain``
+# staying the identity mixer, so channel-select is a SEPARATE mixer inserted
+# after it.
+CHANNEL_SELECT_MIXER = "channel_select"
+
+# Per-source gain for a 2-channel mono/sub sum. 20*log10(0.5) = -6.0206 dB:
+# identical L==R inputs (a mono track, the common case on a mono/sub speaker)
+# sum to EXACTLY 0 dBFS, so they cannot clip under ``volume_limit: 0.0``.
+# Uncorrelated content is correspondingly quieter; that is the safe trade for a
+# household speaker (loudness is recovered downstream by the volume fader, not by
+# risking a clip here).
+MONO_SUM_GAIN_DB = 20.0 * math.log10(0.5)  # -6.020599913…
+
+# Unity route gain (dB). Selecting a single channel onto an output is a plain
+# copy — no attenuation, no boost.
+_CHANNEL_ROUTE_GAIN_DB = 0.0
+
+
+def channel_select_sources(channel: str) -> list[tuple[int, float, bool]]:
+    """The ``(input_channel, gain_db, inverted)`` sources mixed onto EACH of the
+    two output channels for one inter-speaker channel assignment.
+
+    One unity source for a ``left`` / ``right`` route; two clip-safe -6.02 dB
+    sources for a ``mono`` / ``sub`` L+R sum. Both output channels get the SAME
+    content, so the assigned channel reaches the driver regardless of how the
+    physical speaker taps the stereo bus. ``stereo`` is passthrough and has no
+    mixer, so it is not a valid argument here (callers handle it separately).
+    ``sub`` shares ``mono``'s sum; its low-pass crossover is a separate filter.
+
+    Raises ``ValueError`` for an unknown / passthrough channel — this is an
+    internal (resolved) value, so fail loud rather than emit a silent mis-route.
+    """
+    if channel == "left":
+        return [(0, _CHANNEL_ROUTE_GAIN_DB, False)]
+    if channel == "right":
+        return [(1, _CHANNEL_ROUTE_GAIN_DB, False)]
+    if channel in {"mono", "sub"}:
+        return [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
+    raise ValueError(
+        f"channel {channel!r} has no channel-select mixer "
+        "(expected one of left, right, mono, sub)"
+    )
+
+
+def emit_channel_select_mixer(
+    channel: str,
+    *,
+    name: str = CHANNEL_SELECT_MIXER,
+) -> str:
+    """The 2->2 ``channel_select`` Mixer block for one inter-speaker channel.
+
+    Both output channels carry the same content (see
+    :func:`channel_select_sources`). Returns a joined block (callers splice it
+    under a top-level ``mixers:`` map). ``stereo`` is rejected via
+    :func:`channel_select_sources` — it is passthrough and emits no mixer.
+    """
+    sources = channel_select_sources(channel)
+    return emit_mixer(
+        name,
+        channels_in=2,
+        channels_out=2,
+        mapping=[(0, sources), (1, sources)],
+    )
 
 
 def emit_master_gain_pipeline(

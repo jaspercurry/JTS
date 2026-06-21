@@ -32,6 +32,7 @@ from jasper.output_topology import (
 from ._common import issue as _issue
 from .camilla_yaml import STARTUP_LIMITER_CLIP_LIMIT_DB, STARTUP_MUTE_GAIN_DB
 from .graph_evidence import (
+    channel_select_mixer_name as _channel_select_mixer_name,
     driver_baseline_gain_name as _baseline_gain_name,
     driver_baseline_limiter_name as _baseline_limiter_name,
     driver_limiter_name,
@@ -68,12 +69,26 @@ GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
 GRAPH_GUARDED_COMMISSIONING = "guarded_commissioning"
 GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
+GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 GRAPH_UNKNOWN = "unknown"
 GRAPH_UNSAFE = "unsafe"
 
 ACTIVE_BASELINE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config"
 )
+# The follower's driver-domain-only (Layer-A) emit. Independently named here
+# (not imported from the emitter) so the verifier re-proves the graph without
+# trusting the producer — emitter<->verifier independence, exactly as
+# ACTIVE_BASELINE_SOURCE is. The keystone round-trip test pins that the two
+# spellings match.
+ACTIVE_DRIVER_DOMAIN_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
+)
+# Both baseline-shaped sources run every output live (no per-output commission
+# mute) through a protective per-driver chain; they differ only in the
+# pre-split prefix (program-domain headroom + preference EQ vs the inter-speaker
+# channel-select). The mute/role-isolation checks below skip for both.
+_BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 
 CONTRACT_UNCONFIGURED = "unconfigured"
 CONTRACT_NORMAL_STEREO_FULL_RANGE = "normal_stereo_full_range"
@@ -478,6 +493,44 @@ def _flat_graph_allowed(
     )
 
 
+ACTIVE_SPLIT_MIXER_PREFIX = "split_active_"
+
+
+def _pipeline_mixer_names(payload: dict[str, Any]) -> list[str]:
+    """The names of the ``Mixer`` pipeline steps in order (``Filter`` steps
+    excluded).
+
+    ``GraphView.pipeline_steps`` captures only ``Filter`` steps, so the
+    channel-select / split mixer ORDER — which the driver-domain arm must prove —
+    is read from the parsed payload here rather than from the shared view.
+    """
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return []
+    names: list[str] = []
+    for step in pipeline:
+        if not isinstance(step, dict) or step.get("type") != "Mixer":
+            continue
+        name = step.get("name")
+        if isinstance(name, str):
+            names.append(name)
+    return names
+
+
+def _channel_select_precedes_split(mixer_names: list[str]) -> bool:
+    """True iff a ``channel_select`` Mixer step runs strictly before the
+    ``split_active_*`` Mixer step — the inter-speaker pick before the
+    intra-speaker driver split. Fails closed (missing either -> ``False``)."""
+    if _channel_select_mixer_name not in mixer_names:
+        return False
+    select_idx = mixer_names.index(_channel_select_mixer_name)
+    split_idxs = [
+        i for i, name in enumerate(mixer_names)
+        if name.startswith(ACTIVE_SPLIT_MIXER_PREFIX)
+    ]
+    return bool(split_idxs) and select_idx < min(split_idxs)
+
+
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -605,7 +658,7 @@ def _active_graph_evidence(
     missing_mutes = sorted(index for index in required_indexes if index not in mutes)
     if missing_mutes:
         source = str(summary.get("source") or "")
-        if source != ACTIVE_BASELINE_SOURCE:
+        if source not in _BASELINE_LIKE_SOURCES:
             issues.append(_issue(
                 "blocker",
                 "active_graph_missing_commission_mutes",
@@ -640,7 +693,7 @@ def _active_graph_evidence(
     )
     if unwired_mutes:
         source = str(summary.get("source") or "")
-        if source != ACTIVE_BASELINE_SOURCE:
+        if source not in _BASELINE_LIKE_SOURCES:
             issues.append(_issue(
                 "blocker",
                 "active_graph_unwired_commission_mutes",
@@ -648,10 +701,17 @@ def _active_graph_evidence(
                 + ", ".join(str(index + 1) for index in unwired_mutes),
             ))
 
-    is_baseline = str(summary.get("source") or "") == ACTIVE_BASELINE_SOURCE
+    source = str(summary.get("source") or "")
+    is_baseline = source == ACTIVE_BASELINE_SOURCE
+    is_driver_domain = source == ACTIVE_DRIVER_DOMAIN_SOURCE
+    # Both baseline-shaped graphs run every output live through a protective
+    # per-driver chain (no per-output commission mute); the per-driver gain /
+    # limiter / tweeter-HP checks below are identical. They differ only in the
+    # pre-split prefix, branched inside the `is_baseline_like` block.
+    is_baseline_like = is_baseline or is_driver_domain
     unmuted_outputs = (
         set(graph_indexes)
-        if is_baseline
+        if is_baseline_like
         else {
             index for index in graph_indexes
             if index in mutes and mutes[index] is False
@@ -668,7 +728,7 @@ def _active_graph_evidence(
         for item in contract.protected_assignments
         if item.physical_output_index is not None and item.role == "tweeter"
     }
-    if tweeter_outputs and not is_baseline:
+    if tweeter_outputs and not is_baseline_like:
         if not tweeter_guard_present(
             view,
             channels=tweeter_outputs,
@@ -698,7 +758,7 @@ def _active_graph_evidence(
             "active graph unmutes outputs not assigned by the saved topology: "
             + ", ".join(str(index + 1) for index in unknown_unmuted),
         ))
-    if len(unmuted_roles) > 1 and not is_baseline:
+    if len(unmuted_roles) > 1 and not is_baseline_like:
         issues.append(_issue(
             "blocker",
             "active_graph_unmutes_multiple_roles",
@@ -713,26 +773,59 @@ def _active_graph_evidence(
             "active graph unmutes a tweeter output without proving software protection",
         ))
 
-    if is_baseline:
-        if not pipeline_contains_chain(
-            view,
-            channels={0, 1},
-            required_names=("active_baseline_headroom",),
-        ):
-            issues.append(_issue(
-                "blocker",
-                "active_baseline_headroom_unwired",
-                "active baseline graph does not wire the shared headroom filter",
-            ))
-        headroom = _float_value(
-            _filter_params(payload, "active_baseline_headroom").get("gain")
-        )
-        if headroom is None or headroom > 0.0:
-            issues.append(_issue(
-                "blocker",
-                "active_baseline_headroom_invalid",
-                "active baseline headroom gain is missing or positive",
-            ))
+    if is_baseline_like:
+        if is_baseline:
+            # Program-domain prefix: the shared headroom gain rides channels
+            # [0, 1] before the split and must be non-positive.
+            if not pipeline_contains_chain(
+                view,
+                channels={0, 1},
+                required_names=("active_baseline_headroom",),
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_headroom_unwired",
+                    "active baseline graph does not wire the shared headroom filter",
+                ))
+            headroom = _float_value(
+                _filter_params(payload, "active_baseline_headroom").get("gain")
+            )
+            if headroom is None or headroom > 0.0:
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_headroom_invalid",
+                    "active baseline headroom gain is missing or positive",
+                ))
+        else:
+            # Driver-domain (follower) prefix: the leader baked Layer B/C, so
+            # this graph carries NO program-domain prefix. Prove (a) the
+            # inter-speaker channel-select runs strictly before the
+            # intra-speaker split, and (b) no program-domain headroom gain
+            # leaked in (its presence would mean an un-relocated Layer B/C on
+            # the follower). channel-select is a Mixer step, read from the
+            # parsed pipeline order rather than the Filter-only GraphView.
+            mixer_names = _pipeline_mixer_names(payload)
+            if _channel_select_mixer_name not in mixer_names:
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_channel_select_missing",
+                    "driver-domain graph does not wire the channel-select mixer",
+                ))
+            elif not _channel_select_precedes_split(mixer_names):
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_channel_select_after_split",
+                    "driver-domain channel-select must run before the driver split",
+                ))
+            if "active_baseline_headroom" in view.filters:
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_program_prefix_present",
+                    (
+                        "driver-domain graph carries a program-domain headroom "
+                        "filter (the leader owns Layer B/C, not the follower)"
+                    ),
+                ))
         unknown_baseline_outputs = sorted(graph_indexes - required_indexes)
         if unknown_baseline_outputs:
             issues.append(_issue(
@@ -811,6 +904,7 @@ def _active_graph_evidence(
         "muted_outputs": sorted(muted_outputs),
         "all_muted": all_muted,
         "baseline_candidate": is_baseline,
+        "driver_domain_candidate": is_driver_domain,
         "unmuted_roles": sorted(unmuted_roles),
         "tweeter_outputs": sorted(tweeter_outputs),
         "split_channels": split_channels,
@@ -859,7 +953,9 @@ def _active_graph_allowed(
     issues = list(evidence.get("issues") or [])
     classification = GRAPH_UNSAFE
     if evidence.get("safe"):
-        if evidence.get("baseline_candidate"):
+        if evidence.get("driver_domain_candidate"):
+            classification = GRAPH_DRIVER_DOMAIN_BASELINE
+        elif evidence.get("baseline_candidate"):
             classification = GRAPH_APPROVED_ACTIVE_RUNTIME
         elif evidence.get("all_muted"):
             classification = GRAPH_ALL_MUTED_ACTIVE_STARTUP
@@ -904,6 +1000,7 @@ def _active_graph_allowed(
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
         GRAPH_GUARDED_COMMISSIONING,
         GRAPH_APPROVED_ACTIVE_RUNTIME,
+        GRAPH_DRIVER_DOMAIN_BASELINE,
     } and not issues
     return GraphSafety(
         classification=classification if allowed else GRAPH_UNSAFE,
