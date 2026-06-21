@@ -1402,8 +1402,11 @@ Notes specific to JTS that the research doesn't cover:
 
 Last verified: 2026-06-21 (`/chat/` is a dedicated socket-activated
 read-only conversation-history shell on port 8787, with `/data.json`,
-`/state.chat`, and a doctor check; actual ES-module rendering remains the
-separate Prompt 5 asset work. Verified by `tests/test_chat_setup.py`,
+`/state.chat`, a doctor check, and a static ES-module paired-turn renderer.
+The Prompt 5 renderer is verified by static/pytest coverage; it still needs the
+PR's explicit on-device browser pass for render + filter behavior. Verified by
+`tests/test_chat_setup.py`, `tests/test_web_wizard_conventions.py`,
+`tests/test_web_design_system.py`, `tests/test_web_json_island.py`,
 `tests/test_chat_plumbing.py`, `tests/test_doctor_management_surface.py`, and
 `tests/test_doctor_memory_resilience.py`. Prior pass 2026-06-16:
 landing-page capability gating is now BAKED at

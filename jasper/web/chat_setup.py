@@ -39,7 +39,12 @@ def _render_page(csrf_token: str = "") -> bytes:
         '</div>\n'
         '<script type="module" src="/assets/chat/js/main.js"></script>'
     )
-    return canonical_page("Chat", body, csrf_token=csrf_token)
+    return canonical_page(
+        "Chat",
+        body,
+        csrf_token=csrf_token,
+        page_css_href="/assets/chat/chat.css",
+    )
 
 
 def _json_response(

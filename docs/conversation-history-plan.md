@@ -5,8 +5,10 @@
 > a read-only, household-visible log of what was said to the speaker and
 > what it said back. The store plus the Phase 3 read-side backend shell
 > (`jasper-chat-web`, `GET /data.json`, `/state.chat`, doctor check,
-> nginx/install/landing wiring) are implemented as of 2026-06-21; the
-> actual ES-module renderer remains the separate Prompt 5 asset work.
+> nginx/install/landing wiring) and the Prompt 5 ES-module renderer are
+> implemented as of 2026-06-21; the capture seam, OpenAI user/assistant
+> transcript path, and Grok user transcript path are implemented, with Gemini
+> transcript capture still deferred.
 > Grounded in code reads against `main` on 2026-06-19 and refreshed
 > against the current tree on 2026-06-21. **Last updated: 2026-06-21.**
 
@@ -41,14 +43,13 @@ mis-hear debugger ("turn on the bedroom lights" logged as "turn on the
 
 ## 2. The hard part is the data, and it's resolved native-first
 
-There is **no conversation text stored anywhere today** — and the code
-deliberately throws it away (`openai_session.py` logs `chars=len(text)` and
-drops the string; [PRIVACY.md](../PRIVACY.md) promises `usage.db` stores no
-transcripts). So this Feature's real work is *capturing* text, and the
-strategy (verified against `main`) is **native-first** — use the transcript
-the realtime API already emits; do **not** add audio capture or a local/cloud
-STT pass (that would burn the 1 GB RAM budget and reverse the privacy posture
-far harder).
+Before this Feature, there was **no conversation text stored anywhere** — the
+code deliberately threw it away (`openai_session.py` logged `chars=len(text)`
+and dropped the string; [PRIVACY.md](../PRIVACY.md) promised `usage.db` stores
+no transcripts). The Feature's real work is *capturing* text, and the strategy
+(verified against `main`) is **native-first** — use the transcript the realtime
+API already emits; do **not** add audio capture or a local/cloud STT pass (that
+would burn the 1 GB RAM budget and reverse the privacy posture far harder).
 
 Per provider, today:
 
@@ -74,9 +75,9 @@ is where conversation capture hooks — **one write path for all three
 providers.**
 
 What differs per provider is only *how the turn object exposes its text*.
-Add two **optional, `getattr`-probed accessors** to the `LiveTurn` interface
-(`jasper/voice/session.py`), mirroring the existing optional `usage_*`
-accessors:
+Add a small optional transcript capability beside `LiveTurn`
+(`ConversationTranscriptTurn` in `jasper/voice/session.py`), with WakeLoop
+probing the methods via `getattr`:
 
 ```
 user_transcript() -> str | None        # the perceived command (ASR)
@@ -147,6 +148,8 @@ session_id   INTEGER              -- joins usage.db sessions by id
   `system-status/js/` shape), reading the CSRF token from the meta tag,
   rendering rows with the shared `table()` primitive. **All DOM via text
   nodes** — user/assistant text is untrusted; never `innerHTML`.
+  Prompt 5 implements this renderer; the PR still needs an on-device browser
+  pass for render + date-filter behavior.
 - New `deploy/jasper-chat-web.{socket,service}` (copy `jasper-system-web.*`),
   added to `WIZARD_UNITS` in `deploy/lib/install/systemd-units.sh` (the
   `restart`-not-`start` lesson) + a `location /chat/` block in
@@ -214,10 +217,10 @@ on-device Gemini-transcript and end-to-end checks, called out explicitly).
 
 | Phase | Goal | HW needed |
 |---|---|---|
-| **1 — Foundation** | `ConversationStore` (cloned, pytest-covered: CRUD, fail-soft, retention, mic-mute gate) + the optional `LiveTurn` `user_transcript()`/`assistant_transcript()` accessors + the `_end_turn_inner` capture hook, gated by a default-off wizard flag. OpenAI/Grok stop discarding (surface what they already capture). Registers no UI yet. | none |
+| **1 — Foundation** | `ConversationStore` (cloned, pytest-covered: CRUD, fail-soft, retention, mic-mute gate) + the optional turn transcript capability (`user_transcript()`/`assistant_transcript()`) + the `_end_turn_inner` capture hook, gated by a default-off wizard flag. OpenAI/Grok stop discarding (surface what they already capture). Registers no UI yet. | none |
 | **2 — Gemini transcripts** | Add `input_audio_transcription` + `output_audio_transcription` to the Gemini `LiveConnectConfig` and parse in `_on_response`. Lights up the default provider. | on-device cost/latency check |
-| **3 — The `/chat` page** | `jasper-chat-web` service + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check are implemented. The ES module / read-only paired-turn render is deferred to Prompt 5. | on-device browser pass |
-| **4 — Retention + privacy controls** | TTL pruner + row cap + per-item/clear-all delete + the wizard opt-in polish + the scoped PRIVACY.md paragraph. Production-safe after this. | none |
+| **3 — The `/chat` page** | `jasper-chat-web` service + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check are implemented. Prompt 5 adds the static ES-module paired-turn renderer, research badge, null-assistant note, and date filter. | on-device browser pass |
+| **4 — Retention + privacy controls** | TTL pruner + row cap + per-item/clear-all delete + the wizard opt-in polish. The scoped PRIVACY.md paragraph shipped with the first capture path so public docs stay truthful before delete UI exists. Production-safe after the remaining controls. | none |
 | **5 — Richness (deferred, triggered)** | Surface `tool_calls_json` and links/rich content on the page (the `data_json` column pays off). A narrow Grok assistant-text fallback **only** if Grok usage matters. Search/filter. | none |
 
 **First PR (Phase 1):** `conversation-history: store + capture seam (HW-free)`

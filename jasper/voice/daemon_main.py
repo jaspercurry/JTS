@@ -16,6 +16,10 @@ from ..audio_io import TtsPlayout, make_mic_capture, make_tts_playout
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
 from ..camilla import CamillaController, Ducker
 from ..config import Config, VoiceProviderNotConfigured
+from ..conversation_history import (
+    ConversationStore,
+    read_settings as read_conversation_settings,
+)
 from ..cues import AudioCueManager, build_cue_tts_backend
 from ..google_creds import GoogleClients, build_google_clients
 from ..home_assistant import HAClient, build_ha_client
@@ -507,6 +511,10 @@ async def run() -> None:
         cfg.daily_spend_cap_usd,
         cfg.daily_spend_cap_safety_multiplier,
     )
+    conversation_settings = read_conversation_settings()
+    conversation_store: ConversationStore | None = None
+    if conversation_settings.capture_enabled:
+        conversation_store = ConversationStore(conversation_settings.db_path)
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
     renderer = RendererClient(
@@ -941,6 +949,7 @@ async def run() -> None:
                 heartbeat=heartbeat,
                 wake_event_store=wake_event_store,
                 tool_packs=outcomes_to_state(registry.pack_outcomes),
+                conversation_store=conversation_store,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after
@@ -971,6 +980,7 @@ async def run() -> None:
                 await wake_loop.run()
             finally:
                 heartbeat.stop()
+                wake_loop.close_conversation_store()
                 control_socket.close()
                 try:
                     await control_socket.wait_closed()
