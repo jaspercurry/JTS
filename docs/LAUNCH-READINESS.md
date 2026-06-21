@@ -1,6 +1,6 @@
 # Launch readiness — verified backlog
 
-> **Status: current source of truth (verified 2026-06-19).** This is the live,
+> **Status: current source of truth (verified 2026-06-21).** This is the live,
 > evidence-checked open-source-launch backlog. It **supersedes** the
 > point-in-time audit snapshots `docs/REVIEW-2026-06-04-*.md`,
 > `docs/REVIEW-2026-06-12-oss-due-diligence.md`, and
@@ -11,8 +11,8 @@
 The list was verified against `origin/main` — every "done" line was confirmed in
 the tree (the symbol / CI step / tag cited), not trusted from an older doc (the
 earlier audit docs surfaced already-fixed items as open, which is exactly why
-this doc exists). **One open item remains**, and it carries a ready-to-paste
-agent prompt.
+this doc exists). **The open list is now empty** — every tracked launch item
+has shipped (see the archiving note at the bottom).
 
 ## ✅ Done (verified on `main`)
 
@@ -49,21 +49,23 @@ agent prompt.
   records the release marker after the fact; no additional Pi/on-device
   validation was run in the Codex tag session, so hardware confidence comes
   from owner checks outside that session.
+- **SPDX license headers** — every first-party source file now carries an
+  `Apache-2.0` SPDX header (#910): the bulk implementation of CONTRIBUTING's
+  "first-party JTS source is Apache-2.0" convention via `reuse annotate`
+  (~996 files, comments-only, full `test-merge` green). First-party headers
+  only, **no CI gate** — a green-CI REUSE action is a standing
+  annotate-or-break tax that outweighs the badge on a solo repo. The genuinely
+  third-party in-tree assets (OFL fonts, LVGL `lv_conf.h`, `mta_stations.csv`,
+  presets) stay unstamped and are inventoried in
+  [LICENSE-third-party.md](../LICENSE-third-party.md). The bulk commit is
+  recorded in `.git-blame-ignore-revs`.
 
-## 🟡 Open — fan an agent out from here
+## 🟢 Open — none
 
-The privilege-separation blocker is gone and the CI/type-safety + resilience
-batch has shipped (see Done). **One item remains** — mechanical and low-risk.
-
-### 1. SPDX license headers — S, hardware-free, mechanical
-**Why:** 0 of ~804 source files carry an SPDX header — a legal-hygiene signal
-external reviewers check. **Verified still open** (0 of 6 sampled files have one).
-```
-Add `# SPDX-License-Identifier: Apache-2.0` (and the matching `// ` form for
-Rust/JS) to the top of every first-party source file (~804 .py/.rs/.sh/.js),
-skipping vendored/generated files. Optionally add an fsfe/reuse-action CI check.
-Purely textual + wide; verify the build/tests are unaffected.
-```
+The launch backlog is empty. The privilege-separation blocker, the
+CI/type-safety + resilience batch, governance/supply-chain, and the SPDX header
+sweep have all shipped (see Done). If new launch-blocking work surfaces, give it
+a fresh bullet here with a ready-to-paste agent prompt.
 
 ## Deferred by design (not "open")
 
@@ -75,8 +77,10 @@ Purely textual + wide; verify the build/tests are unaffected.
 ## Maintaining this doc
 
 When an open item ships, move its bullet to **Done** with the PR number (or the
-verified symbol/CI step) and delete the agent prompt. **Once SPDX lands the open
-list is empty** — at that point banner this doc historical and move it to
-`docs/historical/` (the launch-readiness work is then done).
+verified symbol/CI step) and delete the agent prompt. **The open list is now
+empty (SPDX shipped in #910), so the launch-readiness work is complete** — this
+doc is ready to be bannered historical and moved to `docs/historical/` as a
+follow-up (that move also touches the README atlas row and the
+`docs/doc-map.toml` entry, so it is kept out of the mechanical SPDX PR).
 
-Last verified: 2026-06-19
+Last verified: 2026-06-21

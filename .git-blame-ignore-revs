@@ -1,0 +1,12 @@
+# Revisions git blame should skip — large, mechanical, no-author-signal
+# commits (bulk reformatting / license-header sweeps). Each line is a full
+# 40-char commit SHA.
+#
+# Enable locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honours this file automatically in its blame view.
+
+# chore(license): Apache-2.0 SPDX headers on first-party source.
+# Comments-only sweep across ~996 files (reuse annotate), so blame
+# attributes each line to its real author rather than the header commit.
+7b92a859ace0a949fd2e62829985bb73ef9c91e2
