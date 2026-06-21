@@ -637,6 +637,33 @@ install_streambox_deps() {
         bluez-alsa-utils avahi-daemon avahi-utils
 }
 
+_webrtc_compile_jobs() {
+    # Bound the WebRTC AEC3 C++ build's parallelism to available RAM.
+    # Each -O3 webrtc-audio-processing translation unit (notably
+    # audio_processing_impl.cc) can peak well over 1 GB in cc1plus;
+    # `meson compile` defaults to nproc jobs, so on a 1 GB Pi the four
+    # parallel compiles exhaust RAM+swap and the OOM killer takes out
+    # cc1plus *and* cascading victims (nginx, jasper-voice were both
+    # OOM-killed on jts2, 2026-06-21), aborting the deploy mid-install.
+    #
+    # Budget ~1.5 GB per job and clamp to [1, nproc]: a 1 GB Pi builds
+    # at -j1 (slower but survives), an 8 GB Pi still gets full nproc.
+    # This is the graduated analogue of rust-daemons.sh's low-memory
+    # profile, which flips at 768 MB — too low here, since the OOM hit
+    # at ~1 GB. $1=MemTotal kB, $2=nproc (both injectable for tests).
+    local memtotal_kb="${1:-0}"
+    local ncpu="${2:-1}"
+    awk -v m="${memtotal_kb}" -v n="${ncpu}" '
+        BEGIN {
+            kb_per_job = 1500000
+            jobs = int(m / kb_per_job)
+            if (jobs < 1) jobs = 1
+            if (jobs > n) jobs = n
+            printf "%d\n", jobs
+        }
+    '
+}
+
 build_webrtc_v2_for_aec3() {
     # Build webrtc-audio-processing v2.1 statically into
     # /opt/jasper/.cache/webrtc-aec3-v2/src/builddir/, then export
@@ -693,8 +720,12 @@ build_webrtc_v2_for_aec3() {
             --buildtype=release)
     fi
 
-    echo "    meson compile -C builddir/"
-    (cd "${src_dir}" && meson compile -C builddir)
+    local compile_jobs
+    compile_jobs="$(_webrtc_compile_jobs \
+        "$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null)" \
+        "$(nproc 2>/dev/null || echo 1)")"
+    echo "    meson compile -C builddir/ (-j ${compile_jobs}; RAM-bounded to avoid OOM-killing the build on low-memory Pis)"
+    (cd "${src_dir}" && meson compile -C builddir -j "${compile_jobs}")
 
     if [[ ! -f "${static_archive}" ]]; then
         echo "  ERROR: meson compile finished but ${static_archive} is missing" >&2
