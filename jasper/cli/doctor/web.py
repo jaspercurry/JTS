@@ -201,3 +201,46 @@ def check_tool_catalog() -> CheckResult:
         label, "ok",
         f"{s['count']} tools, {s['disabled_count']} disabled{pending}",
     )
+
+
+@doctor_check(order=24.8, group="web")
+def check_conversation_history() -> CheckResult:
+    """Report whether the opt-in conversation-history store is usable.
+
+    Capture is default-off, so an absent DB is normal until the household
+    enables history. Once configured on, the read-side store must open cleanly
+    or `/chat/` and `/state.chat` cannot show the log jasper-voice writes.
+    """
+    from ...conversation_history import ConversationStore, read_settings
+
+    label = "conversation history"
+    settings = read_settings()
+    if not settings.capture_enabled:
+        return CheckResult(
+            label,
+            "ok",
+            "capture disabled (skipped)",
+        )
+    store = ConversationStore(settings.db_path, read_only=True)
+    try:
+        if not store.available:
+            return CheckResult(
+                label,
+                "warn",
+                f"capture enabled but {settings.db_path} is unavailable",
+            )
+        stats = store.stats()
+        if stats is None:
+            return CheckResult(
+                label,
+                "warn",
+                f"capture enabled but {settings.db_path} could not be read",
+            )
+        last = stats.last_write_ts_utc or "never"
+        return CheckResult(
+            label,
+            "ok",
+            f"{stats.turn_count} turns, last write {last}",
+        )
+    finally:
+        store.close()

@@ -438,10 +438,10 @@ reordering better than the prior flat enumeration):
 
 ### 3.3 Web surfaces under `jasper/web/`
 
-18 stdlib-`http.server` setup/debug surfaces, mostly socket-activated and
+20 stdlib-`http.server` setup/debug surfaces, mostly socket-activated and
 LAN-only. Some run inside the combined `jasper-web` process; older/heavier
-surfaces such as `/bluetooth/`, `/dial/`, `/system/`, and `/correction/`
-still have their own service/socket wrappers.
+surfaces such as `/bluetooth/`, `/dial/`, `/system/`, `/chat/`, and
+`/correction/` still have their own service/socket wrappers.
 
 | Path | Module | Port | Purpose |
 |---|---|---|---|
@@ -463,6 +463,8 @@ still have their own service/socket wrappers.
 | `/speaker/` | `speaker_setup.py` | 8783 | Speaker display name |
 | `/sound/` | `sound_setup.py` | 8784 | Sound curve + preference EQ |
 | `/rooms/` | `rooms_setup.py` | 8785 | Speakers, pairing, wake-response peering |
+| `/tools/` | `tools_setup.py` | 8786 | Voice tool catalog |
+| `/chat/` | `chat_setup.py` | 8787 | Read-only conversation history |
 
 Static and external companion surfaces:
 
@@ -1398,7 +1400,13 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-16 (landing-page capability gating is now BAKED at
+Last verified: 2026-06-21 (`/chat/` is a dedicated socket-activated
+read-only conversation-history shell on port 8787, with `/data.json`,
+`/state.chat`, and a doctor check; actual ES-module rendering remains the
+separate Prompt 5 asset work. Verified by `tests/test_chat_setup.py`,
+`tests/test_chat_plumbing.py`, `tests/test_doctor_management_surface.py`, and
+`tests/test_doctor_memory_resilience.py`. Prior pass 2026-06-16:
+landing-page capability gating is now BAKED at
 install time — `install.sh` stamps `system_capabilities_for_profile` into the
 page and `applyCapabilities(BAKED_CAPS)` runs at first paint; the
 `/system/data.json` poll no longer drives layout. Verified by

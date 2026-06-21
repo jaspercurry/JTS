@@ -1,0 +1,11 @@
+[Unit]
+Description=Jasper conversation-history dashboard — socket activation
+
+[Socket]
+ListenStream=127.0.0.1:8787
+Accept=no
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=100
+
+[Install]
+WantedBy=sockets.target

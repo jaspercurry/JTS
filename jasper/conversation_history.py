@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -11,6 +12,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "/var/lib/jasper/conversation_history.db"
+DEFAULT_SETTINGS_PATH = "/var/lib/jasper/conversation_history.env"
+SETTINGS_PATH_ENV = "JASPER_CONVERSATION_HISTORY_FILE"
+DB_PATH_ENV = "JASPER_CONVERSATION_HISTORY_DB"
+CAPTURE_ENABLED_ENV = "JASPER_CONVERSATION_HISTORY_ENABLED"
+RETENTION_DAYS_ENV = "JASPER_CONVERSATION_HISTORY_RETENTION_DAYS"
+RETENTION_MAX_ROWS_ENV = "JASPER_CONVERSATION_HISTORY_MAX_ROWS"
 _STORE_ERRORS = (OSError, sqlite3.Error)
 _TURN_COLUMNS = (
     "id",
@@ -38,36 +45,79 @@ class ConversationTurn:
     session_id: int | None
 
 
+@dataclass(frozen=True)
+class ConversationStats:
+    turn_count: int
+    last_write_ts_utc: str | None
+
+
+@dataclass(frozen=True)
+class ConversationSettings:
+    """Fresh read of the conversation-history feature settings."""
+
+    capture_enabled: bool
+    db_path: str
+    retention_days: int | None
+    retention_max_rows: int | None
+    settings_path: str
+
+    @property
+    def retention(self) -> dict[str, int | None]:
+        return {
+            "days": self.retention_days,
+            "max_rows": self.retention_max_rows,
+        }
+
+
 class ConversationStore:
     """Fail-soft SQLite persistence for conversation history."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(
+        self,
+        db_path: str = DEFAULT_DB_PATH,
+        *,
+        read_only: bool = False,
+        warn_unavailable: bool = True,
+    ):
         self._db_path = db_path
+        self._read_only = read_only
+        self._warn_unavailable = warn_unavailable
         self._conn: sqlite3.Connection | None = None
         conn: sqlite3.Connection | None = None
         try:
-            parent = os.path.dirname(db_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            conn = sqlite3.connect(db_path, isolation_level=None)
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS conversation_turns ("
-                "  id TEXT PRIMARY KEY,"
-                "  ts_utc TEXT NOT NULL,"
-                "  provider TEXT,"
-                "  user_text TEXT,"
-                "  assistant_text TEXT,"
-                "  tool_calls_json TEXT,"
-                "  data_json TEXT,"
-                "  session_id INTEGER"
-                ")"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_conversation_turns_recent "
-                "ON conversation_turns (ts_utc DESC, id DESC)"
-            )
+            if read_only:
+                conn = sqlite3.connect(
+                    _read_only_uri(db_path),
+                    isolation_level=None,
+                    uri=True,
+                )
+            else:
+                parent = os.path.dirname(db_path)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                conn = sqlite3.connect(db_path, isolation_level=None)
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS conversation_turns ("
+                    "  id TEXT PRIMARY KEY,"
+                    "  ts_utc TEXT NOT NULL,"
+                    "  provider TEXT,"
+                    "  user_text TEXT,"
+                    "  assistant_text TEXT,"
+                    "  tool_calls_json TEXT,"
+                    "  data_json TEXT,"
+                    "  session_id INTEGER"
+                    ")"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_turns_recent "
+                    "ON conversation_turns (ts_utc DESC, id DESC)"
+                )
         except _STORE_ERRORS as e:
-            logger.warning("conversation history store unavailable (%s): %s", db_path, e)
+            self._warn(
+                "conversation history store unavailable (%s): %s",
+                db_path,
+                e,
+            )
             if conn is not None:
                 try:
                     conn.close()
@@ -81,9 +131,13 @@ class ConversationStore:
     def available(self) -> bool:
         return self._conn is not None
 
+    def _warn(self, msg: str, *args: Any) -> None:
+        if self._warn_unavailable:
+            logger.warning(msg, *args)
+
     def add(self, turn: ConversationTurn) -> bool:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._read_only:
             return False
         try:
             conn.execute(
@@ -94,7 +148,7 @@ class ConversationStore:
             )
             return True
         except _STORE_ERRORS as e:
-            logger.warning("conversation history store add failed (id=%s): %s", turn.id, e)
+            self._warn("conversation history store add failed (id=%s): %s", turn.id, e)
             return False
 
     def get(self, turn_id: str) -> ConversationTurn | None:
@@ -107,7 +161,7 @@ class ConversationStore:
                 (turn_id,),
             ).fetchone()
         except _STORE_ERRORS as e:
-            logger.warning("conversation history store get failed (id=%s): %s", turn_id, e)
+            self._warn("conversation history store get failed (id=%s): %s", turn_id, e)
             return None
         return _turn_from_row(row) if row is not None else None
 
@@ -132,13 +186,13 @@ class ConversationStore:
                     (since_ts, limit_value),
                 ).fetchall()
         except _STORE_ERRORS as e:
-            logger.warning("conversation history store recent failed: %s", e)
+            self._warn("conversation history store recent failed: %s", e)
             return []
         return [_turn_from_row(row) for row in rows]
 
     def delete(self, turn_id: str) -> bool:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._read_only:
             return False
         try:
             cursor = conn.execute(
@@ -147,18 +201,18 @@ class ConversationStore:
             )
             return _changed_count(cursor) > 0
         except _STORE_ERRORS as e:
-            logger.warning("conversation history store delete failed (id=%s): %s", turn_id, e)
+            self._warn("conversation history store delete failed (id=%s): %s", turn_id, e)
             return False
 
     def clear(self) -> int:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._read_only:
             return 0
         try:
             cursor = conn.execute("DELETE FROM conversation_turns")
             return _changed_count(cursor)
         except _STORE_ERRORS as e:
-            logger.warning("conversation history store clear failed: %s", e)
+            self._warn("conversation history store clear failed: %s", e)
             return 0
 
     def prune(
@@ -168,7 +222,7 @@ class ConversationStore:
         older_than_ts: str | None = None,
     ) -> int:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._read_only:
             return 0
         max_rows_value: int | None = None
         if max_rows is not None:
@@ -203,8 +257,26 @@ class ConversationStore:
                 conn.execute("ROLLBACK")
             except _STORE_ERRORS:
                 pass
-            logger.warning("conversation history store prune failed: %s", e)
+            self._warn("conversation history store prune failed: %s", e)
             return 0
+
+    def stats(self) -> ConversationStats | None:
+        conn = self._conn
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*), MAX(ts_utc) FROM conversation_turns",
+            ).fetchone()
+        except _STORE_ERRORS as e:
+            self._warn("conversation history store stats failed: %s", e)
+            return None
+        if row is None:
+            return ConversationStats(0, None)
+        return ConversationStats(
+            turn_count=int(row[0] or 0),
+            last_write_ts_utc=row[1],
+        )
 
     def close(self) -> None:
         conn = self._conn
@@ -220,6 +292,61 @@ class ConversationStore:
 def make_turn_id(ts_utc: str, seq: int) -> str:
     """Return a deterministic, sortable turn id from a caller-provided timestamp."""
     return f"{_compact_utc(ts_utc)}-{seq:03d}"
+
+
+def read_settings(
+    *,
+    path: str | None = None,
+    environ: dict[str, str] | None = None,
+) -> ConversationSettings:
+    """Read conversation-history settings fresh from the wizard-owned file.
+
+    The future privacy/retention controls own
+    ``/var/lib/jasper/conversation_history.env``. Read-side surfaces such as
+    ``/state`` and ``jasper-doctor`` must not rely on their process
+    environment, because those daemons are not restarted by a wizard save.
+    """
+    from .env_load import read_env_file_state
+
+    base_env = dict(os.environ if environ is None else environ)
+    settings_path = path or base_env.get(SETTINGS_PATH_ENV) or DEFAULT_SETTINGS_PATH
+    file_state = read_env_file_state(settings_path)
+    merged = {**base_env, **file_state.values}
+    return ConversationSettings(
+        capture_enabled=_env_bool(merged.get(CAPTURE_ENABLED_ENV), default=False),
+        db_path=(merged.get(DB_PATH_ENV) or DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH,
+        retention_days=_env_optional_positive_int(merged.get(RETENTION_DAYS_ENV)),
+        retention_max_rows=_env_optional_positive_int(
+            merged.get(RETENTION_MAX_ROWS_ENV),
+        ),
+        settings_path=settings_path,
+    )
+
+
+def _read_only_uri(db_path: str) -> str:
+    path = os.path.abspath(db_path)
+    return f"file:{urllib.parse.quote(path, safe='/')}?mode=ro"
+
+
+def _env_bool(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _env_optional_positive_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value.strip(), 10)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _compact_utc(ts_utc: str) -> str:

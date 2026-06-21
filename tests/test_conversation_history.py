@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 from jasper.conversation_history import (
+    CAPTURE_ENABLED_ENV,
     ConversationStore,
     ConversationTurn,
+    DB_PATH_ENV,
+    RETENTION_DAYS_ENV,
+    RETENTION_MAX_ROWS_ENV,
     make_turn_id,
+    read_settings,
 )
 
 
@@ -104,6 +110,90 @@ def test_recent_orders_newest_first_with_limit_and_since_filter(tmp_path):
         "middle",
     ]
     assert store.recent(0) == []
+
+
+def test_read_only_store_does_not_create_or_write_db(tmp_path):
+    db_path = tmp_path / "missing.db"
+    store = ConversationStore(str(db_path), read_only=True)
+    turn = _turn("2026-06-19T20:15:00Z", 1)
+
+    assert store.available is False
+    assert db_path.exists() is False
+    assert store.add(turn) is False
+    assert store.delete(turn.id) is False
+    assert store.clear() == 0
+    assert store.prune(max_rows=1) == 0
+    assert db_path.exists() is False
+
+
+def test_read_only_store_can_read_existing_db_but_not_mutate(tmp_path):
+    db_path = tmp_path / "history.db"
+    writer = ConversationStore(str(db_path))
+    first = _turn("2026-06-19T20:10:00Z", 1, user_text="first")
+    second = _turn("2026-06-19T20:20:00Z", 1, user_text="second")
+    assert writer.add(first) is True
+    assert writer.add(second) is True
+    writer.close()
+
+    reader = ConversationStore(str(db_path), read_only=True)
+    assert reader.available is True
+    assert [turn.user_text for turn in reader.recent(10)] == ["second", "first"]
+    stats = reader.stats()
+    assert stats is not None
+    assert stats.turn_count == 2
+    assert reader.add(_turn("2026-06-19T20:30:00Z", 1)) is False
+    assert reader.delete(first.id) is False
+    reader.close()
+
+    writer = ConversationStore(str(db_path))
+    assert [turn.user_text for turn in writer.recent(10)] == ["second", "first"]
+
+
+def test_read_only_store_can_suppress_query_warnings(tmp_path, caplog):
+    db_path = tmp_path / "history.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.close()
+
+    caplog.set_level(logging.WARNING, logger="jasper.conversation_history")
+    reader = ConversationStore(
+        str(db_path),
+        read_only=True,
+        warn_unavailable=False,
+    )
+    try:
+        assert reader.stats() is None
+        assert reader.recent(10) == []
+    finally:
+        reader.close()
+
+    assert caplog.text == ""
+
+
+def test_read_settings_merges_process_env_and_fresh_wizard_file(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    db_path = tmp_path / "wizard.db"
+    settings_file.write_text(
+        "\n".join([
+            f"{CAPTURE_ENABLED_ENV}=1",
+            f"{DB_PATH_ENV}={db_path}",
+            f"{RETENTION_DAYS_ENV}=14",
+            f"{RETENTION_MAX_ROWS_ENV}=250",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = read_settings(
+        path=str(settings_file),
+        environ={
+            CAPTURE_ENABLED_ENV: "0",
+            DB_PATH_ENV: "/tmp/stale.db",
+        },
+    )
+
+    assert settings.capture_enabled is True
+    assert settings.db_path == str(db_path)
+    assert settings.retention == {"days": 14, "max_rows": 250}
 
 
 def test_prune_by_max_rows_keeps_newest_rows(tmp_path):

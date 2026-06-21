@@ -3,8 +3,12 @@
 > **Status: living plan.** Execution plan for the first deliberate JTS
 > **Feature** (a cross-layer vertical, per the extensibility doctrine):
 > a read-only, household-visible log of what was said to the speaker and
-> what it said back. Forward-looking — nothing here has shipped. Grounded
-> in code reads against `main` on 2026-06-19. **Last updated: 2026-06-19.**
+> what it said back. The store plus the Phase 3 read-side backend shell
+> (`jasper-chat-web`, `GET /data.json`, `/state.chat`, doctor check,
+> nginx/install/landing wiring) are implemented as of 2026-06-21; the
+> actual ES-module renderer remains the separate Prompt 5 asset work.
+> Grounded in code reads against `main` on 2026-06-19 and refreshed
+> against the current tree on 2026-06-21. **Last updated: 2026-06-21.**
 
 **Part of the JTS extensibility model.** This Feature is the *proving
 instance* of the Feature contract in [extensibility.md](extensibility.md):
@@ -212,7 +216,7 @@ on-device Gemini-transcript and end-to-end checks, called out explicitly).
 |---|---|---|
 | **1 — Foundation** | `ConversationStore` (cloned, pytest-covered: CRUD, fail-soft, retention, mic-mute gate) + the optional `LiveTurn` `user_transcript()`/`assistant_transcript()` accessors + the `_end_turn_inner` capture hook, gated by a default-off wizard flag. OpenAI/Grok stop discarding (surface what they already capture). Registers no UI yet. | none |
 | **2 — Gemini transcripts** | Add `input_audio_transcription` + `output_audio_transcription` to the Gemini `LiveConnectConfig` and parse in `_on_response`. Lights up the default provider. | on-device cost/latency check |
-| **3 — The `/chat` page** | `jasper-chat-web` service + ES module + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check. Read-only paired-turn render. | on-device browser pass |
+| **3 — The `/chat` page** | `jasper-chat-web` service + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check are implemented. The ES module / read-only paired-turn render is deferred to Prompt 5. | on-device browser pass |
 | **4 — Retention + privacy controls** | TTL pruner + row cap + per-item/clear-all delete + the wizard opt-in polish + the scoped PRIVACY.md paragraph. Production-safe after this. | none |
 | **5 — Richness (deferred, triggered)** | Surface `tool_calls_json` and links/rich content on the page (the `data_json` column pays off). A narrow Grok assistant-text fallback **only** if Grok usage matters. Search/filter. | none |
 
@@ -274,4 +278,4 @@ unavailable path is a logged no-op that never raises into the turn).
 
 ---
 
-Last verified: 2026-06-19
+Last verified: 2026-06-21
