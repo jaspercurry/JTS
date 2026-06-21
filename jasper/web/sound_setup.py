@@ -135,6 +135,7 @@ from ._common import (
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    json_island,
     reject_csrf,
     send_html_response,
 )
@@ -853,6 +854,22 @@ async def _load_profile_config(
 
 
 def _follower_sound_html(csrf_token: str = "") -> bytes:
+    """Render a bonded active follower's /sound/ page.
+
+    Distributed-active Slice 4: a bonded follower delegates the PROGRAM domain
+    (content EQ, room correction, volume shaping) to the pair leader, but it
+    still owns its LOCAL driver domain (Layer A — the per-driver crossover /
+    limiter / tweeter high-pass that protects the DAC it drives). So the page
+    keeps the delegation card AND mounts the same active-speaker setup UI that
+    main.js renders on a solo box, making the card's "local crossover ... stays
+    with the speaker that owns the DAC path" promise literally true.
+
+    The follower island tells main.js to boot in follower mode: it renders only
+    the active-speaker section (expanded as the primary content) and omits the
+    Off/Saved/Draft content-EQ editor and now-playing plot, which live only on
+    the leader. Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``);
+    the active-speaker commissioning/crossover endpoints are allowed (invariant 6).
+    """
     leader_sound_url = bonded_follower_leader_web_url("/sound/")
     leader_link = (
         '<a class="btn btn--primary" href="'
@@ -860,6 +877,7 @@ def _follower_sound_html(csrf_token: str = "") -> bytes:
         + '">Open leader sound</a>'
         if leader_sound_url else ""
     )
+    follower_island = json_island("sound-follower-data", {"follower": True})
     body = f"""
 <header class="app-header">
   <div class="app-header__row">
@@ -882,9 +900,16 @@ def _follower_sound_html(csrf_token: str = "") -> bytes:
       <a class="btn" href="/rooms/">Manage pair</a>
     </div>
   </section>
+  <div id="view-body"></div>
+  <div class="status-line" id="status" role="status" aria-live="polite"></div>
 </main>
+{follower_island}
+<script type="module" src="/assets/sound-profile/js/main.js"></script>
 """
-    return canonical_page("Sound profile", body, csrf_token=csrf_token)
+    return canonical_page(
+        "Sound profile", body, csrf_token=csrf_token,
+        page_css_href="/assets/sound-profile/sound.css",
+    )
 
 
 def _index_html(csrf_token: str = "") -> bytes:
