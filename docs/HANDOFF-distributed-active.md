@@ -449,9 +449,9 @@ slices land safest-first; each is independently mergeable.
 | **S0-sync** | ✅ | **De-risk gate** — bench the snapclient→loopback→CamillaDSP sync seam with 2 throwaway active followers; acceptance = p99 < 5 ms over 2 h (two-mic acoustic), no audible resync, + ≥24 h `snd-aloop` xrun soak. **Gates Slice 3** | **yes** (2 Pis) |
 | **1** | ✅ | Role/capture: thread `capture_device`; pure-data `OutputTopology` pairing field. Golden byte-identical solo | no |
 | **2** | ✅ | Driver-domain-only active emit variant + `classify_camilla_graph` arm + keystone round-trip test | no |
-| **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed + cue); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / chunksize≥1024 / no-SIGHUP-during-playback | **yes** (2 Pis) |
+| **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed silence + **cue injected into camilla's input, pre-Layer-A, follower-local** — Q2 step 5); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / chunksize≥1024 / no-SIGHUP-during-playback | **yes** (2 Pis) |
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
-| **5** | ✅ | Active **leader** (2nd light CamillaDSP; TTS band-limiting; inv-B-through-Layer-A) — **the v1 gate**; **CPU/thermal** + TTS measured on `jts3` (active cooling assumed) | yes |
+| **5** | ✅ | Active **leader** (2nd light CamillaDSP; TTS band-limiting via **Option 3** — TTS into camilla#2's input loopback, content-duck follows, outputd TTS mixer **not** armed on the active leader; inv-B-through-Layer-A) — **the v1 gate**; **CPU/thermal** measured on `jts3` (active cooling assumed), TTS-latency ratified (Q2 spike) | yes |
 | **6a** | — | Local sub driver — unblock `baseline_subwoofer_not_supported` (solo-active) | mixed |
 | **6b** | — | Wireless sub member + bass management (receiver-side LP/HP, unified leader config) | yes |
 
@@ -532,8 +532,12 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   own content — not silent) plus the `/state` `endpoint.blocked_reason` +
   doctor + `event=multiroom.reconcile.active_follower_blocked` log. The
   **audible** cue through the follower's Layer A on a parked follower / runtime
-  stall is the open **Q2 spike step 5** item (same injection-point class) — it
-  does NOT gate the follower core. The hard safety guarantee (no full-range to
+  stall is resolved by **Q2 spike step 5** (ratified — see the "Decision" record
+  below): inject it into the follower's camilla input (pre-Layer-A,
+  follower-local) via a long-running writer (the grouping supervisor /
+  `jasper-control`, since the reconciler oneshot and parked `jasper-voice`
+  cannot), never a post-camilla mix. It still does **not** gate the follower
+  core. The hard safety guarantee (no full-range to
   the tweeter) holds unconditionally: the loaded graph is always the re-proven
   driver-domain baseline (or the solo-active baseline on fail-closed), so
   stream / silence / garbage all resolve to silence-through-Layer-A, never a
@@ -568,7 +572,9 @@ Gates:
 - **Sync:** inter-speaker error meets the multiroom target (p99 < 5 ms)
   with camilla's fixed latency nulled by `--latency`.
 - **Fail-closed:** pull the stream mid-play (unplug / `tc netem`) → the
-  follower goes **silent + cue**, never full-range.
+  follower goes **silent + cue**, never full-range. The cue is injected into the
+  follower's **camilla input (pre-Layer-A), follower-local** (Q2 step 5) — so it
+  too is band-limited and never reaches the tweeter full-range.
 - **Self-recovery:** un-bond → follower self-recovers to solo active.
 
 ### S0-sync de-risk gate — bench result (2026-06-20)
@@ -657,9 +663,13 @@ speakers, one as leader:
   headroom, so gate on **sustained CPU < ~70%, zero xruns over 2 h, and no
   thermal throttling** (the uncooled Pi 5 drops 2.4→1.5 GHz — **active cooling
   assumed**). Capture real `htop`/temp under load on `jts3`.
-- **Leader TTS:** "Hey Jarvis" replies on the leader reach the tweeter
-  **band-limited** (routed through Layer A or HP'd at the outputd mix) —
-  no full-range speech to the tweeter.
+- **Leader TTS (Option 3, ratified — Q2 spike):** "Hey Jarvis" replies on the
+  leader reach the tweeter **band-limited via camilla#2's Layer A** — TTS is
+  summed into the crossover instance's input loopback (post-snapclient, so it
+  never traverses the round-trip), the content-duck follows the same point, and
+  the outputd 2-ch TTS mixer is **not** armed on the active leader. Confirm no
+  full-range speech to the tweeter and TTS-to-glass ≈ the solo-active baseline
+  (~85–125 ms DSP+playout), not the ~400 ms round-trip.
 - **Matched-pair sync + safety:** both active speakers hold p99 < 5 ms and
   pass the no-full-range re-proof; leader self-loop stall → inv-B falls
   back to direct fan-in **through Layer A** (cue + `/state`), never silent
@@ -698,12 +708,23 @@ speakers, one as leader:
 
 ## Q2 spike — active-leader (and solo-active) TTS band-limiting
 
-> **Status: open — this spike GATES Slice 5 (and informs Slice 3's
-> fail-closed cue). It does NOT gate the follower core (Slices 1–4): a
-> follower is voice/TTS-parked, so it has no TTS to band-limit. Direction
-> leaning (owner, 2026-06-20): ratify *leader-only voice* (already de-facto
-> true) + the cheapest tweeter-safe LOCAL band-limit. The snapcast round-trip
-> is NOT in the tweeter-safe options — measure the DSP-only delta on `jts3`.**
+> **Status: ratified (2026-06-20, measured on `jts3`).** This spike GATES
+> Slice 5 (the active leader) and tightens Slice 3's fail-closed cue; it does
+> NOT gate the follower core (Slices 1–4) — a follower is voice/TTS-parked
+> (`JASPER_GROUPING_VOICE_PARK=1`,
+> [reconcile.py](../jasper/multiroom/reconcile.py)), so it has no
+> conversational TTS to band-limit. **Decisions:** (1) solo-active TTS is
+> already tweeter-safe + in-reference today — **not a gap** (it rides fanin,
+> upstream of CamillaDSP's Layer A); (2) **leader-only voice** ratified
+> (de-facto true via the follower voice-park + inv-A); (3) **Option 3** (TTS
+> summed into the crossover instance's input, upstream of Layer A) is the
+> leader mechanism; (4) the follower fail-closed cue uses the **same**
+> injection point (into camilla's input, follower-local). **Measured
+> incremental TTS-band-limiting latency on `jts3`:** Option 2 ≈ **< 1 ms**,
+> Option 3 ≈ **+85–125 ms** (= the solo-active path JTS already ships), the
+> rejected Option 1 (snapcast round-trip) ≈ **+400 ms** (`buffer_ms`) —
+> Options 2 & 3 confirmed OUT of the round-trip. Full record in
+> "Decision (ratified 2026-06-20)" below.**
 
 **Rules today (verified — `rust/jasper-outputd/src/config.rs`, multiroom
 inv-A).** TTS is mixed at `jasper-outputd` (final stage), **low-latency** (past
@@ -756,25 +777,112 @@ the outputd-2ch-only constraint means solo-active TTS can't use the outputd
 mixer either, so confirm solo-active TTS actually works today (it may itself be
 an unverified gap). Fix solo first.
 
-**The spike — answer in this order, then write the decision back here:**
+## Decision (ratified 2026-06-20 — measured on `jts3`, solo active 2-way @ 48 kHz)
 
-1. **Solo-active TTS today** *(HW-light)* — trace the TTS transport on a solo
-   active speaker: does it route fan-in → CamillaDSP (Layer A) → outputd
-   (band-limited, in-reference), or is the 2ch-only constraint silently dropping
-   it? Fix if broken. This is the foundation for everything below.
-2. **Ratify leader-only voice** *(product)* — follower stays voice-and-TTS-parked.
-3. **Measure the latency delta on `jts3`** for (a) today's outputd mix
-   [baseline, unsafe], (b) Option 3 camilla#2-input [+crossover chunk],
-   (c) Option 2 outputd protective filter [+~one biquad]. Confirm none routes
-   TTS through the snapcast round-trip. Set the conversational-latency budget.
-4. **Pick the leader mechanism** — Option 3 (verified crossover, +chunk, dumb
-   outputd) vs Option 2 (cheapest latency but muffled-or-reimplemented). Weigh
-   fidelity vs latency vs "no DSP in outputd."
-5. **Resolve the follower fail-closed cue** — same injection-point class, but
-   follower-local (no round-trip), so the solo answer from (1) applies: the
-   cue must pass through the follower's Layer A, not be injected post-camilla.
-6. **Ratify** — replace this "open" status with the decision; update Slice 5
-   (and Slice 3's cue handling) scope before building.
+The checklist was worked in order; this is the record.
+
+**1. Solo-active TTS today — WORKS, not a gap.** Traced in code and confirmed
+on `jts3`. There is exactly one TTS transport
+(`JASPER_TTS_TRANSPORT=outputd` — the wire protocol, the only supported value);
+the *socket* decides **where** it mixes. Solo defaults route TTS to
+`JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock` with
+`JASPER_DUCK_TRANSPORT=fanin` ([config.py](../jasper/config.py)), i.e. **into
+fanin, upstream of CamillaDSP**. So on a solo active speaker TTS rides
+`fanin (music+TTS) → CamillaDSP (Layer A) → outputd → DAC`: it is split by the
+per-driver crossover — on `jts3`, the tweeter `LinkwitzRileyHighpass @ 2 kHz`
+in the live `active_speaker_baseline.yml` — and is therefore **tweeter-safe**,
+and it is **in the AEC reference** (outputd publishes its final electrical
+output; `/state.outputd.reference_outputs.speaker_reference_source =
+outputd_final_electrical`, TTS-inclusive). The outputd 2-channel `single_alsa`
+TTS mixer ([config.rs](../rust/jasper-outputd/src/config.rs)) is **not used** on
+the solo path and does **not** silently drop TTS — it is the *bonded-member*
+mixer, armed only by the reconciler. **No fix needed; this is the foundation the
+leader case extends.**
+
+  > **Latent guard hazard (recorded for Slice 5; not fixed here — this is a
+  > spike).** The outputd TTS-mixer guard rejects `content_channels != 2`, but an
+  > active 2-way speaker can *also* be 2-channel (woofer/tweeter, like `jts3`
+  > today), so the guard would *permit* the outputd mixer on a 2-ch active sink —
+  > where mixing post-crossover is full-range to the tweeter (unsafe). Option 3
+  > sidesteps this by construction (the reconciler never arms
+  > `JASPER_OUTPUTD_TTS_SOCKET` on an active leader). Belt-and-suspenders
+  > follow-up: teach the guard that the invariant is "full-range stereo L/R
+  > sink," not "exactly 2 channels."
+
+**2. Leader-only voice — RATIFIED.** A bonded follower is voice/AEC-parked
+(`JASPER_GROUPING_VOICE_PARK=1`, set for an active bonded follower in
+[reconcile.py](../jasper/multiroom/reconcile.py)), and inv-A keeps TTS off the
+stream — so "voice plays only from the leader" is already true. Ratified for v1:
+the assistant "lives" on the leader (fine in one room). This removes any need to
+stream or sync TTS, killing the round-trip-latency worry outright. It does **not**
+by itself make the *leader's own* TTS tweeter-safe (the leader is active) — that
+is Option 3.
+
+**3. Latency — measured on `jts3`. None of the tweeter-safe options route TTS
+through snapcast.**
+
+| Path | TTS injected at | Incremental vs today's outputd mix | Tweeter-safe? |
+|---|---|---|---|
+| (a) outputd mix [today; **unsafe** on active] | outputd `OutputCore`, post-crossover | 0 — reference (TTS-to-glass ≈ DAC playout **63.7 ms**) | ✗ |
+| (c) Option 2 — protective filter on the TTS lane at outputd | outputd, + one biquad | **< 1 ms** (biquad group delay; no added buffering) | ✓ but muffled, or re-impl crossover |
+| (b) Option 3 — TTS into the crossover instance's input | camilla#2 input loopback (post-snapclient) | **+85–125 ms** (camilla chunk 21 ms + playback buffer 43 ms + content-bridge handoff ~63 ms; = the solo-active path) | ✓ |
+| Option 1 — upstream of the bake [**rejected**] | fanin, pre-stream | **+~400 ms** (snapcast `buffer_ms` round-trip) | ✓ but laggy + streams TTS to follower (inv-A) |
+
+Measured anchors (live `/state`, solo active, current buffering):
+`dac.snd_pcm_delay_ms = 63.7`; `content_bridge.fill_frames ≈ 3026` (~63 ms,
+rate_match); camilla `chunksize 1024` (21.3 ms) + `target_level 2048` (42.7 ms).
+Option 3's delta is **bounded DSP latency** (not round-trip), tunable toward a
+~21 ms (one-chunk) floor, and is exactly what a solo active speaker already pays
+for its own voice today. Option 1's +400 ms is the snapcast playout
+(`buffer_ms`, default 400, range 150–1500) — the disqualifier the other options
+avoid because they inject TTS **downstream** of snapclient.
+
+**Conversational-latency budget.** The band-limiting stage must add only **local
+DSP latency** (bounded), never the synced-stream round-trip. Target:
+leader/follower TTS-and-cue-to-glass ≈ the **solo-active** baseline (the
+~85–125 ms of DSP+playout an active speaker already carries), with a working
+ceiling of **≤ ~150 ms** for the band-limiting + playout stage. Option 2 (< 1 ms)
+and Option 3 (+85–125 ms) both satisfy it; Option 1 (≥ 400 ms) does not. Because
+the leader already buffers its own *music* at the round-trip depth and a solo
+active speaker already accepts the camilla path for its *voice*, **Option 3
+introduces no new latency class.**
+
+**4. Leader mechanism — Option 3 (TTS into camilla#2's input loopback).** Chosen
+over Option 2:
+- **Safety / engine.** Reuses the **shipped, verified** per-driver crossover +
+  the `classify_camilla_graph` re-proof; adds **no** safety-critical DSP to the
+  reboot-on-fail Rust daemon. Option 2's tweeter-safe forms are either
+  *skip-tweeter* (a low-pass → muffled < 2 kHz voice, bad UX — speech consonants
+  live above the crossover) or *re-implement the per-driver crossover in outputd
+  Rust* (exactly what the Option-B engine decision rejected, plus relaxing the
+  2-ch outputd constraint to N-channel).
+- **Fidelity.** Full-band voice through the real crossover, not muffled.
+- **Unification (decisive).** The follower fail-closed cue (item 5) *must* inject
+  upstream of Layer A regardless — so Option 3 makes leader-TTS and follower-cue
+  **one** mechanism, validated once. Option 2 leaves the follower cue needing a
+  separate camilla-input path anyway → two mechanisms to build and maintain.
+- **outputd stays dumb** ("swap the engine, not the topology" / "no DSP in
+  outputd" honored).
+- **Cost.** +85–125 ms TTS latency (acceptable per the budget above) + a TTS mix
+  point on the loopback feeding camilla#2 + the content-duck must follow that
+  same point (so the reference still carries the ducked program, inv-A).
+
+**5. Follower fail-closed cue — into the follower's camilla input (through Layer
+A), follower-local.** The base safe state is **silence** (a starved loopback →
+CamillaDSP emits silence *through* the crossover = silence = safe) — already the
+Slice 3 reality (see "Fail-closed cue — v1 reality" above: the reconciler
+oneshot can't play a cue, and the hard no-full-range guarantee holds via the
+re-proven driver-domain baseline). This item resolves the **audible** cue Slice 3
+deferred: inject it at the **same point as Option 3** — the camilla#2 input
+loopback, upstream of Layer A — so it is band-limited (tweeter-safe) and
+**follower-local (no round-trip)**. It must **not** be mixed at outputd
+post-camilla (full-range to the tweeter; the 2-ch outputd mixer also assumes
+L/R, not woofer/tweeter). Player ownership is a Slice 3/5 build detail:
+`jasper-voice` is parked and the reconciler is a oneshot, so a follower-local
+**long-running** writer — the grouping supervisor / `jasper-control`, which
+already watches the stream for starvation — writes the cue WAV into the camilla
+input; never `jasper-voice`, never the reconciler oneshot, never a post-camilla
+mix.
 
 ## Open questions
 
@@ -783,11 +891,13 @@ an unverified gap). Fix solo first.
    Pi 5 thermal throttling under a sustained two-CamillaDSP + server + client
    load. Measure sustained CPU + temp + xruns on `jts3` (active cooling) before
    Slice 5.
-2. **Active-leader TTS band-limiting** — gates Slice 5. Full analysis, the
-   P1/P2/P3 trilemma, the four options, and the ordered spike checklist are in
-   the **"Q2 spike"** section above. Direction leaning: ratify leader-only voice
-   + the cheapest tweeter-safe local band-limit; the snapcast round-trip is NOT
-   in the tweeter-safe options (it's DSP latency, not round-trip latency).
+2. **Active-leader TTS band-limiting** — ✅ **RESOLVED (2026-06-20, Q2 spike
+   ratified).** Leader-only voice ratified; leader TTS uses **Option 3** (into
+   camilla#2's input, through Layer A); follower fail-closed cue uses the same
+   injection point; measured deltas (Option 2 < 1 ms, Option 3 +85–125 ms, the
+   rejected round-trip +400 ms) and the conversational-latency budget are in
+   "Decision (ratified 2026-06-20)" above. Remaining for Slice 5 is the *build +
+   on-device validation* of the chosen mechanism, not the design choice.
 3. **Mixed-bond latency** — an active follower (camilla latency) + a dumb
    follower (bare ChannelPick) in one bond: confirm `--latency` nulls the
    delta to within the sync target.
@@ -798,9 +908,14 @@ an unverified gap). Fix solo first.
    target sub hardware; both reuse `channel_split.py`'s sub fragment.
    Decide in 6b — no need to lock it before the follower core ships.
 
-Last verified: 2026-06-20 (Slice 3 active-follower code landed — driver_domain
-apply seam, jasper.multiroom.follower_config, reconciler active-follower branch
-+ readiness gate/fail-safe-to-solo, outputd fence pin, /state endpoint surface;
-on-device validation on jts.local-leader + jts3-active-follower owed. Prior:
-external design review folded in — S0-sync gate, CPU/thermal reframe,
-clock-master / chunksize≥1024 / no-SIGHUP pins)
+Last verified: 2026-06-21 (Q2 spike ratified — solo-active TTS confirmed
+tweeter-safe + in-reference on `jts3` (not a gap); leader-only voice ratified;
+leader TTS = Option 3 (into camilla#2's input, through Layer A); follower
+fail-closed cue uses the same injection point; latency measured on `jts3`
+(Option 2 < 1 ms, Option 3 +85–125 ms, rejected round-trip +400 ms). Prior
+(2026-06-20): Slice 3 active-follower code landed — driver_domain apply seam,
+jasper.multiroom.follower_config, reconciler active-follower branch + readiness
+gate/fail-safe-to-solo, outputd fence pin, /state endpoint surface; on-device
+validation on jts.local-leader + jts3-active-follower owed. External design
+review folded in — S0-sync gate, CPU/thermal reframe, clock-master /
+chunksize≥1024 / no-SIGHUP pins)
