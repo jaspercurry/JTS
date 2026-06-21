@@ -159,6 +159,8 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_RESEARCH_CONCURRENCY must be > 0")
     if cfg.research_max_result_chars <= 0:
         raise RuntimeError("JASPER_RESEARCH_MAX_RESULT_CHARS must be > 0")
+    if cfg.research_retention < 0:
+        raise RuntimeError("JASPER_RESEARCH_RETENTION must be >= 0")
     return cfg
 
 
@@ -367,6 +369,7 @@ class Config:
     research_max_runtime_sec: float
     research_concurrency: int
     research_max_result_chars: int
+    research_retention: int
 
     # Gemini one-shot TTS model used by the cue subsystem when the
     # active voice provider is `gemini` (or a fallback path picks
@@ -825,6 +828,7 @@ class Config:
             research_max_result_chars=_env_int(
                 "JASPER_RESEARCH_MAX_RESULT_CHARS", 600,
             ),
+            research_retention=_env_int("JASPER_RESEARCH_RETENTION", 200),
             gemini_tts_model=_env(
                 "JASPER_GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview",
             ),

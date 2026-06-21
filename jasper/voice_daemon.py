@@ -1352,11 +1352,14 @@ class WakeLoop:
             played = await self._play_cue(RESEARCH_FAILED_CUE_SLUG)
         else:
             assert text is not None
+            # Log shape, not content: a research result can carry personal
+            # material (medical/financial queries) and the journal is
+            # persistent. Full text stays at DEBUG (cue manager) only.
             logger.info(
-                "research announce: id=%s status=%s text=%r",
+                "research announce: id=%s status=%s text_len=%d",
                 job.id,
                 job.status,
-                text,
+                len(text),
             )
             played = await self._play_dynamic_text(text)
         if not played:

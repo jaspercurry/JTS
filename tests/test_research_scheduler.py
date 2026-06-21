@@ -444,3 +444,80 @@ async def test_done_result_is_capped_and_usage_is_recorded():
     finally:
         if os.path.exists(path):
             os.unlink(path)
+
+
+def test_prune_terminal_bounds_store_and_never_prunes_running():
+    path = _tmp_db_path()
+    try:
+        store = ResearchJobStore(path)
+        for i in range(5):
+            store.add(ResearchJob(
+                id=f"d{i}", query="q", status=DONE, result="r", error=None,
+                created_at=100.0 + i, finished_at=100.0 + i,
+                announced=True, read=False,
+            ))
+        store.add(ResearchJob(
+            id="run", query="q", status=RUNNING, result=None, error=None,
+            created_at=50.0, finished_at=None, announced=False, read=False,
+        ))
+        assert store.prune_terminal(2) == 3
+        # Newest 2 terminal kept; the RUNNING row is never pruned.
+        assert {j.id for j in store.all()} == {"d3", "d4", "run"}
+    finally:
+        os.unlink(path)
+
+
+def test_prune_terminal_never_drops_unannounced_terminal_rows():
+    # Restart-restore re-announces unannounced terminal jobs, so prune must
+    # exempt them even when they're the oldest rows — else a promised result
+    # is silently lost across a restart.
+    path = _tmp_db_path()
+    try:
+        store = ResearchJobStore(path)
+        store.add(ResearchJob(
+            id="unann", query="q", status=DONE, result="r", error=None,
+            created_at=1.0, finished_at=1.0, announced=False, read=False,
+        ))
+        for i in range(3):
+            store.add(ResearchJob(
+                id=f"a{i}", query="q", status=DONE, result="r", error=None,
+                created_at=100.0 + i, finished_at=100.0 + i,
+                announced=True, read=False,
+            ))
+        # keep=1: of the 3 ANNOUNCED rows, prune 2; the oldest (unannounced)
+        # row is exempt despite being beyond the retention window.
+        assert store.prune_terminal(1) == 2
+        ids = {j.id for j in store.all()}
+        assert "unann" in ids
+        assert ids == {"unann", "a2"}
+    finally:
+        os.unlink(path)
+
+
+class _InstantClient:
+    async def complete(self, req):
+        return ResearchResult(text="ok", input_tokens=1, output_tokens=1)
+
+
+@pytest.mark.asyncio
+async def test_mark_announced_bounds_store_and_memory_to_retention():
+    path = _tmp_db_path()
+    sched = ResearchScheduler(_InstantClient(), db_path=path, retention=2)
+    try:
+        for _ in range(4):
+            r = sched.submit("question")
+            assert r.accepted and r.job is not None
+            jid = r.job.id
+            await _wait_for(
+                lambda jid=jid: (j := sched.get(jid)) is not None
+                and j.status == DONE,
+            )
+            sched.mark_announced(jid)
+        # Both the persistent store and the in-memory map are bounded to the
+        # newest `retention` terminal jobs.
+        assert len(ResearchJobStore(path).all()) == 2
+        assert sum(1 for j in sched.list_jobs() if j.status != RUNNING) == 2
+    finally:
+        await sched.stop()
+        if os.path.exists(path):
+            os.unlink(path)

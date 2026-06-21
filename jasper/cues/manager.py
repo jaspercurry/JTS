@@ -42,6 +42,13 @@ from .registry import CUES, CueDef, find as find_cue
 logger = logging.getLogger(__name__)
 
 
+def _preview(text: str, limit: int = 40) -> str:
+    """Short, log-safe repr of dynamic cue text — first `limit` chars, so
+    persistent INFO logs don't carry full (possibly personal) result content."""
+    text = text or ""
+    return repr(text if len(text) <= limit else text[:limit] + "…")
+
+
 # Fallback wait for legacy/fake playout objects that predate
 # TtsPlayout.wait_drained(). Real TtsPlayout implementations expose a
 # sample-counted drain deadline, which is the source of truth for both
@@ -297,10 +304,14 @@ class AudioCueManager:
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
             return False
         await _wait_tts_drained(self._tts)
+        # Dynamic cue text (research results, timer labels) can be personal and
+        # the journal is persistent — log a short preview + length at INFO, full
+        # text only at DEBUG.
         logger.info(
-            "cue speak_text: %r (%d bytes pcm, audio=%.1fs)",
-            text, len(pcm), audio_duration_sec,
+            "cue speak_text: %s (%d chars, %d bytes pcm, audio=%.1fs)",
+            _preview(text), len(text), len(pcm), audio_duration_sec,
         )
+        logger.debug("cue speak_text full text: %r", text)
         return True
 
     # --- internals ---
