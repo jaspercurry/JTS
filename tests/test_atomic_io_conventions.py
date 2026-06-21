@@ -49,7 +49,6 @@ _ALLOWLIST = {
     "jasper/assistant_loudness.py",
     "jasper/audio_quality.py",
     "jasper/audio_validation.py",
-    "jasper/bluetooth/roles.py",
     "jasper/correction/replay_artifacts.py",
     "jasper/output_hardware.py",
     "jasper/output_topology.py",

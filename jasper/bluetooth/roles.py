@@ -7,15 +7,16 @@ back into range and showing up at `/dev/input/event*` — is it a HID
 input we route to jasper-control, or a BT speaker source we let
 bluez-alsa pick up?). That mapping lives here.
 
-Atomic write via tmpfile + rename. Tiny — never larger than a few KB.
+Atomic, group-readable write via :mod:`jasper.atomic_io`. Tiny — never
+larger than a few KB.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from pathlib import Path
+
+from jasper.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -61,27 +62,15 @@ class RoleStore:
             self._write(data)
 
     def _write(self, data: dict[str, str]) -> None:
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            logger.warning("bt_roles: mkdir failed (%s)", e)
-            return
         body = json.dumps(data, indent=2, sort_keys=True)
+        # 0640 group jasper: bt_roles.json lives in /var/lib/jasper, the shared
+        # group-readable state tree under the WS1 non-root drop. Publish it
+        # group-readable (NOT the hand-rolled NamedTemporaryFile/mkstemp default
+        # 0600) so any non-root daemon in the jasper group can read it, matching
+        # the rest of /var/lib/jasper. atomic_write_text creates the parent dir +
+        # writes the right mode in one call; keep the write best-effort (a
+        # role-map write must not crash the bluetooth handler).
         try:
-            fd, tmp = tempfile.mkstemp(
-                prefix=".bt_roles.", suffix=".tmp",
-                dir=str(self._path.parent),
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(body)
-                os.chmod(tmp, 0o600)
-                os.replace(tmp, self._path)
-            except Exception:  # noqa: BLE001
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+            atomic_write_text(self._path, body, mode=0o640)
         except OSError as e:
             logger.warning("bt_roles: write failed (%s)", e)
