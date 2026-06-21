@@ -314,6 +314,13 @@
   }
   .active-speaker-status__stack { display: flex; flex-direction: column; gap: 10px; }
   .active-speaker-status__head { gap: 12px; align-items: center; }
+  /* "Driver levels" summary on the baseline (Validate and apply) card —
+     separated from the card body above it. */
+  .active-speaker-level-match {
+    margin-top: 14px; padding-top: 12px;
+    border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 8px;
+  }
   .active-speaker-facts {
     display: grid; grid-template-columns: 1fr; gap: 0;
     overflow: hidden;

@@ -204,22 +204,32 @@ Avoid:
 
 ### 5. Validate Crossover Blend
 
-After each driver has been measured on its own, the user needs one summed check
+After each driver has been confirmed on its own, the user needs one summed check
 per active speaker group. This is still a guided setup action, not a lab report:
 the UI should say which drivers will be heard together, play the combined test,
-then record the phone-mic capture that proves whether the crossover blends.
-Polarity and delay are technical implementation details, but they can be
-captured as simple problem outcomes when the user hears something wrong. The
-combined test also needs a bounded level control for low-sensitivity drivers:
-the user can raise the next play from the quiet floor, while the backend still
-limits upward motion and logs the emitted level. A manual success click must not
-unlock the active profile without current mic evidence tied to the latest
-audible combined test.
+then have the user confirm the blend. Polarity and delay are technical
+implementation details, but they can be captured as simple problem outcomes when
+the user hears something wrong. The combined test also needs a bounded level
+control for low-sensitivity drivers: the user can raise the next play from the
+quiet floor, while the backend still limits upward motion and logs the emitted
+level.
+
+The phone is OPTIONAL throughout — a household can finish entirely by ear. After
+an audible combined test, the user confirms the blend either by ear ("Blend
+sounds right") or, more reliably, by recording a phone-mic capture. Both paths
+are gated on having actually played the combined test — you can't certify a
+blend you didn't hear — and the mic capture stays the recommended check because
+a polarity/delay null can be hard to judge by ear. (Earlier drafts required the
+mic capture for the positive verdict; that was relaxed in 2026-06 so the whole
+commissioning flow can be completed without a phone — see
+[HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) "the whole phone
+flow is OPTIONAL".)
 
 Good language:
 
 - "Check the crossover blend"
-- "Record mic capture"
+- "Blend sounds right"
+- "Measure with mic (optional)"
 - "Sounds hollow or weak"
 - "Needs level or delay adjustment"
 

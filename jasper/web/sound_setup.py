@@ -2378,6 +2378,13 @@ async def _active_speaker_commission_load_payload(
     # check is the exclusion (see jasper.web.active_speaker_flow).
     blocking = blocking_measurement_phase()
     if blocking is not None:
+        logger.info(
+            "event=sound.active_speaker_commission action=load result=refused "
+            "reason=measurement_in_progress group=%s role=%s blocking=%s",
+            group,
+            role,
+            blocking,
+        )
         return {
             "status": "refused",
             "reason": "measurement_in_progress",
