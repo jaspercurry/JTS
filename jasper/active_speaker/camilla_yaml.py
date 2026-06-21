@@ -33,6 +33,7 @@ from jasper.camilla_emit import (
     emit_linkwitz_riley,
     emit_mixer,
     fmt,
+    mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import emit_filter_spec
 
@@ -186,8 +187,10 @@ def _mixer_sources(
             return [(1, 0.0, inverted)]
         raise ActiveSpeakerConfigError(f"unsupported stereo side {side!r}")
     if layout == "mono":
-        # Safe mono sum. Two -6 dB feeds keep correlated L+R from gaining.
-        return [(0, -6.0, inverted), (1, -6.0, inverted)]
+        # A mono cabinet sums L+R to each driver via the shared clip-safe recipe
+        # (the same one the inter-speaker channel-select uses); ``inverted``
+        # carries this driver's polarity.
+        return mono_sum_sources(inverted=inverted)
     raise ActiveSpeakerConfigError(f"unsupported layout {layout!r}")
 
 

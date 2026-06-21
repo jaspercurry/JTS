@@ -18,6 +18,7 @@ from jasper.camilla_emit import (
     channel_select_sources,
     emit_channel_select_mixer,
     emit_gain_filter,
+    mono_sum_sources,
     emit_linkwitz_riley,
     emit_master_gain_pipeline,
     emit_mixer,
@@ -105,6 +106,22 @@ def test_mixer_matches_multiroom_channel_select():
         "        sources:\n"
         "          - { channel: 0, gain: 0.0000, inverted: false }"
     )
+
+
+def test_mono_sum_sources_is_exactly_clip_safe():
+    # The one clip-safe L+R sum recipe: two MONO_SUM_GAIN_DB feeds summing to
+    # exactly 0 dBFS for identical L==R (NOT a rounded -6.0, which gains +0.02 dB).
+    assert mono_sum_sources() == [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
+    assert sum(10 ** (g / 20.0) for _, g, _ in mono_sum_sources()) == pytest.approx(1.0)
+    assert mono_sum_sources(inverted=True) == [
+        (0, MONO_SUM_GAIN_DB, True), (1, MONO_SUM_GAIN_DB, True)
+    ]
+
+
+def test_channel_select_mono_composes_the_shared_sum():
+    # channel_select("mono"/"sub") is the inter-speaker use of the one recipe.
+    assert channel_select_sources("mono") == mono_sum_sources()
+    assert channel_select_sources("sub") == mono_sum_sources()
 
 
 def test_channel_select_sources_left_right_are_unity_routes():
