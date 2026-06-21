@@ -202,12 +202,12 @@ def emit_mixer(
 # after it.
 CHANNEL_SELECT_MIXER = "channel_select"
 
-# Per-source gain for a 2-channel mono/sub sum. 20*log10(0.5) = -6.0206 dB:
-# identical L==R inputs (a mono track, the common case on a mono/sub speaker)
-# sum to EXACTLY 0 dBFS, so they cannot clip under ``volume_limit: 0.0``.
-# Uncorrelated content is correspondingly quieter; that is the safe trade for a
-# household speaker (loudness is recovered downstream by the volume fader, not by
-# risking a clip here).
+# Per-source gain for a 2-channel L+R mono sum. 20*log10(0.5) = -6.0206 dB:
+# identical L==R inputs (a mono track) sum to EXACTLY 0 dBFS, so they cannot clip
+# under ``volume_limit: 0.0``. Uncorrelated content is correspondingly quieter;
+# that is the safe trade for a household speaker (loudness is recovered
+# downstream by the volume fader, not by risking a clip here). A rounded -6.0 dB
+# (= 0.50119 linear) would add +0.02 dB toward the ceiling — use this constant.
 MONO_SUM_GAIN_DB = 20.0 * math.log10(0.5)  # -6.020599913…
 
 # Unity route gain (dB). Selecting a single channel onto an output is a plain
@@ -215,16 +215,32 @@ MONO_SUM_GAIN_DB = 20.0 * math.log10(0.5)  # -6.020599913…
 _CHANNEL_ROUTE_GAIN_DB = 0.0
 
 
+def mono_sum_sources(*, inverted: bool = False) -> list[tuple[int, float, bool]]:
+    """The clip-safe L+R mono-sum mixer sources: two :data:`MONO_SUM_GAIN_DB`
+    feeds so identical L==R sums to exactly 0 dBFS.
+
+    The one recipe for "sum L and R without gaining toward the clip ceiling",
+    composed by both speaker axes: the INTER-speaker channel-select (when a whole
+    box plays the mono program) and the INTRA-speaker active split (when a mono
+    cabinet feeds the summed program to its drivers). ``inverted`` flips both
+    feeds' polarity — the channel-select never inverts; the active split passes a
+    per-driver polarity. Keeping it here means the clip-safe sum has ONE
+    definition that cannot drift between the two callers.
+    """
+    return [(0, MONO_SUM_GAIN_DB, inverted), (1, MONO_SUM_GAIN_DB, inverted)]
+
+
 def channel_select_sources(channel: str) -> list[tuple[int, float, bool]]:
     """The ``(input_channel, gain_db, inverted)`` sources mixed onto EACH of the
     two output channels for one inter-speaker channel assignment.
 
-    One unity source for a ``left`` / ``right`` route; two clip-safe -6.02 dB
-    sources for a ``mono`` / ``sub`` L+R sum. Both output channels get the SAME
-    content, so the assigned channel reaches the driver regardless of how the
-    physical speaker taps the stereo bus. ``stereo`` is passthrough and has no
-    mixer, so it is not a valid argument here (callers handle it separately).
-    ``sub`` shares ``mono``'s sum; its low-pass crossover is a separate filter.
+    One unity source for a ``left`` / ``right`` route; the clip-safe
+    :func:`mono_sum_sources` for a ``mono`` / ``sub`` L+R sum. Both output
+    channels get the SAME content, so the assigned channel reaches the driver
+    regardless of how the physical speaker taps the stereo bus. ``stereo`` is
+    passthrough and has no mixer, so it is not a valid argument here (callers
+    handle it separately). ``sub`` shares ``mono``'s sum; its low-pass crossover
+    is a separate filter.
 
     Raises ``ValueError`` for an unknown / passthrough channel — this is an
     internal (resolved) value, so fail loud rather than emit a silent mis-route.
@@ -234,7 +250,7 @@ def channel_select_sources(channel: str) -> list[tuple[int, float, bool]]:
     if channel == "right":
         return [(1, _CHANNEL_ROUTE_GAIN_DB, False)]
     if channel in {"mono", "sub"}:
-        return [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
+        return mono_sum_sources()
     raise ValueError(
         f"channel {channel!r} has no channel-select mixer "
         "(expected one of left, right, mono, sub)"

@@ -21,6 +21,7 @@ from jasper.active_speaker import (
     emit_active_speaker_commissioning_config,
 )
 from jasper.active_speaker.environment import classify_camilla_config_text
+from jasper.camilla_emit import MONO_SUM_GAIN_DB
 
 # Reuse the canonical preset fixtures.
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
@@ -96,6 +97,24 @@ def test_commissioning_config_preserves_production_safety():
         limiter = parsed["filters"][f"as_{role}_startup_limiter"]["parameters"]
         assert limiter["clip_limit"] == -12.0
         assert limiter["soft_clip"] is True
+
+
+def test_mono_split_mixer_sums_l_plus_r_clip_safe():
+    # A mono cabinet's split mixer sums L+R via the ONE shared clip-safe recipe
+    # (MONO_SUM_GAIN_DB), not a rounded -6.0 that would gain +0.02 dB toward the
+    # 0 dB ceiling. Pins the shared _mixer_sources mono branch through the
+    # shipped production graph — polarity-agnostic (asserts the gain + the exact
+    # 0 dBFS sum, not the per-driver inversion).
+    out = emit_active_speaker_commissioning_config(
+        _preset(_two_way_preset("mono")), playback_device=ACTIVE_PCM
+    )
+    split = yaml_lib.safe_load(out)["mixers"]["split_active_2way"]
+    assert split["channels"] == {"in": 2, "out": 2}
+    for dest in split["mapping"]:
+        gains = [src["gain"] for src in dest["sources"]]
+        assert gains == [pytest.approx(MONO_SUM_GAIN_DB), pytest.approx(MONO_SUM_GAIN_DB)]
+        # identical L==R sums to EXACTLY unity (0 dBFS), no +0.02 dB drift.
+        assert sum(10 ** (g / 20.0) for g in gains) == pytest.approx(1.0)
 
 
 def test_commissioning_config_rejects_outputd_lane():
