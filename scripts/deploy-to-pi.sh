@@ -193,6 +193,11 @@ ensure_origin_fetched() {
 # BEFORE rsync: a downgrade aborts unless JASPER_DEPLOY_ALLOW_DOWNGRADE=1
 # (deliberate rollback/bisect); diverged sibling branches warn and
 # proceed (routine lab flow, but the replaced work is named).
+#
+# This function also emits a separate, NON-BLOCKING behind-origin/main
+# advisory at the end (the staleness-advisory block below): the guard
+# above only relates the Pi to THIS checkout, so a current checkout can
+# still be deploying onto a box whose installed build trails origin/main.
 preflight_deploy_direction() {
     local remote_manifest installed_sha installed_branch installed_at
     local direction installed_short local_date installed_date
