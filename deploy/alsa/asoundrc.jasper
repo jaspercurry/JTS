@@ -60,6 +60,12 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   jasper-usbsink     → pcm.usbsink_substream     → hw:Loopback,0,3
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
 #   active Nch DSP    ← outputd_active_content_*  ← hw:Loopback,0/1,5
+#   passive stereo DSP ← outputd_content_*        ← hw:Loopback,0/1,6
+#   active-follower    ← (grouping round-trip)    ← hw:Loopback,0/1,8
+#     bond: snapclient writes 0,8; the follower's CamillaDSP captures 1,8
+#     and runs Layer A (distributed-active Slice 3). A 9th pair (8) is
+#     dedicated so it never collides with the active-content lane (5);
+#     pcm_substreams was raised 8→9 (needs a reboot — see snd-aloop.conf).
 #                                                       │
 #                                                       ▼ (loop)
 #   jasper-fanin reads        hw:Loopback,1,0..4
@@ -127,7 +133,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # `hw:Loopback,1,0` is now a private fan-in input lane; the summed
 # music reference is `pcm.jasper_capture` on substream 7.
 
-# Per-renderer substream aliases. Substream allocation (8 pairs per
+# Per-renderer substream aliases. Substream allocation (9 pairs per
 # card, pinned in deploy/modprobe.d/snd-aloop.conf):
 #   0 — librespot          (Spotify Connect)
 #   1 — shairport-sync     (AirPlay 2)
@@ -139,6 +145,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #       8 for DAC8x — see the outputd_active_content_* block below)
 #   6 — outputd post-DSP content lane (Camilla -> outputd)
 #   7 — fan-in daemon's summed output → CamillaDSP / AEC fallback
+#   8 — active-follower grouping round-trip (snapclient -> the follower's
+#       CamillaDSP; distributed-active Slice 3). Dedicated so it never collides
+#       with the active-content lane (5); the 9th pair needs a reboot to appear.
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
 # gets converted to the substream's 48 kHz S16_LE via the configured

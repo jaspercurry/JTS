@@ -128,5 +128,8 @@ def test_install_writes_fanin_asound_conf_and_retires_switcher():
 
 def test_snd_aloop_modprobe_pins_substreams_and_notify():
     conf = (REPO / "deploy" / "modprobe.d" / "snd-aloop.conf").read_text()
-    assert "pcm_substreams=8" in conf
+    # 9 pairs since distributed-active Slice 3: pair 8 is the active-follower
+    # grouping round-trip (dedicated so it never collides with the
+    # active-content lane on pair 5). Needs a reboot to take effect.
+    assert "pcm_substreams=9" in conf
     assert "pcm_notify=0" in conf

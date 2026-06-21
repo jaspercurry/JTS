@@ -137,20 +137,28 @@ MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 # (not the inv-2 FIFO): the active follower needs the loopback's clock for
 # CamillaDSP's `rate_adjust` to track, and the fixed CamillaDSP pipeline
 # latency is nulled by snapclient `--latency` (HANDOFF-distributed-active.md
-# "Clock domain"). It rides a DEDICATED substream so it never collides with
-# the fan-in lane: the production snd-aloop card carries renderers on
-# playback substreams 0-4 and the fan-in summed stream on substream 7
-# (/etc/modprobe.d/snd-aloop.conf), so substream 5 is the free gap. Both
-# sides are env-overridable for on-device tuning; the snd-aloop subdevice
-# is always present (no mkfifo equivalent needed).
+# "Clock domain"). It rides a DEDICATED snd-aloop substream (8). An active
+# follower runs TWO loopback hops that must NOT collide: (1) snapclient ->
+# camilla [this grouping round-trip], and (2) camilla -> outputd's
+# active-content lane, which is substream 5 (`outputd_active_content_*` in
+# deploy/alsa/asoundrc.jasper). The full allocation on an active box is:
+# 0-4 renderers, 5 active-content, 6 passive-content (`outputd_content_*`),
+# 7 fan-in summed stream — so the stock `pcm_substreams=8` (pairs 0-7) is fully
+# taken and the round-trip needs a 9th pair. `deploy/modprobe.d/snd-aloop.conf`
+# therefore sets `pcm_substreams=9` and this uses pair 8. NOTE: a
+# `pcm_substreams` change only takes effect on REBOOT (snd-aloop loads at
+# boot); until then pair 8 does not exist and the bond's CamillaDSP apply
+# fails-closed (the box stays on its safe solo graph). `jasper-doctor`'s
+# snd-aloop check warns when the live substream count is below the configured
+# one. Both sides are env-overridable for on-device tuning.
 #
-#   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,5
-#   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,5
+#   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,8
+#   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,8
 GROUPING_LOOPBACK_PLAYBACK = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_PLAYBACK", "hw:Loopback,0,5",
+    "JASPER_GROUPING_LOOPBACK_PLAYBACK", "hw:Loopback,0,8",
 )
 GROUPING_LOOPBACK_CAPTURE = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_CAPTURE", "hw:Loopback,1,5",
+    "JASPER_GROUPING_LOOPBACK_CAPTURE", "hw:Loopback,1,8",
 )
 # snapclient decodes to the snapserver-pinned 48 kHz / S16 / stereo, so the
 # follower's CamillaDSP captures the loopback as S16_LE (the S0-sync bench

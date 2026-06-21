@@ -61,7 +61,10 @@ class _FakeCamilla:
 
 
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
-    monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: topology)
+    # The re-proof uses the STRICT loader (fail-closed); patch that.
+    monkeypatch.setattr(
+        output_topology_mod, "load_output_topology_strict", lambda *a, **k: topology
+    )
     monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
         crossover_preview_mod, "load_crossover_preview", lambda *a, **k: preview
@@ -113,7 +116,7 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
     assert "emit_active_speaker_driver_domain_config" in yaml
     assert "# program_channel=left" in yaml
-    assert 'device: "hw:Loopback,1,5"' in yaml  # the round-trip loopback capture
+    assert 'device: "hw:Loopback,1,8"' in yaml  # the dedicated round-trip loopback capture
     assert "active_baseline_headroom" not in yaml  # no leader-baked program domain
     # The prior solo-active config was stashed for the unbond restore.
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == (
@@ -172,7 +175,9 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
 
 def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     """Stub the topology load + the graph re-proof for restore tests."""
-    monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: object())
+    monkeypatch.setattr(
+        output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
+    )
     monkeypatch.setattr(
         runtime_contract_mod, "classify_camilla_graph",
         lambda *a, **k: SimpleNamespace(
@@ -224,6 +229,53 @@ def test_restore_refuses_unprovable_candidate_never_loads_passive(
 
     assert restored is None
     assert cam.loaded == []  # NEVER loaded the unprovable config onto the active sink
+
+
+def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:
+    """Critical (adversarial review): the re-proof must use the STRICT topology
+    loader. A corrupt/unreadable topology.json (the filesystem-loss class) must
+    make precheck REFUSE to bond — not fall through to an empty draft where a
+    flat full-range graph would re-prove allowed and reach the tweeter."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+
+    def _boom(*a, **k):
+        raise output_topology_mod.OutputTopologyError("topology.json corrupt")
+
+    monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", _boom)
+
+    with pytest.raises(fc.ActiveFollowerError) as exc:
+        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
+    assert exc.value.reason == "topology_unreadable"
+
+
+def test_restore_fails_closed_on_unreadable_topology_never_loads(
+    monkeypatch, tmp_path,
+) -> None:
+    """Critical (adversarial review): on an unreadable topology, restore must NOT
+    re-prove against a fail-soft empty draft (where a flat stash would pass) —
+    it loads NOTHING and leaves CamillaDSP on its current safe graph."""
+    monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+
+    def _boom(*a, **k):
+        raise output_topology_mod.OutputTopologyError("topology.json corrupt")
+
+    monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", _boom)
+    # A flat config sitting in the stash (what the filesystem-loss class leaves).
+    flat = tmp_path / "active_speaker_baseline.yml"
+    flat.write_text("# flat full-range config\n", encoding="utf-8")
+    fc._write_stash(str(flat), path=fc.FOLLOWER_PRIOR_STASH)
+
+    cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
+    restored = asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
+
+    assert restored is None
+    assert cam.loaded == []  # never loaded a config under a blind topology
 
 
 def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:

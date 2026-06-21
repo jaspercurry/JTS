@@ -501,8 +501,10 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   ([follower_config.py](../jasper/multiroom/follower_config.py)) is the
   active-follower apply/restore arm (mirrors `leader_config`): it builds +
   **re-proves** (`classify_camilla_graph`) the driver-domain config, swaps
-  CamillaDSP glitch-free (snapclient → `hw:Loopback,0,5` → CamillaDSP captures
-  `hw:Loopback,1,5`, `enable_rate_adjust`, no resampler, `chunksize` 1024,
+  CamillaDSP glitch-free (snapclient → `hw:Loopback,0,8` → CamillaDSP captures
+  `hw:Loopback,1,8` — a dedicated snd-aloop pair so the round-trip never
+  collides with the active-content lane (5); `pcm_substreams` 8→9 needs a
+  reboot — `enable_rate_adjust`, no resampler, `chunksize` 1024,
   `S16_LE`), stashes the prior solo-active config, and on un-bond restores the
   **active** baseline (never a passive graph). The reconciler
   ([reconcile.py](../jasper/multiroom/reconcile.py)) detects an active box

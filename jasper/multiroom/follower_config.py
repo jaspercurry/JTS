@@ -11,8 +11,8 @@ relocates **Layer A** (the ``2->N`` split + per-driver crossover / limiter /
 tweeter high-pass) onto the follower's own CamillaDSP, fed by the round-trip
 loopback:
 
-    snapclient --player alsa -> hw:Loopback,0,5   (snapclient writes)
-    CamillaDSP captures           hw:Loopback,1,5  (rate-tracked, bit-perfect)
+    snapclient --player alsa -> hw:Loopback,0,8   (snapclient writes)
+    CamillaDSP captures           hw:Loopback,1,8  (rate-tracked, bit-perfect)
       -> driver-domain Layer A (channel-select -> split -> per-driver chain)
       -> outputd active sink -> DACs
 
@@ -154,7 +154,10 @@ async def precheck_active_follower(
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
     from jasper.active_speaker.runtime_contract import classify_camilla_graph
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
 
     from .reconcile import (
         GROUPING_LOOPBACK_CAPTURE,
@@ -163,7 +166,21 @@ async def precheck_active_follower(
 
     program_channel = program_channel_for(cfg.channel)
 
-    topology = load_output_topology()
+    # STRICT topology load (fail-closed). The re-proof below passes this
+    # topology explicitly to classify_camilla_graph, so a fail-SOFT loader
+    # would hand it an empty draft (requires_roleful_graph=False) on a corrupt
+    # topology.json — and a flat full-range graph then RE-PROVES as allowed
+    # (the tweeter guard is keyed on a roleful topology). The 2026-05-23
+    # filesystem-loss class corrupts topology.json too, so the soft loader goes
+    # blind exactly when it matters. Refuse to bond on an unreadable topology.
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError as exc:
+        raise ActiveFollowerError(
+            "topology_unreadable",
+            "active follower cannot re-prove its graph — output topology is "
+            f"missing/corrupt ({exc}); refusing to bond (no full-range emit)",
+        ) from exc
     design_draft = load_design_draft()
     crossover_preview = load_crossover_preview(current_design_draft=design_draft)
     measurements = load_measurement_state(topology)
@@ -283,7 +300,10 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
     from jasper.active_speaker.baseline_profile import baseline_config_path
     from jasper.active_speaker.runtime_contract import classify_camilla_graph
     from jasper.dsp_apply import apply_dsp_config
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
 
     cam = camilla_factory()
     current = await cam.get_config_file_path(best_effort=True)
@@ -291,6 +311,25 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
 
     if not stash and current != FOLLOWER_CONFIG_PATH:
         # Solo-active box that was never an active follower — no churn.
+        return None
+
+    # STRICT topology load (fail-closed). The re-proof below keys "is this a
+    # safe active graph" on the topology being roleful; a fail-SOFT empty draft
+    # would let a flat full-range config pass re-proof (the tweeter guard goes
+    # blind). The filesystem-loss class that corrupts a durable baseline also
+    # corrupts topology.json, so on an unreadable topology we must NOT load any
+    # candidate — leave CamillaDSP on its current (safe) graph.
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError as exc:
+        log_event(
+            logger,
+            "multiroom.camilla_apply",
+            result="active_follower_restore_topology_unreadable",
+            error=str(exc),
+            current=current or "(none)",
+            level=logging.WARNING,
+        )
         return None
 
     # Candidate order: the stashed prior solo config, then the durable solo
@@ -307,7 +346,6 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
     # classifies as a safe active graph. This is the "never a passive graph"
     # guarantee made good at load time: a flat/corrupt config under a tweeter
     # topology fails classify_camilla_graph and is refused here.
-    topology = load_output_topology()
     candidate: str | None = None
     via = ""
     for cand, cand_via in options:
