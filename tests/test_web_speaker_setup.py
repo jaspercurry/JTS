@@ -18,10 +18,16 @@ from jasper.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
 
 
-def _render(current_name: str = "Kitchen", current_room: str = "", flash: str = "") -> str:
+def _render(
+    current_name: str = "Kitchen",
+    current_room: str = "",
+    flash: str = "",
+    hostname: str = "jts.local",
+) -> str:
     return speaker_setup._index_html(
         current_name=current_name,
         current_room=current_room,
+        hostname=hostname,
         csrf_token="tok-abcdefghijklmnopqrstuvwx",
         status_msg=flash,
     ).decode()
@@ -79,6 +85,20 @@ def test_speaker_current_name_is_escaped_into_value():
     out = _render(current_name='Brittany "B"')
     assert "Brittany" in out
     assert "&quot;B&quot;" in out
+
+
+def test_speaker_hint_shows_configured_hostname_not_hardcoded():
+    # Regression: the "The address stays X" hint must reflect this
+    # speaker's actual JASPER_HOSTNAME, not a baked-in "jts.local".
+    out = _render(hostname="jts2.local")
+    assert "The address stays <code>jts2.local</code>" in out
+    assert "<code>jts.local</code>" not in out
+
+
+def test_speaker_hint_escapes_hostname():
+    out = _render(hostname='evil"<script>')
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
 
 
 def test_speaker_blank_flash_renders_no_banner():
