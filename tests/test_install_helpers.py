@@ -59,6 +59,24 @@ def _compute_min_free_kbytes(memtotal_kb: int) -> int:
     return int(result.stdout.strip())
 
 
+def _webrtc_compile_jobs(memtotal_kb: int, ncpu: int) -> int:
+    """Invoke the bash `_webrtc_compile_jobs` helper (MemTotal kB,
+    nproc) and return the bounded job count it prints."""
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {_INSTALL_SH} >/dev/null && "
+         f"_webrtc_compile_jobs {memtotal_kb} {ncpu}"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"helper failed (rc={result.returncode}): {result.stderr}"
+        )
+    return int(result.stdout.strip())
+
+
 def _render_install_asound_template(
     tmp_path: Path,
     *,
@@ -215,6 +233,46 @@ def test_compute_rejects_negative_or_garbage_input():
     # int(0 * 0.02 + 0.5) = 0, then clamped to 8192.
     result = _compute_min_free_kbytes(0)
     assert result == 8192
+
+
+# --- _webrtc_compile_jobs: RAM-bounded WebRTC AEC3 build parallelism ---
+# Regression: the unbounded `meson compile` fanned out to nproc (4 on a
+# Pi 5) -O3 cc1plus jobs and the OOM killer aborted the deploy on a 1 GB
+# Pi (jts2, 2026-06-21), taking nginx + jasper-voice down with it. The
+# helper budgets ~1.5 GB/job and clamps to [1, nproc].
+
+def test_webrtc_jobs_1gb_pi_is_single_job():
+    """The load-bearing case: a 1 GB Pi must build at -j1 (the OOM we
+    fixed). 991 MB / 1.5 GB-per-job floors to 0 → clamped up to 1."""
+    assert _webrtc_compile_jobs(_PI5_1GB_MEMTOTAL_KB, 4) == 1
+
+
+def test_webrtc_jobs_2gb_pi_is_single_job():
+    """2 GB / 1.5 GB-per-job = 1."""
+    assert _webrtc_compile_jobs(_PI5_2GB_MEMTOTAL_KB, 4) == 1
+
+
+def test_webrtc_jobs_4gb_pi_is_two_jobs():
+    """4 GB / 1.5 GB-per-job = 2 (under the 4-core cap)."""
+    assert _webrtc_compile_jobs(_PI5_4GB_MEMTOTAL_KB, 4) == 2
+
+
+def test_webrtc_jobs_8gb_pi_uses_full_nproc():
+    """A roomy Pi isn't throttled: 8 GB budgets 5 jobs, clamped to the
+    4 cores available."""
+    assert _webrtc_compile_jobs(_PI5_8GB_MEMTOTAL_KB, 4) == 4
+
+
+def test_webrtc_jobs_clamped_to_nproc_not_ram():
+    """RAM allows more jobs than cores → clamp to nproc."""
+    assert _webrtc_compile_jobs(_PI5_16GB_MEMTOTAL_KB, 2) == 2
+
+
+def test_webrtc_jobs_never_zero_on_garbage_input():
+    """A meson `-j0` would be invalid (or unbounded). Zero/garbage
+    MemTotal must still floor to 1 job."""
+    assert _webrtc_compile_jobs(0, 4) == 1
+    assert _webrtc_compile_jobs(1024, 4) == 1
 
 
 def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
