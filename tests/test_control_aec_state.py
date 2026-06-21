@@ -415,8 +415,9 @@ def test_write_wake_threshold_rejects_out_of_range(wake_model_file):
 
 def test_read_wake_threshold_default_when_file_missing(wake_model_file, monkeypatch):
     """Fresh install: no wake_model.env yet. Slider must show the
-    daemon's compiled-in default (0.3, per jasper/config.py:469 and
-    .env.example) so users see what's actually live — not a misleading
+    daemon's compiled-in default (0.3, per Config.wake_threshold in
+    jasper/config.py and .env.example) so users see what's actually live
+    — not a misleading
     0, and not a higher value that a Save would silently raise the real
     threshold to."""
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)

@@ -41,7 +41,9 @@ HOST=""
 LABEL=""
 
 usage() {
-    sed -n '2,30p' "$0"
+    # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
+    # extracted doc block is the original prose, not the license text.
+    sed '2,6d' "$0" | sed -n '2,30p'
 }
 
 while [[ $# -gt 0 ]]; do

@@ -33,7 +33,9 @@ set -euo pipefail
 . "$(dirname "$0")/_lib.sh"
 
 usage() {
-    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
+    # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
+    # extracted doc block is the original prose, not the license text.
+    sed '2,6d' "$0" | sed -n '2,/^$/p' | sed 's/^# \{0,1\}//' >&2
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

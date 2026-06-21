@@ -188,7 +188,7 @@ def _read_wake_threshold() -> float:
     if not val:
         val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
     try:
-        # Mirror the daemon's compiled-in default (jasper/config.py:469,
+        # Mirror the daemon's compiled-in default (in jasper/config.py:
         # `wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3)`, also
         # shipped in .env.example) so the slider + /state show what's
         # actually live. A higher fallback here would make a Save at the

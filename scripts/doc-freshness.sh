@@ -31,7 +31,7 @@ include_all=0
 for arg in "$@"; do
   case "$arg" in
     --all) include_all=1 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed '2,6d' "$0" | sed -n '2,21p' | sed 's/^# \?//'; exit 0 ;;  # 2,6d drops the SPDX header
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done

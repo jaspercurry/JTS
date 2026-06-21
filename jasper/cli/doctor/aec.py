@@ -674,7 +674,7 @@ def _assess_dtln_engine(journal_text: str) -> CheckResult:
     line. Split out from `check_aec_bridge_dtln_engine` so the
     parsing logic is unit-testable without subprocess mocks.
 
-    Successful load line shape (jasper/cli/aec_bridge.py ~line 675):
+    Successful load line shape (emitted by jasper/cli/aec_bridge.py):
         DTLN-aec engine enabled: size=256, udp out=...
     Failed load line shape:
         JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: <reason>.
