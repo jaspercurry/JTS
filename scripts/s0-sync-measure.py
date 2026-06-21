@@ -176,8 +176,8 @@ def run_acoustic(args):
     print(f"  inter-speaker offset ms: p50={np.median(arr):.3f} "
           f"p95={percentile(offs,95):.3f} p99={percentile(offs,99):.3f} "
           f"max={arr.max():.3f}")
-    print(f"  (single capture — this is the smoke go/no-go: a clean secondary\n"
-          f"   peak means the single-mic autocorrelation method works here.)")
+    print("  (single capture — this is the smoke go/no-go: a clean secondary\n"
+          "   peak means the single-mic autocorrelation method works here.)")
     return 0
 
 
@@ -331,10 +331,10 @@ def run_soak(args):
         for a, bb in zip(meds, meds[1:]):
             if abs(bb - a) > RESYNC_JUMP_MS:
                 jumps += 1
-        print(f"  inter-speaker offset ms (RAW, incl. placement bias):")
+        print("  inter-speaker offset ms (RAW, incl. placement bias):")
         print(f"      p50={med:.3f} p95={percentile(all_offsets,95):.3f} "
               f"p99={p99:.3f} max={arr.max():.3f}")
-        print(f"  inter-speaker offset ms (DETRENDED, pure clock-lock):")
+        print("  inter-speaker offset ms (DETRENDED, pure clock-lock):")
         print(f"      p99={p99_detr:.3f} max={float(detr.max()):.3f}")
         print(f"  resync jumps (>|{RESYNC_JUMP_MS}|ms between captures): {jumps}")
         sync_pass = (p99 < TARGET_P99_MS) and (jumps == 0)

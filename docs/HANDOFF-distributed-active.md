@@ -495,6 +495,73 @@ Gates:
   follower goes **silent + cue**, never full-range.
 - **Self-recovery:** un-bond → follower self-recovers to solo active.
 
+### S0-sync de-risk gate — bench result (2026-06-20)
+
+A throwaway BENCH run **before** Slice 3 wires the reconciler, to prove (or
+disprove) that a wireless **active** follower stays sample-locked through the
+one seam the active path adds and the dumb path deliberately avoids:
+`snapclient → snd-aloop → crossover-only CamillaDSP → real DAC`. (The dumb
+follower path uses `--player file` → raw FIFO precisely to dodge snd-aloop; the
+multiroom spike already validated *its* p99 budget. S0 isolates the **new**
+risk: the snd-aloop re-entry + the `rate_adjust`/no-resampler capture-from-
+loopback clock seam against the DAC.) Harness (throwaway, no product code):
+[`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) +
+[`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py). Topology:
+snapserver + follower#1 on `jts3` (HifiBerry DAC8x), follower#2 on `jts.local`
+(USB dongle); each `snapclient → hw:Loopback → camilla [crossover-only,
+`volume_limit:0`, `enable_rate_adjust`, no resampler, chunksize 1024, fixed
+`target_level`] → DAC`, with `snapclient --latency`.
+
+**Method.** The seam's clock-lock is measured **directly** from camilla's
+websocket (state + `buffer_level` vs target + `rate_adjust` + raw capture rate
+via `pycamilladsp`) — the most direct signal that the loopback holds against
+the DAC — alongside a **≥24 h snd-aloop xrun soak** (journal-clean gate) and
+CPU/temp/Pss. snapcast's per-client offset is the inter-client sync proxy.
+
+**Result (provisional — telemetry basis; 24 h soak in progress):**
+- **Clock-lock: PASS (LOCKED, both followers).** `state=RUNNING` throughout;
+  `buffer_level` holds target (mean ≈ 1021/1024 jts.local, 1021/1024 jts3);
+  `rate_adjust` tight and stable (~0.99989–0.99998, i.e. < ±0.02 %). camilla
+  logs `Capture device supports rate adjust` — HEnquist's bit-perfect loopback
+  method engages (no resampler). **0 xruns.**
+- **snd-aloop xrun soak: clean so far,** monitor running since 2026-06-20
+  ~01:08 UTC (`RuntimeMaxSec` 24 h); **final 24 h xrun + thermal numbers to be
+  appended on completion.** Steady-state: camilla ≈ 5.5 MB Pss, snapclient
+  ≈ 5 MB, temps 37–42 °C, no throttling.
+- **Inter-client sync:** snapclient `diff to server` ≈ 0 ms steady-state
+  (sub-ms) — necessary-not-sufficient (does not see camilla's contribution;
+  the clock-lock telemetry above does).
+- **Acoustic p99: DEFERRED.** The onboard mics (jts3 XVF, jts.local XVF + USB
+  PnP) **cannot** measure the inter-speaker offset — each is dominated by its
+  own close speaker, so the autocorrelation can't resolve the faint far
+  speaker (it returns "no clean peak"; an earlier constant ~0.29 ms read was an
+  analyzer artifact = the search-window floor, since fixed). The acoustic p99
+  needs a single mic placed **between** the two speakers at comparable level —
+  the speakers must be co-located. **Owner accepted the telemetry de-risk
+  (2026-06-20)**; the acoustic end-to-end p99 is an explicit follow-up.
+
+**Findings for Slice 3 (operational, hardware-learned):**
+- **Borrowing the DAC reboots a live JTS box.** The essential audio units
+  (`jasper-fanin`/`camilla`/`outputd`/`voice`/`aec-bridge`) carry
+  `StartLimitAction=reboot`; stopping them lets a re-trigger fail-loop into a
+  reboot (hit 3× on `jts3`). The bench disarms first via the same `/run`
+  drop-in (`StartLimitAction=none`) that `jasper-bootloop-guard` uses, verifies
+  it, then stops. **Slice 3 does NOT have this problem** — the reconciler swaps
+  the chain *in place* (no DAC contention); the bench hits it only because it
+  displaces the whole stack. Worth knowing for any future DAC-borrowing bench.
+- **snapserver does not reliably hold a pipe's read end** (`mode=read` AND
+  `mode=create` both ENXIO'd a writer); the bench feeds via a `process://`
+  source. Production feeds the snapfifo from CamillaDSP's `File` output, which
+  sidesteps this.
+
+**Verdict + consequence.** On the telemetry basis the owner accepted, the
+**clock seam holds — the active wireless follower stays sample-locked.**
+Provisional **PASS → Slice 3 is GO**, with two confirmations outstanding: the
+≥24 h xrun soak completing journal-clean (running; append numbers), and the
+acoustic end-to-end p99 < 5 ms once a between-speakers mic is placed. (A later
+xrun-soak failure would downgrade to "retry a constructed/hardware loopback per
+the prior-art note" before shelving.)
+
 **Slice 5 (the v1 gate) adds the matched-pair gates** — two *active*
 speakers, one as leader:
 
