@@ -197,15 +197,6 @@ async def test_research_readback_records_query_report_and_data_json(
     monkeypatch,
 ) -> None:
     wl, store = _wake_loop(tmp_path, monkeypatch)
-    spoken: list[str] = []
-
-    async def _play(text: str) -> bool:
-        spoken.append(text)
-        return True
-
-    scheduler = _MarkingScheduler()
-    wl._play_dynamic_text = _play
-    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
     job = ResearchJob(
         id="research123",
         query="research induction cooktops",
@@ -218,13 +209,12 @@ async def test_research_readback_records_query_report_and_data_json(
         read=False,
     )
 
-    await wl.announce_research_ready(job)
+    wl.record_research_delivery(
+        job,
+        "Induction is fast and efficient.",
+        "yes",
+    )
 
-    assert spoken == [
-        "Hey, your research is ready. Induction is fast and efficient.",
-    ]
-    assert scheduler.announced == ["research123"]
-    assert scheduler.read == ["research123"]
     rows = store.recent(10)
     assert len(rows) == 1
     assert rows[0].user_text == "research induction cooktops"

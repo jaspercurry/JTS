@@ -37,6 +37,15 @@ class LiveTurn(Protocol):
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         ...
 
+    async def send_text_context(self, text: str) -> None:
+        """Add a text-only context item to the current turn without
+        asking the provider to generate yet.
+
+        Used for narrow daemon-initiated confirmation windows where the
+        model needs one-shot routing context before live user audio. The
+        normal wake path does not call this."""
+        ...
+
     async def end_input(self) -> None:
         """Mark end-of-user-speech for this turn (sends `activity_end`).
 

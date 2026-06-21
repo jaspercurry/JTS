@@ -86,11 +86,15 @@ class _FakeSession:
         self._fake = fake
         self._inbox: asyncio.Queue[_Resp | Exception] = asyncio.Queue()
         self.sent_realtime: list[dict] = []
+        self.sent_client_content: list[dict] = []
         self.sent_tool_responses: list[Any] = []
         self.closed = False
 
     async def send_realtime_input(self, **kwargs) -> None:
         self.sent_realtime.append(kwargs)
+
+    async def send_client_content(self, **kwargs) -> None:
+        self.sent_client_content.append(kwargs)
 
     async def send_tool_response(self, function_responses=None) -> None:
         self.sent_tool_responses.append(function_responses)
@@ -262,6 +266,29 @@ async def test_successful_connect_and_turn_cycle():
     finally:
         await conn.stop()
     assert conn._state is ConnectionState.CLOSED
+
+
+async def test_send_text_context_adds_uncompleted_client_content():
+    """One-shot daemon instructions should enter the turn as text context
+    without ending the turn or asking Gemini to respond."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        sess = factory.sessions[0]
+        turn = await conn.acquire_turn()
+
+        await turn.send_text_context("Answer yes or no about research job abc.")
+
+        assert len(sess.sent_client_content) == 1
+        sent = sess.sent_client_content[0]
+        assert sent["turn_complete"] is False
+        content = sent["turns"]
+        assert content.role == "user"
+        assert content.parts[0].text == "Answer yes or no about research job abc."
+        await turn.release()
+    finally:
+        await conn.stop()
 
 
 async def test_session_resumption_handle_used_on_reconnect():

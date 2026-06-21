@@ -146,7 +146,7 @@ def test_data_driven_walk_equals_legacy_sequence():
     # Full registry must be the complete shipped set, in order — guards
     # against a stub silently dropping a pack on BOTH sides.
     assert list(walk_reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(walk_reg.tools) == 30
+    assert len(walk_reg.tools) == len(EXPECTED_TOOL_NAMES)
 
     # Byte-identical ordered serialization (names, descriptions,
     # parameters, providers, timeouts, AND order — all at once).
@@ -412,7 +412,7 @@ def test_real_build_registry_wrapper_produces_full_set():
     )
 
     assert list(reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(reg.tools) == 30
+    assert len(reg.tools) == len(EXPECTED_TOOL_NAMES)
 
 
 def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
@@ -795,4 +795,9 @@ def test_content_bearing_tools_pin_log_redaction():
         "gmail_unread_summary", "gmail_read_thread",
         "home_assistant", "home_assistant_confirm",
     }
-    assert redact_args == {"home_assistant", "home_assistant_confirm", "research"}
+    assert redact_args == {
+        "home_assistant",
+        "home_assistant_confirm",
+        "research",
+        "read_research_result",
+    }

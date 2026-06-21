@@ -301,6 +301,11 @@ class OpenAIRealtimeTurn:
             self._turn_lost = True
             await self._audio_q.put(None)
 
+    async def send_text_context(self, text: str) -> None:
+        if self._released or self._turn_lost or self._committed:
+            return
+        await self._conn._send_text_context(text)
+
     async def submit_recorded_audio(self, pcm_16khz_int16: bytes) -> None:
         """Submit a complete pre-recorded user audio blob in one shot.
 
@@ -424,10 +429,12 @@ class OpenAIRealtimeTurn:
             except Exception as e:  # noqa: BLE001
                 logger.warning("debug record close failed: %s", e)
             self._debug_wav = None
-        # If the daemon released the turn before sending end_input
-        # (no-speech abort, hard cap, etc.), best-effort cancel the
-        # in-flight response so the server doesn't keep generating.
-        if not self._committed and not self._turn_lost:
+        # If teardown races an already-committed response, best-effort cancel
+        # it so the server doesn't keep generating after local playback has
+        # gone away. No-speech aborts release an uncommitted input buffer; do
+        # not send response.cancel there, because the server has no active
+        # response and reports a noisy response_cancel_not_active error.
+        if self._committed and not self._server_turn_complete and not self._turn_lost:
             try:
                 await self._conn._cancel_response()
             except Exception as e:  # noqa: BLE001
@@ -1034,6 +1041,16 @@ class OpenAIRealtimeConnection:
         await self._send_event({
             "type": "input_audio_buffer.append",
             "audio": b64,
+        })
+
+    async def _send_text_context(self, text: str) -> None:
+        await self._send_event({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
         })
 
     async def _commit_and_create_response(self, turn: OpenAIRealtimeTurn) -> None:

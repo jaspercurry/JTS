@@ -46,13 +46,16 @@ DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
 
 # Tools that are REAL registry/manifest entries but are NOT independently
 # user-toggleable, so they get no /tools/ card. home_assistant_confirm is the
-# confirmation half of the Home Assistant consequential-action safety flow —
-# an internal companion of home_assistant, not a browsable capability.
-# Listing it let a user disable confirm alone and strand the confirm flow
-# (and toggling it independently makes no sense); it follows home_assistant.
-# It stays in the registry + manifest (the model uses it); it's only hidden
-# from the catalog UI.
-_CATALOG_HIDDEN: frozenset[str] = frozenset({"home_assistant_confirm"})
+# confirmation half of the Home Assistant consequential-action safety flow and
+# read_research_result is the one-shot confirmation half of async research.
+# Both are internal companions, not browsable capabilities. Listing either lets
+# a user disable the companion alone and strand the parent flow; they follow the
+# parent tool. They stay in the registry + manifest (the model uses them);
+# they're only hidden from the catalog UI.
+_CATALOG_HIDDEN: frozenset[str] = frozenset({
+    "home_assistant_confirm",
+    "read_research_result",
+})
 
 def _catalog_pack_payload(pack: CatalogPack | None) -> dict[str, Any] | None:
     if pack is None:

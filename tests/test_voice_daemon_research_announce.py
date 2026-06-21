@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import time
 import types
+
+import numpy as np
+import pytest
 
 from jasper.research import (
     DONE,
@@ -64,6 +68,12 @@ class _MarkingScheduler:
 
 
 class _FakeTurn:
+    def __init__(self, *, bytes_sent: int = 0, chunks_received: int = 0) -> None:
+        self.end_input_calls = 0
+        self.release_calls = 0
+        self._bytes_sent = bytes_sent
+        self._chunks_received = chunks_received
+
     def last_chunk_at(self) -> float:
         return 0.0
 
@@ -71,9 +81,11 @@ class _FakeTurn:
         return 0.0
 
     async def end_input(self) -> None:
+        self.end_input_calls += 1
         return None
 
     async def release(self) -> None:
+        self.release_calls += 1
         return None
 
     def usage_tokens(self) -> dict[str, int]:
@@ -83,10 +95,10 @@ class _FakeTurn:
         return None
 
     def bytes_sent(self) -> int:
-        return 0
+        return self._bytes_sent
 
     def chunks_received(self) -> int:
-        return 0
+        return self._chunks_received
 
     def turn_lost(self) -> bool:
         return False
@@ -112,11 +124,17 @@ async def _wait_for(predicate, timeout: float = 1.0) -> None:
     raise AssertionError("condition not met before timeout")
 
 
-def _put_in_session(wl) -> None:
+def _put_in_session(
+    wl,
+    *,
+    bytes_sent: int = 0,
+    chunks_received: int = 0,
+) -> _FakeTurn:
     from jasper.voice_daemon import State
 
+    turn = _FakeTurn(bytes_sent=bytes_sent, chunks_received=chunks_received)
     wl._state = State.SESSION
-    wl._turn = _FakeTurn()
+    wl._turn = turn
     wl._session_id = 7
     wl._usage_store = _FakeUsageStore()
     wl._user_speech_seen = True
@@ -133,27 +151,32 @@ def _put_in_session(wl) -> None:
     wl._telemetry_outcome = _noop
     wl._notify_peering_session_ended = _noop
     wl._play_listening_chirp = _noop_chirp
+    return turn
 
 
-async def test_announce_research_ready_reads_done_result_and_marks_announced():
+async def test_announce_research_ready_prompts_and_opens_confirmation_window():
     wl = _wake_loop()
     spoken: list[str] = []
+    opened: list[str] = []
 
     async def _play(text: str) -> bool:
         spoken.append(text)
         return True
 
+    async def _open(job: ResearchJob) -> None:
+        opened.append(job.id)
+
     scheduler = _MarkingScheduler()
     wl._play_dynamic_text = _play
+    wl._open_confirmation_window = _open
     wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
 
     await wl.announce_research_ready(_job())
 
-    assert spoken == [
-        "Hey, your research is ready. Use induction if you want fast response.",
-    ]
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert opened == ["job12345"]
     assert scheduler.announced == ["job12345"]
-    assert scheduler.read == ["job12345"]
+    assert scheduler.read == []
 
 
 async def test_announce_research_ready_failed_job_plays_failure_cue():
@@ -180,20 +203,24 @@ async def test_announce_research_ready_failed_job_plays_failure_cue():
 async def test_announce_research_ready_does_not_mark_read_when_playback_fails():
     wl = _wake_loop()
     spoken: list[str] = []
+    opened: list[str] = []
 
     async def _play(text: str) -> bool:
         spoken.append(text)
         return False
 
+    async def _open(job: ResearchJob) -> None:
+        opened.append(job.id)
+
     scheduler = _MarkingScheduler()
     wl._play_dynamic_text = _play
+    wl._open_confirmation_window = _open
     wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
 
     await wl.announce_research_ready(_job())
 
-    assert spoken == [
-        "Hey, your research is ready. Use induction if you want fast response.",
-    ]
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert opened == []
     assert scheduler.announced == []
     assert scheduler.read == []
 
@@ -220,19 +247,113 @@ async def test_failed_research_cue_failure_does_not_mark_announced():
     assert wl._last_research_failure_announce_at is None
 
 
-async def test_research_done_during_session_is_held_then_drained_on_wake():
-    from jasper.voice_daemon import State
-
+@pytest.mark.parametrize(
+    "gate",
+    ["mic_muted", "measurement_active", "spend_cap", "connection_paused"],
+)
+async def test_confirmation_guard_ladder_reads_immediately(gate: str):
     wl = _wake_loop()
-    _put_in_session(wl)
     spoken: list[str] = []
 
     async def _play(text: str) -> bool:
         spoken.append(text)
         return True
 
+    if gate == "mic_muted":
+        wl._mic_muted = True
+    elif gate == "measurement_active":
+        wl._measurement_active.set()
+    elif gate == "spend_cap":
+        wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
+    elif gate == "connection_paused":
+        wl._connection = types.SimpleNamespace(is_paused=lambda: True)
+
     scheduler = _MarkingScheduler()
     wl._play_dynamic_text = _play
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    await wl.announce_research_ready(_job())
+
+    assert spoken == [
+        "Your research is ready — want me to read it now?",
+        "Use induction if you want fast response.",
+    ]
+    assert scheduler.read == ["job12345"]
+
+
+async def test_confirmation_silence_dismisses_without_model_commit(caplog):
+    wl = _wake_loop()
+    turn = _put_in_session(wl, bytes_sent=299_520)
+    wl._user_speech_seen = False
+    wl._input_ended = False
+    job = _job()
+    wl._research_window_active = True
+    wl._research_window_job = job
+    wl._research_window_decided = False
+    wl._research_window_cancelled_by_wake = False
+    scheduler = _MarkingScheduler()
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        await wl._end_turn_inner("no_speech")
+
+    assert turn.end_input_calls == 0
+    assert turn.release_calls == 1
+    assert scheduler.announced == ["job12345"]
+    assert scheduler.read == []
+    assert wl._research_window_active is False
+    assert "RECORDING TIMEOUT" not in caplog.text
+    assert "SILENT RESPONSE" not in caplog.text
+
+
+async def test_real_wake_during_confirmation_window_cancels_window_and_wins():
+    wl = _wake_loop()
+    turn = _put_in_session(wl)
+    wl._user_speech_seen = False
+    wl._input_ended = False
+    job = _job()
+    wl._research_window_active = True
+    wl._research_window_job = job
+    wl._research_window_decided = False
+    wl._research_window_cancelled_by_wake = False
+    wl._legs["on"].detector.score_frame = lambda _frame: 0.95
+    wl._acquire_buffer = []
+    acquired: list[dict] = []
+
+    def _schedule(coro, *, name):
+        acquired.append({"name": name, "coro": coro})
+        coro.close()
+
+    wl._create_fire_and_forget_task = _schedule
+
+    await wl._handle_wake_frame(np.zeros(1280, dtype=np.int16), leg="on")
+
+    assert turn.end_input_calls == 0
+    assert turn.release_calls == 1
+    assert wl._research_window_active is False
+    assert wl._state.name == "WAKE"
+    assert wl._acquiring is True
+    assert [task["name"] for task in acquired] == ["wake-arbitrate-acquire-drain"]
+
+
+async def test_research_done_during_session_is_held_then_drained_on_wake():
+    from jasper.voice_daemon import State
+
+    wl = _wake_loop()
+    _put_in_session(wl)
+    spoken: list[str] = []
+    opened: list[str] = []
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        return True
+
+    async def _open(job: ResearchJob) -> None:
+        opened.append(job.id)
+
+    scheduler = _MarkingScheduler()
+    wl._play_dynamic_text = _play
+    wl._open_confirmation_window = _open
     wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
 
     await wl.announce_research_ready(_job())
@@ -245,11 +366,10 @@ async def test_research_done_during_session_is_held_then_drained_on_wake():
 
     assert wl._state is State.WAKE
     assert wl._pending_research == []
-    assert spoken == [
-        "Hey, your research is ready. Use induction if you want fast response.",
-    ]
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert opened == ["job12345"]
     assert scheduler.announced == ["job12345"]
-    assert scheduler.read == ["job12345"]
+    assert scheduler.read == []
 
 
 async def test_research_drain_never_speaks_while_session():
@@ -322,17 +442,22 @@ async def test_research_announcements_do_not_overlap_during_drain():
     wl = _wake_loop()
     wl._pending_research = [_job(id="first", result="First.")]
     spoken: list[str] = []
+    opened: list[str] = []
     first_started = asyncio.Event()
     release_first = asyncio.Event()
 
     async def _play(text: str) -> bool:
         spoken.append(text)
-        if text.endswith("First."):
-            first_started.set()
-            await release_first.wait()
         return True
 
+    async def _open(job: ResearchJob) -> None:
+        opened.append(job.id)
+        if job.id == "first":
+            first_started.set()
+            await release_first.wait()
+
     wl._play_dynamic_text = _play
+    wl._open_confirmation_window = _open
 
     drain_task = asyncio.create_task(wl._drain_pending_research())
     await asyncio.wait_for(first_started.wait(), timeout=1.0)
@@ -342,16 +467,18 @@ async def test_research_announcements_do_not_overlap_during_drain():
     )
     await asyncio.sleep(0)
 
-    assert spoken == ["Hey, your research is ready. First."]
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert opened == ["first"]
 
     release_first.set()
     await asyncio.wait_for(drain_task, timeout=1.0)
     await asyncio.wait_for(announce_task, timeout=1.0)
 
     assert spoken == [
-        "Hey, your research is ready. First.",
-        "Hey, your research is ready. Second.",
+        "Your research is ready — want me to read it now?",
+        "Your research is ready — want me to read it now?",
     ]
+    assert opened == ["first", "second"]
 
 
 async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
@@ -371,6 +498,7 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
     wl._state = State.SESSION
     spoken: list[str] = []
     cues: list[str] = []
+    opened: list[str] = []
 
     async def _play(text: str) -> bool:
         spoken.append(text)
@@ -380,9 +508,13 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
         cues.append(slug)
         return True
 
+    async def _open(job: ResearchJob) -> None:
+        opened.append(job.id)
+
     sched = ResearchScheduler(_UnusedClient(), db_path=str(path))
     wl._play_dynamic_text = _play
     wl._play_cue = _play_cue
+    wl._open_confirmation_window = _open
     wl.set_research_scheduler(sched)
     sched.set_on_done(wl.announce_research_ready)
 
@@ -395,11 +527,12 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
     wl._state = State.WAKE
     await wl._drain_pending_research()
 
-    assert spoken == ["Hey, your research is ready. Ready."]
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert opened == ["done1"]
     assert cues == ["research_failed"]
     rows = {job.id: job for job in ResearchJobStore(str(path)).all()}
     assert rows["done1"].announced is True
-    assert rows["done1"].read is True
+    assert rows["done1"].read is False
     assert rows["run1"].status == FAILED
     assert rows["run1"].announced is True
     assert rows["run1"].read is False

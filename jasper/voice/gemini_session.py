@@ -240,6 +240,11 @@ class GeminiLiveTurn:
             self._turn_lost = True
             await self._audio_q.put(None)
 
+    async def send_text_context(self, text: str) -> None:
+        if self._released or self._turn_lost:
+            return
+        await self._conn._send_text_context(text)
+
     async def end_input(self) -> None:
         """Send `activity_end` to the server. Idempotent."""
         if self._activity_end_sent or self._released or self._turn_lost:
@@ -861,6 +866,17 @@ class GeminiLiveConnection:
             raise RuntimeError("live connection: no active session")
         await self._session.send_realtime_input(
             audio=types.Blob(data=pcm, mime_type=self.INPUT_MIME)
+        )
+
+    async def _send_text_context(self, text: str) -> None:
+        if self._session is None:
+            raise RuntimeError("live connection: no active session")
+        await self._session.send_client_content(
+            turns=types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=text)],
+            ),
+            turn_complete=False,
         )
 
     async def _on_turn_released(self, turn: GeminiLiveTurn) -> None:

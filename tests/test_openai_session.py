@@ -367,6 +367,77 @@ async def test_send_audio_emits_input_audio_buffer_append_with_base64_pcm():
         await conn.stop()
 
 
+async def test_send_text_context_adds_text_item_without_response_create():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        baseline = len(sess.sent)
+
+        await turn.send_text_context("Answer yes or no about research job abc.")
+
+        new = sess.sent[baseline:]
+        assert new == [{
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Answer yes or no about research job abc.",
+                }],
+            },
+        }]
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
+async def test_release_without_commit_does_not_cancel_response():
+    """No-speech aborts may have streamed audio but never committed input.
+
+    Releasing that shape must not send response.cancel: there is no active
+    response yet, and the server reports a noisy response_cancel_not_active
+    error.
+    """
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)
+
+        baseline = len(sess.sent)
+        await turn.release()
+        assert "response.cancel" not in {
+            event["type"] for event in sess.sent[baseline:]
+        }
+    finally:
+        await conn.stop()
+
+
+async def test_release_after_commit_cancels_unfinished_response():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)
+        await turn.end_input()
+
+        baseline = len(sess.sent)
+        await turn.release()
+        assert "response.cancel" in {
+            event["type"] for event in sess.sent[baseline:]
+        }
+    finally:
+        await conn.stop()
+
+
 async def test_end_input_sends_commit_and_response_create_in_order():
     """Manual-VAD turn close: ``input_audio_buffer.commit`` then
     ``response.create``. Order matters — sending response.create before
@@ -879,8 +950,8 @@ async def test_function_call_after_turn_aborted_sends_cancelled_output():
         # Simulate the daemon aborting the turn (no-speech detected,
         # connection lost, etc.) BEFORE response.done arrives.
         await turn.release()
-        # Drain the cancel-response that release() fires, so we can
-        # later assert "no response.create" without a stale match.
+        # Keep this assertion scoped to the late dangling call below,
+        # independent of any teardown bookkeeping release() performs.
         sess.sent.clear()
 
         # Server's response.done lands AFTER the turn is gone.

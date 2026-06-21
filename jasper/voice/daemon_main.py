@@ -301,6 +301,7 @@ def _build_registry(
     timer_scheduler: TimerScheduler | None = None,
     research_scheduler: ResearchScheduler | None = None,
     spend_cap: SpendCap | None = None,
+    research_delivery_recorder=None,
     cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
     ha: HAClient | None = None,
@@ -343,6 +344,7 @@ def _build_registry(
         wake_event_store=wake_event_store,
         untrusted_monitor=untrusted_monitor,
         spend_cap=spend_cap,
+        research_delivery_recorder=research_delivery_recorder,
     )
     # Stash the per-pack registration outcomes on the registry (the object
     # that crosses back to run()) so a silently-missing tool family is
@@ -724,6 +726,13 @@ async def run() -> None:
         )
         wake_event_store = None
 
+    research_delivery_recorder_ref = {"fn": None}
+
+    def _record_research_delivery(job, assistant_text, decision) -> None:
+        fn = research_delivery_recorder_ref["fn"]
+        if fn is not None:
+            fn(job, assistant_text, decision)
+
     registry = _build_registry(
         cfg, camilla, renderer, weather, transit_tools,
         volume_coordinator=volume_coordinator,
@@ -732,6 +741,7 @@ async def run() -> None:
         timer_scheduler=timer_scheduler,
         research_scheduler=research_scheduler,
         spend_cap=spend_cap,
+        research_delivery_recorder=_record_research_delivery,
         cues_manager=cues_manager,
         google_clients=google_clients,
         ha=ha,
@@ -960,6 +970,9 @@ async def run() -> None:
                 connection.set_failure_escalation_cb(
                     wake_loop.play_supervisor_cue,
                 )
+            research_delivery_recorder_ref["fn"] = (
+                wake_loop.record_research_delivery
+            )
             # Wire timer announcements through the wake loop's
             # session-aware playback (duck + speak_text + restore,
             # with up-to-5s deferral if a voice turn is in flight).
