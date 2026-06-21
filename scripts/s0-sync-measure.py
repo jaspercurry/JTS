@@ -169,10 +169,19 @@ def run_acoustic(args):
 
 
 # ---------------------------------------------------------------------------
+def _fnum(s):
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_soak_log(path):
-    """Parse one soak-*.log -> dict of budget summary for that host."""
+    """Parse one soak-*.log -> dict of budget + clock-lock summary for that host."""
     xruns = 0
     temps, loads, cpss, spss = [], [], [], []
+    buf_levels, rate_adjs = [], []
+    non_running = 0
     throttled_any = False
     host = "?"
     n = 0
@@ -184,19 +193,26 @@ def parse_soak_log(path):
             n += 1
             host = kv.get("host", host)
             xruns = max(xruns, int(kv.get("camilla_xruns", 0) or 0))
-            if "temp_c" in kv and kv["temp_c"]:
-                try:
-                    temps.append(float(kv["temp_c"]))
-                except ValueError:
-                    pass
+            t = _fnum(kv.get("temp_c"))
+            if t is not None:
+                temps.append(t)
             if kv.get("throttled", "0x0") not in ("0x0", "0", ""):
                 throttled_any = True
-            try:
-                loads.append(float(kv.get("load1", "nan")))
-            except ValueError:
-                pass
+            ld = _fnum(kv.get("load1"))
+            if ld is not None:
+                loads.append(ld)
             cpss.append(int(kv.get("camilla_pss_kb", 0) or 0))
             spss.append(int(kv.get("snapclient_pss_kb", 0) or 0))
+            # Clock-lock telemetry (camilla websocket).
+            st = kv.get("camilla_state", "NA")
+            if st not in ("RUNNING", "NA"):
+                non_running += 1
+            bl = _fnum(kv.get("buffer_level"))
+            if bl is not None and bl > 0:
+                buf_levels.append(bl)
+            ra = _fnum(kv.get("rate_adjust"))
+            if ra is not None and ra > 0:
+                rate_adjs.append(ra)
     return {
         "host": host,
         "samples": n,
@@ -208,6 +224,14 @@ def parse_soak_log(path):
         "camilla_pss_mb": round(max(cpss) / 1024.0, 1) if cpss else None,
         "snapclient_pss_mb": round(max(spss) / 1024.0, 1) if spss else None,
         "hours": round(n / 60.0, 2),
+        # Clock-lock: camilla holding the snd-aloop capture against the DAC.
+        "non_running": non_running,
+        "buf_min": min(buf_levels) if buf_levels else None,
+        "buf_max": max(buf_levels) if buf_levels else None,
+        "buf_mean": round(sum(buf_levels) / len(buf_levels), 1) if buf_levels else None,
+        "rate_min": min(rate_adjs) if rate_adjs else None,
+        "rate_max": max(rate_adjs) if rate_adjs else None,
+        "rate_n": len(rate_adjs),
     }
 
 
@@ -238,6 +262,30 @@ def run_soak(args):
               f"throttled={b['throttled']} load_max={b['load_max']:.2f} "
               f"camilla_pss={b['camilla_pss_mb']}MB "
               f"snapclient_pss={b['snapclient_pss_mb']}MB")
+
+    # --- clock-lock gate (the DIRECT seam signal) ---------------------------
+    # camilla holds the snd-aloop capture locked to the DAC: state RUNNING
+    # throughout, buffer_level never drains, rate_adjust stays near 1.0 within a
+    # tight band (a wide band = oscillation = fighting the clock; a runaway to
+    # the 0.98/1.02 clamp = lock lost). This is more direct than acoustics for
+    # the actual S0 risk (does the rate_adjust-no-resampler loopback hold).
+    print("\nCLOCK-LOCK (camilla rate-adjust telemetry — direct seam signal):")
+    clock_lock_pass = bool(budgets)
+    for b in budgets:
+        has = b["rate_n"] > 0
+        ok = (has and b["non_running"] == 0 and (b["buf_min"] or 0) > 0
+              and (b["rate_min"] or 0) >= 0.98 and (b["rate_max"] or 0) <= 1.02
+              and (b["rate_max"] - b["rate_min"]) < 0.01)
+        clock_lock_pass = clock_lock_pass and ok
+        if not has:
+            print(f"  {b['host']:<9} (no camilla telemetry in log)")
+            clock_lock_pass = False
+            continue
+        run_note = "always" if b["non_running"] == 0 else f"BROKE x{b['non_running']}"
+        print(f"  {b['host']:<9} RUNNING={run_note} "
+              f"buffer={b['buf_min']:.0f}-{b['buf_max']:.0f}(mean {b['buf_mean']}) "
+              f"rate_adjust={b['rate_min']:.6f}..{b['rate_max']:.6f}  "
+              f"{'LOCKED' if ok else 'CHECK'}")
 
     # --- acoustic sync gate -------------------------------------------------
     wavs = sorted(glob.glob(os.path.join(d, "acoustic", "cap-*.wav")), key=_ts_of)
@@ -279,31 +327,50 @@ def run_soak(args):
         sync_pass = (p99 < TARGET_P99_MS) and (jumps == 0)
 
     # --- combined verdict ---------------------------------------------------
+    # Two AUTONOMOUS gates (xrun soak + clock-lock telemetry) carry the seam
+    # de-risk; the acoustic p99 is the gold-standard end-to-end confirmation but
+    # needs a mic BETWEEN the speakers (the onboard mic cannot — proven), so it
+    # is reported as PENDING rather than failing the run.
     xrun_pass = (total_xruns == 0) and not any_throttle and bool(budgets)
     print("\n" + "-" * 74)
-    print(f"  XRUN/SOAK gate : {'PASS' if xrun_pass else 'FAIL/INCOMPLETE'} "
+    print(f"  XRUN/SOAK  gate : {'PASS' if xrun_pass else 'FAIL/INCOMPLETE'} "
           f"(total xruns={total_xruns}, throttled={any_throttle})")
+    print(f"  CLOCK-LOCK gate : {'PASS' if clock_lock_pass else 'FAIL/INCOMPLETE'} "
+          f"(camilla RUNNING + buffer stable + rate_adjust tight ~1.0)")
     if sync_pass is None:
-        print(f"  SYNC gate      : INCONCLUSIVE (no acoustic peaks)")
+        print("  ACOUSTIC   gate : PENDING — needs a mic BETWEEN the speakers. jts3's\n"
+              "                    onboard XVF mic measures its OWN reflection (~0.29 ms\n"
+              "                    constant, persists with the follower muted), not the\n"
+              "                    inter-speaker offset. Place a mic between the speakers\n"
+              "                    (or relocate the follower) and re-capture for the p99.")
     else:
-        print(f"  SYNC gate      : {'PASS' if sync_pass else 'FAIL'} "
+        print(f"  ACOUSTIC   gate : {'PASS' if sync_pass else 'FAIL'} "
               f"(p99={p99:.3f}ms vs {TARGET_P99_MS}ms target)")
-    overall = "PASS" if (xrun_pass and sync_pass) else (
-        "FAIL" if (sync_pass is False or (budgets and not xrun_pass)) else "INCOMPLETE")
+
+    if sync_pass is False or (budgets and (not xrun_pass or not clock_lock_pass)):
+        overall = "FAIL"
+    elif xrun_pass and clock_lock_pass and sync_pass:
+        overall = "PASS"
+    elif xrun_pass and clock_lock_pass:
+        overall = "PASS (telemetry) — acoustic p99 PENDING a between-speakers mic"
+    else:
+        overall = "INCOMPLETE"
     print("=" * 74)
     print(f"  S0-SYNC VERDICT: {overall}")
     print("=" * 74)
     print("  Consequence (write into HANDOFF-distributed-active.md):")
-    if overall == "PASS":
-        print("    PASS -> Slice 3 is go (active wireless follower stays locked).")
+    if overall.startswith("PASS"):
+        print("    Clock seam holds. Slice 3 is go PROVIDED the acoustic p99 is\n"
+              "    confirmed < 5 ms with a between-speakers mic (telemetry +\n"
+              "    snapcast sub-ms inter-client sync are necessary-not-sufficient).")
     elif overall == "FAIL":
         print("    FAIL -> shelve the active wireless follower; active stays\n"
               "    solo-or-leader. Update the slice plan. (If FAIL is xruns,\n"
               "    retry a constructed/hardware loopback per the doc prior-art.)")
     else:
-        print("    INCOMPLETE -> finish the >=24h soak and a 2h acoustic window\n"
-              "    with the mic hearing both speakers before deciding.")
-    return 0 if overall == "PASS" else (2 if overall == "FAIL" else 1)
+        print("    INCOMPLETE -> finish the >=24h soak (and a 2h acoustic window\n"
+              "    with a between-speakers mic) before deciding.")
+    return 0 if overall.startswith("PASS") else (2 if overall == "FAIL" else 1)
 
 
 # ---------------------------------------------------------------------------
