@@ -36,11 +36,14 @@ the ``/state`` aggregator.
 """
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 from typing import Any, Callable
 
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
 from .reconcile import (
+    FOLLOWER_STATUS_FILE,
     SNAP_STREAM_ID,
     desired_snapfifo_path,
     plan,
@@ -50,6 +53,25 @@ from .reconcile import (
 # and reporting "unknown". Bounded so a wedged systemd can't stall the
 # /state aggregator.
 _PROBE_TIMEOUT_SEC = 5
+
+
+def read_active_follower_status(path: str = FOLLOWER_STATUS_FILE) -> dict[str, Any]:
+    """Fresh-read the reconciler's active-follower endpoint status (Slice 3).
+
+    Returns ``{active_follower: bool, blocked_reason: str}`` or ``{}`` when the
+    file is missing / unreadable / malformed. Total + fail-soft: never raises,
+    never reads ``os.environ`` (jasper-control is not restarted on a bond, so a
+    cached env would go stale — the fresh-read contract this module exists for)."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        "active_follower": bool(raw.get("active_follower")),
+        "blocked_reason": str(raw.get("blocked_reason") or ""),
+    }
 
 
 def read_unit_active_states(units: list[str]) -> dict[str, str]:
@@ -264,6 +286,7 @@ def read_grouping_state(
     unit_state_reader: Callable[[list[str]], dict[str, str]] | None = None,
     tap_path_reader: Callable[[], str] | None = None,
     stream_clients_reader: Callable[[], Any] | None = None,
+    endpoint_status_reader: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Read the grouping config fresh from the SSOT file and return a
     JSON-able snapshot dict for ``/state`` and the dashboard.
@@ -351,6 +374,25 @@ def read_grouping_state(
             self_name=_self_client_name(),
             want_stream=SNAP_STREAM_ID,
         )
+
+        # Active-follower endpoint surface (distributed-active Slice 3): an
+        # ``endpoint`` block when this box runs its local Layer-A crossover on
+        # the bonded stream, OR when an active-follower bond was REFUSED and the
+        # box fell back to solo active (the fail-closed reason — the
+        # household-facing "why didn't it join the group" signal; the audible
+        # cue through Layer A is the open Q2 spike item). Gated on cfg.enabled so
+        # a solo speaker's snapshot stays byte-for-byte unchanged (no status-file
+        # read, no extra key). Read fresh, never os.environ.
+        endpoint = (endpoint_status_reader or read_active_follower_status)()
+        if endpoint.get("active_follower") or endpoint.get("blocked_reason"):
+            snapshot["endpoint"] = {
+                "mode": (
+                    "active_crossover"
+                    if endpoint.get("active_follower")
+                    else "blocked"
+                ),
+                "blocked_reason": endpoint.get("blocked_reason", ""),
+            }
     return snapshot
 
 

@@ -1465,17 +1465,20 @@ story; "parked-by-role" is surfaced state, NEVER a silent failure):
 - **Driver DSP** (active crossover, driver protection, per-driver
   gain/delay) must live ON THE BOX DRIVING THE DAC — it is per-driver
   signal routing and hardware-safety-critical (full-range program into
-  a tweeter amp). TODAY a bonded follower has NO driver-DSP path (its
-  camilla is bypassed), and outputd's round-trip lane deliberately
-  FAIL-CLOSES on the dual-Apple active-crossover sink (pinned by
-  `dac_content_lane_rejects_non_single_alsa_sink`) — an
-  active-crossover speaker refuses to bond rather than ever playing
-  uncrossed audio into drivers. The increment that lifts this is the
-  follower local driver-DSP path (snapclient → loopback → camilla
-  [crossover/protection only] → outputd active sink, with snapcast's
-  per-client latency offset compensating camilla's fixed latency) —
-  applies to brainy followers and, with the prebuilt camilladsp
-  binary, to a Zero 2 W "crossover endpoint" tier variant.
+  a tweeter amp). A *dumb* (passive) follower has no driver-DSP path (its
+  camilla is bypassed; the round-trip feeds outputd's `dac_content`
+  ChannelPick), and outputd's round-trip lane FAIL-CLOSES on a non-single
+  sink (`dac_content_lane_rejects_non_single_alsa_sink`). An **active**
+  (multi-driver) follower realizes the driver-DSP-on-the-box path —
+  snapclient → loopback → CamillaDSP [crossover/protection only] → outputd
+  active sink, with snapcast's per-client `--latency` compensating camilla's
+  fixed latency — which **landed in distributed-active Slice 3** (code; the
+  active follower routes around the `dac_content` lane via CamillaDSP
+  re-entry, so the fence is kept for the dumb lane but never fires on the
+  active path). Applies to brainy followers and, with the prebuilt camilladsp
+  binary, to a Zero 2 W "crossover endpoint" tier variant. **This boundary is
+  owned by [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)** —
+  see it for the clock contract, fail-closed/self-recovery, and slice status.
 
 ## 8. Phased delivery
 

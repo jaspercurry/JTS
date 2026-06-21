@@ -662,3 +662,46 @@ def test_stream_truth_disconnected_wrong_binding_does_not_degrade(tmp_path):
     rt = _leader_runtime_with_stream(tmp_path, rows)
     assert rt["health"] == "ok"
     assert socket.gethostname  # keep import used
+
+
+# ---------- active-follower endpoint surface (distributed-active Slice 3) ----------
+
+
+def test_endpoint_block_present_for_active_crossover_follower(tmp_path):
+    """An active follower running its local Layer-A crossover surfaces an
+    ``endpoint`` block (mode=active_crossover) for the dashboard."""
+    path = _write_env(tmp_path, _follower_env())
+    state = read_grouping_state(
+        path,
+        unit_state_reader=_stub,
+        endpoint_status_reader=lambda: {"active_follower": True, "blocked_reason": ""},
+    )
+    assert state["endpoint"] == {"mode": "active_crossover", "blocked_reason": ""}
+
+
+def test_endpoint_block_surfaces_fail_closed_block_reason(tmp_path):
+    """A REFUSED active-follower bond (fell back to solo active) surfaces the
+    fail-closed reason — the household-facing 'why it didn't join' signal."""
+    path = _write_env(tmp_path, _follower_env())
+    state = read_grouping_state(
+        path,
+        unit_state_reader=_stub,
+        endpoint_status_reader=lambda: {
+            "active_follower": False, "blocked_reason": "graph_unprovable",
+        },
+    )
+    assert state["endpoint"] == {"mode": "blocked", "blocked_reason": "graph_unprovable"}
+
+
+def test_no_endpoint_block_for_dumb_member_or_solo(tmp_path):
+    """A dumb member (no active-follower status) and a solo speaker carry NO
+    endpoint block — the surface is opt-in to active endpoints."""
+    follower = read_grouping_state(
+        _write_env(tmp_path, _follower_env()),
+        unit_state_reader=_stub,
+        endpoint_status_reader=lambda: {"active_follower": False, "blocked_reason": ""},
+    )
+    assert "endpoint" not in follower
+    # solo: no status-file read at all, snapshot stays byte-for-byte unchanged.
+    solo = read_grouping_state(str(tmp_path / "missing.env"))
+    assert "endpoint" not in solo

@@ -43,7 +43,7 @@ SOUND_CONFIG_NAME = "sound_current.yml"
 SOUND_AUDITION_CONFIG_NAME = "sound_audition.yml"
 _JTS_GENERATED_RE = re.compile(
     r"^(?:correction_[A-Za-z0-9]+_\d+|sound_current|sound_audition"
-    r"|grouping_leader|grouping_solo_restore)\.yml$"
+    r"|grouping_leader|grouping_solo_restore|grouping_follower)\.yml$"
 )
 
 

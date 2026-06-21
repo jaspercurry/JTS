@@ -775,6 +775,33 @@ mod tests {
     }
 
     #[test]
+    fn active_sink_is_a_legit_bonded_member_without_dac_content() {
+        // distributed-active Slice 3 ("lift the dac_content fence for the active
+        // follower sink"): an ACTIVE (composite/multi-driver) sink IS a legitimate
+        // bonded member — but via CamillaDSP re-entry (Option B), NOT outputd's
+        // dac_content lane. The active follower's reconciler clears the dac_content
+        // env (camilla owns the channel-pick + the 2->N split), so outputd just
+        // runs its normal active sink. The dac_content+single_alsa fence above is
+        // KEPT (it still correctly guards the DUMB-follower dac_content lane) — it
+        // simply never fires on the active-follower path because no FIFO is set.
+        // This pins that the active-sink-while-bondable shape parses: the active
+        // speaker is no longer categorically barred from a bond.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                // No JASPER_OUTPUTD_DAC_CONTENT_FIFO — camilla owns the round-trip.
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.sink_mode, SinkMode::Composite);
+                assert!(cfg.dac_content_fifo.is_none());
+            },
+        );
+    }
+
+    #[test]
     fn systemd_alsa_backend_env_parses() {
         with_env(
             &[

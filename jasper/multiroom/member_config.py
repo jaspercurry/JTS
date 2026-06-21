@@ -14,12 +14,20 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     snapserver's FIFO. No channel_split: the pipe carries BOTH channels.
     Optional leader-owned L/R acoustic delays travel here too; they are
     room/pair correction state, not follower-local policy.
-  - ACTIVE FOLLOWER: solo defaults. Its local CamillaDSP is OUT of the
-    bonded playback path (the round-trip feeds outputd directly); it
-    keeps producing the normal direct lane — which is exactly the inv-B
-    fallback feed — so its config stays byte-for-byte the solo config,
-    rate_adjust=True and all (its sink is the ALSA loopback, which HAS
-    a clock to track).
+  - DUMB FOLLOWER (passive, single-DAC): solo defaults. Its local CamillaDSP
+    is OUT of the bonded playback path (the round-trip feeds outputd's
+    dac_content lane directly); it keeps producing the normal direct lane —
+    which is exactly the inv-B fallback feed — so its config stays
+    byte-for-byte the solo config, rate_adjust=True and all (its sink is the
+    ALSA loopback, which HAS a clock to track).
+  - ACTIVE FOLLOWER (multi-driver, distributed-active Slice 3): NOT this path.
+    An active follower relocates Layer A onto its OWN CamillaDSP IN the bonded
+    path — it captures the round-trip snd-aloop loopback and runs the
+    driver-domain crossover so the tweeter is never fed full-range. That config
+    is emitted by the active-speaker driver-domain emitter and applied by
+    :mod:`jasper.multiroom.follower_config` (the reconciler's active-follower
+    arm), not by ``member_camilla_kwargs`` / ``emit_sound_config``. This
+    function only governs the leader bake + the dumb-member solo defaults.
   - Solo / off / invalid: solo defaults (byte-for-byte unchanged).
 
 MIGRATION NOTE: before Increment 5 this policy applied the
@@ -54,11 +62,13 @@ def member_camilla_kwargs(
     grouping state.
 
     ACTIVE LEADER: ``enable_rate_adjust=False`` + ``playback_pipe_path``
-    (the bonded-leader pipe sink). ACTIVE FOLLOWER and solo / off /
+    (the bonded-leader pipe sink). DUMB FOLLOWER and solo / off /
     invalid: the solo-speaker defaults (``enable_rate_adjust=True``,
     ``playback_pipe_path=None``), so those configs are byte-for-byte
-    unchanged — the follower's local chain is the inv-B fallback feed,
-    not part of the synced stream.
+    unchanged — the dumb follower's local chain is the inv-B fallback feed,
+    not part of the synced stream. An ACTIVE follower (multi-driver) does NOT
+    use this function: its driver-domain crossover config comes from
+    :mod:`jasper.multiroom.follower_config` (distributed-active Slice 3).
 
     ``channel_split`` is always ``None`` here (canonical members drop
     channels in outputd's ChannelPick, never in a local CamillaDSP

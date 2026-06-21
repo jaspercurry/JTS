@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import logging
 import argparse
+import json
 import os
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import atomic_io
@@ -124,6 +125,53 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # the reconciler-owned ARGS_DIR (tmpfs; the reconciler mkfifos it before
 # starting snapclient on every reconcile/boot).
 MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
+
+# ---------- the ACTIVE follower round-trip loopback (distributed-active Slice 3) ----------
+#
+# An ACTIVE (multi-driver) follower cannot use the dumb-follower
+# `dac_content` FIFO path — its CamillaDSP must run Layer A (the crossover)
+# in the bonded audio path. So instead of the FIFO, snapclient writes a
+# private snd-aloop substream and the follower's CamillaDSP captures the
+# paired side, rate-tracking it bit-perfectly (enable_rate_adjust, no
+# resampler — the proven S0-sync seam). This is DELIBERATELY snd-aloop here
+# (not the inv-2 FIFO): the active follower needs the loopback's clock for
+# CamillaDSP's `rate_adjust` to track, and the fixed CamillaDSP pipeline
+# latency is nulled by snapclient `--latency` (HANDOFF-distributed-active.md
+# "Clock domain"). An active follower runs TWO loopback hops that must NOT
+# collide: (1) snapclient -> camilla [this grouping round-trip], and (2) camilla
+# -> outputd's active-content lane = substream 5 (`outputd_active_content_*`).
+# So the round-trip must use a DIFFERENT pair from 5. snd_aloop caps
+# `pcm_substreams` at 8 (pairs 0-7 — a 9th is silently clamped, verified on
+# jts3), so a dedicated extra pair is impossible without a second card (which
+# reintroduces the removed-LoopbackAEC wedge risk). The round-trip therefore
+# rides pair 6 — the PASSIVE stereo content lane (`outputd_content_*`). That is
+# safe to share by a hard hardware-mode invariant: an active follower's outputd
+# is ALWAYS Composite (active topology -> Composite sink -> it reads the
+# active-content lane on pair 5) and NEVER opens the passive content lane on
+# pair 6; a passive box that DOES use pair 6 is never an active follower. The
+# full allocation: 0-4 renderers, 5 active-content, 6 passive-content / active-
+# follower round-trip, 7 fan-in. No reboot needed (pair 6 always exists). Both
+# sides are env-overridable for on-device tuning.
+#
+#   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,6
+#   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,6
+GROUPING_LOOPBACK_PLAYBACK = os.environ.get(
+    "JASPER_GROUPING_LOOPBACK_PLAYBACK", "hw:Loopback,0,6",
+)
+GROUPING_LOOPBACK_CAPTURE = os.environ.get(
+    "JASPER_GROUPING_LOOPBACK_CAPTURE", "hw:Loopback,1,6",
+)
+# snapclient decodes to the snapserver-pinned 48 kHz / S16 / stereo, so the
+# follower's CamillaDSP captures the loopback as S16_LE (the S0-sync bench
+# format) — raw hw:, no plug/resampler, so the bit-perfect rate-track holds.
+GROUPING_LOOPBACK_CAPTURE_FORMAT = "S16_LE"
+
+# The active-follower endpoint STATUS file — the reconciler's fresh truth for
+# /state + the dashboard (read by jasper.multiroom.state, never os.environ,
+# because jasper-control is not restarted on a bond). Persistent (a bond
+# survives reboots). Rewritten on every reconcile so a stale file can never
+# claim an active-follower mode that is no longer current. mode 0644, no secret.
+FOLLOWER_STATUS_FILE = "/var/lib/jasper/grouping-follower-status.json"
 # Reconciler-owned PERSISTENT env file the jasper-outputd unit layers
 # after jasper.env (EnvironmentFile=-). Persistent (NOT /run) so a
 # bonded speaker boots with the lane already configured — no extra
@@ -314,7 +362,10 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
 
 
 def snapclient_argv(
-    cfg: GroupingConfig, *, player_fifo: str | None = None,
+    cfg: GroupingConfig,
+    *,
+    player_fifo: str | None = None,
+    player_alsa_device: str | None = None,
 ) -> list[str]:
     """Build the snapclient command line from a GroupingConfig.
 
@@ -336,6 +387,16 @@ def snapclient_argv(
     busy`` failure of the pre-Increment-5 bond). ``None`` leaves the command
     BYTE-FOR-BYTE unchanged. The ``file:filename=`` option string was verified
     against snapclient 0.31.0 on jts3 (``--player file:?``).
+
+    ``player_alsa_device`` (distributed-active Slice 3 — the ACTIVE follower):
+    when set, snapclient writes to that ALSA device via its ``alsa`` player
+    (``--soundcard <dev> --player alsa``). An active follower's CamillaDSP runs
+    Layer A in the bonded path, so it captures the paired side of this snd-aloop
+    loopback and rate-tracks it (the ``snd_pcm_delay`` trap is avoided not by
+    dodging snd-aloop but by CamillaDSP owning the clock + ``--latency`` nulling
+    the fixed pipeline latency — HANDOFF-distributed-active.md "Clock domain").
+    Mutually exclusive with ``player_fifo`` (active vs dumb follower); the bench
+    proved ``--soundcard hw:Loopback,0,S --player alsa``.
     """
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
     # wizard now mints it as a STABLE mDNS .local handle (the leader's
@@ -352,12 +413,16 @@ def snapclient_argv(
         "--latency",
         str(cfg.client_latency_ms),
     ]
-    if player_fifo:
+    if player_alsa_device:
+        argv += ["--soundcard", player_alsa_device, "--player", "alsa"]
+    elif player_fifo:
         argv += ["--player", f"file:filename={player_fifo}"]
     return argv
 
 
-def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
+def _assemble_args(
+    cfg: GroupingConfig, *, active_endpoint: bool = False,
+) -> dict[str, str]:
     """Derive the {key: value} the units read, from a GroupingConfig.
 
     PURE: a deterministic function of `cfg`. Returns the two derived
@@ -385,13 +450,22 @@ def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
 
     # argv[0] is the binary name (already in the unit's ExecStart); the
     # units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
-    # Every active member's snapclient writes the round-trip FIFO (the
-    # `file` player) — never an ALSA sink, which would fight outputd for
-    # the DAC (the observed `Device or resource busy` failure of the
-    # pre-Increment-5 bond). outputd reads the FIFO via its dac_content
-    # lane (Increment 3) and picks this member's channel there.
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
-    client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
+    if active_endpoint:
+        # ACTIVE follower (Slice 3): snapclient writes the round-trip snd-aloop
+        # loopback; this box's CamillaDSP captures the paired side and runs
+        # Layer A (the crossover) IN the bonded path. The dac_content FIFO lane
+        # is NOT used — camilla owns the channel-pick + split.
+        client = _join_args(
+            snapclient_argv(cfg, player_alsa_device=GROUPING_LOOPBACK_PLAYBACK)
+        )
+    else:
+        # DUMB member: snapclient writes the round-trip FIFO (the `file`
+        # player) — never an ALSA sink, which would fight outputd for the DAC
+        # (the observed `Device or resource busy` failure of the pre-Increment-5
+        # bond). outputd reads the FIFO via its dac_content lane (Increment 3)
+        # and picks this member's channel there.
+        client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
     return {_SERVER_ARGS_KEY: server, _CLIENT_ARGS_KEY: client}
 
 
@@ -407,16 +481,27 @@ def _join_args(argv: list[str]) -> str:
     return " ".join(tail)
 
 
-def outputd_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
+def outputd_grouping_env(
+    cfg: GroupingConfig, *, active_endpoint: bool = False,
+) -> dict[str, str]:
     """The outputd round-trip lane env derived from a GroupingConfig. PURE.
 
-    An ACTIVE member (enabled + valid, either role) plays the
+    A DUMB ACTIVE member (enabled + valid, either role, single-DAC) plays the
     round-tripped stream: outputd reads ``MEMBER_CONTENT_FIFO`` and
     picks this speaker's channel (Increment 3's ``ChannelPick``; the
     channel-split vocabulary). Everyone else gets EMPTY strings — which
     outputd's ``env_optional`` reads as unset, i.e. the byte-identical
     solo loop — so a stale file can never half-configure the lane
     (mirrors ``_assemble_args``'s disable-clears-stale idiom).
+
+    ``active_endpoint`` (distributed-active Slice 3 — the ACTIVE follower):
+    DISABLES the ``dac_content`` ChannelPick on this box. The follower's
+    CamillaDSP owns BOTH the channel-pick and the ``2->N`` split (Layer A), so
+    outputd just runs its normal active sink fed by camilla — no FIFO, no
+    ChannelPick. This is the real capability that replaces the
+    ``dac_content_lane_rejects_non_single_alsa_sink`` fail-closed: the active
+    sink is now a legitimate bonded member (via CamillaDSP, not the dac_content
+    lane). Returns the cleared set, exactly like solo.
 
     WRITER/VALIDATOR COHERENCE (the jts3 2026-06-11 boot-loop incident):
     outputd FAIL-CLOSES on ``DAC_CONTENT_FIFO`` + ``CONTENT_BRIDGE=
@@ -433,7 +518,7 @@ def outputd_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     rate_match soak resumes. Bonding and the soak coexist; neither can
     crash outputd.
     """
-    if cfg.enabled and cfg.error is None:
+    if cfg.enabled and cfg.error is None and not active_endpoint:
         return {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
@@ -500,6 +585,30 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 # Everything above is pure; everything below does real systemctl
 # calls. Keep that boundary crisp.
 # ============================================================
+
+def is_active_speaker_box() -> bool:
+    """True when this speaker is a commissioned ACTIVE (multi-driver) speaker —
+    its saved output topology declares active 2-/3-way main groups. This is the
+    branch signal that splits the ACTIVE-follower path (CamillaDSP runs Layer A
+    in the bonded path) from the DUMB-follower path (outputd ChannelPick).
+
+    TOTAL + fail-soft: any load/parse failure resolves to ``False`` (treat as
+    passive → the safe dumb-follower path). Commissioning READINESS is NOT
+    checked here — a box that declares active groups but is not yet commissioned
+    still takes the active path, where the follower apply fail-closes (no ready
+    baseline → refuse to bond) rather than silently degrading to a full-range
+    dumb follower."""
+    try:
+        from jasper.active_speaker.playback_route import (
+            active_playback_route_capability,
+        )
+        from jasper.output_topology import load_output_topology
+
+        topology = load_output_topology()
+        return active_playback_route_capability(topology).active_group_count > 0
+    except Exception:  # noqa: BLE001 — fail-soft to the passive path
+        return False
+
 
 def _unit_is_enabled(unit: str) -> bool:
     """`systemctl is-enabled --quiet` truth for the restore intent.
@@ -709,6 +818,34 @@ def _restart_unit(unit: str) -> bool:
     return True
 
 
+def _write_follower_status(
+    *, active_follower: bool, blocked_reason: str,
+    path: str = FOLLOWER_STATUS_FILE,
+) -> None:
+    """Write the active-follower endpoint status for /state + the dashboard.
+
+    Fail-soft (a lost status write must not crash the reconcile path; /state
+    falls back to "no endpoint block"). Rewritten every reconcile so the
+    surface is always fresh truth. ``active_follower`` = this box is running its
+    local Layer-A crossover on the bonded stream; ``blocked_reason`` (non-empty)
+    = the active-follower bond was REFUSED and the box fell back to solo active
+    (invariant 5 fail-closed)."""
+    body = json.dumps(
+        {"active_follower": active_follower, "blocked_reason": blocked_reason},
+        sort_keys=True,
+    ) + "\n"
+    try:
+        atomic_io.atomic_write_text(path, body, mode=0o644)
+    except OSError as e:
+        log_event(
+            logger,
+            "multiroom.reconcile.follower_status_failed",
+            path=path,
+            error=e,
+            level=logging.WARNING,
+        )
+
+
 def _restart_outputd() -> bool:
     return _restart_unit(OUTPUTD_UNIT)
 
@@ -808,6 +945,12 @@ def main(argv: list[str] | None = None) -> int:
     decision = plan(cfg)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
+    # An ACTIVE (multi-driver) follower relocates Layer A onto its own
+    # CamillaDSP in the bonded path (distributed-active Slice 3); a DUMB
+    # (single-DAC) follower uses outputd's dac_content ChannelPick. The box's
+    # saved topology decides which path this reconcile takes.
+    box_is_active = is_active_speaker_box()
+    active_follower = active and cfg.role == "follower" and box_is_active
     log_event(
         logger,
         "multiroom.reconcile.start",
@@ -815,12 +958,56 @@ def main(argv: list[str] | None = None) -> int:
         enabled=cfg.enabled,
         role=cfg.role or "(none)",
         error=cfg.error or "(none)",
+        active_box=box_is_active,
+        active_follower=active_follower,
         summary=repr(decision.summary),
     )
     rc = 0
+    follower_block_reason = ""
+
+    # Active-follower readiness GATE (fail-safe to SOLO). Build + re-prove the
+    # driver-domain graph BEFORE tearing down the solo path. If it can't be made
+    # safe (bad channel / not commissioned / graph fails re-proof), do NOT bond:
+    # fall back to solo active so the box keeps playing its own content
+    # (self-recovery, AGENTS.md resilience) instead of half-parking silent. This
+    # is invariant 5's "refuses to bond" — the unsafe graph never reaches the
+    # DACs. The actual CamillaDSP swap happens later (step 5b), after snapclient
+    # is feeding the loopback.
+    if active_follower:
+        try:
+            from .follower_config import precheck_active_follower_sync
+
+            precheck_active_follower_sync(cfg)
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+state
+            follower_block_reason = getattr(
+                e, "reason", "active_follower_precheck_error",
+            )
+            log_event(
+                logger,
+                "multiroom.reconcile.active_follower_blocked",
+                reason=follower_block_reason,
+                error=e,
+                level=logging.ERROR,
+            )
+            # Fail-safe to solo for the rest of this reconcile: treat exactly
+            # like an invalid bond (plan stops snapcast + restores renderers).
+            cfg = replace(cfg, enabled=False)
+            decision = plan(cfg)
+            active = False
+            active_follower = False
+            rc = 1
+
+    # Endpoint status for /state + the dashboard (fresh truth every reconcile):
+    # active-follower mode, or the fail-closed block reason if the bond was
+    # refused and we fell back to solo active.
+    _write_follower_status(
+        active_follower=active_follower,
+        blocked_reason=follower_block_reason,
+        path=FOLLOWER_STATUS_FILE,
+    )
 
     # 1. Derived files + FIFO — before any unit work.
-    derived = _assemble_args(cfg)
+    derived = _assemble_args(cfg, active_endpoint=active_follower)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
     log_event(
@@ -834,7 +1021,7 @@ def main(argv: list[str] | None = None) -> int:
     # Paths passed explicitly (module globals read at CALL time) so the
     # test harness can redirect them; a def-time default would pin the
     # production path.
-    outputd_env = outputd_grouping_env(cfg)
+    outputd_env = outputd_grouping_env(cfg, active_endpoint=active_follower)
     env_changed, env_ok = _write_outputd_env(
         outputd_env, path=OUTPUTD_GROUPING_ENV_FILE,
     )
@@ -849,11 +1036,44 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not env_ok:
         rc = 1
-    if active and not _ensure_member_fifo(path=MEMBER_CONTENT_FIFO):
+    # The member content FIFO feeds the DUMB follower's dac_content lane. An
+    # active follower uses the snd-aloop round-trip loopback instead (a fixed
+    # snd-aloop subdevice — always present, no mkfifo equivalent), so skip it.
+    if active and not active_follower and not _ensure_member_fifo(
+        path=MEMBER_CONTENT_FIFO
+    ):
         rc = 1
 
-    # 2. Solo restore when not an active leader (no-op when already solo).
-    if not active_leader:
+    # 2. CamillaDSP solo RESTORE — unwind a prior bond before units tear down.
+    #    A box that will APPLY a bonded config below (active leader/follower)
+    #    skips restore. An ACTIVE box restores its ACTIVE baseline (Layer A
+    #    intact — NEVER a passive graph, which would be full-range to a tweeter);
+    #    a passive box uses the leader-stash restore. All branches are a no-op on
+    #    the common solo reconcile.
+    if active_leader or active_follower:
+        pass
+    elif box_is_active:
+        try:
+            from .follower_config import restore_active_follower_solo_sync
+
+            restored = restore_active_follower_solo_sync()
+            if restored:
+                log_event(
+                    logger,
+                    "multiroom.reconcile.camilla",
+                    result="active_solo_restored",
+                    path=restored,
+                )
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla_failed",
+                action="active_restore",
+                error=e,
+                level=logging.ERROR,
+            )
+            rc = 1
+    else:
         try:
             from .leader_config import restore_solo_config_sync
 
@@ -951,6 +1171,34 @@ def main(argv: list[str] | None = None) -> int:
             want=SNAP_STREAM_ID,
         )
         if not report["reachable"] or report["failed"]:
+            rc = 1
+
+    # 5b. Active FOLLOWER CamillaDSP swap LAST (snapclient is up → the round-trip
+    #     loopback has its writer, so CamillaDSP locks immediately). The graph
+    #     was already built + re-proven by the readiness gate above, so this is
+    #     just the glitch-free swap. The graph is the re-proven driver-domain
+    #     baseline, so no capture content (stream / silence / garbage) can ever
+    #     produce a full-range driver feed. A swap failure here keeps CamillaDSP
+    #     on its prior safe solo-active graph; the next reconcile retries.
+    if active_follower:
+        try:
+            from .follower_config import apply_prebuilt_follower_config_sync
+
+            applied = apply_prebuilt_follower_config_sync()
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla",
+                result="active_follower",
+                path=applied,
+            )
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla_failed",
+                action="active_follower_apply",
+                error=e,
+                level=logging.ERROR,
+            )
             rc = 1
 
     log_event(logger, "multiroom.reconcile.done", rc=rc)

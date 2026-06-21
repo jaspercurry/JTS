@@ -119,6 +119,15 @@ _UNCODIFIED = {
     "JASPER_AEC_USB_MIC_RATE",
     "JASPER_AEC_USB_MIXER_CARD",
     "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
+    # -- Active-follower round-trip snd-aloop loopback device overrides
+    #    (distributed-active Slice 3). Paired snd-aloop substream wiring
+    #    with safe code defaults on both ends (snapclient writes
+    #    hw:Loopback,0,5; the follower's CamillaDSP captures hw:Loopback,1,5).
+    #    The reconciler is the single writer of the daemon-facing device env;
+    #    these env overrides exist only for on-device tuning if the default
+    #    substream ever collides with the fan-in layout. Not operator config.
+    "JASPER_GROUPING_LOOPBACK_CAPTURE",
+    "JASPER_GROUPING_LOOPBACK_PLAYBACK",
     # -- USB-sink internals: localhost wiring between mux and the
     #    usbsink daemon plus daemon-local knobs. The operator-facing
     #    members of the family (JASPER_USBSINK_PREEMPT,

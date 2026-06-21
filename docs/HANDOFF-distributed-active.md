@@ -491,10 +491,58 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   [`tests/test_active_speaker_runtime_contract.py`](../tests/test_active_speaker_runtime_contract.py)
   and [`tests/test_active_speaker_driver_domain.py`](../tests/test_active_speaker_driver_domain.py).
 
+- **Slice 3** — the reconciler wires the active **follower** (code landed;
+  on-device validation owed). The compile/apply seam
+  (`build_baseline_profile_candidate` / `apply_baseline_profile`,
+  [baseline_profile.py](../jasper/active_speaker/baseline_profile.py)) grew a
+  `driver_domain` + `program_channel` + `capture_format` mode that emits the
+  Slice-2 driver-domain graph; default off keeps the solo baseline
+  byte-identical. A new `jasper.multiroom.follower_config`
+  ([follower_config.py](../jasper/multiroom/follower_config.py)) is the
+  active-follower apply/restore arm (mirrors `leader_config`): it builds +
+  **re-proves** (`classify_camilla_graph`) the driver-domain config, swaps
+  CamillaDSP glitch-free (snapclient → `hw:Loopback,0,6` → CamillaDSP captures
+  `hw:Loopback,1,6` — pair 6 is the passive content lane, free on an active
+  follower since its outputd is always Composite/active (reads pair 5) and never
+  opens the passive lane; snd_aloop caps at 8 pairs so no dedicated extra pair
+  exists — `enable_rate_adjust`, no resampler, `chunksize` 1024,
+  `S16_LE`), stashes the prior solo-active config, and on un-bond restores the
+  **active** baseline (never a passive graph). The reconciler
+  ([reconcile.py](../jasper/multiroom/reconcile.py)) detects an active box
+  (`is_active_speaker_box`), routes snapclient to the round-trip loopback (ALSA
+  player, not the dumb FIFO), DISABLES outputd's `dac_content` ChannelPick on
+  this box (camilla owns the pick + split), and runs a readiness GATE before
+  tearing down the solo path — a follower that can't be made safe **fails safe
+  to solo active** (it never bonds an unprovable graph; invariant 5 +
+  self-recovery). The outputd fence
+  ([config.rs](../rust/jasper-outputd/src/config.rs)) is "lifted" in the real
+  sense: Option B routes the active sink around the `dac_content` lane, so the
+  `dac_content_lane_rejects_non_single_alsa_sink` guard (kept — it still guards
+  the dumb-follower lane) simply never fires on the active-follower path; a
+  positive test pins that an active sink + no dac_content parses. `/state` grows
+  an `endpoint` block (`active_crossover` | `blocked` + reason). Invariants 5
+  (+ the keystone re-proof) are pinned by
+  [`tests/test_multiroom_follower_config.py`](../tests/test_multiroom_follower_config.py),
+  [`tests/test_multiroom_reconcile.py`](../tests/test_multiroom_reconcile.py),
+  and [`tests/test_multiroom_state.py`](../tests/test_multiroom_state.py).
+
+  **Fail-closed cue — v1 reality.** The reconciler is a oneshot that cannot
+  play a cue (no `AudioCueManager`; a follower is voice-parked). So the v1
+  fail-closed *signal* is the solo-active fallback (the box keeps playing its
+  own content — not silent) plus the `/state` `endpoint.blocked_reason` +
+  doctor + `event=multiroom.reconcile.active_follower_blocked` log. The
+  **audible** cue through the follower's Layer A on a parked follower / runtime
+  stall is the open **Q2 spike step 5** item (same injection-point class) — it
+  does NOT gate the follower core. The hard safety guarantee (no full-range to
+  the tweeter) holds unconditionally: the loaded graph is always the re-proven
+  driver-domain baseline (or the solo-active baseline on fail-closed), so
+  stream / silence / garbage all resolve to silence-through-Layer-A, never a
+  full-range feed.
+
 - **Slice 4** — the HW-free web half: a bonded follower's `/sound/` renders the
   local driver/crossover/commissioning UI (the active-speaker endpoints were
   never in the content-DSP 409 block); invariant 6 is pinned by
-  [`tests/test_sound_setup.py`](../tests/test_sound_setup.py). (Slice 3 still owns
+  [`tests/test_sound_setup.py`](../tests/test_sound_setup.py). (Slice 3 owns
   the runtime audio path that makes the delegation promise true end-to-end.)
 
 ## Multi-Pi validation (Slice 3+)
@@ -750,5 +798,9 @@ an unverified gap). Fix solo first.
    target sub hardware; both reuse `channel_split.py`'s sub fragment.
    Decide in 6b — no need to lock it before the follower core ships.
 
-Last verified: 2026-06-20 (external design review folded in: S0-sync gate,
-CPU/thermal reframe, clock-master / chunksize≥1024 / no-SIGHUP pins)
+Last verified: 2026-06-20 (Slice 3 active-follower code landed — driver_domain
+apply seam, jasper.multiroom.follower_config, reconciler active-follower branch
++ readiness gate/fail-safe-to-solo, outputd fence pin, /state endpoint surface;
+on-device validation on jts.local-leader + jts3-active-follower owed. Prior:
+external design review folded in — S0-sync gate, CPU/thermal reframe,
+clock-master / chunksize≥1024 / no-SIGHUP pins)

@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
-from jasper.camilla_config_contract import DEFAULT_CAPTURE_DEVICE, FilterSpec
+from jasper.camilla_config_contract import (
+    DEFAULT_CAPTURE_DEVICE,
+    DEFAULT_CAPTURE_FORMAT,
+    FilterSpec,
+)
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -27,7 +31,11 @@ from jasper.dsp_apply import (
 from jasper.output_topology import OutputTopology
 
 from ._common import issue as _issue
-from .camilla_yaml import emit_active_speaker_baseline_config
+from .camilla_yaml import (
+    DRIVER_DOMAIN_PROGRAM_CHANNELS,
+    emit_active_speaker_baseline_config,
+    emit_active_speaker_driver_domain_config,
+)
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -511,6 +519,9 @@ def build_baseline_profile_candidate(
     config_path: str | Path | None = None,
     playback_device: str | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    driver_domain: bool = False,
+    program_channel: str | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -525,7 +536,24 @@ def build_baseline_profile_candidate(
     of ``docs/HANDOFF-distributed-active.md``). The graph shape — crossover,
     per-driver limiters, tweeter high-pass, 0 dB ceiling — is unaffected; only
     the capture source line changes.
+
+    ``driver_domain`` switches the emit to the **driver-domain-only** graph
+    (``emit_active_speaker_driver_domain_config``, Slice 2): a wireless active
+    follower's Layer A — ``channel_select (pick L/R/mono) -> split -> per-driver
+    crossover/limiter`` — with **no** program-domain headroom and **no**
+    preference EQ (the leader baked Layer B/C into the streamed program). It
+    requires ``program_channel`` (one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``: the
+    inter-speaker channel this box plays). Default ``False`` keeps the full solo
+    baseline emit byte-identical (invariant 7); the reconciler's follower branch
+    passes ``driver_domain=True`` + ``program_channel`` + the loopback
+    ``capture_device``, writing to a follower-specific ``config_path`` /
+    ``state_path`` so the solo baseline artifacts are never clobbered.
     """
+    if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
+        raise ValueError(
+            "driver_domain requires program_channel in "
+            f"{DRIVER_DOMAIN_PROGRAM_CHANNELS}, not {program_channel!r}"
+        )
 
     state_target = baseline_profile_state_path(state_path)
     config_target = baseline_config_path(config_path)
@@ -660,14 +688,28 @@ def build_baseline_profile_candidate(
     validation = {"status": "skipped", "reason": "not_written"}
     if write:
         config_target.parent.mkdir(parents=True, exist_ok=True)
-        yaml = emit_active_speaker_baseline_config(
-            preset,
-            playback_device=resolved_playback_device,
-            corrections=corrections,
-            capture_device=capture_device,
-            out_path=config_target,
-            baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
-        )
+        if driver_domain:
+            assert program_channel is not None  # validated above
+            yaml = emit_active_speaker_driver_domain_config(
+                preset,
+                playback_device=resolved_playback_device,
+                program_channel=program_channel,
+                corrections=corrections,
+                capture_device=capture_device,
+                capture_format=capture_format,
+                out_path=config_target,
+                baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+            )
+        else:
+            yaml = emit_active_speaker_baseline_config(
+                preset,
+                playback_device=resolved_playback_device,
+                corrections=corrections,
+                capture_device=capture_device,
+                capture_format=capture_format,
+                out_path=config_target,
+                baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+            )
         validation = validate(config_target).to_dict()
         if not validation.get("ok_to_apply") and validation.get("status") not in {
             "valid",
@@ -714,6 +756,10 @@ def build_baseline_profile_candidate(
             "sha256": config_sha256,
             "playback_device": resolved_playback_device,
             "playback_device_source": playback_device_source,
+            # "driver" = a wireless follower's Layer-A-only graph (no B/C);
+            # "full" = the solo baseline (B/C + A). Observability only.
+            "domain": "driver" if driver_domain else "full",
+            "program_channel": program_channel if driver_domain else None,
         },
         "verification": {
             "driver_measurements_complete": bool(
@@ -880,6 +926,9 @@ async def apply_baseline_profile(
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    driver_domain: bool = False,
+    program_channel: str | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -889,6 +938,11 @@ async def apply_baseline_profile(
     ``capture_device`` is threaded to :func:`build_baseline_profile_candidate`
     so the reconciler can apply a follower's round-trip-loopback baseline; the
     default keeps the solo apply byte-identical.
+
+    ``driver_domain`` + ``program_channel`` switch the emit to a wireless active
+    follower's driver-domain-only Layer-A graph (Slice 2 emitter). The follower
+    branch of the multiroom reconciler passes follower-specific ``state_path`` /
+    ``config_path`` alongside these so the solo baseline state is not overwritten.
     """
 
     state_target = baseline_profile_state_path(state_path)
@@ -901,6 +955,9 @@ async def apply_baseline_profile(
         state_path=state_target,
         config_path=config_path,
         capture_device=capture_device,
+        capture_format=capture_format,
+        driver_domain=driver_domain,
+        program_channel=program_channel,
         validate=validate,
     )
     if not candidate.get("permissions", {}).get("may_apply"):
