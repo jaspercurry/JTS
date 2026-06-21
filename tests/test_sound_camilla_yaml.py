@@ -34,6 +34,32 @@ def test_sound_config_preserves_room_peqs_before_preference_eq():
     assert yaml.count("channels: [1]") == 1
 
 
+def test_emit_sound_config_writes_group_readable_file(tmp_path):
+    # Regression (false "bond degraded" incident, 2026-06-21): the bonded-leader
+    # config grouping_leader.yml is written by emit_sound_config and read off-disk
+    # by the non-root jasper-control /state leader-pipe health check
+    # (active_leader_pipe_path). The old hand-rolled writer left it at the
+    # NamedTemporaryFile default 0600, so after the WS1 non-root drop jasper-control
+    # (group jasper) could not read it -> /state falsely reported the bond
+    # "degraded — stream is silent" while audio was flowing. The writer now
+    # delegates to atomic_write_text(mode=0o640), matching the active-speaker
+    # emitter. Pin the group-readable mode so a non-root reader keeps working.
+    import os
+    import stat
+
+    profile = SoundProfile(
+        enabled=True,
+        curve_id="harman",
+        simple_eq=SimpleEq(bass_db=2.0, mid_db=-1.0, treble_db=1.5),
+    )
+    out = tmp_path / "grouping_leader.yml"
+    emit_sound_config(profile, out_path=out)
+
+    mode = stat.S_IMODE(os.stat(out).st_mode)
+    assert mode == 0o640, f"expected 0o640 (group-readable), got {oct(mode)}"
+    assert mode & stat.S_IRGRP, "config must be group-readable for non-root jasper-control"
+
+
 def test_disabled_sound_config_bypasses_preference_eq_but_keeps_room_peqs():
     profile = SoundProfile(enabled=False, curve_id="bk", simple_eq=SimpleEq(bass_db=6.0))
     yaml = emit_sound_config(
