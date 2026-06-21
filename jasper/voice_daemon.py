@@ -317,6 +317,7 @@ RESEARCH_READY_CONFIRMATION_TEXT = (
     "Your research is ready — want me to read it now?"
 )
 RESEARCH_CONFIRMATION_REFRACTORY_SEC = 0.35
+RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC = 20.0
 RESEARCH_EMPTY_RESULT_TEXT = (
     "Sorry, that research finished without a readable answer. "
     "Please ask me again."
@@ -802,6 +803,7 @@ class WakeLoop:
         self._research_window_job: ResearchJob | None = None
         self._research_window_decided: bool = False
         self._research_window_cancelled_by_wake: bool = False
+        self._research_window_opening_done: asyncio.Event | None = None
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
@@ -1149,6 +1151,7 @@ class WakeLoop:
         self._research_window_job = None
         self._research_window_decided = False
         self._research_window_cancelled_by_wake = False
+        self._research_window_opening_done = None
         self._stop_event = asyncio.Event()
         self._volume_coordinator = _TestVolumeCoordinator()
         self._cues = None
@@ -1452,11 +1455,16 @@ class WakeLoop:
         self._research_window_job = job
         self._research_window_decided = False
         self._research_window_cancelled_by_wake = False
+        opening_done = asyncio.Event()
+        self._research_window_opening_done = opening_done
         try:
             await self._begin_turn(
                 pre_roll=False,
                 text_context=_research_confirmation_instruction(job),
             )
+            if self._research_window_cancelled_by_wake:
+                await self._end_turn("research_window_wake")
+                return
             log_event(logger, "research.confirmation_window_opened", job_id=job.id)
         except (
             asyncio.TimeoutError,
@@ -1466,6 +1474,19 @@ class WakeLoop:
             TypeError,
             ValueError,
         ) as e:
+            if self._research_window_cancelled_by_wake:
+                logger.info(
+                    "research confirmation window cancelled while opening "
+                    "(id=%s): %s",
+                    job.id,
+                    e,
+                )
+                await self._cleanup_after_failed_begin()
+                self._research_window_active = False
+                self._research_window_job = None
+                self._research_window_decided = False
+                self._research_window_cancelled_by_wake = False
+                return
             logger.exception(
                 "research confirmation window failed; reading immediately "
                 "(id=%s): %s",
@@ -1478,6 +1499,10 @@ class WakeLoop:
             self._research_window_cancelled_by_wake = False
             await self._cleanup_after_failed_begin()
             await self._read_research_job_immediately(job)
+        finally:
+            if self._research_window_opening_done is opening_done:
+                self._research_window_opening_done = None
+            opening_done.set()
 
     def _research_confirmation_guard_reason(self) -> str | None:
         if self._state is State.SESSION:
@@ -2183,7 +2208,7 @@ class WakeLoop:
             )
             return
 
-        if self._research_window_active and self._state is State.SESSION:
+        if self._research_window_active:
             self._research_window_cancelled_by_wake = True
             log_event(
                 logger,
@@ -2194,7 +2219,21 @@ class WakeLoop:
                     if self._research_window_job is not None else ""
                 ),
             )
-            await self._end_turn("research_window_wake")
+            opening_done = self._research_window_opening_done
+            if opening_done is not None:
+                try:
+                    await asyncio.wait_for(
+                        opening_done.wait(),
+                        timeout=RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "research confirmation window cancellation timed out "
+                        "while opening; dropping wake to avoid turn collision"
+                    )
+                    return
+            elif self._state is State.SESSION:
+                await self._end_turn("research_window_wake")
 
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()

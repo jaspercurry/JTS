@@ -336,6 +336,96 @@ async def test_real_wake_during_confirmation_window_cancels_window_and_wins():
     assert [task["name"] for task in acquired] == ["wake-arbitrate-acquire-drain"]
 
 
+async def test_real_wake_during_confirmation_opening_waits_then_wins():
+    wl = _wake_loop()
+    job = _job()
+    wl._research_window_active = True
+    wl._research_window_job = job
+    wl._research_window_decided = False
+    wl._research_window_cancelled_by_wake = False
+    opening_done = asyncio.Event()
+    wl._research_window_opening_done = opening_done
+    wl._legs["on"].detector.score_frame = lambda _frame: 0.95
+    acquired: list[dict] = []
+
+    def _schedule(coro, *, name):
+        acquired.append({"name": name, "coro": coro})
+        coro.close()
+
+    wl._create_fire_and_forget_task = _schedule
+
+    task = asyncio.create_task(
+        wl._handle_wake_frame(np.zeros(1280, dtype=np.int16), leg="on"),
+    )
+    await asyncio.sleep(0)
+
+    assert wl._research_window_cancelled_by_wake is True
+    assert acquired == []
+
+    # Simulate the opener observing the cancellation, cleaning up the
+    # confirmation turn, and releasing the normal wake path to continue.
+    wl._research_window_active = False
+    opening_done.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert wl._state.name == "WAKE"
+    assert wl._acquiring is True
+    assert [task["name"] for task in acquired] == ["wake-arbitrate-acquire-drain"]
+
+
+async def test_confirmation_open_cancelled_after_begin_ends_turn_without_reading():
+    wl = _wake_loop()
+    job = _job()
+    spoken: list[str] = []
+
+    async def _begin_turn(*, pre_roll: bool, text_context: str | None) -> None:
+        assert pre_roll is False
+        assert text_context is not None
+        _put_in_session(wl)
+        wl._research_window_cancelled_by_wake = True
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        return True
+
+    wl._begin_turn = _begin_turn
+    wl._play_dynamic_text = _play
+
+    await wl._open_confirmation_window(job)
+
+    assert spoken == []
+    assert wl._research_window_active is False
+    assert wl._research_window_opening_done is None
+    assert wl._state.name == "WAKE"
+
+
+async def test_confirmation_open_cancelled_begin_failure_clears_without_reading():
+    wl = _wake_loop()
+    job = _job()
+    spoken: list[str] = []
+
+    async def _begin_turn(*, pre_roll: bool, text_context: str | None) -> None:
+        assert pre_roll is False
+        assert text_context is not None
+        wl._research_window_cancelled_by_wake = True
+        raise RuntimeError("turn already cancelled by wake")
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        return True
+
+    wl._begin_turn = _begin_turn
+    wl._play_dynamic_text = _play
+
+    await wl._open_confirmation_window(job)
+
+    assert spoken == []
+    assert wl._research_window_active is False
+    assert wl._research_window_job is None
+    assert wl._research_window_opening_done is None
+    assert wl._state.name == "WAKE"
+
+
 async def test_research_done_during_session_is_held_then_drained_on_wake():
     from jasper.voice_daemon import State
 
