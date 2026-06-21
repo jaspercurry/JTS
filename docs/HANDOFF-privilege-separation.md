@@ -295,6 +295,36 @@ flags drift before it bites. Pinned by `tests/test_systemd_hardening.py` (the
 UMask contract), `tests/test_install_state_group_write.py` (the heal + the
 PSK-safety property), and `tests/test_doctor_state_files.py`.
 
+**Cross-daemon READS need a guard too — the `privsep` doctor group (2026-06-21).**
+The "rely on group read (`0640`+)" paragraph two above is the *contract*; this is
+the *guard* that the contract actually holds on disk. A file a non-root daemon
+reads that regresses to `0600` root-only is caught by every one of these
+fail-soft readers and mapped to a benign default, so the permission failure is
+invisible — it looks identical to "not configured / healthy." That bit twice:
+**#900** (`grouping_leader.yml` left `0600` → jasper-control's `active_leader_pipe_path`
+read `""` and `/state` falsely reported a bonded leader "stream is silent" while
+audio flowed) and **#901** (`bt_roles.json` `0600`). `jasper-doctor`'s `privsep`
+group ([`jasper/cli/doctor/privsep.py`](../jasper/cli/doctor/privsep.py)) closes
+the class: one `check_<daemon>_readable_inputs` per non-root daemon stats each file
+in a coarse, canonical, drift-pinned `MANIFEST` of that daemon's runtime reads and
+verifies the daemon's *own* uid + group set can read it. Because the doctor runs
+as **root** it cannot use `os.access` (root reads everything) — it resolves each
+daemon's identity from the live `systemctl show` directives and reasons about
+owner/group/mode, the read complement of `check_state_dir_group_writable`. It
+skips cleanly when a unit isn't installed (streambox omits voice/mux/input) or
+runs as root (streambox `jasper-web`). `check_household_secret_readable` folds in
+the M2M gate: a *present-but-unreadable* `household_secret` means `/grouping/set`'s
+`household_credential.verify` has silently fail-safe-**opened** (it can't
+distinguish unreadable from "not paired") — a posture invisible to
+`grouping.check_grouping_household_credential`, which keys on `is_paired()`. The
+manifest is pinned to the units by `tests/test_doctor_privsep_manifest.py` (so it
+can't fall behind a unit edit or a new non-root daemon — each `User=jasper-*` unit
+must be in the manifest or the documented `OUT_OF_SCOPE_NONROOT_UNITS` reconciler
+set) and the read-logic by `tests/test_doctor_privsep.py` (`0600` fails, `0640`
+group-`jasper` passes). Scope was confirmed coarse + canonical, group-`jasper`
+trees only (the secret compartments below are excluded — their own group ownership
+is the guard there).
+
 **S2 — single StateDirectory owner.** `jasper-voice` is now the *sole*
 `StateDirectory=jasper` owner; `jasper-mux` dropped its `StateDirectory` and
 reaches `/var/lib/jasper` via `ReadWritePaths` instead. That removes the
@@ -884,6 +914,6 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-06-19 (core-audio daemon root-surface section added
-2026-06-21; the daemons' root + `StartLimitAction=reboot` status verified on
-`jts.local` that day)
+Last verified: 2026-06-21 (core-audio daemon root-surface section + the privsep
+read-access doctor check added 2026-06-21; the always-on core-audio daemons' root
++ `StartLimitAction=reboot` status verified on `jts.local` that day)
