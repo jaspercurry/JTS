@@ -359,6 +359,61 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
     assert implicit["config"]["sha256"] != follower["config"]["sha256"]
 
 
+def test_driver_domain_seam_emits_layer_a_only_follower_graph(
+    tmp_path: Path,
+) -> None:
+    """Slice 3: ``driver_domain=True`` switches the compile/apply seam to the
+    Slice-2 driver-domain-only emit — a follower's Layer A (channel-select +
+    split + per-driver crossover/limiter) with NO program-domain headroom and
+    NO preference EQ. ``program_channel`` is required and validated; the default
+    (full baseline) is unchanged (invariant 7)."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+
+    config_path = tmp_path / "follower_driver_domain.yml"
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "follower_state.json",
+        config_path=config_path,
+        capture_device="hw:CARD=Loopback,DEV=1",
+        driver_domain=True,
+        program_channel="left",
+        validate=_valid_config,
+        created_at="2026-06-14T12:20:00Z",
+    )
+    yaml = config_path.read_text(encoding="utf-8")
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["config"]["domain"] == "driver"
+    assert payload["config"]["program_channel"] == "left"
+    # Driver-domain marker + channel pick present; the leader-baked program
+    # domain (headroom + preference EQ) is ABSENT.
+    assert "emit_active_speaker_driver_domain_config" in yaml
+    assert "# program_channel=left" in yaml
+    assert 'device: "hw:CARD=Loopback,DEV=1"' in yaml
+    assert "active_baseline_headroom" not in yaml
+    # The protective Layer A (per-driver limiter, 0 dB ceiling) survives.
+    assert "as_tweeter_baseline_limiter" in yaml
+    assert "volume_limit: 0.0" in yaml
+
+    # program_channel is required + validated when driver_domain is set.
+    with pytest.raises(ValueError, match="program_channel"):
+        build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            driver_domain=True,
+            program_channel="stereo",  # not a single-box pick
+        )
+
+
 def test_pairing_intent_does_not_change_emitted_baseline_config(
     tmp_path: Path,
 ) -> None:

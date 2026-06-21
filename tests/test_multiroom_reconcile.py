@@ -349,6 +349,30 @@ def test_snapclient_argv_adds_file_player_when_fifo_set():
     assert argv[argv.index("--player") + 1] == f"file:filename={fifo}"
 
 
+# ---------- snapclient_argv(): ACTIVE follower loopback (Slice 3) ----------
+
+
+def test_snapclient_argv_active_endpoint_uses_alsa_loopback_player():
+    """An active follower writes the round-trip snd-aloop loopback via the ALSA
+    player (--soundcard <dev> --player alsa), NOT the dumb-follower file FIFO —
+    its CamillaDSP captures the paired side and runs Layer A in the bonded
+    path."""
+    dev = reconcile_mod.GROUPING_LOOPBACK_PLAYBACK
+    argv = snapclient_argv(_follower(), player_alsa_device=dev)
+    assert argv[argv.index("--soundcard") + 1] == dev
+    assert argv[argv.index("--player") + 1] == "alsa"
+    assert "file:filename=" not in " ".join(argv)
+
+
+def test_snapclient_argv_alsa_player_takes_precedence_over_fifo():
+    """If both are (defensively) passed, the ALSA loopback wins — the active
+    path never falls back to the FIFO."""
+    argv = snapclient_argv(
+        _follower(), player_fifo="/x.fifo", player_alsa_device="hw:Loopback,0,5",
+    )
+    assert "--soundcard" in argv and "file:filename=" not in " ".join(argv)
+
+
 # ---------- _assemble_args(): pure derivation of the two env keys ----------
 #
 # These mirror the snap*_argv tests but assert on the env-key VALUES the
@@ -418,6 +442,38 @@ def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
     assert d[SERVER_KEY] == ""
     assert f"--player file:filename={MEMBER_CONTENT_FIFO}" in d[CLIENT_KEY]
     assert "alsa:device=default" not in d[CLIENT_KEY]
+
+
+def test_assemble_args_active_endpoint_writes_loopback_not_fifo():
+    """An ACTIVE follower (active_endpoint=True) writes the snd-aloop round-trip
+    loopback via the ALSA player; the dumb-follower FIFO is NOT used (camilla
+    owns the path). The default (active_endpoint=False) is unchanged."""
+    from jasper.multiroom.reconcile import (
+        GROUPING_LOOPBACK_PLAYBACK,
+        MEMBER_CONTENT_FIFO,
+    )
+
+    d = _assemble_args(_follower(), active_endpoint=True)
+    assert d[SERVER_KEY] == ""  # a follower runs no server
+    assert f"--soundcard {GROUPING_LOOPBACK_PLAYBACK} --player alsa" in d[CLIENT_KEY]
+    assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
+    # default path is the dumb FIFO (regression guard for the off-by-default).
+    assert "--soundcard" not in _assemble_args(_follower())[CLIENT_KEY]
+
+
+def test_outputd_grouping_env_active_endpoint_clears_dac_content():
+    """An ACTIVE follower disables outputd's dac_content ChannelPick — camilla
+    owns the channel-pick + split, so outputd runs its normal active sink. The
+    lane env is cleared exactly like solo; a DUMB member still arms it."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        outputd_grouping_env,
+    )
+
+    active = outputd_grouping_env(_follower(), active_endpoint=True)
+    assert active[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""  # cleared (no dac_content)
+    dumb = outputd_grouping_env(_follower(), active_endpoint=False)
+    assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
 
 
 def test_assemble_args_disabled_clears_both():
@@ -546,6 +602,14 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         reconcile_mod, "MEMBER_CONTENT_FIFO",
         str(tmp_path / "member-content.fifo"),
     )
+    monkeypatch.setattr(
+        reconcile_mod, "FOLLOWER_STATUS_FILE",
+        str(tmp_path / "grouping-follower-status.json"),
+    )
+    # Default to the PASSIVE path (these legacy main() tests assert dumb-member
+    # behavior); the active-follower main() flow has its own tests that override
+    # this. is_active_speaker_box reads the topology, so stub it for hermeticity.
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: False)
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
 
     order: list[str] = []
@@ -904,3 +968,99 @@ def test_main_follower_voice_env_kicks_aec_reconcile_with_park_flag(
     assert f"{VOICE_PARK_ENV}=1" in text
     assert "restart:jasper-aec-reconcile.service" in order
     assert "restart:jasper-voice.service" not in order
+
+
+# ---------- active-follower endpoint status writer (Slice 3) ----------
+
+
+def test_write_follower_status_round_trips(tmp_path):
+    """The reconciler writes a fresh JSON status the /state reader consumes."""
+    import json
+
+    from jasper.multiroom.reconcile import _write_follower_status
+
+    p = str(tmp_path / "grouping-follower-status.json")
+    _write_follower_status(active_follower=True, blocked_reason="", path=p)
+    assert json.loads(open(p).read()) == {
+        "active_follower": True, "blocked_reason": "",
+    }
+    # Rewritten every reconcile — a later blocked state replaces the prior one.
+    _write_follower_status(active_follower=False, blocked_reason="graph_unprovable", path=p)
+    assert json.loads(open(p).read()) == {
+        "active_follower": False, "blocked_reason": "graph_unprovable",
+    }
+
+
+# ---------- main(): ACTIVE follower flow (Slice 3) ----------
+
+
+def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
+    tmp_path, monkeypatch,
+):
+    """An active follower: the readiness GATE runs BEFORE the units (fail-safe),
+    snapclient writes the loopback (not the FIFO), and the CamillaDSP swap runs
+    AFTER the unit plan (so the loopback has its writer)."""
+    import jasper.multiroom.follower_config as fc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    monkeypatch.setattr(
+        fc_mod, "precheck_active_follower_sync",
+        lambda cfg_: order.append("precheck") or "grouping_follower.yml",
+    )
+    monkeypatch.setattr(
+        fc_mod, "apply_prebuilt_follower_config_sync",
+        lambda: order.append("camilla_active_follower") or "grouping_follower.yml",
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    # Gate before units; camilla swap after the unit plan.
+    assert order.index("precheck") < order.index("apply")
+    assert order.index("apply") < order.index("camilla_active_follower")
+    # snapclient targets the round-trip loopback, not the dumb FIFO.
+    body = target.read_text()
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
+    # endpoint status persisted as active_crossover.
+    status = tmp_path / "grouping-follower-status.json"
+    assert '"active_follower": true' in status.read_text()
+
+
+def test_main_active_follower_precheck_failure_falls_back_to_solo(
+    tmp_path, monkeypatch,
+):
+    """If the readiness gate fails (can't make the driver-domain graph safe),
+    the box does NOT bond — it fails safe to SOLO: no CamillaDSP follower swap,
+    snapclient cleared, the active-solo restore runs, and the block reason is
+    surfaced for /state (invariant 5 fail-closed + self-recovery)."""
+    import jasper.multiroom.follower_config as fc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+
+    def _boom(cfg_):
+        raise fc_mod.ActiveFollowerError("graph_unprovable", "nope")
+
+    monkeypatch.setattr(fc_mod, "precheck_active_follower_sync", _boom)
+    monkeypatch.setattr(
+        fc_mod, "apply_prebuilt_follower_config_sync",
+        lambda: order.append("camilla_active_follower"),
+    )
+    monkeypatch.setattr(
+        fc_mod, "restore_active_follower_solo_sync",
+        lambda: order.append("active_solo_restore") or None,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1  # surfaced as failed
+    assert "camilla_active_follower" not in order  # never bonded the unsafe graph
+    assert "active_solo_restore" in order  # fell back to solo active
+    # snapclient args cleared (fail-safe to solo => no client).
+    assert "JASPER_SNAPCLIENT_ARGS=\n" in target.read_text()
+    # block reason surfaced for the dashboard.
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "graph_unprovable"' in status
+    assert '"active_follower": false' in status
