@@ -302,6 +302,17 @@ from . import satellites as satellites
 from .satellites import (
     check_dial_heartbeat,
 )
+from . import privsep as privsep
+from .privsep import (
+    MANIFEST as PRIVSEP_MANIFEST,
+    OUT_OF_SCOPE_NONROOT_UNITS,
+    check_control_readable_inputs,
+    check_web_readable_inputs,
+    check_mux_readable_inputs,
+    check_voice_readable_inputs,
+    check_input_readable_inputs,
+    check_household_secret_readable,
+)
 
 _STREAMBOX_OMITTED_DOCTOR_GROUPS = frozenset({
     "voice",
@@ -385,6 +396,15 @@ __all__ = [
     "peering",
     "grouping",
     "satellites",
+    "privsep",
+    "PRIVSEP_MANIFEST",
+    "OUT_OF_SCOPE_NONROOT_UNITS",
+    "check_control_readable_inputs",
+    "check_web_readable_inputs",
+    "check_mux_readable_inputs",
+    "check_voice_readable_inputs",
+    "check_input_readable_inputs",
+    "check_household_secret_readable",
     "check_env_file",
     "check_speaker_name",
     "check_state_dir",
