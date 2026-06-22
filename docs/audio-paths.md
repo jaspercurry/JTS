@@ -488,12 +488,11 @@ assignment invalidates old evidence for readiness. Summed validation must
 reference the latest current audible combined-driver test for that speaker
 group; the product flow can use an explicit operator listening check when no
 phone-mic reading is present, while artifact-only or stale tests cannot satisfy
-the baseline compiler. `/sound/active-speaker/baseline-profile/apply` is the active-speaker
-handoff into normal playback, but it is enabled only for an outputd-owned active
-playback lane. Today that product handoff is declared by the measured
-dual-Apple USB-C 4-channel profile. HiFiBerry DAC8x and single Apple USB-C
-topologies can run bounded direct diagnostics, but their baselines remain
-inspectable YAML until outputd owns a matching active handoff. Protected startup
+the baseline compiler. `/sound/active-speaker/baseline-profile/apply` is the
+active-speaker handoff into normal playback, but it is enabled only for an
+outputd-owned active playback lane. Today that product handoff is
+profile-declared for a single Apple USB-C dongle at width 2, DAC8x/DAC8x Studio
+at width 8, and the dual-Apple USB-C composite at width 4. Protected startup
 staging follows the durable-outputd boundary: supported DACs resolve to the
 active outputd lane instead of opening `hw:<card>,0` directly, so normal
 `jasper-outputd` ownership is not bypassed.
@@ -562,7 +561,8 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-18 (active-speaker direct-DAC diagnostic route removed,
-dynamic route width, summed-test transient active graph, and outputd-only durable apply boundary rechecked against
-`playback_route.py`, `sound_setup.py`, `playback.py`, `staging.py`, and
-`baseline_profile.py`)
+Last verified: 2026-06-22 (active-speaker direct-DAC diagnostic route removed,
+dynamic route width, summed-test transient active graph, and outputd-only
+durable apply boundary rechecked against `playback_route.py`,
+`output_topology.py`, `sound_setup.py`, `playback.py`, `staging.py`,
+`baseline_profile.py`, and the active-lane `DacProfile` declarations)

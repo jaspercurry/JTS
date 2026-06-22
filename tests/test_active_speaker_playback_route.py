@@ -12,7 +12,11 @@ from jasper.active_speaker.playback_route import (
     active_playback_route_capability,
     resolve_active_playback_device,
 )
-from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH, HIFIBERRY_DAC8X
+from jasper.audio_hardware.dac import (
+    APPLE_USB_C_DONGLE,
+    DUAL_APPLE_USB_C_DAC_4CH,
+    HIFIBERRY_DAC8X,
+)
 from jasper.output_topology import (
     EXPLICIT_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
@@ -110,6 +114,24 @@ def test_dac8x_capability_reads_active_outputd_lane() -> None:
     assert cap.required_active_output_count == 2
     assert cap.fits_required_outputs is True
     assert cap.ready is True
+
+
+def test_apple_dongle_capability_reads_width_two_outputd_active_lane() -> None:
+    topo = _topology(
+        APPLE_USB_C_DONGLE.id,
+        2,
+        card_id="Apple",
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+    cap = active_playback_route_capability(topo)
+
+    assert cap.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
+    assert cap.transport_channel_count == 2
+    assert cap.required_active_output_count == 2
+    assert cap.fits_required_outputs is True
+    assert cap.ready is True
+    assert cap.issues == ()
 
 
 def test_dual_apple_capability_reads_outputd_lane_width() -> None:

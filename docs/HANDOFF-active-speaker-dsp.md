@@ -60,6 +60,13 @@
 > low-level channel test. This still does not play audio, reload
 > CamillaDSP, or grant playback permission; tweeter protection and path
 > safety remain separate blockers.
+> The bottom **Reset speaker setup** recovery action posts to
+> `/sound/output-topology/reset`: it stops any active-speaker tone/session,
+> resets the saved topology to the detected passive hardware draft, kicks
+> audio-hardware reconcile, and clears active-speaker setup/evidence JSON
+> artifacts (design draft, crossover preview, staged config, path safety,
+> startup/commission/ramp state, measurements, and baseline candidate). It does
+> not play sound and does not delete generated CamillaDSP YAML files.
 > `jasper.active_speaker.safe_playback` remains the backend confirmation ledger
 > and Stop substrate, but the browser no longer exposes a separate Arm step.
 > Active crossover commissioning arms through `commission-load` and uses the
@@ -598,11 +605,12 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
 ### Critical path
 
 1. **DAC-agnostic active-output transport** (the hard prerequisite). The single
-   path needs the speaker's DAC to have an outputd active lane. Today only the
-   dual-Apple 4-channel composite declares one. The transport is generalized to
-   dispatch on clock-domain *shape* (coherent single / paired composite) with
-   width + channel map as data, so a single coherent DAC8x (8ch) and any future
-   DAC ride it without per-DAC code. Full design + change set:
+   path needs the speaker's DAC to have an outputd active lane. The product
+   profiles that declare one today are the single Apple USB-C dongle (2ch),
+   DAC8x/DAC8x Studio (8ch), and the dual-Apple 4-channel composite. The
+   transport dispatches on clock-domain *shape* (coherent single / paired
+   composite) with width + channel map as data, so future coherent DACs ride it
+   without per-DAC code. Full design + change set:
    [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
    "DAC-agnostic active-output transport (design-of-record)".
 
@@ -703,9 +711,10 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   byte-identical stereo. The active content lane (snd-aloop substream 5) is raw
   `type hw` (card/device/subdevice only — the `hw` plugin rejects
   channels/rate/format; width is set by the openers and locked by snd-aloop),
-  `type plug`/`plughw:` banned. The DAC8x/DAC8x-Studio `DacProfile`s declare
-  `supports_active_outputd_lane=True` (`active_outputd_lane_channels=8` = the
-  cap). Because the gate accepts the config's actual width, the existing
+  `type plug`/`plughw:` banned. The active-capable product `DacProfile`s declare
+  `supports_active_outputd_lane=True` (Apple USB-C dongle cap 2,
+  DAC8x/DAC8x-Studio cap 8, dual-Apple composite cap 4). Because the gate accepts
+  the config's actual width, the existing
   per-speaker emitters (driver-count configs) engage active mode directly — **no
   full-width-padding producer is needed.** **Load-bearing hardware fact (#741) —
   DAC capability VERIFIED on jts3:** `aplay --dump-hw-params` on the raw DAC8x

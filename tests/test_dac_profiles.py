@@ -44,7 +44,7 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
     assert dac.is_known_profile_id("unknown_usb_dac") is False
     assert dac.physical_output_count_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.physical_output_count_for("unknown_usb_dac") is None
-    assert dac.active_outputd_lane_channels_for(APPLE_USB_C_DONGLE_ID) is None
+    assert dac.active_outputd_lane_channels_for(APPLE_USB_C_DONGLE_ID) == 2
     assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_ID) == 8
     assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_STUDIO_ID) == 8
     assert dac.active_outputd_lane_channels_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
@@ -69,8 +69,8 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     )
     assert APPLE_USB_C_DONGLE.clock_domain_contract == "single_device"
     assert APPLE_USB_C_DONGLE.outputd_sink == "alsa"
-    assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is False
-    assert APPLE_USB_C_DONGLE.active_outputd_lane_channels is None
+    assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
+    assert APPLE_USB_C_DONGLE.active_outputd_lane_channels == 2
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
     assert APPLE_USB_C_DONGLE.supported_card_matches == ("usb-c to 3.5mm",)
     assert APPLE_USB_C_DONGLE.headphone_pinned_100 is True

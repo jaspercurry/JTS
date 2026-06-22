@@ -47,6 +47,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/channel-identity mark/clear physical identity evidence
   POST /active-speaker/channel-protection mark/clear tweeter protection evidence
   POST /output-topology save a complete speaker/DAC topology draft
+  POST /output-topology/reset reset output topology + active setup evidence
   POST /settings persist global sound settings
   POST /volume-floor/audition start/update a non-persistent 1% floor tone
   POST /volume-floor/stop stop the non-persistent 1% floor tone
@@ -328,6 +329,23 @@ def _save_output_topology_payload(
         "clock_domain": clock_domain_report(topology),
         "active_playback_route": _active_speaker_playback_route_payload(topology),
     }
+
+
+def _reset_output_topology_payload() -> dict[str, Any]:
+    from jasper.active_speaker.reset import clear_active_speaker_setup_state
+    from jasper.cli.output_topology_reset import reset_to_detected_passive
+
+    tone_stop = _active_speaker_stop_commission_tone(reason="output_topology_reset")
+    safe_stop = _active_speaker_stop_payload()
+    reset = reset_to_detected_passive()
+    setup_reset = clear_active_speaker_setup_state()
+    payload = _output_topology_payload()
+    payload["reset"] = reset
+    payload["active_speaker_reset"] = setup_reset
+    payload["tone_stop"] = tone_stop
+    payload["safe_playback"] = safe_stop
+    payload["saved"] = True
+    return payload
 
 
 def _active_speaker_playback_route_payload(
@@ -4541,6 +4559,7 @@ def _make_handler(
                 "/active-speaker/baseline-profile",
                 "/active-speaker/baseline-profile/apply",
                 "/output-topology",
+                "/output-topology/reset",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -4806,6 +4825,17 @@ def _make_handler(
                     except OSError as e:
                         logger.exception(
                             "event=sound.output_topology_save result=error "
+                            "error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/output-topology/reset":
+                    try:
+                        self._send_json(_reset_output_topology_payload())
+                    except (OSError, RuntimeError, ValueError) as e:
+                        logger.exception(
+                            "event=sound.output_topology_reset result=error "
                             "error=%s",
                             type(e).__name__,
                         )

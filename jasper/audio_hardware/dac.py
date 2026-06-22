@@ -241,6 +241,10 @@ APPLE_USB_C_DONGLE = DacProfile(
     usb_ids=("05ac:110a",),
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
     headphone_pinned_100=True,
+    # A single Apple dongle can carry a mono active 2-way graph over the same
+    # width-aware single-ALSA active lane used by wider coherent DACs.
+    supports_active_outputd_lane=True,
+    active_outputd_lane_channels=2,
     udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
 )
 
