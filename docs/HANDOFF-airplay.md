@@ -1359,6 +1359,44 @@ the stream type and any non-default latency:
 
 `scripts/airplay-latency-probe.sh` captures this during a live session.
 
+**JTS-side observability — the tight regime is now visible without the
+journal (Stage D, 2026-06-21).** Three surfaces, all OBSERVABILITY-ONLY
+(they do not touch the offset derivation, the reconciler, or any audio
+path):
+- **Proactive computed fit** — `jasper/multiroom/airplay_latency.py`'s
+  pure `assess_fit(buffer_ms, notified_frames)` computes the budget
+  (`(frames + 11035) / 44100`; the default 77175 when no `Notified
+  latency` line) vs. the need (`~150 ms + buffer_ms`) and flags
+  `tight` + a bounded `residual_lag_sec`. Surfaced fail-soft at
+  `/state.grouping.airplay_latency_fit` — `{"applicable": false}` unless
+  this speaker is an active bonded leader (the journal is read ONLY in
+  that rare case, gated behind a one-line config parse, so a solo speaker
+  pays nothing). The reader (`read_notified_frames`) is fail-soft: an
+  unreadable journal resolves to the default budget, never a false warn.
+- **Doctor check** — `check_grouping_airplay_latency` (grouping domain)
+  skips (`ok`, "n/a") on solo/follower and warns only when a bonded
+  leader's budget is genuinely too short, naming the residual lag and the
+  remediation (lower `buffer_ms` on `/rooms`).
+- **Reactive ground truth** — shairport's own "stream latency … too short
+  to accommodate an offset" warning is classified by the AirPlay-health
+  sampler (`classify_journal_line` →
+  `type=shairport_offset_too_short`, severity `issue`) so it lands in the
+  existing `/system` AirPlay-health event ring with no new journal reads.
+
+**Step-0 measurement (2026-06-21).** Mining the persistent shairport
+journals on jts.local found **9 real AP2 (Realtime) sessions, zero
+`Notified latency` lines, zero "too short" warnings** — with
+`log_verbosity = 2` confirmed live, so a non-default budget WOULD have been
+logged. Every observed session used the default ~2.0 s budget (the free
+regime). This is why the surface above is deliberately scoped down (quiet
+when comfortable, gated journal reads) rather than an always-on detector.
+Caveat / still owed: those sessions are audio-app AirPlay; a per-app
+**video** sweep (Apple TV app, YouTube/Safari, QuickTime across a couple
+of iOS/macOS versions) with `scripts/airplay-latency-probe.sh` is a
+human/hardware measurement not yet run — but AP2 buffered (video) streams
+take a *larger*, not smaller, budget, so the free regime is expected to
+hold there too.
+
 ### What shairport logs actually mean
 
 The two log messages in [Pattern B](#pattern-b--shairport-resync_threshold-misfire-the-classic)

@@ -25,8 +25,12 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # and the defensive is_active_speaker_box topology probe) — each is a "never
 # crash the reconcile / fail safe to solo" handler matching the existing
 # reconciler idiom.
-MAX_NOQA_MARKERS = 797
-MAX_BLE001_MARKERS = 617
+# 2026-06-21 (+1 suppression marker, blind-except): the bonded-leader AirPlay
+# latency-fit /state snapshot (jasper/multiroom/airplay_latency.py) carries the
+# same fail-soft "observability must never break /state" guard every sibling
+# /state section does.
+MAX_NOQA_MARKERS = 798
+MAX_BLE001_MARKERS = 618
 
 _BROAD_EXCEPT = re.compile(
     r"^\s*except (?:BaseException|Exception)(?: as [A-Za-z_][A-Za-z0-9_]*)?:"

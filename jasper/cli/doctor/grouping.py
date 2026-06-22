@@ -442,6 +442,47 @@ def check_grouping_household_credential() -> CheckResult:
     )
 
 
+@doctor_check(order=75.9, group="grouping")
+def check_grouping_airplay_latency() -> CheckResult:
+    """A bonded LEADER receiving AirPlay must fit its hidden downstream
+    delay (~150 ms pipeline + the Snapcast ``buffer_ms``) inside the budget
+    the AirPlay sender negotiated, or its own output lands AFTER the AirPlay
+    anchor → bounded residual lip-sync lag (the "Stage D" gap,
+    docs/HANDOFF-airplay.md "AirPlay 2 latency is sender-authored").
+
+    OBSERVABILITY ONLY — this never changes the offset. Skips (``ok``) on
+    solo / follower. For a bonded leader it reads the sender's most-recent
+    notified latency from shairport's journal (ABSENCE => the default ~2.0 s
+    budget, the free regime — fail-soft, so an unreadable journal reads as
+    comfortable, never a false warn) and warns ONLY when the budget is
+    genuinely too short to hide the delay. Pinned to the same pure
+    :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
+    uses, so the doctor and the dashboard tell one story."""
+    from ...multiroom.airplay_latency import assess_fit, read_notified_frames
+    from ...multiroom.config import is_active_member, load_config
+
+    label = "grouping: AirPlay latency fit"
+    cfg = load_config()
+    if not (is_active_member(cfg) and cfg.role == "leader"):
+        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+
+    fit = assess_fit(cfg.buffer_ms, read_notified_frames())
+    budget_desc = (
+        f"budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs need "
+        f"~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms})"
+    )
+    if fit.tight:
+        return CheckResult(
+            label, "warn",
+            f"AirPlay budget too short for the bonded round-trip: {budget_desc} "
+            f"=> ~{fit.residual_lag_sec * 1000:.0f} ms residual lip-sync lag. "
+            "Lower the Snapcast buffer_ms on http://jts.local/rooms, or expect "
+            "bounded lag while bonded; shairport also logs 'stream latency too "
+            "short to accommodate an offset'.",
+        )
+    return CheckResult(label, "ok", f"fits — {budget_desc}")
+
+
 # NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED
 # 2026-06-11 with the rest of the retired outputd-as-producer machinery
 # (`SnapfifoSink` / `SNAPFIFO_PRODUCER_WIRED` / the reconciler tap limb): the
