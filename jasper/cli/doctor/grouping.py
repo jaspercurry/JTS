@@ -10,6 +10,7 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from ._registry import doctor_check
@@ -481,6 +482,90 @@ def check_grouping_airplay_latency() -> CheckResult:
             "short to accommodate an offset'.",
         )
     return CheckResult(label, "ok", f"fits — {budget_desc}")
+
+
+@doctor_check(order=75.95, group="grouping")
+def check_crossover_unit_installed() -> CheckResult:
+    """An ACTIVE LEADER must have camilla#2's endpoint-crossover unit
+    installed and parseable.
+
+    camilla#2 (``jasper-camilla-crossover.service``, :1235) is the per-driver
+    crossover instance an active leader runs alongside the always-on camilla#1
+    (docs/HANDOFF-distributed-active.md "Stage B"). It is shipped INERT — not
+    enabled, not yet reconciler-gated — so this check only asserts the dormant
+    infrastructure is *present and valid* on the one box that will eventually
+    run it; it does NOT assert the unit is active (a later PR arms it).
+
+    Active leader = an active/roleful output topology (so this box runs a
+    per-driver crossover at all) AND a bonded leader (so it is the leader half
+    of the pair). Any other box — an ordinary speaker, a passive leader, an
+    active follower — skips cleanly with ``ok``: the unit file is installed
+    everywhere by install.sh, but it is only *meaningful* on an active leader,
+    and a normal box that never enables it needs no health signal here.
+
+    A missing or unparseable unit on an active leader is a real gap (the
+    reconciler PR would have nothing to arm), so it warns."""
+    from ...multiroom.config import is_active_member, load_config
+    from ...output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    label = "grouping: crossover unit"
+    cfg = load_config()
+    if not (is_active_member(cfg) and cfg.role == "leader"):
+        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+
+    # Active/roleful topology is the second half of "active leader": only a
+    # box that runs a per-driver crossover needs camilla#2. A passive leader
+    # (full-range, no roleful outputs) skips. Imported lazily and read through
+    # the shared runtime contract, same as check_active_speaker_runtime_graph.
+    from ...active_speaker.runtime_contract import (
+        active_topology_requires_roleful_graph,
+    )
+
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        # No usable topology means this is not a commissioned active speaker,
+        # so camilla#2 is not its concern. Skip rather than warn — the active
+        # speaker runtime graph check owns topology-validity reporting.
+        return CheckResult(label, "ok", "no active-speaker topology (n/a)")
+    if not active_topology_requires_roleful_graph(topology):
+        return CheckResult(label, "ok", "passive leader — no crossover (n/a)")
+
+    unit = "jasper-camilla-crossover.service"
+    # `systemctl cat` is the canonical "is the unit installed?" probe used
+    # across the doctor (renderers / audio use systemctl rather than raw
+    # Path.exists, so a unit found anywhere on systemd's search path counts).
+    # returncode 0 = systemd found and could read the unit.
+    if _run(["systemctl", "cat", unit]).returncode != 0:
+        return CheckResult(
+            label, "warn",
+            f"active leader but {unit} is not installed — the endpoint-"
+            "crossover instance cannot be armed; re-run the JTS installer "
+            "(bash scripts/deploy-to-pi.sh)",
+        )
+
+    # `systemd-analyze verify` is the parse check. It is not always present
+    # (dev hosts); when it is, a non-zero exit means the unit is malformed.
+    # When it is absent we fall back to installed-only (above) — a parse
+    # probe we cannot run must never produce a false warning.
+    if shutil.which("systemd-analyze") is None:
+        return CheckResult(
+            label, "ok",
+            f"installed ({unit}); systemd-analyze unavailable, parse unchecked",
+        )
+    verify = _run(["systemd-analyze", "verify", unit])
+    if verify.returncode != 0:
+        detail = (verify.stderr or verify.stdout or "").strip().replace("\n", " ")
+        return CheckResult(
+            label, "warn",
+            f"{unit} failed systemd-analyze verify: {detail[:200]}",
+        )
+    return CheckResult(
+        label, "ok", f"installed + parseable ({unit}), INERT until armed",
+    )
 
 
 # NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED

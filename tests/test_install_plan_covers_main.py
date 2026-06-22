@@ -52,6 +52,7 @@ _STEP_TO_PLAN_MARKER = {
     "install_alsa": "Render /etc/asound.conf through",
     "install_camilladsp": "CamillaDSP:",
     "ensure_outputd_camilla_statefile": "Seed or validate the outputd Camilla statefile",
+    "ensure_crossover_camilla_statefile": "camilla#2 crossover Camilla statefile",
     "install_renderers": "shairport-sync source archive",
     "set_usb_gadget_mode": "USB gadget dtoverlay",
     "tune_wifi_for_airplay": "Disable WiFi power-save on the active wlan0",

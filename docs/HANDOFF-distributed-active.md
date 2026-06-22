@@ -863,6 +863,22 @@ the active-leader code on real drivers without a second active speaker. Gates ar
 pre-registered above (CPU/thermal, the clock-lock soak signatures, band-limited-
 tweeter TTS, inv-B-through-Layer-A).
 
+> **B1 landed (2026-06-21) — dormant camilla#2 infrastructure only.** The
+> second CamillaDSP instance (camilla#2, the endpoint-crossover instance on
+> `:1235`) now ships as INERT infrastructure: `jasper-camilla-crossover.service`
+> + `jasper-camilla-crossover-guard` are installed, the `JASPER_CAMILLA2_*`
+> config fields + `crossover_controller()` exist, and install.sh seeds
+> `crossover-statefile.yml` through the active-speaker runtime contract. The
+> unit is **not boot-enabled and not yet wired into any reconciler** — a later
+> PR arms it only when the box is both leader and active. Two B1 safety
+> invariants are pinned by tests: camilla#2 carries **NO
+> `StartLimitAction=reboot`** (it fails closed to silence, never reboots the
+> household speaker, unlike the always-on camilla#1), and its crossover guard
+> repairs ONLY to the re-proven **driver-domain (Layer-A-intact) baseline,
+> never flat** (a flat crossover would send full-range to the tweeter). The
+> summer build, the `rate_adjust` OFF + summing topology, the CPU/thermal +
+> clock-lock soak, and the reconciler gating all remain unbuilt.
+
 **Stage C — matched pair (two identical active speakers, one as leader):
 BLOCKED.** Precondition is a **second commissioned active speaker with real
 drivers**; today only `jts3` qualifies (`jts5` is a dual-Apple-DAC bench box with

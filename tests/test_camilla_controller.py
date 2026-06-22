@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.camilla import CamillaController
+from jasper.camilla import CamillaController, crossover_controller
 
 
 class _FakeVolume:
@@ -48,6 +48,25 @@ def _controller(fake: _FakeClient) -> CamillaController:
 
     cam._call = call  # type: ignore[method-assign]
     return cam
+
+
+def test_crossover_controller_defaults_to_camilla2_port(monkeypatch):
+    # No env set -> the camilla#2 (endpoint-crossover) defaults: loopback,
+    # port 1235 (distinct from camilla#1's 1234).
+    monkeypatch.delenv("JASPER_CAMILLA2_HOST", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA2_PORT", raising=False)
+    cam = crossover_controller()
+    assert isinstance(cam, CamillaController)
+    assert cam._host == "127.0.0.1"
+    assert cam._port == 1235
+
+
+def test_crossover_controller_honors_env_overrides(monkeypatch):
+    monkeypatch.setenv("JASPER_CAMILLA2_HOST", "10.0.0.9")
+    monkeypatch.setenv("JASPER_CAMILLA2_PORT", "1299")
+    cam = crossover_controller()
+    assert cam._host == "10.0.0.9"
+    assert cam._port == 1299
 
 
 @pytest.mark.asyncio

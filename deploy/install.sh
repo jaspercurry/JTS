@@ -605,6 +605,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      the normal production statefile. Rollback to a pre-outputd
      release/branch must also stop/disable jasper-outputd because that
      older code does not know about the outputd unit.
+   - Seed the camilla#2 crossover Camilla statefile (the dormant
+     endpoint-crossover instance, :1235) through the same active-speaker
+     runtime contract. Its unit is installed but NOT enabled — a later
+     reconciler arms it only on an active leader.
    - Run the AEC/mic reconciler so voice follows attached hardware.
    - Install the multi-room grouping units: snapserver + snapclient
      DISABLED (grouping is never auto-enabled; the snapcast apt
@@ -1106,6 +1110,48 @@ ensure_outputd_camilla_statefile() {
         systemctl restart jasper-camilla.service 2>/dev/null || \
             echo "  WARN: jasper-camilla restart failed after statefile repair. Check logs with: journalctl -u jasper-camilla -e"
     fi
+}
+
+ensure_crossover_camilla_statefile() {
+    # Seed camilla#2's OWN statefile (crossover-statefile.yml) so the
+    # endpoint-crossover instance (jasper-camilla-crossover.service, :1235)
+    # has a config to load on first start (the unit has no positional
+    # config — same CamillaDSP-v4 statefile-clobber reason as camilla#1).
+    #
+    # Reuses the SAME active-speaker runtime contract as
+    # ensure_outputd_camilla_statefile (jasper-active-speaker
+    # runtime-safe-graph), which on a roleful/protected topology — the ONLY
+    # topology where camilla#2 is meaningful — selects the DRIVER-DOMAIN
+    # (Layer-A-intact) baseline / all-muted active startup graph and NEVER
+    # the flat fallback (the contract's `select_flat` branch is gated on
+    # `not requires_roleful_graph`; see
+    # jasper/active_speaker/runtime_contract.py). So an active box gets a
+    # tweeter-safe driver-domain seed.
+    #
+    # SEAM FLAGGED FOR THE RECONCILER PR: on an ORDINARY (non-active) box
+    # the contract returns flat, so this would seed flat into a file named
+    # crossover-statefile.yml. That is BENIGN today because camilla#2 is
+    # INERT there (the unit is never enabled) AND the crossover guard
+    # re-proves the same never-flat contract at every start. The later
+    # reconciler PR — which knows when the box is actually an active
+    # leader — should refine this to seed the EXACT driver-domain baseline
+    # (not whatever runtime-safe-graph returns for a non-roleful topology)
+    # at the moment it arms the unit. We do NOT author that here: emitting
+    # a precise driver-domain baseline is jasper/active_speaker/* code,
+    # outside this unit's scope fence.
+    #
+    # We never restart the unit (it is not enabled), so there is no
+    # JASPER_RESTART_* knob here — only the seed write.
+    local output
+    echo "  Seeding camilla#2 crossover statefile via active-speaker runtime contract"
+    if ! output="$(/opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
+        --statefile /var/lib/camilladsp/crossover-statefile.yml \
+        --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
+        --write-statefile 2>&1)"; then
+        printf '%s\n' "${output}"
+        return 1
+    fi
+    printf '%s\n' "${output}"
 }
 
 find_card() {
@@ -2098,6 +2144,7 @@ main() {
         tune_wifi_for_airplay
         install_streambox_jasper
         ensure_outputd_camilla_statefile
+        ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
         build_install_jasper_fanin
         build_install_jasper_outputd
@@ -2137,6 +2184,7 @@ main() {
     tune_wifi_for_airplay
     install_jasper
     ensure_outputd_camilla_statefile
+    ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_systemd_units
