@@ -1,12 +1,16 @@
 # Launch readiness — verified backlog
 
-> **Status: current source of truth (verified 2026-06-21).** This is the live,
-> evidence-checked open-source-launch backlog. It **supersedes** the
-> point-in-time audit snapshots `docs/REVIEW-2026-06-04-*.md`,
-> `docs/REVIEW-2026-06-12-oss-due-diligence.md`, and
-> `docs/REVIEW-google-oss-readiness.md` — those are tagged historical and kept
-> only for archaeology (they list work that has since shipped). Drive cleanup
-> agents from THIS doc, not those.
+> **Status: historical.** The open-source-launch backlog this doc tracked is
+> **complete** — every item shipped: daemon privilege separation, CI/type-safety
+> hardening, resilience hardening, OSS governance, supply chain, structured
+> logging, the `v0.1.0` tag, and (last) the Apache-2.0 SPDX license headers in
+> #910. Archived 2026-06-22 with an empty open list. Preserved for
+> primary-source archaeology — specific facts (PR numbers, "what's done" lists,
+> file paths) reflect that moment and will drift. Read it for the narrative of
+> what launch readiness required, not as current operational truth; the shipped
+> state lives in the code, `CHANGELOG.md`, and the cited PRs. This doc itself
+> **superseded** the point-in-time audit snapshots `REVIEW-2026-06-04-*.md`,
+> `REVIEW-2026-06-12-oss-due-diligence.md`, and `REVIEW-google-oss-readiness.md`.
 
 The list was verified against `origin/main` — every "done" line was confirmed in
 the tree (the symbol / CI step / tag cited), not trusted from an older doc (the
@@ -23,7 +27,7 @@ has shipped (see the archiving note at the bottom).
   compartmentalization (#776 `jasper-secrets` for LLM/Google keys, `jasper-intsecrets`
   for HA/Spotify). The group-perm-clobber the drop introduces is fixed (#827/#834)
   and guard-tested (`test_systemd_hardening.py`, `test_aec_reconcile.py`). Design
-  of record: [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).
+  of record: [HANDOFF-privilege-separation.md](../HANDOFF-privilege-separation.md).
 - **CI / type-safety hardening** — landed across the 2026-06-18→19 cleanup pass:
   a lenient mypy baseline in CI (the "Type check (mypy; lenient baseline)" step +
   `jasper/py.typed` + `[tool.mypy]` config); a Python **3.11 / 3.12 / 3.13
@@ -57,7 +61,7 @@ has shipped (see the archiving note at the bottom).
   annotate-or-break tax that outweighs the badge on a solo repo. The genuinely
   third-party in-tree assets (OFL fonts, LVGL `lv_conf.h`, `mta_stations.csv`,
   presets) stay unstamped and are inventoried in
-  [LICENSE-third-party.md](../LICENSE-third-party.md). The bulk commit is
+  [LICENSE-third-party.md](../../LICENSE-third-party.md). The bulk commit is
   recorded in `.git-blame-ignore-revs`.
 
 ## 🟢 Open — none
@@ -74,13 +78,12 @@ a fresh bullet here with a ready-to-paste agent prompt.
   trusted-LAN trade-off (see SECURITY.md), parity with router admin UIs. Revisit
   only if the threat model changes.
 
-## Maintaining this doc
+## Archive note
 
-When an open item ships, move its bullet to **Done** with the PR number (or the
-verified symbol/CI step) and delete the agent prompt. **The open list is now
-empty (SPDX shipped in #910), so the launch-readiness work is complete** — this
-doc is ready to be bannered historical and moved to `docs/historical/` as a
-follow-up (that move also touches the README atlas row and the
-`docs/doc-map.toml` entry, so it is kept out of the mechanical SPDX PR).
+The launch-readiness backlog reached an empty open list when SPDX headers
+shipped in #910, so this doc was bannered historical and moved here to
+`docs/historical/` on 2026-06-22, repointing the README atlas row and the
+`docs/doc-map.toml` entry in the same change. It is no longer maintained; it
+stands as the record of what the open-source launch required.
 
-Last verified: 2026-06-21
+Last current: 2026-06-21

@@ -6,7 +6,9 @@
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
 # GitHub honours this file automatically in its blame view.
 
-# chore(license): Apache-2.0 SPDX headers on first-party source.
-# Comments-only sweep across ~996 files (reuse annotate), so blame
-# attributes each line to its real author rather than the header commit.
-7b92a859ace0a949fd2e62829985bb73ef9c91e2
+# chore(license): Apache-2.0 SPDX headers on first-party source (#910).
+# Comments-only sweep across ~996 files (reuse annotate), so blame skips it
+# and attributes each header line to the file's surrounding author. This is
+# the squash-merge SHA on main (the PR squashed its 4 commits into one), not
+# the pre-squash feature-branch SHA, which is not in main's history.
+13ffb32489648c5929cca83fc29de373ad13a701
