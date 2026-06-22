@@ -55,6 +55,7 @@ code = [
   "scripts/docs-linkcheck.py",
   "docs/doc-map.toml",
   "docs/testing-tooling.md",
+  ".claude/commands/deep-audit.md",
 ]
 docs = [
   "AGENTS.md",
@@ -62,6 +63,7 @@ docs = [
   "README.md",
   "CONTRIBUTING.md",
   "docs/testing-tooling.md",
+  "docs/DEEP-AUDIT-PLAYBOOK.md",
 ]
 requires_docs_when = [
   "The documentation paradigm, README atlas, agent context loading, PR documentation-impact workflow, freshness checks, or docs routing map changes.",
