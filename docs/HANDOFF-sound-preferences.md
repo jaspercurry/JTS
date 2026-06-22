@@ -147,6 +147,11 @@ the hard clip guard, so removing the old preamp cannot raise the output
 ceiling — at high volume a large boost clips at 0 dBFS rather than
 ducking the whole mix.
 
+Active-speaker baselines follow the same preference policy: the EQ bands
+are inserted before the split/crossover path and ride at unity. Explicit
+output trim or match-loudness attenuation still folds into
+`active_baseline_headroom`; preference boosts do not.
+
 **Room-correction boosts are the exception — they are headroom-compensated
 automatically.** The assertive correction strategy (`cuts_only=False`) can
 emit room PEQs with up to +3 dB total boost. Unlike preference boosts,

@@ -64,7 +64,7 @@ active-speaker baseline"), while `/sound/` calls the same file "custom".
 Invert the assumption. Today the call site hard-codes "the loaded graph
 is a stereo `emit_sound_config`." Instead, the call site asks the
 **currently-loaded graph kind** to re-emit *itself* with the user's
-preference (and room-correction) filters folded in — preserving its own
+preference (and room-correction) filters applied — preserving its own
 structure. Graph kinds that can safely host EQ do so; the rest fail
 **closed** with an honest, typed reason.
 
@@ -95,7 +95,7 @@ existing layering):
     (`ACTIVE_BASELINE_SOURCE`, the same signal the verifier's `is_baseline`
     branch keys on) decides which it is. *PR-1:* raised
     `CarrierCannotHostEq("eq_on_active_not_wired", …)` for all three. *PR-3
-    (DONE):* a **SOLO baseline** folds preference EQ pre-split — recomposed from
+    (DONE):* a **SOLO baseline** inserts preference EQ pre-split — recomposed from
     the saved evidence via
     [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py),
     NEVER through the stereo template (invariant 3). Startup/commissioning still
@@ -187,14 +187,14 @@ makes them safe:
    corner or leak energy into a band a driver can't handle.
 2. Upstream of every per-driver `Limiter` and the tweeter HP → a
    preference *boost* cannot bypass the limiter.
-3. **Headroom is folded into the single `active_baseline_headroom`
-   gain**, not added as a sibling pre-split attenuation. Reduce available
-   pre-split headroom by `total_positive_boost_db(preference + room)`
-   (the exact mechanism `emit_sound_config` uses for room boosts), so the
-   corrected program cannot exceed unity before the split. The household's
-   `output_trim_db` (manual headroom + loudness match) folds into the SAME gain
-   — gated on the profile actually having EQ, exactly like the stereo path — so
-   the active EQ apply honours it rather than silently dropping it.
+3. **Explicit headroom is folded into the single
+   `active_baseline_headroom` gain**, not added as a sibling pre-split
+   attenuation. This gain carries baseline headroom plus the household's
+   `output_trim_db` (manual headroom + loudness match), gated on the
+   profile actually having EQ, exactly like the stereo path. Preference
+   boosts themselves ride at unity ("boosts boost"), while safety comes
+   from their pre-split placement, the crossover/limiters/tweeter HP, and
+   the 0 dB volume ceiling.
 
 **Compose, don't text-splice.** `emit_active_speaker_baseline_config` grew an
 optional `preference_filters` param wired pre-split (a separate Filter step on
@@ -204,7 +204,7 @@ shape decisions stay in `active_speaker.camilla_yaml`. The carrier composes via
 thin helper that rebuilds the structural baseline from the saved evidence using
 the **same derivation primitives** `build_baseline_profile_candidate` uses
 (`resolve_active_playback_device` → `compile_preset_from_crossover_preview` →
-`_derive_corrections` → the emitter), then folds the preference bands in. It is
+`_derive_corrections` → the emitter), then inserts the preference bands. It is
 a sibling of `build_baseline_profile_candidate`, **not** a new param on it: the
 durable baseline (`active_speaker_baseline.yml`, the reconcile fallback) stays
 EQ-free, while the carrier writes the EQ'd baseline to the `/sound` apply target
@@ -268,21 +268,16 @@ each caller wires the names into its own pipeline. Output is
 list — **data**, not a `SoundProfile`), `total_positive_boost_db`, and the
 `camilla_emit` leaves.
 
-**Headroom-policy seam (read before PR-3 reuses this).** PR-3 reuses the
-*filter-definition assembly* + the now-public `emit_filter_spec` + the
-neutral `FilterSpec` — but **not** the headroom output verbatim. The stereo
-policy `build_stereo_prefix` bakes is: a standalone `room_headroom` gain for
-the worst-case **room** boost only (`max` over `room_peqs`/`room_peqs_right`),
-with preference boosts riding at unity (the master `volume_limit==0` ceiling
-guards them). The active baseline's policy is different (see "Where
-preference EQ slots into the active graph"): it folds
-`total_positive_boost_db(preference + room)` into the single
-`active_baseline_headroom` gain — room **and** preference, into an existing
-gain, not a sibling. So PR-3 must NOT splice the stereo `room_headroom` into
-an active graph; it should either have `build_stereo_prefix` surface
-`room_headroom_db` (returned, so the active caller can fold rather than emit
-it) or compose at the `emit_filter_spec` level. Naming the seam here so the
-"reused by PR-3" line above is not read as "splice it wholesale."
+**Headroom-policy seam.** Active and stereo preference EQ now share the
+same policy: preference boosts ride at unity, and explicit
+`output_trim_db` is the only preference-layer global attenuation. Stereo
+room correction still emits a standalone `room_headroom` gain for the
+worst-case **room** boost only (`max` over `room_peqs`/`room_peqs_right`).
+If active room correction later grows a producer, do not splice the
+stereo `room_headroom` into the active graph as a sibling; have the
+builder surface the room-headroom value so the active caller can fold
+room headroom into `active_baseline_headroom`, or compose at the
+`emit_filter_spec` level.
 
 **Layering note (why it's a neutral leaf module).** The builder takes the
 preference `FilterSpec` list and emits it, so it needs `FilterSpec` +
@@ -303,8 +298,8 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
 | 6 | ActiveGraph (pre-capability) + Unknown raise `CarrierCannotHostEq` with a **stable `reason_code`**; the route returns **200-with-body**, never 5xx — no silent failure | 1 |
 | — | Recognizer mutual-exclusivity incl. an env-overridden baseline path (`JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH`) | 1 |
 | — | Behavior-neutral: existing base / sound / correction apply+draft tests stay green (verbatim relocation) | 1 |
-| 2 | **Keystone:** `ActiveGraphCarrier.reemit` output, fed back through `classify_camilla_graph` for the same topology, classifies `GRAPH_APPROVED_ACTIVE_RUNTIME` / `allowed=True` — folding EQ never breaks the contract | 3 |
-| 4 | Emitter-side: a `+N` dB preference boost reduces pre-split headroom by `≥ total_positive_boost_db(prefs)` and keeps `volume_limit == 0.0`. **Test with a shelf, not just a peak** | 3 |
+| 2 | **Keystone:** `ActiveGraphCarrier.reemit` output, fed back through `classify_camilla_graph` for the same topology, classifies `GRAPH_APPROVED_ACTIVE_RUNTIME` / `allowed=True` - inserting EQ never breaks the contract | 3 |
+| 4 | Emitter-side: a `+N` dB preference boost keeps `active_baseline_headroom` unchanged without explicit trim and keeps `volume_limit == 0.0`; `output_trim_db` still folds into the headroom gain. **Test with a shelf, not just a peak** | 3 |
 | 5 | The preference filter step is wired on the program channels strictly **before** the split mixer (pipeline index of pref step < Mixer step) | 3 |
 | — | `build_stereo_prefix` is byte-identical to today for the solo stereo case (golden) | 2 |
 | 7 | Bonded-member + active baseline → `ActiveGraphCarrier` refuses with a clear reason (the deferred active×grouping decision) | 3 |
@@ -338,8 +333,8 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   (`tests/test_camilla_stereo_prefix.py`); existing sound tests unchanged. See
   the "Sharing" section above.
 - **PR-3 (the capability — CI-green; hardware gate on jts3 pending):**
-  `emit_active_speaker_baseline_config` grew `preference_filters` (pre-split +
-  folded headroom); the new `recompose_baseline_yaml` sibling rebuilds the
+  `emit_active_speaker_baseline_config` grew `preference_filters` (pre-split,
+  with boosts at unity); the new `recompose_baseline_yaml` sibling rebuilds the
   baseline with EQ from the saved evidence; `_ActiveGraphCarrier` flips
   refuse→emit for the SOLO baseline (keyed on `ACTIVE_BASELINE_SOURCE`),
   refuses startup/commissioning (`eq_on_active_not_wired`), bonded
@@ -354,8 +349,9 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   `GRAPH_APPROVED_ACTIVE_RUNTIME` with the then-current conservative baseline
   headroom. Current repo invariant after the zero-baseline-headroom change:
   flat recompose emits `active_baseline_headroom` at 0 dB, and a +6 dB
-  preference (a +4 dB shelf + a +2 dB peak) folds headroom to exactly −6 dB,
+  preference (a +4 dB shelf + a +2 dB peak) still leaves headroom at 0 dB,
   rides pre-split, keeps `volume_limit: 0.0`, and still classifies APPROVED;
+  an explicit 4 dB `output_trim_db` folds to `active_baseline_headroom: -4 dB`.
   jts3's own CamillaDSP 4.1.3 `--check` accepted the EQ'd graph ("Config is
   valid") in the prior hardware pass.
   **Still to do (human-gated):** the live load-and-listen audible smoke test

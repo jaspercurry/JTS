@@ -286,8 +286,9 @@ def _bonded_active_member() -> bool:
 def _recompose_active_baseline_with_eq(
     profile, *, output_trim_db: float = 0.0, out_path: str | Path | None = None
 ):
-    """Recompose the SOLO active baseline with ``profile``'s preference EQ folded
-    in pre-split, returning the emitted YAML (written to ``out_path`` when given).
+    """Recompose the SOLO active baseline with ``profile``'s preference EQ
+    inserted pre-split, returning the emitted YAML (written to ``out_path`` when
+    given).
 
     Rebuilds the structural baseline from the saved evidence via the active
     emitter (``recompose_baseline_yaml``) rather than parsing the running config
