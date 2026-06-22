@@ -34,6 +34,15 @@ def _cfg(**over) -> GroupingConfig:
     return GroupingConfig(**base)
 
 
+@pytest.fixture(autouse=True)
+def _reset_frames_cache():
+    """The notified-frames TTL cache is process-wide module state; keep tests
+    isolated from each other's reads."""
+    al._notified_frames_cache = None
+    yield
+    al._notified_frames_cache = None
+
+
 # ---------- assess_fit: pure math ----------
 
 
@@ -242,3 +251,66 @@ def test_classify_ignores_unrelated_shairport_line():
     from jasper.control.airplay_health import SHAIRPORT_UNIT, classify_journal_line
 
     assert classify_journal_line(SHAIRPORT_UNIT, "Notified latency is 50000 frames.") is None
+
+
+# ---------- cached_notified_frames: bound journalctl on the /state hot path ----------
+
+
+def test_cached_notified_frames_serves_within_ttl_then_refreshes():
+    """/state is polled ~5 s; the budget changes per session (minutes). The
+    cache must serve from one read within the TTL and re-read past it."""
+    clock = [100.0]
+    calls = []
+
+    def reader():
+        calls.append(1)
+        return len(calls) * 1000
+
+    now = lambda: clock[0]
+    assert al.cached_notified_frames(now=now, reader=reader) == 1000
+    assert al.cached_notified_frames(now=now, reader=reader) == 1000  # cache hit
+    assert len(calls) == 1
+
+    clock[0] += al._NOTIFIED_FRAMES_TTL_SEC + 1.0
+    assert al.cached_notified_frames(now=now, reader=reader) == 2000  # refreshed
+    assert len(calls) == 2
+
+
+def test_cached_notified_frames_caches_none_so_a_wedged_journalctl_is_not_hammered():
+    calls = []
+
+    def reader():
+        calls.append(1)
+        return None
+
+    now = lambda: 50.0
+    assert al.cached_notified_frames(now=now, reader=reader) is None
+    assert al.cached_notified_frames(now=now, reader=reader) is None
+    assert len(calls) == 1  # None is cached, not re-read every poll
+
+
+# ---------- writer <-> observer lockstep ----------
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        _cfg(enabled=False, role=""),            # solo
+        _cfg(role="follower", leader_addr="x"),  # follower
+        _cfg(error="broken"),                    # enabled-but-invalid leader
+        _cfg(),                                  # active leader
+    ],
+)
+def test_offset_write_gate_matches_observability_gate(cfg):
+    """The reconciler ARMS the bonded offset (airplay_grouping_env != {}) under
+    exactly the condition the observability reports as `applicable`. If these
+    ever diverge, /state would claim a fit for an offset that is not armed (or
+    hide one that is). Bind both to is_active_leader and pin it here."""
+    from jasper.multiroom.config import is_active_leader
+    from jasper.multiroom.reconcile import airplay_grouping_env
+
+    armed = bool(airplay_grouping_env(cfg))
+    snap = al.bonded_airplay_latency_snapshot(
+        config_loader=lambda: cfg, frames_reader=lambda: None,
+    )
+    assert armed == is_active_leader(cfg) == bool(snap.get("applicable"))

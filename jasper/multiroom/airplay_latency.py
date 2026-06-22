@@ -51,10 +51,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .config import GroupingConfig, is_active_member
+from .config import GroupingConfig, is_active_leader
 
 # --- shairport / AP2 contract constants ---
 # All cross-checked against the live shairport-sync binary's format strings
@@ -198,6 +200,39 @@ def read_notified_frames(
     return frames
 
 
+# Short TTL cache over the journal read. The negotiated budget changes only
+# per AirPlay session (minutes apart), but jasper-control's /state is polled
+# every ~5 s — and by several clients concurrently on its ThreadingHTTPServer.
+# Without this, an active bonded leader would spawn a `journalctl` scanning a
+# verbose 30-min journal on every poll, during the busiest moment (bonded
+# playback) on a 1 GB Pi. The cache bounds that to <=1 read per TTL across all
+# callers, and caches the fail-soft None so a wedged journalctl is not hammered.
+# Mirrors the _source_availability_cache pattern in control/state_aggregate.py.
+_NOTIFIED_FRAMES_TTL_SEC = 30.0
+_notified_frames_cache: tuple[float, int | None] | None = None
+_notified_frames_lock = threading.Lock()
+
+
+def cached_notified_frames(
+    *,
+    now: Callable[[], float] = time.monotonic,
+    reader: Callable[[], int | None] = read_notified_frames,
+) -> int | None:
+    """:func:`read_notified_frames` behind a process-wide TTL cache (monotonic
+    clock, thread-safe). ``now`` / ``reader`` are injectable for tests."""
+    global _notified_frames_cache
+    with _notified_frames_lock:
+        cached = _notified_frames_cache
+        if cached is not None and now() - cached[0] < _NOTIFIED_FRAMES_TTL_SEC:
+            return cached[1]
+    # Read outside the lock: the subprocess must not serialize concurrent
+    # /state requests. A rare double-read during a cold window is harmless.
+    value = reader()
+    with _notified_frames_lock:
+        _notified_frames_cache = (now(), value)
+    return value
+
+
 def bonded_airplay_latency_snapshot(
     *,
     config_loader: Callable[[], GroupingConfig] | None = None,
@@ -206,20 +241,25 @@ def bonded_airplay_latency_snapshot(
     """Fail-soft ``/state`` snapshot of the bonded-leader AirPlay latency fit.
 
     Returns ``{"applicable": False}`` on solo / follower / invalid configs —
-    the common case — WITHOUT reading the journal (the bonded-leader gate
-    is one tiny env-file parse). Only an active bonded leader triggers the
-    journal read and returns the full fit. Returns None only if the read
-    itself errors, matching the per-section nullability of ``/state``.
-    Total: never raises.
+    the common case — WITHOUT reading the journal (the bonded-leader gate is
+    one tiny env-file parse). Only an active bonded leader triggers the
+    journal read (TTL-cached, see :func:`cached_notified_frames`) and returns
+    the full fit. Returns None only if the read itself errors, matching the
+    per-section nullability of ``/state``. Total: never raises.
+
+    Gated on the SAME :func:`jasper.multiroom.config.is_active_leader` the
+    reconciler uses to WRITE the bonded offset (airplay_grouping_env), so the
+    surface can never claim "applicable" when the offset is not armed (or
+    vice versa).
     """
     from .config import load_config
 
     load = config_loader or load_config
     try:
         cfg = load()
-        if not (is_active_member(cfg) and cfg.role == "leader"):
+        if not is_active_leader(cfg):
             return {"applicable": False}
-        read = frames_reader or read_notified_frames
+        read = frames_reader or cached_notified_frames
         fit = assess_fit(cfg.buffer_ms, read())
         return {"applicable": True, **fit.to_dict()}
     except Exception:  # noqa: BLE001 — observability must never break /state

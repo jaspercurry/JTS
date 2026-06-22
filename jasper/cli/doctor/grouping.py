@@ -460,11 +460,11 @@ def check_grouping_airplay_latency() -> CheckResult:
     :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
     uses, so the doctor and the dashboard tell one story."""
     from ...multiroom.airplay_latency import assess_fit, read_notified_frames
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_leader, load_config
 
     label = "grouping: AirPlay latency fit"
     cfg = load_config()
-    if not (is_active_member(cfg) and cfg.role == "leader"):
+    if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     fit = assess_fit(cfg.buffer_ms, read_notified_frames())

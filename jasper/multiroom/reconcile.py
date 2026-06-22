@@ -42,7 +42,7 @@ from pathlib import Path
 
 from .. import atomic_io
 from ..log_event import log_event
-from .config import GroupingConfig, is_active_member, load_config
+from .config import GroupingConfig, is_active_leader, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -604,7 +604,7 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     acoustically calibrated alongside snapclient --latency.
     jasper-apply-airplay-mode ADDS this to the solo-derived offset.
     """
-    if is_active_member(cfg) and cfg.role == "leader":
+    if is_active_leader(cfg):
         return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
     return {}
 
