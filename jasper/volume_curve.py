@@ -75,7 +75,7 @@ def configured_volume_floor_db() -> float:
             _SETTINGS_FLOOR_CACHE = (*signature, floor_db)
             _SETTINGS_FLOOR_WARNING_LOGGED = False
         return floor_db
-    except Exception as e:  # noqa: BLE001
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as e:
         with _SETTINGS_FLOOR_LOCK:
             should_log = not _SETTINGS_FLOOR_WARNING_LOGGED
             _SETTINGS_FLOOR_WARNING_LOGGED = True

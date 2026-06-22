@@ -542,7 +542,7 @@ async def _apply_settings(
             persist_profile=False,
             output_trim_db=_output_trim(profile, settings),
         )
-    except Exception as e:  # noqa: BLE001
+    except (OSError, RuntimeError, ValueError, TypeError) as e:
         logger.exception("sound settings re-apply failed")
         payload["warning"] = f"Saved, but applying to the speaker failed: {e}"
         return payload
@@ -556,7 +556,7 @@ async def _apply_settings(
         )
         if reconciled:
             payload["volume_reconciled"] = True
-    except Exception as e:  # noqa: BLE001
+    except (AttributeError, OSError, RuntimeError) as e:
         logger.warning("volume floor saved but volume reconcile failed: %s", e)
         payload["volume_warning"] = (
             "Saved, but the current volume will use the new floor on the next "
@@ -680,7 +680,7 @@ class _LoopingVolumeFloorTone:
             try:
                 proc.kill()
                 proc.wait(timeout=0.75)
-            except Exception:  # noqa: BLE001 - best-effort cleanup only.
+            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
                 pass
         except ProcessLookupError:
             pass
@@ -844,7 +844,7 @@ class _VolumeFloorToneSession:
                     )
                 try:
                     runner.start()
-                except Exception:
+                except (OSError, RuntimeError):
                     with self._lock:
                         if self._runner is runner:
                             self._clear_active_locked()
@@ -857,7 +857,7 @@ class _VolumeFloorToneSession:
                     original = None
                     raise
                 started_runner = runner
-            except Exception:
+            except (OSError, RuntimeError):
                 with self._lock:
                     self._starting = False
                     self._cancel_start = False
@@ -1008,7 +1008,7 @@ class _VolumeFloorToneSession:
                     original_mute=original_mute,
                 )
             )
-        except Exception:  # noqa: BLE001 - timeout/error cleanup is best effort.
+        except (OSError, RuntimeError):
             logger.exception(
                 "event=sound.volume_floor_tone action=restore result=error "
                 "reason=%s",
@@ -4797,7 +4797,7 @@ def _make_handler(
                                 )
                             )
                         )
-                    except Exception as e:  # noqa: BLE001
+                    except (OSError, RuntimeError, ValueError, TypeError) as e:
                         logger.exception("volume floor audition failed")
                         self._send_json({"error": str(e)}, status=502)
                     return
@@ -4811,7 +4811,7 @@ def _make_handler(
                                 )
                             )
                         )
-                    except Exception as e:  # noqa: BLE001
+                    except (OSError, RuntimeError, ValueError, TypeError) as e:
                         logger.exception("volume floor tone stop failed")
                         self._send_json({"error": str(e)}, status=502)
                     return
