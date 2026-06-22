@@ -204,7 +204,12 @@ install_jasper() {
             # the vendored v2 build completes. Forcing a rebuild is the
             # simplest way to guarantee setup.py sees the env var and builds
             # both extensions.
-            WEBRTC_AEC3_V2_PREFIX="${JASPER_WEBRTC_V2_PREFIX:-}" \
+            # cc1plus compiles aec3_binding_v2.cpp at -O3 (~430 MB peak);
+            # contain it so an OOM kills only this build, never a live
+            # daemon. The env is passed via `env` (part of argv) so it
+            # survives independently of systemd-run scope env inheritance.
+            run_contained_build "jasper-aec3" -- \
+                env "WEBRTC_AEC3_V2_PREFIX=${JASPER_WEBRTC_V2_PREFIX:-}" \
                 "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
                 "${INSTALL_DIR}/jasper_aec3"
             mkdir -p "$(dirname "${marker}")"

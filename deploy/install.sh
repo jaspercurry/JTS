@@ -42,6 +42,7 @@ source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
+source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/renderers.sh"
 source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 source "${REPO_DIR}/deploy/lib/install/model-staging.sh"
@@ -401,6 +402,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; Zero-class RAM uses the installer
      low-memory Cargo release overrides.
+   - The shairport-sync/nqptp source builds and both Rust daemon builds
+     run RAM-bounded and cgroup-contained via
+     deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
+     never a live daemon. See docs/HANDOFF-build-sandbox.md.
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -523,6 +528,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      owner.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
+   - All heavy source builds above (webrtc AEC3, jasper_aec3, the Rust
+     daemons, shairport-sync, nqptp) run RAM-bounded and cgroup-contained
+     via deploy/lib/install/build-sandbox.sh, so an OOM during an
+     in-service update kills only the build, never a live daemon.
+     See docs/HANDOFF-build-sandbox.md.
 
 3. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -775,20 +785,13 @@ _webrtc_compile_jobs() {
     #
     # Budget ~1.5 GB per job and clamp to [1, nproc]: a 1 GB Pi builds
     # at -j1 (slower but survives), an 8 GB Pi still gets full nproc.
-    # This is the graduated analogue of rust-daemons.sh's low-memory
-    # profile, which flips at 768 MB — too low here, since the OOM hit
-    # at ~1 GB. $1=MemTotal kB, $2=nproc (both injectable for tests).
-    local memtotal_kb="${1:-0}"
-    local ncpu="${2:-1}"
-    awk -v m="${memtotal_kb}" -v n="${ncpu}" '
-        BEGIN {
-            kb_per_job = 1500000
-            jobs = int(m / kb_per_job)
-            if (jobs < 1) jobs = 1
-            if (jobs > n) jobs = n
-            printf "%d\n", jobs
-        }
-    '
+    # $1=MemTotal kB, $2=nproc (both injectable for tests).
+    #
+    # Now a thin caller of the unified _ram_bounded_jobs policy in
+    # build-sandbox.sh, at the shared C++ budget. Kept as a named function
+    # so its regression tests and the call site below stay stable.
+    # Containment of the compile itself is run_contained_build.
+    _ram_bounded_jobs "${1:-0}" "${2:-1}" "${BUILD_SANDBOX_KB_PER_JOB_CPP}"
 }
 
 build_webrtc_v2_for_aec3() {
@@ -851,8 +854,9 @@ build_webrtc_v2_for_aec3() {
     compile_jobs="$(_webrtc_compile_jobs \
         "$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null)" \
         "$(nproc 2>/dev/null || echo 1)")"
-    echo "    meson compile -C builddir/ (-j ${compile_jobs}; RAM-bounded to avoid OOM-killing the build on low-memory Pis)"
-    (cd "${src_dir}" && meson compile -C builddir -j "${compile_jobs}")
+    echo "    meson compile -C builddir/ (-j ${compile_jobs}; RAM-bounded + cgroup-contained to avoid OOM-killing live daemons on low-memory Pis)"
+    (cd "${src_dir}" && run_contained_build "webrtc-aec3" -- \
+        meson compile -C builddir -j "${compile_jobs}")
 
     if [[ ! -f "${static_archive}" ]]; then
         echo "  ERROR: meson compile finished but ${static_archive} is missing" >&2

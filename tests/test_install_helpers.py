@@ -846,9 +846,11 @@ def test_shairport_build_completes_before_old_binary_is_removed():
     idx_remove = text.index("apt-get remove -y shairport-sync")
     idx_make_install = text.index("make install || true")
 
-    # The compile (first `make -j4` after the sps fetch) must precede
-    # the stop/remove, which must precede `make install`.
-    idx_build = text.index("make -j4", idx_fetch)
+    # The compile (the contained shairport-sync build after the sps fetch)
+    # must precede the stop/remove, which must precede `make install`.
+    # The heavy build now routes through run_contained_build (RAM-bounded
+    # + cgroup-contained) instead of a hardcoded `make -j4`.
+    idx_build = text.index('run_contained_build "shairport-sync"', idx_fetch)
     assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
 
 
@@ -1207,3 +1209,317 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
     assert 'app_css_ver="$(resolve_build_sha_short)"' in fn
     # The old direct manifest read for the cache-bust version is gone.
     assert "grep -E '^JASPER_GIT_SHA='" not in fn
+
+
+# build-sandbox.sh — unified RAM-aware + cgroup-contained build policy
+# ----------------------------------------------------------------------
+# Workstream A of docs/install-update-resilience-plan.md. On jts2
+# (1 GB Pi 5, 2026-06-21) an unbounded `meson compile` OOM-killed the
+# build AND cascaded into nginx + jasper-voice. These tests pin the two
+# levers that generalize the PR #899 point-fix: RAM-aware `-j`
+# (_ram_bounded_jobs) and cgroup containment (run_contained_build), and
+# the inverse-of-audio-daemon policy that makes a build the OOM victim
+# instead of a daemon. Canonical doc: docs/HANDOFF-build-sandbox.md.
+
+_BUILD_SANDBOX_LIB = _INSTALL_LIB_DIR / "build-sandbox.sh"
+_RUST_DAEMONS_LIB = _INSTALL_LIB_DIR / "rust-daemons.sh"
+
+
+def _ram_bounded_jobs(memtotal_kb: int, ncpu: int, kb_per_job: int) -> int:
+    """Invoke the generalized `_ram_bounded_jobs` helper."""
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {_INSTALL_SH} >/dev/null && "
+         f"_ram_bounded_jobs {memtotal_kb} {ncpu} {kb_per_job}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"helper failed (rc={result.returncode}): {result.stderr}")
+    return int(result.stdout.strip())
+
+
+def _build_sandbox_props(
+    tmp_path: Path,
+    label: str = "demo",
+    memtotal_kb: int = 1_014_768,
+    extra_env: dict | None = None,
+) -> str:
+    """Return the systemd-run property list build_sandbox_props emits,
+    with a synthetic MemTotal injected so MemoryHigh is deterministic."""
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal:       {memtotal_kb} kB\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         f"build_sandbox_props {shlex.quote(label)}"],
+        capture_output=True, text=True, timeout=5, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _run_contained_build(
+    script_tail: str, extra_env: dict | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && {script_tail}"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+
+
+# --- _ram_bounded_jobs: generalized RAM-aware parallelism --------------
+
+def test_ram_bounded_jobs_cpp_budget_matches_webrtc_pin():
+    """C++ -O3 budget (1.5 GB/job): the exact PR #899 values, now via the
+    generalized helper."""
+    assert _ram_bounded_jobs(_PI5_1GB_MEMTOTAL_KB, 4, 1_500_000) == 1
+    assert _ram_bounded_jobs(_PI5_4GB_MEMTOTAL_KB, 4, 1_500_000) == 2
+    assert _ram_bounded_jobs(_PI5_8GB_MEMTOTAL_KB, 4, 1_500_000) == 4
+
+
+def test_ram_bounded_jobs_c_budget_is_gentler_than_old_j4_on_1gb():
+    """C autotools budget (0.4 GB/job): a 1 GB Pi builds shairport at -j2,
+    not the old hardcoded -j4 that helped drive the OOM. A ~400 MB
+    Zero-class box drops to -j1."""
+    assert _ram_bounded_jobs(_PI5_1GB_MEMTOTAL_KB, 4, 400_000) == 2
+    assert _ram_bounded_jobs(409_600, 4, 400_000) == 1
+    assert _ram_bounded_jobs(_PI5_4GB_MEMTOTAL_KB, 4, 400_000) == 4  # nproc cap
+
+
+def test_ram_bounded_jobs_clamps_to_nproc_and_floors_to_one():
+    assert _ram_bounded_jobs(_PI5_16GB_MEMTOTAL_KB, 2, 1_500_000) == 2
+    assert _ram_bounded_jobs(0, 4, 400_000) == 1
+    assert _ram_bounded_jobs(1024, 4, 1_500_000) == 1
+
+
+def test_webrtc_compile_jobs_delegates_to_ram_bounded_jobs():
+    """The point-fix function stays value-identical to the generalized
+    helper at the C++ budget across the SKU range — so the existing
+    _webrtc_compile_jobs regression tests keep meaning the same thing."""
+    for m in (
+        _PI5_1GB_MEMTOTAL_KB, _PI5_2GB_MEMTOTAL_KB,
+        _PI5_4GB_MEMTOTAL_KB, _PI5_8GB_MEMTOTAL_KB,
+    ):
+        assert _webrtc_compile_jobs(m, 4) == _ram_bounded_jobs(m, 4, 1_500_000)
+
+
+# --- build_sandbox_props: the inverse-of-audio-daemon policy -----------
+
+def test_build_sandbox_props_is_inverse_of_audio_daemon_policy(tmp_path):
+    """A build is the opposite of an audio daemon: preferred OOM victim,
+    yields CPU/IO, and — the load-bearing invariant — is ALLOWED to swap.
+    jts-audio.slice and pi-run-diagnostic.sh forbid swap; a build must
+    not, or a big -O3 TU can't complete on a 1 GB Pi."""
+    props = _build_sandbox_props(tmp_path)
+    assert "--property=OOMScoreAdjust=900" in props  # positive == kill me first
+    assert "--property=CPUWeight=20" in props
+    assert "--property=IOWeight=20" in props
+    assert "--property=MemoryAccounting=yes" in props
+    assert "MemorySwapMax" not in props  # swap allowed — the inverse invariant
+
+
+def test_build_sandbox_props_soft_memory_high_leaves_headroom(tmp_path):
+    """MemoryHigh is a soft throttle at ~85% MemTotal (not a kill), so the
+    build leans on swap rather than dying and ~15% stays for PID1/sshd."""
+    props = _build_sandbox_props(tmp_path, memtotal_kb=1_000_000)
+    m = re.search(r"--property=MemoryHigh=(\d+)K", props)
+    assert m, props
+    high_kb = int(m.group(1))
+    assert 840_000 <= high_kb <= 860_000
+
+
+def test_build_sandbox_props_hard_caps_are_opt_in(tmp_path):
+    """MemoryMax (hard kill) and RuntimeMaxSec are off by default — a
+    too-low cap would kill a legit single-TU compile or a slow Zero-2-W
+    build — but available when an operator opts in."""
+    default = _build_sandbox_props(tmp_path)
+    assert "MemoryMax" not in default
+    assert "RuntimeMaxSec" not in default
+
+    opted = _build_sandbox_props(tmp_path, extra_env={
+        "JASPER_BUILD_SANDBOX_MEMORY_MAX": "700M",
+        "JASPER_BUILD_SANDBOX_RUNTIME_MAX": "45min",
+    })
+    assert "--property=MemoryMax=700M" in opted
+    assert "--property=RuntimeMaxSec=45min" in opted
+
+
+def test_build_sandbox_props_oom_adj_is_overridable(tmp_path):
+    props = _build_sandbox_props(tmp_path, extra_env={
+        "JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ": "1000"})
+    assert "--property=OOMScoreAdjust=1000" in props
+    assert "--property=OOMScoreAdjust=900" not in props
+
+
+def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
+    """If MemTotal is unreadable, MemoryHigh is omitted but OOMScoreAdjust
+    (the cgroup-controller-independent protection) is always present."""
+    env = os.environ.copy()
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(tmp_path / "does-not-exist")
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && build_sandbox_props x"],
+        capture_output=True, text=True, timeout=5, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--property=OOMScoreAdjust=900" in result.stdout
+    assert "MemoryHigh" not in result.stdout
+    assert "MemorySwapMax" not in result.stdout
+
+
+# --- run_contained_build: graceful degradation, no double-run ----------
+
+def test_build_sandbox_active_false_when_disabled():
+    r = _run_contained_build(
+        "_build_sandbox_active && echo active || echo inactive",
+        extra_env={"JASPER_BUILD_SANDBOX": "0"})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().endswith("inactive")
+
+
+def test_build_sandbox_disabled_runs_command_directly():
+    """When disabled (CI/macOS/container path), the command runs verbatim
+    and unmodified."""
+    r = _run_contained_build(
+        "run_contained_build demo -- bash -c 'echo ran $((1+1))'",
+        extra_env={"JASPER_BUILD_SANDBOX": "0"})
+    assert r.returncode == 0, r.stderr
+    assert "ran 2" in r.stdout
+
+
+def test_build_sandbox_propagates_failure_without_double_run():
+    """A real build failure surfaces verbatim and is never masked by a
+    second uncontained run (the no-retry contract)."""
+    r = _run_contained_build(
+        "run_contained_build demo -- bash -c 'echo once; exit 3'",
+        extra_env={"JASPER_BUILD_SANDBOX": "0"})
+    assert r.returncode == 3
+    assert r.stdout.count("once") == 1
+
+
+# --- call-site wiring: every heavy build is bounded + contained --------
+
+def test_install_sources_build_sandbox_lib():
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert 'source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"' in text
+
+
+def test_heavy_builds_route_through_run_contained_build():
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
+    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
+    rust = _RUST_DAEMONS_LIB.read_text(encoding="utf-8")
+    assert 'run_contained_build "webrtc-aec3"' in install_sh
+    assert 'run_contained_build "jasper-aec3"' in python_runtime
+    assert 'run_contained_build "nqptp"' in renderers
+    assert 'run_contained_build "shairport-sync"' in renderers
+    assert 'run_contained_build "${name}"' in rust
+
+
+def test_renderer_make_is_ram_bounded_not_hardcoded_j4():
+    """The old hardcoded `make -j4` (which helped drive the 1 GB OOM) is
+    gone; both renderer C builds derive -j from build_sandbox_jobs at the
+    named C budget (not a bare literal)."""
+    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
+    assert "make -j4" not in renderers
+    assert renderers.count(
+        'make -j"$(build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_C}")"'
+    ) == 2
+
+
+def test_build_sandbox_budget_constants_are_named_once():
+    """The per-toolchain RAM/job budgets are the policy — named once in the
+    lib (cf. RUST_LOW_MEMORY_BUILD_THRESHOLD_KB), not bare literals scattered
+    across call sites."""
+    lib = _BUILD_SANDBOX_LIB.read_text(encoding="utf-8")
+    assert "BUILD_SANDBOX_KB_PER_JOB_CPP=1500000" in lib
+    assert "BUILD_SANDBOX_KB_PER_JOB_C=400000" in lib
+    # _webrtc_compile_jobs uses the named C++ budget, not a bare literal.
+    assert 'BUILD_SANDBOX_KB_PER_JOB_CPP' in _INSTALL_SH.read_text(encoding="utf-8")
+
+
+def test_build_sandbox_lib_parses():
+    result = subprocess.run(
+        ["bash", "-n", str(_BUILD_SANDBOX_LIB)],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _build_sandbox_jobs(kb_per_job_expr: str, memtotal_kb: int, ncpu: int,
+                        tmp_path: Path) -> int:
+    """Invoke the build_sandbox_jobs wrapper with MemTotal + nproc injected
+    (mirrors rust-daemons.sh's JASPER_RUST_MEMINFO_FILE test pattern)."""
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal:       {memtotal_kb} kB\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
+    env["JASPER_BUILD_NPROC"] = str(ncpu)
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         f"build_sandbox_jobs {kb_per_job_expr}"],
+        capture_output=True, text=True, timeout=5, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout.strip())
+
+
+def test_build_sandbox_jobs_reads_injected_meminfo_and_nproc(tmp_path):
+    """The wrapper resolves the host's MemTotal/nproc and applies the named
+    budget — the path the renderer makes actually call."""
+    # C budget on a 1 GB Pi, 4 cores -> 2 jobs; 1 core clamps to 1.
+    assert _build_sandbox_jobs(
+        '"${BUILD_SANDBOX_KB_PER_JOB_C}"', 1_014_768, 4, tmp_path) == 2
+    assert _build_sandbox_jobs(
+        '"${BUILD_SANDBOX_KB_PER_JOB_C}"', 1_014_768, 1, tmp_path) == 1
+    # C++ budget on the same box -> 1 job (the OOM we fixed).
+    assert _build_sandbox_jobs(
+        '"${BUILD_SANDBOX_KB_PER_JOB_CPP}"', 1_014_768, 4, tmp_path) == 1
+
+
+def test_run_contained_build_invokes_systemd_run_scope_with_policy(tmp_path):
+    """Force containment with a stub systemd-run on PATH and assert the
+    invocation contract: --scope, the inverse-policy properties, the --
+    separator, and the verbatim command. Without this, a refactor could
+    silently drop OOMScoreAdjust (the load-bearing protection) or add a
+    swap cap, and the rest of the suite would stay green."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "systemd-run"
+    stub.write_text(
+        '#!/usr/bin/env bash\nfor a in "$@"; do printf "ARG=%s\\n" "$a"; done\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1014768 kB\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    env["JASPER_BUILD_SANDBOX"] = "1"  # force on; the stub satisfies command -v
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         "run_contained_build demo -- echo HELLO WORLD"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    args = [ln[len("ARG="):] for ln in result.stdout.splitlines()
+            if ln.startswith("ARG=")]
+    assert "--scope" in args
+    assert "--property=OOMScoreAdjust=900" in args
+    assert "--property=MemoryAccounting=yes" in args
+    # Inverse-policy: a build must never get a swap cap.
+    assert not any("MemorySwapMax" in a for a in args)
+    # Command forwarded verbatim, after the -- separator.
+    assert "--" in args
+    assert args[-3:] == ["echo", "HELLO", "WORLD"]

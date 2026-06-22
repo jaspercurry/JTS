@@ -193,6 +193,15 @@ and #C can land before #A, and #D informs all of them.
 
 ### Workstream A — Memory-safe, production-isolated builds across tiers
 
+> **First slice shipped (2026-06-21):** the unified RAM-aware +
+> cgroup-contained build policy
+> ([`deploy/lib/install/build-sandbox.sh`](../deploy/lib/install/build-sandbox.sh))
+> now wraps every heavy installer build. Canonical doc:
+> [HANDOFF-build-sandbox.md](HANDOFF-build-sandbox.md). Remaining/follow-up:
+> prebuilt per-arch artifacts for the Zero 2 W (a CPU-time problem
+> containment can't solve), the Rust low-memory threshold bump, and the
+> on-hardware OOM confirmation listed in that doc.
+
 ```text
 Read docs/install-update-resilience-plan.md for full context (problems #1, #2;
 the hardware-tier and fresh-vs-update axes; the prior art list).
