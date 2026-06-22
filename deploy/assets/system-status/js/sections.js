@@ -257,9 +257,15 @@ export function airplayBody(hp, outputd, services) {
   const fanin = cur.fanin || {}, airplay = fanin.airplay || {}, output = fanin.output || {};
   const rate = airplay.frames_per_sec;
   const mpris = cur.mpris || {};
-  const now = (rate != null && rate >= 1000)
-    ? Math.round(rate).toLocaleString() + " frames/s"
-    : (mpris.playing ? "MPRIS playing · no fan-in frames" : "idle");
+  // The airplay lane free-runs at ~48 kHz of SILENCE whenever the pipeline
+  // is up, so the raw rate only means "streaming" while shairport is
+  // actually playing (mpris). At idle, show "idle" — not a phantom rate
+  // (the 2026-06-22 "why are there frames with nothing playing?" report).
+  const now = mpris.playing === true
+    ? ((rate != null && rate >= 1000)
+        ? Math.round(rate).toLocaleString() + " frames/s"
+        : "playing · no fan-in frames")
+    : (mpris.playing === false ? "idle" : "—");
 
   const fanText = fanin.available
     ? "input " + (fanin.input_buffer_frames || "—") +

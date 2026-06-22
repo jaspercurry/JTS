@@ -208,11 +208,11 @@ Status meanings:
 
 | Status | Meaning |
 |---|---|
-| `ok` | Fan-in is reachable, buffer contract is intact, and the 5 m/30 m windows have no AirPlay-path recovery events. |
-| `inactive` | Fan-in is reachable but the AirPlay lane is not receiving frames. |
-| `watch` | Non-fatal evidence appeared, usually material Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." |
-| `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, or Camilla playback underrun. |
-| `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
+| `ok` | AirPlay is actively streaming (shairport reports playing), fan-in is receiving frames, and the 5 m/30 m windows have no AirPlay-path recovery events. |
+| `inactive` | shairport reports nothing streaming (MPRIS `PlaybackStatus` not playing). The airplay input lane free-runs ~48 kHz of *silence* whenever the pipeline is up — even with no sender connected — so idle is decided by `PlaybackStatus`, **not** the frame rate. Idle-pipeline artifacts (benign Camilla short reads, content EAGAIN) do not raise a warning here. |
+| `watch` | While AirPlay is actively streaming, non-fatal evidence appeared — usually material Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." Idle short reads stay `inactive`; they do not escalate. |
+| `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, Camilla playback underrun, or shairport reports playing while fan-in is not receiving frames. |
+| `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, shairport `PlaybackStatus` is unavailable, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
 
 Use the card for "is anything happening right now / recently?" If it
 shows `watch` or `issue`, use the fast scan above or the full polling
