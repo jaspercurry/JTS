@@ -244,7 +244,7 @@ the decision points below.
 | **L0** | everyone (implicit) | Designed crossover + protective HP **applied, fail-closed**; flat-graph-with-tweeter-role is illegal | `GraphValidator`, outputd graph | wire the validator at the emit gate; make commission cut-over actually apply |
 | **L1** | anyone, phone only | Per-driver level match: play band-limited tone/sweep per driver through the production graph, capture phone mic, compute overlap-band dB delta → fixed trim, propose + confirm + apply; `measurement_mode=magnitude_only` so it can never authorize a phase/delay decision | sweep/deconv/analysis/quality, `measurement_window`, browser-mic | trim algorithm; Stage-6 endpoint+UI; sensitivity-fallback when skipped |
 | **L1.5** | optional | Loudness compensation (ISO 226) as a *separate* volume-dependent EQ layer | — | separate feature, default off; **not** part of commissioning |
-| **L2** | enthusiasts w/ calibrated mic | FR + phase + null-depth; per-driver EQ; crossover blend/polarity/delay | `calibration.py` upload, full deconv pipeline, `phase_aware` mode | null-depth capture; delay/polarity search gated on `phase_aware` |
+| **L2** | enthusiasts w/ calibrated mic | calibrated FR + null-depth; measured per-driver delay + polarity (per-driver EQ stays OUT) — **landed 2026-06-21, see below** | `calibration.py` upload, full deconv pipeline, `phase_aware` mode | null-depth capture; delay/polarity proposal gated on `phase_aware` |
 
 **Fail-closed default:** if L1 capture is low-SNR or aborts, fall back to
 datasheet sensitivity (or a conservative tweeter trim) and mark the config
@@ -293,6 +293,63 @@ end-to-end override/provisional in `tests/test_active_speaker_baseline_profile.p
 **Owed: on-Pi (jts3) audible pass** — run the guided flow with a phone near each
 driver and confirm the measured trim lands near the datasheet ~25 dB delta and
 the speaker is audibly level-matched.
+
+### L2 calibrated crossover alignment (landed 2026-06-21)
+
+The calibrated-mic tier refines per-driver **delay + polarity** on top of L1's
+level match and surfaces the per-driver + summed FR curves. Gated so an
+uncalibrated phone can never authorize a phase decision:
+
+1. **Calibrated capture.** The driver / summed capture endpoints accept a
+   `calibration_id` — the SAME `correction.calibration` store the `/correction/`
+   wizard fills (Dayton iMM-6/UMM-6, miniDSP UMIK, uploaded REW curve). The handler
+   loads the record and threads `record.curve` into `driver_acoustics`;
+   `_capture_to_magnitude` applies it via the shared
+   `correction.calibration.apply_calibration_curve`, so the surfaced FR is
+   calibrated and the null-depth shoulders (different frequencies) are corrected
+   rather than relying on an additive cal cancelling.
+2. **The phase_aware gate.** `crossover_alignment.resolve_measurement_mode` is
+   downgrade-only: `phase_aware` is granted ONLY with a calibrated mic, re-enforced
+   at the data layer in `build_crossover_alignment_proposal` (every contributing
+   capture must report `acoustic.calibrated`). A magnitude-only (phone) proposal is
+   explicitly *unauthorized* — no delay/polarity. Uncalibrated phase error is
+   ±20–40° at Fc, so this is a correctness gate, not a preference.
+3. **Measured delay + polarity proposal.** `propose_crossover_alignment` is
+   deterministic (no LLM): **delay whichever driver arrives EARLIER** (from the IR
+   direct-arrival index `deconv.deconvolve_with_arrival` exposes — a horn can make
+   the tweeter *later*, so the woofer may receive the delay), clamped 0..20 ms and
+   labeled an *estimate* (separate near-field captures are not loop-back
+   timing-locked → validate with the null). **Polarity** from the reverse-polarity
+   null proof: in-phase flat + deep reverse null → keep; in-phase deep null + flat
+   reverse → invert; both deep / both flat → review.
+   `analyze_summed_crossover(expect_null=…)` flips the verdict for a reverse-polarity
+   capture (a deep null is the *pass*).
+4. **Preview → confirm → apply.** `GET /active-speaker/crossover-alignment` previews
+   the proposal + the surfaced per-driver/summed FR curves (the maintainer tweaks
+   Fc/slope by hand — this feature NEVER auto-rewrites Fc/slope).
+   `POST /active-speaker/crossover-alignment` confirms (re-checks phase_aware,
+   independent of the client) and records the chosen delay/polarity onto the group's
+   summed validation, which `baseline_profile._derive_corrections` already folds into
+   the per-driver `corrections` (delay clamped 0..20 ms; polarity = mixer `inverted`).
+   The recompiled baseline re-proves the runtime_contract tweeter guard; level stays
+   L1's attenuation-only job and the 0 dB ceiling holds.
+
+Scope held: NO per-driver post-split EQ, NO listening-position room correction —
+near-field crossover calibration only. Multi-group (stereo-pair) delay/polarity
+*emission* stays deferred (`group_specific_delay_not_applied`); the proposal computes
+for one group, so a mono/single-group speaker (jts3's `active_mono_2way`) gets the
+full refinement.
+
+Tests: `tests/test_active_speaker_crossover_alignment.py` (cal-curve application via
+the null-depth shift, the phase_aware gate at both layers, the
+delay-the-earlier-arriver + polarity truth table, arrival from a pure-delay IR) and
+the pure UI summary in `tests/js/active_speaker_ui_test.mjs`.
+**Owed: on-Pi (jts3) calibrated pass** — with the Dayton USB-C near-field on each
+driver, confirm the captured FR is sane, the proposed delay/polarity improve the
+summed null depth, and nothing exceeds the 0 dB ceiling. The interactive `main.js`
+render of the proposal card + the FR-curve plot is the presentational follow-up done
+on-device (the pure summary helper `crossoverAlignmentSummary` + the JSON contract
+are shipped).
 
 ---
 
@@ -479,4 +536,4 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-06-20
+Last verified: 2026-06-21

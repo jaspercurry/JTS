@@ -3072,6 +3072,38 @@ def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str,
     return payload
 
 
+def _active_speaker_capture_calibration(
+    raw: dict[str, Any],
+) -> tuple[Any, str | None, dict[str, Any]]:
+    """Resolve (cal curve, calibration_id, resolved-mode dict) for an L2 capture.
+
+    A calibrated measurement mic is named by ``calibration_id`` — the SAME
+    correction calibration store the ``/correction/`` wizard fills (Dayton iMM-6 /
+    UMM-6, miniDSP UMIK, or an uploaded REW curve). ``phase_aware`` is gated on the
+    curve actually resolving: a phone (no / unknown calibration_id) is downgraded
+    to ``magnitude_only`` so it can never authorize a phase/delay/polarity decision.
+    """
+    from jasper.active_speaker.crossover_alignment import resolve_measurement_mode
+
+    calibration_id = str(raw.get("calibration_id") or "").strip()
+    curve = None
+    resolved_id: str | None = None
+    if calibration_id:
+        from jasper.correction.calibration import load_calibration_record
+
+        try:
+            record = load_calibration_record(calibration_id)
+        except (FileNotFoundError, ValueError, OSError):
+            record = None
+        if record is not None:
+            curve = record.curve
+            resolved_id = record.calibration_id
+    mode = resolve_measurement_mode(
+        raw.get("measurement_mode"), has_calibrated_mic=curve is not None
+    )
+    return curve, resolved_id, mode.to_dict()
+
+
 def _active_speaker_driver_capture_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Analyze one phone-mic driver WAV and record acoustic measurement evidence."""
 
@@ -3089,6 +3121,9 @@ def _active_speaker_driver_capture_payload(raw: dict[str, Any]) -> dict[str, Any
     sweep_meta = _active_speaker_capture_sweep_meta(raw)
     group_id = str(raw.get("speaker_group_id") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
+    calibration_curve, calibration_id, measurement_mode = (
+        _active_speaker_capture_calibration(raw)
+    )
     payload = record_driver_acoustic_capture(
         topology,
         preset,
@@ -3098,11 +3133,16 @@ def _active_speaker_driver_capture_payload(raw: dict[str, Any]) -> dict[str, Any
         sweep_meta=sweep_meta,
         playback_id=_playback_id_from_capture(raw),
         test_level_dbfs=raw.get("test_level_dbfs"),
-        has_mic_calibration=bool(raw.get("has_mic_calibration")),
+        has_mic_calibration=(
+            bool(raw.get("has_mic_calibration")) or calibration_curve is not None
+        ),
+        calibration=calibration_curve,
         notes=raw.get("notes"),
         calibration_level=load_calibration_level_state(),
         safe_session=load_safe_playback_state(),
     )
+    payload["measurement_mode"] = measurement_mode
+    payload["calibration_id"] = calibration_id
     measurement = (
         payload.get("measurement")
         if isinstance(payload.get("measurement"), dict)
@@ -3437,6 +3477,9 @@ def _active_speaker_summed_capture_payload(raw: dict[str, Any]) -> dict[str, Any
     sweep_meta = _active_speaker_capture_sweep_meta(raw)
     group_id = str(raw.get("speaker_group_id") or "").strip()
     summed_test_id = _summed_test_id_from_capture(raw)
+    calibration_curve, calibration_id, measurement_mode = (
+        _active_speaker_capture_calibration(raw)
+    )
     payload = record_summed_acoustic_capture(
         topology,
         preset,
@@ -3449,10 +3492,16 @@ def _active_speaker_summed_capture_payload(raw: dict[str, Any]) -> dict[str, Any
         polarity=raw.get("polarity"),
         delay_ms=raw.get("delay_ms"),
         delay_target_role=raw.get("delay_target_role"),
-        has_mic_calibration=bool(raw.get("has_mic_calibration")),
+        expect_null=bool(raw.get("expect_null")),
+        has_mic_calibration=(
+            bool(raw.get("has_mic_calibration")) or calibration_curve is not None
+        ),
+        calibration=calibration_curve,
         notes=raw.get("notes"),
         calibration_level=load_calibration_level_state(),
     )
+    payload["measurement_mode"] = measurement_mode
+    payload["calibration_id"] = calibration_id
     measurement = (
         payload.get("measurement")
         if isinstance(payload.get("measurement"), dict)
@@ -3480,6 +3529,164 @@ def _active_speaker_summed_capture_payload(raw: dict[str, Any]) -> dict[str, Any
         summary.get("required_summed_group_count"),
     )
     return payload
+
+
+def _active_speaker_alignment_curves(
+    measurements: dict[str, Any],
+    group: str | None,
+) -> dict[str, Any]:
+    """Collect the surfaced per-driver + summed FR curves for the alignment preview.
+
+    These are the (calibrated) magnitude shapes the maintainer eyeballs to tweak
+    Fc/slope by hand — this feature never auto-rewrites Fc/slope.
+    """
+    curves: dict[str, Any] = {"drivers": {}, "summed": None}
+    latest = measurements.get("latest_by_target")
+    if isinstance(latest, dict):
+        for rec in latest.values():
+            if not isinstance(rec, dict):
+                continue
+            if group and rec.get("speaker_group_id") != group:
+                continue
+            role = rec.get("role")
+            acoustic = rec.get("acoustic")
+            if (
+                isinstance(role, str)
+                and isinstance(acoustic, dict)
+                and acoustic.get("fr_curve")
+            ):
+                curves["drivers"][role] = acoustic["fr_curve"]
+    summed = measurements.get("latest_summed_by_group")
+    if isinstance(summed, dict) and group:
+        rec = summed.get(group)
+        if isinstance(rec, dict):
+            acoustic = rec.get("acoustic")
+            if isinstance(acoustic, dict) and acoustic.get("fr_curve"):
+                curves["summed"] = acoustic["fr_curve"]
+    return curves
+
+
+def _active_speaker_crossover_alignment_payload(
+    requested_mode: str | None = None,
+    speaker_group_id: str | None = None,
+) -> dict[str, Any]:
+    """Preview the L2 crossover-alignment proposal from current measurement state.
+
+    Reads the recorded per-driver arrivals + summed null depth and proposes a SAFE
+    delay/polarity refinement (``phase_aware`` granted only when the contributing
+    captures were calibrated), plus the per-driver + summed FR curves for the
+    maintainer. Read-only — the operator applies via the confirm POST.
+    """
+    from jasper.active_speaker.commissioning_capture import (
+        build_crossover_alignment_proposal,
+    )
+    from jasper.active_speaker.crossover_alignment import PHASE_AWARE
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    topology = load_output_topology()
+    preset = _active_speaker_capture_preset(topology)
+    measurements = load_measurement_state(topology)
+    result = build_crossover_alignment_proposal(
+        preset,
+        measurements,
+        requested_mode=requested_mode or PHASE_AWARE,
+        speaker_group_id=speaker_group_id,
+    )
+    result["curves"] = _active_speaker_alignment_curves(
+        measurements, result.get("speaker_group_id")
+    )
+    proposal = result.get("proposal") if isinstance(result.get("proposal"), dict) else {}
+    logger.info(
+        "event=sound.active_speaker_crossover_alignment status=%s mode=%s "
+        "authorized=%s delay_target=%s polarity_action=%s",
+        result.get("status"),
+        (result.get("mode") or {}).get("mode"),
+        proposal.get("authorized"),
+        proposal.get("delay_target_role"),
+        proposal.get("polarity_action"),
+    )
+    return result
+
+
+def _active_speaker_crossover_alignment_confirm_payload(
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Confirm + apply an L2 delay/polarity refinement into the baseline source.
+
+    Gated independently of the client: applying a measurement-derived
+    delay/polarity requires ``phase_aware`` (a calibrated mic). The confirmed
+    values are recorded onto the group's summed validation (the existing mechanism
+    ``baseline_profile._derive_corrections`` folds into the per-driver corrections —
+    delay clamped 0..20 ms, polarity = mixer ``inverted``; level stays L1's
+    attenuation-only job and the 0 dB ceiling is preserved). Returns the recompiled
+    baseline candidate so the operator previews the folded change — which re-proves
+    the runtime_contract tweeter guard — before the durable apply.
+    """
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.measurement import record_summed_validation
+
+    if not isinstance(raw, dict):
+        raise ValueError("crossover alignment confirm request must be an object")
+    _curve, calibration_id, mode = _active_speaker_capture_calibration(raw)
+    if mode.get("mode") != "phase_aware":
+        logger.info(
+            "event=sound.active_speaker_crossover_alignment_confirm status=blocked "
+            "reason=requires_calibrated_mic"
+        )
+        return {
+            "status": "blocked",
+            "reason": "requires_calibrated_mic",
+            "measurement_mode": mode,
+            "message": (
+                "delay/polarity changes need a calibrated measurement mic "
+                "(phase_aware)"
+            ),
+        }
+    group_id = str(raw.get("speaker_group_id") or "").strip()
+    polarity = str(raw.get("polarity") or "normal").strip().lower()
+    summed_raw = {
+        "speaker_group_id": group_id,
+        "outcome": "blend_ok",
+        "operator_listening_check": True,
+        "summed_test_id": _summed_test_id_from_capture(raw),
+        "playback_id": _playback_id_from_capture(raw),
+        "polarity": polarity,
+        "delay_ms": raw.get("delay_ms"),
+        "delay_target_role": raw.get("delay_target_role"),
+        "notes": "L2 calibrated crossover alignment (confirmed)",
+    }
+    topology = load_output_topology()
+    measurement = record_summed_validation(
+        topology, summed_raw, calibration_level=load_calibration_level_state(),
+    )
+    # Surface the recompiled baseline (the folded delay/polarity + the re-proven
+    # tweeter guard) as a preview — but the validation is already persisted, so a
+    # baseline-compile hiccup must not turn a successful confirm into an error.
+    try:
+        baseline = _active_speaker_baseline_profile_payload(write=False)
+    except (ValueError, OSError, KeyError) as e:
+        logger.warning(
+            "event=sound.active_speaker_crossover_alignment_confirm "
+            "baseline_preview_failed error=%s",
+            type(e).__name__,
+        )
+        baseline = {"status": "preview_unavailable", "error": str(e)}
+    logger.info(
+        "event=sound.active_speaker_crossover_alignment_confirm status=%s "
+        "group_id=%s polarity=%s delay_ms=%s baseline=%s",
+        measurement.get("status"),
+        group_id,
+        polarity,
+        raw.get("delay_ms"),
+        baseline.get("status"),
+    )
+    return {
+        "status": "ok",
+        "measurement_mode": mode,
+        "calibration_id": calibration_id,
+        "measurement": measurement,
+        "baseline": baseline,
+    }
 
 
 def _active_speaker_baseline_profile_payload(
@@ -3597,6 +3804,7 @@ def _make_handler(
                 "/active-speaker/design-draft",
                 "/active-speaker/crossover-preview",
                 "/active-speaker/measurements",
+                "/active-speaker/crossover-alignment",
                 "/active-speaker/baseline-profile",
                 "/active-speaker/environment",
                 "/active-speaker/safe-playback",
@@ -3656,6 +3864,25 @@ def _make_handler(
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
                         "event=sound.active_speaker_measurements result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/crossover-alignment":
+                try:
+                    query = urllib.parse.parse_qs(
+                        urllib.parse.urlparse(self.path).query
+                    )
+                    self._send_json(
+                        _active_speaker_crossover_alignment_payload(
+                            requested_mode=(query.get("measurement_mode") or [None])[0],
+                            speaker_group_id=(
+                                query.get("speaker_group_id") or [None]
+                            )[0],
+                        )
+                    )
+                except (ValueError, OSError, KeyError) as e:
+                    logger.exception(
+                        "event=sound.active_speaker_crossover_alignment result=error"
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -3791,6 +4018,7 @@ def _make_handler(
                 "/active-speaker/summed-test",
                 "/active-speaker/summed-validation",
                 "/active-speaker/summed-capture",
+                "/active-speaker/crossover-alignment",
                 "/active-speaker/baseline-profile",
                 "/active-speaker/baseline-profile/apply",
                 "/output-topology",
@@ -3943,6 +4171,19 @@ def _make_handler(
                     except OSError as e:
                         logger.exception(
                             "event=sound.active_speaker_summed_capture "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/crossover-alignment":
+                    try:
+                        self._send_json(
+                            _active_speaker_crossover_alignment_confirm_payload(raw)
+                        )
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_crossover_alignment_confirm "
                             "result=error error=%s",
                             type(e).__name__,
                         )

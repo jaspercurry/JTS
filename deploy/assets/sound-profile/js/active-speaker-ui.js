@@ -332,6 +332,85 @@ export function levelMatchSummary(baseline) {
   };
 }
 
+export const CALIBRATED_ALIGNMENT_GUIDANCE =
+  'For delay and polarity, use a calibrated measurement mic (Dayton iMM-6/UMM-6, ' +
+  'miniDSP UMIK, or an uploaded REW curve): select it under “Calibrated mic”, hold ' +
+  'it near-field per driver, then capture the summed crossover. A phone can ' +
+  'level-match but cannot set delay or polarity — those need calibrated phase.';
+
+function humanPolarityAction(action) {
+  return {
+    keep: 'Polarity looks correct — keep it',
+    invert: 'Invert one driver (proposed)',
+    review: 'Polarity needs review'
+  }[action] || '—';
+}
+
+// Summarise the /active-speaker/crossover-alignment proposal for the L2 card. Pure:
+// main.js owns the DOM and the per-driver/summed curve plot from payload.curves. A
+// proposal is a PROPOSAL — the maintainer reviews the surfaced evidence and confirms;
+// delay/polarity are gated on a calibrated (phase_aware) measurement, level stays the
+// separate attenuation-only level match.
+export function crossoverAlignmentSummary(payload) {
+  payload = payload || {};
+  var proposal = payload.proposal && typeof payload.proposal === 'object' ?
+    payload.proposal : null;
+  var mode = payload.mode && typeof payload.mode === 'object' ? payload.mode : {};
+  var modeName = String(mode.mode || '');
+  var needsCal = modeName !== 'phase_aware';
+  if (!proposal) {
+    return {
+      available: false,
+      authorized: false,
+      needsCalibratedMic: needsCal,
+      note: (payload.status === 'no_measurements' || payload.status === 'no_crossover') ?
+        'Measure each driver near-field first, then capture the summed crossover.' :
+        'No alignment proposal yet.',
+      guidance: CALIBRATED_ALIGNMENT_GUIDANCE
+    };
+  }
+  var authorized = !!proposal.authorized;
+  var delayText;
+  if (!authorized) {
+    delayText = '—';
+  } else if (proposal.delay_confidence === 'aligned') {
+    delayText = 'Drivers already time-aligned';
+  } else if (proposal.delay_target_role && typeof proposal.delay_ms === 'number') {
+    delayText = 'Delay ' + humanRole(proposal.delay_target_role) + ' ' +
+      proposal.delay_ms.toFixed(2) + ' ms (estimate — validate with the null)';
+  } else {
+    delayText = 'No delay (capture both drivers near-field to estimate)';
+  }
+  var nullParts = [];
+  if (typeof proposal.in_phase_null_depth_db === 'number') {
+    nullParts.push('in-phase ' + proposal.in_phase_null_depth_db.toFixed(0) + ' dB');
+  }
+  if (typeof proposal.reverse_null_depth_db === 'number') {
+    nullParts.push('reverse ' + proposal.reverse_null_depth_db.toFixed(0) + ' dB');
+  }
+  var issues = Array.isArray(proposal.issues) ?
+    proposal.issues
+      .map(function(entry) { return String((entry && entry.message) || ''); })
+      .filter(Boolean) :
+    [];
+  return {
+    available: true,
+    authorized: authorized,
+    needsCalibratedMic: needsCal,
+    mode: modeName,
+    delayText: delayText,
+    polarityText: authorized ? humanPolarityAction(proposal.polarity_action) : '—',
+    nullText: nullParts.length ? nullParts.join(', ') : 'no summed capture yet',
+    issues: issues,
+    note: authorized ?
+      'Proposal from a calibrated measurement — review the evidence, then Apply to ' +
+        'fold delay/polarity into the baseline.' :
+      'Delay and polarity need a calibrated measurement mic; with a phone you can ' +
+        'still level-match each driver.',
+    guidance: CALIBRATED_ALIGNMENT_GUIDANCE
+  };
+}
+
 export function playbackResultMessage(playback, fallback, normalizeMessage) {
   playback = playback || {};
   var issues = Array.isArray(playback.issues) ? playback.issues : [];
