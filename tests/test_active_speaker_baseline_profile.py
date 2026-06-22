@@ -307,6 +307,11 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
     assert payload["config"]["playback_device_source"] == "outputd_active_lane"
     assert 'device: "outputd_active_content_playback"' in yaml
     assert "active_baseline_headroom" in yaml
+    assert (
+        "  active_baseline_headroom:\n"
+        "    type: Gain\n"
+        "    parameters: { gain: 0.0000, inverted: false, mute: false }"
+    ) in yaml
     assert "as_tweeter_baseline_limiter" in yaml
 
 
@@ -942,7 +947,7 @@ def test_recompose_baseline_yaml_folds_preference_eq_and_stays_approved(
     # The keystone (invariant 2), end-to-end through the recompose seam: a
     # +6 dB preference (a +4 dB highshelf -- a SHELF, the conservative
     # boost-sum case -- plus a +2 dB peak) folds into the single
-    # active_baseline_headroom gain (12 -> 18 dB) and rides PRE-SPLIT, and the
+    # active_baseline_headroom gain (0 -> 6 dB) and rides PRE-SPLIT, and the
     # emitted graph still re-proves as GRAPH_APPROVED_ACTIVE_RUNTIME. Folding EQ
     # never breaks the protection contract.
     import re
@@ -975,13 +980,13 @@ def test_recompose_baseline_yaml_folds_preference_eq_and_stays_approved(
 
     # invariant 4 (emitter-side): the headroom gain is folded by the worst-case
     # additive boost (sum of positive shelf+peak gains = 6 dB), keeping it
-    # non-positive -- 12 dB baseline headroom -> 18 dB attenuation.
+    # non-positive -- 0 dB baseline headroom -> 6 dB attenuation.
     match = re.search(
         r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
         eq_yaml,
     )
     assert match is not None
-    assert float(match.group(1)) == -18.0
+    assert float(match.group(1)) == -6.0
 
     # invariant 5: the preference filter step is wired on the program channels
     # strictly BEFORE the split mixer.
@@ -996,7 +1001,7 @@ def test_recompose_baseline_yaml_folds_preference_eq_and_stays_approved(
     assert graph.allowed is True
 
     # output_trim_db (manual headroom + loudness match) threads through recompose
-    # and folds into the SAME headroom gain (12 baseline + 6 boost + 4 trim = 22),
+    # and folds into the SAME headroom gain (0 baseline + 6 boost + 4 trim = 10),
     # so the active EQ apply honours the household's loudness setting; still APPROVED.
     trimmed_yaml, trim_issues = recompose_baseline_yaml(
         topology,
@@ -1010,7 +1015,7 @@ def test_recompose_baseline_yaml_folds_preference_eq_and_stays_approved(
         r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
         trimmed_yaml,
     )
-    assert trim_match is not None and float(trim_match.group(1)) == -22.0
+    assert trim_match is not None and float(trim_match.group(1)) == -10.0
     assert classify_camilla_graph(topology=topology, text=trimmed_yaml).allowed is True
 
 

@@ -372,7 +372,7 @@ def test_baseline_preference_boost_folds_into_headroom() -> None:
         return float(match.group(1))
 
     # +5 shelf + +3 peak = +8 dB worst-case boost; headroom drops by >= 8 dB and
-    # stays non-positive. (12 dB baseline -> 20 dB attenuation.)
+    # stays non-positive. (0 dB baseline -> 8 dB attenuation.)
     assert _headroom_db(flat) - _headroom_db(boosted) >= 8.0 - 1e-6
     assert _headroom_db(boosted) <= 0.0
     assert "volume_limit: 0.0" in boosted
@@ -397,19 +397,19 @@ def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
     prefs = (
         FilterSpec(name="pref_pk", biquad_type="Peaking", freq=2000.0, gain=2.0, q=1.0),
     )
-    # With EQ: -(12 baseline + 2 boost + 4 trim) = -18.
+    # With EQ: -(0 baseline + 2 boost + 4 trim) = -6.
     with_eq = _active_baseline_yaml("mono", 2, preference_filters=prefs, output_trim_db=4.0)
-    assert _headroom_db(with_eq) == -18.0
+    assert _headroom_db(with_eq) == -6.0
     assert _headroom_db(with_eq) <= 0.0
     assert classify_camilla_graph(
         topology=_active_topology("mono", "active_2_way"), text=with_eq
     ).allowed is True
 
-    # Flat profile: the trim is ignored (can't clip from EQ), headroom stays -12
+    # Flat profile: the trim is ignored (can't clip from EQ), headroom stays 0
     # and the config is byte-identical to no-trim — preserves the no-EQ contract.
     flat_no_trim = _active_baseline_yaml("mono", 2)
     flat_with_trim = _active_baseline_yaml("mono", 2, output_trim_db=4.0)
-    assert _headroom_db(flat_with_trim) == -12.0
+    assert _headroom_db(flat_with_trim) == 0.0
     assert flat_with_trim == flat_no_trim
 
 

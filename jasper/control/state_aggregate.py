@@ -41,6 +41,7 @@ from . import (
 )
 from .aec_endpoints import _aec_full_status
 from .dial import _dial_heartbeat, _probe_dial_reachable
+from .gain_chain import build_gain_chain_snapshot
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
@@ -630,6 +631,15 @@ async def _get_state(
         mux_status=mux_st,
         diagnostics=_read_volume_diagnostics(),
     )
+    gain_chain = build_gain_chain_snapshot(
+        active_source=active_source,
+        volume_policy=volume_policy,
+        camilla_status=camilla_st,
+        sound_profile=sound_profile,
+        fanin_status=fanin_st,
+        outputd_status=outputd_st,
+        log_changes=True,
+    )
 
     # Build the dial section from the snapshot taken before the gather
     # so age_seconds is consistent with whatever IP the probe targeted.
@@ -775,6 +785,7 @@ async def _get_state(
             "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,
             "volume_policy": volume_policy,
+            "gain_chain": gain_chain,
             "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
             "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
             "clipped_samples": camilla_st["clipped_samples"],

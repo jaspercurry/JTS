@@ -62,7 +62,7 @@ STARTUP_HEADROOM_DB = 40.0
 COMMISSIONING_HEADROOM_DB = 0.0
 STARTUP_MUTE_GAIN_DB = -120.0
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
-BASELINE_HEADROOM_DB = 12.0
+BASELINE_HEADROOM_DB = 0.0
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
@@ -483,10 +483,12 @@ def _emit_baseline_filter_definitions(
     # byte-identical). A trim is a (non-negative) attenuation, clamped here.
     boost_db = total_positive_boost_db(preference_filters)
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
+    total_headroom_db = baseline_headroom_db + boost_db + trim_db
+    headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(
             "active_baseline_headroom",
-            -(baseline_headroom_db + boost_db + trim_db),
+            headroom_gain_db,
         )
     )
     lines.extend(_emit_baseline_driver_definitions(
@@ -1011,8 +1013,8 @@ def emit_active_speaker_baseline_config(
     """Build an accepted active-speaker baseline candidate.
 
     Unlike the startup template, this YAML is not muted. It still preserves
-    the JTS 0 dB volume ceiling, includes conservative headroom, keeps
-    per-driver limiters, and refuses positive per-driver correction gain.
+    the JTS 0 dB volume ceiling, keeps per-driver limiters, and refuses
+    positive per-driver correction gain.
     Callers own the acceptance evidence and explicit CamillaDSP apply step.
 
     ``preference_filters`` (Layer C) is the program-domain preference EQ band
