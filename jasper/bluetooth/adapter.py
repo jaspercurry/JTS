@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Adapter-level bluez ops: power, pairing window, scan.
 
 Thin async wrappers around `org.bluez.Adapter1`. The web layer owns

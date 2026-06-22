@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """systemd socket-activation + idle-shutdown for setup wizards.
 
 Each wizard runs as its own systemd service paired with a .socket unit.

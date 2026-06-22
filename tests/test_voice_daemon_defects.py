@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import asyncio
@@ -177,6 +181,46 @@ async def test_idle_watchdog_caps_mid_response_stall(caplog):
         )
 
     assert "response stalled" in caplog.text
+
+
+class _CompletedTurn:
+    """Turn whose only completion signal is ``server_turn_complete()`` — the
+    shape an interrupted Gemini turn reaches (it goes interrupted ->
+    turn_complete, with no generation_complete)."""
+
+    def turn_lost(self) -> bool:
+        return False
+
+    def last_activity_at(self) -> float:
+        return time.monotonic()
+
+    def server_turn_complete(self) -> bool:
+        return True
+
+    def last_chunk_at(self) -> float:
+        return 0.0
+
+    def audio_chunks_pending(self) -> int:
+        return 0
+
+
+async def test_idle_watchdog_returns_on_server_turn_complete():
+    """Clean-close path: once the server reports turn_complete and audio has
+    drained, the watchdog ends the turn on that signal alone — there is no
+    generation_complete to wait on. The generous timers ensure only the
+    ``server_turn_complete()`` branch can end this turn, so a provider whose
+    interrupted turn goes interrupted -> turn_complete (Gemini) cannot hang
+    the watchdog. Complement to ``test_idle_watchdog_caps_mid_response_stall``
+    (the no-signal fallback)."""
+    await asyncio.wait_for(
+        _idle_watchdog(
+            _CompletedTurn(),
+            _DrainedTts(),
+            timeout=999.0,
+            response_stall_timeout=999.0,
+        ),
+        timeout=1.0,
+    )
 
 
 async def test_server_vad_trigger_uses_public_create_response_only():

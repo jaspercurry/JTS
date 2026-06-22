@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-doctor checks — privilege-separation read access.
 
 WS1 dropped jasper-control/-web/-mux/-voice/-input to non-root (each runs as
@@ -154,6 +158,19 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # /sound/ wizard reads the active profile + global settings.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
+        ),
+    ),
+    DaemonReadSpec(
+        unit="jasper-chat-web",
+        unit_file="deploy/jasper-chat-web.service",
+        user="jasper-web",
+        group="jasper",
+        supplementary_groups=(),
+        paths=(
+            # /chat/ re-reads these fresh so the browser toggle takes effect
+            # without restarting jasper-voice or jasper-chat-web.
+            "/var/lib/jasper/conversation_history.env",
+            "/var/lib/jasper/conversation_history.db",
         ),
     ),
     DaemonReadSpec(
@@ -440,6 +457,13 @@ def check_web_readable_inputs() -> CheckResult:
     files it renders (the #901 bt_roles.json surface). Skips on streambox, where
     jasper-web runs as root."""
     return _check_daemon("jasper-web")
+
+
+@doctor_check(order=23.565, group="privsep")
+def check_chat_web_readable_inputs() -> CheckResult:
+    """jasper-chat-web must be able to read the conversation-history settings
+    and SQLite store it renders and mutates."""
+    return _check_daemon("jasper-chat-web")
 
 
 @doctor_check(order=23.57, group="privsep")

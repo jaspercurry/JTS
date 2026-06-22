@@ -193,6 +193,15 @@ and #C can land before #A, and #D informs all of them.
 
 ### Workstream A — Memory-safe, production-isolated builds across tiers
 
+> **First slice shipped (2026-06-21):** the unified RAM-aware +
+> cgroup-contained build policy
+> ([`deploy/lib/install/build-sandbox.sh`](../deploy/lib/install/build-sandbox.sh))
+> now wraps every heavy installer build. Canonical doc:
+> [HANDOFF-build-sandbox.md](HANDOFF-build-sandbox.md). Remaining/follow-up:
+> prebuilt per-arch artifacts for the Zero 2 W (a CPU-time problem
+> containment can't solve), the Rust low-memory threshold bump, and the
+> on-hardware OOM confirmation listed in that doc.
+
 ```text
 Read docs/install-update-resilience-plan.md for full context (problems #1, #2;
 the hardware-tier and fresh-vs-update axes; the prior art list).
@@ -222,6 +231,14 @@ real-hardware confirmation.
 ```
 
 ### Workstream B — Atomic, verifiable, recoverable updates
+
+> **Status: landed (2026-06-21).** The build manifest is now the
+> verified-install marker (written last, gated by `set -e`); deploy
+> verification surfaces OOM collateral + post-restart voice/AEC/renderer
+> health and gates on the manifest advancing. Full A-B generations were
+> analysed and deferred. Operational truth + the rollback decision:
+> [HANDOFF-install-update-transaction.md](HANDOFF-install-update-transaction.md).
+> The prompt below is preserved as the originating brief.
 
 ```text
 Read docs/install-update-resilience-plan.md for full context (problems #3, #4,
@@ -285,6 +302,15 @@ design note + scoped PR; flag what needs a real plug/unplug hardware pass.
 ```
 
 ### Workstream D — Hardware-tier awareness, cross-tier testing, and the stale-update question
+
+> **Design note + recommendation delivered:**
+> [`install-hardware-tier-and-staleness.md`](install-hardware-tier-and-staleness.md).
+> Bottom line: tier ≠ profile (add detected RAM/CPU/arch up front,
+> orthogonal to full/streambox); migrations are convergent so far-behind
+> is *not* a migration-pile-up risk — it amplifies risk via cold build
+> caches, so stepwise updates are **rejected** in favour of safe builds
+> (A) + atomic updates (B); plus a cross-SKU test strategy and a scoped
+> tier-detection + arch-guard change in `deploy/install.sh`.
 
 ```text
 Read docs/install-update-resilience-plan.md for full context (the hardware-tier

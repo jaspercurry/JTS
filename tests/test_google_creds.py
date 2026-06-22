@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.google_creds.
 
 Covers the registry CRUD + token-file persistence shape. The actual

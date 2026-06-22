@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Volume regression scenarios — pins the LLM-visible contract for the
 five volume tools (`get_volume`, `set_volume`, `adjust_volume`, `mute`,
 `unmute`) backed by `jasper.tools.audio.make_audio_tools`.

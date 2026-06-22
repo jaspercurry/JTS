@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Self-heal a lost NetworkManager WiFi profile from the wizard-owned stash.
 #
 # The 2026-05-23 incident: a dirty shutdown left

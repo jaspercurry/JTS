@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """State aggregation helpers for jasper-control."""
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
@@ -36,6 +41,7 @@ from . import (
 )
 from .aec_endpoints import _aec_full_status
 from .dial import _dial_heartbeat, _probe_dial_reachable
+from .gain_chain import build_gain_chain_snapshot
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
@@ -128,6 +134,15 @@ def _conversation_history_state() -> dict[str, Any] | None:
         }
     finally:
         store.close()
+
+
+def _research_state(
+    runtime: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Read privacy-safe async-research state."""
+    from ..research.state import snapshot
+
+    return snapshot(runtime=runtime)
 
 
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
@@ -313,7 +328,10 @@ async def _get_state(
     from ..camilla import CamillaController
     from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
-    from ..voice.provider_state import read_active_provider_state
+    from ..voice.provider_state import (
+        read_active_provider_state,
+        read_barge_in_enabled,
+    )
 
     # Provider + model: re-read the wizard-owned SSOT file fresh on every
     # call. jasper-control is NOT restarted on a provider switch (only
@@ -622,6 +640,15 @@ async def _get_state(
         mux_status=mux_st,
         diagnostics=_read_volume_diagnostics(),
     )
+    gain_chain = build_gain_chain_snapshot(
+        active_source=active_source,
+        volume_policy=volume_policy,
+        camilla_status=camilla_st,
+        sound_profile=sound_profile,
+        fanin_status=fanin_st,
+        outputd_status=outputd_st,
+        log_changes=True,
+    )
 
     # Build the dial section from the snapshot taken before the gather
     # so age_seconds is consistent with whatever IP the probe targeted.
@@ -647,6 +674,14 @@ async def _get_state(
     except Exception:  # noqa: BLE001
         logger.exception("grouping state read failed")
         grouping_state = None
+
+    # Bonded-leader AirPlay latency fit (Stage D observability — see
+    # jasper/multiroom/airplay_latency.py). The shared composer (also used by
+    # /rooms.json) attaches it non-mutatingly; read_grouping_state stays a pure
+    # config projection and the gated, cached journal read lives behind the
+    # helper. Total (returns {"applicable": False} on solo without touching the
+    # journal), so the grouping section survives a broken read.
+    grouping_state = with_airplay_latency_fit(grouping_state)
 
     # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
     # os.environ — jasper-control isn't restarted on a /transit/ save, only
@@ -689,6 +724,16 @@ async def _get_state(
         logger.exception("conversation history state read failed")
         chat_state = None
 
+    try:
+        research_state = _research_state((voice_st or {}).get("research"))
+    except (ImportError, OSError, RuntimeError, ValueError):
+        logger.exception("research state read failed")
+        research_state = None
+
+    # Lazy import (mirrors read_active_provider_state above) so jasper-control
+    # doesn't pull jasper.voice.* at module load. Cheap file stat per /state.
+    from ..voice.input_presence import voice_parked_no_mic
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -720,12 +765,36 @@ async def _get_state(
             # explicitly here like the other voice fields, so a new
             # session_status field must be pulled through.
             "tool_packs": (voice_st or {}).get("tool_packs"),
+            # In-session barge-in (full-duplex). `enabled` is read FRESH
+            # per active provider here (same rationale as provider/model
+            # above): jasper-control is NOT restarted on a barge-in toggle,
+            # so an os.environ/Config cache would show a stale value. The
+            # firing stats are curated pull-through from jasper-voice's
+            # session_status (like wake_legs / tool_packs) — null when
+            # voice is unreachable.
+            "barge_in": {
+                "enabled": (
+                    read_barge_in_enabled(active_provider.provider)
+                    if active_provider.provider else False
+                ),
+                "last_at": (voice_st or {}).get("barge_in_last_at"),
+                "count_session": (voice_st or {}).get("barge_in_count_session"),
+                "last_leg": (voice_st or {}).get("barge_in_last_leg"),
+            },
             "reachable": voice_st is not None,
+            # Disambiguates reachable:false. True when the AEC reconciler
+            # parked voice for a missing microphone (its ConditionPathExists
+            # marker is present) — i.e. "intentionally idle, no mic", NOT
+            # "crashed". Read fresh from the marker each call (jasper-control
+            # isn't restarted on a mic plug/unplug). See
+            # docs/HANDOFF-hotplug-resilience.md "Layer 3".
+            "parked_no_mic": voice_parked_no_mic(),
         },
         "audio": {
             "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,
             "volume_policy": volume_policy,
+            "gain_chain": gain_chain,
             "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
             "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
             "clipped_samples": camilla_st["clipped_samples"],
@@ -810,8 +879,11 @@ async def _get_state(
         # Multiroom grouping (off by default). null only if the fresh
         # read itself errored; otherwise a JSON-able snapshot of the
         # wizard-owned grouping.env (enabled / role / channel / bond_id /
-        # leader_addr / buffer_ms / codec / error). See
-        # jasper/multiroom/state.py + docs/HANDOFF-multiroom.md.
+        # leader_addr / buffer_ms / codec / error), PLUS airplay_latency_fit:
+        # the bonded-leader AirPlay tight-regime observability ({applicable:
+        # false} unless this speaker is an active bonded leader). See
+        # jasper/multiroom/state.py + jasper/multiroom/airplay_latency.py +
+        # docs/HANDOFF-multiroom.md / docs/HANDOFF-airplay.md.
         "grouping": grouping_state,
         # Transit city packs (which cities' transit is enabled). null only
         # if the fresh read itself errored; otherwise {packs: [{id, label,
@@ -832,4 +904,7 @@ async def _get_state(
         # is unavailable while capture is enabled, or if the state read
         # itself fails. See jasper.conversation_history.
         "chat": chat_state,
+        # Async research summary. Counts and timestamps only; no prompt or
+        # answer text leaves the local store through /state.
+        "research": research_state,
     }

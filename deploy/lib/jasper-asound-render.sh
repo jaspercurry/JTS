@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Shared ALSA template rendering helpers for JTS final-output routing.
 #
 # Inputs are the already-detected role variables owned by install.sh and

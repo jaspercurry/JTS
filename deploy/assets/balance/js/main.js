@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Pair-balance walkthrough (#23 P2, equal-loudness redesign). One
 // speaker at a time: sample the room's noise floor, ask the server to
 // play that speaker's quiet-to-loud ramp, watch the phone's in-band

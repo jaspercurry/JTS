@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """``jasper-doctor`` — preflight diagnostic CLI (package entry).
 
 This package is the decomposed form of the original single-file
@@ -282,6 +286,10 @@ from .web import (
     check_control_token,
     check_web_design_assets,
 )
+from . import research as research
+from .research import (
+    check_research,
+)
 from . import peering as peering
 from .peering import (
     check_peering_mode,
@@ -290,6 +298,7 @@ from .peering import (
 )
 from . import grouping as grouping
 from .grouping import (
+    check_crossover_unit_installed,
     check_grouping,
     check_grouping_channel_pick,
     check_grouping_household_credential,
@@ -399,6 +408,7 @@ __all__ = [
     "network",
     "correction",
     "web",
+    "research",
     "peering",
     "grouping",
     "satellites",
@@ -568,9 +578,11 @@ __all__ = [
     "check_conversation_history",
     "check_web_design_assets",
     "check_control_token",
+    "check_research",
     "check_peering_mode",
     "check_peering_discovery",
     "_local_peer_id",
+    "check_crossover_unit_installed",
     "check_grouping",
     "check_grouping_channel_pick",
     "check_grouping_household_credential",

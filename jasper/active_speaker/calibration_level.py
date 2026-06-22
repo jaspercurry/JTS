@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Calibration-level contract for active-speaker channel tests.
 
 This module owns the tiny but load-bearing distinction between normal

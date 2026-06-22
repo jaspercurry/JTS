@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Invariants for the shared canonical design system.
 
 The redesigned management UI shares one stylesheet — deploy/assets/app.css —
@@ -58,6 +62,7 @@ def test_app_css_carries_shared_primitives():
     for marker in (
         "@font-face", "--primary:", ".page", ".eyebrow",
         ".segmented", ".btn", ".sr-only", "prefers-reduced-motion",
+        "[hidden] { display: none !important; }",
     ):
         assert marker in css, f"app.css missing shared primitive: {marker}"
 

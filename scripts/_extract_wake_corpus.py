@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Extract a training-ready wake-word corpus from the wake_events store.
 
 Reads `wake-events.sqlite3` + per-event WAVs (typically the snapshot

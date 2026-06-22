@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // render.js — pure catalog -> HTML-string builders for the /tools/ UI.
 //
 // main.js/detail.js own fetches, POSTs, and event delegation. This module

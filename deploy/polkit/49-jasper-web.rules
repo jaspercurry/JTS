@@ -63,8 +63,10 @@
 //     SupplementaryGroups=, not this file.
 //   * CAP_NET_ADMIN for jasper/wifi_scan_repair.py's NL80211
 //     CRIT_PROTOCOL_STOP is NOT granted — the most network-exposed daemon
-//     stays cap-less and the scan-repair degrades fail-soft (the /wifi/ page
-//     keeps "Join by name"). See docs/HANDOFF-privilege-separation.md.
+//     stays cap-less. /wifi/scan asks jasper-control's scoped restart broker
+//     to start the root-only jasper-wifi-scan-repair.service helper instead;
+//     if that fails, the page keeps "Join by name". See
+//     docs/HANDOFF-privilege-separation.md.
 //   * NetworkManager's own reload / sleep / wake / checkpoint actions — the
 //     wizard never calls them; granting only what wifi_setup.py exercises
 //     keeps the blast radius of a jasper-web compromise to the Wi-Fi

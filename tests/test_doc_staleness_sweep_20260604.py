@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression guards for the 2026-06-04 documentation-staleness sweep.
 
 Each test pins a doc/comment claim that had drifted from the code to the

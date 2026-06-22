@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pattern-2 text-provider registry for async research.
 
 Providers parse their own env keys from a plain mapping. A missing key

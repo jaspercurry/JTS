@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Compute ERLE numbers from two WAV files produced by aec-erle-record.sh.
 
 Asks three questions:

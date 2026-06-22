@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Calendar regression scenarios — pins the LLM-visible contract for
 the two calendar tools (`calendar_today_summary`, `calendar_upcoming`)
 backed by `jasper.tools.calendar.make_calendar_tools`.

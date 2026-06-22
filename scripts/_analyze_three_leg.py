@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Weekly review of the multi-leg wake-event corpus.
 
 The OR-gate fires on any configured wake leg (AEC3, chip-direct raw,

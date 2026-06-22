@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Runtime-integrity evidence for correction measurement bundles.
 
 The acoustic pipeline can produce a curve from a WAV even when the Pi

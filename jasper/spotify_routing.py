@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Smart Spotify-target resolver: decides which device_id to send
 start_playback to, and what (if anything) needs to stop first.
 

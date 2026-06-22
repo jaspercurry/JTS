@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """HID device handler.
 
 Matches any device advertising the HID service UUID (0x1124). The

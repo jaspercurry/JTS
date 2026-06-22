@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Calibration-agent intake, prompt, and response-validation CLI."""
 from __future__ import annotations
 

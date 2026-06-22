@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-doctor checks — env domain.
 
 Re-homed verbatim from the original monolithic
@@ -70,6 +74,7 @@ def _classify_state_group_write(usage_db: Path) -> CheckResult:
     state_dir = usage_db.parent
     candidates = (
         usage_db,
+        state_dir / "conversation_history.db",
         state_dir / "timers.db",
         state_dir / "wake-events" / "wake-events.sqlite3",
         state_dir / "speaker_volume.json",

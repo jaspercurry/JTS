@@ -177,6 +177,24 @@ The output-side invariant lives here: **provider truncation must be
 driven from the final playout ledger, not provider event arrival time or
 queued-frame estimates**.
 
+**Status (2026-06-21).** Steps 1-3 — the provider-agnostic *detection +
+local-flush spine* — have landed behind a per-provider feature flag that
+**defaults OFF**. While the assistant is speaking,
+`WakeLoop._handle_playback_frame` (in `jasper/voice_daemon.py`) runs local
+Silero VAD on the AEC-cleaned "on" leg and, on a sustained speech run at
+or above `JASPER_VAD_BARGE_IN_THRESHOLD`, calls
+`LiveTurn.request_local_interrupt()`, which `_play_responses` races (now
+including the `wait_drained()` drain-tail window) to `flush()` local TTS.
+The flag is `JASPER_BARGE_IN_<PROVIDER>` in
+`/var/lib/jasper/voice_provider.env`, read fresh per turn via
+`jasper.voice.provider_state.read_barge_in_enabled` (never an os.environ
+cache); a runtime guard hard-disables it for the session when the active
+profile has no AEC reference (`direct_mic`), to avoid self-tripping on
+un-cancelled TTS bleed. Step 4 — **provider cancel/truncate** — is
+deliberately *not* wired yet: a real-time provider may resume speaking
+after the local flush until that increment lands. Off-device validation
+cannot exercise false-barge from TTS bleed; that is a hardware step.
+
 ## Codebase Validation
 
 Rechecked against the current tree on 2026-06-01:
@@ -186,7 +204,13 @@ Rechecked against the current tree on 2026-06-01:
   its semantics: `write_segment()`/`write()`, `end_segment()`,
   `flush()`, `expected_drain_at()`, and `wait_drained()`.
 - `jasper/voice/turn_playback.py` + `_play_responses` races each TTS
-  write against provider interruption and calls `flush()` on interruption.
+  write against the turn's interrupt event — set by a provider
+  server-interrupt or, with barge-in enabled, by the daemon's local
+  `request_local_interrupt()` — and calls `flush()` (via the shared
+  `_flush_for_interrupt`, which emits `event=barge.flush_failed` on a
+  failed flush rather than crashing the turn). When `barge_in_enabled`,
+  the same race also covers the `wait_drained()` drain-tail window; with
+  it off the function is byte-identical to its pre-barge-in shape.
   `_idle_watchdog` and `jasper/voice_daemon.py`'s `_end_turn` rely on
   `expected_drain_at()` to
   avoid ending a turn before queued audio drains.
@@ -409,15 +433,27 @@ What exists:
   synchronous `FLUSH_SYNC` path for interruption and bounds this ack
   wait; on timeout it closes the ordered TTS socket so a late stale ack
   cannot be mistaken for a later flush.
-- Playout ledger: the off-path outputd core still contains the richer
-  per-segment ledger shape: active assistant/cue segments plus bounded
-  recent terminal history; provider item id; flushed frames; and
-  `audio_played_ms` estimated from the output clock and DAC delay rather
-  than treating written frames as heard frames. The packaged fan-in TTS
-  ack currently reports queue-level flush facts and an empty events list
-  (`max_audio_played_ms=0`, `events=[]`). Robust provider truncation
-  therefore still needs the final playout-ledger slice wired to the
-  active TTS/final-output path.
+- Playout ledger: outputd's core carries the DAC-clock-true per-segment
+  ledger (provider item id, flushed frames, and `audio_played_ms` estimated
+  from the output clock and DAC delay rather than treating written frames as
+  heard frames), used on a bonded multiroom member where assistant audio
+  mixes at the final output stage. In the solo packaged topology the
+  assistant path is owned by `jasper-fanin` (pre-CamillaDSP), which now
+  carries its OWN per-segment playout ledger
+  ([`rust/jasper-fanin/src/playout.rs`](../rust/jasper-fanin/src/playout.rs)):
+  the `FLUSH_SYNC` ack reports per-segment provider item id, queued/flushed
+  frames, and a real `max_audio_played_ms` plus `events[]` — replacing the
+  former hardcoded `max_audio_played_ms=0` / `events=[]`. Because fan-in
+  cannot see the DAC clock, its `audio_played_ms` is the MIX-COMMIT count:
+  frames popped into the program toward snd-aloop, paced by the blocking
+  snd-aloop write and therefore DAC-rate-paced, NOT a queued-frame estimate.
+  It over-reads true acoustic playout by the FIXED downstream pipeline depth
+  (CamillaDSP + the snd-aloop rings + outputd's content ring + the DAC
+  buffer/hw delay), which is the conservative direction for truncation;
+  closing that offset to exact DAC-clock precision (subtracting outputd's
+  reported DAC delay) is the remaining follow-up. Robust provider truncation
+  therefore now needs the provider adapters wired to CONSUME this
+  acknowledgement.
 - Runtime unit: `deploy/systemd/jasper-outputd.service` is enabled by
   `deploy/install.sh` and sets the ALSA/socket defaults.
   Optional lab retuning belongs in `/var/lib/jasper/outputd.env`; the
@@ -482,11 +518,16 @@ What is still intentionally not done:
 - The chip USB-IN producer is intentionally separate from the software
   speaker monitor. Software AEC/corpus/diagnostics should not depend on
   chip hardware being present.
-- Provider truncation is not yet wired to the local TTS flush and final
-  playout-ledger acknowledgements. The contract is now documented here
-  and in `HANDOFF-voice-providers.md`; implementation still needs to
-  produce/consume the needed `audio_played_ms` and provider item
-  identity for provider-specific truncate/cancel commands.
+- Provider truncation is wired for the OpenAI/Grok pack (PR-4). The local
+  TTS flush PRODUCES the `audio_played_ms` and provider item identity
+  (fan-in solo + outputd bonded), and `turn_playback._flush_for_interrupt`
+  now drives the active provider's adapter to CONSUME that acknowledgement —
+  `response.cancel` then `conversation.item.truncate(audio_end_ms=played-ms)`,
+  a no-op + WARN when the ledger reports `max_audio_played_ms=0` so it never
+  truncates on bytes-received. The contract is documented here and in
+  `HANDOFF-voice-providers.md`. Remaining: Gemini's obey-`interrupted` pack
+  (PR-5; it self-truncates server-side, so no client truncate), Grok
+  verification (PR-6), and the on-hardware AEC gate before default-on (PR-7).
 - The latest TTS ledger refinements (provider item id over IPC,
   synchronous flush acknowledgement, and DAC-delay-based drain
   accounting) still need Pi validation after an operator-approved
@@ -1334,8 +1375,18 @@ datum: how much assistant audio was actually heard.
   socket only for active bonded members. Solo stays fan-in-owned, while a
   bonded member mixes its own assistant audio in outputd after the
   snapcast round trip and before reference publication.
+- 2026-06-21: Wired the solo fan-in TTS `FLUSH_SYNC` ack to a real
+  per-segment playout ledger (`rust/jasper-fanin/src/playout.rs`),
+  replacing the hardcoded `max_audio_played_ms=0` / `events=[]`. fan-in is
+  pre-CamillaDSP and cannot see the DAC clock, so its `audio_played_ms` is
+  the mix-commit count (frames committed to the snd-aloop program,
+  DAC-rate-paced) and over-reads true playout by the fixed downstream
+  pipeline depth — the conservative direction for truncation. Exact
+  DAC-clock precision (subtracting outputd's reported DAC delay) and the
+  provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-18 (active-speaker runtime graph boundary rechecked
+Last verified: 2026-06-21 (fan-in solo `FLUSH_SYNC` playout-ledger ack
+verified against rust/jasper-fanin/src/{playout,tts}.rs; active-speaker runtime graph boundary rechecked
 against `jasper.active_speaker.runtime_contract`, install outputd-statefile
 selection, and doctor runtime graph check; Stage-7 outputd loop unification
 previously rechecked against

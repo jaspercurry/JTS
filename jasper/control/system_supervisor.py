@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Userspace-liveness supervisor — Tier 4.6 of the JTS resilience
 ladder, closing the gap exposed by the 2026-05-23 incident.
 

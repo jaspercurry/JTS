@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Boot-time XVF3800 chip init — `jasper-aec-init`.
 
 Runs as a one-shot systemd unit before jasper-aec-bridge starts.

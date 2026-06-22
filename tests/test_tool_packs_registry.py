@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Slice 1 gate — the data-driven tool-pack walk must produce a registry
 byte-identical to the legacy hardcoded `_build_registry` sequence.
 

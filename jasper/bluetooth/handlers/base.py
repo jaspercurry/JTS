@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Protocol for per-device-class post-pair behaviour."""
 from __future__ import annotations
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Drift guard: the Tier-A daemons keep their WS1 phase-1 hardening stanza.
 
 A compromise of an always-on, network-facing `jasper-*` daemon is a full-root
@@ -139,7 +143,7 @@ DROPPED = {
     # `bluetooth` (BlueZ Adapter1 Alias for the /speaker rename — a D-Bus policy
     # grant), `systemd-journal` (journalctl -k Wi-Fi diagnostics), and, since 4a,
     # `jasper-secrets` (the wizards write + render the secret files). No
-    # CAP_NET_ADMIN — the NL80211 scan-repair degrades fail-soft.
+    # CAP_NET_ADMIN — NL80211 scan-repair routes through a root helper.
     "jasper-web": (
         "jasper-web",
         {"audio", "bluetooth", "systemd-journal", "jasper-secrets", "jasper-intsecrets"},
@@ -400,6 +404,9 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     "jasper-dongle-recover": ROOT / "deploy/systemd/jasper-dongle-recover.service",
     "jasper-wifi-guardian": ROOT / "deploy/systemd/jasper-wifi-guardian.service",
     "jasper-wifi-recover": ROOT / "deploy/systemd/jasper-wifi-recover.service",
+    "jasper-wifi-scan-repair": (
+        ROOT / "deploy/systemd/jasper-wifi-scan-repair.service"
+    ),
     "jasper-grouping-reconcile": (
         ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
     ),

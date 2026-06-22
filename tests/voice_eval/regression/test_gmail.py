@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Gmail regression scenarios — pins the LLM-visible contract for the
 two gmail tools (`gmail_unread_summary`, `gmail_read_thread`) backed by
 `jasper.tools.gmail.make_gmail_tools`.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bounded downloads for opaque runtime model files.
 
 Installer code downloads a small number of ONNX assets that the runtime

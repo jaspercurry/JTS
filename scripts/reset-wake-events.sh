@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reset the wake-event corpus on the Pi, starting a clean week of
 # data collection. Designed for the triple-stream architecture
 # rollout: after the feature deploys, run this to wipe the

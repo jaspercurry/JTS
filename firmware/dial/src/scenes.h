@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Jasper Curry
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 // Screen / scene graph for the dial.
 //
 // State model (single source of truth lives in scenes.cpp):

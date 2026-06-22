@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Optional DAC-content FIFO source — the multi-room round-trip lane
 //! (Increment 3 of docs/HANDOFF-multiroom.md §2 "Canonical signal flow").
 //!

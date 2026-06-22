@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Timer regression scenarios.
 
 Pins the LLM-visible contract for the four timer tools — set, list,

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """A2DP-sink handler — Pi receives audio from a phone/tablet.
 
 Matches anything advertising A2DP Sink (0x110b) or A2DP Source (0x110a)

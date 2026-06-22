@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Multiroom grouping configuration — env-file loader.
 
 Persisted at /var/lib/jasper/grouping.env, mode 0644 (no secrets).
@@ -455,6 +459,22 @@ def is_active_member(cfg: GroupingConfig) -> bool:
     invalid config (nothing is streaming there, so it is NOT an active member).
     """
     return cfg.enabled and cfg.error is None
+
+
+def is_active_leader(cfg: GroupingConfig) -> bool:
+    """Is this speaker the ACTIVE LEADER of a running bond — an active member
+    whose role is leader? PURE; composed from :func:`is_active_member`,
+    mirroring :func:`follower_leader_addr`.
+
+    The ONE predicate behind every "this speaker plays its own channel
+    through the Snapcast round-trip, so it must compensate that delay"
+    decision. It is shared on purpose so the WRITER of the bonded-leader
+    AirPlay offset (:func:`jasper.multiroom.reconcile.airplay_grouping_env`)
+    and the OBSERVERS of that state (the ``/state`` snapshot + doctor check in
+    :mod:`jasper.multiroom.airplay_latency` / the grouping doctor checks)
+    can never disagree about whether the offset is armed — a divergence would
+    make the observability lie about what the speaker is actually doing."""
+    return is_active_member(cfg) and cfg.role == "leader"
 
 
 def follower_leader_addr(cfg: GroupingConfig) -> str | None:

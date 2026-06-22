@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /sources/ playback-source on/off toggles.
 //
 // The page server-renders four toggles (AirPlay, Bluetooth, Spotify Connect,

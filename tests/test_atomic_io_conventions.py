@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Ratchet: no NEW hand-rolled tempfile+rename writers outside atomic_io.
 
 ``jasper/atomic_io.py`` is the canonical atomic text-file writer (its

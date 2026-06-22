@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /ha/ (Home Assistant connection wizard) page behaviour.
 //
 // The page is server-rendered in one of three states (none / partial /

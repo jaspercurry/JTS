@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """AEC3 single-variable sweep campaign.
 
 Starts from V2FIXED as baseline. For each knob, sweeps values and

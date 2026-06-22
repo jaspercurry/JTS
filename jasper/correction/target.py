@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Target frequency-response curves for room correction.
 
 Built-in targets (returned as dB arrays evaluated on a frequency grid):

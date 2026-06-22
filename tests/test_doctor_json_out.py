@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """WS1 Phase 3b-2 — the root-fidelity /system/diagnostics capture path.
 
 jasper-doctor is a root tool, and jasper-control is now non-root — running the

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # shellcheck shell=bash
 # Shared header for laptop-side scripts. Source from a script with:
 #
@@ -300,4 +304,77 @@ classify_installed_vs_main() {
     fi
     echo "behind"
     return 0
+}
+
+# ── OOM-collateral parsing (deploy post-install surfacing) ───────────────
+#
+# Problem #2/#5 (docs/install-update-resilience-plan.md): on jts2 a source
+# build OOM-killed nginx AND jasper-voice, and the deploy tooling exited
+# silently — the collateral was only discoverable by SSHing in to read the
+# journal. deploy-to-pi.sh now scans the kernel log for the install window
+# and surfaces what was killed. These are the pure parsers behind that;
+# the ssh/journalctl I/O stays in deploy-to-pi.sh so they unit-test against
+# captured journal text.
+#
+# Two readings of one kernel OOM event:
+#   - the victim's cgroup (task_memcg=/system.slice/<unit>.service) names
+#     the systemd UNIT reliably — this is what we gate on, because a venv
+#     console-script daemon (jasper-voice) is execve'd as the interpreter,
+#     so its process `comm` reads `python3`, NOT its unit name;
+#   - the process comm (`Killed process N (comm)` / `task=comm`) is the
+#     human-friendly "what died" line, and is the only signal for build
+#     tools (cc1plus, cargo, …) which run in a transient ssh scope, not a
+#     named .service.
+
+# oom_killed_units <kernel_log_text>
+# Echo the distinct systemd unit names of OOM victims, newline-separated,
+# parsed from the cgroup-v2 task_memcg=/oom_memcg= fields. Empty when the
+# log carries no memcg field (older kernels) — callers fall back to comms.
+# pipefail-safe: no-match stages exit 0.
+oom_killed_units() {
+    local text="$1"
+    printf '%s\n' "$text" \
+        | grep -oE '(task_memcg|oom_memcg)=[^,[:space:]]+' 2>/dev/null \
+        | grep -oE '[A-Za-z0-9@._-]+\.service' 2>/dev/null \
+        | sort -u || true
+    return 0
+}
+
+# oom_killed_comms <kernel_log_text>
+# Echo the distinct victim process names (comm), newline-separated, from
+# both the classic `Killed process N (comm)` line and the structured
+# `,task=comm,` field. Human context only — see oom_killed_units for the
+# reliable production-daemon signal. pipefail-safe.
+oom_killed_comms() {
+    local text="$1"
+    {
+        printf '%s\n' "$text" \
+            | grep -oE 'Killed process [0-9]+ \([^)]+\)' 2>/dev/null \
+            | sed -E 's/.*\(([^)]+)\)/\1/' || true
+        printf '%s\n' "$text" \
+            | grep -oE '[, ]task=[^,]+' 2>/dev/null \
+            | sed -E 's/.*task=//' || true
+    } | sed '/^[[:space:]]*$/d' | sort -u
+    return 0
+}
+
+# oom_unit_is_production <unit_name>
+# Return 0 when the OOM-killed unit is a live production daemon whose death
+# during an update is a real incident (problem #2). Build steps run in a
+# transient ssh scope, not these units, so a build-tool OOM never matches.
+# This is the laptop-side analog of the on-Pi production-daemon set in
+# jasper/cli/doctor/_shared.py (`_RUNTIME_STATE_UNITS`); they can't share
+# (bash vs Python, laptop vs Pi). The `jasper-*` glob absorbs new jasper
+# daemons; only the non-jasper tail (nginx/shairport/librespot/…) is a
+# hand-maintained list that could drift — keep it in sync if that set grows.
+oom_unit_is_production() {
+    case "$1" in
+        jasper-*.service|nginx.service|shairport-sync.service|\
+        librespot.service|bluealsa-aplay.service|nqptp.service)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // dialog.js — accessible, styled stand-ins for the browser's native
 // confirm()/alert() popups, shared across the canonical (app.css) pages.
 //

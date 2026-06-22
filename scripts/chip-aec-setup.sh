@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Phase 1 setup for the chip-aec-experiment.
 # See docs/CHIP-AEC-EXPERIMENT.md for the full plan and revert procedure.
 #

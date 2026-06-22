@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Corpus test-mode crash-recovery for the wake-corpus recorder.
 
 Entering corpus test mode stops jasper-voice so the UDP ports are free

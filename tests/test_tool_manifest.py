@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Slice 3 — the derived manifest is no-loss over every shipped tool.
 
 `Tool.to_manifest_entry()` / `ToolRegistry.to_manifest()` build a stable,

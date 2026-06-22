@@ -147,6 +147,11 @@ the hard clip guard, so removing the old preamp cannot raise the output
 ceiling — at high volume a large boost clips at 0 dBFS rather than
 ducking the whole mix.
 
+Active-speaker baselines follow the same preference policy: the EQ bands
+are inserted before the split/crossover path and ride at unity. Explicit
+output trim or match-loudness attenuation still folds into
+`active_baseline_headroom`; preference boosts do not.
+
 **Room-correction boosts are the exception — they are headroom-compensated
 automatically.** The assertive correction strategy (`cuts_only=False`) can
 emit room PEQs with up to +3 dB total boost. Unlike preference boosts,
@@ -295,7 +300,9 @@ generates a precise prompt for an external assistant, and accepts a bounded
 JSON response with kind `jts_active_crossover_driver_research`. Importing
 that JSON fills the visible fields for operator review; saving persists the
 visible manual settings as first-class draft input and may also preserve the
-bounded research JSON as evidence. Hidden imported values never override
+bounded research JSON as evidence. Per-driver notes are capped at 2048
+characters so they stay a safety-relevant summary; full research reports
+belong outside the design draft. Hidden imported values never override
 user-edited visible settings, and the draft still does not apply filters,
 reload CamillaDSP, or authorize sound.
 Choosing a confirmed active driver in **Test each driver** calls the commission
@@ -693,8 +700,8 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-19 (config-preservation/refusal section updated for the
-graph-carrier dispatch — active-speaker baselines are now recognized and
-refused with a typed `reason_code` returned as a 200 `{status:"blocked"}`
-body, not a flat "custom config" 502; see HANDOFF-dsp-graph-carrier.md. Prior
-recheck 2026-06-18 after the active-speaker UI / commission-ramp work.)
+Last verified: 2026-06-22 (active-crossover driver-research note bounds
+checked against `jasper.active_speaker.design_draft` and the `/sound/` static
+module. Prior 2026-06-19 recheck covered config-preservation/refusal updates
+for graph-carrier dispatch; see HANDOFF-dsp-graph-carrier.md. Prior recheck
+2026-06-18 after the active-speaker UI / commission-ramp work.)

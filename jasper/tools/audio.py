@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Volume control voice tools.
 
 Routes through `VolumeCoordinator` so "set volume to 50%" pushes to

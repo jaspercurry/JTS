@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Voice provider configuration wizard at /voice/.
 
 UX: a single page with one card per supported provider (Gemini /

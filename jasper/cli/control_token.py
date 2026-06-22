@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-control-token — manage jasper-control's mutation token.
 
 JTS is a trusted-LAN appliance: ``jasper-control`` (``0.0.0.0:8780``) has

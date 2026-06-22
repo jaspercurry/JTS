@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the xAI Grok Voice adapter.
 
 Grok bills a flat ~$3/hour by connection uptime, but JTS's daily spend

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """measurement_window() coordinator: pause/resume contract.
 
 We can't run real systemctl or talk to a real voice_daemon UDS in a

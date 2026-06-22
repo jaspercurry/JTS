@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression checks for the static landing page.
 
 The main page is plain HTML/JS under deploy/index.html. These tests

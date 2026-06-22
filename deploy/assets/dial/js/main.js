@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /dial/ rotary-dial onboarding (setup page behaviour).
 //
 // The /dial/ setup page is fetch-driven: it polls GET ./scan every 2 s for

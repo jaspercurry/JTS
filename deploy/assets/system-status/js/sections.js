@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // sections.js — data → view builders, one per dashboard card. Each takes a
 // slice of the /system/snapshot and returns DOM (or, for the in-place audio
 // toggle, mutates its refs). Pure: no fetching, no polling — views.js owns
@@ -185,6 +189,9 @@ function summarizeAnomalies(s) {
   if (s.shairport_packet_drops) parts.push(s.shairport_packet_drops + " packet drops");
   if (s.shairport_sync_errors) parts.push(s.shairport_sync_errors + " sync corrections");
   if (s.shairport_underruns) parts.push(s.shairport_underruns + " shairport underruns");
+  // shairport_events buckets out-of-sequence / broken-pipe / offset-too-short
+  // (bonded-leader lip-sync) — surfaced here so those counts are not invisible.
+  if (s.shairport_events) parts.push(s.shairport_events + " shairport events");
   if (s.fanin_airplay_xruns) parts.push(s.fanin_airplay_xruns + " AirPlay fan-in xruns");
   if (s.fanin_output_xruns) parts.push(s.fanin_output_xruns + " output xruns");
   if (s.camilla_short_reads) parts.push(s.camilla_short_reads + " Camilla short reads");
@@ -253,9 +260,15 @@ export function airplayBody(hp, outputd, services) {
   const fanin = cur.fanin || {}, airplay = fanin.airplay || {}, output = fanin.output || {};
   const rate = airplay.frames_per_sec;
   const mpris = cur.mpris || {};
-  const now = (rate != null && rate >= 1000)
-    ? Math.round(rate).toLocaleString() + " frames/s"
-    : (mpris.playing ? "MPRIS playing · no fan-in frames" : "idle");
+  // The airplay lane free-runs at ~48 kHz of SILENCE whenever the pipeline
+  // is up, so the raw rate only means "streaming" while shairport is
+  // actually playing (mpris). At idle, show "idle" — not a phantom rate
+  // (the 2026-06-22 "why are there frames with nothing playing?" report).
+  const now = mpris.playing === true
+    ? ((rate != null && rate >= 1000)
+        ? Math.round(rate).toLocaleString() + " frames/s"
+        : "playing · no fan-in frames")
+    : (mpris.playing === false ? "idle" : "—");
 
   const fanText = fanin.available
     ? "input " + (fanin.input_buffer_frames || "—") +

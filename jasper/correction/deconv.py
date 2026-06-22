@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """FFT-based regularized deconvolution for room-impulse extraction.
 
 Given the captured signal y(t) ≈ (h * x)(t) where x is the played

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Reader for the librespot state file written by the --onevent hook.
 
 librespot (rust) doesn't expose an HTTP control surface like

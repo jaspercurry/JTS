@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Report documentation that a PR should consider based on changed files.
 
 The map is intentionally advisory: a hit means "scan this canonical doc

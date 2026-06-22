@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Flip the real-time voice provider the daemon uses. Supported
 # providers are read from the installed Python catalog on the Pi. They
 # all sit behind the same `LiveConnection` /

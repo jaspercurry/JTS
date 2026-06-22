@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the household credential (device-to-device control auth).
 
 The household secret is the M2M counterpart to the per-device control token:

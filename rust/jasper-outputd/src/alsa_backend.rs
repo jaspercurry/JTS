@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! ALSA transport for the outputd topology.
 //!
 //! The DAC playback stream is blocking and owns timing. Camilla's

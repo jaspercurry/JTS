@@ -1,9 +1,13 @@
 # Handoff: distributed active crossover (active speaker across a wireless pair)
 
-> **Status: design-of-record (ratified 2026-06-20; hardware-gated slices
-> pending).** Architecture, engine, slice plan, and v1 scope are ratified —
-> **v1 gates on the matched-pair leader**; on-device validation on `jts3`
-> remains. This is the canonical design + slice plan for running an active
+> **Status: design-of-record (ratified 2026-06-20; active-leader realization
+> ratified 2026-06-21; hardware-gated slices pending).** Architecture, engine,
+> slice plan, v1 scope, AND the Stage-B active-leader clock realization are
+> ratified — **v1 gates on the matched-pair leader**. Stage A (the active
+> *follower*, Slice 3) has **passed** on `jts3`; the active *leader* (Slice 5)
+> is ratified-not-built; the matched pair (Stage C) is hardware-blocked (needs a
+> 2nd commissioned active speaker). See "On-device status (2026-06-21)". This is
+> the canonical design + slice plan for running an active
 > speaker's **driver-domain crossover (Layer A)** across a wireless pair: a
 > **follower** (and, in v1, the leader's own drivers) runs Layer A locally,
 > while the **leader** owns the program domain (Layer B room correction +
@@ -30,6 +34,19 @@ Two JTS capabilities cannot be combined today, and the combination is
   across woofer/mid/tweeter and **band-limits each driver** (Layer A —
   [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)). Sending
   a full-range feed to a tweeter can destroy it.
+
+**Product requirement (why the active leader is v1, not flagship-only —
+confirmed by the owner 2026-06-21).** The household runs **multiple
+active-crossover speakers** and needs **full any-role flexibility**: any
+speaker, active or passive, must work as either **leader or follower**. So an
+*active speaker leading a pair* is a v1 requirement, not a "someday" feature —
+this was pressure-tested for over-engineering on 2026-06-21 and the active
+leader was confirmed *earned*, not gold-plating. The only thing genuinely
+hardware-gated is **validating** the two-active *matched pair* (Stage C, which
+needs a second commissioned active speaker); the active-leader mechanism
+(Stage B) does **not** block on that — it ships and validates against an
+active-leader + passive-follower rig (the buildable target). Build for that
+rig; validate the matched pair when the hardware exists.
 
 Today an active-crossover speaker **refuses to bond**, fail-closed:
 `apply_bonded_leader_config` routes the loaded config through the graph
@@ -319,6 +336,134 @@ two identical active speakers is the flagship case, so v1 is not "done" until
 the matched pair works, including the `jts3` RAM measurement and the TTS
 band-limiting decision.
 
+### Stage B — the ratified active-leader realization (2026-06-21)
+
+Gap 3 establishes *why* an active leader runs two CamillaDSP. This is the
+ratified *how* — the clock realization, the one constraint that must survive
+future "consolidation," the pair budget, and the build decision that stays open
+until the `jts3` measurement. (Decisions confirmed 2026-06-21: build the leader
+mixer; split the on-device gates music-first then TTS; reuse `emit_sound_config`
+for the camilla#1 bake plus a pipe-sink verifier exemption.)
+
+**One hard clock crossing, one rate loop.** Count *crossings*, not stages.
+`snapserver → DAC` is the only hard crossing (two real crystals, absorbed
+continuously). The leader's own TTS/cue is a **soft input** — no independent
+crystal producing it at a fixed wrong rate, just buffered and consumed at the
+DAC's pace — so it is *not* a crossing and needs *no* loop. The combined stream
+therefore has **exactly one** rate loop. Two configurations follow from this:
+
+- **Music-only (no leader TTS):** camilla#2 *is* the loop — it reads the
+  snapclient round-trip loopback with `enable_rate_adjust` ON, exactly the
+  **already-validated active-follower seam** (`snapclient → loopback → camilla
+  [rate_adjust] → DAC`). No mixer, no new clock topology — the leader's own
+  drivers are driven by the follower endpoint config verbatim, while camilla#1
+  bakes the wire.
+- **With leader TTS:** TTS must be summed **pre-crossover** (camilla#2 has a
+  single capture and cannot mix a second source), so a summing stage moves in
+  front of camilla#2 and **becomes the sole loop**; camilla#2 then runs
+  `enable_rate_adjust` **OFF** (a passive, DAC-clocked crossover/EQ block, the
+  ppm absorbed upstream by the one loop keeping its output buffer fed). Running
+  camilla#2's `rate_adjust` *and* the upstream matcher is two loops referenced
+  to the same terminal error through the shared buffer — the documented
+  `rate_adjust`+resampler oscillation (CamillaDSP #207); a "near-idle trim" only
+  widens the stable region, it does not survive the load/thermal/scheduler
+  swings a music+voice Pi throws. **One live loop. Not two.**
+
+> **CONSTRAINT — DO NOT MERGE THE TWO `jasper-outputd` INSTANCES.** The
+> summing+rate-match outputd (`outputd-summer`, **upstream** of the crossover)
+> and the DAC-owning, AEC-reference-publishing outputd (`outputd-final`,
+> **downstream** of the crossover) are two instances of the same binary that
+> **must stay separate**, and the reason is **invisible from their config** —
+> they read as obvious duplication. The reason: **inv-A requires the AEC
+> reference to equal the *post-crossover* final electrical** (TTS-inclusive), so
+> the box cancels *its own band-limited* voice instead of waking on / talking
+> over it. That pins the reference publisher downstream of camilla#2's crossover;
+> the summer must be upstream (it feeds camilla#2). Merge them and the published
+> reference becomes *pre-crossover* — AEC silently stops cancelling the speaker's
+> own TTS, with no error, no config diff, and no test failing unless one asserts
+> reference == post-crossover. If you are reading the config and about to
+> consolidate these two units, **this paragraph is why you must not.**
+
+**Topology (the with-TTS final form):**
+
+```
+renderers─fanin─music tap─► camilla#1 (:1234)  B/C+headroom, File→SNAPFIFO ─►snapserver─wire─►follower
+            (pair 7)                                   │
+                       leader snapclient (--host 127.0.0.1, --player file → FIFO)
+                                                       ▼
+       outputd-summer  ◄── TTS + commanded duck (soft inputs)   ──  THE ONE LOOP (content_bridge=rate_match) + sum
+                                                       │  (pipe; or loopback in the two-instance build)
+                                                       ▼
+       camilla#2 (:1235)  crossover, rate_adjust OFF  (passive, DAC-clocked by backpressure)
+                                                       │  (pair 5)
+                                                       ▼
+       outputd-final   DAC owner + AEC reference  (POST-crossover ⇒ inv-A, band-limited TTS in the reference)
+                                                       ▼  DAC (tweeter-safe)
+```
+
+**Summing, not sidechain.** JTS ducking is *commanded* (`PROGRAM_DUCK_ON/OFF`
+over the TTS socket, a ramped gain — `jasper-fanin`'s `program_duck_gain()`),
+not an auto-detecting sidechain compressor. So TTS *and* the duck fold into
+`outputd-summer` (the single matcher); there is no separate downstream ducker.
+The duck follows for free: point the leader's `JASPER_TTS_OUTPUTD_SOCKET` at
+`outputd-summer` and the in-band duck command rides the same socket.
+`JASPER_OUTPUTD_TTS_SOCKET` on `outputd-final` stays **unset** (its
+post-crossover 2-ch mixer is the full-range-to-tweeter hazard — the recorded
+latent guard hazard, now closed belt-and-suspenders in
+[#925](https://github.com/jaspercurry/JTS/pull/925) via
+`JASPER_OUTPUTD_ACTIVE_LANE`, so the mixer fails closed on an active sink even
+if the socket were set).
+
+**Pair budget — only DAC-side hops force loopbacks.** Pairs are consumed by
+components that demand a real ALSA device, not by stages; our own daemons
+pipe/FIFO for free. snapclient writes a **FIFO**; `outputd-summer` writes a
+**pipe** that camilla#2 **File-captures** (`type: File`/`Stdin` — which has *no*
+rate-adjust, exactly matching camilla#2's `rate_adjust` OFF; see
+[HANDOFF-multiroom.md](HANDOFF-multiroom.md) "File/pipe has no rate-adjust"). So
+the only forced loopbacks are pair 7 (`fanin→camilla#1`, dsnoop multi-reader)
+and pair 5 (`camilla#2→outputd-final`); renderers hold 0–4; **pair 6 is free**
+(consumed only if the summer writes a loopback — the two-instance build below).
+No 9th pair, no second `snd-aloop` card. *File-capture-frees-pair-6 is confirmed
+in principle; nail it empirically in the camilla#1/#2 emit work.*
+
+**camilla#1 program bake — verifier exemption (safe by construction).** camilla#1
+emits the program domain only (Layer B/C + headroom, **no** Layer A), `File` sink
+→ `SNAPFIFO`, `enable_rate_adjust: false`. It bypasses the graph carrier (as the
+follower arm does), and `classify_camilla_graph` gains one arm: **a flat program
+graph whose `devices.playback.type == File` is safe regardless of topology** — no
+DAC is attached, so no driver can be over-driven. Key it strictly on the playback
+*type* and reuse the existing `playback_is_pipe` parser
+([leader_config.py](../jasper/multiroom/leader_config.py)) so the exemption and
+the leader-pipe liveness check cannot disagree. The dangerous direction (a flat
+*Alsa*-sink graph reaching the DAC) is **not** exempted — the existing tweeter
+block still fires.
+
+**Sequencing — isolate the new clock topology from the 2-instance bring-up.**
+Because the music-only path *is* the validated follower seam, the on-device gates
+split so a failure has one candidate cause: (1) bring up the active leader on the
+**validated seam** (camilla#1 bake + camilla#2-as-follower-endpoint `rate_adjust`
+ON, no summer) — proves the two-instance setup + CPU/thermal + music sync on a
+proven clock; (2) swap in `outputd-summer` + camilla#2 `rate_adjust` **OFF**
+(still music-only) — isolates the **new** clock topology, gated by the
+pre-registered soak signatures below; (3) arm TTS + the commanded duck as a soft
+input into the now-proven summer, plus the follower fail-closed cue (same
+injection point). A failed soak in step 2 points unambiguously at the summer
+topology, not at the 2-instance setup or at TTS.
+
+**OPEN — the summer build (resolved by the `jts3` measurement, not here).** What
+`outputd-summer` is built from is **not settled**: (a) a **second
+`jasper-outputd` instance** — maximum reuse of the shipped
+`content_bridge=rate_match` + TTS mixer, reference-publish off; heavier (two
+outputd processes) and outputs a loopback, so it consumes pair 6 — vs (b) a
+**lean pipe-writing summer** reusing only the `content_bridge` rate-match logic —
+less RAM, frees pair 6 via camilla#2 File-capture, some new code. **Resolution
+mechanism:** the `jts3` RAM/CPU measurement inside the Slice-5 CPU/thermal gate,
+plus a soak A/B. **Order logic:** prefer **lean-first** if RAM is the binding
+constraint on the 1 GB Pi (it usually is, per the OOM history); fall back to the
+**two-instance** build if a from-scratch summer's rate-match quality does not
+match the shipped `content_bridge`. Do not encode either choice in config before
+that measurement.
+
 ## Subwoofer — two different "subs" (gaps 4 & 5)
 
 These are conflated in shorthand but are distinct designs:
@@ -451,7 +596,7 @@ slices land safest-first; each is independently mergeable.
 | **2** | ✅ | Driver-domain-only active emit variant + `classify_camilla_graph` arm + keystone round-trip test | no |
 | **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed silence + **cue injected into camilla's input, pre-Layer-A, follower-local** — Q2 step 5); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / chunksize≥1024 / no-SIGHUP-during-playback | **yes** (2 Pis) |
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
-| **5** | ✅ | Active **leader** (2nd light CamillaDSP; TTS band-limiting via **Option 3** — TTS into camilla#2's input loopback, content-duck follows, outputd TTS mixer **not** armed on the active leader; inv-B-through-Layer-A) — **the v1 gate**; **CPU/thermal** measured on `jts3` (active cooling assumed), TTS-latency ratified (Q2 spike) | yes |
+| **5** | ✅ | Active **leader** (2nd CamillaDSP; realization ratified 2026-06-21 — single rate loop = `outputd-summer`, camilla#2 `rate_adjust` **OFF**, the two `jasper-outputd` instances kept **separate** for inv-A, Option-3 TTS as a soft input, inv-B-through-Layer-A). Sequence: validated-seam music → swap-in-summer (soak gate) → arm TTS. **The v1 gate**; **CPU/thermal + summer-build pick** measured on `jts3` (active cooling). Details: "Stage B — the ratified active-leader realization" | yes |
 | **6a** | — | Local sub driver — unblock `baseline_subwoofer_not_supported` (solo-active) | mixed |
 | **6b** | — | Wireless sub member + bass management (receiver-side LP/HP, unified leader config) | yes |
 
@@ -548,6 +693,34 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   never in the content-DSP 409 block); invariant 6 is pinned by
   [`tests/test_sound_setup.py`](../tests/test_sound_setup.py). (Slice 3 owns
   the runtime audio path that makes the delegation promise true end-to-end.)
+
+- **Slice 5 (partial — leader camilla#1 bake + verifier exemption)** — the
+  HW-free emit + verifier half of the active *leader*, per "camilla#1 program
+  bake — verifier exemption" above. `emit_active_speaker_program_bake_config`
+  ([camilla_yaml.py](../jasper/active_speaker/camilla_yaml.py)) emits the
+  PROGRAM domain only (Layer B/C + headroom, `File`→`SNAPFIFO`,
+  `enable_rate_adjust: false`, **no** Layer A) by reusing
+  `jasper.sound.camilla_yaml.emit_sound_config`'s program assembly verbatim and
+  re-stamping a distinct DAC-less-bake `# Source:` marker
+  (`ACTIVE_PROGRAM_BAKE_SOURCE`). It bypasses the graph carrier exactly as the
+  follower arm does — the carrier fence `eq_on_active_bonded_member` (the
+  interactive `/sound` EQ path) is untouched. `classify_camilla_graph`
+  ([runtime_contract.py](../jasper/active_speaker/runtime_contract.py)) gains one
+  arm: a flat program graph whose `devices.playback.type == File` is allowed
+  regardless of topology (`GRAPH_PROGRAM_BAKE_PIPE`), keyed STRICTLY on the
+  File-pipe playback via the shared
+  [`playback_is_pipe`](../jasper/multiroom/leader_config.py) parser so the
+  exemption and the leader-pipe liveness check can't disagree. The dangerous
+  direction (a flat *Alsa*-sink graph reaching the DAC under a roleful topology)
+  stays blocked, and the pipe bake is **not** selectable as a solo speaker's own
+  graph (its File sink feeds the FIFO, not the DAC — `safe_graph_for_current_topology`
+  excludes it). Emitter↔verifier stay independent. **The reconciler wiring that
+  *runs* camilla#1 in this mode (the two-instance bring-up) landed HW-free as
+  Stage B Step 0** (see the B-Step-0 callout under "On-device status"); the
+  `outputd-summer` + the on-device gates remain later steps. Pinned by
+  [`tests/test_active_speaker_program_bake.py`](../tests/test_active_speaker_program_bake.py)
+  and the program-bake arms in
+  [`tests/test_active_speaker_runtime_contract.py`](../tests/test_active_speaker_runtime_contract.py).
 
 ## Multi-Pi validation (Slice 3+)
 
@@ -674,6 +847,104 @@ speakers, one as leader:
   pass the no-full-range re-proof; leader self-loop stall → inv-B falls
   back to direct fan-in **through Layer A** (cue + `/state`), never silent
   and never full-range.
+- **Leader clock-lock soak — pre-registered signatures (fixed BEFORE the run,
+  not rationalised after).** The single-loop realization (see "Stage B — the
+  ratified active-leader realization") must produce the *stationary* signature
+  over a ≥24 h `snd-aloop` soak once `outputd-summer` + camilla#2 `rate_adjust`
+  OFF are in the path. Log the **resampler ratio**, the **fill of every buffer**
+  at the crossing, and an **end-to-end latency probe** for the whole run. Three
+  signatures, fixed now so there is nothing to rationalise against later:
+  - **One clean loop (PASS):** ratio is a stationary random walk around the true
+    crystal offset (≈ constant few-ppm, bounded noise); fills stationary;
+    latency flat.
+  - **Two coupled loops (the rejected `rate_adjust`-ON-camilla#2 failure):**
+    low-frequency *hunting* in the ratio and/or a *beat* between two fills;
+    latency breathes.
+  - **No matcher (a transparent summer with no rate-match):** monotone fill
+    *ramp* → underrun; latency creeps ~1 ms/min.
+  This is the discriminator the seconds-scale inter-client diff cannot see, and
+  it is why the **≥24 h soak** (still owed from S0-sync) gates the clock-topology
+  step before it locks.
+
+### On-device status (2026-06-21) — Stage A passed, Stage B ratified-not-built, Stage C blocked
+
+**Stage A — the active *follower* (Slice 3) on-device validation: PASSED** (the
+"on-device validation owed" above is discharged for the follower). Rig: bond
+`jts.local` (passive leader) → `jts3` (active follower).
+- `/state.grouping.endpoint = active_crossover`; the **live** re-proof
+  (`classify_camilla_graph` on the running follower config) returned the
+  driver-domain baseline `allowed=True` — no full-range path to the tweeter.
+- **Clock-lock under real music:** camilla `:1234` `rate_adjust` spread
+  **8–23 ppm**, `buffer_level` steady ~**2040–2085 / 2048**, **0 xruns**,
+  `state = RUNNING`.
+- On-seat listen confirmed good; **self-recovery** verified — unbond → both boxes
+  return to clean solo, `jts3` re-proves its active baseline.
+- **Outstanding (telemetry accepted in lieu):** acoustic inter-speaker
+  **p99 < 5 ms** needs a mic placed *between* the two speakers (each onboard mic
+  hears only its own speaker). Owner accepted the telemetry de-risk; the acoustic
+  number is **not fabricated** and stays an explicit follow-up.
+
+**Stage B — the active *leader* (Slice 5): design ratified (see "Stage B — the
+ratified active-leader realization" above); the HW-free reconciler arm (Step 0)
+is BUILT, on-device bring-up (Steps 1-3) not yet run.** Rig will be
+`jts3` (active leader, real drivers) → `jts.local` (passive follower) — exercises
+the active-leader code on real drivers without a second active speaker. Gates are
+pre-registered above (CPU/thermal, the clock-lock soak signatures, band-limited-
+tweeter TTS, inv-B-through-Layer-A).
+
+> **B1 landed (2026-06-21) — dormant camilla#2 infrastructure only.** The
+> second CamillaDSP instance (camilla#2, the endpoint-crossover instance on
+> `:1235`) now ships as INERT infrastructure: `jasper-camilla-crossover.service`
+> + `jasper-camilla-crossover-guard` are installed, the `JASPER_CAMILLA2_*`
+> config fields + `crossover_controller()` exist, and install.sh seeds
+> `crossover-statefile.yml` through the active-speaker runtime contract. The
+> unit is **not boot-enabled and not yet wired into any reconciler** — a later
+> PR arms it only when the box is both leader and active. Two B1 safety
+> invariants are pinned by tests: camilla#2 carries **NO
+> `StartLimitAction=reboot`** (it fails closed to silence, never reboots the
+> household speaker, unlike the always-on camilla#1), and its crossover guard
+> repairs ONLY to the re-proven **driver-domain (Layer-A-intact) baseline,
+> never flat** (a flat crossover would send full-range to the tweeter). The
+> summer build, the `rate_adjust` OFF + summing topology, the CPU/thermal +
+> clock-lock soak, and the reconciler gating all remain unbuilt.
+
+> **Stage B Step 0 landed (2026-06-22) — HW-free reconciler arm, music-only seam
+> (no summer).** [`jasper.multiroom.active_leader_config`](../jasper/multiroom/active_leader_config.py)
+> + the grouping reconciler's active-leader branch
+> ([`reconcile.py`](../jasper/multiroom/reconcile.py)) now arm the two-instance
+> bring-up on bond: camilla#1 runs the program bake (File→`SNAPFIFO`,
+> `emit_active_speaker_program_bake_config`) and camilla#2 is armed (`systemctl
+> enable --now jasper-camilla-crossover.service`) on a `crossover-statefile.yml`
+> **RE-SEEDED with the re-proven driver-domain (Layer-A-intact) graph** — closing
+> the B1 seam (the install seed is flat; the crossover guard repairs a dead pipe,
+> not a flat statefile). snapclient writes the round-trip loopback (the leader is
+> its own receiver) and camilla#2 runs **`rate_adjust` ON — the already-validated
+> active-follower seam, no `outputd-summer`, no leader TTS yet**. Fail-closed: if
+> either graph can't be re-proven the box **refuses to bond and falls back to
+> solo active** (invariant 5, self-recovery); on unbond camilla#2 is disabled and
+> camilla#1 restored to the re-proven solo-active baseline (never passive, via the
+> shared `follower_config.restore_active_camilla_solo` ladder). The unbond
+> teardown is gated on the camilla#2 unit being enabled, so the active-FOLLOWER
+> path stays byte-identical. `/state.grouping.endpoint` surfaces
+> `mode=active_crossover, role=leader` (or `mode=blocked` + reason on fail-closed).
+> Pinned by [`tests/test_multiroom_active_leader_config.py`](../tests/test_multiroom_active_leader_config.py)
+> + the active-leader flow tests in
+> [`tests/test_multiroom_reconcile.py`](../tests/test_multiroom_reconcile.py).
+> **Owed (Steps 1-3, on-device):** the `jts3` bring-up + CPU/thermal gate (which
+> also resolves the open summer-build pick), then swap in `outputd-summer` +
+> camilla#2 `rate_adjust` OFF + the ≥24 h clock-lock soak, then arm TTS + the
+> follower fail-closed cue. One Layer-B caveat to verify on-device: the camilla#1
+> bake passes `room_peqs=[]` (an active baseline carries no Layer B today — only
+> Layer C/preference + headroom), so confirm the followers hear the same
+> correction the leader applies solo.
+
+**Stage C — matched pair (two identical active speakers, one as leader):
+BLOCKED.** Precondition is a **second commissioned active speaker with real
+drivers**; today only `jts3` qualifies (`jts5` is a dual-Apple-DAC bench box with
+*no* real drivers). Until that hardware exists, Stage C — both boxes holding
+p99 < 5 ms with the no-full-range re-proof, the leader's Option-3 TTS reaching its
+own tweeter band-limited, matched-pair sync + safety — is the remaining v1 gate
+after Stage B.
 
 ## Invariants → tests
 
@@ -799,15 +1070,18 @@ the solo path and does **not** silently drop TTS — it is the *bonded-member*
 mixer, armed only by the reconciler. **No fix needed; this is the foundation the
 leader case extends.**
 
-  > **Latent guard hazard (recorded for Slice 5; not fixed here — this is a
-  > spike).** The outputd TTS-mixer guard rejects `content_channels != 2`, but an
-  > active 2-way speaker can *also* be 2-channel (woofer/tweeter, like `jts3`
-  > today), so the guard would *permit* the outputd mixer on a 2-ch active sink —
+  > **Latent guard hazard — RESOLVED in [#925](https://github.com/jaspercurry/JTS/pull/925).**
+  > The outputd TTS-mixer guard rejected `content_channels != 2`, but an active
+  > 2-way speaker can *also* be 2-channel (woofer/tweeter, like `jts3` today), so
+  > the guard would have *permitted* the outputd mixer on a 2-ch active sink —
   > where mixing post-crossover is full-range to the tweeter (unsafe). Option 3
-  > sidesteps this by construction (the reconciler never arms
-  > `JASPER_OUTPUTD_TTS_SOCKET` on an active leader). Belt-and-suspenders
-  > follow-up: teach the guard that the invariant is "full-range stereo L/R
-  > sink," not "exactly 2 channels."
+  > already sidesteps this by construction (the reconciler never arms
+  > `JASPER_OUTPUTD_TTS_SOCKET` on an active leader); the belt-and-suspenders fix
+  > now also makes it structural: `JASPER_OUTPUTD_ACTIVE_LANE` (set by
+  > `jasper-audio-hardware-reconcile` on a 2-ch active sink) teaches outputd that
+  > the invariant is "full-range stereo L/R sink," not "exactly 2 channels," so
+  > the TTS mixer, the rate-match bridge, and the dac_content lane all fail closed
+  > on an active lane regardless of channel width.
 
 **2. Leader-only voice — RATIFIED.** A bonded follower is voice/AEC-parked
 (`JASPER_GROUPING_VOICE_PARK=1`, set for an active bonded follower in
@@ -886,18 +1160,26 @@ mix.
 
 ## Open questions
 
-1. **Active-leader CPU/thermal** (reframed from "RAM" per the 2026-06-20
-   external review) — RAM has big headroom; the binding limit is CPU jitter +
-   Pi 5 thermal throttling under a sustained two-CamillaDSP + server + client
-   load. Measure sustained CPU + temp + xruns on `jts3` (active cooling) before
-   Slice 5.
-2. **Active-leader TTS band-limiting** — ✅ **RESOLVED (2026-06-20, Q2 spike
-   ratified).** Leader-only voice ratified; leader TTS uses **Option 3** (into
-   camilla#2's input, through Layer A); follower fail-closed cue uses the same
-   injection point; measured deltas (Option 2 < 1 ms, Option 3 +85–125 ms, the
-   rejected round-trip +400 ms) and the conversational-latency budget are in
-   "Decision (ratified 2026-06-20)" above. Remaining for Slice 5 is the *build +
-   on-device validation* of the chosen mechanism, not the design choice.
+1. **Active-leader CPU/thermal + the summer-build pick** (reframed from "RAM"
+   per the 2026-06-20 external review) — RAM has big headroom; the binding limit
+   is CPU jitter + Pi 5 thermal throttling under a sustained two-CamillaDSP +
+   summer + server + client load. Measure sustained CPU + temp + xruns on `jts3`
+   (active cooling) before Slice 5. **The same measurement resolves the open
+   summer-build pick** (a second `jasper-outputd` instance vs a lean
+   pipe-writing summer — see "Stage B — the ratified active-leader realization");
+   lean-first unless RAM headroom or rate-match quality forces the two-instance
+   build.
+2. **Active-leader TTS band-limiting** — ✅ **RESOLVED (2026-06-20 design /
+   2026-06-21 realization).** Leader-only voice ratified; leader TTS uses
+   **Option 3** (summed pre-crossover into the single matcher, through Layer A);
+   follower fail-closed cue uses the same injection point; measured deltas
+   (Option 2 < 1 ms, Option 3 +85–125 ms, the rejected round-trip +400 ms) are in
+   "Decision (ratified 2026-06-20)". The 2026-06-21 realization pins the
+   *mechanism*: one rate loop (the summer), camilla#2 `rate_adjust` OFF, and the
+   **two-outputd-instance constraint** (summer upstream, reference publisher
+   downstream — never merge) in "Stage B — the ratified active-leader
+   realization". Remaining for Slice 5 is the *build + on-device validation*, not
+   any design choice.
 3. **Mixed-bond latency** — an active follower (camilla latency) + a dumb
    follower (bare ChannelPick) in one bond: confirm `--latency` nulls the
    delta to within the sync target.
@@ -908,11 +1190,18 @@ mix.
    target sub hardware; both reuse `channel_split.py`'s sub fragment.
    Decide in 6b — no need to lock it before the follower core ships.
 
-Last verified: 2026-06-21 (Q2 spike ratified — solo-active TTS confirmed
-tweeter-safe + in-reference on `jts3` (not a gap); leader-only voice ratified;
-leader TTS = Option 3 (into camilla#2's input, through Layer A); follower
-fail-closed cue uses the same injection point; latency measured on `jts3`
-(Option 2 < 1 ms, Option 3 +85–125 ms, rejected round-trip +400 ms). Prior
+Last verified: 2026-06-21 (Stage-B active-leader realization ratified — one rate
+loop = `outputd-summer`, camilla#2 `rate_adjust` OFF, the **two `jasper-outputd`
+instances kept separate for inv-A** [summer upstream / reference publisher
+downstream — never merge], TTS as a soft input, File-capture frees pair 6,
+camilla#1 program-bake verifier exemption keyed on `playback.type == File`,
+pre-registered clock-lock soak signatures, open summer-build pick resolved by the
+`jts3` measurement; see "Stage B — the ratified active-leader realization" +
+"On-device status (2026-06-21)". Stage A (active *follower*, Slice 3) PASSED on
+`jts3`/`jts.local`; Stage C matched pair hardware-blocked. Same-day: Q2 spike
+ratified — solo-active TTS confirmed tweeter-safe + in-reference on `jts3` (not a
+gap); leader-only voice ratified; leader TTS = Option 3; latency measured on
+`jts3` (Option 2 < 1 ms, Option 3 +85–125 ms, rejected round-trip +400 ms). Prior
 (2026-06-20): Slice 3 active-follower code landed — driver_domain apply seam,
 jasper.multiroom.follower_config, reconciler active-follower branch + readiness
 gate/fail-safe-to-solo, outputd fence pin, /state endpoint surface; on-device

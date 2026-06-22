@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Curated voice-provider model and voice catalog.
 
 The catalog powers the /voice setup wizard. It is intentionally not a
@@ -16,6 +20,38 @@ class ModelStatus(StrEnum):
     TESTED = "tested"
     FALLBACK = "fallback"
     EXPERIMENTAL = "experimental"
+
+
+class InterruptReconcile(StrEnum):
+    """How a provider reconciles its conversation history after JTS cuts
+    assistant playback short on a barge-in / local cancel.
+
+    This is the barge-in "pack" capability declaration: the robust-barge-in
+    packs (later PRs) branch on this kind, never on provider name, so adding
+    or swapping a provider needs no ``if provider == "openai"`` edit in pack
+    code — same self-similar-registry boundary the transit providers use.
+    The matching adapter methods are ``LiveTurn.cancel_response()`` and
+    ``LiveTurn.truncate_assistant_audio()`` in ``jasper/voice/session.py``.
+
+    Kinds (from the "Provider Interruption Contract" in
+    docs/HANDOFF-voice-providers.md):
+
+    - ``needs_client_truncate`` — the WebSocket transport keeps the full
+      generated assistant turn server-side, so the client must send
+      ``conversation.item.truncate`` at the heard boundary to align history
+      (OpenAI Realtime).
+    - ``server_self_truncates`` — the provider drops the unspoken tail on its
+      own when user activity interrupts (Gemini Live's
+      ``START_OF_ACTIVITY_INTERRUPTS``); there is no client truncate call to
+      synthesize.
+    - ``inherits`` — same wire shape as the provider this adapter subclasses;
+      resolved to the base provider's kind via ``interrupt_reconcile_base``
+      (Grok inherits OpenAI). Lets ``resolve_interrupt_reconcile()`` follow
+      the one real subclass edge instead of duplicating the base's choice.
+    """
+    NEEDS_CLIENT_TRUNCATE = "needs_client_truncate"
+    SERVER_SELF_TRUNCATES = "server_self_truncates"
+    INHERITS = "inherits"
 
 
 @dataclass(frozen=True)
@@ -70,6 +106,23 @@ class ProviderCatalogEntry:
     cost_hint: str
     models: tuple[ModelOption, ...]
     voices: tuple[VoiceOption, ...]
+    # Barge-in reconciliation kind — the "pack" capability declaration. The
+    # runtime dispatch is the daemon's getattr seam (jasper/voice/session.py),
+    # NOT a branch on this field; this is the declared, test-validated,
+    # observable contract (resolved once per daemon, surfaced on
+    # event=barge.detected / /state) — see ``InterruptReconcile`` and
+    # ``resolve_interrupt_reconcile``. REQUIRED,
+    # no default: a correctness-bearing capability is declared per provider,
+    # never silently defaulted (same no-silent-fallback stance the active-
+    # provider selection takes). A future provider that omits it fails loudly
+    # at construction instead of inheriting a wrong barge-in behaviour.
+    # tests/test_voice_catalog.py pins the known values; "Adding a fourth
+    # provider" in docs/HANDOFF-voice-providers.md lists it.
+    interrupt_reconcile: InterruptReconcile
+    # Only meaningful when ``interrupt_reconcile`` is ``INHERITS``: the
+    # provider id whose reconciliation kind this one adopts (its adapter
+    # subclasses that provider's adapter). Empty otherwise.
+    interrupt_reconcile_base: str = ""
     extras: tuple[ProviderExtra, ...] = ()
     # Pricing-editor metadata (consumed by jasper/web/voice_setup.py): the
     # public pricing page a human/chatbot reads — no provider API exposes
@@ -124,6 +177,9 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
             "audio_input_per_million_usd",
             "audio_output_per_million_usd",
         ),
+        # Gemini cuts the unspoken tail server-side on
+        # START_OF_ACTIVITY_INTERRUPTS; no client truncate call to make.
+        interrupt_reconcile=InterruptReconcile.SERVER_SELF_TRUNCATES,
     ),
     ProviderCatalogEntry(
         id="openai",
@@ -208,6 +264,9 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
             "text_output_per_million_usd",
             "cached_input_per_million_usd",
         ),
+        # WebSocket playback keeps the whole assistant turn server-side; the
+        # client must send conversation.item.truncate at the heard boundary.
+        interrupt_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
     ),
     ProviderCatalogEntry(
         id="grok",
@@ -239,6 +298,11 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         ),
         pricing_url="https://docs.x.ai/developers/pricing",
         pricing_buckets=("flat_per_hour_usd",),
+        # GrokRealtimeConnection subclasses the OpenAI adapter and reuses its
+        # conversation.item.truncate / response.cancel wire shape — inherit
+        # OpenAI's reconciliation kind rather than restating it.
+        interrupt_reconcile=InterruptReconcile.INHERITS,
+        interrupt_reconcile_base="openai",
     ),
 )
 
@@ -265,6 +329,33 @@ def _require_provider(provider_id: str) -> ProviderCatalogEntry:
     if provider is None:
         raise KeyError(f"unknown voice provider {provider_id!r}")
     return provider
+
+
+def resolve_interrupt_reconcile(provider_id: str) -> InterruptReconcile:
+    """Resolve a provider's concrete barge-in reconciliation kind.
+
+    Follows an ``INHERITS`` declaration through ``interrupt_reconcile_base``
+    so callers (the robust-barge-in packs) always get a concrete kind —
+    never ``INHERITS`` — without encoding the subclass relationship
+    themselves. Raises if an ``INHERITS`` entry has no resolvable base or the
+    inheritance chain cycles."""
+    provider = _require_provider(provider_id)
+    seen: set[str] = set()
+    while provider.interrupt_reconcile is InterruptReconcile.INHERITS:
+        if provider.id in seen:
+            raise RuntimeError(
+                f"voice provider {provider.id!r}: cyclic interrupt_reconcile "
+                "inheritance",
+            )
+        seen.add(provider.id)
+        base_id = provider.interrupt_reconcile_base
+        if not base_id:
+            raise RuntimeError(
+                f"voice provider {provider.id!r} declares INHERITS interrupt "
+                "reconciliation but sets no interrupt_reconcile_base",
+            )
+        provider = _require_provider(base_id)
+    return provider.interrupt_reconcile
 
 
 def default_model_id(provider_id: str) -> str:

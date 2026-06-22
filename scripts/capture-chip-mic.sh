@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Record a clip from the Pi's chip mic (XVF3800 ReSpeaker) at 16 kHz
 # mono — same format the AMOLED satellite firmware emits, so the two
 # can be compared apples-to-apples in Audacity / sox.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Per-session usage / cost accounting for the voice loop.
 
 The spend cap is a coarse circuit breaker, not a billing source of

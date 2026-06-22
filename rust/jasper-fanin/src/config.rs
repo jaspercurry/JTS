@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration loaded from `JASPER_FANIN_*` environment variables.
 //!
 //! Source of truth for defaults: `docs/HANDOFF-fan-in-daemon.md`

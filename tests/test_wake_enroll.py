@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.cli.wake_enroll's pure helpers.
 
 The interactive recording loop and systemctl orchestration are

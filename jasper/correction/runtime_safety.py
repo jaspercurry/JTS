@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Runtime graph safety helpers for room-correction entry points.
 
 Room correction owns measurement state, not speaker-role policy. When it needs

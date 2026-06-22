@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Inbound source-volume observers for the volume coordinator.
 
 When the user drags the Spotify app's slider or hits the BT volume

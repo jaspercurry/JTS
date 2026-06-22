@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Active-speaker crossover commissioning substrate.
 
 This package is intentionally pure Python and import-cheap. It models the
@@ -22,6 +26,7 @@ from .profile import (
     required_driver_roles,
 )
 from .camilla_yaml import (
+    ACTIVE_PROGRAM_BAKE_SOURCE,
     ACTIVE_STARTUP_CONFIG_NAME,
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
@@ -34,6 +39,7 @@ from .camilla_yaml import (
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
     emit_active_speaker_driver_domain_config,
+    emit_active_speaker_program_bake_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -222,10 +228,19 @@ from .driver_acoustics import (
 from .commissioning_capture import (
     DRIVER_VERDICT_TO_OUTCOME,
     SUMMED_VERDICT_TO_OUTCOME,
+    build_crossover_alignment_proposal,
     driver_passband_hz,
     primary_crossover_fc_hz,
     record_driver_acoustic_capture,
     record_summed_acoustic_capture,
+)
+from .crossover_alignment import (
+    MAGNITUDE_ONLY,
+    PHASE_AWARE,
+    CrossoverAlignmentProposal,
+    ResolvedMode,
+    propose_crossover_alignment,
+    resolve_measurement_mode,
 )
 
 __all__ = [
@@ -253,6 +268,13 @@ __all__ = [
     "primary_crossover_fc_hz",
     "record_driver_acoustic_capture",
     "record_summed_acoustic_capture",
+    "build_crossover_alignment_proposal",
+    "CrossoverAlignmentProposal",
+    "ResolvedMode",
+    "MAGNITUDE_ONLY",
+    "PHASE_AWARE",
+    "propose_crossover_alignment",
+    "resolve_measurement_mode",
     "CALIBRATION_LEVEL_KIND",
     "COMMISSION_RAMP_MAX_LEVEL_DBFS",
     "DEFAULT_PRESET_RESOURCE",
@@ -292,6 +314,7 @@ __all__ = [
     "TONE_PLAYBACK_RESULT_KIND",
     "AUTO_LEVEL_DECISION_KIND",
     "ACTIVE_PLAYBACK_DEVICE_ENV",
+    "ACTIVE_PROGRAM_BAKE_SOURCE",
     "AplayTonePlaybackBackend",
     "ActiveChannelMap",
     "ActiveSpeakerConfigError",
@@ -360,6 +383,7 @@ __all__ = [
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
     "emit_active_speaker_driver_domain_config",
+    "emit_active_speaker_program_bake_config",
     "channel_select_mixer_name",
     "load_active_speaker_preset",
     "load_design_draft",

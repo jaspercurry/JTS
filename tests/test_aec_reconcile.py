@@ -1,7 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
+import json
 import os
+import socket
 import subprocess
+import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -52,6 +61,13 @@ def _run_reconcile(
                 tmp_path / "grouping-voice.env"
             ),
             "JASPER_ASOUND_ROOT": str(tmp_path / "asound"),
+            # Redirect the voice-input-absent marker into tmp so the no-mic
+            # paths (mark_voice_input_absent) never touch the real
+            # /var/lib/jasper on the test host. Per-test overrides via
+            # extra_env still win (the marker cases assert on this path).
+            "JASPER_VOICE_INPUT_ABSENT_MARKER": str(
+                tmp_path / "voice-input-absent"
+            ),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
             # Hermetic: always source the repo's shared env-file lib, never
@@ -115,6 +131,79 @@ def _write_card(tmp_path: Path, card: str = "Array", channels: int = 6) -> None:
 def _systemctl_log(tmp_path: Path) -> str:
     log = tmp_path / "systemctl.log"
     return log.read_text() if log.exists() else ""
+
+
+def _outputd_status_payload(
+    *,
+    verdict: str,
+    status: str = "locked",
+    observe: bool = True,
+    writer_enabled: bool = True,
+) -> dict:
+    return {
+        "reference_outputs": {
+            "chip_ref_pcm": "plughw:CARD=Array,DEV=0",
+            "chip_ref_writer": {"enabled": writer_enabled},
+            "aec_clock": {
+                "chip_ref_sro_ppm": 3.2 if verdict == "coherent" else 42.0,
+                "sro_estimator_status": status,
+                "verdict": verdict,
+                "verdict_reason": f"{verdict}/{status}",
+                "observe": observe,
+            },
+        },
+    }
+
+
+@contextmanager
+def _fake_outputd_status_socket(payload: dict):
+    """Serve one small STATUS JSON fixture over a short-path UDS."""
+
+    with tempfile.TemporaryDirectory(prefix="jts-aec-", dir="/tmp") as root:
+        socket_path = str(Path(root) / "outputd.sock")
+        ready = threading.Event()
+        stop = threading.Event()
+        errors: list[BaseException] = []
+
+        def serve() -> None:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                    srv.bind(socket_path)
+                    srv.listen()
+                    srv.settimeout(0.1)
+                    ready.set()
+                    while not stop.is_set():
+                        try:
+                            conn, _ = srv.accept()
+                        except socket.timeout:
+                            continue
+                        with conn:
+                            try:
+                                conn.recv(1024)
+                            except OSError:
+                                pass
+                            conn.sendall(json.dumps(payload).encode("utf-8"))
+            except OSError as exc:
+                errors.append(exc)
+                ready.set()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        assert ready.wait(2.0), "fake outputd STATUS socket did not start"
+        if errors:
+            raise errors[0]
+        try:
+            yield socket_path
+        finally:
+            stop.set()
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(0.1)
+                    client.connect(socket_path)
+                    client.sendall(b"STATUS\n")
+            except OSError:
+                pass
+            thread.join(2.0)
 
 
 def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None:
@@ -469,6 +558,102 @@ def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
+
+
+def test_explicit_chip_profile_uses_hifiberry_when_outputd_verdict_is_coherent(
+    tmp_path: Path,
+) -> None:
+    """JTS3 path: HiFiBerry is not statically blessed, but a locked
+    outputd aec_clock=coherent verdict is calibration evidence and permits
+    production chip-AEC."""
+    _write_env(
+        tmp_path,
+        "udp:9876",
+        extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n",
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec")
+    _write_card(tmp_path, channels=6)
+
+    with _fake_outputd_status_socket(
+        _outputd_status_payload(verdict="coherent", status="locked"),
+    ) as socket_path:
+        result = _run_reconcile(
+            tmp_path,
+            "--reason",
+            "test",
+            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": socket_path},
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert "outputd aec_clock permits chip-AEC" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
+
+
+def test_auto_profile_uses_outputd_coherent_verdict_for_non_apple_dac(
+    tmp_path: Path,
+) -> None:
+    """Auto also promotes non-Apple DACs when outputd has locked a coherent
+    chip-ref clock verdict."""
+    _write_env(
+        tmp_path,
+        "udp:9876",
+        extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n",
+    )
+    _write_card(tmp_path, channels=6)
+
+    with _fake_outputd_status_socket(
+        _outputd_status_payload(verdict="coherent", status="locked"),
+    ) as socket_path:
+        result = _run_reconcile(
+            tmp_path,
+            "--reason",
+            "test",
+            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": socket_path},
+        )
+
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+
+
+def test_explicit_chip_profile_still_falls_back_for_compensable_verdict(
+    tmp_path: Path,
+) -> None:
+    """A measured but drifting DAC needs the deferred rate-match layer, so
+    `compensable` remains on the software-AEC3 floor."""
+    _write_env(
+        tmp_path,
+        "udp:9876",
+        extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n",
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec")
+    _write_card(tmp_path, channels=6)
+
+    with _fake_outputd_status_socket(
+        _outputd_status_payload(verdict="compensable", status="locked"),
+    ) as socket_path:
+        result = _run_reconcile(
+            tmp_path,
+            "--reason",
+            "test",
+            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": socket_path},
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert "verdict=compensable" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
 
 
 @pytest.mark.parametrize(
@@ -1008,3 +1193,101 @@ def test_reconcile_unparks_voice_when_flag_absent(tmp_path: Path) -> None:
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-voice.service" in commands
     assert "enable jasper-voice.service" in commands
+
+
+# --- microphone-presence marker (docs/HANDOFF-hotplug-resilience.md) ----
+# The reconciler is the single writer of the persistent NEGATIVE marker
+# jasper-voice.service gates on (ConditionPathExists=!<marker>). These pin
+# both convergence directions: marker CREATED whenever voice is parked for
+# no mic, REMOVED whenever a mic is present (incl. the custom-mic path,
+# which must never be gated by us). _run_reconcile already redirects the
+# marker into tmp_path (see its env setup), so these just locate the file.
+
+def _marker(tmp_path: Path) -> Path:
+    return tmp_path / "voice-input-absent"
+
+
+def test_reconcile_marks_voice_input_absent_when_no_mic(tmp_path: Path) -> None:
+    # No card present at all + a stale udp device -> the no-candidate-mic
+    # park path. Voice must be gated off so it can't boot-start and
+    # crash-loop into StartLimitAction=reboot.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _marker(tmp_path).exists(), result.stderr
+    assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_reconcile_marks_voice_input_absent_when_aec_disabled_no_mic(
+    tmp_path: Path,
+) -> None:
+    # The AEC-disabled branch has its own no-mic stop path; it must mark too.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path, mode="disabled")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _marker(tmp_path).exists(), result.stderr
+
+
+def test_reconcile_clears_marker_when_6ch_present(tmp_path: Path) -> None:
+    # A stale marker (box previously had no mic) must be removed the moment
+    # the 6-channel Array reappears, so the ConditionPathExists gate opens.
+    _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    _marker(tmp_path).write_text("reason=stale\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not _marker(tmp_path).exists(), result.stderr
+    assert "restart jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_reconcile_clears_marker_when_direct_mic_present(tmp_path: Path) -> None:
+    # 2-channel Array -> direct-mic (no AEC) path still (re)starts voice, so
+    # the marker must clear here too.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=2)
+    _marker(tmp_path).write_text("reason=stale\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not _marker(tmp_path).exists(), result.stderr
+    assert "restart jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_reconcile_clears_marker_for_custom_mic(tmp_path: Path) -> None:
+    # Custom JASPER_MIC_DEVICE: the reconciler leaves voice config alone and
+    # must NOT gate the operator's device — clear any stale marker so voice
+    # can start and try it (the daemon's exit-66 park is the safety net).
+    _write_env(tmp_path, "hw:9,0")  # not an owned value
+    _write_mode(tmp_path)
+    _marker(tmp_path).write_text("reason=stale\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "leaving voice config untouched" in result.stderr
+    assert not _marker(tmp_path).exists(), result.stderr
+
+
+def test_reconcile_check_only_does_not_touch_marker(tmp_path: Path) -> None:
+    # --check-aec-ready is the bridge's ExecCondition: a pure read, it must
+    # never create or remove the marker.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _marker(tmp_path).write_text("reason=preexisting\n")
+
+    result = _run_reconcile(tmp_path, "--check-aec-ready")
+
+    # No card -> not aec-ready -> exit 1, but the marker is untouched.
+    assert result.returncode == 1
+    assert _marker(tmp_path).read_text() == "reason=preexisting\n"

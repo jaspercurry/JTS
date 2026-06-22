@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only state snapshot for `/state.resilience.wifi_guardian`.
 
 The WiFi profile guardian is a `Type=oneshot` systemd unit that runs at

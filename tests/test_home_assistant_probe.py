@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.home_assistant.probe_status and the doctor check.
 
 probe_status is the one-shot reachability + version helper consumed by

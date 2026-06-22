@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the control-token core + CLI.
 
 The token gates jasper-control's high-impact mutations behind an X-JTS-Token

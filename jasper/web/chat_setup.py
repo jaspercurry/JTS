@@ -1,9 +1,8 @@
-"""Conversation-history dashboard at /chat/.
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
 
-Read-only page shell plus JSON data endpoint for captured voice turns.
-The writer is jasper-voice; this socket-activated web process opens the
-SQLite store read-only and never creates or mutates the database.
-"""
+"""Conversation-history dashboard and household controls at /chat/."""
 from __future__ import annotations
 
 import argparse
@@ -16,11 +15,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from ..conversation_history import ConversationStore, read_settings
+from ..conversation_history import ConversationStore, read_settings, write_settings
 from ._common import (
     begin_request,
     canonical_page,
+    guard_mutating_request,
     guard_read_request,
+    reject_csrf,
     send_html_response,
     send_proxy_json,
 )
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+MAX_JSON_BYTES = 4096
 IDLE_SHUTDOWN_SEC = 1800.0
 
 
@@ -73,7 +75,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             # nginx strips the /chat/ prefix so we see "/" and "/data.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
@@ -89,6 +91,38 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 self._send_data(url.query)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
+
+        def do_POST(self) -> None:
+            url = urllib.parse.urlparse(self.path)
+            path = url.path.rstrip("/") or "/"
+            if path not in ("/capture", "/clear"):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not guard_mutating_request(self):
+                reject_csrf(self)
+                return
+            if path == "/capture":
+                self._set_capture()
+                return
+            if path == "/clear":
+                self._clear_history()
+                return
+
+        def _read_json(self) -> tuple[dict[str, Any] | None, str | None]:
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+            except ValueError:
+                return None, "invalid content length"
+            if length < 0 or length > MAX_JSON_BYTES:
+                return None, "request too large"
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                parsed = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None, "invalid JSON body"
+            if not isinstance(parsed, dict):
+                return None, "JSON body must be an object"
+            return parsed, None
 
         def _send_data(self, raw_query: str) -> None:
             query = urllib.parse.parse_qs(raw_query, keep_blank_values=True)
@@ -109,6 +143,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             )
             try:
                 stats = store.stats()
+                available = store.available and stats is not None
                 turns = (
                     store.recent(limit, since_ts=since)
                     if stats is not None
@@ -116,14 +151,100 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 )
                 payload = {
                     "schema_version": 1,
-                    "available": store.available and stats is not None,
+                    "capture_enabled": settings.capture_enabled,
+                    "available": available,
                     "limit": limit,
                     "since": since,
+                    "stats": (
+                        asdict(stats)
+                        if stats is not None
+                        else None
+                    ),
+                    "retention": settings.retention,
                     "turns": [asdict(turn) for turn in turns],
                 }
             finally:
                 store.close()
             _json_response(self, payload)
+
+        def _set_capture(self) -> None:
+            body, err = self._read_json()
+            if err is not None:
+                _json_response(self, {"error": err}, status=HTTPStatus.BAD_REQUEST)
+                return
+            assert body is not None
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                _json_response(
+                    self,
+                    {"error": "enabled must be true or false"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            stats = None
+            if enabled:
+                candidate = read_settings()
+                store = ConversationStore(candidate.db_path)
+                try:
+                    stats = store.stats()
+                    if not store.available or stats is None:
+                        _json_response(
+                            self,
+                            {
+                                "error": (
+                                    "conversation-history store could not be "
+                                    "initialized"
+                                ),
+                            },
+                            status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                        return
+                finally:
+                    store.close()
+            try:
+                settings = write_settings(capture_enabled=enabled)
+            except (OSError, ValueError) as e:
+                logger.exception("could not write conversation-history settings")
+                _json_response(
+                    self,
+                    {"error": f"could not save settings: {e}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            _json_response(
+                self,
+                {
+                    "ok": True,
+                    "capture_enabled": settings.capture_enabled,
+                    "stats": asdict(stats) if stats is not None else None,
+                    "retention": settings.retention,
+                },
+            )
+
+        def _clear_history(self) -> None:
+            settings = read_settings()
+            store = ConversationStore(settings.db_path)
+            try:
+                if not store.available:
+                    _json_response(
+                        self,
+                        {"error": "conversation-history store is unavailable"},
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                    return
+                deleted = store.clear()
+                stats = store.stats()
+            finally:
+                store.close()
+            _json_response(
+                self,
+                {
+                    "ok": True,
+                    "deleted": deleted,
+                    "capture_enabled": settings.capture_enabled,
+                    "stats": asdict(stats) if stats is not None else None,
+                },
+            )
 
     return Handler
 

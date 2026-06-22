@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test scripts/_lib.sh `verify_or_record_peer_id` — the deploy-target
 identity guard.
 

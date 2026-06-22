@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Emit commissioning-safe CamillaDSP templates for active speakers.
 
 This module is intentionally side-effect-light: it can build or write a
@@ -24,7 +28,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
     FilterSpec,
-    total_positive_boost_db,
+    PeqFilter,
 )
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
@@ -36,6 +40,8 @@ from jasper.camilla_emit import (
     mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.sound.camilla_yaml import emit_sound_config
+from jasper.sound.profile import SoundProfile
 
 from .profile import (
     ADJACENT_PAIRS_BY_WAY,
@@ -55,11 +61,25 @@ STARTUP_HEADROOM_DB = 40.0
 COMMISSIONING_HEADROOM_DB = 0.0
 STARTUP_MUTE_GAIN_DB = -120.0
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
-BASELINE_HEADROOM_DB = 12.0
+BASELINE_HEADROOM_DB = 0.0
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     "jasper_out",
+)
+
+# The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
+# It emits ONLY the program domain (Layer B room correction + Layer C preference
+# EQ + program headroom) to a ``File`` sink writing the snapserver pipe — NO
+# Layer A (no 2->N split, no per-driver crossover/delay/gain/limiter; those live
+# in camilla#2). This distinct ``# Source:`` marker is what the runtime verifier
+# keys on to recognise the bake as a DAC-less program graph; the *safety* of the
+# exemption keys on ``devices.playback.type == File`` (no DAC attached, so no
+# driver can be over-driven), not on this string. Stamped over emit_sound_config's
+# own marker so the bake stays distinguishable from the solo /sound + correction
+# program graphs that share emit_sound_config's program assembly.
+ACTIVE_PROGRAM_BAKE_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
 )
 
 # Driver-domain-only (active follower) emit. A follower picks ONE inter-speaker
@@ -445,27 +465,20 @@ def _emit_baseline_filter_definitions(
     output_trim_db: float = 0.0,
 ) -> str:
     lines: list[str] = []
-    # Program-domain headroom for the pre-split preference EQ (Layer C). The
-    # preference filters sit DOWNSTREAM of this gain (see _emit_baseline_pipeline),
-    # so folding their worst-case additive boost into this single attenuation
-    # guarantees the corrected program stays <= unity at the split input: a
-    # +B dB band lands at -(headroom) regardless of B. This reuses the exact
-    # mechanism emit_sound_config uses for room boosts (total_positive_boost_db).
-    # The fold keeps the emitted gain <= -boost_sum, so the runtime classifier's
-    # "headroom present and non-positive" baseline invariant holds by construction.
-    #
-    # output_trim_db (the household's manual headroom + loudness-match attenuation)
-    # folds into the SAME gain so the active path honours it exactly like the
-    # stereo emit_sound_config path. Like the stereo path it applies ONLY when the
-    # profile actually has EQ: a flat profile can't clip from EQ and plays at
-    # unity, so a configured trim is ignored (keeps the no-EQ baseline
-    # byte-identical). A trim is a (non-negative) attenuation, clamped here.
-    boost_db = total_positive_boost_db(preference_filters)
+    # Program-domain headroom for the pre-split preference EQ (Layer C). This
+    # gain is the active graph's single place for explicit common attenuation:
+    # baseline headroom, plus the household's manual headroom / loudness-match
+    # output_trim_db when a profile has EQ. Preference boosts themselves ride at
+    # unity, matching the stereo /sound policy: boosts boost. Driver safety comes
+    # from placement (pre-split, upstream of crossover/limiters/tweeter HP) and
+    # the 0 dB volume ceiling, not from an automatic boost-derived preamp.
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
+    total_headroom_db = baseline_headroom_db + trim_db
+    headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(
             "active_baseline_headroom",
-            -(baseline_headroom_db + boost_db + trim_db),
+            headroom_gain_db,
         )
     )
     lines.extend(_emit_baseline_driver_definitions(
@@ -990,18 +1003,18 @@ def emit_active_speaker_baseline_config(
     """Build an accepted active-speaker baseline candidate.
 
     Unlike the startup template, this YAML is not muted. It still preserves
-    the JTS 0 dB volume ceiling, includes conservative headroom, keeps
-    per-driver limiters, and refuses positive per-driver correction gain.
+    the JTS 0 dB volume ceiling, keeps per-driver limiters, and refuses
+    positive per-driver correction gain.
     Callers own the acceptance evidence and explicit CamillaDSP apply step.
 
     ``preference_filters`` (Layer C) is the program-domain preference EQ band
     list — the same ``FilterSpec`` objects ``build_sound_filters`` produces for
     the stereo emitter. When non-empty, each ``.active()`` band is emitted on
-    the program channels [0, 1] strictly *before* the split mixer, and its
-    worst-case additive boost is folded into ``active_baseline_headroom`` so the
-    corrected program cannot exceed unity at the split input (see the placement
-    + headroom rationale in ``docs/HANDOFF-dsp-graph-carrier.md``). The empty
-    default keeps every existing caller byte-identical.
+    the program channels [0, 1] strictly *before* the split mixer. Preference
+    boosts ride at unity, matching ``emit_sound_config``: the active graph keeps
+    them safe by placing them upstream of every crossover/limiter/tweeter HP and
+    preserving the 0 dB volume ceiling. The empty default keeps every existing
+    caller byte-identical.
 
     ``output_trim_db`` is the household's manual headroom + loudness-match
     attenuation (``jasper.sound.settings.output_trim_db``), folded into the same
@@ -1319,6 +1332,118 @@ pipeline:
             preset.way_count,
             output_count,
             program_channel,
+        )
+    return yaml
+
+
+# The exact ``# Source:`` line emit_sound_config stamps. We rewrite it to the
+# bake's own marker, so the substitution is a 1:1 swap; assert it fired rather
+# than silently shipping the wrong provenance if that emitter's header changes.
+_SOUND_SOURCE_LINE = "# Source: jasper.sound.camilla_yaml.emit_sound_config"
+_PROGRAM_BAKE_SOURCE_LINE = f"# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}"
+
+
+def emit_active_speaker_program_bake_config(
+    profile: SoundProfile,
+    *,
+    room_peqs: list[PeqFilter] | None = None,
+    output_trim_db: float = 0.0,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int = DEFAULT_CHUNKSIZE,
+    target_level: int = DEFAULT_TARGET_LEVEL,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
+    out_path: str | Path | None = None,
+    profile_id: str | None = None,
+) -> str:
+    """Build the active-LEADER's **program-domain-only** camilla#1 bake.
+
+    Stage B (``docs/HANDOFF-distributed-active.md``, "camilla#1 program bake")
+    splits an active *leader*'s DSP across two CamillaDSP instances. This emits
+    the **program** half (camilla#1): Layer B room correction + Layer C
+    preference EQ + program headroom, written to a ``File`` sink feeding the
+    snapserver pipe (``SNAPFIFO``) so the follower(s) receive a corrected stereo
+    wire. The **driver** half — the ``2->N`` split and every per-driver
+    crossover / delay / gain / soft-clip limiter (Layer A) — lives in camilla#2
+    and is **deliberately absent here**.
+
+    It is a *separate* emit that **bypasses the graph carrier** (exactly like the
+    follower's :func:`emit_active_speaker_driver_domain_config`): the carrier
+    fence ``eq_on_active_bonded_member`` guards the interactive ``/sound`` EQ
+    apply and is untouched by this path. The program assembly is
+    :func:`jasper.sound.camilla_yaml.emit_sound_config`'s — reused verbatim with
+    a ``File``/pipe sink and ``enable_rate_adjust=False`` (a ``File`` backend has
+    no output clock for rate_adjust to steer; on the synced active chain the one
+    rate-tracker is upstream) — so the baked correction is byte-for-byte the
+    program graph the speaker already ships. Only the ``# Source:`` provenance
+    marker differs: this config carries :data:`ACTIVE_PROGRAM_BAKE_SOURCE` so the
+    runtime verifier recognises it as a DAC-less program bake.
+
+    Safety is *by construction*: the playback is a pipe, not a DAC, so no driver
+    can be over-driven and the full-range-to-tweeter invariant cannot be
+    violated regardless of the saved speaker topology. The runtime verifier's
+    matching exemption (:func:`jasper.active_speaker.runtime_contract.classify_camilla_graph`)
+    keys on ``devices.playback.type == File`` — never on this marker — so an
+    ALSA-sink program graph reaching the DAC stays blocked under a roleful
+    topology.
+
+    This emit does NOT load or reload CamillaDSP, and it does NOT wire camilla#1
+    into the reconciler — that is a later Stage-B slice. ``out_path`` writes the
+    YAML group-readably (0640) for callers that stage it; the default returns the
+    text only.
+    """
+
+    # Import the snapserver pipe target lazily: it is the canonical camilla#1
+    # sink and lives in the grouping reconciler (jasper.multiroom.reconcile),
+    # whose module-load chain this read-heavy emitter must not pull eagerly. The
+    # sibling jasper.multiroom.leader_config uses the same lazy-import idiom for
+    # exactly this constant.
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    program_yaml = emit_sound_config(
+        profile,
+        room_peqs=room_peqs,
+        capture_device=capture_device,
+        capture_format=capture_format,
+        sample_rate=sample_rate,
+        chunksize=chunksize,
+        target_level=target_level,
+        volume_limit_db=volume_limit_db,
+        profile_id=profile_id,
+        output_trim_db=output_trim_db,
+        # The one rate-tracker on the synced active chain is upstream of
+        # camilla#1; a File sink has no output clock to steer anyway. The
+        # emit_sound_config pipe-sink guard enforces this pairing.
+        enable_rate_adjust=False,
+        playback_pipe_path=SNAPFIFO,
+    )
+
+    # Re-stamp provenance so the bake is distinguishable from the solo /sound +
+    # correction program graphs that share emit_sound_config's assembly. Fail
+    # loud if the upstream marker ever changes shape (a silent miss would ship a
+    # bake the verifier can't route to the flat program path).
+    if _SOUND_SOURCE_LINE not in program_yaml:
+        raise ActiveSpeakerConfigError(
+            "program bake could not re-stamp the source marker: "
+            "emit_sound_config no longer emits the expected '# Source:' line"
+        )
+    yaml = program_yaml.replace(_SOUND_SOURCE_LINE, _PROGRAM_BAKE_SOURCE_LINE, 1)
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+        logger.info(
+            "event=active_speaker_program_bake_config_written path=%s pipe=%s "
+            "room_peqs=%d output_trim=%.3f",
+            out_path,
+            SNAPFIFO,
+            len(room_peqs or []),
+            output_trim_db,
         )
     return yaml
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper-doctor's usbsink checks.
 
 The checks are hardware-side (systemctl, /proc/asound,

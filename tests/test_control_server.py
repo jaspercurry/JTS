@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Route-level tests for jasper.control.server.
 
 Spins the ThreadingHTTPServer on a random port. The volume routes go
@@ -1830,6 +1834,10 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     provider_file = tmp_path / "voice_provider.env"
     provider_file.write_text(
         "JASPER_VOICE_PROVIDER=openai\nJASPER_OPENAI_MODEL=gpt-realtime-2\n"
+        # Per-provider barge-in flag lives in the same wizard-owned SSOT
+        # file; /state must read it fresh (jasper-control isn't restarted
+        # on a toggle). openai=on, gemini absent — proves per-provider.
+        "JASPER_BARGE_IN_OPENAI=1\n"
     )
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")  # stale env, must be ignored
@@ -1856,12 +1864,22 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     # tool_packs is the same shape of curated pull-through (jasper-doctor's
     # check_tool_packs cross-checks it against the static registry).
     assert "tool_packs" in body["voice"]
+    # barge_in.enabled is read FRESH per active provider (openai) from the
+    # same wizard file — the regression guard for the fresh-reader rationale.
+    # Voice is unreachable here, so the firing stats are null.
+    assert body["voice"]["barge_in"]["enabled"] is True
+    assert body["voice"]["barge_in"]["count_session"] is None
+    assert body["voice"]["barge_in"]["last_at"] is None
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None
     assert body["audio"]["playback_rms_dbfs"] is None
     assert body["audio"]["playback_peak_dbfs"] is None
     assert body["audio"]["clipped_samples"] is None
+    assert body["audio"]["gain_chain"]["schema_version"] == 1
+    assert body["audio"]["gain_chain"]["common_static_gain_db"] == 0.0
+    assert body["audio"]["gain_chain"]["complete_common_static_gain"] is False
+    assert "camilla_main_volume_db_unknown" in body["audio"]["gain_chain"]["warnings"]
     assert body["audio"]["sound"]["curve_id"] == "flat"
     assert body["audio"]["sound"]["filter_count"] == 0
     assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
@@ -2118,6 +2136,14 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     assert policy["guard_reason"] == "push_write_failed"
     assert policy["previous_db"] == 0.0
     assert policy["last_source_push_result"]["reason"] == "write_failed"
+    gain_chain = body["audio"]["gain_chain"]
+    assert gain_chain["common_static_gain_db"] == -12.5
+    assert gain_chain["complete_common_static_gain"] is True
+    user_volume = next(
+        stage for stage in gain_chain["stages"] if stage["id"] == "user_volume"
+    )
+    assert user_volume["gain_db"] == -12.5
+    assert user_volume["details"]["push_guard_active"] is True
 
 
 def test_state_usbsink_section_null_when_disabled(

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pytest fixtures for the voice-eval suite.
 
 The harness is session-scoped so the `LiveConnection` is opened once

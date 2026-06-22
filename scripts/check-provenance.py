@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Check that install/build fetches are represented in provenance.
 
 This is intentionally lightweight. It does not try to solve SBOMs,

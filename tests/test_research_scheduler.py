@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import asyncio
@@ -106,6 +110,16 @@ def test_store_fail_soft_when_sqlite_unavailable(tmp_path):
     assert store.mark_done("x", "done") is None
     assert store.mark_failed("x", "failed") is None
     store.close()
+
+
+def test_scheduler_close_closes_owned_store(tmp_path):
+    path = str(tmp_path / "research.db")
+    store = ResearchJobStore(path)
+    sched = ResearchScheduler(BlockingClient(), store=store)
+
+    sched.close()
+
+    assert store.add(_job("closed")) is False
 
 
 class BlockingClient:

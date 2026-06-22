@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Build + write the /run/jasper/tools.json catalog the /tools/ wizard reads.
 
 jasper-voice owns this file: it enumerates EVERY first-party tool (via

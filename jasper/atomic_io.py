@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The single home for atomic text-file writes in JTS.
 
 The codebase persists small bits of runtime state to disk all over

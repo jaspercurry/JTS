@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """System dashboard at /system/.
 
 Read-only(ish) view of what the speaker is doing — RAM/CPU/temp/disk

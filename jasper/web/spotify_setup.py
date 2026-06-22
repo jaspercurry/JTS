@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tiny self-contained HTTP service for adding household Spotify
 accounts. Public surface: http://jts.local/spotify/ — visible there
 because nginx reverse-proxies /spotify/ → http://127.0.0.1:8765/.

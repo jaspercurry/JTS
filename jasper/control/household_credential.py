@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Household shared secret for device-to-device control (the bond fan-out).
 
 JTS's per-device :mod:`jasper.control.control_token` is a CSRF token: it proves

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic confidence report for room-correction measurements.
 
 The report is intentionally modest: it summarizes evidence JTS already

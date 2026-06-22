@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Wizard import-chain contract: every setup page imports light.
 
 The pages under ``jasper/web/*_setup.py`` are socket-activated stdlib

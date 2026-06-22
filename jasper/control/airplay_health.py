@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Lightweight AirPlay health sampler for the /system dashboard.
 
 The sampler runs inside jasper-control, next to SystemSampler, but is
@@ -37,6 +41,20 @@ CAMILLA_INTERVAL_SEC = 30.0
 BUCKET_SECONDS = 10.0
 HISTORY_SECONDS = 30 * 60.0
 EVENT_RING_SIZE = 20
+
+# Boot warmup: suppress transient audio-path event RECORDING for the
+# first DEFAULT_WARMUP_SEC after the sampler starts (~ jasper-control
+# start ~ boot). A reboot's content-xrun + AirPlay-resync settling would
+# otherwise flip the dashboard straight to "issue: recent audio-path
+# recovery event". Mirrors the cold_start gate in system_supervisor
+# (120 s) / shairport_supervisor (60 s). Sustained/real problems still
+# surface after the window (doctor + persistent counters unaffected).
+DEFAULT_WARMUP_SEC = 120.0
+# Per-session grace armed when AirPlay transitions idle->active: the
+# PTP-anchor settle at session establish emits expected sync-correction
+# / out-of-sequence bursts. >= JOURNAL_INTERVAL_SEC so the next 30 s
+# journal scan after a connect is covered.
+DEFAULT_CONNECT_GRACE_SEC = 45.0
 
 FANIN_SOCKET = "/run/jasper-fanin/control.sock"
 FANIN_TIMEOUT_SEC = 1.0
@@ -81,6 +99,7 @@ EVENT_BUCKET_FIELD = {
     "shairport_sync_negative": "shairport_sync_errors",
     "shairport_underrun": "shairport_underruns",
     "shairport_broken_pipe": "shairport_events",
+    "shairport_offset_too_short": "shairport_events",
     "fanin_airplay_xrun": "fanin_airplay_xruns",
     "fanin_output_xrun": "fanin_output_xruns",
     "camilla_short_read": "camilla_short_reads",
@@ -166,6 +185,27 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
                 "title": "AirPlay output error",
                 "detail": "shairport output transport error",
             }
+        # shairport could not fully apply the backend latency offset — the
+        # configured offset exceeds the sender's negotiated AP2 latency
+        # budget, so output plays late. The classifier has no bond context,
+        # so the detail states only the fact shairport reported; the expected
+        # trigger is a bonded LEADER whose Snapcast round-trip pushes the
+        # offset past a tight budget (the proactive, bond-aware diagnosis +
+        # remediation lives in jasper/multiroom/airplay_latency.py + the
+        # grouping doctor check). Matches the stable substring of shairport's
+        # warning ("... it too short to accommodate an offset ..." — the "it"
+        # is shairport's own typo).
+        if "too short to accommodate an offset" in line:
+            return {
+                "type": "shairport_offset_too_short",
+                "subsystem": "shairport",
+                "severity": "issue",
+                "title": "AirPlay latency budget too short",
+                "detail": (
+                    "configured offset exceeds the sender's AirPlay latency "
+                    "budget — output plays late"
+                ),
+            }
         return None
 
     if unit == CAMILLA_UNIT:
@@ -234,6 +274,8 @@ class AirPlayHealthSampler:
         camilla_host: str = "127.0.0.1",
         camilla_port: int = 1234,
         maintenance_suppress_path: str | None = MAINTENANCE_SUPPRESS_UNTIL_PATH,
+        warmup_sec: float = DEFAULT_WARMUP_SEC,
+        connect_grace_sec: float = DEFAULT_CONNECT_GRACE_SEC,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
         self._sample_interval = sample_interval_sec
@@ -250,6 +292,14 @@ class AirPlayHealthSampler:
         )
         self._maintenance_suppress_path = maintenance_suppress_path
         self._time = time_fn
+        # Warmup / connect-grace suppression (see DEFAULT_*_SEC above).
+        self._warmup_sec = warmup_sec
+        self._connect_grace_sec = connect_grace_sec
+        self._started_at = time_fn()
+        self._connect_grace_until: float | None = None
+        self._airplay_active = False
+        self._warmup_active = warmup_sec > 0.0
+        self._suppressed_reason: str | None = None
 
         self._lock = threading.Lock()
         self._buckets: deque[dict[str, Any]] = deque(maxlen=self._history_points)
@@ -297,6 +347,9 @@ class AirPlayHealthSampler:
                 "last_sample_at": self._last_sample_at,
                 "maintenance_suppressed": self._maintenance_suppressed,
                 "maintenance_suppressed_until": self._maintenance_suppressed_until,
+                "warmup_active": self._warmup_active,
+                "connect_grace_until": self._connect_grace_until,
+                "suppressed_reason": self._suppressed_reason,
                 "status": status,
                 "reason": reason,
                 "current": {
@@ -323,23 +376,92 @@ class AirPlayHealthSampler:
     def _tick(self) -> None:
         now = self._time()
         suppress_until = self._read_maintenance_suppress_until(now)
-        suppress_events = suppress_until is not None
+        within_warmup = (now - self._started_at) < self._warmup_sec
+        in_connect_grace = (
+            self._connect_grace_until is not None
+            and now < self._connect_grace_until
+        )
+        # Base suppression gates this tick's fan-in xrun recording.
+        suppress_base = (
+            suppress_until is not None or within_warmup or in_connect_grace
+        )
         self._ensure_bucket(now)
-        self._sample_fanin(now, suppress_events=suppress_events)
+        self._sample_fanin(now, suppress_events=suppress_base)
 
         if now - self._last_mpris_sample_at >= self._mpris_interval:
             self._sample_mpris(now)
         if now - self._last_camilla_sample_at >= self._camilla_interval:
             self._sample_camilla(now)
+
+        # Arm a per-session grace when AirPlay transitions idle->active.
+        # The PTP-anchor settle at session establish emits expected
+        # sync-correction / out-of-sequence bursts; suppressing event
+        # *recording* (not just classification) keeps the 5m/30m windows
+        # clean, same as the boot warmup. Detected after sampling so the
+        # freshly-armed grace also covers THIS tick's journal scan.
+        active = self._airplay_active_now()
+        if active and not self._airplay_active:
+            self._connect_grace_until = now + self._connect_grace_sec
+        self._airplay_active = active
+        in_connect_grace = (
+            self._connect_grace_until is not None
+            and now < self._connect_grace_until
+        )
+        suppress_events = suppress_base or in_connect_grace
+
         if suppress_events:
             self._advance_journal_cursors(now)
         elif now - self._last_journal_scan_at >= self._journal_interval:
             self._scan_journals(now)
 
+        if suppress_until is not None:
+            reason: str | None = "maintenance"
+        elif within_warmup:
+            reason = "warmup"
+        elif in_connect_grace:
+            reason = "airplay_connect"
+        else:
+            reason = None
+
         with self._lock:
             self._last_sample_at = now
-            self._maintenance_suppressed = suppress_events
+            # Keep maintenance_suppressed meaning the maintenance FILE
+            # only (existing consumer semantics); warmup/connect surface
+            # via suppressed_reason / warmup_active below.
+            self._maintenance_suppressed = suppress_until is not None
             self._maintenance_suppressed_until = suppress_until
+            self._warmup_active = within_warmup
+            self._suppressed_reason = reason
+
+    def _airplay_streaming(self) -> bool | None:
+        """Authoritative "is a sender streaming?" — shairport's MPRIS
+        PlaybackStatus. Single source of truth shared by the dashboard
+        status (`_status_locked`) and the connect-grace
+        (`_airplay_active_now`).
+
+        NOT the fan-in frame rate: the airplay input lane free-runs at
+        ~48 kHz of SILENCE whenever the pipeline is up (fan-in clocks every
+        lane off the always-on DAC loop), so the rate reads "active" even at
+        idle. Returns ``True``/``False``, or ``None`` when the MPRIS probe is
+        unavailable — so callers can tell idle from unknown. Freshness is
+        bounded by the MPRIS sample interval (~30 s).
+        """
+        mpris = self._current_mpris if isinstance(self._current_mpris, dict) else None
+        if not mpris:
+            return None
+        playing = mpris.get("playing")
+        return playing if isinstance(playing, bool) else None
+
+    def _airplay_active_now(self) -> bool:
+        """Whether a sender is actively streaming, for arming the connect
+        grace. Keyed on `_airplay_streaming()` (shairport MPRIS) — never the
+        always-on silent frame rate — so the idle->active transition the
+        grace watches reflects a real session start, not the pipeline simply
+        coming up. Detection therefore lags up to one MPRIS sample interval;
+        the boot warmup is the primary post-restart smoother, the connect
+        grace a best-effort session-establish one.
+        """
+        return self._airplay_streaming() is True
 
     def _sample_fanin(self, now: float, *, suppress_events: bool = False) -> None:
         status = self._fanin_probe()
@@ -591,18 +713,42 @@ class AirPlayHealthSampler:
         ):
             return "issue", "recent audio-path recovery event"
 
-        mpris = self._current_mpris or {}
+        # Is AirPlay actually streaming? Use the authoritative MPRIS signal
+        # (`_airplay_streaming`) — NOT the fan-in frame rate, which free-runs
+        # ~48 kHz of silence whenever the pipeline is up and so reads
+        # "active" even at idle. The frame rate is only a corroborating
+        # fault check once we know audio *should* be flowing. See
+        # docs/HANDOFF-airplay.md.
+        mpris_playing = self._airplay_streaming()
         airplay = fanin.get("airplay", {})
         airplay_rate = (
             _as_float(airplay.get("frames_per_sec"))
             if isinstance(airplay, dict) else None
         )
-        if mpris.get("playing") is True and airplay_rate is not None:
-            if airplay_rate < 1000.0:
-                return "issue", "MPRIS playing but fan-in is not receiving frames"
-        if mpris.get("playing") is True and airplay_rate is None:
-            return "unknown", "waiting for fan-in frame-rate baseline"
 
+        if mpris_playing is False:
+            # Nothing streaming. Idle-pipeline artifacts — benign Camilla
+            # short reads, content EAGAIN, the silent 48 kHz frame flow —
+            # must NOT escalate to "watch"/"ok": they are the always-on
+            # loopback clocking silence, not anything a listener can hear.
+            # Returning here, before the non-fatal-warning branch below,
+            # keeps an idle speaker reading "inactive".
+            return "inactive", "AirPlay not currently streaming"
+        if mpris_playing is None:
+            # shairport PlaybackStatus unavailable (probe error / before the
+            # first MPRIS sample). The silent free-running rate can't stand
+            # in for it, so report unknown rather than guess "ok".
+            return "unknown", "AirPlay playback status unavailable"
+
+        # shairport reports it IS playing from here.
+        if airplay_rate is None:
+            return "unknown", "waiting for fan-in frame-rate baseline"
+        if airplay_rate < 1000.0:
+            return "issue", "AirPlay reports playing but fan-in is not receiving frames"
+
+        # Streaming and receiving frames: surface recent non-fatal warnings
+        # (short reads, soft events) that happened *while actively
+        # streaming* — meaningful now, unlike the idle case above.
         if (
             summary_30m["shairport_events"] > 0
             or summary_30m["fanin_airplay_xruns"] > 0
@@ -611,15 +757,6 @@ class AirPlayHealthSampler:
             or summary_30m["camilla_playback_underruns"] > 0
         ):
             return "watch", "recent non-fatal audio-path warning"
-
-        if mpris.get("playing") is False and (
-            airplay_rate is None or airplay_rate < 1000.0
-        ):
-            return "inactive", "AirPlay not currently streaming"
-        if airplay_rate is None:
-            return "unknown", "waiting for fan-in frame-rate baseline"
-        if airplay_rate is not None and airplay_rate < 1000.0:
-            return "inactive", "AirPlay not currently streaming"
         return "ok", "AirPlay path clean"
 
     def _history_locked(self) -> dict[str, list[Any]]:

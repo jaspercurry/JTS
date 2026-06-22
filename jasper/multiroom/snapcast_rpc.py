@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Snapserver JSON-RPC client + the group→stream binding pin.
 
 THE INCIDENT THIS EXISTS FOR (2026-06-11 bring-up): snapcast PERSISTS

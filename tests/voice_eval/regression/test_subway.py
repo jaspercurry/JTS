@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Subway regression scenarios — re-diagnoses the "Jarvis hallucinates
 train times" bug and locks the fix once it lands.
 

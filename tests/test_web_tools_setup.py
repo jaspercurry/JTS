@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Handler-level tests for the /tools/ catalog wizard.
 
 The static web-convention/design-system gates (test_web_wizard_conventions,

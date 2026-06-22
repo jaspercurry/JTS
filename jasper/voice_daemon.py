@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +49,7 @@ from .conversation_history import (
     ConversationStore,
     ConversationTurn,
     make_turn_id,
+    prune_for_settings,
     read_settings as read_conversation_settings,
 )
 from .watchdog import Heartbeat
@@ -67,6 +72,8 @@ from .voice.prompt import (  # noqa: F401
     SYSTEM_INSTRUCTION,
     _build_system_instruction,
 )
+from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
+from .voice.provider_state import read_barge_in_enabled
 from .voice.turn_playback import (  # noqa: F401
     _idle_watchdog,
     _play_responses,
@@ -79,6 +86,14 @@ logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
+# Primary microphone could not be opened at startup (os.EX_NOINPUT). A
+# DISTINCT code from EX_CONFIG (78) so the unit, doctor, and /state can
+# tell "no usable mic" from "no provider configured". Listed in
+# jasper-voice.service's SuccessExitStatus + RestartPreventExitStatus so
+# the daemon parks cleanly (waiting for the AEC reconciler / udev to
+# restart it on plug-in) instead of crash-looping toward
+# StartLimitAction=reboot. See docs/HANDOFF-hotplug-resilience.md "Layer 2".
+VOICE_MIC_UNAVAILABLE_EXIT = 66
 
 
 def _synthetic_audio_profile(
@@ -404,6 +419,28 @@ SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 # "turn aborts and user re-wakes," vs the silent failure of "model
 # hallucinates a response while user is still trying to start."
 SPEECH_RUN_PEAK_MIN = 0.60
+
+# In-session barge-in: how long the user must speak continuously (each
+# frame >= JASPER_VAD_BARGE_IN_THRESHOLD) before we flush local TTS.
+# Reuses the wake-tail arming duration so a real spoken interruption
+# clears it within ~200 ms while a single bleed transient cannot. The
+# per-frame bar is the (stricter) barge-in threshold, not the loose
+# wake-tail 0.15 — bleed false-positives are the failure mode here.
+BARGE_IN_SUSTAINED_SPEECH_SEC = SUSTAINED_SPEECH_TO_ARM_SEC
+
+
+def _aec_reference_available(mic_device: str) -> bool:
+    """True when the primary session mic leg is fed by the AEC bridge over
+    UDP (``udp:<port>``), i.e. its signal has the speaker's own output
+    (music AND TTS) cancelled against the final-output reference. That is
+    the precondition for in-session barge-in detection: a direct ALSA
+    device (the ``direct_mic`` profile, e.g. ``Array`` / ``hw:...``)
+    carries un-cancelled TTS bleed, so VAD would self-trip the gate every
+    turn — the self-interrupt loop the barge-in guard refuses to enter.
+
+    This is leg/profile *selection*, not an AEC topology change: the "on"
+    leg is the same stream the live session already consumes."""
+    return mic_device.strip().lower().startswith("udp:")
 
 
 class State(Enum):
@@ -794,6 +831,8 @@ class WakeLoop:
         )
         self._conversation_turn_seq = 0
         self._research_scheduler: ResearchScheduler | None = None
+        self._research_provider_id: str | None = None
+        self._research_model: str | None = None
         self._pending_research: list[ResearchJob] = []
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
@@ -941,6 +980,41 @@ class WakeLoop:
         self._max_silero_raw_in_turn: float = 0.0
         self._silero_raw_armed_at_ms: int | None = None
         self._silero_aec_armed_at_ms: int | None = None
+
+        # In-session barge-in (full-duplex). DEFAULT OFF: resolved fresh
+        # per turn in _begin_turn from the per-provider SSOT flag, then
+        # gated by AEC-reference availability. While the assistant is
+        # speaking (_input_ended set), _handle_playback_frame runs Silero
+        # on the AEC-cleaned "on" leg and flushes local TTS on a sustained
+        # speech run. `_barge_in_reference_available` is constant for the
+        # daemon (mic_device is frozen Config); the no-reference WARN is
+        # one-shot per daemon to avoid per-turn log spam on a misconfigured
+        # direct_mic + barge-in-on install.
+        self._barge_in_reference_available: bool = _aec_reference_available(
+            cfg.mic_device,
+        )
+        self._barge_in_no_ref_warned: bool = False
+        self._barge_in_active: bool = False
+        # Reconciliation kind for the active provider (resolved once — the
+        # provider is fixed for the daemon's life; a switch restarts us).
+        # Consumed by barge.detected + /state so a durable barge-in
+        # (needs_client_truncate: OpenAI/Grok send response.cancel +
+        # conversation.item.truncate) is distinguishable from a cosmetic one
+        # (server_self_truncates: Gemini no-ops the reconcile, so a real-time
+        # provider may resume). Makes the registry's interrupt_reconcile
+        # declaration load-bearing, not test-only metadata.
+        self._barge_in_reconcile = resolve_interrupt_reconcile(cfg.voice_provider)
+        self._barge_in_run_started_at: float = 0.0
+        self._barge_in_run_peak: float = 0.0
+        self._barge_in_signalled_this_run: bool = False
+        # Firing telemetry surfaced through session_status -> /state.voice.
+        # `count` is a daemon-lifetime running total (NOT per-turn — a
+        # per-turn counter reads 0 between turns, exactly when /state is
+        # polled), so "is barge-in firing a lot?" is answerable from the
+        # dashboard, complementing the per-fire event=barge.detected line.
+        self._barge_in_count: int = 0
+        self._barge_in_last_at: str | None = None
+        self._barge_in_last_leg: str | None = None
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -1099,6 +1173,7 @@ class WakeLoop:
         cfg = SimpleNamespace(
             duck_db=0.0,
             idle_timeout_sec=10.0,
+            mic_device="udp:9876",
             mic_mute_state_path="/tmp/jasper-voice-daemon-test-mute.env",
             peering_enabled=False,
             peering_uds_socket="/tmp/jasper-peering-test.sock",
@@ -1107,6 +1182,7 @@ class WakeLoop:
             server_vad_prefix_ms=300,
             server_vad_silence_ms=500,
             server_vad_threshold=0.5,
+            vad_barge_in_threshold=0.5,
             voice_provider="test",
             wake_model="test_model",
         )
@@ -1142,6 +1218,8 @@ class WakeLoop:
         self._conversation_store_path = None
         self._conversation_turn_seq = 0
         self._research_scheduler = None
+        self._research_provider_id = None
+        self._research_model = None
         self._pending_research = []
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
@@ -1205,6 +1283,20 @@ class WakeLoop:
         self._max_silero_raw_in_turn = 0.0
         self._silero_raw_armed_at_ms = None
         self._silero_aec_armed_at_ms = None
+        self._barge_in_reference_available = _aec_reference_available(
+            cfg.mic_device,
+        )
+        self._barge_in_no_ref_warned = False
+        self._barge_in_active = False
+        # No real provider in the test harness ("test" isn't registered), so
+        # pin a representative reconcile kind so barge.detected / /state work.
+        self._barge_in_reconcile = InterruptReconcile.NEEDS_CLIENT_TRUNCATE
+        self._barge_in_run_started_at = 0.0
+        self._barge_in_run_peak = 0.0
+        self._barge_in_signalled_this_run = False
+        self._barge_in_count = 0
+        self._barge_in_last_at = None
+        self._barge_in_last_leg = None
         self._pre_roll = deque(maxlen=PRE_ROLL_FRAMES)
         self._wake_event_store = None
         self._current_event_id = None
@@ -1267,11 +1359,17 @@ class WakeLoop:
         return await self.play_cue(slug)
 
     def set_research_scheduler(
-        self, scheduler: ResearchScheduler | None,
+        self,
+        scheduler: ResearchScheduler | None,
+        *,
+        provider_id: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Wire the research scheduler so announcements can mark jobs
         announced only after the wake loop has attempted the spoken path."""
         self._research_scheduler = scheduler
+        self._research_provider_id = provider_id
+        self._research_model = model
 
     async def announce_timer(self, timer: "Timer") -> None:
         """Public hook called by `TimerScheduler` when a timer fires.
@@ -1317,27 +1415,30 @@ class WakeLoop:
         for idx, pending in enumerate(self._pending_research):
             if pending.id == job.id:
                 self._pending_research[idx] = job
-                logger.info(
-                    "research announce: coalesced pending job id=%s status=%s",
-                    job.id,
-                    job.status,
+                log_event(
+                    logger,
+                    "research.announce_pending_coalesced",
+                    job_id=job.id,
+                    status=job.status,
                 )
                 return
         self._pending_research.append(job)
         if len(self._pending_research) > self._research_pending_cap:
             dropped = self._pending_research.pop(0)
-            logger.warning(
-                "research announce: dropped pending job id=%s status=%s "
-                "after pending queue exceeded cap=%d",
-                dropped.id,
-                dropped.status,
-                self._research_pending_cap,
+            log_event(
+                logger,
+                "research.announce_pending_dropped",
+                job_id=dropped.id,
+                status=dropped.status,
+                cap=self._research_pending_cap,
+                level=logging.WARNING,
             )
-        logger.info(
-            "research announce: held until idle id=%s status=%s pending=%d",
-            job.id,
-            job.status,
-            len(self._pending_research),
+        log_event(
+            logger,
+            "research.announce_held",
+            job_id=job.id,
+            status=job.status,
+            pending=len(self._pending_research),
         )
 
     async def _drain_pending_research(self) -> None:
@@ -1365,39 +1466,49 @@ class WakeLoop:
         if job.status == DONE and job.result:
             text = RESEARCH_READY_CONFIRMATION_TEXT
         elif job.status == DONE:
-            logger.warning(
-                "research announce: done job missing result id=%s",
-                job.id,
+            log_event(
+                logger,
+                "research.announce_missing_result",
+                job_id=job.id,
+                level=logging.WARNING,
             )
             text = RESEARCH_EMPTY_RESULT_TEXT
         elif job.status == FAILED:
             text = None
         else:
-            logger.warning(
-                "research announce: skipped unexpected status id=%s status=%s",
-                job.id,
-                job.status,
+            log_event(
+                logger,
+                "research.announce_skipped",
+                job_id=job.id,
+                status=job.status,
+                reason="unexpected_status",
+                level=logging.WARNING,
             )
             return
 
         if job.status == FAILED:
             remaining = self._research_failure_cooldown_remaining()
             if remaining > 0:
-                logger.warning(
-                    "research announce: suppressed failed job id=%s by "
-                    "cooldown remaining=%.1fs",
-                    job.id,
-                    remaining,
+                log_event(
+                    logger,
+                    "research.announce_suppressed",
+                    job_id=job.id,
+                    status=job.status,
+                    reason="failure_cooldown",
+                    remaining_s=round(remaining, 1),
+                    level=logging.WARNING,
                 )
                 self._mark_research_announced(job, read=False)
                 return
 
         if job.status == FAILED:
-            logger.info(
-                "research announce: id=%s status=%s cue=%s",
-                job.id,
-                job.status,
-                RESEARCH_FAILED_CUE_SLUG,
+            log_event(
+                logger,
+                "research.announce",
+                job_id=job.id,
+                status=job.status,
+                mode="cue",
+                cue=RESEARCH_FAILED_CUE_SLUG,
             )
             played = await self._play_cue(RESEARCH_FAILED_CUE_SLUG)
         else:
@@ -1405,18 +1516,22 @@ class WakeLoop:
             # Log shape, not content: a research result can carry personal
             # material (medical/financial queries) and the journal is
             # persistent. Full text stays at DEBUG (cue manager) only.
-            logger.info(
-                "research announce: id=%s status=%s text_len=%d",
-                job.id,
-                job.status,
-                len(text),
+            log_event(
+                logger,
+                "research.announce",
+                job_id=job.id,
+                status=job.status,
+                mode="confirmation",
+                text_len=len(text),
             )
             played = await self._play_dynamic_text(text)
         if not played:
-            logger.warning(
-                "research announce: playback failed id=%s status=%s",
-                job.id,
-                job.status,
+            log_event(
+                logger,
+                "research.announce_playback_failed",
+                job_id=job.id,
+                status=job.status,
+                level=logging.WARNING,
             )
             return
         if job.status == FAILED:
@@ -1457,11 +1572,13 @@ class WakeLoop:
         self._research_window_cancelled_by_wake = False
         opening_done = asyncio.Event()
         self._research_window_opening_done = opening_done
+        reset_window = True
         try:
             await self._begin_turn(
                 pre_roll=False,
                 text_context=_research_confirmation_instruction(job),
             )
+            reset_window = False
             if self._research_window_cancelled_by_wake:
                 await self._end_turn("research_window_wake")
                 return
@@ -1482,10 +1599,6 @@ class WakeLoop:
                     e,
                 )
                 await self._cleanup_after_failed_begin()
-                self._research_window_active = False
-                self._research_window_job = None
-                self._research_window_decided = False
-                self._research_window_cancelled_by_wake = False
                 return
             logger.exception(
                 "research confirmation window failed; reading immediately "
@@ -1493,13 +1606,14 @@ class WakeLoop:
                 job.id,
                 e,
             )
-            self._research_window_active = False
-            self._research_window_job = None
-            self._research_window_decided = False
-            self._research_window_cancelled_by_wake = False
             await self._cleanup_after_failed_begin()
             await self._read_research_job_immediately(job)
         finally:
+            if reset_window:
+                self._research_window_active = False
+                self._research_window_job = None
+                self._research_window_decided = False
+                self._research_window_cancelled_by_wake = False
             if self._research_window_opening_done is opening_done:
                 self._research_window_opening_done = None
             opening_done.set()
@@ -1610,7 +1724,7 @@ class WakeLoop:
         """
         if self._mic_muted:
             return
-        if user_text is None and assistant_text is None:
+        if user_text is None and assistant_text is None and data_json is None:
             return
         try:
             settings = read_conversation_settings()
@@ -1640,6 +1754,8 @@ class WakeLoop:
                 data_text = None
         elif data_json is not None:
             data_text = str(data_json)
+        if user_text is None and assistant_text is None and data_text is None:
+            return
 
         ts_utc = _conversation_ts_utc()
         self._conversation_turn_seq = (
@@ -1656,7 +1772,15 @@ class WakeLoop:
             data_json=data_text,
             session_id=session_id,
         )
-        store.add(turn)
+        if store.add(turn):
+            try:
+                prune_for_settings(store, settings, anchor_ts_utc=ts_utc)
+            except (OSError, RuntimeError, ValueError) as e:
+                logger.warning(
+                    "conversation capture: retention prune failed (%s: %s)",
+                    type(e).__name__,
+                    e,
+                )
 
     async def _play_dynamic_text(self, text: str) -> bool:
         """Speak arbitrary `text` through the cue manager, with
@@ -2843,6 +2967,105 @@ class WakeLoop:
             f"SESSION_ENDED {self._peering_current_epoch} {reason}",
         )
 
+    def _resolve_barge_in_for_turn(self) -> None:
+        """Decide whether in-session barge-in is active for the turn about
+        to open, and reset its per-turn run state.
+
+        Reads the per-provider enable flag from the SSOT file (not the
+        start-time ``Config``) so a wizard / operator toggle takes effect
+        without a daemon restart — jasper-voice is restarted on a *provider*
+        switch but not on a barge-in toggle. The read is mtime-gated
+        (``read_barge_in_enabled``), so the steady-state per-turn cost is a
+        single ``os.stat``, not a full open+read+parse. DEFAULT OFF.
+
+        Self-interrupt-loop guard: when barge-in is requested but the
+        primary mic leg has no AEC reference (the ``direct_mic`` profile),
+        hard-disable it for the turn and WARN once per daemon, rather than
+        let un-cancelled TTS bleed self-trip the gate every turn."""
+        self._barge_in_run_started_at = 0.0
+        self._barge_in_run_peak = 0.0
+        self._barge_in_signalled_this_run = False
+        want = read_barge_in_enabled(self._cfg.voice_provider)
+        if want and not self._barge_in_reference_available:
+            if not self._barge_in_no_ref_warned:
+                self._barge_in_no_ref_warned = True
+                log_event(
+                    logger,
+                    "barge.disabled_no_reference",
+                    provider=self._cfg.voice_provider,
+                    mic_device=self._cfg.mic_device,
+                    level=logging.WARNING,
+                )
+            want = False
+        self._barge_in_active = want
+
+    async def _handle_playback_frame(self, frame) -> None:
+        """In-session barge-in detection while the assistant is speaking.
+
+        Reached from ``_handle_session_frame`` once ``_input_ended`` is set
+        AND barge-in is active for the turn. Runs local Silero VAD on the
+        AEC-cleaned "on" leg — the same ``frame`` the live session consumed
+        (leg selection, NOT an AEC topology change) — and, on a sustained
+        speech run at or above ``JASPER_VAD_BARGE_IN_THRESHOLD``, sets the
+        turn's interrupt event so ``_play_responses`` flushes local TTS
+        immediately. The felt experience: the user talks over the assistant
+        and the speaker goes quiet.
+
+        This is the provider-agnostic detection + local-flush spine. It
+        does NOT truncate / cancel the provider response (a later increment
+        owns that), so a real-time provider may resume after the flush.
+
+        Runs INLINE (never a ``_bg_task``): ``_handle_session_frame`` ends
+        the turn the moment any ``_bg_tasks`` entry completes, so a
+        fire-once detector task would race turn-end."""
+        if self._turn is None:
+            return
+        # Same primary-leg Silero the in-session EOU detector scores; a
+        # predict error propagates exactly as it does there (unguarded)
+        # rather than being silently swallowed here.
+        speech_prob = self._vad.predict(frame)
+        now = asyncio.get_event_loop().time()
+        if speech_prob < self._cfg.vad_barge_in_threshold:
+            # Sub-threshold frame breaks the run. A fresh continuous run
+            # must re-accumulate from zero (and may re-trigger), mirroring
+            # the wake-tail arming reset.
+            self._barge_in_run_started_at = 0.0
+            self._barge_in_run_peak = 0.0
+            self._barge_in_signalled_this_run = False
+            return
+        if self._barge_in_run_started_at == 0.0:
+            self._barge_in_run_started_at = now
+            self._barge_in_run_peak = speech_prob
+        else:
+            self._barge_in_run_peak = max(self._barge_in_run_peak, speech_prob)
+        if self._barge_in_signalled_this_run:
+            return
+        sustained = now - self._barge_in_run_started_at
+        if sustained < BARGE_IN_SUSTAINED_SPEECH_SEC:
+            return
+        self._barge_in_signalled_this_run = True
+        self._barge_in_count += 1
+        self._barge_in_last_leg = "on"
+        self._barge_in_last_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds",
+        )
+        log_event(
+            logger,
+            "barge.detected",
+            leg="on",
+            silero=f"{self._barge_in_run_peak:.2f}",
+            sustained_ms=int(sustained * 1000),
+            # Durable (needs_client_truncate) vs cosmetic (server_self_truncates,
+            # where a real-time provider may resume) — see _barge_in_reconcile.
+            reconcile=self._barge_in_reconcile.value,
+        )
+        # Set the turn's interrupt event (provider-agnostic; getattr so an
+        # adapter without the capability degrades to no local flush rather
+        # than crashing). _play_responses is awaiting wait_for_interrupt.
+        trigger = getattr(self._turn, "request_local_interrupt", None)
+        if callable(trigger):
+            trigger()
+
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
         # this frame is silently consumed (no double-dispatch into detector).
@@ -2853,6 +3076,12 @@ class WakeLoop:
         assert self._turn is not None
 
         if self._input_ended:
+            # Input closed: the assistant is (or is about to be) speaking.
+            # With barge-in active, score this frame for an interruption;
+            # otherwise drop it exactly as before (mic ignored during
+            # playback).
+            if self._barge_in_active:
+                await self._handle_playback_frame(frame)
             return
 
         # ---- Server-side VAD branch ----
@@ -3130,6 +3359,24 @@ class WakeLoop:
             # silently failed to build (event=tool_pack.build_failed) is
             # visible in /state.voice + jasper-doctor, not only the journal.
             "tool_packs": self._tool_packs,
+            # In-session barge-in firing telemetry → /state.voice.barge_in
+            # (the `enabled` flag is read fresh in jasper-control's
+            # aggregator, not here — it can change without restarting this
+            # daemon). count is daemon-lifetime; last_at is UTC ISO.
+            "barge_in_count_session": self._barge_in_count,
+            "barge_in_last_at": self._barge_in_last_at,
+            "barge_in_last_leg": self._barge_in_last_leg,
+            # Reconcile kind for the active provider so the dashboard can show
+            # whether a barge-in durably stops the assistant (OpenAI/Grok) or
+            # only flushes locally while the server may resume (Gemini).
+            "barge_in_reconcile": self._barge_in_reconcile.value,
+            "research": {
+                "configured": self._research_scheduler is not None,
+                "provider": self._research_provider_id,
+                "model": self._research_model,
+                "pending_announcements": len(self._pending_research),
+                "confirmation_window_active": self._research_window_active,
+            },
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:
@@ -3195,6 +3442,7 @@ class WakeLoop:
         self._max_silero_raw_in_turn = 0.0
         self._silero_raw_armed_at_ms = None
         self._silero_aec_armed_at_ms = None
+        self._resolve_barge_in_for_turn()
         if self._vad_off is not None:
             self._vad_off.reset()
         t_after_state = _time.monotonic()
@@ -3288,7 +3536,9 @@ class WakeLoop:
                 len(pre_roll_frames), len(pre_roll_frames) * 80.0,
             )
         playback = asyncio.create_task(
-            _play_responses(self._turn, self._tts)
+            _play_responses(
+                self._turn, self._tts, barge_in_enabled=self._barge_in_active,
+            )
         )
         idle = asyncio.create_task(
             _idle_watchdog(
@@ -3474,6 +3724,7 @@ class WakeLoop:
                 self._record_conversation_turn(
                     _optional_turn_text(self._turn, "user_transcript"),
                     _optional_turn_text(self._turn, "assistant_transcript"),
+                    data_json=_optional_turn_data_json(self._turn),
                 )
             # Per-turn no-audio detection. Splits into two distinct
             # phenomena, gated on whether the wake loop explicitly ended
@@ -3611,6 +3862,24 @@ def _optional_turn_text(turn: object, method_name: str) -> str | None:
         return None
     text = str(text).strip()
     return text or None
+
+
+def _optional_turn_data_json(turn: object) -> dict | str | None:
+    getter = getattr(turn, "conversation_metadata", None)
+    if not callable(getter):
+        return None
+    try:
+        data = getter()
+    except (RuntimeError, TypeError, ValueError) as e:
+        logger.debug("conversation capture: conversation_metadata failed: %s", e)
+        return None
+    if data is None or isinstance(data, (dict, str)):
+        return data
+    logger.debug(
+        "conversation capture: conversation_metadata returned unsupported %s",
+        type(data).__name__,
+    )
+    return None
 
 
 def _active_voice(*args, **kwargs):

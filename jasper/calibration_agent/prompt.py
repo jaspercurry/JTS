@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Prompt package builder for the JTS calibration advisor harness.
 
 This is intentionally provider-neutral. It produces the compact system

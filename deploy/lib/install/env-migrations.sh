@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Wizard-env migrations + manifest rendering for deploy/install.sh.
 #
 # Extracted verbatim from install.sh (the installer remains the only

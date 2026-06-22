@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Offline harness for the live-VAD speech-arming gate.
 
 Replays every captured wake-event WAV through silero with the same

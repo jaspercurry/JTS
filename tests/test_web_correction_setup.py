@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free tests for the /correction/ wizard (canonical design system).
 
 The room-correction page is HARDWARE/BROWSER-CRITICAL — the real measurement

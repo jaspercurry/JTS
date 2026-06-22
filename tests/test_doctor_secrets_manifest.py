@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The secret-compartment manifest must mirror the systemd units it reasons about.
 
 ``jasper.cli.doctor.secret_compartments.COMPARTMENTS`` hardcodes, per Phase 4

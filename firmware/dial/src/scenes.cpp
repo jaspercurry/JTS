@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Scene graph + LVGL UI for the dial. See scenes.h for the state
 // model. Aesthetic: modern hi-fi — midnight-blue background, warm
 // white type, accent color per state.

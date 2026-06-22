@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared primitives for the jasper-doctor check package.
 
 This is the base layer every per-domain check module imports

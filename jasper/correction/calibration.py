@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Measurement-microphone calibration registry and parser.
 
 The correction wizard supports two happy paths:

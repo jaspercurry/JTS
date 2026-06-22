@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Integration tests for jasper.peering.uds.
 
 Spins up a real Unix-domain-socket server, talks to it via the

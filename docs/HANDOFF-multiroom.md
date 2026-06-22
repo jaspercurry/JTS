@@ -739,8 +739,10 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   surviving `OutputCore` engine (assistant segments, loudness profiles,
   saturating mix, `PlayoutLedger`); the `FLUSH_SYNC` barge-in ack now
   carries DAC-true `audio_played_ms` + per-segment events from
-  `commit_prepared_period_with_dac_delay` (fanin's ack hardcodes 0 — the
-  outputd port makes it honest). EVERY bonded member's voice flips its TTS
+  `commit_prepared_period_with_dac_delay`. fanin's solo ack now carries its
+  own per-segment playout ledger too (`rust/jasper-fanin/src/playout.rs`),
+  but a mix-commit estimate that over-reads by the downstream pipeline
+  depth; outputd's port is the DAC-true one. EVERY bonded member's voice flips its TTS
   socket to its own outputd (inv-3: the leader's TTS never enters the
   shared stream — each speaker's OWN replies mix locally, post-round-trip,
   pre-reference, which is exactly inv-A's tap requirement; `PROGRAM_DUCK`
@@ -1770,11 +1772,42 @@ front-run the complexity nor forget where it belongs.
    its full mix and the TTS-separation work would vanish — so this decision is
    load-bearing for the inv-2 build. Time-synced whole-house announcements
    (TTS on the buffered path) remain a future, separate feature if ever wanted.
-2. **AirPlay 2 sync expectation.** Route AirPlay through the
-   Snapcast FIFO like every source (uniform, simpler), giving up
-   shairport/nqptp's free PTP sample-alignment? A native PTP
-   carve-out only earns its keep if sample-perfect AirPlay
-   multi-room is a hard requirement.
+2. **AirPlay 2 sync expectation — ANALYZED 2026-06-21; build pending.**
+   A receiver cannot grow the AP2 latency budget — AP2 latency is
+   sender-authored (full mechanism in
+   [HANDOFF-airplay.md](HANDOFF-airplay.md) "AirPlay 2 latency is
+   sender-authored — the bonded-leader consequence"). So the plan is
+   NEITHER to route AirPlay through the Snapcast FIFO NOR a PTP
+   carve-out: the bonded leader keeps shairport/nqptp's native AP2 path
+   and compensates the Snapcast round-trip locally with a **bond-aware**
+   `audio_backend_latency_offset_in_seconds` (the offset shifts the AP2
+   PTP anchor identically for realtime and buffered streams). INVARIANT:
+   the Snapcast term is added ONLY while this speaker is an active bonded
+   leader and torn down on unbond — solo/follower speakers are
+   byte-for-byte unaffected. The remaining sub-question — which only
+   decides whether bonded lip-sync is fully recovered or degrades to
+   bounded residual lag — is the sender's negotiated budget vs. the
+   ~150 ms + `buffer_ms` hidden delay *plus shairport's own 0.5 s backend
+   buffer* (shairport drops the offset, not just trims it, once
+   budget < need + 0.5 s — see HANDOFF-airplay.md "JTS-side observability");
+   measure it per-app on-device with
+   `scripts/airplay-latency-probe.sh` before sizing `buffer_ms`. The
+   build hook is `reconcile.py` step 5 (the leader's bonded CamillaDSP
+   apply — `passive_leader` re-emits the pipe bake, `active_speaker_leader`
+   runs the camilla#1 program bake + arms camilla#2), where the bonded
+   CamillaDSP config is already applied.
+   **Stage D (observability) — BUILT 2026-06-21.** The tight regime is now
+   visible JTS-side without reading the journal by hand:
+   `/state.grouping.airplay_latency_fit` (computed budget-vs-need, fail-soft,
+   `{"applicable": false}` off the bonded-leader path), a grouping doctor
+   check (`check_grouping_airplay_latency`), and the AirPlay-health event
+   ring classifying shairport's "too short to accommodate an offset" warning.
+   See `jasper/multiroom/airplay_latency.py` and HANDOFF-airplay.md "JTS-side
+   observability". The Step-0 measurement (jts.local: 9/9 observed sessions
+   on the default ~2.0 s budget) showed the free regime dominates, so the
+   surface is scoped down (quiet when comfortable, journal read only when
+   actually a bonded leader). Still owed: the per-app **video** budget sweep
+   (human/hardware) to confirm video stays in the free regime.
 3. **When does multi-*room* (>1 room) actually arrive?** The whole
    `Group`/election deferral rests on "one pair/room for now." A
    third room being imminent reorders the roadmap.

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # =============================================================================
 # multiroom-spike.sh — P0 multi-room feasibility SPIKE harness (THROWAWAY)
 # =============================================================================
@@ -521,7 +526,9 @@ do_teardown() {
 }
 
 usage() {
-    sed -n '2,/^# ===/p' "$0" | sed 's/^# \{0,1\}//' >&2
+    # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
+    # extracted doc block is the original banner, not the license text.
+    sed '2,6d' "$0" | sed -n '2,/^# ===/p' | sed 's/^# \{0,1\}//' >&2
 }
 
 # =============================================================================

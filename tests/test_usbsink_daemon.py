@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for UsbSinkDaemon's startup + cleanup lifecycle.
 
 The interesting property here isn't audio (that's hardware-side) but

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # shellcheck shell=bash
 # WS1 Phase 3b/first Tier-B slice — dedicated non-root service users + the
 # shared `jasper` group. Tier-A daemons dropped from root: jasper-voice /
@@ -78,8 +82,8 @@ create_jasper_service_users() {
     # the same-path correction_substream), `bluetooth` (BlueZ Adapter1 Alias for
     # the /speaker rename — a D-Bus policy grant), and `systemd-journal`
     # (journalctl -k for Wi-Fi scan-suppression diagnostics). No netdev (polkit
-    # is authoritative on modern NM), no CAP_NET_ADMIN (scan-repair degrades
-    # fail-soft).
+    # is authoritative on modern NM), no CAP_NET_ADMIN (scan-repair runs through
+    # the root jasper-wifi-scan-repair.service helper).
     # systemd-journal is always present (systemd owns it), so it is safe in the
     # useradd -G. bluetooth is NOT: it is created by the bluez package, which
     # install_deps apt-installs AFTER create_jasper_service_users runs — so a

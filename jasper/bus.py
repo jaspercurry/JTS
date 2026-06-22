@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """NYC MTA bus real-time arrivals via the BusTime SIRI API.
 
 One source of truth, no fallback (unlike subway, which has both

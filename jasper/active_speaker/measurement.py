@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Durable active-speaker driver-check and measurement evidence.
 
 This module records the evidence produced by the guided active-crossover flow:

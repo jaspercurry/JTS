@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Measurement quality checks for correction captures.
 
 The DSP math can produce a curve for almost any WAV, including a

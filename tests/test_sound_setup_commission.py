@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """/sound/ web payloads for per-driver commissioning + the Stage-5 ramp.
 
 The payloads are thin wrappers over the library (exhaustively tested in

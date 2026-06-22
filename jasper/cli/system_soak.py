@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bounded whole-system soak sampler.
 
 This command is intentionally an operator diagnostic, not a daemon. Run it

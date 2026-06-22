@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the /spotify/ wizard after its migration to the canonical look.
 
 1. Each of the wizard's page states (setup, redirect-URI, manual pre-warn,
@@ -14,6 +18,7 @@
 from __future__ import annotations
 
 import http
+import time
 import types
 from email.message import Message
 from io import BytesIO
@@ -409,6 +414,47 @@ def test_post_setup_credentials_rejects_malformed_client_id(monkeypatch):
     h.do_POST()
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert wrote == []
+
+
+def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
+    """A token persistence failure must not look like a successful re-link."""
+    state = "state-abc"
+    handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
+    spotify_setup._PENDING_FLOWS.clear()
+    spotify_setup._PENDING_FLOWS[state] = (
+        "jasper", "verifier", "challenge", time.monotonic(),
+    )
+    calls = {"invalidate": 0, "restart": 0}
+
+    def boom(self, account_name, code, verifier, challenge):
+        raise OSError("disk denied")
+
+    monkeypatch.setattr(handler_cls, "_exchange_code", boom)
+    monkeypatch.setattr(
+        spotify_setup,
+        "_invalidate_health_cache",
+        lambda: calls.__setitem__("invalidate", calls["invalidate"] + 1),
+    )
+    monkeypatch.setattr(
+        spotify_setup,
+        "_restart_spotify_consumers",
+        lambda: calls.__setitem__("restart", calls["restart"] + 1),
+    )
+
+    h = _Request(handler_cls, f"/oauth-callback?code=abc&state={state}")
+    h.do_GET()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    location = h.header_values("Location")[0]
+    assert location == "./"
+    cookies = h.header_values("Set-Cookie")
+    assert any(
+        "jts_flash=Auth%20exchange%20failed%3A%20disk%20denied" in cookie
+        for cookie in cookies
+    )
+    assert all("Linked" not in cookie for cookie in cookies)
+    assert calls == {"invalidate": 0, "restart": 0}
+    assert state not in spotify_setup._PENDING_FLOWS
 
 
 def test_playlist_preview_is_json_and_needs_no_csrf(monkeypatch):

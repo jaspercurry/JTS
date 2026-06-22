@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.multiroom.state.read_grouping_state.
 
 The state reader is the fresh-read SSOT projection consumed by
@@ -676,11 +680,30 @@ def test_endpoint_block_present_for_active_crossover_follower(tmp_path):
         unit_state_reader=_stub,
         endpoint_status_reader=lambda: {"active_follower": True, "blocked_reason": ""},
     )
-    assert state["endpoint"] == {"mode": "active_crossover", "blocked_reason": ""}
+    assert state["endpoint"] == {
+        "mode": "active_crossover", "role": "follower", "blocked_reason": "",
+    }
+
+
+def test_endpoint_block_present_for_active_crossover_leader(tmp_path):
+    """An active LEADER running camilla#2 (its local Layer-A crossover, while
+    camilla#1 bakes the wire) surfaces an ``endpoint`` block tagged role=leader
+    (distributed-active Slice 5)."""
+    path = _write_env(tmp_path, _leader_env())
+    state = read_grouping_state(
+        path,
+        unit_state_reader=_stub,
+        endpoint_status_reader=lambda: {
+            "active_follower": False, "active_leader": True, "blocked_reason": "",
+        },
+    )
+    assert state["endpoint"] == {
+        "mode": "active_crossover", "role": "leader", "blocked_reason": "",
+    }
 
 
 def test_endpoint_block_surfaces_fail_closed_block_reason(tmp_path):
-    """A REFUSED active-follower bond (fell back to solo active) surfaces the
+    """A REFUSED active-endpoint bond (fell back to solo active) surfaces the
     fail-closed reason — the household-facing 'why it didn't join' signal."""
     path = _write_env(tmp_path, _follower_env())
     state = read_grouping_state(
@@ -690,7 +713,9 @@ def test_endpoint_block_surfaces_fail_closed_block_reason(tmp_path):
             "active_follower": False, "blocked_reason": "graph_unprovable",
         },
     )
-    assert state["endpoint"] == {"mode": "blocked", "blocked_reason": "graph_unprovable"}
+    assert state["endpoint"] == {
+        "mode": "blocked", "role": "", "blocked_reason": "graph_unprovable",
+    }
 
 
 def test_no_endpoint_block_for_dumb_member_or_solo(tmp_path):

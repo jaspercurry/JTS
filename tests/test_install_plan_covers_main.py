@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Drift guard: every install step in main() is described by the dry run.
 
 `bash deploy/install.sh --dry-run` is contributor-facing safety gear
@@ -36,6 +40,7 @@ _INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 # step function called in main() -> phrase that must appear in the
 # --dry-run plan output (after whitespace normalization).
 _STEP_TO_PLAN_MARKER = {
+    "hardware_tier_preflight": "Hardware tier",
     "create_jasper_service_users": "non-root service users",
     "install_deps": "apt-get update",
     "persist_install_profile": "Persist the install profile tier",
@@ -47,6 +52,7 @@ _STEP_TO_PLAN_MARKER = {
     "install_alsa": "Render /etc/asound.conf through",
     "install_camilladsp": "CamillaDSP:",
     "ensure_outputd_camilla_statefile": "Seed or validate the outputd Camilla statefile",
+    "ensure_crossover_camilla_statefile": "camilla#2 crossover Camilla statefile",
     "install_renderers": "shairport-sync source archive",
     "set_usb_gadget_mode": "USB gadget dtoverlay",
     "tune_wifi_for_airplay": "Disable WiFi power-save on the active wlan0",
@@ -70,6 +76,7 @@ _STEP_TO_PLAN_MARKER = {
     "install_nginx_site": "nginx config",
     "install_camillagui": "CamillaGUI",
     "regenerate_audio_cues": "Regenerate audio cues",
+    "write_build_manifest": "build.txt verified-install marker",
     "run_doctor_summary": "jasper-doctor as a final non-blocking health summary",
 }
 

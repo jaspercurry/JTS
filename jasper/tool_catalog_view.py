@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Light read-side view of the tool catalog: overlay the user's desired
 disabled-set onto the catalog JSON jasper-voice wrote.
 

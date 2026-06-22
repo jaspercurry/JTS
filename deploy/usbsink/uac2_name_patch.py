@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Rewrite the UAC2 gadget module's AudioStreaming interface strings.
 
 Stdlib-only. NO ``jasper`` imports, NO venv — this runs under the

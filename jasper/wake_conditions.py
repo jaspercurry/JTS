@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Single source of truth for wake-detection acoustic conditions + corpus axes.
 
 A *condition* names the acoustic situation a wake event happens in

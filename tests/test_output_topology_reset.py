@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the ``jasper-output-topology-reset`` recovery command.
 
 The command returns a box whose saved output topology has drifted from

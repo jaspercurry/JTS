@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Install jasper voice daemon + always-on CamillaDSP on a Raspberry Pi.
 #
 # Source-builds shairport-sync (AirPlay 2) + nqptp, drops in
@@ -37,6 +42,7 @@ source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
+source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/renderers.sh"
 source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 source "${REPO_DIR}/deploy/lib/install/model-staging.sh"
@@ -145,6 +151,114 @@ detect_default_install_profile() {
     esac
 }
 
+# Detect the box's hardware tier (RAM / CPU / arch) once, up front. This
+# is ORTHOGONAL to the install profile above: the profile is the product
+# role (does this box run the voice brain?), the tier is hardware
+# capability (how do I build safely here?). jts2 — a 1 GB Pi 5 on the
+# `full` profile — is the proof they differ: small hardware, full role.
+#
+# Pure reporter: prints one normalized line and mutates nothing, so the
+# dry-run plan, the real-install preflight, and tests can all call it.
+# The tier names the RAM region the box is in for OBSERVABILITY — an OOM
+# in a later build step is then self-evident in the deploy transcript. It
+# is the first step toward one shared tier vocabulary for the build knobs
+# that today read RAM independently (rust-daemons.sh's low-memory flip;
+# _webrtc_compile_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
+# this helper is Workstream A; this change does NOT alter any build behavior.
+# See docs/install-hardware-tier-and-staleness.md.
+#
+# Seams (all default to the real system; injectable so tests can drive
+# the whole SKU matrix with no hardware):
+#   JASPER_HW_MEMINFO_FILE  (default /proc/meminfo)
+#   JASPER_HW_NPROC         (default `nproc`)
+#   JASPER_HW_ARCH          (default `uname -m`)
+detect_hardware_tier() {
+    local meminfo="${JASPER_HW_MEMINFO_FILE:-/proc/meminfo}"
+    local mem_kb
+    mem_kb="$(awk '/^MemTotal:/ { print $2; exit }' "${meminfo}" 2>/dev/null || true)"
+    case "${mem_kb}" in
+        ""|*[!0-9]*) mem_kb=0 ;;
+    esac
+    # Declare then assign (not `local x="$(...)"`) so ShellCheck SC2155
+    # doesn't fire and a subshell failure can't be masked.
+    local cpus
+    cpus="${JASPER_HW_NPROC:-$(nproc 2>/dev/null || echo 1)}"
+    case "${cpus}" in
+        ""|*[!0-9]*) cpus=1 ;;
+    esac
+    local arch
+    arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    [[ -n "${arch}" ]] || arch="unknown"
+
+    # The low boundary REUSES rust-daemons.sh's threshold (one source of
+    # truth) so the label can't drift from the build knob it describes —
+    # below it, the Rust low-memory build profile is already active.
+    # install.sh always sources rust-daemons.sh, so the var is set; the
+    # :- fallback only guards a partial source in a stray test context.
+    # The 2 GB split is the one tier-owned constant: it separates the jts2
+    # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
+    # headroom.
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-786432}"
+    local tier
+    if (( mem_kb == 0 )); then
+        tier="unknown"
+    elif (( mem_kb < low_kb )); then
+        tier="low"
+    elif (( mem_kb < 2097152 )); then
+        tier="constrained"
+    else
+        tier="standard"
+    fi
+    printf 'ram_mb=%d cpus=%s arch=%s tier=%s\n' "$(( mem_kb / 1024 ))" "${cpus}" "${arch}" "${tier}"
+}
+
+# True when the detected/injected arch is a 64-bit ARM target JTS ships
+# prebuilt binaries for (CamillaDSP aarch64, librespot arm64 .deb,
+# CamillaGUI aarch64). 32-bit Pi OS (armv7l/armhf) — an easy Imager
+# mis-pick on a Zero 2 W, which is arm64-capable but often imaged 32-bit
+# — has no prebuilt path and fails deep in a fetch today.
+_hardware_tier_arch_supported() {
+    local arch
+    arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    case "${arch}" in
+        aarch64|arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Real-install preflight: log the detected tier (so the deploy transcript
+# names it — closes the "failure wasn't self-evident" gap when a later
+# build OOMs) and fail fast on an unsupported architecture before any
+# mutation. A read-only preflight, like require_root; runs after the
+# --dry-run early return so it never trips on x86 CI dry-runs.
+hardware_tier_preflight() {
+    local tier_line
+    tier_line="$(detect_hardware_tier)"
+    echo "  hardware tier: ${tier_line}"
+    logger -t jasper-install -- "event=hardware_tier.detected ${tier_line}" 2>/dev/null || true
+
+    if _hardware_tier_arch_supported; then
+        return 0
+    fi
+    local arch
+    arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    if _is_truthy "${JASPER_ALLOW_UNSUPPORTED_ARCH:-0}"; then
+        echo "  WARN: unsupported architecture '${arch}'; JASPER_ALLOW_UNSUPPORTED_ARCH=1 set —" >&2
+        echo "  proceeding, but the prebuilt CamillaDSP/librespot/CamillaGUI fetches will likely fail" >&2
+        return 0
+    fi
+    cat >&2 <<EOF
+ERROR: unsupported architecture '${arch}'.
+
+JTS ships prebuilt 64-bit ARM binaries (CamillaDSP aarch64, librespot
+arm64, CamillaGUI aarch64) and is supported only on 64-bit Raspberry Pi
+OS (Trixie). Re-flash with the 64-bit image, or set
+JASPER_ALLOW_UNSUPPORTED_ARCH=1 to attempt the install anyway (expect
+the prebuilt fetches to fail).
+EOF
+    return 2
+}
+
 # The RAW first line of the marker, before normalization. Used only to
 # detect a legacy endpoint/satellite marker so the migration to streambox
 # can be logged once. Mirrors jasper.install_profile._normalize_with_migration_log.
@@ -251,6 +365,11 @@ Run for real from a Pi-local checkout:
    - A legacy persisted endpoint/satellite marker normalizes to
      streambox, so the box auto-migrates to the streambox install path.
 
+Hardware tier (detected on this host): $(detect_hardware_tier)
+  - Informational; orthogonal to the profile. The real install fails
+    fast on a non-arm64 architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1.
+    See docs/install-hardware-tier-and-staleness.md.
+
 2. System packages
    - apt-get update.
    - Streambox renderer/DSP stack runtime/build packages:
@@ -283,13 +402,18 @@ Run for real from a Pi-local checkout:
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; Zero-class RAM uses the installer
      low-memory Cargo release overrides.
+   - The shairport-sync/nqptp source builds and both Rust daemon builds
+     run RAM-bounded and cgroup-contained via
+     deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
+     never a live daemon. See docs/HANDOFF-build-sandbox.md.
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
      /var/lib/jasper-intsecrets, /opt/camilladsp, /etc/camilladsp,
      /var/lib/camilladsp, /usr/share/jasper-web, and feature-specific
      state directories.
-   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
+   - Write the /var/lib/jasper/build.txt verified-install marker
+     (written LAST, only on full success) with deploy SHA/branch metadata.
    - Copy the jasper Python package, pyproject.toml, landing pages,
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
@@ -353,6 +477,13 @@ Profile guard:
   - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
 
+Hardware tier (detected on this host): $(detect_hardware_tier)
+  - Informational; orthogonal to the profile. Build strategy keys off
+    RAM (the Rust low-memory profile under 768 MB; the WebRTC AEC3 -j
+    cap budgets ~1.5 GB/job). The real install fails fast on a non-arm64
+    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. See
+    docs/install-hardware-tier-and-staleness.md.
+
 1. System packages
    - apt-get update.
    - Core runtime/build packages:
@@ -397,12 +528,18 @@ Profile guard:
      owner.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
+   - All heavy source builds above (webrtc AEC3, jasper_aec3, the Rust
+     daemons, shairport-sync, nqptp) run RAM-bounded and cgroup-contained
+     via deploy/lib/install/build-sandbox.sh, so an OOM during an
+     in-service update kills only the build, never a live daemon.
+     See docs/HANDOFF-build-sandbox.md.
 
 3. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
      /opt/camilladsp, /etc/camilladsp, /var/lib/camilladsp,
      /usr/share/jasper-web, and feature-specific state directories.
-   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata
+   - Write the /var/lib/jasper/build.txt verified-install marker
+     (written LAST, only on full success) with deploy SHA/branch metadata
      when available.
    - Write /var/lib/jasper/voice_provider_ids from the Python voice
      catalog so boot/hotplug shell can validate providers without
@@ -436,7 +573,7 @@ Profile guard:
      site files) superseded by the GitHub Pages OAuth bounce page.
 
 5. Services and live actions
-   - Create the `jasper` group and the non-root service users
+   - Create the \`jasper\` group and the non-root service users
      (jasper-voice / jasper-mux / jasper-input / jasper-control /
      jasper-web) the Tier-A daemons drop to, plus the Phase 4
      secret-compartment groups.
@@ -468,6 +605,10 @@ Profile guard:
      the normal production statefile. Rollback to a pre-outputd
      release/branch must also stop/disable jasper-outputd because that
      older code does not know about the outputd unit.
+   - Seed the camilla#2 crossover Camilla statefile (the dormant
+     endpoint-crossover instance, :1235) through the same active-speaker
+     runtime contract. Its unit is installed but NOT enabled — a later
+     reconciler arms it only on an active leader.
    - Run the AEC/mic reconciler so voice follows attached hardware.
    - Install the multi-room grouping units: snapserver + snapclient
      DISABLED (grouping is never auto-enabled; the snapcast apt
@@ -648,20 +789,13 @@ _webrtc_compile_jobs() {
     #
     # Budget ~1.5 GB per job and clamp to [1, nproc]: a 1 GB Pi builds
     # at -j1 (slower but survives), an 8 GB Pi still gets full nproc.
-    # This is the graduated analogue of rust-daemons.sh's low-memory
-    # profile, which flips at 768 MB — too low here, since the OOM hit
-    # at ~1 GB. $1=MemTotal kB, $2=nproc (both injectable for tests).
-    local memtotal_kb="${1:-0}"
-    local ncpu="${2:-1}"
-    awk -v m="${memtotal_kb}" -v n="${ncpu}" '
-        BEGIN {
-            kb_per_job = 1500000
-            jobs = int(m / kb_per_job)
-            if (jobs < 1) jobs = 1
-            if (jobs > n) jobs = n
-            printf "%d\n", jobs
-        }
-    '
+    # $1=MemTotal kB, $2=nproc (both injectable for tests).
+    #
+    # Now a thin caller of the unified _ram_bounded_jobs policy in
+    # build-sandbox.sh, at the shared C++ budget. Kept as a named function
+    # so its regression tests and the call site below stay stable.
+    # Containment of the compile itself is run_contained_build.
+    _ram_bounded_jobs "${1:-0}" "${2:-1}" "${BUILD_SANDBOX_KB_PER_JOB_CPP}"
 }
 
 build_webrtc_v2_for_aec3() {
@@ -724,8 +858,9 @@ build_webrtc_v2_for_aec3() {
     compile_jobs="$(_webrtc_compile_jobs \
         "$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null)" \
         "$(nproc 2>/dev/null || echo 1)")"
-    echo "    meson compile -C builddir/ (-j ${compile_jobs}; RAM-bounded to avoid OOM-killing the build on low-memory Pis)"
-    (cd "${src_dir}" && meson compile -C builddir -j "${compile_jobs}")
+    echo "    meson compile -C builddir/ (-j ${compile_jobs}; RAM-bounded + cgroup-contained to avoid OOM-killing live daemons on low-memory Pis)"
+    (cd "${src_dir}" && run_contained_build "webrtc-aec3" -- \
+        meson compile -C builddir -j "${compile_jobs}")
 
     if [[ ! -f "${static_archive}" ]]; then
         echo "  ERROR: meson compile finished but ${static_archive} is missing" >&2
@@ -977,6 +1112,51 @@ ensure_outputd_camilla_statefile() {
     fi
 }
 
+ensure_crossover_camilla_statefile() {
+    # Seed camilla#2's OWN statefile (crossover-statefile.yml) so the
+    # endpoint-crossover instance (jasper-camilla-crossover.service, :1235)
+    # has a config to load on first start (the unit has no positional
+    # config — same CamillaDSP-v4 statefile-clobber reason as camilla#1).
+    #
+    # Reuses the SAME active-speaker runtime contract as
+    # ensure_outputd_camilla_statefile (jasper-active-speaker
+    # runtime-safe-graph), which on a roleful/protected topology — the ONLY
+    # topology where camilla#2 is meaningful — selects the DRIVER-DOMAIN
+    # (Layer-A-intact) baseline / all-muted active startup graph and NEVER
+    # the flat fallback (the contract's `select_flat` branch is gated on
+    # `not requires_roleful_graph`; see
+    # jasper/active_speaker/runtime_contract.py). So an active box gets a
+    # tweeter-safe driver-domain seed.
+    #
+    # SEAM FLAGGED FOR THE RECONCILER PR: on an ORDINARY (non-active) box
+    # the contract returns flat, so this would seed flat into a file named
+    # crossover-statefile.yml. That is BENIGN today because camilla#2 is
+    # INERT there (the unit is never enabled), so the flat seed is never
+    # loaded. NOTE: the crossover guard does NOT convert a flat statefile —
+    # it acts only on a dead bonded pipe — so the driver-domain guarantee
+    # for an ARMED camilla#2 rests on the reconciler seeding it at arm time,
+    # not on the guard. The later
+    # reconciler PR — which knows when the box is actually an active
+    # leader — should refine this to seed the EXACT driver-domain baseline
+    # (not whatever runtime-safe-graph returns for a non-roleful topology)
+    # at the moment it arms the unit. We do NOT author that here: emitting
+    # a precise driver-domain baseline is jasper/active_speaker/* code,
+    # outside this unit's scope fence.
+    #
+    # We never restart the unit (it is not enabled), so there is no
+    # JASPER_RESTART_* knob here — only the seed write.
+    local output
+    echo "  Seeding camilla#2 crossover statefile via active-speaker runtime contract"
+    if ! output="$(/opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
+        --statefile /var/lib/camilladsp/crossover-statefile.yml \
+        --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
+        --write-statefile 2>&1)"; then
+        printf '%s\n' "${output}"
+        return 1
+    fi
+    printf '%s\n' "${output}"
+}
+
 find_card() {
     # find_card "<aplay|arecord>" "<grep regex>"
     local tool="$1" regex="$2"
@@ -1100,37 +1280,73 @@ install_alsa() {
     echo "  Wrote /etc/asound.conf with fan-in, outputd lanes, and jasper_out rollback path"
 }
 
-write_build_manifest() {
-    # Build manifest — captures the git SHA + install timestamp at the
-    # moment install.sh ran. The /system dashboard and deploy verifier
-    # read this to show/prove which checkout is installed.
-    local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
-    local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
-    local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
-    if [[ "${git_sha}" == "unknown" ]] && command -v git >/dev/null 2>&1 && \
+# Resolve the short build SHA for THIS install run, with the same
+# precedence write_build_manifest uses: deploy env var (the normal
+# laptop-driven path) → git in the rsynced checkout (Pi-local installs) →
+# the prior manifest → "unknown". Factored out so the landing page's
+# app.css cache-bust and the build manifest agree by construction even
+# though the manifest is now written LAST (see write_build_manifest).
+resolve_build_sha_short() {
+    local sha="${JASPER_DEPLOY_SHA:-}"
+    if [[ -z "${sha}" ]] && command -v git >/dev/null 2>&1 && \
        { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
-        git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
-        git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
-        git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+        sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || true)
     fi
-    if [[ "${git_sha}" == "unknown" && -f "${STATE_DIR}/build.txt" ]]; then
-        local prior_sha
-        prior_sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-        if [[ -n "${prior_sha}" && "${prior_sha}" != "unknown" ]]; then
-            git_sha="${prior_sha}"
-            git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-            git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-            echo "  preserving build manifest from prior install: ${git_sha} on ${git_branch}"
-        fi
+    if [[ -z "${sha}" && -f "${STATE_DIR}/build.txt" ]]; then
+        sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)
     fi
-    cat > "${STATE_DIR}/build.txt" <<EOF
+    printf '%s\n' "${sha:-unknown}"
+}
+
+write_build_manifest() {
+    # Build manifest = the VERIFIED-INSTALL success marker, NOT a "we
+    # started installing X" note. It is written ONCE, as the final
+    # mutation in main(), so `set -euo pipefail` guarantees every
+    # build/install/migration step above ran to completion before this
+    # line is reached. A mid-install abort (e.g. the OOM-killed WebRTC
+    # build on jts2, 2026-06-21) therefore leaves the PRIOR good manifest
+    # untouched — so the deploy direction-guard and the /system "Software"
+    # card never advertise a SHA the box is not cleanly running. This
+    # closes problem #4 in docs/install-update-resilience-plan.md, where
+    # the manifest was written EARLY and lied after the build failed.
+    #
+    # JASPER_INSTALL_STATUS=ok records exactly that honest claim: the
+    # install process for this SHA completed. (Runtime subsystem health —
+    # is voice up? is the mic present? — is a separate layer the deploy
+    # verifier surfaces post-restart; the install can't attest to it
+    # because it doesn't restart the hardware-gated daemons.)
+    local git_sha git_full git_branch
+    git_sha="$(resolve_build_sha_short)"
+    git_full="${JASPER_DEPLOY_SHA_FULL:-}"
+    git_branch="${JASPER_DEPLOY_BRANCH:-}"
+    if [[ ( -z "${git_full}" || -z "${git_branch}" ) ]] && command -v git >/dev/null 2>&1 && \
+       { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
+        [[ -z "${git_full}" ]] && git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || true)
+        [[ -z "${git_branch}" ]] && git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    fi
+    if [[ ( -z "${git_full}" || -z "${git_branch}" ) && -f "${STATE_DIR}/build.txt" ]]; then
+        [[ -z "${git_full}" ]] && git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)
+        [[ -z "${git_branch}" ]] && git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)
+    fi
+    git_full="${git_full:-unknown}"
+    git_branch="${git_branch:-unknown}"
+
+    # Atomic write: this is the success marker, so a torn write (power loss
+    # mid-cat) must never leave a half-line the direction-guard misreads.
+    # Mirrors persist_install_profile's tempfile+rename. STATE_DIR already
+    # exists by the end of main(); we don't re-`install -d` it so we can't
+    # clobber the group-writable widening done earlier in the run.
+    local tmp="${STATE_DIR}/build.txt.tmp.$$"
+    cat > "${tmp}" <<EOF
 JASPER_GIT_SHA=${git_sha}
 JASPER_GIT_SHA_FULL=${git_full}
 JASPER_GIT_BRANCH=${git_branch}
 JASPER_INSTALL_AT=$(date -Iseconds)
+JASPER_INSTALL_STATUS=ok
 EOF
-    chmod 0644 "${STATE_DIR}/build.txt"
-    echo "  Build manifest: ${git_sha} on ${git_branch}"
+    chmod 0644 "${tmp}"
+    mv -f "${tmp}" "${STATE_DIR}/build.txt"
+    echo "  Build manifest (verified install): ${git_sha} on ${git_branch}"
 }
 
 # Generic "delete-and-append" rewrite of one KEY=value line in
@@ -1413,9 +1629,13 @@ install_management_static_assets() {
     install -m 0644 "${index_src}" /usr/share/jasper-web/index.html
     # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
     # query string) so a deploy busts the year-immutable /assets cache.
-    # The landing page is static HTML, so we substitute at install time;
-    # build.txt was written earlier in this run.
-    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
+    # The landing page is static HTML, so we substitute at install time.
+    # Resolve the SHA directly (deploy env → git → prior manifest) rather
+    # than reading build.txt: the manifest is now written LAST, as the
+    # verified-install marker, so it still holds the PRIOR SHA at this
+    # point in the run. resolve_build_sha_short returns the same value the
+    # manifest will record, so the cache key matches the installed build.
+    app_css_ver="$(resolve_build_sha_short)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
     sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
     # Bake the install profile's capability map into the landing page so its
@@ -1913,6 +2133,7 @@ main() {
     if install_profile_legacy_marker_migrating; then
         echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=streambox source=marker"
     fi
+    hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
         persist_install_profile "${install_profile}"
@@ -1926,6 +2147,7 @@ main() {
         tune_wifi_for_airplay
         install_streambox_jasper
         ensure_outputd_camilla_statefile
+        ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
         build_install_jasper_fanin
         build_install_jasper_outputd
@@ -1944,6 +2166,12 @@ main() {
         provision_correction_tls
         install_streambox_nginx_site
         widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+        # Final mutation: stamp the verified-install manifest only now that
+        # every step above succeeded (set -e). run_doctor_summary below is
+        # non-mutating diagnostics — keep write_build_manifest the LAST
+        # state change so a failure anywhere above leaves the prior good
+        # manifest. See write_build_manifest + problem #4 in the plan.
+        write_build_manifest
         run_doctor_summary
         return 0
     fi
@@ -1959,6 +2187,7 @@ main() {
     tune_wifi_for_airplay
     install_jasper
     ensure_outputd_camilla_statefile
+    ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_systemd_units
@@ -1977,6 +2206,12 @@ main() {
     install_camillagui
     regenerate_audio_cues
     widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+    # Final mutation: stamp the verified-install manifest only now that
+    # every step above succeeded (set -e). run_doctor_summary below is
+    # non-mutating diagnostics — keep write_build_manifest the LAST state
+    # change so a failure anywhere above leaves the prior good manifest.
+    # See write_build_manifest + problem #4 in the plan.
+    write_build_manifest
     run_doctor_summary
 }
 

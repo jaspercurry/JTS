@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """AudioCueManager — central object the daemon calls to play cues
 and ensure the cache is fresh.
 

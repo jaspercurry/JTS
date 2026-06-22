@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Static guardrails for web wizard UI/security conventions.
 
 These are intentionally narrow tripwires for patterns that have already

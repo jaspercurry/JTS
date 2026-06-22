@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // debug-card.js — the /system "Debug logging" card.
 //
 // Self-contained: fetches its own state from the long-lived control

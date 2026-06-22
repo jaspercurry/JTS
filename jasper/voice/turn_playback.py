@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import asyncio
@@ -23,9 +27,95 @@ async def _turn_audio_chunks(turn: LiveTurn):
         yield AudioOutChunk(pcm=pcm)
 
 
+async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
+    """Flush local TTS playout in response to an interrupt, clear the turn's
+    interrupted state, then reconcile the active provider's conversation
+    state to the heard boundary.
+
+    The interrupt can come from a provider server-interrupt (Gemini) or
+    from local barge-in detection (``WakeLoop._handle_playback_frame`` ->
+    ``turn.request_local_interrupt()``). The local TTS flush always happens
+    first (the latency-critical action). After a *clean* flush this drives
+    the provider-pack seam — ``cancel_response`` then
+    ``truncate_assistant_audio`` (jasper/voice/session.py) — with the playout
+    ledger's played-ms, so provider history matches what the listener
+    actually heard. Both are no-ops for a server-self-truncating provider
+    (Gemini); the OpenAI/Grok pack sends ``response.cancel`` +
+    ``conversation.item.truncate``. The seam is getattr-probed, so an adapter
+    without it degrades to local-flush-only.
+
+    Returns ``True`` on a clean flush, ``False`` if the flush errored. On a
+    flush error it emits
+    ``event=barge.flush_failed`` at WARNING — never silently — skips the
+    provider reconcile (a failed local flush has no trustworthy played
+    boundary to truncate against), and the caller stops racing the interrupt
+    and lets the turn end through its normal teardown."""
+    try:
+        ack = await tts.flush()
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            logger,
+            "barge.flush_failed",
+            error=type(e).__name__,
+            detail=str(e),
+            level=logging.WARNING,
+        )
+        return False
+    if ack is not None:
+        log_event(
+            logger,
+            "tts_flush.playout_ack",
+            max_audio_played_ms=ack.get("max_audio_played_ms"),
+            segments=ack.get("segments"),
+            flushed_frames=ack.get("flushed_frames"),
+        )
+    turn.clear_interrupted()
+    # Drop assistant audio already buffered for playback but not yet written.
+    # The flush above only cleared the DAC ring (~one write), but burst-
+    # delivery providers (OpenAI/Grok) enqueue the whole response up front,
+    # so without this the play loop resumes writing the backlog and the
+    # assistant audibly talks over the user. getattr-probed like the rest of
+    # the seam; adapters that stream without an internal buffer (or already
+    # drain on their own server-interrupt path) return 0 / omit it.
+    drop_pending = getattr(turn, "drop_pending_audio", None)
+    if callable(drop_pending):
+        dropped = drop_pending()
+        if dropped:
+            log_event(logger, "barge.dropped_pending_audio", chunks=dropped)
+    # Local playout is now fully stopped; reconcile the active provider's
+    # conversation state to the heard boundary using the playout ledger's
+    # played-ms from the flush ack. Capability seam (jasper/voice/session.py):
+    # a server-self-truncating provider (Gemini) no-ops both calls; the
+    # OpenAI/Grok pack sends response.cancel then
+    # conversation.item.truncate(audio_end_ms=played-ms). getattr-probed so
+    # an adapter predating the seam degrades to local-flush-only rather than
+    # crashing — same optional-capability handling as request_local_interrupt.
+    # Order matters: cancel stops generation first, then truncate trims
+    # history to what actually played. The truncate's own no-op-if-0 /
+    # missing-id guards live in the pack, so passing the raw ledger value
+    # (0 when unwired/unavailable) is safe here.
+    played_ms = ack.get("max_audio_played_ms") if isinstance(ack, dict) else None
+    try:
+        played_ms_int = int(played_ms) if played_ms is not None else 0
+    except (TypeError, ValueError):
+        # Defensive: a non-numeric value from a foreign/corrupted producer
+        # must not raise out of the flush path. The pack's own no-op-if-<=0
+        # guard then skips the truncate.
+        played_ms_int = 0
+    cancel = getattr(turn, "cancel_response", None)
+    if callable(cancel):
+        await cancel("barge_in")
+    truncate = getattr(turn, "truncate_assistant_audio", None)
+    if callable(truncate):
+        await truncate(None, played_ms_int)
+    return True
+
+
 async def _play_responses(
     turn: LiveTurn,
     tts: TtsPlayout,
+    *,
+    barge_in_enabled: bool = False,
 ) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -33,17 +123,28 @@ async def _play_responses(
     buffer. Without this, ALSA/sounddevice buffering causes 100-300ms of
     overrun where the model talks over the user.
 
-    Cleanup contract: both per-iteration helpers (the interrupt waiter
-    and the in-flight write) MUST be cancelled and awaited before this
-    function returns, otherwise they leak as `Task destroyed but it is
-    pending` warnings. The waiter is held alive by a reference cycle
-    through `turn._interrupt_event`, so dropping the local without
+    ``barge_in_enabled`` (default False) extends the interrupt race to the
+    drain-tail window below. With it False the function is byte-identical
+    to its pre-barge-in shape: the chunk-loop race is unchanged (it still
+    handles Gemini's server-interrupt), and the drain tail is a plain
+    ``wait_drained()``. With it True a barge-in arriving *after* the last
+    chunk was written — the common case for burst-delivery providers that
+    stream every chunk before playout finishes — still flushes, instead of
+    being swallowed until the tail drains on its own.
+
+    Cleanup contract: the per-iteration helpers (the interrupt waiter, the
+    in-flight write, and the drain waiter) MUST be cancelled and awaited
+    before this function returns, otherwise they leak as `Task destroyed
+    but it is pending` warnings. The waiter is held alive by a reference
+    cycle through `turn._interrupt_event`, so dropping the local without
     explicit cleanup means GC eventually breaks the cycle and Task.__del__
-    fires. The OpenAI / Grok adapters never set `_interrupt_event` (no
-    barge-in implemented), so the waiter is always pending at turn end
-    and the leak would fire every turn without this try/finally."""
+    fires. Providers that implement no interrupt at all leave the waiter
+    pending at turn end, so the leak would fire every turn without this
+    try/finally."""
     interrupt_task: asyncio.Task | None = None
     write_task: asyncio.Task | None = None
+    drain_task: asyncio.Task | None = None
+    flush_failed = False
     try:
         async for chunk in _turn_audio_chunks(turn):
             if interrupt_task is None or interrupt_task.done():
@@ -65,19 +166,11 @@ async def _play_responses(
                     await write_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-                ack = await tts.flush()
-                flush_handler = getattr(turn, "on_tts_flush", None)
-                if callable(flush_handler):
-                    await flush_handler(ack)
-                if ack is not None:
-                    log_event(
-                        logger,
-                        "tts_flush.playout_ack",
-                        max_audio_played_ms=ack.get("max_audio_played_ms"),
-                        segments=ack.get("segments"),
-                        flushed_frames=ack.get("flushed_frames"),
-                    )
-                turn.clear_interrupted()
+                if not await _flush_for_interrupt(turn, tts):
+                    # Flush errored (already WARNed). Stop racing the
+                    # interrupt and fall through to the normal turn end.
+                    flush_failed = True
+                    break
                 interrupt_task = None
             elif write_task in done:
                 try:
@@ -102,9 +195,30 @@ async def _play_responses(
         # Anchors on samples queued (not network arrivals), so an
         # OpenAI-style burst delivery and a Gemini-style real-time
         # pacing both end the turn at the right moment.
-        await tts.wait_drained()
+        if barge_in_enabled and not flush_failed:
+            # Race a late barge-in against the drain. wait_drained is a
+            # single timed sleep, so cancelling it mid-wait is free.
+            if interrupt_task is None or interrupt_task.done():
+                interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
+            drain_task = asyncio.create_task(tts.wait_drained())
+            done, _ = await asyncio.wait(
+                {drain_task, interrupt_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if interrupt_task in done:
+                # drain_task is still pending; the finally block below
+                # cancels and awaits it (a single timed sleep, free to
+                # cancel). Flush the residual tail, then end the turn. The
+                # return is intentionally not captured: unlike the chunk-loop
+                # caller there is nothing left to gate (the turn ends here
+                # either way), and a failed flush already WARNed inside
+                # _flush_for_interrupt.
+                await _flush_for_interrupt(turn, tts)
+                interrupt_task = None
+        else:
+            await tts.wait_drained()
     finally:
-        for t in (interrupt_task, write_task):
+        for t in (interrupt_task, write_task, drain_task):
             if t is None or t.done():
                 continue
             t.cancel()

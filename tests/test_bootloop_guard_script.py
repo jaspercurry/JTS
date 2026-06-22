@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for deploy/bin/jasper-bootloop-guard (audit C1).
 
 Pure-bash policy script, tested via subprocess.run with a fake

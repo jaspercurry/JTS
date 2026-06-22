@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # =============================================================================
 # s0-sync-bench.sh — S0-SYNC de-risk gate BENCH harness (THROWAWAY)
 # =============================================================================
@@ -652,7 +657,7 @@ while [[ $# -gt 0 ]]; do
     --volume-db) VOLUME_DB="$2"; shift ;;
     --sub) ALOOP_SUB="$2"; shift ;;
     --resampler) RESAMPLER="$2"; shift ;;
-    -h|--help) sed -n '2,/^# ===/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 0 ;;
+    -h|--help) sed '2,6d' "$0" | sed -n '2,/^# ===/p' | sed 's/^# \{0,1\}//' >&2; exit 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;
   esac
   shift
@@ -665,5 +670,5 @@ case "$ACTION" in
   collect) do_collect ;;
   status) do_status ;;
   teardown) do_teardown ;;
-  *) sed -n '2,/^# ===/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed '2,6d' "$0" | sed -n '2,/^# ===/p' | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

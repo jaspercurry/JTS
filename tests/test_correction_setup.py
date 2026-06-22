@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the room-correction wizard at /correction/.
 
 The page started as the Phase 0 mic-permission skeleton and has grown

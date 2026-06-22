@@ -15,6 +15,9 @@
 # hw-validation runbooks there).
 session_artifacts = [
   "docs/AEC-DIAG-01-baseline.md",
+  # Execution artifact: per-window build prompts for the barge-in plan in
+  # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
+  "docs/barge-in-build-prompts.md",
 ]
 
 [[subsystem]]
@@ -52,6 +55,7 @@ code = [
   "scripts/docs-linkcheck.py",
   "docs/doc-map.toml",
   "docs/testing-tooling.md",
+  ".claude/commands/deep-audit.md",
 ]
 docs = [
   "AGENTS.md",
@@ -59,6 +63,7 @@ docs = [
   "README.md",
   "CONTRIBUTING.md",
   "docs/testing-tooling.md",
+  "docs/DEEP-AUDIT-PLAYBOOK.md",
 ]
 requires_docs_when = [
   "The documentation paradigm, README atlas, agent context loading, PR documentation-impact workflow, freshness checks, or docs routing map changes.",
@@ -127,13 +132,17 @@ docs = [
   "QUICKSTART.md",
   "BRINGUP.md",
   "docs/HANDOFF-supply-chain.md",
+  "docs/HANDOFF-build-sandbox.md",
   "docs/HANDOFF-resilience.md",
   "docs/install-update-resilience-plan.md",
+  "docs/HANDOFF-install-update-transaction.md",
+  "docs/install-hardware-tier-and-staleness.md",
 ]
 requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
   "A build/download/provenance input or runtime install location changes.",
   "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes (see the install-update-resilience planning brief).",
+  "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change (see HANDOFF-install-update-transaction.md).",
 ]
 verification = [
   "bash scripts/doc-freshness.sh 90 --all",
@@ -293,6 +302,10 @@ docs = [
   "docs/HANDOFF-prompting.md",
   "docs/HANDOFF-audible-feedback.md",
   "docs/HANDOFF-speaker-output-reference.md",
+  # Mic presence-gate: a jasper-voice.service / audio_io / daemon_main change
+  # near the no-mic park path must route here (ConditionPathExists marker +
+  # exit-66 park + the cross-component convergence model).
+  "docs/HANDOFF-hotplug-resilience.md",
   "docs/HANDOFF-vad-experiments.md",
   "docs/HANDOFF-persistent-live-session.md",
   # Canonical doc for the tool-platform boundary (packs, catalog, dispatch,
@@ -381,6 +394,9 @@ docs = [
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
   "docs/HANDOFF-aec.md",
   "docs/HANDOFF-barge-in.md",
+  # The reconciler is the single writer of the mic presence-gate marker;
+  # a change to its park/start paths must route here.
+  "docs/HANDOFF-hotplug-resilience.md",
   "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-xvf3800.md",
   "docs/HANDOFF-mic-quality-v2.md",
@@ -412,6 +428,7 @@ code = [
   "deploy/systemd/jasper-wifi-guardian.service",
   "deploy/systemd/jasper-wifi-recover.service",
   "deploy/systemd/jasper-wifi-recover.timer",
+  "deploy/systemd/jasper-wifi-scan-repair.service",
   "scripts/experiments/wifi-scan-repair.py",
 ]
 docs = [
@@ -423,7 +440,7 @@ requires_docs_when = [
   "Wi-Fi lockout protection, scan suppression repair, rollback behavior, guardian persistence, or NetworkManager recovery semantics change.",
 ]
 verification = [
-  "pytest tests/test_wifi_setup_scan_health.py tests/test_wifi_setup_guardian_hooks.py tests/test_wifi_scan_repair.py tests/test_wifi_guardian_persistence.py tests/test_wifi_guardian_script.py tests/test_wifi_recover_script.py",
+  "pytest tests/test_wifi_setup_scan_health.py tests/test_wifi_setup_guardian_hooks.py tests/test_wifi_scan_repair.py tests/test_wifi_guardian_persistence.py tests/test_wifi_guardian_script.py tests/test_wifi_recover_script.py tests/test_restart_broker.py tests/test_polkit_jasper_control.py",
 ]
 
 [[subsystem]]
@@ -454,6 +471,8 @@ id = "volume-and-sound"
 title = "Volume coordination and sound preferences"
 safety = "audio-output-risk"
 code = [
+  "jasper/control/gain_chain.py",
+  "jasper/control/state_aggregate.py",
   "jasper/volume_*.py",
   "jasper/volume_coordinator.py",
   "jasper/tools/audio.py",
@@ -476,10 +495,10 @@ docs = [
   "docs/HANDOFF-dsp-graph-carrier.md",
 ]
 requires_docs_when = [
-  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
+  "The canonical listening level, source volume carrier, gain-chain ledger, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
 ]
 verification = [
-  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
+  "pytest tests/test_gain_chain.py tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
 ]
 
 [[subsystem]]
@@ -755,7 +774,6 @@ code = [
   "LICENSE",
   "NOTICE",
   "LICENSE-third-party.md",
-  "docs/LAUNCH-READINESS.md",
   "docs/OSS-READINESS-TOP-FIVE.md",
   "docs/REVIEW-google-oss-readiness.md",
   "docs/REVIEW-2026-06-04-deep-dive.md",
@@ -777,7 +795,6 @@ docs = [
   "CODE_OF_CONDUCT.md",
   "CHANGELOG.md",
   "LICENSE-third-party.md",
-  "docs/LAUNCH-READINESS.md",
   "docs/OSS-READINESS-TOP-FIVE.md",
   "docs/REVIEW-google-oss-readiness.md",
   "docs/REVIEW-2026-06-04-deep-dive.md",

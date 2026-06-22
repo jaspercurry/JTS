@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression: TTS IPC writes must pace to the owner's pending budget.
 
 jasper-fanin's TTS lane accepts audio into a bounded pending queue

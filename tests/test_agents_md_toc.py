@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Keep AGENTS.md's anchor table of contents complete and live.
 
 AGENTS.md (PR #698) grew a "## Contents" anchor ToC under its canonical

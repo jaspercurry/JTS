@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Append-only ring buffer of xrun events at
 //! `/var/lib/jasper/fanin/xrun_history.jsonl`.
 //!

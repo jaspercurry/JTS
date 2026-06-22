@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Interoperability helpers for correction measurement bundles.
 
 REW and similar tools are happiest with boring files: delimited

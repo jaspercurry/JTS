@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.volume_observers.
 
 The observers shell out to busctl/bluealsa-cli for AirPlay/BT, and

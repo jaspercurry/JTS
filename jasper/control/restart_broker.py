@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Privileged restart broker — the single mediated systemctl boundary (WS1 Phase 3).
 
 Background: jasper-web's ~13 wizard restart sites, jasper-mux's librespot
@@ -124,6 +128,7 @@ MANAGED_UNITS = frozenset({
 # just enough for graph transitions to request a bounded reconciliation pass.
 START_ONLY_UNITS = frozenset({
     "jasper-audio-hardware-reconcile.service",
+    "jasper-wifi-scan-repair.service",
 })
 
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS

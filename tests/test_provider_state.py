@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the shared active-voice-provider SSOT reader.
 
 These encode the contract that bit us on /system/: the active provider
@@ -12,11 +16,14 @@ from jasper.voice.catalog import default_model_id
 from jasper.voice import provider_state as provider_state_mod
 from jasper.env_load import EnvFileState
 from jasper.voice.provider_state import (
+    barge_in_env_key,
     read_active_provider_state,
     read_active_model,
     read_active_provider,
     read_active_provider_and_model,
+    read_barge_in_enabled,
     resolve_active_provider,
+    resolve_barge_in_enabled,
 )
 
 
@@ -110,3 +117,55 @@ def test_resolve_is_pure_validates_and_strips():
     assert resolve_active_provider({}) == ""
     assert resolve_active_provider({"JASPER_VOICE_PROVIDER": ""}) == ""
     assert resolve_active_provider({"JASPER_VOICE_PROVIDER": "x"}) == ""
+
+
+# --- Per-provider barge-in enable flag (DEFAULT OFF) -------------------
+
+
+def test_barge_in_env_key_is_per_provider():
+    assert barge_in_env_key("gemini") == "JASPER_BARGE_IN_GEMINI"
+    assert barge_in_env_key("openai") == "JASPER_BARGE_IN_OPENAI"
+    assert barge_in_env_key("grok") == "JASPER_BARGE_IN_GROK"
+
+
+def test_barge_in_defaults_off_when_unset(tmp_path):
+    # The whole safety contract: absent flag == disabled, never a guess.
+    path = _write(tmp_path, "JASPER_VOICE_PROVIDER=gemini\n")
+    assert read_barge_in_enabled("gemini", path) is False
+
+
+def test_barge_in_enabled_when_truthy(tmp_path):
+    for raw in ("1", "true", "yes", "on", "enabled", "ON", "True"):
+        path = _write(tmp_path, f"JASPER_BARGE_IN_GEMINI={raw}\n")
+        assert read_barge_in_enabled("gemini", path) is True, raw
+
+
+def test_barge_in_disabled_when_falsey(tmp_path):
+    for raw in ("0", "false", "no", "off", "disabled", ""):
+        path = _write(tmp_path, f"JASPER_BARGE_IN_GEMINI={raw}\n")
+        assert read_barge_in_enabled("gemini", path) is False, raw
+
+
+def test_barge_in_is_per_provider_isolated(tmp_path):
+    # Enabling one provider's flag must not enable another's.
+    path = _write(tmp_path, "JASPER_BARGE_IN_GEMINI=1\n")
+    assert read_barge_in_enabled("gemini", path) is True
+    assert read_barge_in_enabled("openai", path) is False
+    assert read_barge_in_enabled("grok", path) is False
+
+
+def test_barge_in_unknown_provider_is_off(tmp_path):
+    path = _write(tmp_path, "JASPER_BARGE_IN_BOGUS=1\n")
+    assert read_barge_in_enabled("bogus", path) is False
+
+
+def test_barge_in_missing_file_is_off(tmp_path):
+    path = str(tmp_path / "does-not-exist.env")
+    assert read_barge_in_enabled("gemini", path) is False
+
+
+def test_resolve_barge_in_is_pure():
+    assert resolve_barge_in_enabled("gemini", {"JASPER_BARGE_IN_GEMINI": "1"}) is True
+    assert resolve_barge_in_enabled("gemini", {"JASPER_BARGE_IN_GEMINI": " on "}) is True
+    assert resolve_barge_in_enabled("gemini", {}) is False
+    assert resolve_barge_in_enabled("bogus", {"JASPER_BARGE_IN_BOGUS": "1"}) is False

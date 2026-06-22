@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-doctor checks — WS1 Phase 4 secret-compartment on-disk posture.
 
 The *secret-side complement* to :mod:`~jasper.cli.doctor.privsep`. privsep verifies

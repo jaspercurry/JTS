@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Single-source verification vocabulary for active-speaker CamillaDSP graphs.
 
 The active-speaker safety verifiers — ``runtime_contract`` (re-proves an emitted

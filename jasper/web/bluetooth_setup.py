@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """/bluetooth/ — generic Bluetooth control panel.
 
 Phone-Settings-style page: live device list, pair anything, no

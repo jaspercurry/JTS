@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# jasper-camilla-crossover-guard — keep camilla#2 (the endpoint-crossover
+# instance, :1235) from looping on a dead bonded pipe, and when it repairs
+# that, repair ONLY to a TWEETER-SAFE driver-domain graph — never flat. (A
+# non-pipe / solo statefile is left untouched: like the camilla#1 pipe-guard
+# this acts ONLY on a dead bonded pipe. It does not convert a flat statefile,
+# so the never-flat guarantee for an ARMED camilla#2 is owned by the
+# reconciler's arm-time seed, not by this guard — see install.sh
+# ensure_crossover_camilla_statefile.)
+#
+# Runs as ExecStartPre= on jasper-camilla-crossover.service. Mirrors
+# jasper-camilla-pipe-guard (the camilla#1 guard) in shape: pure bash,
+# fail-open everywhere, env-overridable paths, structured
+# `event=camilla_crossover_guard.<outcome>` lines on stderr. Read that
+# script's header for the full measured failure modes (a File-sink dead
+# pipe makes camilladsp 4.1.3 exit CLEAN; a reader-less FIFO blocks in
+# open(2)); they are identical here.
+#
+# THE ONE CRITICAL DIFFERENCE FROM THE camilla#1 GUARD: the safe-repair
+# target. camilla#1 (the program-bake / outputd instance) may repair to
+# the FLAT outputd-cutover.yml, because flat stereo to the DAC is safe on
+# an ordinary full-range box. camilla#2 IS the per-driver crossover on an
+# ACTIVE speaker — a flat config there would send FULL-RANGE signal to the
+# tweeter (the exact hazard the whole distributed-active increment exists
+# to prevent; docs/HANDOFF-distributed-active.md "Stage B"). So this guard
+# repairs ONLY to the re-proven DRIVER-DOMAIN baseline (Layer A intact),
+# NEVER to flat.
+#
+# How "never flat" is GUARANTEED, not just intended: the repair delegates
+# to `jasper-active-speaker runtime-safe-graph`, whose contract is that a
+# roleful/protected topology (every active speaker) can NEVER select the
+# flat fallback — it returns the driver-domain active baseline / all-muted
+# active startup graph, or a BLOCKED decision that leaves the statefile
+# untouched (jasper/active_speaker/runtime_contract.py
+# safe_graph_for_current_topology: the `select_flat` branch is gated on
+# `not requires_roleful_graph`). We still pass --flat-config because the
+# CLI requires the arg, but on camilla#2's roleful topology it is
+# structurally unreachable. A blocked decision intentionally leaves the
+# statefile alone: there is NO safe flat recovery once a tweeter/protected
+# role is saved, and silence beats full-range-to-a-tweeter.
+#
+# This PR is INERT: jasper-camilla-crossover.service is not enabled, so in
+# practice this guard does not run yet. It ships now so the dormant
+# infrastructure is complete and a later reconciler PR can arm the unit
+# without also having to add its guard.
+#
+# FAIL-OPEN EVERYWHERE: any unexpected condition (unreadable statefile,
+# missing base config, runtime contract unavailable, write failure) logs
+# and exits 0 so camilla#2 starts unmodified. The unit invokes it with
+# `ExecStartPre=-` as a second belt: even a missing script cannot block
+# the start.
+
+set -uo pipefail
+
+# Distinct statefile var from the camilla#1 guard's JASPER_CAMILLA_STATEFILE
+# so the two guards can never read each other's statefile.
+STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
+# --flat-config value the CLI requires; STRUCTURALLY UNREACHABLE for
+# camilla#2's roleful topology (see header). Present only to satisfy the
+# arg; never selected as camilla#2's repair target.
+BASE_CONFIG="${JASPER_CAMILLA_BASE_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
+RUNTIME_SAFE_GRAPH="${JASPER_RUNTIME_SAFE_GRAPH:-/opt/jasper/.venv/bin/jasper-active-speaker}"
+SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
+# Seconds the reader-presence probe waits before declaring "no reader".
+PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
+
+log() {
+    # log <outcome> [detail...]
+    local outcome="$1"
+    shift || true
+    echo "event=camilla_crossover_guard.${outcome} ${*}" >&2
+}
+
+[ -r "$STATEFILE" ] || { log skip reason=no_statefile; exit 0; }
+
+config_path=$(
+    sed -n 's/^[[:space:]]*config_path:[[:space:]]*//p' "$STATEFILE" \
+        | head -1 | tr -d '"' | tr -d "'"
+)
+[ -n "$config_path" ] || { log skip reason=no_config_path; exit 0; }
+[ -r "$config_path" ] || { log skip reason=config_unreadable "path=$config_path"; exit 0; }
+
+# Pipe-shaped = the config's playback filename names the snapserver
+# FIFO (the emitter writes it as a quoted literal; match either form).
+if ! grep -q "filename:.*${SNAPFIFO}" "$config_path"; then
+    log ok reason=solo_config
+    exit 0
+fi
+
+# Bonded pipe config. Healthy only if the FIFO exists AND has a reader.
+if [ -p "$SNAPFIFO" ]; then
+    # Reader-presence probe: opening a FIFO for write returns instantly
+    # iff a reader exists; with no reader it blocks (-> timeout). The
+    # momentary write-open is harmless to snapserver (a pipe source is
+    # designed for writers that come and go). FAIL-OPEN: if the timeout
+    # tool itself is unavailable, treat exists-as-FIFO as healthy — a
+    # repair needs positive evidence of a dead pipe, never a missing
+    # probe (the Pi always ships coreutils; this guards dev machines).
+    if ! command -v timeout >/dev/null 2>&1; then
+        log ok reason=pipe_exists_probe_unavailable
+        exit 0
+    fi
+    if timeout "$PROBE_TIMEOUT" bash -c "exec 3> '$SNAPFIFO'" 2>/dev/null; then
+        log ok reason=pipe_healthy
+        exit 0
+    fi
+    why=no_reader
+else
+    why=fifo_absent
+fi
+
+if ! command -v "$RUNTIME_SAFE_GRAPH" >/dev/null 2>&1; then
+    log skip reason=runtime_contract_unavailable "detail=$why"
+    exit 0
+fi
+
+# REPAIR: ask the active-speaker runtime contract for the only legal
+# persisted graph. For camilla#2 the saved topology is ALWAYS
+# roleful/protected, so the contract returns the DRIVER-DOMAIN baseline
+# (Layer A intact) or the all-muted active startup graph — NEVER flat (the
+# flat branch is gated on `not requires_roleful_graph`). A blocked
+# decision intentionally leaves the statefile untouched: flat stereo is
+# not a safe recovery target once a tweeter/protected role is saved, and
+# camilla#2 fails CLOSED to silence rather than risk full-range to a
+# tweeter.
+if output="$(
+    "$RUNTIME_SAFE_GRAPH" runtime-safe-graph \
+        --statefile "$STATEFILE" \
+        --flat-config "$BASE_CONFIG" \
+        --write-statefile \
+        --json 2>&1
+)"; then
+    repaired_to="$(
+        sed -n 's/^[[:space:]]*config_path:[[:space:]]*//p' "$STATEFILE" \
+            | head -1 | tr -d '"' | tr -d "'"
+    )"
+    log repaired "reason=$why from=$config_path to=${repaired_to:-unknown}" \
+        "detail=camilla#2 starts on the driver-domain (Layer-A-intact) safe graph; next grouping reconcile re-applies the bond"
+else
+    log skip reason=runtime_contract_blocked "detail=$why" \
+        "message=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-240)"
+fi
+exit 0

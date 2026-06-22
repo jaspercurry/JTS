@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: the voice-eval session-loop pin must actually win.
 
 pytest-asyncio's auto mode puts a bare ``asyncio`` marker on every

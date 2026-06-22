@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only correction measurement-report payload helpers.
 
 Keep this module import-cheap: the correction wizard web process is a

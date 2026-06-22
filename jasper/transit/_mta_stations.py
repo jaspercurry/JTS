@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared MTA-stations CSV loader for the subway runtime client + provider.
 
 Both `jasper.subway` (the arrivals tool runtime) and

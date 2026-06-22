@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Volume coordinator and transport-dispatch helpers for jasper-control."""
 from __future__ import annotations
 

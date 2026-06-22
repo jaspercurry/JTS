@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Weather lookup via Open-Meteo (free, no API key, no rate-limit
 problems for personal use). Two endpoints:
 

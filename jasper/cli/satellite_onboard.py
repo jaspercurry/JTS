@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-satellite-onboard - Pi-mediated provisioning for the JTS AMOLED satellite."""
 from __future__ import annotations
 

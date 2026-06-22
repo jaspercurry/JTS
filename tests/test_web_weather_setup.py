@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Canonical-design-system tests for the migrated /weather/ wizard.
 
 Two concerns:

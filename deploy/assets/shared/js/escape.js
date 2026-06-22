@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // escape.js — HTML-entity + DOM-id escapers shared across the canonical pages.
 //
 // A migrated wizard imports these by absolute path

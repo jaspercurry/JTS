@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Greedy peak-fit parametric-EQ designer for the modal range.
 
 Defaults match Jasper's known-good REW workflow:

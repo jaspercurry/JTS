@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reconcile JTS mic/AEC state with the audio hardware currently present.
 #
 # This is intentionally a small policy layer around /etc/jasper/jasper.env
@@ -12,6 +17,17 @@ ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 MODE_FILE="${JASPER_AEC_MODE_FILE:-/var/lib/jasper/aec_mode.env}"
 VOICE_PROVIDER_FILE="${JASPER_VOICE_PROVIDER_FILE:-/var/lib/jasper/voice_provider.env}"
 VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice_provider_ids}"
+# Persistent NEGATIVE marker for the mic-presence gate
+# (docs/HANDOFF-hotplug-resilience.md "Layer 1"). This reconciler is the
+# SINGLE WRITER: created on every "no usable mic, park voice" path,
+# removed on every "mic present, (re)start voice" path. jasper-voice.service
+# gates ExecStart on its ABSENCE (ConditionPathExists=!<this path>), so a
+# no-mic box never start-crash-loops. PERSISTENT (/var/lib/jasper, not /run)
+# so a no-mic box stays gated across reboot before any reconcile runs;
+# absence fails OPEN (voice runs). The path is duplicated as a literal in
+# jasper-voice.service and jasper/voice/input_presence.py; agreement is
+# pinned by tests/test_voice_input_gate.py.
+VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/voice-input-absent}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K6Ch"
@@ -21,6 +37,7 @@ if [[ -x /opt/jasper/.venv/bin/python ]]; then
 fi
 MIC_PROFILE_PYTHON="${JASPER_MIC_PROFILE_PYTHON:-$DEFAULT_MIC_PROFILE_PYTHON}"
 MIC_PROFILE_STATE_PATH="${JASPER_MIC_PROFILE_STATE_PATH:-/run/jasper-mic-profile/xvf3800.json}"
+OUTPUTD_CONTROL_SOCKET="${JASPER_OUTPUTD_CONTROL_SOCKET:-/run/jasper-outputd/control.sock}"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
@@ -310,7 +327,7 @@ chip_aec_dac_status() {
     esac
 }
 
-chip_aec_dac_detail() {
+chip_aec_dac_static_detail() {
     local dac_id status
     dac_id="$(normalize_output_dac_id "${1:-unknown}")"
     status="$(chip_aec_dac_status "$dac_id")"
@@ -333,8 +350,122 @@ chip_aec_dac_detail() {
     esac
 }
 
+CHIP_AEC_DAC_GATE_DAC=""
+CHIP_AEC_DAC_GATE_OK=0
+CHIP_AEC_DAC_GATE_DETAIL=""
+CHIP_AEC_DAC_GATE_SOURCE=""
+
+outputd_aec_clock_gate_detail() {
+    if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
+        echo "outputd aec_clock unavailable: python not found at ${MIC_PROFILE_PYTHON}"
+        return 1
+    fi
+    local detail rc
+    set +e
+    detail="$("$MIC_PROFILE_PYTHON" - "$OUTPUTD_CONTROL_SOCKET" <<'PY'
+import json
+import socket
+import sys
+
+path = sys.argv[1]
+
+
+def finish(ok: bool, detail: str) -> None:
+    print(detail)
+    raise SystemExit(0 if ok else 1)
+
+
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        sock.connect(path)
+        sock.sendall(b"STATUS\n")
+        chunks = []
+        total = 0
+        while total < 65536:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+except OSError as exc:
+    finish(False, f"outputd aec_clock unavailable: STATUS socket {path}: {exc}")
+
+try:
+    payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+except json.JSONDecodeError as exc:
+    finish(False, f"outputd aec_clock unavailable: invalid STATUS JSON: {exc}")
+
+refs = payload.get("reference_outputs")
+if not isinstance(refs, dict):
+    finish(False, "outputd aec_clock unavailable: STATUS missing reference_outputs")
+clock = refs.get("aec_clock")
+if not isinstance(clock, dict):
+    finish(False, "outputd aec_clock unavailable: STATUS missing reference_outputs.aec_clock")
+writer = refs.get("chip_ref_writer")
+if not isinstance(writer, dict) or not writer.get("enabled"):
+    finish(False, "outputd aec_clock unavailable: chip-ref writer is not active")
+
+verdict = str(clock.get("verdict") or "")
+status = str(clock.get("sro_estimator_status") or "")
+observe = clock.get("observe")
+ppm = clock.get("chip_ref_sro_ppm")
+reason = str(clock.get("verdict_reason") or "").strip()
+detail = (
+    f"outputd aec_clock verdict={verdict or 'missing'} "
+    f"status={status or 'missing'} observe={observe} "
+    f"chip_ref_sro_ppm={ppm} reason={reason}"
+)
+finish(verdict == "coherent" and status == "locked", detail)
+PY
+)"
+    rc=$?
+    set -e
+    echo "$detail"
+    return "$rc"
+}
+
+refresh_chip_aec_dac_gate() {
+    local dac_id status detail
+    dac_id="$(normalize_output_dac_id "${1:-unknown}")"
+    if [[ "$CHIP_AEC_DAC_GATE_DAC" == "$dac_id" ]]; then
+        return
+    fi
+    CHIP_AEC_DAC_GATE_DAC="$dac_id"
+    CHIP_AEC_DAC_GATE_OK=0
+    CHIP_AEC_DAC_GATE_SOURCE=""
+    status="$(chip_aec_dac_status "$dac_id")"
+    if [[ "$status" == "supported" ]]; then
+        CHIP_AEC_DAC_GATE_OK=1
+        CHIP_AEC_DAC_GATE_SOURCE="static"
+        CHIP_AEC_DAC_GATE_DETAIL="$(chip_aec_dac_static_detail "$dac_id")"
+        return
+    fi
+    if detail="$(outputd_aec_clock_gate_detail)"; then
+        CHIP_AEC_DAC_GATE_OK=1
+        CHIP_AEC_DAC_GATE_SOURCE="outputd_aec_clock"
+        CHIP_AEC_DAC_GATE_DETAIL="$detail"
+        return
+    fi
+    CHIP_AEC_DAC_GATE_DETAIL="$(chip_aec_dac_static_detail "$dac_id"); ${detail}"
+}
+
 chip_aec_dac_supported() {
-    [[ "$(chip_aec_dac_status "${1:-unknown}")" == "supported" ]]
+    refresh_chip_aec_dac_gate "${1:-unknown}"
+    [[ "$CHIP_AEC_DAC_GATE_OK" == "1" ]]
+}
+
+chip_aec_dac_detail() {
+    refresh_chip_aec_dac_gate "${1:-unknown}"
+    echo "$CHIP_AEC_DAC_GATE_DETAIL"
+}
+
+log_chip_aec_dac_gate_if_dynamic() {
+    refresh_chip_aec_dac_gate "${1:-unknown}"
+    if [[ "$CHIP_AEC_DAC_GATE_OK" == "1" \
+        && "$CHIP_AEC_DAC_GATE_SOURCE" == "outputd_aec_clock" ]]; then
+        log "outputd aec_clock permits chip-AEC for output_dac=$(normalize_output_dac_id "${1:-unknown}"): ${CHIP_AEC_DAC_GATE_DETAIL}"
+    fi
 }
 
 chip_aec_mic_supported() {
@@ -397,6 +528,7 @@ apply_audio_input_profile() {
             if aec_ready "$AEC_MIC_DEVICE" \
                 && chip_aec_mic_supported \
                 && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID"
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
@@ -419,6 +551,7 @@ apply_audio_input_profile() {
         xvf_chip_aec)
             AEC_MODE="auto"
             if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID"
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
@@ -749,7 +882,41 @@ enable_start_aec() {
     run_systemctl restart jasper-aec-bridge.service
 }
 
+# Mic-presence gate marker writers (docs/HANDOFF-hotplug-resilience.md
+# "Layer 1"). mark = "no usable mic, voice is parked"; clear = "a mic is
+# present". jasper-voice.service's ConditionPathExists=!<marker> reads the
+# absence. Both best-effort: a marker write failing must never abort a
+# reconcile pass (the daemon's exit-66 backstop still parks a no-mic start).
+# Do NOT re-mode the parent dir here — same trap as ensure_mode_file (#827).
+mark_voice_input_absent() {
+    local reason="${1:-no usable microphone present}"
+    # The parent dir (/var/lib/jasper) is guaranteed by ensure_mode_file,
+    # which runs earlier in every non-check-only pass; we deliberately do
+    # NOT create or re-mode it here (re-moding 0770 root:jasper -> 0755
+    # strips the group-write bit the non-root daemons need — the #827
+    # trap). If the dir is somehow absent the write fails soft below and
+    # the daemon's exit-66 backstop still parks voice.
+    if printf 'reason=%s\n' "$reason" > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
+        chmod 0644 "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
+        log "voice input absent: marked ${VOICE_INPUT_ABSENT_MARKER} (${reason}); jasper-voice gated off until a mic appears"
+    else
+        log "voice input absent: failed to write ${VOICE_INPUT_ABSENT_MARKER} (${reason}); relying on daemon exit-66 park"
+    fi
+}
+
+clear_voice_input_absent() {
+    if [[ -e "$VOICE_INPUT_ABSENT_MARKER" ]]; then
+        rm -f "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
+        log "voice input present: cleared ${VOICE_INPUT_ABSENT_MARKER}; jasper-voice gate open"
+    fi
+}
+
 restart_voice() {
+    # A mic is present (this is only called from the mic-present paths),
+    # so open the presence gate before (re)starting. Done even on the
+    # provider-unset branch below: the mic axis is genuinely satisfied;
+    # the separate `disable --now` parks voice on the provider axis.
+    clear_voice_input_absent
     if ! voice_provider_configured; then
         log "voice provider unset or invalid; leaving jasper-voice parked"
         run_systemctl disable --now jasper-voice.service
@@ -804,6 +971,11 @@ restart_outputd_if_needed() {
 }
 
 stop_voice() {
+    # Only ever reached when no candidate mic is present, so this is the
+    # canonical "park voice for no mic" action: stamp the presence marker
+    # so jasper-voice's ConditionPathExists gate keeps it from restarting
+    # (or boot-starting) until a mic reappears and clears it.
+    mark_voice_input_absent "no candidate microphone present"
     run_systemctl stop jasper-voice.service
     reset_failed_units jasper-voice.service
 }
@@ -898,6 +1070,11 @@ fi
 
 if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     log "custom JASPER_MIC_DEVICE=${CURRENT_MIC}; leaving voice config untouched"
+    # We don't manage custom mics, so we must not gate them: clear any
+    # stale presence marker so jasper-voice can start and try the operator's
+    # device. If it can't open, the daemon's exit-66 park (not a crash-loop)
+    # is the safety net. Mirrors the "leave voice config untouched" contract.
+    clear_voice_input_absent
     stop_disable_aec
     write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
     restart_outputd_if_needed

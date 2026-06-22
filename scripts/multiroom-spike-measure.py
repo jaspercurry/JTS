@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # =============================================================================
 # multiroom-spike-measure.py — analyzer for the P0 multi-room SPIKE (THROWAWAY)
 # =============================================================================

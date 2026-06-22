@@ -1,11 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /chat/ dashboard entry point.
 //
 // Reads the CSRF meta tag like the other migrated pages, fetches data.json via
 // the shared HTTP helper, and self-schedules polling without overlapping
 // requests. Rendering lives in views.js and uses text nodes only.
 
-import { jtsAlert } from "/assets/shared/js/dialog.js";
-import { getJSON } from "./api.js";
+import { jtsAlert, jtsConfirm } from "/assets/shared/js/dialog.js";
+import { getJSON, postJSON } from "./api.js";
 import {
   buildPage,
   dateValueToSince,
@@ -45,6 +49,34 @@ const handlers = {
       title: "Conversation history",
     });
   },
+  async setCapture(enabled) {
+    setBusy(true);
+    try {
+      await postJSON("capture", { enabled: !!enabled });
+      refreshSoon();
+    } catch (err) {
+      await jtsAlert(errorMessage(err), { title: "Conversation history" });
+      refreshSoon();
+    } finally {
+      setBusy(false);
+    }
+  },
+  async clearHistory() {
+    const ok = await jtsConfirm(
+      "Clear all saved conversation turns from this speaker?",
+      { title: "Clear conversation history", danger: true },
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await postJSON("clear", {});
+      refreshSoon();
+    } catch (err) {
+      await jtsAlert(errorMessage(err), { title: "Conversation history" });
+    } finally {
+      setBusy(false);
+    }
+  },
 };
 
 refs = buildPage(root, handlers, {
@@ -76,6 +108,17 @@ function syncUrl() {
 function refreshSoon() {
   if (pollTimer !== null) window.clearTimeout(pollTimer);
   pollTimer = window.setTimeout(refresh, 0);
+}
+
+function setBusy(value) {
+  if (!refs) return;
+  if (refs.captureToggle) refs.captureToggle.disabled = !!value;
+  if (refs.clearButton) refs.clearButton.disabled = !!value;
+}
+
+function errorMessage(err) {
+  if (err && err.message) return err.message;
+  return String(err || "Request failed.");
 }
 
 async function refresh() {

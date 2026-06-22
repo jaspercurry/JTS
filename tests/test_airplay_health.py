@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import json
@@ -58,8 +62,15 @@ def _fanin_status(
 
 
 def _sampler(**kwargs) -> AirPlayHealthSampler:
-    """Build a sampler isolated from live Pi maintenance markers."""
+    """Build a sampler isolated from live Pi maintenance markers.
+
+    Warmup + connect-grace default OFF here so the classification tests
+    below exercise steady-state behaviour at small clock values; the
+    warmup / connect-grace suppression has its own dedicated tests.
+    """
     kwargs.setdefault("maintenance_suppress_path", None)
+    kwargs.setdefault("warmup_sec", 0.0)
+    kwargs.setdefault("connect_grace_sec", 0.0)
     return AirPlayHealthSampler(**kwargs)
 
 
@@ -108,6 +119,67 @@ def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
     assert underrun is not None
     assert underrun["type"] == "camilla_playback_underrun"
     assert underrun["severity"] == "issue"
+
+
+def test_offset_too_short_warning_rolls_into_shairport_events() -> None:
+    """The bonded-leader tight-regime warning must affect the AirPlay-health
+    status, not just sit in the raw event list — i.e. it has to roll into the
+    `shairport_events` bucket like its siblings (shairport_oos /
+    shairport_broken_pipe). Without the EVENT_BUCKET_FIELD mapping the event
+    would be invisible to `_status_locked`'s 30 m verdict."""
+    too_short = (
+        "The stream latency (0.300000 seconds) it too short to accommodate an "
+        "offset of 0.550000 seconds and a backend buffer of 0.100000 seconds."
+    )
+    ev = classify_journal_line("shairport-sync", too_short)
+    assert ev is not None and ev["type"] == "shairport_offset_too_short"
+
+    now = [1000.0]
+    sampler = _sampler(time_fn=lambda: now[0])
+    sampler._record_event(now[0], ev)
+    summary = sampler._summary_locked(window_sec=1800.0)
+    assert summary["shairport_events"] >= 1
+
+
+def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
+    """End-to-end pin of the 'moves the status verdict, not just the event list'
+    promise: drive the full journal -> classify -> record -> status path and
+    assert the AirPlay-health status becomes 'watch' (the 30 m shairport_events
+    verdict), with the audio path otherwise healthy.
+
+    The warning is a bonded-leader lip-sync event that only occurs *while
+    actively streaming*, so the scenario is mpris=playing with a frame-rate
+    baseline established — the condition under which non-fatal warnings
+    surface as 'watch' (idle reads 'inactive'; see _status_locked)."""
+    now = [2000.0]
+    frames = [0]
+
+    def fanin_probe() -> dict:
+        frames[0] += 480000  # keep the rate above the 1000 floor
+        return _fanin_status(airplay_frames=frames[0])
+
+    def journal(unit: str, _since: float, _now: float) -> list[str]:
+        if unit == "shairport-sync":
+            return [
+                "The stream latency (0.300000 seconds) it too short to accommodate "
+                "an offset of 1.050000 seconds and a backend buffer of 0.500000 "
+                "seconds."
+            ]
+        return []
+
+    sampler = _sampler(
+        fanin_probe=fanin_probe,
+        journal_reader=journal,
+        mpris_probe=lambda: {"playing": True},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+    assert snap["status"] == "watch"
+    assert snap["summary_30m"]["shairport_events"] >= 1
 
 
 def test_tiny_camilla_short_reads_are_ignored_as_recovered_partials() -> None:
@@ -206,6 +278,8 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
         maintenance_suppress_path=str(marker),
+        warmup_sec=0.0,
+        connect_grace_sec=0.0,
         time_fn=lambda: now[0],
     )
 
@@ -237,8 +311,11 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
     assert shairport_calls[0][1] == 1005.0
 
 
-def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
+def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
+    # While AirPlay IS streaming, recoverable Camilla short reads are a
+    # non-fatal warning (watch), not a hard issue.
     now = [2000.0]
+    frames = [0, 240000]
 
     def journal(unit: str, _since: float, _now: float) -> list[str]:
         if unit == "jasper-camilla":
@@ -249,7 +326,61 @@ def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
         return []
 
     sampler = _sampler(
-        fanin_probe=lambda: _fanin_status(),
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=journal,
+        mpris_probe=lambda: {"playing": True},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()            # records short reads + frame baseline
+    now[0] += 5.0
+    sampler._tick()            # frame rate now ~48 kHz
+    snap = sampler.snapshot()
+
+    assert snap["status"] == "watch"
+    assert snap["summary_5m"]["camilla_short_reads"] == 2
+    assert snap["summary_5m"]["camilla_playback_underruns"] == 0
+
+
+def test_idle_silence_at_full_rate_reads_inactive_not_ok() -> None:
+    # The airplay input lane free-runs at ~48 kHz of SILENCE with no
+    # sender, so a high frame rate must NOT read as "AirPlay path clean".
+    # shairport PlaybackStatus (MPRIS) is authoritative -> inactive.
+    # (2026-06-22 report: idle JTS2 showing frames with nothing playing.)
+    now = [4000.0]
+    frames = [0, 240000]
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=lambda _unit, _since, _now: [],
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+
+    assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
+    assert snap["status"] == "inactive"
+    assert snap["reason"] == "AirPlay not currently streaming"
+
+
+def test_idle_camilla_short_reads_do_not_escalate_to_watch() -> None:
+    # Benign Camilla short reads can occur on the idle (silence) pipeline.
+    # With AirPlay not streaming they must read "inactive", never "watch" —
+    # but they are still RECORDED for history/diagnostics.
+    now = [5000.0]
+
+    def journal(unit: str, _since: float, _now: float) -> list[str]:
+        if unit == "jasper-camilla":
+            return ["Capture read 586 frames instead of the requested 1024"]
+        return []
+
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=240000),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
@@ -259,9 +390,53 @@ def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
     sampler._tick()
     snap = sampler.snapshot()
 
-    assert snap["status"] == "watch"
-    assert snap["summary_5m"]["camilla_short_reads"] == 2
-    assert snap["summary_5m"]["camilla_playback_underruns"] == 0
+    assert snap["status"] == "inactive"
+    assert snap["reason"] == "AirPlay not currently streaming"
+    assert snap["summary_5m"]["camilla_short_reads"] == 1
+
+
+def test_mpris_unavailable_reads_unknown_not_guessed_ok() -> None:
+    # If the shairport MPRIS probe fails, the silent free-running rate
+    # can't substitute -> unknown, not a guessed "ok".
+    now = [6000.0]
+    frames = [0, 240000]
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=lambda _unit, _since, _now: [],
+        mpris_probe=lambda: None,
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+
+    assert snap["status"] == "unknown"
+    assert "playback status unavailable" in snap["reason"]
+
+
+def test_playing_but_frames_not_arriving_is_issue() -> None:
+    # shairport reports playing but the airplay lane is barely advancing
+    # (sender stalled / substream broke) -> a real fault, not "ok".
+    now = [7000.0]
+    frames = [0, 500]  # ~100 frames/s over 5 s, well under the 1000 floor
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=lambda _unit, _since, _now: [],
+        mpris_probe=lambda: {"playing": True},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+
+    assert snap["status"] == "issue"
+    assert "not receiving frames" in snap["reason"]
 
 
 def test_fanin_input_buffer_regression_is_issue() -> None:
@@ -433,3 +608,107 @@ def test_system_snapshot_endpoint_fails_soft_when_airplay_snapshot_raises(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
+    # A reboot's content-xrun + AirPlay-resync settling must NOT flip the
+    # dashboard straight to "issue: recent audio-path recovery event"
+    # during the warmup window (the 2026-06-21 post-reboot dashboard).
+    now = [1000.0]
+    statuses = [
+        _fanin_status(airplay_frames=0, airplay_xruns=5, output_frames=0),
+        _fanin_status(
+            airplay_frames=240000, airplay_xruns=7, output_frames=240000,
+        ),
+        _fanin_status(
+            airplay_frames=6000000, airplay_xruns=9, output_frames=6000000,
+        ),
+    ]
+    sampler = AirPlayHealthSampler(
+        fanin_probe=lambda: statuses.pop(0),
+        journal_reader=lambda u, _s, _n: (
+            ["recovering from a previous underrun"]
+            if u == "shairport-sync" else []
+        ),
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=None,
+        warmup_sec=120.0,
+        connect_grace_sec=0.0,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()            # t=1000, within warmup (started_at=1000)
+    now[0] += 5.0
+    sampler._tick()            # t=1005, still within warmup
+
+    snap = sampler.snapshot()
+    assert snap["warmup_active"] is True
+    assert snap["suppressed_reason"] == "warmup"
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 0
+    assert snap["summary_5m"]["shairport_underruns"] == 0
+    assert snap["events"] == []
+    assert snap["status"] != "issue"
+
+    # Past the warmup window a genuine recovery event surfaces again.
+    now[0] = 1000.0 + 121.0
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["warmup_active"] is False
+    assert snap["suppressed_reason"] is None
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 2
+    assert snap["status"] == "issue"
+
+
+def test_airplay_connect_grace_suppresses_session_establish() -> None:
+    # When a sender connects, the PTP-anchor settle emits expected
+    # sync-correction bursts; a per-session grace keeps them off the
+    # dashboard. Connect detection is MPRIS-driven (the frame rate
+    # free-runs silence and so can't mark a real session start), so it is
+    # bounded by the ~30 s MPRIS sample interval — advance past it.
+    now = [5000.0]
+    frames = [0]
+
+    def fanin_probe():
+        frames[0] += 480000   # keep the rate well above the 1000 floor
+        return _fanin_status(airplay_frames=frames[0])
+
+    mpris = {"playing": False}
+    journal = {"shairport-sync": []}
+
+    sampler = AirPlayHealthSampler(
+        fanin_probe=fanin_probe,
+        journal_reader=lambda u, _s, _n: list(journal.get(u, [])),
+        mpris_probe=lambda: dict(mpris),
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=None,
+        warmup_sec=0.0,
+        connect_grace_sec=45.0,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()            # t=5000 idle baseline (MPRIS sampled: not playing)
+    assert sampler.snapshot()["suppressed_reason"] is None
+
+    # Sender connects; advance past the MPRIS interval so it re-samples
+    # playing and the idle->active transition arms the grace.
+    mpris["playing"] = True
+    journal["shairport-sync"] = ["rtp.c sync: Large negative sync error"]
+    now[0] += 31.0             # t=5031: MPRIS -> playing -> arm grace
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["suppressed_reason"] == "airplay_connect"
+    assert snap["summary_5m"]["shairport_sync_errors"] == 0   # establish burst suppressed
+    assert snap["events"] == []
+
+    # Grace (45 s) expires; the establish-class sync error is no longer
+    # suppressed and surfaces (a sync error is a hard 5 m recovery event).
+    now[0] += 46.0             # t=5077: past grace, still playing
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["suppressed_reason"] is None
+    assert snap["summary_5m"]["shairport_sync_errors"] >= 1
+    assert snap["status"] == "issue"

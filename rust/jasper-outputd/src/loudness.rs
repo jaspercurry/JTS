@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compatibility shim for the shared assistant/content loudness policy.
 //!
 //! Outputd still owns final-output assistant mixing for bonded members.

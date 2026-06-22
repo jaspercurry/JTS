@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared CamillaDSP graph-safety primitives for active-speaker commissioning.
 
 This module is the single home for the shared parse adapters and fail-closed

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Active-speaker commissioning ↔ measurement mutual exclusion.
 
 Pins the cooperative serialization that keeps the active-crossover commission

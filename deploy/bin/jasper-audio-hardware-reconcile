@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reconcile JTS output-DAC role with the ALSA hardware currently present.
 #
 # This is the output-hardware counterpart to jasper-aec-reconcile:
@@ -681,6 +686,11 @@ apply_audio_runtime_env() {
         # single-sink width knob so a stale value from a prior active single
         # DAC cannot reach outputd (which rejects != 4 on the composite sink).
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
+        # The 4-ch composite sink is already fenced off the stereo-only TTS
+        # mixer / rate-match by its width (content_channels=4 != 2); clear the
+        # active-lane marker so toggling here from a prior active single DAC
+        # cannot leave a stale =1.
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
         log_event "runtime_env" \
             "mode=dual_apple outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
@@ -713,6 +723,13 @@ apply_audio_runtime_env() {
             OUTPUTD_ACTIVE_CHANNELS="$active_channels"
             set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_active_content_capture" && changed=1
             set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "$active_channels" && changed=1
+            # Belt-and-suspenders for the latent outputd-TTS-mixer hazard: an
+            # active 2-way speaker is ALSO 2-channel, so outputd's bare
+            # content_channels==2 check would wrongly permit its post-crossover
+            # TTS mixer / rate-match here. Mark the lane explicitly so outputd
+            # fails those stereo-only features closed (full-range-to-tweeter
+            # safety). Active-mode voice rides fanin, upstream of the crossover.
+            set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "1" && changed=1
             log_event "runtime_env" \
                 "mode=single_alsa_active active_channels=${active_channels} active_lane_cap=${active_lane_cap} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
         else
@@ -722,6 +739,10 @@ apply_audio_runtime_env() {
             # Clear the width knob so outputd defaults to stereo; a stale active
             # width would otherwise mis-size the (stereo) content lane.
             set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
+            # Leaving active mode: clear the active-lane marker so a stale =1
+            # cannot keep the stereo-only TTS mixer / rate-match fenced off on
+            # an ordinary passive stereo DAC.
+            set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
             log_event "runtime_env" \
                 "mode=single_alsa outputd_env=${OUTPUTD_ENV_FILE} changed=${changed} active_graph=${graph_status:-none}"
         fi
@@ -735,6 +756,7 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
         log_event "runtime_env" \
             "mode=parked outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     fi

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-doctor check_tool_packs — tool-pack registration health.
 
 Tool registration is fault-isolated per pack (jasper.tools.packs): a pack

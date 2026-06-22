@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Canonical structured-log emitter for JTS `event=` lines.
 
 Across the codebase, operational events are logged as hand-written

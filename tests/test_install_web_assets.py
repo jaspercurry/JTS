@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """install_web_assets (deploy/lib/install/web-assets.sh).
 
 The /assets/ copy (app.css, fonts, per-page CSS + ES modules) + the

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # systemd unit install/enable steps for deploy/install.sh.
 #
 # Extracted from install.sh; functions assume install.sh globals and
@@ -34,6 +39,12 @@ install_local_audio_graph_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
         "${SYSTEMD_DIR}/jasper-camilla.service"
+    # camilla#2 — endpoint-crossover instance (:1235). INERT: installed but
+    # NOT enabled; a later reconciler PR arms it only on an active leader.
+    # docs/HANDOFF-distributed-active.md "Stage B".
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-camilla-crossover.service" \
+        "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
         "${SYSTEMD_DIR}/jasper-fanin.service"
@@ -58,6 +69,15 @@ install_local_audio_graph_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
         /usr/local/sbin/jasper-camilla-pipe-guard
+    # camilla#2's crossover guard. Like the pipe-guard it breaks a dead-pipe
+    # restart loop BEFORE launch, but repairs ONLY to the re-proven
+    # driver-domain (Layer-A-intact) graph — never flat (a flat crossover
+    # would send full-range to the tweeter). Shipped now alongside the
+    # dormant unit so the later reconciler PR can arm the unit without also
+    # adding its guard. docs/HANDOFF-distributed-active.md "Stage B".
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-camilla-crossover-guard" \
+        /usr/local/sbin/jasper-camilla-crossover-guard
 }
 
 install_streambox_web_unit_files() {
@@ -112,6 +132,7 @@ validate_streambox_systemd_units() {
         local -a verify_units=(
             "${SYSTEMD_DIR}/jasper-control.service"
             "${SYSTEMD_DIR}/jasper-camilla.service"
+            "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
             "${SYSTEMD_DIR}/jasper-fanin.service"
             "${SYSTEMD_DIR}/jasper-outputd.service"
             "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
@@ -139,6 +160,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
             "${SYSTEMD_DIR}/jasper-wifi-recover.service"
             "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
+            "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
             "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
@@ -163,6 +185,9 @@ install_resilience_identity_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
         "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
@@ -384,6 +409,12 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
         "${SYSTEMD_DIR}/jasper-camilla.service"
+    # camilla#2 — endpoint-crossover instance (:1235). INERT: installed but
+    # NOT enabled; a later reconciler PR arms it only on an active leader.
+    # docs/HANDOFF-distributed-active.md "Stage B".
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-camilla-crossover.service" \
+        "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
         "${SYSTEMD_DIR}/jasper-voice.service"
@@ -523,6 +554,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
         "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
@@ -540,6 +574,16 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
         /usr/local/sbin/jasper-camilla-pipe-guard
+    # Camilla #2 crossover guard. ExecStartPre= on
+    # jasper-camilla-crossover: same dead-pipe loop break as the pipe
+    # guard, but its safe-repair target is the re-proven DRIVER-DOMAIN
+    # (Layer-A-intact) graph — NEVER flat (a flat crossover would send
+    # full-range to the tweeter, the hazard this increment prevents).
+    # Installed now so the dormant unit is complete; the unit is not yet
+    # enabled. docs/HANDOFF-distributed-active.md "Stage B".
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-camilla-crossover-guard" \
+        /usr/local/sbin/jasper-camilla-crossover-guard
 
     # Identity reconciler. Type=oneshot snapshot of the speaker's
     # effective mDNS identity (OS hostname vs Avahi's post-collision

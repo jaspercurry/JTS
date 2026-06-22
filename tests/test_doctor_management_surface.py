@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper-doctor's management-surface probe.
 
 check_management_surface exercises the browser path (loopback nginx with
@@ -9,6 +13,7 @@ scripts/deploy-to-pi.sh.
 from __future__ import annotations
 
 import io
+import sqlite3
 import urllib.error
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -21,6 +26,8 @@ from jasper.conversation_history import (
     make_turn_id,
 )
 from jasper.cli.doctor import web as doctor_web
+from jasper.cli.doctor import research as doctor_research
+from jasper.research import DONE, ResearchJob, ResearchJobStore
 
 
 def _install_nginx_site(monkeypatch, tmp_path):
@@ -156,3 +163,76 @@ def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
 
     assert r.status == "ok"
     assert "1 turns" in r.detail
+
+
+def test_research_check_ok_when_disabled(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(tmp_path / "missing.db"))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "ok"
+    assert "disabled" in r.detail
+
+
+def test_research_check_warns_when_configured_store_missing(monkeypatch, tmp_path):
+    db_path = tmp_path / "missing.db"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "warn"
+    assert "openai configured" in r.detail
+    assert str(db_path) in r.detail
+    assert db_path.exists() is False
+
+
+def test_research_check_warns_when_configured_store_query_fails(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "research.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE wrong_table (query TEXT)")
+    conn.close()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "warn"
+    assert "openai configured" in r.detail
+    assert str(db_path) in r.detail
+    assert "no such table" in r.detail
+
+
+def test_research_check_ok_with_existing_store_without_private_text(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "research.db"
+    store = ResearchJobStore(str(db_path))
+    assert store.add(
+        ResearchJob(
+            id="done1",
+            query="private prompt",
+            status=DONE,
+            result="private answer",
+            error=None,
+            created_at=1.0,
+            finished_at=2.0,
+            announced=True,
+            read=False,
+        ),
+    )
+    store.close()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "ok"
+    assert "openai configured" in r.detail
+    assert "private prompt" not in r.detail
+    assert "private answer" not in r.detail

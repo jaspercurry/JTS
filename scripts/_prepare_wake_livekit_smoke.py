@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Prepare a tiny LiveKit wakeword smoke-training workdir.
 
 This consumes the output from ``scripts/prepare-wake-training-workdir.sh`` and

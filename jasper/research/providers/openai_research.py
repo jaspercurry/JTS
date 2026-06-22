@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """OpenAI Responses-backed research provider.
 
 The OpenAI SDK import is intentionally lazy so importing the registry is

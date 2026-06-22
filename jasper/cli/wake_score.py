@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-wake-score — Score a corpus of WAVs through a wake-word model.
 
 Walks a directory laid out as `aec_{leg}_{condition}/{split}/*.wav`

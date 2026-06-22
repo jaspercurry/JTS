@@ -649,10 +649,14 @@ This is the **only** supported deploy path. It does, in order:
 4. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
    set — rsyncs the Python source from the remote checkout into
    `/opt/jasper/`, then `pip install -e`'s `/opt/jasper` into
-   `/opt/jasper/.venv` (the runtime). Also writes
-   `/var/lib/jasper/build.txt`, migrates units to socket
-   activation, conditionally enables AEC on 6-ch firmware. See
-   "Runtime Python lives in /opt/jasper" below.
+   `/opt/jasper/.venv` (the runtime). Writes the
+   `/var/lib/jasper/build.txt` **verified-install marker as its FINAL
+   step** (only on full success, `JASPER_INSTALL_STATUS=ok`), so a
+   mid-install abort leaves the prior good manifest rather than a SHA the
+   box isn't cleanly running — the direction-guard reads an honest value.
+   Also migrates units to socket activation, conditionally enables AEC on
+   6-ch firmware. See "Runtime Python lives in /opt/jasper" below and
+   [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 5. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
    mic/AEC reconciler restart or park `jasper-voice` according to the
@@ -667,6 +671,17 @@ This is the **only** supported deploy path. It does, in order:
    class). `jasper-doctor`'s `check_management_surface` runs the same
    probe on-Pi. Skipped under `SKIP_RESTART=1` (no restart, nothing
    new to verify).
+7. Broadened post-deploy verification (passwordless-sudo deploys only —
+   `ssh -tt` can't capture cleanly). Surfaces any **OOM collateral** during
+   the install window (a build that OOM-killed a live daemon is reported,
+   not silent — problem #5), **gates** on the manifest having advanced to
+   the deployed SHA+`status=ok` (problem #4), and **surfaces** `jasper-doctor`
+   health covering voice/AEC/renderers (problem #7, advisory — the
+   broken-vs-idle reclassification of missing-hardware daemons is the
+   hot-plug workstream's job). On install failure the deploy exits *before*
+   restarting daemons, so live services keep serving the prior build.
+   Canonical doc:
+   [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 
 **Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
 That flow exists historically but misses:
@@ -1334,8 +1349,12 @@ validated on hardware: after a scan is classified as
 sends `NL80211_CMD_CRIT_PROTOCOL_STOP` to `wlan0`, waits briefly, and
 retries the scan. This does not intentionally drop WiFi and is
 rate-limited by `/var/lib/jasper/wifi_scan_repair.json` so page reloads
-or repeated button taps do not spam the radio. Structured logs use
-`event=wifi_scan_repair.*`.
+or repeated button taps do not spam the radio. Because `jasper-web` runs
+without `CAP_NET_ADMIN`, the page asks jasper-control's restart broker to
+`start` the fixed root helper `jasper-wifi-scan-repair.service`; when run
+as root (tests/operator shell), the same Python helper can execute
+in-process. Structured logs use `event=wifi_scan_repair.*` plus the broker's
+`event=restart_broker.*` line for the unit start.
 
 The same NetworkManager profile-hardening triple —
 `connection.autoconnect=yes`, `connection.autoconnect-retries=0` (NM's
@@ -2159,6 +2178,25 @@ firmware. If the Array is absent after a previous AEC-enabled boot, it
 clears stale UDP back to a direct mic candidate and stops voice rather
 than letting it watchdog-loop on an unfed socket. Future direct mics can
 be added to `JASPER_MIC_DEVICE_CANDIDATES` without changing this logic.
+
+**No-mic park is gated, not just stopped.** The reconciler is also the
+single writer of a persistent **negative** marker
+(`/var/lib/jasper/voice-input-absent`): created on every no-usable-mic
+path, removed whenever a mic is present (including the custom-mic path,
+which is never gated). `jasper-voice.service` carries
+`ConditionPathExists=!/var/lib/jasper/voice-input-absent`, so a no-mic
+box never start-crash-loops into `StartLimitAction=reboot` — PID 1 skips
+the start cleanly (the same clean-skip the output owner gets from its
+`ExecCondition` DAC gate). As a backstop, a primary-mic open failure
+exits `66` (`VOICE_MIC_UNAVAILABLE_EXIT`, in the unit's
+`SuccessExitStatus`/`RestartPreventExitStatus`) so the daemon parks
+instead of looping. Plug-in recovers via the existing udev →
+`jasper-aec-reconcile` → `restart_voice` path. The marker path is
+duplicated as a literal in the unit, the reconciler, and
+[`jasper/voice/input_presence.py`](jasper/voice/input_presence.py)
+(pinned by `tests/test_voice_input_gate.py`). Full design — including
+why output and satellites needed no change — is
+[`docs/HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md).
 
 The bridge→voice transport is UDP localhost (`udp:9876`) since
 May 2026; the prior snd-aloop `LoopbackAEC` topology was retired

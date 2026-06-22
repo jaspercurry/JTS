@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Multicast UDP transport for peering messages.
 
 Five message types, one JSON object per UDP datagram, max ~300 bytes.

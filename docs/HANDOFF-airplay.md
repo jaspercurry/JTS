@@ -208,11 +208,11 @@ Status meanings:
 
 | Status | Meaning |
 |---|---|
-| `ok` | Fan-in is reachable, buffer contract is intact, and the 5 m/30 m windows have no AirPlay-path recovery events. |
-| `inactive` | Fan-in is reachable but the AirPlay lane is not receiving frames. |
-| `watch` | Non-fatal evidence appeared, usually material Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." |
-| `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, or Camilla playback underrun. |
-| `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
+| `ok` | AirPlay is actively streaming (shairport reports playing), fan-in is receiving frames, and the 5 m/30 m windows have no AirPlay-path recovery events. |
+| `inactive` | shairport reports nothing streaming (MPRIS `PlaybackStatus` not playing). The airplay input lane free-runs ~48 kHz of *silence* whenever the pipeline is up — even with no sender connected — so idle is decided by `PlaybackStatus`, **not** the frame rate. Idle-pipeline artifacts (benign Camilla short reads, content EAGAIN) do not raise a warning here. |
+| `watch` | While AirPlay is actively streaming, non-fatal evidence appeared — usually material Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." Idle short reads stay `inactive`; they do not escalate. |
+| `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, Camilla playback underrun, or shairport reports playing while fan-in is not receiving frames. |
+| `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, shairport `PlaybackStatus` is unavailable, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
 
 Use the card for "is anything happening right now / recently?" If it
 shows `watch` or `issue`, use the fast scan above or the full polling
@@ -1269,6 +1269,170 @@ The negative sign is intentional. Upstream's own example says a backend
 that takes 100 ms to process audio should use `-0.1`, so shairport feeds
 the backend 100 ms early. We use the same principle for CamillaDSP's
 hidden fixed buffer and outputd's invisible DAC queue.
+
+### AirPlay 2 latency is sender-authored — the bonded-leader consequence
+
+*Added 2026-06-21 from a source-level review (shairport-sync master) of
+how AirPlay sets the latency and where the offset acts. Resolves
+multi-room open question #2 (`HANDOFF-multiroom.md` §9).*
+
+**AP1 and AP2 invert the latency contract.** In AP1/RAOP the *receiver*
+advertised a floor (`Audio-Latency: 11025`, ~0.25 s) that the sender
+added to its own figure. In AP2 the receiver advertises
+`Audio-Latency: 0` and the **sender authors the whole timeline**: it
+picks the latency (from the stream type it chose plus its own network
+assessment), ships it as the PTP anchor (`SETRATEANCHORI` →
+`rtp_ap2_control_receiver` → `set_ptp_anchor_info`), and delays its
+*own* on-screen video by that same number to hold lip-sync (Apple patent
+US 11,196,899, "Synchronization of wireless-audio to video"). The
+receiver is *informed, not consulted* — the one theoretical
+receiver→sender lever (`outputLatencyMicros` in the GET /info plist) is
+not emitted by shairport and is ignored by the one inspectable AP2
+sender, so it is not something to rely on. The sender does **not** measure
+our real hardware latency; it *assumes* sound emerges at the anchor time.
+The entire burden of landing sound on the anchor — and thus any
+uncompensated downstream delay — is the receiver's, and surfaces as
+audio-late lip-sync.
+
+**Our offset is local, and universal across AP2 stream types.**
+`audio_backend_latency_offset_in_seconds` never goes on the wire. In the
+AP2 path it is folded into the PTP anchor *unconditionally*
+(`set_ptp_anchor_info(conn, clock_id, frame_1 - 11035 - added_latency,
+…)`), and AP2 playout time is computed purely from that anchor
+(`frame_to_ptp_local_time` reads `anchor_rtptime`/`anchor_local_time`,
+**not** `conn->latency`). So a single static offset shifts playout by
+exactly `added_latency / rate` for **both** AP2 stream types — realtime
+(ALAC) and buffered (AAC) — with no stream-type branch around the anchor
+math. The `net_latency <= 0` guard clamps only `conn->latency`, which in
+PTP mode governs the packet-resend window, **not** playout — so an
+over-budget offset is *not dropped* for AP2: shairport warns and
+continues, the anchor still shifts, and realized early-play is bounded
+only by the physical pre-roll the sender provides (too small a budget →
+bounded residual lag, never a crash or corruption). (AirPlay 1/NTP is a
+genuinely different path — `rtp_control_receiver` folds the offset
+through `conn->latency` into the NTP anchor — but AP1's ~2 s budget makes
+any realistic offset fit trivially.) Verified against shairport-sync
+master: `rtp_ap2_control_receiver`, `frame_to_ptp_local_time`,
+`set_ptp_anchor_info`, `rtp_control_receiver` in rtp.c; `buffer_get_frame`
+in player.c.
+
+**The bonded-leader gap.** A bonded leader plays its *own* channel
+through the Snapcast round-trip ("a follower of itself"), inserting the
+Snapcast playout buffer (`cfg.buffer_ms`, default 400 ms —
+`jasper/multiroom/config.py`) into the leader's own path to its DAC. That
+delay is invisible to the solo offset derivation
+(`derive_audio_backend_latency_offset` in
+`deploy/bin/jasper-apply-airplay-mode` reads CamillaDSP + fan-in +
+outputd only — no Snapcast term) and is never recomputed on bond (the
+grouping reconciler never calls `jasper-apply-airplay-mode`). So a bonded
+leader receiving AirPlay emits ~`buffer_ms` after the anchor → its audio
+lags the sender's video by ~the Snapcast buffer.
+
+**Fix shape — conditional, with a hard solo-untouched invariant.** Make
+the offset bond-aware: add a Snapcast term to the derived offset *only
+while this speaker is an active bonded leader*, and re-render + restart
+shairport on bond/unbond (the reconciler's compare-before-write →
+restart-on-change idiom). **INVARIANT — a solo or follower speaker gets
+zero AirPlay-timing change from this feature**: the Snapcast term is 0
+when this speaker is not a bonded leader, so the derived value stays the
+current `-0.149333`, shairport is not restarted on a no-op solo
+reconcile, and the bonded term is torn down (offset restored to the solo
+value) on unbond. Whether the fix fully restores lip-sync then depends on
+the sender's negotiated budget vs. the total hidden delay (~150 ms
+pipeline + `buffer_ms`): the AP2 offset shifts the anchor regardless, but
+realized early-play is capped by the sender's pre-roll, so a too-small
+budget degrades to bounded residual lag (≈ the shortfall) with a
+shairport warning. Measure the real per-app budget before assuming the
+free regime.
+
+**Measuring the negotiated budget (no config change needed).** shairport
+runs at `log_verbosity = 2` on JTS (diagnostics block in
+`deploy/shairport-sync.conf.template`), so the journal already names both
+the stream type and any non-default latency:
+- Stream type — `Connection N. AP2 Realtime Audio Stream.` /
+  `… AP2 Buffered Audio Stream.` (rtsp.c).
+- Negotiated latency — `Notified latency is N frames.`, emitted only when
+  `N != 77175`; **absence means the default 77175 frames (≈1.75 s; ~2.0 s
+  with the +11035 shairport adds) = the comfortable/free regime.** A
+  printed `N` below the frames-equivalent of `150 ms + buffer_ms` is the
+  tight regime.
+
+`scripts/airplay-latency-probe.sh` captures this during a live session.
+
+**JTS-side observability — the tight regime is now visible without the
+journal (Stage D, 2026-06-21).** Three surfaces, all OBSERVABILITY-ONLY
+(they do not touch the offset derivation, the reconciler, or any audio
+path):
+- **Proactive computed fit** — `jasper/multiroom/airplay_latency.py`'s
+  pure `assess_fit(buffer_ms, notified_frames)` computes the budget
+  (`(frames + 11035) / 44100`; the default 77175 when no `Notified
+  latency` line) vs. the need (`~150 ms + buffer_ms`) and flags
+  `tight` + a bounded `residual_lag_sec`. **The tight test mirrors
+  shairport's own** (verified against `rtp.c` `rtp_ap2_control_receiver`,
+  `net_latency <= 0`): shairport applies the negative offset only while
+  `budget ≥ |offset| + audio_backend_buffer_desired_length` (0.5 s in
+  `shairport-sync.conf.template`); below that it logs "too short" and
+  **drops the offset entirely**. So `tight` fires at
+  `budget < need + 0.5 s` and `residual_lag_sec` is the FULL `need` (the
+  whole pipeline+buffer delay goes uncompensated), not the shortfall.
+  Consequence: with the default `buffer_ms` (400 → need ~0.55 s) the
+  threshold is ~1.05 s, far under the ~2.0 s default budget; but a
+  `buffer_ms` above ~1350 ms is tight **even at the default budget**.
+  Surfaced fail-soft on BOTH `/state.grouping.airplay_latency_fit` and
+  `/rooms.json` (`self.grouping.airplay_latency_fit`) — both wrap
+  `read_grouping_state()` with the one shared composer
+  `airplay_latency.with_airplay_latency_fit`, so the two surfaces agree and
+  neither re-derives it. The value is `{"applicable": false}` unless this
+  speaker is an active bonded leader (the journal is read ONLY in that rare
+  case, gated behind a one-line config parse, so a solo speaker pays nothing;
+  and even a leader's read is TTL-cached via `cached_notified_frames` so the
+  ~5–7 s page polls cannot spawn a `journalctl` per request — all callers
+  share one cached read). The gate is the shared `config.is_active_leader` —
+  the SAME predicate the reconciler uses to WRITE the offset
+  (`airplay_grouping_env`), so the surface can never claim a fit for an offset
+  that is not armed. The reader (`read_notified_frames`) is fail-soft: an
+  unreadable journal resolves to the default budget, never a false warn.
+  `GET /grouping` deliberately stays unwrapped — its consumers don't need it.
+- **Household-facing card** — the `/rooms` page renders an "AirPlay lip-sync"
+  row inside the bond card (only on an active bonded leader): a quiet
+  "Synced" badge when it fits, an amber "Lagging ~N ms" badge + a one-line
+  explanation when tight. Source: the `groupingBody` renderer in
+  `deploy/assets/rooms/js/main.js`. (Solo/follower → `applicable:false` →
+  the row isn't drawn.)
+- **Doctor check** — `check_grouping_airplay_latency` (grouping domain)
+  skips (`ok`, "n/a") on solo/follower and warns only when a bonded
+  leader's budget is genuinely too short, naming the residual lag. The
+  remediation is honest about the lever that exists: the sender budget is
+  AP2-authored (not growable locally), and `buffer_ms` has **no wizard
+  control** (it lives in `grouping.env` as `JASPER_GROUPING_BUFFER_MS`,
+  default 400), so the warn says to lower that env value if it was raised —
+  it does **not** point at a non-existent `/rooms` knob.
+- **Reactive ground truth** — shairport's own "stream latency … too short
+  to accommodate an offset" warning is classified by the AirPlay-health
+  sampler (`classify_journal_line` →
+  `type=shairport_offset_too_short`, severity `issue`) so it lands in the
+  existing `/system` AirPlay-health event ring with no new journal reads,
+  and rolls into the `shairport_events` counter (like
+  `shairport_oos`/`shairport_broken_pipe`) so it also moves the
+  AirPlay-health status verdict, not just the raw event list.
+
+**Step-0 measurement (2026-06-21).** Mining the persistent shairport
+journals on jts.local found **9 real AP2 (Realtime) sessions, zero
+`Notified latency` lines, zero "too short" warnings** — with
+`log_verbosity = 2` confirmed live, so a non-default budget WOULD have been
+logged. Every observed session used the default ~2.0 s budget (the free
+regime). This is why the surface above is deliberately scoped down (quiet
+when comfortable, gated journal reads) rather than an always-on detector.
+(That measurement is about the *sender* budget; the corrected tight test
+also makes the regime reachable from JTS's side via a `buffer_ms` raised
+above ~1350 ms even at the default budget — a config the household controls
+and the doctor/`/state` now flag.)
+Caveat / still owed: those sessions are audio-app AirPlay; a per-app
+**video** sweep (Apple TV app, YouTube/Safari, QuickTime across a couple
+of iOS/macOS versions) with `scripts/airplay-latency-probe.sh` is a
+human/hardware measurement not yet run — but AP2 buffered (video) streams
+take a *larger*, not smaller, budget, so the free regime is expected to
+hold there too.
 
 ### What shairport logs actually mean
 

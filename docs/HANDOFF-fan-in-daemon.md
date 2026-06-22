@@ -512,10 +512,21 @@ entirely: the grouping reconciler points it at outputd's TTS server
 (`rust/jasper-outputd/src/tts.rs`; the wire vocabulary + parser are the
 shared `rust/jasper-tts-protocol` crate both daemons import) so assistant
 audio mixes post-round-trip instead of riding the synced stream. One
-contract delta to know when comparing acks: fan-in's `FLUSH_SYNC`
-summary hardcodes `max_audio_played_ms: 0` / `events: []` (no DAC
-ledger here), while outputd's reports DAC-true played milliseconds
-from its playout ledger. See HANDOFF-multiroom.md Increment 5 PR-2.
+contract delta to know when comparing acks: both daemons now return a
+per-segment playout ledger in the `FLUSH_SYNC` ack (provider item id,
+flushed frames, `max_audio_played_ms`, `events[]`) — the ack KEY shape is a
+single contract in `jasper-tts-protocol` (`FLUSH_SYNC_ACK_KEYS` /
+`FLUSH_SYNC_ACK_EVENT_KEYS`, each daemon guard-tested against it) so the two
+renderers cannot drift under the one Python consumer — but the drain point
+differs. outputd drains against the real DAC `snd_pcm_delay`, so its
+`audio_played_ms` is DAC-true. fan-in sits pre-CamillaDSP and cannot see
+the DAC, so its ledger ([`rust/jasper-fanin/src/playout.rs`](../rust/jasper-fanin/src/playout.rs))
+counts the mix-commit point — frames popped into the program toward
+snd-aloop — which over-reads true playout by the fixed downstream pipeline
+depth (the conservative direction for barge-in truncation). See
+HANDOFF-multiroom.md Increment 5 PR-2 and
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+"Robust Barge-In Contract".
 
 **`JASPER_FANIN_MUSIC_OUTPUT_PCM` — the multi-room music-only tap (off by
 default).** When set, the mixer writes a SECOND output every period: the

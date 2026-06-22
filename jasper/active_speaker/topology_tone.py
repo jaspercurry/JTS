@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Topology-target tone plans for active-speaker channel tests.
 
 This module bridges the saved physical output topology to the existing

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Compile and apply accepted active-speaker baseline profiles.
 
 The baseline profile is the handoff from commissioning into normal playback:
@@ -822,7 +826,7 @@ def recompose_baseline_yaml(
     out_path: str | Path | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the active-speaker baseline YAML for the current accepted
-    evidence, with optional program-domain preference EQ folded in pre-split.
+    evidence, with optional program-domain preference EQ inserted pre-split.
 
     This is the composition seam the graph carrier
     (:mod:`jasper.sound.graph_carrier`) uses to apply preference EQ on top of an
@@ -832,10 +836,10 @@ def recompose_baseline_yaml(
     (``resolve_active_playback_device`` → ``compile_preset_from_crossover_preview``
     → ``_derive_corrections`` → ``emit_active_speaker_baseline_config``) — rather
     than parsing the running config (the explicit anti-pattern). Only the
-    ``preference_filters`` (and the ``output_trim_db`` they ride with) differ
-    from the durable baseline; the crossover, per-driver limiters, tweeter
-    high-pass, and 0 dB ceiling are identical, so the emitted YAML re-proves as
-    ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
+    ``preference_filters`` (and the explicit ``output_trim_db`` attenuation)
+    differ from the durable baseline; the crossover, per-driver limiters,
+    tweeter high-pass, and 0 dB ceiling are identical, so the emitted YAML
+    re-proves as ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
 
     ``output_trim_db`` is the household's manual headroom + loudness-match
     attenuation; the emitter folds it into ``active_baseline_headroom`` so the
@@ -843,7 +847,7 @@ def recompose_baseline_yaml(
 
     Unlike :func:`build_baseline_profile_candidate` /
     :func:`apply_baseline_profile`, this re-emit takes no ``capture_device``: it
-    folds program-domain (Layer C) preference EQ, which only ever runs on the
+    inserts program-domain (Layer C) preference EQ, which only ever runs on the
     fan-in-fed program domain — a solo speaker's single graph and a pair
     leader's bake instance (``camilla#1``). A wireless follower (and a leader's
     own-driver instance, ``camilla#2``) is Layer-A-only and never recomposes

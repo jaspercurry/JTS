@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! The JTS assistant/TTS protocol and shared playout policy.
 //!
 //! Newline-framed text commands with binary AUDIO payloads, spoken by
@@ -10,10 +14,15 @@
 //! once and consumed by both ends.
 //!
 //! It also owns the shared K-weighted assistant loudness policy used by
-//! fan-in and outputd. Queueing policy, epochs, metrics, flush-ack
-//! summaries, and final mixing engines stay per-daemon — they may
-//! legitimately diverge without breaking compatibility. Wire vocabulary
-//! and assistant loudness decisions may not.
+//! fan-in and outputd. Queueing policy, epochs, metrics, the per-daemon
+//! playout LEDGERS behind the flush-ack — and the VALUES they report
+//! (fan-in's pre-DSP mix-commit estimate vs outputd's DAC-true one) — and
+//! final mixing engines stay per-daemon; they may legitimately diverge
+//! without breaking compatibility. Wire vocabulary may not: that means the
+//! command parser AND the `FLUSH_SYNC` ack KEY shape
+//! ([`FLUSH_SYNC_ACK_KEYS`] / [`FLUSH_SYNC_ACK_EVENT_KEYS`]), which the
+//! Python consumer and barge-in truncation parse, plus assistant loudness
+//! decisions.
 
 use std::io::{self, BufRead};
 
@@ -25,6 +34,41 @@ pub const CHANNELS: u16 = 2;
 /// Hard per-AUDIO-command byte cap (matches fanin: ~10.9 s of stereo
 /// S16 at 48 kHz). A malformed length header cannot OOM the daemon.
 pub const MAX_AUDIO_BYTES: usize = 2 * 1024 * 1024;
+
+/// Canonical top-level JSON keys of a `FLUSH_SYNC` acknowledgement line.
+///
+/// The ack is the response half of this wire protocol. fan-in (solo) and
+/// outputd (bonded multiroom member) each render it from their OWN playout
+/// ledger — the *values* differ (mix-commit vs DAC-true) but the *key
+/// shape* must not, because one Python consumer (`jasper/audio_io.py`,
+/// `jasper/voice/turn_playback.py`) and the barge-in truncation path parse
+/// both. Each daemon's tests assert its rendered ack satisfies this
+/// contract; changing it is a deliberate wire change touching both daemons
+/// and the Python consumer in the same PR. Extra keys are tolerated by the
+/// `.get()`-based consumer; missing/renamed keys are the breakage this
+/// pins.
+pub const FLUSH_SYNC_ACK_KEYS: &[&str] = &[
+    "ok",
+    "requests",
+    "pending_frames",
+    "segments",
+    "flushed_frames",
+    "max_audio_played_ms",
+    "events",
+];
+
+/// Canonical JSON keys of each object in a `FLUSH_SYNC` ack's `events`
+/// array (the per-segment playout records barge-in truncation consumes).
+/// See [`FLUSH_SYNC_ACK_KEYS`] for the contract rationale.
+pub const FLUSH_SYNC_ACK_EVENT_KEYS: &[&str] = &[
+    "segment",
+    "kind",
+    "provider_item_id",
+    "queued_frames",
+    "written_frames",
+    "drained_frames",
+    "flushed_frames",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentKind {
@@ -390,5 +434,37 @@ mod tests {
     fn parser_eof_is_clean_close() {
         let mut reader = Cursor::new(Vec::new());
         assert!(matches!(read_command(&mut reader), Ok(None)));
+    }
+
+    #[test]
+    fn flush_sync_ack_key_contract_is_stable() {
+        // The shared FLUSH_SYNC ack wire shape. Both daemons' renderers and
+        // the Python consumer agree on exactly these keys; changing either
+        // list is a deliberate wire-contract change. Each daemon has a guard
+        // test asserting its rendered ack contains every key here.
+        assert_eq!(
+            FLUSH_SYNC_ACK_KEYS,
+            [
+                "ok",
+                "requests",
+                "pending_frames",
+                "segments",
+                "flushed_frames",
+                "max_audio_played_ms",
+                "events",
+            ]
+        );
+        assert_eq!(
+            FLUSH_SYNC_ACK_EVENT_KEYS,
+            [
+                "segment",
+                "kind",
+                "provider_item_id",
+                "queued_frames",
+                "written_frames",
+                "drained_frames",
+                "flushed_frames",
+            ]
+        );
     }
 }

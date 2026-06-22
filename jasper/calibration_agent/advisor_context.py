@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """LLM-ready context for calibration-agent review and bounded actions.
 
 This module is the narrow bridge between deterministic bundle evidence

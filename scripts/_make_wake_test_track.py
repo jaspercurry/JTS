@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate a wake-rate test audio track: N × <PHRASE> with fixed gaps.
 
 Runs on the Pi (uses OpenAI TTS via the API key in /etc/jasper/jasper.env).

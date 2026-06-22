@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Persisted active-speaker design draft.
 
 The design draft is the durable bridge between the user-facing output map and
@@ -30,6 +34,7 @@ _SUPPORTED_CONFIDENCE = {"low", "medium", "high", "unknown"}
 _MAX_DRIVERS = 16
 _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
+MAX_DRIVER_NOTE_CHARS = 2048
 _CROSSOVER_ROLE_PAIRS = {
     "active_2_way": (("woofer", "tweeter"),),
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
@@ -165,7 +170,11 @@ def _normalise_driver(raw: Any) -> dict[str, Any]:
             raw.get("gain_offset_db"),
             "driver.gain_offset_db",
         ),
-        "notes": _text(raw.get("notes"), "driver.notes", max_chars=1000),
+        "notes": _text(
+            raw.get("notes"),
+            "driver.notes",
+            max_chars=MAX_DRIVER_NOTE_CHARS,
+        ),
         "sources": _string_list(raw.get("sources"), "driver.sources"),
     }
     return {key: value for key, value in driver.items() if value not in (None, [])}
@@ -209,7 +218,11 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
             raw.get("gain_offset_db"),
             "manual_settings.driver.gain_offset_db",
         ),
-        "notes": _text(raw.get("notes"), "manual_settings.driver.notes", max_chars=1000),
+        "notes": _text(
+            raw.get("notes"),
+            "manual_settings.driver.notes",
+            max_chars=MAX_DRIVER_NOTE_CHARS,
+        ),
     }
     return {key: value for key, value in driver.items() if value not in (None, [])}
 

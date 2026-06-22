@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """WS1 — pin env-file modes for cross-user daemon reads.
 
 The broad `/var/lib/jasper` state files that jasper-control still fresh-reads

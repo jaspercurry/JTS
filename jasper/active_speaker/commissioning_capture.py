@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bridge: mic-backed acoustic verdict -> commissioning measurement record.
 
 [`driver_acoustics`](driver_acoustics.py)'s ``analyze_driver_capture`` /
@@ -28,11 +32,17 @@ caller re-captures rather than persisting a fabricated result.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.output_topology import OutputTopology
 
+from .crossover_alignment import (
+    PHASE_AWARE,
+    propose_crossover_alignment,
+    resolve_measurement_mode,
+)
 from .driver_acoustics import (
     ANALYSIS_HI_HZ,
     ANALYSIS_LO_HZ,
@@ -49,6 +59,9 @@ from .driver_acoustics import (
 )
 from .measurement import record_driver_measurement, record_summed_validation
 from .profile import ActiveSpeakerPreset, crossover_edges_for_role
+
+if TYPE_CHECKING:
+    from jasper.correction.calibration import CalibrationCurve
 
 
 def driver_crossover_fcs(preset: ActiveSpeakerPreset, role: str) -> tuple[float, ...]:
@@ -127,6 +140,7 @@ def record_driver_acoustic_capture(
     playback_id: str | None = None,
     test_level_dbfs: float | None = None,
     has_mic_calibration: bool = False,
+    calibration: "CalibrationCurve | None" = None,
     notes: str | None = None,
     calibration_level: Mapping[str, Any] | None = None,
     safe_session: Mapping[str, Any] | None = None,
@@ -159,6 +173,7 @@ def record_driver_acoustic_capture(
         passband_hz=passband,
         overlap_fcs=driver_crossover_fcs(preset, role),
         has_mic_calibration=has_mic_calibration,
+        calibration=calibration,
     )
     acoustic = result.to_dict()
     outcome = DRIVER_VERDICT_TO_OUTCOME.get(result.verdict)
@@ -216,7 +231,9 @@ def record_summed_acoustic_capture(
     polarity: str | None = None,
     delay_ms: float | None = None,
     delay_target_role: str | None = None,
+    expect_null: bool = False,
     has_mic_calibration: bool = False,
+    calibration: "CalibrationCurve | None" = None,
     notes: str | None = None,
     calibration_level: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
@@ -246,12 +263,18 @@ def record_summed_acoustic_capture(
             "acoustic": None,
             "measurement": None,
         }
+    # Both capture kinds judge "is a null present?" against the same threshold; for
+    # a reverse-polarity capture (one driver inverted) a present null is the PASS,
+    # for an in-phase one it is the PROBLEM. The cap-independent polarity call
+    # (reverse-vs-in-phase margin) is the proposal's job, not this per-capture verdict.
     result = analyze(
         captured_wav,
         sweep_meta,
         crossover_fc_hz=fc,
         null_threshold_db=null_threshold_db,
+        expect_null=expect_null,
         has_mic_calibration=has_mic_calibration,
+        calibration=calibration,
     )
     acoustic = result.to_dict()
     outcome = SUMMED_VERDICT_TO_OUTCOME.get(result.verdict)
@@ -293,4 +316,155 @@ def record_summed_acoustic_capture(
         "crossover_fc_hz": fc,
         "acoustic": acoustic,
         "measurement": measurement,
+    }
+
+
+def _acoustic_calibrated(record: Any) -> bool | None:
+    """Whether this record's acoustic block was captured with a calibrated mic.
+
+    None when there is no acoustic block (no contribution to the phase_aware
+    decision). The proposal grants phase_aware only when EVERY contributing record
+    is calibrated — an uncalibrated phone capture can never authorize a phase/delay
+    decision, even if phase_aware is requested.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    acoustic = record.get("acoustic")
+    if not isinstance(acoustic, Mapping):
+        return None
+    return bool(acoustic.get("calibrated"))
+
+
+def _summed_null_depths(
+    summed_record: Any,
+) -> tuple[float | None, float | None]:
+    """(in_phase_null_db, reverse_null_db) from a group's latest summed record.
+
+    The state keeps one summed record per group, tagged ``expect_null`` (True for a
+    reverse-polarity capture). Route its depth to the matching slot; the other is
+    None until that capture is taken.
+    """
+    if not isinstance(summed_record, Mapping):
+        return None, None
+    acoustic = summed_record.get("acoustic")
+    if not isinstance(acoustic, Mapping):
+        return None, None
+    raw_depth = acoustic.get("null_depth_db")
+    if raw_depth is None:
+        return None, None
+    try:
+        depth = float(raw_depth)
+    except (TypeError, ValueError):
+        return None, None
+    if not math.isfinite(depth):
+        return None, None
+    if acoustic.get("expect_null"):
+        return None, depth
+    return depth, None
+
+
+def build_crossover_alignment_proposal(
+    preset: ActiveSpeakerPreset,
+    measurements: Mapping[str, Any],
+    *,
+    requested_mode: str = PHASE_AWARE,
+    speaker_group_id: str | None = None,
+) -> dict[str, Any]:
+    """Propose a SAFE crossover polarity refinement (+ delay status) from state.
+
+    A pure read: it walks the recorded summed-crossover null depths (in-phase and,
+    if captured, reverse-polarity) for the PRIMARY (lowest) crossover and asks
+    :func:`crossover_alignment.propose_crossover_alignment`.
+
+    The phase_aware gate is enforced AT THE DATA: ``requested_mode`` is granted
+    only when the contributing summed capture was taken with a calibrated mic
+    (``acoustic.calibrated``); otherwise it downgrades to ``magnitude_only`` and
+    the proposal is unauthorized (no polarity/delay decision). So a phone capture
+    can never yield a phase decision even if phase_aware is requested. Never raises
+    on thin/empty state; returns ``{status, mode, proposal, ...}``.
+
+    Scope: ONE crossover (the primary / lowest). A 3-way's upper crossover needs
+    its own summed-null capture and is out of scope for this increment. Multi-group
+    (stereo-pair) polarity/delay *emission* is also deferred (see
+    ``baseline_profile``'s ``group_specific_delay_not_applied``); the proposal
+    computes for one group, so a mono/single-group speaker (jts3's
+    active_mono_2way) gets the full L2 polarity refinement.
+    """
+    regions = sorted(
+        (r for r in preset.crossover_regions if r.fc_hz and r.fc_hz > 0),
+        key=lambda r: r.fc_hz,
+    )
+    if not regions:
+        return {"status": "no_crossover", "proposal": None}
+    region = regions[0]
+    lower_role = region.lower_driver
+    upper_role = region.upper_driver
+    fc = float(region.fc_hz)
+
+    latest = measurements.get("latest_by_target")
+    if not isinstance(latest, Mapping):
+        summary = measurements.get("summary")
+        latest = (
+            summary.get("latest_driver_measurements")
+            if isinstance(summary, Mapping)
+            else None
+        )
+    by_group_role: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for rec in (latest.values() if isinstance(latest, Mapping) else []):
+        if not isinstance(rec, Mapping):
+            continue
+        group_id = rec.get("speaker_group_id")
+        role = rec.get("role")
+        if isinstance(group_id, str) and group_id and isinstance(role, str):
+            by_group_role[(group_id, role)] = rec
+
+    latest_summed = measurements.get("latest_summed_by_group")
+    summed_by_group = latest_summed if isinstance(latest_summed, Mapping) else {}
+
+    group = speaker_group_id
+    if group is None:
+        groups = {g for (g, _r) in by_group_role} | set(summed_by_group.keys())
+        if len(groups) == 1:
+            group = next(iter(groups))
+        elif summed_by_group:
+            group = sorted(summed_by_group.keys())[0]
+        elif groups:
+            group = sorted(groups)[0]
+    if group is None:
+        return {"status": "no_measurements", "proposal": None}
+
+    lower_rec = by_group_role.get((group, lower_role))
+    upper_rec = by_group_role.get((group, upper_role))
+    summed_rec = summed_by_group.get(group)
+    in_phase_null, reverse_null = _summed_null_depths(summed_rec)
+
+    # The phase_aware gate at the data layer: every contributing capture must be
+    # calibrated. A single uncalibrated record blocks phase_aware.
+    cal_flags = [
+        flag
+        for flag in (
+            _acoustic_calibrated(lower_rec),
+            _acoustic_calibrated(upper_rec),
+            _acoustic_calibrated(summed_rec),
+        )
+        if flag is not None
+    ]
+    data_calibrated = bool(cal_flags) and all(cal_flags)
+    resolved = resolve_measurement_mode(
+        requested_mode, has_calibrated_mic=data_calibrated
+    )
+
+    proposal = propose_crossover_alignment(
+        mode=resolved.mode,
+        crossover_fc_hz=fc,
+        lower_role=lower_role,
+        upper_role=upper_role,
+        in_phase_null_depth_db=in_phase_null,
+        reverse_null_depth_db=reverse_null,
+    )
+    return {
+        "status": "ok",
+        "speaker_group_id": group,
+        "mode": resolved.to_dict(),
+        "proposal": proposal.to_dict(),
     }

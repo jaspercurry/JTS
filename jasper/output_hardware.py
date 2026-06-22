@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only output hardware profile classification.
 
 This module is the output-side counterpart to ``audio_profile_state``:

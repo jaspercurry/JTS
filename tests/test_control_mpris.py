@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.control.mpris — the shared shairport-sync MPRIS
 PlaybackStatus probe.
 

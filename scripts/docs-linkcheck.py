@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Check local Markdown links and anchors in changed Markdown files.
 
 This is a PR-fast check. It intentionally ignores external URLs and only

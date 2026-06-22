@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-mux — renderer source-arbiter.
 
 Polls each renderer's state on a short interval and, when a new

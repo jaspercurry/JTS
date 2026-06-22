@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure active-speaker setup helpers for /sound/.
 //
 // This module deliberately contains no DOM or fetch state. The large sound
@@ -329,6 +333,84 @@ export function levelMatchSummary(baseline) {
         'to measure them instead.' :
       'Per-driver levels are set — the quietest driver is the 0 dB reference.',
     guidance: NEARFIELD_LEVEL_MATCH_GUIDANCE
+  };
+}
+
+export const CALIBRATED_ALIGNMENT_GUIDANCE =
+  'For polarity, use a calibrated measurement mic (Dayton iMM-6/UMM-6, miniDSP ' +
+  'UMIK, or an uploaded REW curve): select it under “Calibrated mic”, then capture ' +
+  'the summed crossover in-phase and with one driver inverted. A phone can ' +
+  'level-match but cannot judge polarity — that needs calibrated phase.';
+
+function humanPolarityAction(action) {
+  return {
+    keep: 'Polarity looks correct — keep it',
+    invert: 'Invert one driver (proposed)',
+    review: 'Polarity needs review'
+  }[action] || '—';
+}
+
+function humanDelayStatus(status) {
+  return {
+    aligned: 'Drivers sum cleanly — time-aligned',
+    needs_alignment: 'Deep crossover null — run the delay alignment walk',
+    unknown: 'Capture the summed crossover to check'
+  }[status] || '—';
+}
+
+// Summarise the /active-speaker/crossover-alignment proposal for the L2 card. Pure:
+// main.js owns the DOM and the per-driver/summed curve plot from payload.curves. A
+// proposal is a PROPOSAL — the maintainer reviews the surfaced evidence and confirms;
+// polarity is gated on a calibrated (phase_aware) measurement, level stays the
+// separate attenuation-only level match, and the delay VALUE comes from the
+// timing-locked alignment walk (this surfaces only its status).
+export function crossoverAlignmentSummary(payload) {
+  payload = payload || {};
+  var proposal = payload.proposal && typeof payload.proposal === 'object' ?
+    payload.proposal : null;
+  var mode = payload.mode && typeof payload.mode === 'object' ? payload.mode : {};
+  var modeName = String(mode.mode || '');
+  var needsCal = modeName !== 'phase_aware';
+  if (!proposal) {
+    return {
+      available: false,
+      authorized: false,
+      needsCalibratedMic: needsCal,
+      note: (payload.status === 'no_measurements' || payload.status === 'no_crossover') ?
+        'Measure each driver near-field first, then capture the summed crossover.' :
+        'No alignment proposal yet.',
+      guidance: CALIBRATED_ALIGNMENT_GUIDANCE
+    };
+  }
+  var authorized = !!proposal.authorized;
+  var delayText = authorized ? humanDelayStatus(proposal.delay_status) : '—';
+  var nullParts = [];
+  if (typeof proposal.in_phase_null_depth_db === 'number') {
+    nullParts.push('in-phase ' + proposal.in_phase_null_depth_db.toFixed(0) + ' dB');
+  }
+  if (typeof proposal.reverse_null_depth_db === 'number') {
+    nullParts.push('reverse ' + proposal.reverse_null_depth_db.toFixed(0) + ' dB');
+  }
+  var issues = Array.isArray(proposal.issues) ?
+    proposal.issues
+      .map(function(entry) { return String((entry && entry.message) || ''); })
+      .filter(Boolean) :
+    [];
+  return {
+    available: true,
+    authorized: authorized,
+    needsCalibratedMic: needsCal,
+    mode: modeName,
+    delayText: delayText,
+    polarityText: authorized ? humanPolarityAction(proposal.polarity_action) : '—',
+    nullText: nullParts.length ? nullParts.join(', ') : 'no summed capture yet',
+    issues: issues,
+    note: authorized ?
+      'Proposal from a calibrated measurement — review the evidence, then capture ' +
+        'the summed crossover with the chosen polarity to apply it to the baseline.' :
+      'Polarity needs a calibrated measurement mic; with a phone you can still ' +
+        'level-match each driver.',
+    guidance: CALIBRATED_ALIGNMENT_GUIDANCE
   };
 }
 

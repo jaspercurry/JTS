@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pair-balance measurement core — equal-loudness ramp method (#23 P2).
 
 The flow this serves (orchestrated by jasper/web/balance_flow.py): one

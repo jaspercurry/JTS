@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free behaviour tests for the privsep readability check core.
 
 The check runs as root on the Pi (so it can't use os.access — that would read
@@ -190,6 +194,7 @@ def test_decorated_checks_are_total_without_systemctl(monkeypatch):
     for fn in (
         privsep.check_control_readable_inputs,
         privsep.check_web_readable_inputs,
+        privsep.check_chat_web_readable_inputs,
         privsep.check_mux_readable_inputs,
         privsep.check_voice_readable_inputs,
     ):

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """PEQ designer: greedy peak-fit on synthetic frequency responses.
 
 The PEQ designer is the "make it audibly better" step. If it picks

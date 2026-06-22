@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin the jasper-camilla.service systemd unit invariants.
 
 The unit owns the load-bearing CamillaDSP launch — anything that drifts

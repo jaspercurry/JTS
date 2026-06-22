@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Output-owner core with fake transports for tests and developer runs.
 
 use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};

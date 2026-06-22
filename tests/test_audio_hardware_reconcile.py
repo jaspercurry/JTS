@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import json
@@ -442,6 +446,10 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         # The single stereo path now also manages the wide-lane width knob,
         # cleared so a stale active width can't mis-size the stereo lane.
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
+        # A passive stereo sink is not an active-crossover lane, so the
+        # active-lane marker is cleared here too. Seeding it keeps the
+        # steady state truly unchanged (no spurious outputd restart).
+        "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -595,6 +603,10 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
+    # A wide composite sink (4ch) is already fenced off outputd's stereo-only
+    # features by its channel width, so the reconciler does NOT set the 2-ch
+    # active-lane marker here — it stays cleared.
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
     assert "type null" in template
@@ -762,6 +774,10 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
+    # A 2-ch active sink is the case channel width can't distinguish from a
+    # full-range stereo L/R sink, so the reconciler marks it explicitly; outputd
+    # reads this to fail its stereo-only post-crossover features closed.
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
 
 

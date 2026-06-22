@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Manual discovery of provider voice models for the /voice wizard.
 
 Discovery is deliberately operator-triggered. The wizard reads this

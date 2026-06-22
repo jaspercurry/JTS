@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // controls.js — state rules for /wake-corpus/ capture options.
 //
 // Kept separate from main.js so the chip-profile invariants can be tested

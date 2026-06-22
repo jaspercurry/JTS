@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Run jasper-system-soak on the active Pi through the bounded diagnostic lane.
 #
 # This is a convenience wrapper for:

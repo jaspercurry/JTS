@@ -405,6 +405,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-mic-fusion-architecture.md  Design/plan (draft): pluggable-mic boundary + N-leg wake fusion
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
+  HANDOFF-hotplug-resilience.md  Runtime mic/DAC/satellite attach-detach convergence (no crash-loop)
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
   HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
   HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
@@ -415,7 +416,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
-  HANDOFF-volume.md             Source-aware volume coordinator
+  HANDOFF-volume.md             Source-aware volume coordinator + gain-chain ledger
   multi-user-spotify.md
   audit-pending-followups.md    Open Tier 2/3 follow-ups
   ...                           additional HANDOFF, proposal, research,
@@ -515,11 +516,12 @@ steps. Apache 2.0 like the rest of the repo.
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/extensibility.md](docs/extensibility.md) | Maintainers / AI / extension contributors | **Start here before adding a modular subsystem.** The cross-cutting extensibility doctrine: the one invariant (host-mediated indirection), the five extension contracts (tools, sources, model providers, hardware profiles, features), the *what-kind → which-pattern* decision tree, and the build-now-vs-defer trust gradient. Frames the per-contract docs that follow. |
 | [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet, pack-first catalog, singleton packs for standalone tools, generated pack detail pages, full prompt override/reset, and the built-in `/tools/` on/off catalog wizard |
-| [docs/research-tool-plan.md](docs/research-tool-plan.md) | Maintainers / AI | Vision, design, and phased roadmap for the async "research this and tell me later" tool: a fast `research(query)` tool that hands the question to a pluggable text LLM (OpenAI v1, Anthropic v2) running in a bounded background job, then reads a <=30 s summary back through the existing timer-fire announcement path. Records the shipped Phase-1/2 defaults (background+poll, no webhook, short spoken answers, spend accounting) and the deferred future (hold-and-read etiquette, dedicated failure cues, barge-in yes/no, interaction history log). |
-| [docs/conversation-history-plan.md](docs/conversation-history-plan.md) | Maintainers / AI | Execution plan for the first JTS **Feature** (per the extensibility doctrine): a read-only `/chat` log of perceived-command-in / response-back. Native-first transcript capture, a dedicated `ConversationStore`, a `/system/`-shaped read-only page, `/state.chat`, doctor coverage, and opt-in / mic-mute-gated / retention-capped privacy. The store plus backend/page shell are now implemented; the ES-module renderer remains separate work. |
+| [docs/research-tool-plan.md](docs/research-tool-plan.md) | Maintainers / AI | Vision, design, and phased roadmap for the async "research this and tell me later" tool: a fast `research(query)` tool that hands the question to a pluggable text LLM (OpenAI v1, Anthropic v2) running in a bounded background job, then reads a <=30 s summary back through the existing timer-fire announcement path. Records the shipped defaults (background+poll, no webhook, short spoken answers, spend accounting, etiquette hardening, and privacy-safe status/doctor observability) and the deferred future (Anthropic, full barge-in, richer interaction history). |
+| [docs/conversation-history-plan.md](docs/conversation-history-plan.md) | Maintainers / AI | Execution plan for the first JTS **Feature** (per the extensibility doctrine): a household-visible `/chat` log of perceived-command-in / response-back with local capture controls. Native-first transcript capture, a dedicated `ConversationStore`, static ES-module page, `/state.chat`, doctor coverage, and opt-in / mic-mute-gated / retention-capped privacy are implemented; Gemini transcript capture and richer filtering remain deferred. |
 | [docs/examples/tool_pack_starter.py](docs/examples/tool_pack_starter.py) | Trusted tool-pack contributors | Non-production postcard example of a copyable capability pack: `CapabilityPack`, `CatalogPack`, explicit `ToolDefinition`, `PythonExecutor`, labels, timeout, risk flags, and deps/build shape. Tests import it so the example cannot drift from the real boundary. |
-| [docs/LAUNCH-READINESS.md](docs/LAUNCH-READINESS.md) | Maintainers / cleanup agents | **Current, verified open-source-launch backlog** — what's done (privilege separation, governance) and what's open, each open item with a ready-to-paste agent prompt. Supersedes the `REVIEW-*` audit snapshots. |
 | [docs/install-update-resilience-plan.md](docs/install-update-resilience-plan.md) | Maintainers / AI | **Planning brief (not operational truth).** Problems + open questions for hardening the install/update flow across Pi hardware tiers (512 MB–16 GB), fresh-vs-in-service-update, large version jumps, and runtime hot-plug/unplug. Origin: a 2026-06-21 jts2 update that OOM-killed the build (and nginx/voice) mid-install. Carries four ready-to-paste workstream prompts (memory-safe builds, atomic/recoverable updates, hot-plug resilience, tier-aware install + testing). |
+| [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md) | Maintainers / AI | **Operational** (Workstream B, landed). How a JTS update is a transaction: the build manifest is the verified-install marker (written last, gated by `set -e`, so a failed update never advertises a SHA it isn't running), deploy verification covers voice/AEC/renderers via `jasper-doctor` (broken-vs-idle), and collateral OOM kills are surfaced/gated. Includes the rollback/A-B analysis (cheapest "never worse than before"; full A-B deferred) and the Workstream-C seam. |
+| [docs/install-hardware-tier-and-staleness.md](docs/install-hardware-tier-and-staleness.md) | Maintainers / AI | **Design note + recommendation (Workstream D output).** Findings on making the installer hardware-tier-aware (RAM/CPU/arch detected up front, orthogonal to the full/streambox *profile*) and the version-skew risk question. Bottom line: migrations are convergent so being far behind is not a migration-pile-up risk; it amplifies risk via cold build caches (the OOM-prone WebRTC/Cargo rebuilds) — so stepwise updates are rejected in favor of safe builds (A) + atomic updates (B). Includes the cross-SKU test strategy and the scoped tier-detection/arch-guard PR. |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Contributor "files to know" register + the original top-five framing (priority list superseded by LAUNCH-READINESS.md) |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
@@ -528,7 +530,9 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up a Zero 2 W streambox | Lab runbook for cheap Zero-class JTS: the streambox install profile (local renderers, DSP, shared capability-gated UI) plus the planned `active_crossover` output topology. "Endpoint behaviour" is now the runtime multiroom follower role, not a separate install tier |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
+| [docs/HANDOFF-build-sandbox.md](docs/HANDOFF-build-sandbox.md) | Maintainers / install-path | How `install.sh` runs heavy compiles (webrtc AEC3, jasper_aec3, Rust daemons, shairport-sync/nqptp) RAM-bounded + cgroup-contained so an OOM during an in-service update kills only the build, never a live daemon. Workstream A of the install-update resilience brief; the inverse-of-audio-daemon build policy |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
+| [docs/DEEP-AUDIT-PLAYBOOK.md](docs/DEEP-AUDIT-PLAYBOOK.md) | Maintainers / AI agents (pre-launch) | The heavyweight whole-codebase audit method: many sub-agents comb the tree close to line by line for dead code, drift, duplication, unjustified complexity, and the **unknown unknowns** (orphans, dead flags, off-map corners). Capital-T-truth bar (a clean result is *suspect*), coverage ledger, adversarial verification, honest grades with confidence. Driven by the `/deep-audit` command. NOT a per-diff review — that's `/code-review ultra`. |
 | [docs/HANDOFF-observability.md](docs/HANDOFF-observability.md) | Operator + AI | Logging/observability model (heartbeat-vs-forensic split, the three steady-state verbosity hotspots, persistent-journald rationale) + the approved per-subsystem debug-mode toggle, flight-recorder, and download-diagnostics design |
 | [docs/HANDOFF-privilege-separation.md](docs/HANDOFF-privilege-separation.md) | Maintainers / security | Threat model + ADR for hardening and de-rooting the daemons: Phase 1 hardened-root stanza (landed, measured), the restart-broker + invisible-token, the Tier-A user drop with its recovery-validation matrix, and the tracked Tier-B follow-up |
 | [docs/HANDOFF-control-plane-auth.md](docs/HANDOFF-control-plane-auth.md) | Maintainers / security | Device-to-device / household control-plane auth: why the per-device CSRF control token cannot authenticate cross-speaker grouping, the prior-art research, the household-credential design, shipped Phase A-C status, and the Phase D scope decision. Also folds in the landing-page mic-mute token-delivery fix |
@@ -676,10 +680,16 @@ reference. Currently:
   Also documents the new debug-WAV recording instrumentation
   (`JASPER_DEBUG_RECORD_OPENAI_AUDIO`).
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) —
-  Historical costing record for robust barge-in options under the
-  earlier measure-first policy. Useful archaeology, but superseded
-  as the current recommendation by
-  [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md).
+  Live implementation plan & current-code gap analysis for robust
+  assistant-speech barge-in (provider-agnostic spine + per-provider
+  packs). The contract itself lives in
+  [`HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md) and
+  [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md);
+  the 2026-05-23 option-costing record is a tagged historical appendix.
+- [`barge-in-build-prompts.md`](docs/barge-in-build-prompts.md) —
+  Execution artifact (session handoff): the step sequencing + copy-paste
+  per-window agent prompts for building barge-in against the plan in
+  `HANDOFF-barge-in.md`. Retire once barge-in has shipped.
 - [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md)
   — Chosen architecture direction for moving from today's split
   music/TTS output paths to a JTS-native output owner that publishes
@@ -720,6 +730,17 @@ reference. Currently:
   `jasper/control/{shairport,system}_supervisor.py`, or the
   `Type=notify` / `WatchdogSec=` / `StartLimitAction=` blocks in
   any service unit.
+- [`HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md) —
+  Runtime hardware attach/detach convergence ("treat it like a
+  computer"): mic/XVF3800, output DAC/dongle, satellites can be
+  plugged/unplugged while running and the speaker converges both
+  directions with no redeploy, restart, or crash-loop. The mic
+  presence-gate (`jasper-voice` `ConditionPathExists` on a reconciler-
+  written marker + a clean `66` exit), why the output owner and
+  satellites already converge, and the plug/unplug hardware-pass
+  checklist. Read before touching the no-mic/no-DAC park paths in
+  `deploy/bin/jasper-aec-reconcile`, `jasper-voice.service`, or the
+  `ConditionPathExists`/`ExecCondition` device gates.
 - [`HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md) —
   Design + shipped implementation (T5.1 + T5.2, May 2026) for
   closing the Tier 5 liveness gap exposed by the 2026-05-23
@@ -789,8 +810,9 @@ reference. Currently:
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
   — Source-aware transport (AirPlay/Spotify Connect) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
-  volume coordinator (one canonical `listening_level`, dispatched
-  to whichever source is active, observed inbound at 1 Hz)
+  volume coordinator and `/state.audio.gain_chain` ledger (one
+  canonical `listening_level`, dispatched to whichever source is active,
+  observed inbound at 1 Hz, plus the read-only common gain total)
 - [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md)
   — Planned provider/source capability boundary for future music
   integrations: volume, transport, metadata, health, and contributor

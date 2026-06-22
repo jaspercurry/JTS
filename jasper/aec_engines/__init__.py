@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pluggable AEC engines for jasper-aec-bridge.
 
 The bridge captures mic + ref once and dispatches each chunk to N

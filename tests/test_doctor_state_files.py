@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Doctor checks for the /var/lib/jasper persisted-state files.
 
 `check_supervisor_reboot_state` (resilience) and `check_mux_mode_state`
@@ -168,6 +172,26 @@ def test_state_group_write_flags_group_unwritable(tmp_path):
     res = _classify_state_group_write(usage)
     assert res.status == "warn"
     assert "usage.db" in res.detail
+
+
+def test_state_group_write_checks_conversation_history_db(
+    tmp_path, monkeypatch,
+):
+    import grp
+    import types as _types
+
+    usage = tmp_path / "usage.db"
+    history = tmp_path / "conversation_history.db"
+    history.write_text("x", encoding="utf-8")
+    history.chmod(0o640)  # readable by /chat, not writable by jasper-voice
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: _types.SimpleNamespace(gr_name="jasper"),
+    )
+
+    res = _classify_state_group_write(usage)
+
+    assert res.status == "warn"
+    assert "conversation_history.db" in res.detail
 
 
 def test_state_group_write_ok_when_group_jasper_and_writable(tmp_path, monkeypatch):

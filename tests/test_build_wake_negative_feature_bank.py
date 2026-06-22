@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/_build_wake_negative_feature_bank.py."""
 from __future__ import annotations
 

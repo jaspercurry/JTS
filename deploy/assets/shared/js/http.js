@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // http.js — CSRF-aware fetch helpers shared across the canonical pages.
 //
 // The first cross-page module after dialog.js. A migrated wizard imports it

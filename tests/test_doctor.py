@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper-doctor's env loading, provider-aware key
 check, and ALSA mic-card lookup. Hardware-side checks (sounddevice,
 systemctl, arecord, etc) are exercised on the Pi via
@@ -283,6 +287,123 @@ def test_check_household_credential_bonded_unpaired_warns(monkeypatch, tmp_path)
     assert r.status == "warn"
     assert "household credential is missing" in r.detail
     assert "/rooms" in r.detail
+
+
+# --- camilla#2 endpoint-crossover unit (Stage B B1, INERT) ----------------
+
+def test_crossover_unit_check_registered():
+    assert "check_crossover_unit_installed" in _registered_check_names()
+
+
+def test_crossover_unit_solo_is_ok(monkeypatch):
+    # Not an active member -> skip before touching topology or systemd.
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_crossover_unit_installed()
+    assert r.status == "ok"
+    assert "not an active bond leader" in r.detail
+
+
+def test_crossover_unit_follower_is_ok(monkeypatch):
+    # An ACTIVE follower is not the leader half of the pair; camilla#2 is the
+    # leader's instance, so a follower skips.
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="follower", channel="right",
+        bond_id="x", leader_addr="192.168.1.50"), "")
+    r = doctor.check_crossover_unit_installed()
+    assert r.status == "ok"
+    assert "not an active bond leader" in r.detail
+
+
+def test_crossover_unit_passive_leader_is_ok(monkeypatch, tmp_path):
+    # A bonded LEADER whose output topology has NO roleful/protected outputs
+    # is a passive leader — it runs no per-driver crossover, so camilla#2 is
+    # n/a and the check skips with ok.
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_topology([]), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="x"), "")
+    r = doctor.check_crossover_unit_installed()
+    assert r.status == "ok"
+    assert "passive leader" in r.detail
+
+
+def _active_leader_topology(monkeypatch, tmp_path):
+    """Set up an ACTIVE-LEADER context: a roleful/protected output topology
+    plus a bonded-leader grouping config. Leaves `doctor.grouping._run`
+    patchable by the caller for the systemd probes."""
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_active_topology("mono", "active_2_way"), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    import jasper.multiroom.config as mr_config
+
+    cfg = _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="x")
+    monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
+
+
+def test_crossover_unit_active_leader_warns_when_missing(monkeypatch, tmp_path):
+    # Active leader but the unit is not installed (systemctl cat nonzero) ->
+    # a real gap the reconciler PR would have nothing to arm.
+    _active_leader_topology(monkeypatch, tmp_path)
+
+    def fake_run(argv, *a, **kw):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
+    r = doctor.check_crossover_unit_installed()
+    assert r.status == "warn"
+    assert "jasper-camilla-crossover.service is not installed" in r.detail
+
+
+def test_crossover_unit_active_leader_ok_when_installed(monkeypatch, tmp_path):
+    # Active leader, unit installed (systemctl cat ok) and parseable
+    # (systemd-analyze verify ok) -> ok, and the message says INERT.
+    _active_leader_topology(monkeypatch, tmp_path)
+
+    def fake_run(argv, *a, **kw):
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
+    # Force the "systemd-analyze present" branch deterministically.
+    monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _name: "/usr/bin/systemd-analyze")
+    r = doctor.check_crossover_unit_installed()
+    assert r.status == "ok"
+    assert "INERT" in r.detail
+
+
+def test_crossover_unit_active_leader_ok_without_systemd_analyze(monkeypatch, tmp_path):
+    # Active leader, unit installed, but systemd-analyze unavailable (dev box)
+    # -> ok with an explicit "parse unchecked" note; never a false warn.
+    _active_leader_topology(monkeypatch, tmp_path)
+
+    def fake_run(argv, *a, **kw):
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
+    monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _name: None)
+    r = doctor.check_crossover_unit_installed()
+    assert r.status == "ok"
+    assert "parse unchecked" in r.detail
 
 
 def test_check_grouping_invalid_config_warns(monkeypatch):

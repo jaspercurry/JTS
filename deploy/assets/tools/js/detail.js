@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // detail.js — generated /tools/pack/<id>/ detail page.
 //
 // The server only passes the requested pack id through a JSON data island.

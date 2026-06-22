@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Stage 5 — per-driver floor-unmute gain ramp.
 
 Three layers, all hardware-free:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Voice-tool registry + per-provider schema serializers.
 
 Tool factories under ``jasper.tools.*`` may return either explicit

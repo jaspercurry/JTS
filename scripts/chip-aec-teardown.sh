@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Revert chip-aec-experiment back to production state (WebRTC bridge).
 # See docs/CHIP-AEC-EXPERIMENT.md.
 

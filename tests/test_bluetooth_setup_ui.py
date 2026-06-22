@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Static UI contract tests for jasper.web.bluetooth_setup.
 
 The behavioral Bluetooth path is hardware-backed, so these tests stay

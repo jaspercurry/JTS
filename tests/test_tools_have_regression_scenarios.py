@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: every LLM voice tool has a regression scenario file mention.
 
 AGENTS.md ("Test discipline — required, not optional"): every tool the

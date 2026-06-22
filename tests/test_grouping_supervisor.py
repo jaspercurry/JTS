@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.control.grouping_supervisor.
 
 Tests drive `_tick` directly with the four IO hooks (config load /

@@ -3,7 +3,7 @@
 Last reviewed: 2026-05-27
 
 > **The current, verified launch-readiness backlog is
-> [LAUNCH-READINESS.md](LAUNCH-READINESS.md)** — drive launch/cleanup work from
+> [LAUNCH-READINESS.md](historical/LAUNCH-READINESS.md)** — drive launch/cleanup work from
 > there. This file is kept for its contributor-facing "files to know" reference
 > and the original top-five framing, but its *priority list is stale*: the
 > headline privilege-separation items below have since shipped (all five Tier-A

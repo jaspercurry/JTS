@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.wake_training.feature_bank shared utilities."""
 from __future__ import annotations
 

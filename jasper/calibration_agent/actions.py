@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic action runner for validated calibration-advisor plans.
 
 The runner is intentionally boring: it consumes the output of

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Web asset install for deploy/install.sh: copies everything under
 # /usr/share/jasper-web/assets/ and writes the install manifest that
 # jasper-doctor's check_web_design_assets verifies file-by-file.

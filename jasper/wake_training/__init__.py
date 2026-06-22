@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Offline wake-word training helpers.
 
 This package owns reusable data-prep contracts for the custom wake-word

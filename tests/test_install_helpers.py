@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for bash helpers in deploy/install.sh.
 
 The helpers can be sourced cleanly because install.sh's `main` call
@@ -14,9 +18,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tests.install_surface import installer_text
 
@@ -403,6 +410,7 @@ def test_install_enables_wifi_recover_timer_with_now():
     install_sh = installer_text()
     assert "jasper-wifi-recover.service" in install_sh
     assert "jasper-wifi-recover.timer" in install_sh
+    assert "jasper-wifi-scan-repair.service" in install_sh
     assert "systemctl enable --now jasper-wifi-recover.timer" in install_sh
 
 
@@ -842,9 +850,11 @@ def test_shairport_build_completes_before_old_binary_is_removed():
     idx_remove = text.index("apt-get remove -y shairport-sync")
     idx_make_install = text.index("make install || true")
 
-    # The compile (first `make -j4` after the sps fetch) must precede
-    # the stop/remove, which must precede `make install`.
-    idx_build = text.index("make -j4", idx_fetch)
+    # The compile (the contained shairport-sync build after the sps fetch)
+    # must precede the stop/remove, which must precede `make install`.
+    # The heavy build now routes through run_contained_build (RAM-bounded
+    # + cgroup-contained) instead of a hardcoded `make -j4`.
+    idx_build = text.index('run_contained_build "shairport-sync"', idx_fetch)
     assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
 
 
@@ -1001,3 +1011,544 @@ def test_full_install_editable_pip_install_keeps_full_extra():
     # With the endpoint tier removed there is no bare base-package editable
     # install any more — every profile pulls an extras-tagged install.
     assert text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}"') == 0
+
+
+# ----------------------------------------------------------------------
+# Build manifest = the VERIFIED-INSTALL success marker (Workstream B,
+# problem #4). On jts2 (2026-06-21) the manifest was written EARLY, before
+# an OOM-killed build aborted install.sh, so the box advertised a SHA it
+# wasn't cleanly running and misled the deploy direction-guard. The fix:
+# write the manifest as the FINAL mutation in main(), gated by set -e, so
+# a mid-install abort leaves the prior good manifest untouched.
+# ----------------------------------------------------------------------
+
+_PYTHON_RUNTIME_LIB = _INSTALL_LIB_DIR / "python-runtime.sh"
+
+
+def _run_install_snippet(
+    snippet: str,
+    *,
+    state_dir: Path | None = None,
+    repo_dir: Path | None = None,
+    deploy_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Source install.sh and run a snippet with a deterministic build-SHA
+    environment. Clears any inherited JASPER_DEPLOY_* so precedence tests
+    don't pick up a value from the CI runner, then exports the requested
+    ones and overrides STATE_DIR/REPO_DIR to scratch paths."""
+    prelude = [
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+        "unset JASPER_DEPLOY_SHA JASPER_DEPLOY_SHA_FULL JASPER_DEPLOY_BRANCH",
+    ]
+    for key, val in (deploy_env or {}).items():
+        prelude.append(f"export {key}={shlex.quote(val)}")
+    if state_dir is not None:
+        prelude.append(f"STATE_DIR={shlex.quote(str(state_dir))}")
+    if repo_dir is not None:
+        prelude.append(f"REPO_DIR={shlex.quote(str(repo_dir))}")
+    script = " && ".join([*prelude, snippet])
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_write_build_manifest_records_sha_and_verified_status(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    result = _run_install_snippet(
+        "write_build_manifest",
+        state_dir=state,
+        deploy_env={
+            "JASPER_DEPLOY_SHA": "abc1234",
+            "JASPER_DEPLOY_SHA_FULL": "abc1234deadbeef",
+            "JASPER_DEPLOY_BRANCH": "main",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = (state / "build.txt").read_text(encoding="utf-8")
+    assert "JASPER_GIT_SHA=abc1234" in manifest
+    assert "JASPER_GIT_SHA_FULL=abc1234deadbeef" in manifest
+    assert "JASPER_GIT_BRANCH=main" in manifest
+    assert "JASPER_INSTALL_AT=" in manifest
+    # The honest "install process completed" claim the deploy verifier reads.
+    assert "JASPER_INSTALL_STATUS=ok" in manifest
+
+
+def test_write_build_manifest_preserves_prior_full_and_branch(tmp_path):
+    """With no deploy env and no git, the full SHA + branch fall back to a
+    prior manifest. Exercises the `[[ -z x ]] && x=$(grep …)` fallback
+    lines under set -euo pipefail (sourcing install.sh enables it), proving
+    they don't abort, and that the marker is still re-stamped status=ok."""
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "build.txt").write_text(
+        "JASPER_GIT_SHA=cafe123\nJASPER_GIT_SHA_FULL=cafe123456789\n"
+        "JASPER_GIT_BRANCH=release\nJASPER_INSTALL_AT=2026-01-01T00:00:00-00:00\n"
+        "JASPER_INSTALL_STATUS=ok\n",
+        encoding="utf-8",
+    )
+    result = _run_install_snippet(
+        "write_build_manifest",
+        state_dir=state,
+        repo_dir=tmp_path / "not-a-git-repo",  # no env, no git → prior manifest
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = (state / "build.txt").read_text(encoding="utf-8")
+    assert "JASPER_GIT_SHA=cafe123" in manifest
+    assert "JASPER_GIT_SHA_FULL=cafe123456789" in manifest
+    assert "JASPER_GIT_BRANCH=release" in manifest
+    assert "JASPER_INSTALL_STATUS=ok" in manifest
+
+
+def test_write_build_manifest_is_atomic_tempfile_rename():
+    """The success marker must be written tempfile-then-rename so a torn
+    write (power loss mid-`cat`) can't leave a half-line the direction
+    guard misreads. Mirrors persist_install_profile."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert "build.txt.tmp.$$" in text
+    assert 'mv -f "${tmp}" "${STATE_DIR}/build.txt"' in text
+
+
+def test_resolve_build_sha_short_prefers_deploy_env(tmp_path):
+    result = _run_install_snippet(
+        "resolve_build_sha_short",
+        state_dir=tmp_path,
+        repo_dir=tmp_path,  # non-git, so the env var must be what's used
+        deploy_env={"JASPER_DEPLOY_SHA": "feedface"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "feedface"
+
+
+def test_resolve_build_sha_short_falls_back_to_prior_manifest(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "build.txt").write_text(
+        "JASPER_GIT_SHA=deadbee\nJASPER_GIT_SHA_FULL=deadbeef00\n"
+        "JASPER_GIT_BRANCH=main\nJASPER_INSTALL_STATUS=ok\n",
+        encoding="utf-8",
+    )
+    result = _run_install_snippet(
+        "resolve_build_sha_short",
+        state_dir=state,
+        repo_dir=tmp_path / "not-a-git-repo",  # no env, no git → prior manifest
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "deadbee"
+
+
+def test_resolve_build_sha_short_unknown_when_nothing_available(tmp_path):
+    result = _run_install_snippet(
+        "resolve_build_sha_short",
+        state_dir=tmp_path,  # no build.txt
+        repo_dir=tmp_path / "not-a-git-repo",  # no env, no git
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "unknown"
+
+
+def test_build_manifest_not_written_during_python_runtime_install():
+    """The early write (the bug) is gone: neither install_jasper nor
+    install_streambox_jasper *calls* write_build_manifest — it's main()'s
+    final step now. (Comment references to it are fine; a bare-command
+    invocation is the regression we forbid.)"""
+    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
+    call_lines = [
+        ln for ln in python_runtime.splitlines()
+        if ln.strip() == "write_build_manifest"
+    ]
+    assert not call_lines, (
+        "write_build_manifest must not be CALLED from the python-runtime "
+        "install steps (it is main()'s final, verified-success step): "
+        f"{call_lines}"
+    )
+
+
+def test_build_manifest_is_the_final_main_mutation():
+    """In both main() paths the manifest is written immediately before the
+    (non-mutating) run_doctor_summary, after the build steps, and nothing
+    mutating runs after it — so reaching it means every build/install step
+    succeeded under set -e (the load-bearing invariant behind problem #4)."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    # Adjacency: write_build_manifest directly precedes run_doctor_summary
+    # in both the full and streambox paths (whitespace-tolerant).
+    adjacency = re.findall(r"write_build_manifest\n\s*run_doctor_summary", text)
+    assert len(adjacency) == 2, adjacency
+
+    # Bounded main() body (def line to its column-0 closing brace), so the
+    # file's trailing `if main "$@"` guard isn't counted.
+    match = re.search(r"\nmain\(\) \{\n(.*?)\n\}", text, re.DOTALL)
+    assert match is not None, "could not locate main() body"
+    body = match.group(1)
+    # The Rust final-output owner (a required, OOM-capable build) is built
+    # before the manifest is stamped.
+    assert body.index("build_install_jasper_outputd") < body.index(
+        "write_build_manifest"
+    )
+    # run_doctor_summary is the TERMINAL step: nothing mutating follows the
+    # manifest stamp. After the last run_doctor_summary call, only branch-
+    # closing tokens remain (return 0 / fi / comments / whitespace).
+    tail = body[body.rindex("run_doctor_summary") + len("run_doctor_summary"):]
+    leftover = [
+        ln.strip()
+        for ln in tail.splitlines()
+        if ln.strip()
+        and not ln.strip().startswith("#")
+        and ln.strip() not in {"return 0", "fi"}
+    ]
+    assert not leftover, f"unexpected steps after run_doctor_summary: {leftover}"
+
+
+def test_landing_page_app_css_version_uses_resolved_build_sha():
+    """Now that build.txt is written last, the landing-page cache-bust must
+    resolve the SHA directly (deploy env → git → prior manifest), not read
+    the not-yet-updated manifest — or a deploy would ship the prior SHA's
+    cache key and browsers wouldn't bust the /assets cache."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    start = text.index("install_management_static_assets() {")
+    fn = text[start: text.index("\ninstall_nginx_site() {", start)]
+    assert 'app_css_ver="$(resolve_build_sha_short)"' in fn
+    # The old direct manifest read for the cache-bust version is gone.
+    assert "grep -E '^JASPER_GIT_SHA='" not in fn
+
+
+# build-sandbox.sh — unified RAM-aware + cgroup-contained build policy
+# ----------------------------------------------------------------------
+# Workstream A of docs/install-update-resilience-plan.md. On jts2
+# (1 GB Pi 5, 2026-06-21) an unbounded `meson compile` OOM-killed the
+# build AND cascaded into nginx + jasper-voice. These tests pin the two
+# levers that generalize the PR #899 point-fix: RAM-aware `-j`
+# (_ram_bounded_jobs) and cgroup containment (run_contained_build), and
+# the inverse-of-audio-daemon policy that makes a build the OOM victim
+# instead of a daemon. Canonical doc: docs/HANDOFF-build-sandbox.md.
+
+_BUILD_SANDBOX_LIB = _INSTALL_LIB_DIR / "build-sandbox.sh"
+_RUST_DAEMONS_LIB = _INSTALL_LIB_DIR / "rust-daemons.sh"
+
+
+def _ram_bounded_jobs(memtotal_kb: int, ncpu: int, kb_per_job: int) -> int:
+    """Invoke the generalized `_ram_bounded_jobs` helper."""
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {_INSTALL_SH} >/dev/null && "
+         f"_ram_bounded_jobs {memtotal_kb} {ncpu} {kb_per_job}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"helper failed (rc={result.returncode}): {result.stderr}")
+    return int(result.stdout.strip())
+
+
+def _build_sandbox_props(
+    tmp_path: Path,
+    label: str = "demo",
+    memtotal_kb: int = 1_014_768,
+    extra_env: dict | None = None,
+) -> str:
+    """Return the systemd-run property list build_sandbox_props emits,
+    with a synthetic MemTotal injected so MemoryHigh is deterministic."""
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal:       {memtotal_kb} kB\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         f"build_sandbox_props {shlex.quote(label)}"],
+        capture_output=True, text=True, timeout=5, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _run_contained_build(
+    script_tail: str, extra_env: dict | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && {script_tail}"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+
+
+# --- _ram_bounded_jobs: generalized RAM-aware parallelism --------------
+
+def test_ram_bounded_jobs_cpp_budget_matches_webrtc_pin():
+    """C++ -O3 budget (1.5 GB/job): the exact PR #899 values, now via the
+    generalized helper."""
+    assert _ram_bounded_jobs(_PI5_1GB_MEMTOTAL_KB, 4, 1_500_000) == 1
+    assert _ram_bounded_jobs(_PI5_4GB_MEMTOTAL_KB, 4, 1_500_000) == 2
+    assert _ram_bounded_jobs(_PI5_8GB_MEMTOTAL_KB, 4, 1_500_000) == 4
+
+
+def test_ram_bounded_jobs_c_budget_is_gentler_than_old_j4_on_1gb():
+    """C autotools budget (0.4 GB/job): a 1 GB Pi builds shairport at -j2,
+    not the old hardcoded -j4 that helped drive the OOM. A ~400 MB
+    Zero-class box drops to -j1."""
+    assert _ram_bounded_jobs(_PI5_1GB_MEMTOTAL_KB, 4, 400_000) == 2
+    assert _ram_bounded_jobs(409_600, 4, 400_000) == 1
+    assert _ram_bounded_jobs(_PI5_4GB_MEMTOTAL_KB, 4, 400_000) == 4  # nproc cap
+
+
+def test_ram_bounded_jobs_clamps_to_nproc_and_floors_to_one():
+    assert _ram_bounded_jobs(_PI5_16GB_MEMTOTAL_KB, 2, 1_500_000) == 2
+    assert _ram_bounded_jobs(0, 4, 400_000) == 1
+    assert _ram_bounded_jobs(1024, 4, 1_500_000) == 1
+
+
+def test_webrtc_compile_jobs_delegates_to_ram_bounded_jobs():
+    """The point-fix function stays value-identical to the generalized
+    helper at the C++ budget across the SKU range — so the existing
+    _webrtc_compile_jobs regression tests keep meaning the same thing."""
+    for m in (
+        _PI5_1GB_MEMTOTAL_KB, _PI5_2GB_MEMTOTAL_KB,
+        _PI5_4GB_MEMTOTAL_KB, _PI5_8GB_MEMTOTAL_KB,
+    ):
+        assert _webrtc_compile_jobs(m, 4) == _ram_bounded_jobs(m, 4, 1_500_000)
+
+
+# --- build_sandbox_props: the inverse-of-audio-daemon policy -----------
+
+def test_build_sandbox_props_is_inverse_of_audio_daemon_policy(tmp_path):
+    """A build is the opposite of an audio daemon: preferred OOM victim,
+    yields CPU/IO, and — the load-bearing invariant — is ALLOWED to swap.
+    jts-audio.slice and pi-run-diagnostic.sh forbid swap; a build must
+    not, or a big -O3 TU can't complete on a 1 GB Pi."""
+    props = _build_sandbox_props(tmp_path)
+    # OOMScoreAdjust is an exec property that a `systemd-run --scope` unit
+    # REJECTS ("Unknown assignment"), which broke every deploy; the positive
+    # "kill me first" oom_score_adj is applied to the build process via choom
+    # instead (see test_build_sandbox_oom_prefix_*). Pin its ABSENCE from the
+    # scope property list so the regression cannot return.
+    assert "OOMScoreAdjust" not in props
+    assert "--property=CPUWeight=20" in props
+    assert "--property=IOWeight=20" in props
+    assert "--property=MemoryAccounting=yes" in props
+    assert "MemorySwapMax" not in props  # swap allowed — the inverse invariant
+
+
+@pytest.mark.skipif(
+    shutil.which("choom") is None,
+    reason="choom (util-linux) absent on this host; verified on the Linux Pi/CI",
+)
+def test_build_sandbox_oom_prefix_uses_choom_kill_me_first():
+    """The build's positive "kill me first" oom_score_adj is applied via choom
+    — the scope-compatible substitute for the OOMScoreAdjust exec property a
+    `systemd-run --scope` unit cannot take (the #922 deploy-breaker). choom
+    ships in util-linux, present on the Linux CI runner and the Pi.
+    (Fail-open when choom is absent is a one-line `command -v` guard in
+    build_sandbox_oom_prefix — the build runs without the bias, never blocked.)"""
+    r = _run_contained_build("build_sandbox_oom_prefix")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["choom", "-n", "900", "--"]
+    r2 = _run_contained_build(
+        "build_sandbox_oom_prefix",
+        extra_env={"JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ": "750"},
+    )
+    assert r2.stdout.split() == ["choom", "-n", "750", "--"]
+
+
+def test_build_sandbox_props_soft_memory_high_leaves_headroom(tmp_path):
+    """MemoryHigh is a soft throttle at ~85% MemTotal (not a kill), so the
+    build leans on swap rather than dying and ~15% stays for PID1/sshd."""
+    props = _build_sandbox_props(tmp_path, memtotal_kb=1_000_000)
+    m = re.search(r"--property=MemoryHigh=(\d+)K", props)
+    assert m, props
+    high_kb = int(m.group(1))
+    assert 840_000 <= high_kb <= 860_000
+
+
+def test_build_sandbox_props_hard_caps_are_opt_in(tmp_path):
+    """MemoryMax (hard kill) and RuntimeMaxSec are off by default — a
+    too-low cap would kill a legit single-TU compile or a slow Zero-2-W
+    build — but available when an operator opts in."""
+    default = _build_sandbox_props(tmp_path)
+    assert "MemoryMax" not in default
+    assert "RuntimeMaxSec" not in default
+
+    opted = _build_sandbox_props(tmp_path, extra_env={
+        "JASPER_BUILD_SANDBOX_MEMORY_MAX": "700M",
+        "JASPER_BUILD_SANDBOX_RUNTIME_MAX": "45min",
+    })
+    assert "--property=MemoryMax=700M" in opted
+    assert "--property=RuntimeMaxSec=45min" in opted
+
+
+def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
+    """If MemTotal is unreadable, MemoryHigh is omitted but the cgroup-
+    controller-independent scope properties (CPU/IO weight + accounting) are
+    always present. (The OOM bias rides choom, not a property — see
+    test_build_sandbox_oom_prefix_uses_choom_kill_me_first.)"""
+    env = os.environ.copy()
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(tmp_path / "does-not-exist")
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && build_sandbox_props x"],
+        capture_output=True, text=True, timeout=5, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--property=CPUWeight=20" in result.stdout
+    assert "--property=IOWeight=20" in result.stdout
+    assert "OOMScoreAdjust" not in result.stdout
+    assert "MemoryHigh" not in result.stdout
+    assert "MemorySwapMax" not in result.stdout
+
+
+# --- run_contained_build: graceful degradation, no double-run ----------
+
+def test_build_sandbox_active_false_when_disabled():
+    r = _run_contained_build(
+        "_build_sandbox_active && echo active || echo inactive",
+        extra_env={"JASPER_BUILD_SANDBOX": "0"})
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().endswith("inactive")
+
+
+def test_build_sandbox_disabled_runs_command_directly():
+    """When disabled (CI/macOS/container path), the command runs verbatim
+    and unmodified."""
+    r = _run_contained_build(
+        "run_contained_build demo -- bash -c 'echo ran $((1+1))'",
+        extra_env={"JASPER_BUILD_SANDBOX": "0"})
+    assert r.returncode == 0, r.stderr
+    assert "ran 2" in r.stdout
+
+
+def test_build_sandbox_propagates_failure_without_double_run():
+    """A real build failure surfaces verbatim and is never masked by a
+    second uncontained run (the no-retry contract)."""
+    r = _run_contained_build(
+        "run_contained_build demo -- bash -c 'echo once; exit 3'",
+        extra_env={"JASPER_BUILD_SANDBOX": "0"})
+    assert r.returncode == 3
+    assert r.stdout.count("once") == 1
+
+
+# --- call-site wiring: every heavy build is bounded + contained --------
+
+def test_install_sources_build_sandbox_lib():
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert 'source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"' in text
+
+
+def test_heavy_builds_route_through_run_contained_build():
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
+    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
+    rust = _RUST_DAEMONS_LIB.read_text(encoding="utf-8")
+    assert 'run_contained_build "webrtc-aec3"' in install_sh
+    assert 'run_contained_build "jasper-aec3"' in python_runtime
+    assert 'run_contained_build "nqptp"' in renderers
+    assert 'run_contained_build "shairport-sync"' in renderers
+    assert 'run_contained_build "${name}"' in rust
+
+
+def test_renderer_make_is_ram_bounded_not_hardcoded_j4():
+    """The old hardcoded `make -j4` (which helped drive the 1 GB OOM) is
+    gone; both renderer C builds derive -j from build_sandbox_jobs at the
+    named C budget (not a bare literal)."""
+    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
+    assert "make -j4" not in renderers
+    assert renderers.count(
+        'make -j"$(build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_C}")"'
+    ) == 2
+
+
+def test_build_sandbox_budget_constants_are_named_once():
+    """The per-toolchain RAM/job budgets are the policy — named once in the
+    lib (cf. RUST_LOW_MEMORY_BUILD_THRESHOLD_KB), not bare literals scattered
+    across call sites."""
+    lib = _BUILD_SANDBOX_LIB.read_text(encoding="utf-8")
+    assert "BUILD_SANDBOX_KB_PER_JOB_CPP=1500000" in lib
+    assert "BUILD_SANDBOX_KB_PER_JOB_C=400000" in lib
+    # _webrtc_compile_jobs uses the named C++ budget, not a bare literal.
+    assert 'BUILD_SANDBOX_KB_PER_JOB_CPP' in _INSTALL_SH.read_text(encoding="utf-8")
+
+
+def test_build_sandbox_lib_parses():
+    result = subprocess.run(
+        ["bash", "-n", str(_BUILD_SANDBOX_LIB)],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _build_sandbox_jobs(kb_per_job_expr: str, memtotal_kb: int, ncpu: int,
+                        tmp_path: Path) -> int:
+    """Invoke the build_sandbox_jobs wrapper with MemTotal + nproc injected
+    (mirrors rust-daemons.sh's JASPER_RUST_MEMINFO_FILE test pattern)."""
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal:       {memtotal_kb} kB\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
+    env["JASPER_BUILD_NPROC"] = str(ncpu)
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         f"build_sandbox_jobs {kb_per_job_expr}"],
+        capture_output=True, text=True, timeout=5, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout.strip())
+
+
+def test_build_sandbox_jobs_reads_injected_meminfo_and_nproc(tmp_path):
+    """The wrapper resolves the host's MemTotal/nproc and applies the named
+    budget — the path the renderer makes actually call."""
+    # C budget on a 1 GB Pi, 4 cores -> 2 jobs; 1 core clamps to 1.
+    assert _build_sandbox_jobs(
+        '"${BUILD_SANDBOX_KB_PER_JOB_C}"', 1_014_768, 4, tmp_path) == 2
+    assert _build_sandbox_jobs(
+        '"${BUILD_SANDBOX_KB_PER_JOB_C}"', 1_014_768, 1, tmp_path) == 1
+    # C++ budget on the same box -> 1 job (the OOM we fixed).
+    assert _build_sandbox_jobs(
+        '"${BUILD_SANDBOX_KB_PER_JOB_CPP}"', 1_014_768, 4, tmp_path) == 1
+
+
+def test_run_contained_build_invokes_systemd_run_scope_with_policy(tmp_path):
+    """Force containment with a stub systemd-run on PATH and assert the
+    invocation contract: --scope, the inverse-policy properties, the --
+    separator, and the verbatim command. Without this, a refactor could
+    silently re-add the OOMScoreAdjust property a --scope unit rejects, or
+    add a swap cap, and the rest of the suite would stay green."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "systemd-run"
+    stub.write_text(
+        '#!/usr/bin/env bash\nfor a in "$@"; do printf "ARG=%s\\n" "$a"; done\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1014768 kB\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    env["JASPER_BUILD_SANDBOX"] = "1"  # force on; the stub satisfies command -v
+    env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
+    result = subprocess.run(
+        ["bash", "-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         "run_contained_build demo -- echo HELLO WORLD"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    args = [ln[len("ARG="):] for ln in result.stdout.splitlines()
+            if ln.startswith("ARG=")]
+    assert "--scope" in args
+    # The OOMScoreAdjust exec property a --scope unit rejects must NOT be here
+    # (the #922 deploy-breaker); the OOM bias rides choom in the command instead.
+    assert not any("OOMScoreAdjust" in a for a in args)
+    assert "--property=MemoryAccounting=yes" in args
+    # Inverse-policy: a build must never get a swap cap.
+    assert not any("MemorySwapMax" in a for a in args)
+    # Command forwarded verbatim, after the -- separator.
+    assert "--" in args
+    assert args[-3:] == ["echo", "HELLO", "WORLD"]

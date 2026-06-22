@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Jasper AMOLED Satellite — Phase 1.2 firmware.
 //
 // Phase 0 (mic capture) + Phase 1.1 (WiFi + Improv) + on-screen status

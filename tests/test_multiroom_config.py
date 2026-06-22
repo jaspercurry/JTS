@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.multiroom.config.
 
 Pure logic — no I/O beyond the env file the loader reads. Exercises the
@@ -545,6 +549,26 @@ def test_follower_leader_addr_predicate():
     assert follower_leader_addr(cfg(enabled=False)) is None
     assert follower_leader_addr(cfg(error="broken")) is None
     assert follower_leader_addr(cfg(leader_addr="")) is None
+
+
+def test_is_active_leader_predicate():
+    """The ONE active-bonded-LEADER predicate shared by the reconciler's
+    bonded-AirPlay-offset WRITE gate and its observers (airplay_latency +
+    grouping doctor checks), so the surface can never disagree with what is
+    armed. True only for an enabled, valid, leader config."""
+    from jasper.multiroom.config import GroupingConfig, is_active_leader
+
+    def cfg(**kw):
+        base = dict(enabled=True, role="leader", channel="left",
+                    bond_id="b", leader_addr="", buffer_ms=400,
+                    codec="flac", error=None)
+        base.update(kw)
+        return GroupingConfig(**base)
+
+    assert is_active_leader(cfg()) is True
+    assert is_active_leader(cfg(enabled=False, role="")) is False  # solo
+    assert is_active_leader(cfg(role="follower", leader_addr="x")) is False
+    assert is_active_leader(cfg(error="broken")) is False  # enabled but invalid
 
 
 def test_trim_db_parse_and_validation_matrix():

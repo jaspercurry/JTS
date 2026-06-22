@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Replay-grade derived artifacts for correction bundles.
 
 Raw capture WAVs remain the canonical evidence. These helpers write

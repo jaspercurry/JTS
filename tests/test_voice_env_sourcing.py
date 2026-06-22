@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-voice must source every wizard env file whose keys its Config reads.
 
 The daemon-side mirror of ``test_env_load_mirrors_unit.py`` (which guards the

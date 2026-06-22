@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared feature-bank utilities for offline wake-word training.
 
 This module is the stable contract underneath the Phase 0 wake-training

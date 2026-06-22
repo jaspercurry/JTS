@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /wake/ input-profile/detection card + model-form affordance.
 //
 // The page is server-rendered. Two pieces of behaviour ride on top:

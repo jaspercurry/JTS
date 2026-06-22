@@ -1,6 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scan-health reporting in jasper.web.wifi_setup."""
 from __future__ import annotations
 
+import json
 import subprocess
 from unittest.mock import patch
 
@@ -22,6 +27,14 @@ def _scripted_nmcli(steps):
             return _mock_proc()
 
     return side_effect
+
+
+def test_scan_repair_timeout_env_parse_is_fail_soft(monkeypatch):
+    import jasper.web.wifi_setup as wifi_setup
+
+    monkeypatch.setenv("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", "nope")
+
+    assert wifi_setup._env_float("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", 20.0) == 20.0
 
 
 def test_scan_report_happy_path_deduplicates_and_skips_hidden(monkeypatch):
@@ -57,6 +70,7 @@ def test_scan_report_marks_driver_suppression_from_nmcli_error(monkeypatch):
     import jasper.web.wifi_setup as wifi_setup
 
     monkeypatch.setattr(wifi_setup.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(wifi_setup.os, "geteuid", lambda: 0)
     with patch.object(
         wifi_setup, "_run_nmcli",
         side_effect=_scripted_nmcli([
@@ -91,6 +105,7 @@ def test_scan_report_marks_driver_suppression_from_kernel_log(monkeypatch):
 
     list_stdout = "*:ap1:Home:Infra:64:270 Mbit/s:84:WPA2"
     monkeypatch.setattr(wifi_setup.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(wifi_setup.os, "geteuid", lambda: 0)
     with patch.object(
         wifi_setup, "_run_nmcli",
         side_effect=_scripted_nmcli([
@@ -172,6 +187,7 @@ def test_scan_report_repairs_driver_suppression_and_retries(monkeypatch):
         ":ap2:Guest:Infra:6:130 Mbit/s:70:WPA2",
     ])
     monkeypatch.setattr(wifi_setup.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(wifi_setup.os, "geteuid", lambda: 0)
     with patch.object(
         wifi_setup, "_run_nmcli",
         side_effect=_scripted_nmcli([
@@ -201,3 +217,65 @@ def test_scan_report_repairs_driver_suppression_and_retries(monkeypatch):
     assert report["scan"]["repair"]["ack"] is True
     assert [n["ssid"] for n in report["networks"]] == ["Guest"]
     assert report["scan"]["debug"]["rawNetworkCount"] == 2
+
+
+def test_scan_report_nonroot_starts_root_repair_helper_and_retries(
+    monkeypatch,
+    tmp_path,
+):
+    import jasper.web.wifi_setup as wifi_setup
+
+    first_list = "*:ap1:Home:Infra:64:270 Mbit/s:84:WPA2"
+    healed_list = "\n".join([
+        "*:ap1:Home:Infra:64:270 Mbit/s:84:WPA2",
+        ":ap2:Guest:Infra:6:130 Mbit/s:70:WPA2",
+    ])
+    state_path = tmp_path / "wifi_scan_repair.json"
+    calls = []
+
+    def fake_manage_units(*units, **kwargs):
+        calls.append((units, kwargs))
+        state_path.write_text(json.dumps({
+            "iface": "wlan0",
+            "lastAttemptAt": 100.0,
+            "lastAck": True,
+            "lastReason": "attempted",
+            "nextAllowedAt": 160.0,
+        }))
+        return {"ok": True, "action": "start", "rc": 0}
+
+    monkeypatch.setattr(wifi_setup.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(wifi_setup.time, "time", lambda: 100.0)
+    monkeypatch.setattr(wifi_setup.os, "geteuid", lambda: 999)
+    monkeypatch.setattr(
+        wifi_setup.wifi_scan_repair, "DEFAULT_STATE_PATH", state_path,
+    )
+    monkeypatch.setattr(wifi_setup, "manage_units", fake_manage_units)
+    with patch.object(
+        wifi_setup, "_run_nmcli",
+        side_effect=_scripted_nmcli([
+            _mock_proc(),
+            _mock_proc(stdout=first_list),
+            _mock_proc(),
+            _mock_proc(stdout=healed_list),
+        ]),
+    ), patch.object(
+        wifi_setup,
+        "_recent_kernel_scan_suppressed",
+        side_effect=[True, False],
+    ):
+        report = wifi_setup.scan_networks_report()
+
+    assert calls == [(
+        ("jasper-wifi-scan-repair.service",),
+        {
+            "verb": "start",
+            "reason": "wifi-scan-suppressed",
+            "no_block": False,
+            "timeout": 20.0,
+        },
+    )]
+    assert report["scan"]["degraded"] is False
+    assert report["scan"]["repair"]["attempted"] is True
+    assert report["scan"]["repair"]["ack"] is True
+    assert [n["ssid"] for n in report["networks"]] == ["Guest"]

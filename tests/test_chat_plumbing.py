@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,15 +23,21 @@ def test_chat_web_is_socket_nginx_and_entrypoint_wired():
     assert "ListenStream=127.0.0.1:8787" in socket_unit
     assert "Type=notify" in service_unit
     assert "WatchdogSec=30s" in service_unit
+    assert "User=jasper-web" in service_unit
+    assert "Group=jasper" in service_unit
+    assert "UMask=0007" in service_unit
     assert (
         "ExecStart=/opt/jasper/.venv/bin/jasper-chat-web "
         "--host 127.0.0.1 --port 8787"
     ) in service_unit
     for hardening in (
-        "ProtectSystem=full",
+        "ProtectSystem=strict",
+        "ReadWritePaths=/var/lib/jasper",
         "ProtectHome=true",
         "PrivateTmp=true",
         "NoNewPrivileges=true",
+        "CapabilityBoundingSet=",
+        "SystemCallFilter=@system-service",
     ):
         assert hardening in service_unit
     assert "location /chat/" in nginx

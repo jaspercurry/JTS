@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Control-side orchestration for the runtime debug-logging toggle.
 
 ``jasper-control`` owns the *write* side of the debug toggle (the read

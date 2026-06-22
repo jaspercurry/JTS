@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared browser-side audio measurement primitives for phone-mic flows.
 // Domain policy stays in each page; this module owns the repeated
 // getUserMedia / AudioWorklet / WAV-encoding plumbing and the invariant

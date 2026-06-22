@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: every JASPER_* env var read in jasper/ must be codified.
 
 AGENTS.md ("Codify, don't memorise"): if a runtime value matters, it

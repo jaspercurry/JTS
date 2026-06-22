@@ -95,7 +95,8 @@ it (we require `is_playing=True`).
 ## Multi-account Spotify routing
 
 The household has multiple Spotify users, each with their own
-OAuth refresh token under `/var/lib/jasper-intsecrets/spotify/accounts.json`.
+OAuth refresh token under `/var/lib/jasper-intsecrets/spotify/caches/`;
+`accounts.json` is only the registry index.
 `Router.resolve_for_transport` decides whose account a voice
 command targets by cross-referencing the AirPlay sender's
 ClientName (from shairport-sync MPRIS) against each account's
@@ -146,6 +147,7 @@ invite further conversation.
 
 ---
 
-Last verified: 2026-06-17 (Spotify registry path, source registry,
-0% content mute, USB Camilla-master volume, guarded handoff path, and
-source-capabilities plan link rechecked)
+Last verified: 2026-06-22 (Spotify token-cache location rechecked against
+`jasper.accounts`; source registry, 0% content mute, USB Camilla-master volume,
+guarded handoff path, and source-capabilities plan link were last rechecked
+2026-06-17)

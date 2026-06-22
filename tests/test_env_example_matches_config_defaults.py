@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: .env.example literals must equal the jasper/config.py defaults.
 
 install.sh seeds /etc/jasper/jasper.env from .env.example on a fresh
@@ -101,6 +105,10 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     # Ducking / CamillaDSP reach.
     ("JASPER_CAMILLA_HOST", "camilla_host", "str"),
     ("JASPER_CAMILLA_PORT", "camilla_port", "int"),
+    # camilla#2 — endpoint-crossover instance (INERT until reconciler-gated).
+    ("JASPER_CAMILLA2_HOST", "camilla2_host", "str"),
+    ("JASPER_CAMILLA2_PORT", "camilla2_port", "int"),
+    ("JASPER_CAMILLA2_STATEFILE", "camilla2_statefile", "str"),
     ("JASPER_DUCK_DB", "duck_db", "float"),
     # Timeouts / idle context reset.
     ("JASPER_IDLE_TIMEOUT_SEC", "idle_timeout_sec", "int"),

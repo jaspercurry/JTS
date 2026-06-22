@@ -331,9 +331,11 @@ profiles, multiple Apple dongles, and future USB DACs without making chip-AEC
 success depend on one DAC's folklore.
 
 The current executable policy is intentionally conservative: Apple USB-C dongle
-is the measured supported baseline; HiFiBerry/DAC8x-family, dual-Apple, unknown,
-and future DAC IDs fall back to software AEC3 until their calibration artifact
-and timing constraints are codified.
+is the measured static baseline, and non-Apple DAC IDs fall back to software
+AEC3 unless outputd's live verdict gate reports locked `coherent`. JTS3's
+HiFiBerry DAC8x can arm through that shipped gate; the follow-up is to promote
+Jasper's validation evidence into a persistent known-good profile fact so
+matching DAC8x systems do not need to re-prove coherence at every boot.
 
 ## 6. Tests To Guard This
 

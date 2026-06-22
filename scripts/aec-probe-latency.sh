@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Measure end-to-end ref-to-mic delay through the music chain.
 #
 # Plays a 200 ms log chirp via correction_substream (the private

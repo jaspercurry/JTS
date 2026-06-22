@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """No-audio playback-readiness checklist for active-speaker commissioning.
 
 This module owns the deterministic safety evidence that must pass before a

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-doctor checks — grouping domain.
 
 Re-homed verbatim from the original monolithic
@@ -6,6 +10,7 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from ._registry import doctor_check
@@ -111,20 +116,24 @@ def check_grouping_rate_adjust() -> CheckResult:
     snapclient's sample-stuffing is the single rate-tracker for the synced
     chain; a second rate-adjuster in the leader's CamillaDSP (the one
     daemon writing the shared stream) fights it and oscillates (the
-    documented ``rate_adjust`` + ``AsyncSinc`` trap). A FOLLOWER is
-    deliberately out of scope (canonical model, Increment 5): its local
-    CamillaDSP is not in the bonded playback path — it feeds only the
-    inv-B fallback lane, an ALSA loopback with a real clock, where
-    rate_adjust=true is CORRECT. This reads the ACTIVE config, so it
+    documented ``rate_adjust`` + ``AsyncSinc`` trap). The no-rate-adjust rule is
+    SPECIFIC to the leader's pipe-writing CamillaDSP (a File/pipe sink has no
+    output clock, so snapclient is the sole tracker). A FOLLOWER is out of this
+    check's scope because it correctly runs ``rate_adjust: true``: a passive
+    follower's CamillaDSP sits outside the bonded path, and an ACTIVE follower's
+    CamillaDSP IS in the bonded path (distributed-active Slice 3 — it captures
+    the round-trip loopback and runs Layer A) but is itself the sole rate-tracker
+    of that loopback, so ``rate_adjust: true`` is REQUIRED there, not forbidden.
+    This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_leader, load_config
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    if not (is_active_member(cfg) and cfg.role == "leader"):
+    if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
@@ -156,14 +165,14 @@ def check_grouping_leader_pipe() -> CheckResult:
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for (HANDOFF-multiroom.md §2, Increment 5)."""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_leader, load_config
     from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
     from .correction import _active_camilla_config_path
 
     label = "grouping: leader pipe"
     cfg = load_config()
-    if not (is_active_member(cfg) and cfg.role == "leader"):
+    if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
@@ -431,6 +440,140 @@ def check_grouping_household_credential() -> CheckResult:
         "bonded but the household credential is missing — cross-device "
         "/grouping/set is unauthenticated (fail-safe open) until this speaker "
         "re-pairs; re-save the bond from http://jts.local/rooms to restore it",
+    )
+
+
+@doctor_check(order=75.9, group="grouping")
+def check_grouping_airplay_latency() -> CheckResult:
+    """A bonded LEADER receiving AirPlay must fit its hidden downstream
+    delay (~150 ms pipeline + the Snapcast ``buffer_ms``) inside the budget
+    the AirPlay sender negotiated, or its own output lands AFTER the AirPlay
+    anchor → bounded residual lip-sync lag (the "Stage D" gap,
+    docs/HANDOFF-airplay.md "AirPlay 2 latency is sender-authored").
+
+    OBSERVABILITY ONLY — this never changes the offset. Skips (``ok``) on
+    solo / follower. For a bonded leader it reads the sender's most-recent
+    notified latency from shairport's journal (ABSENCE => the default ~2.0 s
+    budget, the free regime — fail-soft, so an unreadable journal reads as
+    comfortable, never a false warn) and warns ONLY when the budget is
+    genuinely too short to hide the delay. Pinned to the same pure
+    :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
+    uses, so the doctor and the dashboard tell one story."""
+    from ...multiroom.airplay_latency import assess_fit, read_notified_frames
+    from ...multiroom.config import is_active_leader, load_config
+
+    label = "grouping: AirPlay latency fit"
+    cfg = load_config()
+    if not is_active_leader(cfg):
+        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+
+    from ...multiroom.airplay_latency import SHAIRPORT_BACKEND_BUFFER_SEC
+
+    fit = assess_fit(cfg.buffer_ms, read_notified_frames())
+    budget_desc = (
+        f"budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs "
+        f"need ~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms}) + "
+        f"shairport backend buffer {SHAIRPORT_BACKEND_BUFFER_SEC:.1f}s"
+    )
+    if fit.tight:
+        # No local control grows the budget (AP2 latency is sender-authored)
+        # and buffer_ms has no wizard knob, so the remediation is honest about
+        # the lever that exists: lower JASPER_GROUPING_BUFFER_MS (default 400)
+        # in /var/lib/jasper/grouping.env if it was raised. Do NOT point at a
+        # /rooms control — none writes buffer_ms.
+        return CheckResult(
+            label, "warn",
+            f"AirPlay budget too short for the bonded round-trip: {budget_desc} "
+            f"=> shairport drops the offset => ~{fit.residual_lag_sec * 1000:.0f} ms "
+            "residual lip-sync lag (it also logs 'stream latency too short to "
+            "accommodate an offset'). The sender's budget can't be grown locally; "
+            "if JASPER_GROUPING_BUFFER_MS (grouping.env, default 400) was raised, "
+            "lowering it shrinks the need.",
+        )
+    return CheckResult(label, "ok", f"fits — {budget_desc}")
+
+
+@doctor_check(order=75.95, group="grouping")
+def check_crossover_unit_installed() -> CheckResult:
+    """An ACTIVE LEADER must have camilla#2's endpoint-crossover unit
+    installed and parseable.
+
+    camilla#2 (``jasper-camilla-crossover.service``, :1235) is the per-driver
+    crossover instance an active leader runs alongside the always-on camilla#1
+    (docs/HANDOFF-distributed-active.md "Stage B"). It is shipped INERT — not
+    enabled, not yet reconciler-gated — so this check only asserts the dormant
+    infrastructure is *present and valid* on the one box that will eventually
+    run it; it does NOT assert the unit is active (a later PR arms it).
+
+    Active leader = an active/roleful output topology (so this box runs a
+    per-driver crossover at all) AND a bonded leader (so it is the leader half
+    of the pair). Any other box — an ordinary speaker, a passive leader, an
+    active follower — skips cleanly with ``ok``: the unit file is installed
+    everywhere by install.sh, but it is only *meaningful* on an active leader,
+    and a normal box that never enables it needs no health signal here.
+
+    A missing or unparseable unit on an active leader is a real gap (the
+    reconciler PR would have nothing to arm), so it warns."""
+    from ...multiroom.config import is_active_leader, load_config
+    from ...output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    label = "grouping: crossover unit"
+    cfg = load_config()
+    if not is_active_leader(cfg):
+        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+
+    # Active/roleful topology is the second half of "active leader": only a
+    # box that runs a per-driver crossover needs camilla#2. A passive leader
+    # (full-range, no roleful outputs) skips. Imported lazily and read through
+    # the shared runtime contract, same as check_active_speaker_runtime_graph.
+    from ...active_speaker.runtime_contract import (
+        active_topology_requires_roleful_graph,
+    )
+
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        # No usable topology means this is not a commissioned active speaker,
+        # so camilla#2 is not its concern. Skip rather than warn — the active
+        # speaker runtime graph check owns topology-validity reporting.
+        return CheckResult(label, "ok", "no active-speaker topology (n/a)")
+    if not active_topology_requires_roleful_graph(topology):
+        return CheckResult(label, "ok", "passive leader — no crossover (n/a)")
+
+    unit = "jasper-camilla-crossover.service"
+    # `systemctl cat` is the canonical "is the unit installed?" probe used
+    # across the doctor (renderers / audio use systemctl rather than raw
+    # Path.exists, so a unit found anywhere on systemd's search path counts).
+    # returncode 0 = systemd found and could read the unit.
+    if _run(["systemctl", "cat", unit]).returncode != 0:
+        return CheckResult(
+            label, "warn",
+            f"active leader but {unit} is not installed — the endpoint-"
+            "crossover instance cannot be armed; re-run the JTS installer "
+            "(bash scripts/deploy-to-pi.sh)",
+        )
+
+    # `systemd-analyze verify` is the parse check. It is not always present
+    # (dev hosts); when it is, a non-zero exit means the unit is malformed.
+    # When it is absent we fall back to installed-only (above) — a parse
+    # probe we cannot run must never produce a false warning.
+    if shutil.which("systemd-analyze") is None:
+        return CheckResult(
+            label, "ok",
+            f"installed ({unit}); systemd-analyze unavailable, parse unchecked",
+        )
+    verify = _run(["systemd-analyze", "verify", unit])
+    if verify.returncode != 0:
+        detail = (verify.stderr or verify.stdout or "").strip().replace("\n", " ")
+        return CheckResult(
+            label, "warn",
+            f"{unit} failed systemd-analyze verify: {detail[:200]}",
+        )
+    return CheckResult(
+        label, "ok", f"installed + parseable ({unit}), INERT until armed",
     )
 
 

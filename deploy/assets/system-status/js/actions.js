@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // actions.js — the page's mutating interactions: restart / reboot / power-off,
 // the audio-conversion apply, and run-diagnostics. Each surfaces failure
 // honestly (button label or status text, plus console.error) — no silent paths.

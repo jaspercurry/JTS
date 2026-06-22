@@ -1,0 +1,97 @@
+[Unit]
+Description=CamillaDSP #2 (endpoint-crossover instance; reconciler-gated, INERT until armed)
+After=sound.target network.target jasper-fanin.service
+Wants=sound.target jasper-fanin.service
+# camilla#2 is the per-driver crossover instance on an ACTIVE LEADER
+# (docs/HANDOFF-distributed-active.md "Stage B — the ratified active-
+# leader realization"). It coexists with the always-on camilla#1
+# (jasper-camilla.service, :1234) and is NOT enabled at boot — a later
+# reconciler PR starts it on demand only when the box is both leader
+# AND active. As of this PR it is dormant infrastructure: installed,
+# parseable, never started.
+#
+# Start-limit loop-bound ONLY — NO StartLimitAction. camilla#1
+# escalates to StartLimitAction=reboot because it is the always-on
+# solo music daemon: if it cannot start, the speaker is silently dead
+# and a clean reboot is the least-bad recovery. camilla#2 is the
+# OPPOSITE case: it is a secondary, reconciler-gated instance, so a
+# crash must fail CLOSED to silence through the crossover, NEVER reboot
+# the household speaker. We keep the burst guard (so a genuinely broken
+# config does not spin forever) but deliberately leave
+# StartLimitAction at its default (none) — see the no-reboot note in
+# the [Service] OOMScoreAdjust comment for the resilience rationale.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# Same audio-protection slice as camilla#1: MemorySwapMax=0 keeps
+# CamillaDSP's biquad/limiter DSP state off zram so it cannot suffer
+# zstd-decompression jitter under memory pressure (the 2026-05-24
+# stress-test finding; see docs/HANDOFF-resilience.md "Stage 2").
+Slice=jts-audio.slice
+Type=simple
+# --statefile + NO positional CONFIGFILE, for the SAME reason as
+# camilla#1 (see jasper-camilla.service): CamillaDSP v4 OVERWRITES the
+# statefile with a positional config's path on every start, which would
+# defeat the persistence story. camilla#2 uses its OWN statefile
+# (crossover-statefile.yml) so it never collides with camilla#1's
+# outputd-statefile.yml. install.sh seeds it via the active-speaker
+# runtime contract; on a roleful (active) topology — the only topology
+# where camilla#2 is ever armed — that is the driver-domain (Layer-A-
+# intact) baseline. On an ordinary box the seed is flat, but the unit is
+# never enabled there; the reconciler PR that arms camilla#2 owns seeding
+# the exact driver-domain baseline at arm time (the guard repairs a dead
+# bonded pipe, not a flat statefile).
+#
+# Crossover guard: if the statefile points at a dead bonded pipe,
+# repair to the re-proven DRIVER-DOMAIN baseline (Layer A intact),
+# NEVER the flat outputd-cutover.yml — camilla#2 IS the per-driver
+# crossover, so a flat repair would send full-range to the tweeter,
+# the exact hazard this increment prevents. `-` prefix keeps it fail-
+# open: even a missing guard must never block this start path.
+ExecStartPre=-/usr/local/sbin/jasper-camilla-crossover-guard
+ExecStart=/opt/camilladsp/camilladsp \
+    -p 1235 -a 127.0.0.1 \
+    --statefile /var/lib/camilladsp/crossover-statefile.yml
+# Recover from a crash, but do NOT escalate: with the StartLimit burst
+# guard above and StartLimitAction left at its default (none), a
+# genuinely broken config stops retrying after the burst and the
+# instance stays failed (visible to systemctl / the doctor) rather than
+# rebooting the box. on-failure (not always): a clean exit is an
+# intentional reconciler stop, which must not be fought with a restart.
+Restart=on-failure
+RestartSec=2
+# Audio-quality knobs consistent with camilla#1 (jasper-camilla.service):
+# negative Nice + realtime I/O so the DSP loop is not starved, and the
+# RT-priority / mlock ceilings CamillaDSP needs for a glitch-free path.
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+
+# OOM posture — INTENTIONALLY LIGHTER than camilla#1's -900. camilla#1
+# is the always-on music bottleneck (silencing it = worst UX), so it
+# sits at -900, just above sshd/journald's reserved -1000. camilla#2 is
+# a secondary crossover instance: under RAM pressure on the 1 GB Pi we
+# WANT the kernel to reclaim it BEFORE camilla#1, and -500 places it
+# strictly between camilla#1 (-900) and an ordinary unbiased process
+# (0) so the OOM killer prefers it over the always-on instance but not
+# over unrelated user work. This is the fail-closed-to-silence posture:
+# a reclaimed camilla#2 means "no audio through the crossover" (which
+# the later reconciler re-arms), never a reboot.
+OOMScoreAdjust=-500
+
+# [Install] present but the unit is NOT enabled at install time. This
+# mirrors the established reconciler/wizard-gated pattern in this repo:
+# jasper-aec-bridge.service (enabled by jasper-aec-reconcile, not
+# install.sh) and jasper-usbsink.service (enabled by the /sources/
+# wizard) both keep WantedBy=multi-user.target yet ship disabled. A
+# later reconciler PR will `systemctl enable --now` this unit only when
+# the box is both leader AND active; install.sh deliberately does not
+# enable it, so it stays INERT (installed, parseable, never started)
+# until then. WantedBy here arms it ONLY after that explicit enable —
+# it does not auto-start at boot while disabled.
+[Install]
+WantedBy=multi-user.target
+

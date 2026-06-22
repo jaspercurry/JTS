@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Single source of truth for OOMScoreAdjust values per critical
 daemon, shared between Python (jasper.cli.doctor) and bash
 (deploy/install.sh's migrate_memory_resilience step).

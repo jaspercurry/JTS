@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Static lint-policy guards.
 
 These tests do not replace Ruff. They pin the project-level lint contract
@@ -21,8 +25,24 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # and the defensive is_active_speaker_box topology probe) — each is a "never
 # crash the reconcile / fail safe to solo" handler matching the existing
 # reconciler idiom.
-MAX_NOQA_MARKERS = 797
-MAX_BLE001_MARKERS = 617
+# 2026-06-21 (+1 suppression marker, blind-except): the bonded-leader AirPlay
+# latency-fit /state snapshot (jasper/multiroom/airplay_latency.py) carries the
+# same fail-soft "observability must never break /state" guard every sibling
+# /state section does.
+# 2026-06-21 (+1 suppression marker, blind-except): the OpenAI barge-in pack's
+# truncate_assistant_audio wraps the conversation.item.truncate wire send so
+# the LiveTurn seam can honour its "must never raise" contract while still
+# surfacing the failure as event=barge.truncate_failed (WARN) — the same
+# guarded-wire-send idiom as the adjacent _cancel_response.
+# 2026-06-22 (+2 suppression markers, blind-except): distributed-active Stage B
+# (active leader, Slice 5) added two fail-soft boundaries to the grouping
+# reconcile path — the active-leader camilla#1 program-bake apply + camilla#2
+# re-seed, and the unbond active-leader restore — each a "never crash the
+# reconcile / fail safe to solo" handler matching the existing reconciler idiom.
+MAX_NOQA_MARKERS = 801
+MAX_BLE001_MARKERS = 621
+# (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
+# latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
 _BROAD_EXCEPT = re.compile(
     r"^\s*except (?:BaseException|Exception)(?: as [A-Za-z_][A-Za-z0-9_]*)?:"

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /speaker/ rename confirm guard.
 //
 // The page is a plain server-rendered form that POSTs to ./save. This module

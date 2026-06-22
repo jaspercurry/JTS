@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin the audited panic-freedom of the Rust audio daemons' runtime paths.
 
 A 2026-06 audit manually verified that every ``.unwrap()`` / ``.expect(``

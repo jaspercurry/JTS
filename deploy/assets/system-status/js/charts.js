@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // charts.js — tiny inline-SVG charts: sparkline + per-core CPU bars.
 //
 // Tone is the single colour knob. A chart sets `--tone` on its root and

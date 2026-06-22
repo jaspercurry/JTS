@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """mDNS-SD discovery of sibling JTS peers via python-zeroconf.
 
 Browses for `_jasper-peer._udp.local.` and emits PeerSeen / PeerGone

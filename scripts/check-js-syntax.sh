@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Syntax-check browser ES modules and Node harnesses.
 #
 # `node --check a.js b.js` only checks the first script, treating the rest as

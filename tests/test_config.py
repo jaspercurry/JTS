@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,6 +111,18 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.volume_regress_safe_high_pct == 70
     assert cfg.volume_first_boot_default_pct == 50
     assert cfg.gemini_voice == "Aoede"
+    # camilla#1 (always-on) and camilla#2 (endpoint-crossover, INERT) — the
+    # two CamillaDSP instances an active leader runs. camilla#2 listens on
+    # 1235 so it cannot collide with camilla#1's 1234, and carries its own
+    # statefile. These defaults are pinned here (and against .env.example in
+    # tests/test_env_example_matches_config_defaults.py) because jasper.env
+    # is a frozen first-install seed — a drifted default would silently ship
+    # the .env.example literal instead.
+    assert cfg.camilla_host == "127.0.0.1"
+    assert cfg.camilla_port == 1234
+    assert cfg.camilla2_host == "127.0.0.1"
+    assert cfg.camilla2_port == 1235
+    assert cfg.camilla2_statefile == "/var/lib/camilladsp/crossover-statefile.yml"
     assert cfg.vad_barge_in_threshold == 0.5
     assert cfg.server_vad_enabled is False
     assert cfg.spotify_device_name == "JTS"

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Local STATUS socket for outputd observability.
 //!
 //! The socket mirrors the fan-in daemon's shape: one command per
@@ -1488,6 +1492,7 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            active_lane: false,
         }
     }
 

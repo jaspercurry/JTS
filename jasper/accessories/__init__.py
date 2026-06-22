@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Third-party HID accessories (volume knobs, macro pads, etc.).
 
 This package owns Pi-side integration of "dumb" accessories — devices

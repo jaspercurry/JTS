@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for `UdpMicCapture` and `make_mic_capture`.
 
 The UDP transport replaces the snd-aloop LoopbackAEC path that the

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """leader_config — the grouping reconciler's CamillaDSP apply arm
 (Increment 5). Pure parts + the fail-closed refusal path (which raises in
 prepare, before any websocket I/O): the restore ladder decision, the

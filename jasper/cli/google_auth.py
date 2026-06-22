@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """One-time Google OAuth bootstrap CLI fallback for headless setup.
 
 The web wizard at http://jts.local/google is the supported path. This

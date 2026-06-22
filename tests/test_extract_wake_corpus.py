@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/_extract_wake_corpus.py.
 
 Build a synthetic wake_events SQLite + matching WAV files in tmp_path,

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // RBJ Audio EQ Cookbook biquad magnitude response.
 //
 // Pure, DOM-free module shared by the live /sound/ graph (main.js) and the

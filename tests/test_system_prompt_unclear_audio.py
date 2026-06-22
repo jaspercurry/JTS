@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression tests for the SYSTEM_INSTRUCTION's Unclear Audio section.
 
 Background (2026-05-24): the VAD test matrix surfaced a dangerous failure

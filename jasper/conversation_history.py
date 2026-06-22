@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Fail-soft SQLite persistence for captured conversation turns."""
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ import os
 import sqlite3
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -19,6 +23,8 @@ CAPTURE_ENABLED_ENV = "JASPER_CONVERSATION_HISTORY_ENABLED"
 CAPTURE_ALIAS_ENV = "JASPER_CONVERSATION_CAPTURE"
 RETENTION_DAYS_ENV = "JASPER_CONVERSATION_HISTORY_RETENTION_DAYS"
 RETENTION_MAX_ROWS_ENV = "JASPER_CONVERSATION_HISTORY_MAX_ROWS"
+SETTINGS_FILE_MODE = 0o644
+STORE_FILE_MODE = 0o660
 _STORE_ERRORS = (OSError, sqlite3.Error)
 _TURN_COLUMNS = (
     "id",
@@ -113,6 +119,7 @@ class ConversationStore:
                     "CREATE INDEX IF NOT EXISTS idx_conversation_turns_recent "
                     "ON conversation_turns (ts_utc DESC, id DESC)"
                 )
+                _chmod_store(db_path)
         except _STORE_ERRORS as e:
             self._warn(
                 "conversation history store unavailable (%s): %s",
@@ -337,9 +344,98 @@ def read_settings(
     )
 
 
+def write_settings(
+    *,
+    capture_enabled: bool,
+    path: str | None = None,
+    environ: dict[str, str] | None = None,
+) -> ConversationSettings:
+    """Persist the household-owned capture switch to the settings file.
+
+    The capture gate intentionally lives in
+    ``/var/lib/jasper/conversation_history.env`` instead of a daemon process
+    environment: `/chat/`, `/state`, doctor, and jasper-voice all read this
+    file fresh so a browser toggle takes effect without a restart.
+    """
+    from .atomic_io import atomic_write_text
+    from .env_load import read_env_file_state
+
+    base_env = dict(os.environ if environ is None else environ)
+    settings_path = path or base_env.get(SETTINGS_PATH_ENV) or DEFAULT_SETTINGS_PATH
+    current = read_settings(path=settings_path, environ=base_env)
+    values = dict(read_env_file_state(settings_path).values)
+
+    values[CAPTURE_ALIAS_ENV] = "1" if capture_enabled else "0"
+    # Keep a single capture flag in the wizard-owned file. read_settings()
+    # still accepts the older explicit name for compatibility.
+    values.pop(CAPTURE_ENABLED_ENV, None)
+    values[DB_PATH_ENV] = current.db_path
+
+    parent = os.path.dirname(settings_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    lines: list[str] = []
+    for key, value in values.items():
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"env value for {key} contains newline")
+        lines.append(f"{key}={value}\n")
+    atomic_write_text(settings_path, "".join(lines), mode=SETTINGS_FILE_MODE)
+    return read_settings(path=settings_path, environ=base_env)
+
+
+def prune_for_settings(
+    store: ConversationStore,
+    settings: ConversationSettings,
+    *,
+    anchor_ts_utc: str,
+) -> int:
+    """Apply retention configured for production conversation writes.
+
+    Failures are contained by ``ConversationStore.prune``; callers should
+    treat the return value as best-effort observability, never as a write
+    precondition.
+    """
+    older_than_ts = _retention_cutoff_ts(
+        anchor_ts_utc,
+        settings.retention_days,
+    )
+    return store.prune(
+        max_rows=settings.retention_max_rows,
+        older_than_ts=older_than_ts,
+    )
+
+
 def _read_only_uri(db_path: str) -> str:
     path = os.path.abspath(db_path)
     return f"file:{urllib.parse.quote(path, safe='/')}?mode=ro"
+
+
+def _chmod_store(db_path: str) -> None:
+    try:
+        store_stat = os.stat(db_path)
+    except OSError as e:
+        logger.warning(
+            "conversation history store stat failed (%s): %s",
+            db_path,
+            e,
+        )
+        return
+    current_mode = store_stat.st_mode & 0o777
+    if (current_mode & 0o060) == 0o060 and store_stat.st_uid != os.geteuid():
+        return
+    try:
+        os.chmod(db_path, STORE_FILE_MODE)
+    except OSError as e:
+        try:
+            if (os.stat(db_path).st_mode & 0o060) == 0o060:
+                return
+        except OSError:
+            pass
+        logger.warning(
+            "conversation history store chmod failed (%s): %s",
+            db_path,
+            e,
+        )
 
 
 def _env_bool(value: str | None, *, default: bool) -> bool:
@@ -373,6 +469,25 @@ def _compact_utc(ts_utc: str) -> str:
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _retention_cutoff_ts(anchor_ts_utc: str, days: int | None) -> str | None:
+    if days is None:
+        return None
+    raw = anchor_ts_utc.strip()
+    parse_value = f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(parse_value)
+    except ValueError:
+        logger.warning(
+            "conversation history retention skipped invalid timestamp: %s",
+            anchor_ts_utc,
+        )
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    cutoff = dt.astimezone(timezone.utc) - timedelta(days=days)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _row_values(turn: ConversationTurn) -> tuple[Any, ...]:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """manual_session_start must honor the user-deliberate stop-listening
 gates the wake path enforces.
 

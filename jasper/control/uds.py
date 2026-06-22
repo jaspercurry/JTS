@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Local UDS client helpers used by jasper-control endpoints."""
 from __future__ import annotations
 

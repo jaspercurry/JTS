@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Cross-language / cross-process wire-contract guards.
 
 These tests pin the *names and shapes* that cross a language or process

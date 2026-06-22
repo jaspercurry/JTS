@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Renderer install steps for deploy/install.sh: librespot (raspotify
 # .deb), nqptp + shairport-sync (AirPlay 2) source builds, bluez
 # config, the USB gadget dtoverlay, and the AirPlay WiFi power-save
@@ -56,7 +61,10 @@ install_renderers() {
             cd "${tmpdir}/nqptp" || exit 1
             autoreconf -fi
             ./configure --with-systemd-startup
-            make -j4
+            # RAM-bounded + cgroup-contained C build (BUILD_SANDBOX_KB_PER_JOB_C
+            # budget) so an OOM kills only the build, not a live daemon.
+            run_contained_build "nqptp" -- \
+                make -j"$(build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_C}")"
             make install
         )
         rm -rf "${tmpdir}"
@@ -98,7 +106,10 @@ install_renderers() {
                 --with-airplay-2 \
                 --with-metadata --with-dbus-interface \
                 --with-mpris-interface
-            make -j4
+            # RAM-bounded + cgroup-contained C build (BUILD_SANDBOX_KB_PER_JOB_C
+            # budget) so an OOM kills only the build, not a live daemon.
+            run_contained_build "shairport-sync" -- \
+                make -j"$(build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_C}")"
         )
         # Build succeeded — now remove the apt-installed AP1 build if
         # present. Keep /etc/shairport-sync.conf — apt remove preserves

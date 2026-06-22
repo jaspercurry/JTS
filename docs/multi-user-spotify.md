@@ -238,6 +238,12 @@ re-link via the wizard.
   health probe, calls `build_clients` and caches the result for 60s.
   Cache is busted on every mutation (OAuth callback, account remove,
   credentials reset, credentials change).
+- `jasper.accounts.build_cache_handler` — spotipy cache adapter used by
+  every Spotify OAuth client. It publishes refreshed token JSON via a
+  tempfile + `os.replace` at mode `0640`, instead of spotipy's stock
+  in-place writer, so any `jasper-intsecrets` member can replace an
+  older cache file owned by another service while the final file stays
+  group-readable rather than group-writable.
 
 **Debugging "Spotify isn't working":**
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins the documented JTS tool upstream-failure contract.
 
 The contract (docs/HANDOFF-prompting.md "The upstream-failure

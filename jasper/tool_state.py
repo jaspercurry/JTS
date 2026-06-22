@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Wizard-owned SSOT for voice tool pack/tool UI state.
 
 Keys in /var/lib/jasper/tool_state.env:

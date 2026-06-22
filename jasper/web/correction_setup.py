@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Room correction wizard at /correction/.
 
 The user opens the page on a phone, selects a calibrated input,

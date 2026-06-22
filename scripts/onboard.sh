@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # JTS Pi onboarding — single command from "I flashed a Pi" to
 # "speaker is running." Run on the laptop, after Pi Imager has
 # flashed the Pi and the Pi has booted and joined the LAN.

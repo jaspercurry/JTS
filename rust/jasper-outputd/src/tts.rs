@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Post-round-trip TTS IPC for the final-output owner — the bonded-member
 //! voice path (docs/HANDOFF-multiroom.md §2, Increment 5 PR-2).
 //!
@@ -717,5 +721,48 @@ mod tests {
         bridge.drain(&mut core);
         assert_eq!(core.pending_assistant_frames(), 8);
         assert_eq!(metrics.dropped_audio_frames.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn flush_sync_ack_satisfies_shared_key_contract() {
+        // Mirror of jasper-fanin's guard: the FLUSH_SYNC ack key shape is a
+        // shared wire contract (jasper-tts-protocol) so the bonded-member
+        // ack and fan-in's solo ack cannot drift apart under the one Python
+        // consumer.
+        use jasper_tts_protocol::{FLUSH_SYNC_ACK_EVENT_KEYS, FLUSH_SYNC_ACK_KEYS};
+
+        let (mut bridge, mut core, tx, ftx) = bridge_with_core();
+        send(
+            &tx,
+            0,
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("item-x".into()),
+                profile: None,
+            },
+        );
+        send(&tx, 0, TtsCommand::Audio(vec![5i16; 8])); // a flushed segment
+        bridge.drain(&mut core);
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        ftx.send(QueuedFlush {
+            epoch: 1,
+            ack: Some(ack_tx),
+        })
+        .unwrap();
+        bridge.drain(&mut core);
+
+        let line = ack_rx.try_recv().expect("flush ack").to_json_line();
+        for key in FLUSH_SYNC_ACK_KEYS {
+            assert!(
+                line.contains(&format!("\"{key}\":")),
+                "outputd ack missing top-level key {key}: {line}"
+            );
+        }
+        for key in FLUSH_SYNC_ACK_EVENT_KEYS {
+            assert!(
+                line.contains(&format!("\"{key}\":")),
+                "outputd ack missing event key {key}: {line}"
+            );
+        }
     }
 }

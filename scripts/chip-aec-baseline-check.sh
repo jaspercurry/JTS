@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Phase 2: baseline gate before judging chip-AEC convergence.
 #
 # This runs after chip-aec-setup.sh and before chip-aec-poll-convergence.sh.

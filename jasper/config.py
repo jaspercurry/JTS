@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import os
@@ -219,6 +223,14 @@ class Config:
 
     camilla_host: str
     camilla_port: int
+    # camilla#2 — the endpoint-crossover CamillaDSP instance on an active
+    # leader (docs/HANDOFF-distributed-active.md "Stage B"). Coexists with
+    # the always-on camilla#1 (camilla_host/port above, :1234). Dormant
+    # until a later reconciler arms jasper-camilla-crossover.service; these
+    # fields just give code a typed handle to its websocket + statefile.
+    camilla2_host: str
+    camilla2_port: int
+    camilla2_statefile: str
     duck_db: float
     duck_transport: str
     idle_timeout_sec: int
@@ -617,12 +629,16 @@ class Config:
             tts_drain_tail_sec=_env_float(
                 "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
             ),
-            # Silero VAD probability threshold for barge-in gating.
-            # While the model is producing TTS, mic frames are only
-            # forwarded to Gemini if Silero says speech_prob >= this.
-            # 0.5 = standard Silero default; raise to 0.7 if music
-            # bleed false-triggers barge-in, lower if real speech
-            # is being missed.
+            # Silero speech-probability threshold for in-session barge-in.
+            # While the assistant is speaking, a sustained run of
+            # AEC-cleaned mic frames at or above this value flushes local
+            # TTS so the user can talk over the reply. 0.5 = Silero
+            # default; raise to 0.7 if music/TTS bleed false-triggers,
+            # lower if real interrupts are missed. Only consulted when
+            # barge-in is enabled for the active provider (per-provider
+            # JASPER_BARGE_IN_<PROVIDER> flag in voice_provider.env, set
+            # directly today, default OFF); see
+            # jasper.voice.provider_state.read_barge_in_enabled.
             vad_barge_in_threshold=_env_float(
                 "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
             ),
@@ -638,6 +654,12 @@ class Config:
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
+            camilla2_host=_env("JASPER_CAMILLA2_HOST", "127.0.0.1"),
+            camilla2_port=_env_int("JASPER_CAMILLA2_PORT", 1235),
+            camilla2_statefile=_env(
+                "JASPER_CAMILLA2_STATEFILE",
+                "/var/lib/camilladsp/crossover-statefile.yml",
+            ),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this

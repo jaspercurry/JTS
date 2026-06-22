@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared program-domain (stereo) DSP *prefix* builder.
 
 The program domain (the 1–2-channel music bus) carries room correction

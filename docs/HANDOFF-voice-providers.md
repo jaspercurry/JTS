@@ -87,10 +87,13 @@ speak only to those interfaces; the per-provider adapters are:
 Conversation-history capture is an optional turn capability, not a provider
 branch in WakeLoop. Providers that natively receive text transcripts expose
 `ConversationTranscriptTurn.user_transcript()` / `assistant_transcript()` on
-their turn objects; WakeLoop probes those methods at teardown and writes
-through the daemon-held `ConversationStore` only when the opt-in capture gate is
-enabled. Providers without native transcript support can omit the capability and
-still satisfy `LiveTurn`; the `/chat/` page renders the missing side honestly.
+their turn objects; WakeLoop probes those methods at teardown and writes through
+the daemon-held `ConversationStore` only when the opt-in capture gate is
+enabled. Providers without native transcript support can either omit the
+capability and still satisfy `LiveTurn`, or expose
+`ConversationMetadataTurn.conversation_metadata()` for bounded, privacy-safe
+metadata such as "transcripts unavailable" and tool names; the `/chat/` page
+renders the missing side honestly.
 
 Daemon-initiated confirmation windows use the provider-neutral
 `LiveTurn.send_text_context()` hook. It adds a text-only routing instruction to
@@ -354,14 +357,38 @@ Sources:
   events, `conversation.item.truncate`, and `response.cancel`:
   <https://docs.x.ai/developers/rest-api-reference/inference/voice>
 
-The provider-neutral interface should be capability-based, not
+The provider-neutral interface is capability-based, not
 provider-name-based:
 
+- `request_local_interrupt()` — **landed (PR-2)** on `LiveTurn`
+  (`jasper/voice/session.py`; implemented by the Gemini and OpenAI/Grok
+  adapters). It is the local-flush trigger only: it sets the turn's
+  interrupt event so `_play_responses` flushes audible TTS, and
+  deliberately does **not** cancel/truncate the provider. The daemon
+  drives it from in-session Silero VAD behind the default-OFF
+  `JASPER_BARGE_IN_<PROVIDER>` flag. The provider-cancel seam below
+  (`cancel_response` / `truncate_assistant_audio`) is now **wired for
+  OpenAI (PR-4)**: after the local flush, `_flush_for_interrupt` drives
+  `cancel_response` then `truncate_assistant_audio` with the flush ack's
+  played-ms. **Grok inherits that pack** (its paid verification is PR-6).
+  **Gemini's reconcile is finalised as a no-op (PR-5)**:
+  `server_self_truncates` has no client truncate/cancel call to make, and
+  JTS keeps Gemini on manual VAD + `NO_INTERRUPTION` even with barge-in
+  enabled, so the daemon's local gate is the sole interruption authority
+  (option (a) in [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Gemini pack";
+  pinned by `tests/test_gemini_barge_in.py`).
 - `cancel_response(reason)` for explicit local interruption/manual
   cancellation.
 - `truncate_assistant_audio(provider_item_id, audio_played_ms)` for
   providers that need conversation history aligned to WebSocket
   playout.
+- `drop_pending_audio()` (returns the count dropped) for providers with an
+  internal playout buffer: after the local TTS flush, the spine drains the
+  adapter's queued-but-unwritten assistant audio so a burst-delivery provider
+  (OpenAI/Grok stream the whole response up front) does not replay the backlog
+  over the user — the local flush alone clears only the DAC ring. Optional
+  (getattr-probed); an adapter that streams without a buffer omits it.
+  Preserves any terminal end-of-audio sentinel so the consumer still ends.
 - `supports_provider_vad()` remains separate from barge-in support:
   provider VAD can help detect or commit turns, but local TTS flush is
   still required to stop audible audio immediately.
@@ -369,6 +396,35 @@ provider-name-based:
   has no OpenAI-style item id for audio truncation; OpenAI emits one and
   JTS already carries it through the outputd-compatible TTS IPC used by
   fan-in.
+- The active provider's reconciliation kind is surfaced at runtime — on
+  `event=barge.detected` (`reconcile=`) and
+  `/state.voice.barge_in.barge_in_reconcile` — so a durable barge-in
+  (`needs_client_truncate`: OpenAI/Grok cancel+truncate) is distinguishable
+  from a cosmetic one (`server_self_truncates`: Gemini no-ops the reconcile and
+  a real-time server may resume). This makes the registry's
+  `interrupt_reconcile` declaration load-bearing, not test-only metadata.
+
+This seam landed in code as of PR-3 (added **behaviour-neutral**):
+`LiveTurn.cancel_response()` / `LiveTurn.truncate_assistant_audio()` and
+`LiveConnection.supports_provider_vad()` live in
+[`jasper/voice/session.py`](../jasper/voice/session.py). **PR-4 wired the
+OpenAI pack** (the reference): `cancel_response` → `response.cancel`
+(guarded to an in-progress response, so it can't trip the server's
+`response_cancel_not_active`), and `truncate_assistant_audio` →
+`conversation.item.truncate{content_index:0, audio_end_ms}` using the
+playout ledger's played-ms — a **no-op + WARN when that played-ms is 0**, so
+it never truncates on bytes-received (an out-of-range `audio_end_ms` errors
+server-side and desyncs context). Grok inherits it; Gemini keeps the no-op
+default (it self-truncates server-side). It stays default-OFF behind the
+per-provider flag, so no household behaviour changed.
+Which reconciliation a provider needs is a declarative registry field, not
+a provider-name branch: `ProviderCatalogEntry.interrupt_reconcile` in
+[`jasper/voice/catalog.py`](../jasper/voice/catalog.py)
+(`needs_client_truncate` for OpenAI, `server_self_truncates` for Gemini,
+`inherits` → OpenAI for Grok); `resolve_interrupt_reconcile()` follows the
+`inherits` edge so packs always read a concrete kind. The seam is pinned by
+`tests/test_voice_barge_in_contract.py` and the registry declaration by
+`tests/test_voice_catalog.py`.
 
 The cross-provider invariant is owned by
 [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md#robust-barge-in-contract):
@@ -400,8 +456,10 @@ should be:
    provider-specific) with a sane default and an explicit
    "required only when active provider" validation.
 4. New provider entry in `jasper/voice/catalog.py`, including model
-   status labels (`tested` / `fallback` / `experimental`) and voice
-   choices for the `/voice/` wizard.
+   status labels (`tested` / `fallback` / `experimental`), voice
+   choices for the `/voice/` wizard, and an `interrupt_reconcile`
+   barge-in declaration (`needs_client_truncate` /
+   `server_self_truncates` / `inherits` + `interrupt_reconcile_base`).
 5. No reconciler shell allow-list edit: `install.sh` emits
    `/var/lib/jasper/voice_provider_ids` from the catalog, and
    `jasper-aec-reconcile` reads that generated file. Keep the
@@ -412,7 +470,10 @@ should be:
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
    reconnect → manual-VAD payload shape → text-context injection does
    not request generation → tool round advances the turn's idle anchor
-   (see "Idle anchor + tool rounds" below).
+   (see "Idle anchor + tool rounds" below). Also add the adapter's
+   turn/connection classes to `tests/test_voice_barge_in_contract.py`'s
+   parametrized lists so the barge-in seam (cancel / truncate /
+   `supports_provider_vad`) is covered.
 8. No provider-list edit in `scripts/switch-voice-provider.sh`: it
    reads provider IDs, key env vars, and model env vars from the
    installed runtime catalog on the Pi.
@@ -530,4 +591,13 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-13 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`)
+Last verified: 2026-06-22 (barge-in interruption contract re-verified against `jasper/voice/session.py`, `jasper/voice/turn_playback.py`, and the adapters — added the `drop_pending_audio()` seam member and the `reconcile`/`barge_in_reconcile` observability after the integrated-review remediation; unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
+barge-in capability seam: PR-3 landed it behaviour-neutral
+(`LiveTurn.cancel_response`/`truncate_assistant_audio` +
+`LiveConnection.supports_provider_vad` + catalog `interrupt_reconcile`);
+PR-4 wired the OpenAI/Grok pack to real `response.cancel` +
+`conversation.item.truncate` with the played-ms no-op-if-0 guard, driven
+by `turn_playback._flush_for_interrupt` — pinned by
+`tests/test_openai_session.py`, `tests/test_turn_playback_barge_in.py`, and
+`tests/test_voice_barge_in_contract.py`, registry by
+`tests/test_voice_catalog.py`)

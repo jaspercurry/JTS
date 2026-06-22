@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guarded active-speaker startup config load and rollback.
 
 This is the first active-speaker slice that may reload CamillaDSP. It still

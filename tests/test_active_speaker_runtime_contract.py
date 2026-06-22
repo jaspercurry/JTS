@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import pytest
@@ -5,10 +9,12 @@ import pytest
 from pathlib import Path
 
 from jasper.active_speaker import (
+    ACTIVE_PROGRAM_BAKE_SOURCE,
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
     emit_active_speaker_driver_domain_config,
+    emit_active_speaker_program_bake_config,
 )
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
@@ -17,6 +23,7 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_DRIVER_DOMAIN_BASELINE,
     GRAPH_FLAT_FULL_RANGE,
     GRAPH_GUARDED_COMMISSIONING,
+    GRAPH_PROGRAM_BAKE_PIPE,
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
     CONTRACT_ACTIVE_STEREO_2WAY,
@@ -32,6 +39,7 @@ from jasper.active_speaker.runtime_contract import (
 )
 from jasper.camilla_config_contract import FilterSpec
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.sound.profile import SimpleEq, SoundProfile
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
@@ -304,7 +312,7 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     assert graph.details["unmuted_outputs"] == [0, 1]
 
 
-# --- PR-3: preference EQ folds into the active baseline, pre-split -------
+# --- PR-3: preference EQ rides at unity in the active baseline, pre-split ---
 
 @pytest.mark.parametrize(
     "layout,mode,way",
@@ -317,12 +325,12 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
 )
 def test_baseline_with_preference_eq_stays_approved(layout, mode, way) -> None:
     # Keystone (invariant 2), emitter-level: emit the real active baseline with a
-    # preference SHELF folded in, feed it back through the SAME classifier for the
-    # SAME topology -> still GRAPH_APPROVED_ACTIVE_RUNTIME. Folding EQ never breaks
-    # the protection contract. Cover stereo + 3-way because the classifier's
-    # per-output name collection gathers the pre-split [0,1] pref names into
-    # outputs 0/1 but not the right-channel/higher outputs — an asymmetry that
-    # only manifests beyond mono-2-way.
+    # preference SHELF inserted pre-split, feed it back through the SAME classifier
+    # for the SAME topology -> still GRAPH_APPROVED_ACTIVE_RUNTIME. Adding EQ
+    # never breaks the protection contract. Cover stereo + 3-way because the
+    # classifier's per-output name collection gathers the pre-split [0,1] pref
+    # names into outputs 0/1 but not the right-channel/higher outputs — an
+    # asymmetry that only manifests beyond mono-2-way.
     topology = _active_topology(layout, mode)
     prefs = (
         FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
@@ -338,11 +346,12 @@ def test_baseline_with_preference_eq_stays_approved(layout, mode, way) -> None:
     assert graph.allowed is True
 
 
-def test_baseline_preference_boost_folds_into_headroom() -> None:
-    # Invariant 4 (emitter-side): a +N dB preference boost reduces the pre-split
-    # headroom by >= total_positive_boost_db(prefs) and keeps volume_limit 0.0.
-    # Tested with a SHELF (summing a shelf's band gain is the conservative bound
-    # and the easy-to-get-wrong case).
+def test_baseline_preference_boost_rides_at_unity() -> None:
+    # Invariant 4 (emitter-side): a +N dB preference boost does not add hidden
+    # program attenuation. It rides at unity just like the stereo /sound path,
+    # while the active graph keeps it safe by placing EQ pre-split and preserving
+    # volume_limit 0.0. Tested with a SHELF because that was the easy-to-get-wrong
+    # bass/treble boost case.
     import re
 
     flat = _active_baseline_yaml("mono", 2)
@@ -363,17 +372,15 @@ def test_baseline_preference_boost_folds_into_headroom() -> None:
         assert match is not None
         return float(match.group(1))
 
-    # +5 shelf + +3 peak = +8 dB worst-case boost; headroom drops by >= 8 dB and
-    # stays non-positive. (12 dB baseline -> 20 dB attenuation.)
-    assert _headroom_db(flat) - _headroom_db(boosted) >= 8.0 - 1e-6
-    assert _headroom_db(boosted) <= 0.0
+    assert _headroom_db(flat) == 0.0
+    assert _headroom_db(boosted) == 0.0
     assert "volume_limit: 0.0" in boosted
 
 
 def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
     # output_trim_db (manual headroom + loudness match) folds into the SAME
-    # active_baseline_headroom gain as the boost, so the active path honours the
-    # household's loudness setting exactly like emit_sound_config. It applies
+    # active_baseline_headroom gain, so the active path honours the household's
+    # loudness setting exactly like emit_sound_config. It applies
     # ONLY when the profile has EQ (mirrors the stereo path): a flat profile
     # plays at unity and ignores the trim.
     import re
@@ -389,19 +396,19 @@ def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
     prefs = (
         FilterSpec(name="pref_pk", biquad_type="Peaking", freq=2000.0, gain=2.0, q=1.0),
     )
-    # With EQ: -(12 baseline + 2 boost + 4 trim) = -18.
+    # With EQ: -(0 baseline + 4 trim) = -4. Preference boosts ride at unity.
     with_eq = _active_baseline_yaml("mono", 2, preference_filters=prefs, output_trim_db=4.0)
-    assert _headroom_db(with_eq) == -18.0
+    assert _headroom_db(with_eq) == -4.0
     assert _headroom_db(with_eq) <= 0.0
     assert classify_camilla_graph(
         topology=_active_topology("mono", "active_2_way"), text=with_eq
     ).allowed is True
 
-    # Flat profile: the trim is ignored (can't clip from EQ), headroom stays -12
+    # Flat profile: the trim is ignored (can't clip from EQ), headroom stays 0
     # and the config is byte-identical to no-trim — preserves the no-EQ contract.
     flat_no_trim = _active_baseline_yaml("mono", 2)
     flat_with_trim = _active_baseline_yaml("mono", 2, output_trim_db=4.0)
-    assert _headroom_db(flat_with_trim) == -12.0
+    assert _headroom_db(flat_with_trim) == 0.0
     assert flat_with_trim == flat_no_trim
 
 
@@ -858,3 +865,151 @@ def test_driver_domain_not_persistable_as_solo_fallback(tmp_path: Path) -> None:
     )
     assert decision.status == "blocked"
     assert decision.selected_config_path is None
+
+
+# --- Stage B: camilla#1 program bake — File-sink verifier exemption -----------
+# The active-leader's program-domain bake (Layer B/C + headroom, File->SNAPFIFO,
+# no Layer A) is SAFE regardless of speaker topology — no DAC is attached, so no
+# driver can be over-driven. The exemption keys STRICTLY on devices.playback.type
+# == File (via the shared playback_is_pipe parser), never on the source marker;
+# the dangerous direction (a flat ALSA-sink graph reaching the DAC under a
+# roleful topology) stays blocked. emitter<->verifier stay independent: the
+# emitter writes the graph, the classifier re-derives the verdict from the text.
+
+
+def _program_bake_yaml(**kw) -> str:
+    profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=6.0))
+    return emit_active_speaker_program_bake_config(profile, **kw)
+
+
+_FILE_PLAYBACK_BLOCK = (
+    "  playback:\n"
+    "    type: File\n"
+    "    channels: 2\n"
+    '    filename: "/run/jasper-snapserver/snapfifo"\n'
+    "    format: S16_LE"
+)
+_ALSA_PLAYBACK_BLOCK = (
+    "  playback:\n"
+    "    type: Alsa\n"
+    "    channels: 2\n"
+    '    device: "outputd_content_playback"\n'
+    "    format: S16_LE"
+)
+
+
+def _swap_file_sink_for_alsa(text: str) -> str:
+    # The verifier re-derives its verdict from the text; flipping ONLY the
+    # playback sink (File -> Alsa) is the minimal mutation that turns the safe
+    # pipe bake into the dangerous full-range-to-DAC graph.
+    assert _FILE_PLAYBACK_BLOCK in text
+    return text.replace(_FILE_PLAYBACK_BLOCK, _ALSA_PLAYBACK_BLOCK, 1)
+
+
+@pytest.mark.parametrize("layout,mode", [
+    ("mono", "active_2_way"),
+    ("mono", "active_3_way"),
+    ("stereo", "active_2_way"),
+    ("stereo", "active_3_way"),
+])
+def test_program_bake_allowed_even_under_tweeter_topology(layout, mode) -> None:
+    # POSITIVE round-trip: the emitted bake, fed back through the verifier,
+    # classifies allowed under a ROLEFUL tweeter topology — the File sink makes
+    # it safe by construction.
+    topology = _active_topology(layout, mode)
+    graph = classify_camilla_graph(topology=topology, text=_program_bake_yaml())
+    assert graph.allowed, graph.issues
+    assert graph.classification == GRAPH_PROGRAM_BAKE_PIPE
+    assert graph.details["program_bake_pipe"] is True
+
+
+def test_program_bake_is_file_shaped_no_layer_a_rate_adjust_off() -> None:
+    # The bake the verifier exempts is a File/pipe sink, has NO Layer A, and runs
+    # rate_adjust off — the three properties that make the exemption sound. (Full
+    # parsed-shape coverage lives in test_active_speaker_program_bake.py; here we
+    # keep the file's no-yaml string idiom.)
+    text = _program_bake_yaml()
+    assert "    type: File\n" in text
+    assert "enable_rate_adjust: false" in text
+    assert "split_active_" not in text
+    assert "active_baseline_headroom" not in text
+
+
+def test_program_bake_alsa_sink_under_tweeter_topology_still_blocked() -> None:
+    # NEGATIVE: the dangerous direction stays blocked. A flat ALSA-sink graph
+    # (full-range to the DAC) under a tweeter topology is full-range-to-tweeter
+    # and the existing tweeter guard must still fire. The File-sink exemption is
+    # narrow and additive — it does NOT weaken the ALSA-sink block.
+    topology = _active_topology("mono", "active_2_way")
+    alsa_flat = _swap_file_sink_for_alsa(_program_bake_yaml())
+    graph = classify_camilla_graph(topology=topology, text=alsa_flat)
+    assert graph.allowed is False
+    assert "flat_full_range_graph_illegal_for_roleful_topology" in {
+        i["code"] for i in graph.issues
+    }
+
+
+def test_program_bake_exemption_keys_on_file_not_marker() -> None:
+    # The exemption keys STRICTLY on playback.type == File, never on the source
+    # marker. An ALSA-sink graph still carrying the program-bake `# Source:`
+    # marker is NOT exempted — it stays blocked under a tweeter topology.
+    topology = _active_topology("mono", "active_2_way")
+    marker_but_alsa = _swap_file_sink_for_alsa(_program_bake_yaml())
+    assert f"# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}" in marker_but_alsa
+    graph = classify_camilla_graph(topology=topology, text=marker_but_alsa)
+    assert graph.allowed is False
+
+
+def test_program_bake_source_marker_matches_verifier() -> None:
+    # The cross-module routing contract: the emitter's `# Source:` header must be
+    # the exact string the verifier (via classify_camilla_config_text) keys on to
+    # route the bake to the flat program lane, or the exemption never fires.
+    text = _program_bake_yaml()
+    source_line = next(
+        line for line in text.splitlines() if line.startswith("# Source:")
+    )
+    assert source_line.split("# Source:")[1].strip() == ACTIVE_PROGRAM_BAKE_SOURCE
+
+
+def test_program_bake_safe_with_no_topology_configured() -> None:
+    # An unconfigured topology (no roleful outputs) is the common solo case; the
+    # bake is allowed there too (still a pipe, still no DAC).
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench",
+        "name": "Bench speaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [],
+        "routing": {},
+    })
+    graph = classify_camilla_graph(topology=topology, text=_program_bake_yaml())
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_PROGRAM_BAKE_PIPE
+
+
+def test_program_bake_not_selectable_as_solo_graph(tmp_path: Path) -> None:
+    # The exemption makes the bake SAFE (no DAC to over-drive) but it is NOT a
+    # selectable speaker output graph: its File sink feeds the snapserver FIFO,
+    # not the DAC, so the solo selector must never preserve it (that would leave a
+    # solo speaker silent). Wiring camilla#1 is a later Stage-B slice; this PR
+    # ships the emit + verifier only. The flat fallback points at a missing path
+    # so the ONLY way this could pass is the (wrong) preserve_current branch.
+    topology = _full_range_mono()
+    config = tmp_path / "grouping_leader.yml"
+    config.write_text(_program_bake_yaml(), encoding="utf-8")
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=str(config),
+        preferred_config_path=str(config),
+        flat_config_path=str(tmp_path / "no-such-outputd.yml"),
+        staged_config={},
+    )
+    assert decision.selected_config_path != str(config)
+    assert decision.status != "preserve_current"

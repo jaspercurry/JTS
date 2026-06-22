@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Python runtime install steps for deploy/install.sh.
 #
 # Extracted from install.sh; functions assume install.sh globals and
@@ -17,7 +22,12 @@ install_jasper() {
     # root-created CLI artifact cannot wedge the web setup flow.
     install -d -m 2770 -o root -g jasper "${STATE_DIR}/active_speaker_tone_artifacts"
 
-    write_build_manifest
+    # NOTE: the build manifest is intentionally NOT written here. It is the
+    # verified-install success marker and is stamped as the FINAL mutation
+    # in main() (write_build_manifest), so a failure anywhere downstream —
+    # the WebRTC/Rust builds, unit install, nginx config — leaves the prior
+    # good manifest rather than a SHA the box isn't cleanly running.
+    # (Problem #4, docs/install-update-resilience-plan.md.)
 
     # WS1 Phase 4a — the per-account Google OAuth token tree + client secret now
     # live in the group-`jasper-secrets` compartment (jasper-voice + jasper-web
@@ -194,7 +204,12 @@ install_jasper() {
             # the vendored v2 build completes. Forcing a rebuild is the
             # simplest way to guarantee setup.py sees the env var and builds
             # both extensions.
-            WEBRTC_AEC3_V2_PREFIX="${JASPER_WEBRTC_V2_PREFIX:-}" \
+            # cc1plus compiles aec3_binding_v2.cpp at -O3 (~430 MB peak);
+            # contain it so an OOM kills only this build, never a live
+            # daemon. The env is passed via `env` (part of argv) so it
+            # survives independently of systemd-run scope env inheritance.
+            run_contained_build "jasper-aec3" -- \
+                env "WEBRTC_AEC3_V2_PREFIX=${JASPER_WEBRTC_V2_PREFIX:-}" \
                 "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
                 "${INSTALL_DIR}/jasper_aec3"
             mkdir -p "$(dirname "${marker}")"
@@ -296,7 +311,8 @@ install_streambox_jasper() {
     install -d -m 0750 "${ENV_DIR}"
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
-    write_build_manifest
+    # Build manifest is written as the FINAL mutation in main(), not here —
+    # see install_jasper's note and write_build_manifest for why (problem #4).
 
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \

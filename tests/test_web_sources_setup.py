@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free tests for the /sources/ wizard (sources_setup.py).
 
 Renders the page and drives the /state + /set handlers in-process; mocks
