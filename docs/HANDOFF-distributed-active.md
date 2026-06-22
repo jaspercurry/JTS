@@ -694,6 +694,33 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   [`tests/test_sound_setup.py`](../tests/test_sound_setup.py). (Slice 3 owns
   the runtime audio path that makes the delegation promise true end-to-end.)
 
+- **Slice 5 (partial — leader camilla#1 bake + verifier exemption)** — the
+  HW-free emit + verifier half of the active *leader*, per "camilla#1 program
+  bake — verifier exemption" above. `emit_active_speaker_program_bake_config`
+  ([camilla_yaml.py](../jasper/active_speaker/camilla_yaml.py)) emits the
+  PROGRAM domain only (Layer B/C + headroom, `File`→`SNAPFIFO`,
+  `enable_rate_adjust: false`, **no** Layer A) by reusing
+  `jasper.sound.camilla_yaml.emit_sound_config`'s program assembly verbatim and
+  re-stamping a distinct DAC-less-bake `# Source:` marker
+  (`ACTIVE_PROGRAM_BAKE_SOURCE`). It bypasses the graph carrier exactly as the
+  follower arm does — the carrier fence `eq_on_active_bonded_member` (the
+  interactive `/sound` EQ path) is untouched. `classify_camilla_graph`
+  ([runtime_contract.py](../jasper/active_speaker/runtime_contract.py)) gains one
+  arm: a flat program graph whose `devices.playback.type == File` is allowed
+  regardless of topology (`GRAPH_PROGRAM_BAKE_PIPE`), keyed STRICTLY on the
+  File-pipe playback via the shared
+  [`playback_is_pipe`](../jasper/multiroom/leader_config.py) parser so the
+  exemption and the leader-pipe liveness check can't disagree. The dangerous
+  direction (a flat *Alsa*-sink graph reaching the DAC under a roleful topology)
+  stays blocked, and the pipe bake is **not** selectable as a solo speaker's own
+  graph (its File sink feeds the FIFO, not the DAC — `safe_graph_for_current_topology`
+  excludes it). Emitter↔verifier stay independent. The reconciler wiring that
+  actually *runs* camilla#1 in this mode (the two-instance bring-up, the summer,
+  the on-device gates) is a **later PR**. Pinned by
+  [`tests/test_active_speaker_program_bake.py`](../tests/test_active_speaker_program_bake.py)
+  and the program-bake arms in
+  [`tests/test_active_speaker_runtime_contract.py`](../tests/test_active_speaker_runtime_contract.py).
+
 ## Multi-Pi validation (Slice 3+)
 
 **S0-sync de-risk gate — run BEFORE Slice 3.** The snapclient→loopback→

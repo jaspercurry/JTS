@@ -27,7 +27,10 @@ from jasper.camilla_config_contract import (
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 
 from ._common import issue as _issue
-from .camilla_yaml import FORBIDDEN_ACTIVE_PLAYBACK_TOKENS
+from .camilla_yaml import (
+    ACTIVE_PROGRAM_BAKE_SOURCE,
+    FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
+)
 from .path_safety import evaluate_path_safety_evidence
 from .profile import ActiveSpeakerConfigError
 
@@ -36,6 +39,15 @@ ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
 SAFE_PLAYBACK_SCHEMA_VERSION = 1
 DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 ALSA_PROBE_TIMEOUT_SEC = 3.0
+
+# The active-leader's camilla#1 program bake (distributed-active Stage B): a flat
+# (no-Layer-A) program graph whose playback is a File/pipe sink, not a DAC. Its
+# own classification keeps it OFF the DAC-output rollback/restore paths
+# (path_safety's restore_classifications) — a leader-only pipe bake must never be
+# selected as a solo speaker's restore target — while still routing to the flat
+# program lane in classify_camilla_graph, where the File-sink exemption allows it
+# regardless of topology (safe by construction: no DAC, no driver to over-drive).
+CAMILLA_CLASS_PROGRAM_BAKE = "jts_active_leader_program_bake"
 
 _CARD_RE = re.compile(
     r"^card\s+(?P<card_index>\d+):\s+"
@@ -256,6 +268,14 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
     if active_startup_marker or split["present"]:
         classification = "active_startup_candidate"
         label = "JTS active-speaker startup candidate"
+    elif source == ACTIVE_PROGRAM_BAKE_SOURCE:
+        # Active-leader camilla#1 program bake: flat program domain to a pipe,
+        # never a DAC. Distinct from jts_generated_stereo so it stays off the
+        # solo restore/rollback target paths (a pipe-sink config restored to a
+        # solo DAC speaker would be silent), while classify_camilla_graph routes
+        # it to the flat program lane + File-sink exemption.
+        classification = CAMILLA_CLASS_PROGRAM_BAKE
+        label = "JTS active-leader program bake (camilla#1)"
     elif source in {
         "jasper.sound.camilla_yaml.emit_sound_config",
         # Historical correction configs used this source marker before the
