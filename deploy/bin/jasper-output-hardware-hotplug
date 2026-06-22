@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Request output-hardware reconciliation from udev hotplug events.
+#
+# The generic audio-hardware udev rule uses SYSTEMD_WANTS on ALSA sound
+# control nodes, which is the right steady-state trigger for newly-added
+# cards. Some USB remove paths do not reliably activate the disappearing
+# sound device, though, so Apple-dongle removal also calls this helper
+# from the parent USB device. Keep it tiny and fail-open: udev should
+# never block on JTS recovery policy.
+
+set -uo pipefail
+
+SYSTEMCTL="${JASPER_SYSTEMCTL:-}"
+if [[ -z "$SYSTEMCTL" ]]; then
+    if [[ -x /usr/bin/systemctl ]]; then
+        SYSTEMCTL=/usr/bin/systemctl
+    else
+        SYSTEMCTL=/bin/systemctl
+    fi
+fi
+
+if "$SYSTEMCTL" --no-block start jasper-audio-hardware-reconcile.service; then
+    echo "event=audio_hardware_hotplug.reconcile_requested action=${ACTION:-unknown} subsystem=${SUBSYSTEM:-unknown} product=${PRODUCT:-unknown}" >&2
+else
+    rc=$?
+    echo "event=audio_hardware_hotplug.reconcile_request_failed action=${ACTION:-unknown} subsystem=${SUBSYSTEM:-unknown} product=${PRODUCT:-unknown} rc=${rc}" >&2
+fi
+
+exit 0

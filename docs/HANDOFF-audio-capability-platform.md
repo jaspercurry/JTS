@@ -55,7 +55,9 @@ The product direction:
    user in a half-enabled state. DAC role detection is event-driven:
    install and boot run one reconcile pass, and udev `controlC*`
    add/remove/change events trigger the same output-hardware reconciler
-   for USB DAC changes. I2S HATs generally appear through boot-time
+   for USB DAC changes. Apple USB-C DAC removal also has a USB-device
+   helper because the disappearing ALSA control node may not always wake
+   systemd on remove. I2S HATs generally appear through boot-time
    device-tree/ALSA enumeration, so boot/install reconciliation is the
    primary path for them.
 2. **Different mics should be usable.** A mic with no hardware AEC
@@ -644,6 +646,6 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-19 (chip-AEC availability wording rechecked
-against the geometry-aware XVF profile resolver; broader platform plan
-still matches 2026-06-09 scope).
+Last verified: 2026-06-22 (output hotplug wording rechecked against the
+audio-hardware reconciler udev/helper path; broader platform plan still
+matches 2026-06-09 scope).

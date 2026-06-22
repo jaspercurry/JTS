@@ -29,6 +29,8 @@ from jasper.output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputCardFact,
     OutputHardwareState,
+    classify_output_cards,
+    write_state as write_output_hardware_state,
 )
 from jasper.voice.catalog import PROVIDERS, provider_ids_manifest_text
 
@@ -608,6 +610,246 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
 
     assert result.status == "warn"
     assert "only 1 Apple audio card(s)" in result.detail
+
+
+def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, save_output_topology
+    from jasper.output_topology import OutputTopology
+
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple active pair",
+        "status": "draft",
+        "hardware": {
+            "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+            "device_label": "Dual Apple USB-C DAC 4-channel pair",
+            "physical_output_count": 4,
+            "child_devices": [
+                {
+                    "child_id": "left_dac",
+                    "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                    "device_label": "Apple USB-C audio adapter",
+                    "serial": "DWH53530FHL2FN3AC",
+                    "physical_output_indexes": [0, 1],
+                },
+                {
+                    "child_id": "right_dac",
+                    "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                    "device_label": "Apple USB-C audio adapter",
+                    "serial": "DWH53530FLL2FN3A3",
+                    "physical_output_indexes": [2, 3],
+                },
+            ],
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 0},
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 2},
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 3,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
+    })
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    state = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        selected_card_id="A",
+        selected_pcm="hw:CARD=A,DEV=0",
+        apple_dac_count=1,
+        child_devices=(
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+            ),
+        ),
+    )
+    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+
+    output = doctor.check_output_hardware_state()
+    active = doctor.check_active_speaker_output_hardware_match()
+
+    assert output.status == "ok"
+    assert "profile=apple_usb_c_dongle status=ready outputs=2" in output.detail
+    assert active.status == "fail"
+    assert f"saved={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID}" in active.detail
+    assert f"current={APPLE_USB_C_DONGLE_DEVICE_ID} status=ready" in active.detail
+    assert "active speaker actions are blocked" in active.detail
+    assert "Basic output hardware is reported separately" in active.detail
+
+
+def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+    from jasper.output_topology import save_output_topology
+
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple active pair",
+        "status": "draft",
+        "hardware": {
+            "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+            "device_label": "Dual Apple USB-C DAC 4-channel pair",
+            "physical_output_count": 4,
+            "child_devices": [
+                {
+                    "child_id": "left_dac",
+                    "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                    "device_label": "Apple USB-C audio adapter",
+                    "serial": "DWH53530FHL2FN3AC",
+                    "physical_output_indexes": [0, 1],
+                },
+                {
+                    "child_id": "right_dac",
+                    "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                    "device_label": "Apple USB-C audio adapter",
+                    "serial": "DWH53530FLL2FN3A3",
+                    "physical_output_indexes": [2, 3],
+                },
+            ],
+            "clock_domain_evidence": {
+                "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+                "measurement_id": "doctor-serial-contract",
+                "status": "passed",
+                "duration_seconds": 900,
+                "sample_rate_hz": 48000,
+                "offset_frames": -7,
+                "max_offset_delta_frames": 0,
+                "drift_ppm": 0,
+                "xrun_count": 0,
+                "dac_serials": [
+                    "DWH53530FHL2FN3AC",
+                    "DWH53530FLL2FN3A3",
+                ],
+            },
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 0},
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 2},
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 3,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
+    })
+    topology_path = tmp_path / "output_topology.json"
+    hardware_path = tmp_path / "output_hardware.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="WRONGLEFTSERIAL",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="WRONGRIGHTSERIAL",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=hardware_path,
+    )
+
+    output = doctor.check_output_hardware_state()
+    active = doctor.check_active_speaker_output_hardware_match()
+
+    assert output.status == "ok"
+    assert (
+        f"profile={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID} status=ready outputs=4"
+        in output.detail
+    )
+    assert active.status == "fail"
+    assert f"saved={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID}" in active.detail
+    assert f"current={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID} status=ready" in active.detail
+    assert "current-hardware clock blockers=dual_apple_observed_serial_mismatch" in active.detail
+    assert "active speaker actions are blocked" in active.detail
+    assert "Basic output hardware is reported separately" in active.detail
 
 
 def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
@@ -3883,6 +4125,10 @@ def test_check_camilla_volume_limit_registered_in_sync_checks():
 
 def test_active_speaker_runtime_graph_registered_in_sync_checks():
     assert "check_active_speaker_runtime_graph" in _registered_check_names()
+
+
+def test_active_speaker_output_hardware_match_registered_in_sync_checks():
+    assert "check_active_speaker_output_hardware_match" in _registered_check_names()
 
 
 def test_active_speaker_runtime_graph_ok_without_topology(monkeypatch, tmp_path):

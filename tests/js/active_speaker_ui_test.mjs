@@ -11,11 +11,33 @@ import assert from "node:assert/strict";
 import {
   CALIBRATED_ALIGNMENT_GUIDANCE,
   NEARFIELD_LEVEL_MATCH_GUIDANCE,
+  activeSpeakerStepState,
   commissionPayloadFailure,
   crossoverAlignmentSummary,
+  defaultActiveSpeakerStep,
   levelMatchSummary,
   nearfieldCaptureHint,
 } from "../../deploy/assets/sound-profile/js/active-speaker-ui.js";
+
+// A saved topology whose current observed hardware no longer matches must stay
+// on the layout step; later active-speaker actions remain unavailable.
+{
+  const ctx = {
+    hasLayout: true,
+    dirty: false,
+    hardwareMatchesSaved: false,
+    driverResearchSatisfied: true,
+    outputIdentityComplete: true,
+    driverChecksComplete: true,
+    baselineProfileApplied: false,
+  };
+  assert.equal(defaultActiveSpeakerStep(ctx), "layout");
+  assert.equal(activeSpeakerStepState("layout", ctx), "active");
+  assert.equal(activeSpeakerStepState("research", ctx), "todo");
+  assert.equal(activeSpeakerStepState("map", ctx), "todo");
+  assert.equal(activeSpeakerStepState("safety", ctx), "todo");
+  assert.equal(activeSpeakerStepState("profile", ctx), "todo");
+}
 
 // Measured override: each driver's trim is "Measured", config is not provisional.
 {

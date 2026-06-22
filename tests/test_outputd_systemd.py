@@ -66,6 +66,9 @@ def test_outputd_unit_runtime_and_exec_paths():
     unit = _read_unit()
     assert _value_for(unit, "RuntimeDirectory") == "jasper-outputd"
     assert _value_for(unit, "ExecStart") == "/opt/jasper/bin/jasper-outputd"
+    assert _value_for(unit, "ExecStopPost") == (
+        "-/usr/local/sbin/jasper-outputd-failure-reconcile"
+    )
     assert "JASPER_OUTPUTD_TTS_SOCKET" not in unit
     for expected in [
         'Environment="JASPER_OUTPUTD_BACKEND=alsa"',

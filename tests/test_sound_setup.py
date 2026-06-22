@@ -627,6 +627,12 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Confirm each DAC output after you check the wiring." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
+    assert "observedHardware" in js
+    assert "Saved speaker topology" in js
+    assert "Currently attached hardware" in js
+    assert "Hardware mismatch" in js
+    assert "Saved topology expects" in js
+    assert "Detected output hardware" not in js
     assert "supported" in js
     assert "needs attention" not in js
     assert "Confirm output" in js
@@ -689,6 +695,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Speaker layout is a draft." in js
     assert "active-speaker-issues--warning" in js
     assert "renderIssueList(issues, 5)" in js
+    assert "function outputClockHardwareBlockers()" in js
+    assert "dual_apple_observed_" in js
+    assert "dual_apple_usb_topology_mismatch" in js
     assert "function crossoverPreviewDisplayStatus(payload)" in js
     assert "JTS still checks the setup before any sound." in js
     assert "Starter stereo" not in js
@@ -1875,6 +1884,187 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
         issue["code"] for issue in envelope["clock_domain"]["issues"]
     }
     assert payload["safety"]["sound_tests_allowed"] is False
+
+
+def test_sound_output_topology_payload_separates_saved_dual_from_observed_single(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple stereo active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 2,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 3,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
+    })
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    envelope = sound_setup._output_topology_payload()
+    payload = envelope["output_topology"]
+
+    assert payload["hardware"]["device_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert payload["hardware"]["physical_output_count"] == 4
+    assert envelope["output_hardware"]["profile_id"] == APPLE_USB_C_DONGLE_DEVICE_ID
+    assert envelope["output_hardware"]["physical_output_count"] == 2
+    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock_blocked"
+    assert "dual_apple_observed_profile_mismatch" in {
+        issue["code"] for issue in envelope["clock_domain"]["issues"]
+    }
+    assert envelope["clock_domain"]["composite_clock_supported"] is False
+    assert envelope["clock_domain"]["coherent_physical_output_count"] == 0
+    assert envelope["output_hardware"]["profile_id"] != payload["hardware"]["device_id"]
+
+
+def test_sound_output_topology_payload_blocks_wrong_dual_apple_serials(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple",
+        "name": "Dual Apple active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [],
+        "routing": {},
+    })
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="WRONGLEFTSERIAL",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="WRONGRIGHTSERIAL",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    envelope = sound_setup._output_topology_payload()
+
+    assert envelope["output_hardware"]["profile_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert envelope["output_hardware"]["physical_output_count"] == 4
+    assert envelope["output_hardware"]["status"] == "ready"
+    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock_blocked"
+    assert "dual_apple_observed_serial_mismatch" in {
+        issue["code"] for issue in envelope["clock_domain"]["issues"]
+    }
+    assert envelope["clock_domain"]["composite_clock_supported"] is False
+    assert envelope["clock_domain"]["coherent_physical_output_count"] == 0
 
 
 def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(

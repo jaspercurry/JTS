@@ -109,6 +109,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
+    observedHardware: null,
     identitySaving: '', protectionSaving: '',
     error: '', dirty: false, touched: false
   };
@@ -804,6 +805,79 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function outputHardware(topology) {
     return topology && topology.hardware ? topology.hardware : null;
+  }
+  function observedOutputHardware() {
+    return outputTopology.observedHardware || null;
+  }
+  function hardwareId(hardware) {
+    return hardware ? String(hardware.device_id || hardware.profile_id || '') : '';
+  }
+  function observedHardwareId(hardware) {
+    return hardware ? String(hardware.profile_id || hardware.device_id || '') : '';
+  }
+  function hardwareLabel(hardware, fallback) {
+    return hardware ? String(
+      hardware.device_label || hardware.profile_label ||
+      hardware.device_id || hardware.profile_id || fallback || 'Unknown output device'
+    ) : (fallback || 'Unknown output device');
+  }
+  function hardwareOutputCount(hardware) {
+    return Number(hardware && hardware.physical_output_count) || 0;
+  }
+  function hardwareSummary(label, count) {
+    return label + ' (' + count + ' physical output' + (count === 1 ? '' : 's') + ')';
+  }
+  var observedHardwareClockIssueCodes = {
+    dual_apple_observation_missing: true,
+    dual_apple_usb_topology_mismatch: true,
+    dual_apple_usb_topology_unknown: true,
+    dual_apple_stable_identity_missing: true,
+    dual_apple_endpoint_not_synchronous: true
+  };
+  function isObservedHardwareClockIssue(issue) {
+    var code = String(issue && issue.code || '');
+    return code.indexOf('dual_apple_observed_') === 0 ||
+      !!observedHardwareClockIssueCodes[code];
+  }
+  function outputClockHardwareBlockers() {
+    var clock = outputClockDomainReport();
+    var issues = clock && Array.isArray(clock.issues) ? clock.issues : [];
+    return issues.filter(function(issue) {
+      return issue && issue.severity === 'blocker' &&
+        isObservedHardwareClockIssue(issue);
+    });
+  }
+  function outputHardwareMismatch(topology) {
+    var saved = outputHardware(topology);
+    var observed = observedOutputHardware();
+    var clockBlockers = outputClockHardwareBlockers();
+    if (!saved || (!observed && !clockBlockers.length)) return null;
+    var savedId = hardwareId(saved);
+    var currentId = observedHardwareId(observed);
+    var savedCount = hardwareOutputCount(saved);
+    var currentCount = hardwareOutputCount(observed);
+    var idMismatch = !!(savedId && currentId && savedId !== currentId);
+    var countMismatch = savedCount !== currentCount;
+    if (!idMismatch && !countMismatch && !clockBlockers.length) return null;
+    var savedLabel = hardwareLabel(saved, 'Saved hardware');
+    var currentLabel = hardwareLabel(observed, 'Attached hardware');
+    var currentSummary = observed
+      ? 'currently attached hardware is ' + hardwareSummary(currentLabel, currentCount)
+      : 'current output hardware has not been observed';
+    var blockerMessages = clockBlockers.map(function(issue) {
+      return String(issue.message || '');
+    }).filter(Boolean);
+    return {
+      savedLabel: savedLabel,
+      currentLabel: currentLabel,
+      savedCount: savedCount,
+      currentCount: currentCount,
+      clockBlockers: clockBlockers,
+      message: 'Saved topology expects ' +
+        hardwareSummary(savedLabel, savedCount) +
+        ', but ' + currentSummary + '.' +
+        (blockerMessages.length ? ' ' + blockerMessages.join(' ') : '')
+    };
   }
   function outputEvaluation(topology) {
     return topology && topology.evaluation ? topology.evaluation : {};
@@ -1606,6 +1680,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return {
       hasLayout: outputGroups(topology).length > 0,
       dirty: outputTopology.dirty,
+      hardwareMatchesSaved: !outputHardwareMismatch(topology),
       driverResearchSatisfied: driverResearchStepSatisfied(),
       outputIdentityComplete: outputIdentityComplete(),
       driverChecksComplete: driverChecksComplete(),
@@ -1670,6 +1745,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function outputTemplateUnavailableReason(template, topology, hasSubwoofer) {
     if (!template) return 'Choose a supported speaker layout.';
+    var mismatch = outputHardwareMismatch(topology);
+    if (mismatch) {
+      return mismatch.message + ' Reconnect the saved hardware or refresh after the attached hardware is stable.';
+    }
     var hardware = outputHardware(topology);
     var physicalCount = Number(hardware && hardware.physical_output_count) || 0;
     if (physicalCount < template.minOutputs) {
@@ -2231,6 +2310,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderOutputHardwareCard(topology, statusValue) {
     var hardware = outputHardware(topology) || {};
+    var observed = observedOutputHardware() || null;
+    var mismatch = outputHardwareMismatch(topology);
     var clock = outputClockDomainReport();
     var clockStatus = clock && clock.status || '';
     var compositeClock = clockStatus.indexOf('dual_apple_composite_clock') === 0;
@@ -2247,16 +2328,47 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       [clockSupportLabel, clockSupportValue],
       ['Topology', topology.name || topology.topology_id || 'Speaker outputs']
     ];
-    return '<div class="output-card output-card--hardware">' +
+    var savedCard = '<div class="output-card output-card--hardware">' +
       '<div class="output-card__head">' +
         '<div><p class="output-card__title">' + escapeHtml(hardware.device_label || 'Unknown output device') + '</p>' +
-        '<p class="setting-row__hint">Detected output hardware</p></div>' +
+        '<p class="setting-row__hint">Saved speaker topology</p></div>' +
         '<span class="status-pill' + outputStatusClass(statusValue) + '">' + escapeHtml(statusValue) + '</span>' +
       '</div>' +
       '<dl class="active-speaker-facts output-facts">' + rows.map(function(row) {
         return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
       }).join('') + '</dl>' +
     '</div>';
+    var observedRows = observed ? [
+      ['Profile', observed.profile_id || observed.device_id || 'unknown'],
+      ['Outputs', String(hardwareOutputCount(observed)) + ' physical'],
+      ['Status', observed.status || 'unknown'],
+      ['Selected card', observed.selected_card_id || 'none'],
+      ['Selected PCM', observed.selected_pcm || 'none']
+    ] : [];
+    var observedCard = observed ? (
+      '<div class="output-card output-card--hardware">' +
+        '<div class="output-card__head">' +
+          '<div><p class="output-card__title">' + escapeHtml(hardwareLabel(observed, 'Unknown output device')) + '</p>' +
+          '<p class="setting-row__hint">Currently attached hardware</p></div>' +
+          '<span class="status-pill' + outputStatusClass(observed.status || 'ready') + '">' +
+            escapeHtml(observed.status || 'unknown') + '</span>' +
+        '</div>' +
+        '<dl class="active-speaker-facts output-facts">' + observedRows.map(function(row) {
+          return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+        }).join('') + '</dl>' +
+      '</div>'
+    ) : '';
+    var mismatchCard = mismatch ? (
+      '<div class="output-card output-card--hardware">' +
+        '<div class="output-card__head">' +
+          '<div><p class="output-card__title">Hardware mismatch</p>' +
+          '<p class="setting-row__hint">' + escapeHtml(mismatch.message) + '</p></div>' +
+          '<span class="status-pill status-pill--blocked">blocked</span>' +
+        '</div>' +
+        '<p class="setting-row__hint">Reconnect the saved hardware or reconfigure the speaker layout after the attached hardware is stable. JTS keeps the saved topology intact.</p>' +
+      '</div>'
+    ) : '';
+    return mismatchCard + savedCard + observedCard;
   }
   function outputGroupPoint(group, index, total) {
     var pos = group.position || {};
@@ -3589,6 +3701,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.identity = payload && payload.channel_identity || topology && topology.channel_identity || null;
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
+    outputTopology.observedHardware = payload && payload.output_hardware || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;

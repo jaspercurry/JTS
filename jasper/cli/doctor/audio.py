@@ -43,6 +43,34 @@ from ._shared import (
 )
 from .correction import _active_camilla_config_path
 
+
+_OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
+    "dual_apple_observation_missing",
+    "dual_apple_usb_topology_mismatch",
+    "dual_apple_usb_topology_unknown",
+    "dual_apple_stable_identity_missing",
+    "dual_apple_endpoint_not_synchronous",
+})
+
+
+def _observed_output_hardware_clock_blockers(
+    clock: dict[str, object],
+) -> list[dict[str, object]]:
+    issues = clock.get("issues")
+    if not isinstance(issues, list):
+        return []
+    blockers: list[dict[str, object]] = []
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("severity") != "blocker":
+            continue
+        code = str(issue.get("code") or "")
+        if code.startswith("dual_apple_observed_") or (
+            code in _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES
+        ):
+            blockers.append(issue)
+    return blockers
+
+
 def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
     """kind is 'aplay' (playback) or 'arecord' (capture)."""
     bin_path = shutil.which(kind)
@@ -388,6 +416,88 @@ def check_output_hardware_state() -> CheckResult:
         "Output hardware state",
         "ok",
         detail,
+    )
+
+
+@doctor_check(order=20.5, group="audio")
+def check_active_speaker_output_hardware_match() -> CheckResult:
+    """Keep saved active-speaker topology mismatch out of basic playback health."""
+
+    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.output_topology import (
+        OutputTopologyError,
+        clock_domain_report,
+        load_output_topology_strict,
+    )
+
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError as exc:
+        return CheckResult(
+            "active speaker output hardware",
+            "fail",
+            f"saved output topology is unavailable or invalid: {exc}",
+        )
+
+    contract = classify_output_contract(topology)
+    if not contract.topology_configured:
+        return CheckResult(
+            "active speaker output hardware",
+            "ok",
+            "no saved speaker topology configured",
+        )
+
+    observed = _load_output_hardware_state()
+    if observed is None:
+        return CheckResult(
+            "active speaker output hardware",
+            "warn",
+            "current output hardware state unavailable; run `sudo systemctl start jasper-audio-hardware-reconcile`",
+        )
+
+    saved = topology.hardware
+    saved_count = int(saved.physical_output_count or 0)
+    observed_count = int(observed.physical_output_count or 0)
+    detail = (
+        f"saved={saved.device_id} outputs={saved_count}; "
+        f"current={observed.profile_id} status={observed.status} "
+        f"outputs={observed_count}"
+    )
+    clock_blockers: list[dict[str, object]] = []
+    if saved.device_id == observed.profile_id and saved_count == observed_count:
+        clock_blockers = _observed_output_hardware_clock_blockers(
+            clock_domain_report(topology)
+        )
+    if (
+        saved.device_id == observed.profile_id
+        and saved_count == observed_count
+        and not clock_blockers
+    ):
+        return CheckResult("active speaker output hardware", "ok", detail)
+
+    status = "fail" if contract.requires_roleful_graph else "warn"
+    blocker_detail = ""
+    if clock_blockers:
+        codes = ",".join(str(issue.get("code") or "") for issue in clock_blockers)
+        messages = "; ".join(
+            str(issue.get("message") or "") for issue in clock_blockers
+            if issue.get("message")
+        )
+        blocker_detail = (
+            f"; current-hardware clock blockers={codes}"
+            f"{': ' + messages if messages else ''}"
+        )
+    suffix = (
+        "active speaker actions are blocked; reconnect the saved hardware "
+        "or reconfigure the speaker layout"
+        if contract.requires_roleful_graph
+        else "saved topology differs from currently attached hardware"
+    )
+    return CheckResult(
+        "active speaker output hardware",
+        status,
+        f"{detail}{blocker_detail}; {suffix}. "
+        "Basic output hardware is reported separately.",
     )
 
 
