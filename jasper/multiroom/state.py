@@ -74,6 +74,7 @@ def read_active_follower_status(path: str = FOLLOWER_STATUS_FILE) -> dict[str, A
         return {}
     return {
         "active_follower": bool(raw.get("active_follower")),
+        "active_leader": bool(raw.get("active_leader")),
         "blocked_reason": str(raw.get("blocked_reason") or ""),
     }
 
@@ -379,21 +380,32 @@ def read_grouping_state(
             want_stream=SNAP_STREAM_ID,
         )
 
-        # Active-follower endpoint surface (distributed-active Slice 3): an
-        # ``endpoint`` block when this box runs its local Layer-A crossover on
-        # the bonded stream, OR when an active-follower bond was REFUSED and the
-        # box fell back to solo active (the fail-closed reason — the
-        # household-facing "why didn't it join the group" signal; the audible
-        # cue through Layer A is the open Q2 spike item). Gated on cfg.enabled so
-        # a solo speaker's snapshot stays byte-for-byte unchanged (no status-file
-        # read, no extra key). Read fresh, never os.environ.
+        # Active-endpoint surface (distributed-active Slice 3 follower / Slice 5
+        # active leader): an ``endpoint`` block when this box runs its local
+        # Layer-A crossover on the bonded stream — as a FOLLOWER, or as the active
+        # LEADER (camilla#2, while camilla#1 bakes the wire) — OR when an
+        # active-endpoint bond was REFUSED and the box fell back to solo active
+        # (the fail-closed reason — the household-facing "why didn't it join the
+        # group" signal; the audible cue through Layer A is the open Q2 spike
+        # item). Gated on cfg.enabled so a solo speaker's snapshot stays
+        # byte-for-byte unchanged (no status-file read, no extra key). Read fresh,
+        # never os.environ.
         endpoint = (endpoint_status_reader or read_active_follower_status)()
-        if endpoint.get("active_follower") or endpoint.get("blocked_reason"):
+        endpoint_follower = endpoint.get("active_follower")
+        endpoint_leader = endpoint.get("active_leader")
+        if endpoint_follower or endpoint_leader or endpoint.get("blocked_reason"):
             snapshot["endpoint"] = {
+                # Both follower + active leader run a local Layer-A crossover;
+                # ``role`` discriminates. "blocked" = bond refused (fail-closed).
                 "mode": (
                     "active_crossover"
-                    if endpoint.get("active_follower")
+                    if endpoint_follower or endpoint_leader
                     else "blocked"
+                ),
+                "role": (
+                    "leader" if endpoint_leader
+                    else "follower" if endpoint_follower
+                    else ""
                 ),
                 "blocked_reason": endpoint.get("blocked_reason", ""),
             }

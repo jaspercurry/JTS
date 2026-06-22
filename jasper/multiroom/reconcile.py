@@ -233,6 +233,16 @@ AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 # restarts-or-parks voice per role + provider + mic, one writer total.
 AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 
+# camilla#2 — the endpoint-crossover CamillaDSP instance (:1235), armed ONLY on
+# an ACTIVE LEADER (HANDOFF-distributed-active.md "Stage B — the ratified
+# active-leader realization"). Reconciler-gated: `enable --now` on bond (after
+# the statefile is re-seeded with the re-proven driver-domain graph) and
+# `disable --now` on unbond. INERT/dormant infrastructure otherwise (PR #930).
+# It carries NO StartLimitAction=reboot, so a failed arm fails closed to silence
+# through the crossover — never reboots the household speaker (unlike the
+# always-on camilla#1).
+CROSSOVER_UNIT = "jasper-camilla-crossover.service"
+
 # Derived, Python-validated park signal for the bash reconciler: written
 # into grouping-voice.env as exactly `JASPER_GROUPING_VOICE_PARK=1` for
 # an ACTIVE bonded FOLLOWER (the dumb-follower profile parks voice + the
@@ -865,20 +875,73 @@ def _restart_unit(unit: str) -> bool:
     return True
 
 
+def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
+    """Run ``systemctl <verb...> jasper-camilla-crossover.service`` for the
+    active-leader camilla#2 arm/teardown. Fail-soft (logged + reflected in the
+    exit code; the doctor's active-leader crossover-unit check surfaces a unit
+    left un-armed). camilla#2 carries NO StartLimitAction=reboot, so a failed
+    arm fails closed to silence — never reboots the speaker."""
+    try:
+        subprocess.run(
+            ["systemctl", *verb, CROSSOVER_UNIT],
+            check=True, capture_output=True, text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        log_event(
+            logger,
+            "multiroom.reconcile.crossover_unit_failed",
+            unit=CROSSOVER_UNIT,
+            action=action,
+            error=e,
+            stderr=stderr.strip(),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "multiroom.reconcile.crossover_unit",
+        unit=CROSSOVER_UNIT,
+        action=action,
+    )
+    return True
+
+
+def _arm_crossover_unit() -> bool:
+    """``systemctl enable --now`` camilla#2 (the endpoint-crossover instance) for
+    an active leader. Idempotent (enabling/starting an already-armed unit is a
+    no-op). The crossover statefile MUST be re-seeded with the re-proven
+    driver-domain graph BEFORE this (the caller orders it) so a cold start never
+    loads a flat statefile (full-range to a tweeter)."""
+    return _systemctl_crossover_unit("enable", "--now", action="armed")
+
+
+def _disable_crossover_unit() -> bool:
+    """``systemctl disable --now`` camilla#2 on unbond. Idempotent (disabling a
+    not-armed unit is a no-op)."""
+    return _systemctl_crossover_unit("disable", "--now", action="disabled")
+
+
 def _write_follower_status(
     *, active_follower: bool, blocked_reason: str,
+    active_leader: bool = False,
     path: str = FOLLOWER_STATUS_FILE,
 ) -> None:
-    """Write the active-follower endpoint status for /state + the dashboard.
+    """Write the active-endpoint status for /state + the dashboard.
 
     Fail-soft (a lost status write must not crash the reconcile path; /state
     falls back to "no endpoint block"). Rewritten every reconcile so the
-    surface is always fresh truth. ``active_follower`` = this box is running its
-    local Layer-A crossover on the bonded stream; ``blocked_reason`` (non-empty)
-    = the active-follower bond was REFUSED and the box fell back to solo active
-    (invariant 5 fail-closed)."""
+    surface is always fresh truth. ``active_follower`` = this box runs its local
+    Layer-A crossover on the bonded stream as a FOLLOWER; ``active_leader`` = it
+    runs that crossover (camilla#2) as the bond LEADER (and also bakes the wire
+    on camilla#1); ``blocked_reason`` (non-empty) = an active-endpoint bond was
+    REFUSED and the box fell back to solo active (invariant 5 fail-closed)."""
     body = json.dumps(
-        {"active_follower": active_follower, "blocked_reason": blocked_reason},
+        {
+            "active_follower": active_follower,
+            "active_leader": active_leader,
+            "blocked_reason": blocked_reason,
+        },
         sort_keys=True,
     ) + "\n"
     try:
@@ -1001,6 +1064,19 @@ def main(argv: list[str] | None = None) -> int:
     # saved topology decides which path this reconcile takes.
     box_is_active = is_active_speaker_box()
     active_follower = active and cfg.role == "follower" and box_is_active
+    # An ACTIVE leader is brains + an endpoint: camilla#1 bakes the program
+    # domain to the wire AND camilla#2 runs this box's own Layer-A crossover on
+    # the round-tripped stream (two CamillaDSP; HANDOFF-distributed-active.md
+    # "Stage B — the ratified active-leader realization"). A PASSIVE leader keeps
+    # the single-camilla pipe bake (jasper.multiroom.leader_config).
+    # ``active_leader`` (valid leader, either kind) is unchanged; these split it.
+    active_speaker_leader = active_leader and box_is_active
+    passive_leader = active_leader and not box_is_active
+    # Both active endpoints (the follower AND the active leader's own drivers)
+    # capture the round-trip loopback and run a camilla-owned channel-pick +
+    # split, so they SHARE the snapclient-writes-loopback + outputd-dac_content-
+    # disabled wiring (the active leader ALSO bakes the wire + hosts the stream).
+    active_endpoint = active_follower or active_speaker_leader
     log_event(
         logger,
         "multiroom.reconcile.start",
@@ -1010,54 +1086,76 @@ def main(argv: list[str] | None = None) -> int:
         error=cfg.error or "(none)",
         active_box=box_is_active,
         active_follower=active_follower,
+        active_leader=active_speaker_leader,
         summary=repr(decision.summary),
     )
     rc = 0
-    follower_block_reason = ""
+    endpoint_block_reason = ""
 
-    # Active-follower readiness GATE (fail-safe to SOLO). Build + re-prove the
-    # driver-domain graph BEFORE tearing down the solo path. If it can't be made
-    # safe (bad channel / not commissioned / graph fails re-proof), do NOT bond:
-    # fall back to solo active so the box keeps playing its own content
-    # (self-recovery, AGENTS.md resilience) instead of half-parking silent. This
-    # is invariant 5's "refuses to bond" — the unsafe graph never reaches the
-    # DACs. The actual CamillaDSP swap happens later (step 5b), after snapclient
-    # is feeding the loopback.
-    if active_follower:
+    # Active-ENDPOINT readiness GATE (fail-safe to SOLO). Build + re-prove the
+    # driver-domain graph BEFORE tearing down the solo path — for a follower its
+    # one CamillaDSP, for an active leader BOTH camilla#2's driver-domain graph
+    # AND camilla#1's program bake. If it can't be made safe (bad channel / not
+    # commissioned / graph fails re-proof), do NOT bond: fall back to solo active
+    # so the box keeps playing its own content (self-recovery, AGENTS.md
+    # resilience) instead of half-parking silent. This is invariant 5's "refuses
+    # to bond" — the unsafe graph never reaches the DACs. The actual CamillaDSP
+    # applies happen later, after snapcast is up.
+    if active_endpoint:
         try:
-            from .follower_config import precheck_active_follower_sync
+            if active_speaker_leader:
+                from .active_leader_config import precheck_active_leader_sync
 
-            precheck_active_follower_sync(cfg)
+                precheck_active_leader_sync(cfg)
+            else:
+                from .follower_config import precheck_active_follower_sync
+
+                precheck_active_follower_sync(cfg)
         except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+state
-            follower_block_reason = getattr(
-                e, "reason", "active_follower_precheck_error",
+            endpoint_block_reason = getattr(
+                e, "reason", "active_endpoint_precheck_error",
+            )
+            # Distinct event per role (the follower name is documented in
+            # HANDOFF-distributed-active.md); both literals stay greppable.
+            blocked_event = (
+                "multiroom.reconcile.active_leader_blocked"
+                if active_speaker_leader
+                else "multiroom.reconcile.active_follower_blocked"
             )
             log_event(
                 logger,
-                "multiroom.reconcile.active_follower_blocked",
-                reason=follower_block_reason,
+                blocked_event,
+                reason=endpoint_block_reason,
                 error=e,
                 level=logging.ERROR,
             )
             # Fail-safe to solo for the rest of this reconcile: treat exactly
             # like an invalid bond (plan stops snapcast + restores renderers).
+            # Reset EVERY role flag — including active_leader, which gates the
+            # step-6 stream-binding pin — so a refused bond never partially
+            # behaves like a leader/endpoint.
             cfg = replace(cfg, enabled=False)
             decision = plan(cfg)
             active = False
+            active_leader = False
             active_follower = False
+            active_speaker_leader = False
+            passive_leader = False
+            active_endpoint = False
             rc = 1
 
     # Endpoint status for /state + the dashboard (fresh truth every reconcile):
-    # active-follower mode, or the fail-closed block reason if the bond was
-    # refused and we fell back to solo active.
+    # active-follower / active-leader mode, or the fail-closed block reason if
+    # the bond was refused and we fell back to solo active.
     _write_follower_status(
         active_follower=active_follower,
-        blocked_reason=follower_block_reason,
+        active_leader=active_speaker_leader,
+        blocked_reason=endpoint_block_reason,
         path=FOLLOWER_STATUS_FILE,
     )
 
     # 1. Derived files + FIFO — before any unit work.
-    derived = _assemble_args(cfg, active_endpoint=active_follower)
+    derived = _assemble_args(cfg, active_endpoint=active_endpoint)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
     log_event(
@@ -1071,7 +1169,7 @@ def main(argv: list[str] | None = None) -> int:
     # Paths passed explicitly (module globals read at CALL time) so the
     # test harness can redirect them; a def-time default would pin the
     # production path.
-    outputd_env = outputd_grouping_env(cfg, active_endpoint=active_follower)
+    outputd_env = outputd_grouping_env(cfg, active_endpoint=active_endpoint)
     env_changed, env_ok = _write_outputd_env(
         outputd_env, path=OUTPUTD_GROUPING_ENV_FILE,
     )
@@ -1087,9 +1185,10 @@ def main(argv: list[str] | None = None) -> int:
     if not env_ok:
         rc = 1
     # The member content FIFO feeds the DUMB follower's dac_content lane. An
-    # active follower uses the snd-aloop round-trip loopback instead (a fixed
-    # snd-aloop subdevice — always present, no mkfifo equivalent), so skip it.
-    if active and not active_follower and not _ensure_member_fifo(
+    # active ENDPOINT (follower or active leader) uses the snd-aloop round-trip
+    # loopback instead (a fixed snd-aloop subdevice — always present, no mkfifo
+    # equivalent), so skip it.
+    if active and not active_endpoint and not _ensure_member_fifo(
         path=MEMBER_CONTENT_FIFO
     ):
         rc = 1
@@ -1102,6 +1201,34 @@ def main(argv: list[str] | None = None) -> int:
     #    the common solo reconcile.
     if active_leader or active_follower:
         pass
+    elif box_is_active and _unit_is_enabled(CROSSOVER_UNIT):
+        # Unbond of an ACTIVE LEADER: camilla#2 (the crossover unit) is enabled
+        # ONLY after an active leader armed it, so its enable state is the
+        # discriminator "this box WAS an active leader" — tear camilla#2 down +
+        # restore camilla#1 via the leader stash (the untouched active-FOLLOWER
+        # path below stays byte-identical). disable is idempotent.
+        if not _disable_crossover_unit():
+            rc = 1
+        try:
+            from .active_leader_config import restore_active_leader_solo_sync
+
+            restored = restore_active_leader_solo_sync()
+            if restored:
+                log_event(
+                    logger,
+                    "multiroom.reconcile.camilla",
+                    result="active_leader_solo_restored",
+                    path=restored,
+                )
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla_failed",
+                action="active_leader_restore",
+                error=e,
+                level=logging.ERROR,
+            )
+            rc = 1
     elif box_is_active:
         try:
             from .follower_config import restore_active_follower_solo_sync
@@ -1216,8 +1343,9 @@ def main(argv: list[str] | None = None) -> int:
         if not _restart_unit(SHAIRPORT_UNIT):
             rc = 1
 
-    # 5. Bonded apply LAST (snapserver is up → the pipe has its reader).
-    if active_leader:
+    # 5. Bonded apply LAST (snapserver is up → the pipe has its reader; snapclient
+    #    is up → the round-trip loopback has its writer).
+    if passive_leader:
         try:
             from .leader_config import apply_bonded_leader_config_sync
 
@@ -1237,15 +1365,53 @@ def main(argv: list[str] | None = None) -> int:
                 level=logging.ERROR,
             )
             rc = 1
+    elif active_speaker_leader:
+        # Active leader (two CamillaDSP): camilla#1 bakes the program domain to
+        # the wire (apply AFTER snapserver — the pipe reader exists), camilla#2
+        # runs this box's own Layer-A crossover on the round-tripped stream (arm
+        # AFTER snapclient — the loopback has its writer). Both configs were built
+        # + re-proven by the readiness gate above. The crossover statefile is
+        # RE-SEEDED with the re-proven driver-domain graph BEFORE enabling the
+        # unit — the never-flat guarantee for an armed camilla#2 (the crossover
+        # guard repairs a dead pipe, NOT a flat statefile). camilla#2 keeps
+        # enable_rate_adjust ON: the music-only validated active-follower seam, no
+        # outputd-summer yet (HANDOFF-distributed-active.md "Sequencing" step 1).
+        try:
+            from .active_leader_config import (
+                apply_active_leader_bake_sync,
+                seed_crossover_statefile,
+            )
 
-        # 6. The stream-binding pin (after camilla apply so snapserver
-        # has had its longest warm-up): re-bind every PERSISTED snapcast
-        # group to our stream. A stale server.json binding (the distro-
-        # snapserver era's "default") silently mutes the whole bond
-        # behind green health — the 2026-06-11 bring-up incident. The
-        # ensure retries internally; an unreachable snapserver flips the
-        # exit code (a bond whose bindings cannot be verified is a
-        # degraded bond) and the runtime health shows it.
+            applied = apply_active_leader_bake_sync()
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla",
+                result="active_leader_bake",
+                path=applied,
+            )
+            seed_crossover_statefile()
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla_failed",
+                action="active_leader_bake_apply",
+                error=e,
+                level=logging.ERROR,
+            )
+            rc = 1
+        # Arm camilla#2 (systemctl enable --now) AFTER the statefile re-seed.
+        if not _arm_crossover_unit():
+            rc = 1
+
+    if active_leader:
+        # 6. The stream-binding pin (ANY leader hosts the stream; runs after the
+        # camilla apply so snapserver has had its longest warm-up): re-bind every
+        # PERSISTED snapcast group to our stream. A stale server.json binding (the
+        # distro-snapserver era's "default") silently mutes the whole bond behind
+        # green health — the 2026-06-11 bring-up incident. The ensure retries
+        # internally; an unreachable snapserver flips the exit code (a bond whose
+        # bindings cannot be verified is a degraded bond) and the runtime health
+        # shows it.
         from .snapcast_rpc import ensure_groups_on_stream
 
         report = ensure_groups_on_stream(SNAP_STREAM_ID)

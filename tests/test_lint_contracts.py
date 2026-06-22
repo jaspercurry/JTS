@@ -34,8 +34,13 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # the LiveTurn seam can honour its "must never raise" contract while still
 # surfacing the failure as event=barge.truncate_failed (WARN) — the same
 # guarded-wire-send idiom as the adjacent _cancel_response.
-MAX_NOQA_MARKERS = 799
-MAX_BLE001_MARKERS = 619
+# 2026-06-22 (+2 suppression markers, blind-except): distributed-active Stage B
+# (active leader, Slice 5) added two fail-soft boundaries to the grouping
+# reconcile path — the active-leader camilla#1 program-bake apply + camilla#2
+# re-seed, and the unbond active-leader restore — each a "never crash the
+# reconcile / fail safe to solo" handler matching the existing reconciler idiom.
+MAX_NOQA_MARKERS = 801
+MAX_BLE001_MARKERS = 621
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

@@ -714,9 +714,10 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   direction (a flat *Alsa*-sink graph reaching the DAC under a roleful topology)
   stays blocked, and the pipe bake is **not** selectable as a solo speaker's own
   graph (its File sink feeds the FIFO, not the DAC — `safe_graph_for_current_topology`
-  excludes it). Emitter↔verifier stay independent. The reconciler wiring that
-  actually *runs* camilla#1 in this mode (the two-instance bring-up, the summer,
-  the on-device gates) is a **later PR**. Pinned by
+  excludes it). Emitter↔verifier stay independent. **The reconciler wiring that
+  *runs* camilla#1 in this mode (the two-instance bring-up) landed HW-free as
+  Stage B Step 0** (see the B-Step-0 callout under "On-device status"); the
+  `outputd-summer` + the on-device gates remain later steps. Pinned by
   [`tests/test_active_speaker_program_bake.py`](../tests/test_active_speaker_program_bake.py)
   and the program-bake arms in
   [`tests/test_active_speaker_runtime_contract.py`](../tests/test_active_speaker_runtime_contract.py).
@@ -884,7 +885,8 @@ speakers, one as leader:
   number is **not fabricated** and stays an explicit follow-up.
 
 **Stage B — the active *leader* (Slice 5): design ratified (see "Stage B — the
-ratified active-leader realization" above), NOT yet built or run.** Rig will be
+ratified active-leader realization" above); the HW-free reconciler arm (Step 0)
+is BUILT, on-device bring-up (Steps 1-3) not yet run.** Rig will be
 `jts3` (active leader, real drivers) → `jts.local` (passive follower) — exercises
 the active-leader code on real drivers without a second active speaker. Gates are
 pre-registered above (CPU/thermal, the clock-lock soak signatures, band-limited-
@@ -905,6 +907,36 @@ tweeter TTS, inv-B-through-Layer-A).
 > never flat** (a flat crossover would send full-range to the tweeter). The
 > summer build, the `rate_adjust` OFF + summing topology, the CPU/thermal +
 > clock-lock soak, and the reconciler gating all remain unbuilt.
+
+> **Stage B Step 0 landed (2026-06-22) — HW-free reconciler arm, music-only seam
+> (no summer).** [`jasper.multiroom.active_leader_config`](../jasper/multiroom/active_leader_config.py)
+> + the grouping reconciler's active-leader branch
+> ([`reconcile.py`](../jasper/multiroom/reconcile.py)) now arm the two-instance
+> bring-up on bond: camilla#1 runs the program bake (File→`SNAPFIFO`,
+> `emit_active_speaker_program_bake_config`) and camilla#2 is armed (`systemctl
+> enable --now jasper-camilla-crossover.service`) on a `crossover-statefile.yml`
+> **RE-SEEDED with the re-proven driver-domain (Layer-A-intact) graph** — closing
+> the B1 seam (the install seed is flat; the crossover guard repairs a dead pipe,
+> not a flat statefile). snapclient writes the round-trip loopback (the leader is
+> its own receiver) and camilla#2 runs **`rate_adjust` ON — the already-validated
+> active-follower seam, no `outputd-summer`, no leader TTS yet**. Fail-closed: if
+> either graph can't be re-proven the box **refuses to bond and falls back to
+> solo active** (invariant 5, self-recovery); on unbond camilla#2 is disabled and
+> camilla#1 restored to the re-proven solo-active baseline (never passive, via the
+> shared `follower_config.restore_active_camilla_solo` ladder). The unbond
+> teardown is gated on the camilla#2 unit being enabled, so the active-FOLLOWER
+> path stays byte-identical. `/state.grouping.endpoint` surfaces
+> `mode=active_crossover, role=leader` (or `mode=blocked` + reason on fail-closed).
+> Pinned by [`tests/test_multiroom_active_leader_config.py`](../tests/test_multiroom_active_leader_config.py)
+> + the active-leader flow tests in
+> [`tests/test_multiroom_reconcile.py`](../tests/test_multiroom_reconcile.py).
+> **Owed (Steps 1-3, on-device):** the `jts3` bring-up + CPU/thermal gate (which
+> also resolves the open summer-build pick), then swap in `outputd-summer` +
+> camilla#2 `rate_adjust` OFF + the ≥24 h clock-lock soak, then arm TTS + the
+> follower fail-closed cue. One Layer-B caveat to verify on-device: the camilla#1
+> bake passes `room_peqs=[]` (an active baseline carries no Layer B today — only
+> Layer C/preference + headroom), so confirm the followers hear the same
+> correction the leader applies solo.
 
 **Stage C — matched pair (two identical active speakers, one as leader):
 BLOCKED.** Precondition is a **second commissioned active speaker with real
