@@ -145,8 +145,18 @@ def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
     """End-to-end pin of the 'moves the status verdict, not just the event list'
     promise: drive the full journal -> classify -> record -> status path and
     assert the AirPlay-health status becomes 'watch' (the 30 m shairport_events
-    verdict), with the audio path otherwise healthy."""
+    verdict), with the audio path otherwise healthy.
+
+    The warning is a bonded-leader lip-sync event that only occurs *while
+    actively streaming*, so the scenario is mpris=playing with a frame-rate
+    baseline established — the condition under which non-fatal warnings
+    surface as 'watch' (idle reads 'inactive'; see _status_locked)."""
     now = [2000.0]
+    frames = [0]
+
+    def fanin_probe() -> dict:
+        frames[0] += 480000  # keep the rate above the 1000 floor
+        return _fanin_status(airplay_frames=frames[0])
 
     def journal(unit: str, _since: float, _now: float) -> list[str]:
         if unit == "shairport-sync":
@@ -158,12 +168,14 @@ def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
         return []
 
     sampler = _sampler(
-        fanin_probe=lambda: _fanin_status(),
+        fanin_probe=fanin_probe,
         journal_reader=journal,
-        mpris_probe=lambda: {"playing": False},
+        mpris_probe=lambda: {"playing": True},
         camilla_probe=lambda: None,
         time_fn=lambda: now[0],
     )
+    sampler._tick()
+    now[0] += 5.0
     sampler._tick()
     snap = sampler.snapshot()
     assert snap["status"] == "watch"
