@@ -1792,8 +1792,10 @@ front-run the complexity nor forget where it belongs.
    budget < need + 0.5 s — see HANDOFF-airplay.md "JTS-side observability");
    measure it per-app on-device with
    `scripts/airplay-latency-probe.sh` before sizing `buffer_ms`. The
-   build hook is `reconcile.py` step 5 (`if active_leader:`), where the
-   bonded CamillaDSP config is already applied.
+   build hook is `reconcile.py` step 5 (the leader's bonded CamillaDSP
+   apply — `passive_leader` re-emits the pipe bake, `active_speaker_leader`
+   runs the camilla#1 program bake + arms camilla#2), where the bonded
+   CamillaDSP config is already applied.
    **Stage D (observability) — BUILT 2026-06-21.** The tight regime is now
    visible JTS-side without reading the journal by hand:
    `/state.grouping.airplay_latency_fit` (computed budget-vs-need, fail-soft,

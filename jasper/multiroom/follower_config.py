@@ -285,12 +285,21 @@ async def apply_active_follower_config(
     return await apply_prebuilt_follower_config(camilla_factory=camilla_factory)
 
 
-async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | None:
-    """Unwind an active follower's CamillaDSP back to its solo-active baseline.
+async def restore_active_camilla_solo(
+    *,
+    camilla_factory=_camilla,
+    stash_path: str = FOLLOWER_PRIOR_STASH,
+    own_config_path: str = FOLLOWER_CONFIG_PATH,
+    apply_source: str = RESTORE_SOURCE,
+    log_kind: str = "active_follower",
+) -> str | None:
+    """Restore the always-on CamillaDSP (camilla#1) to a RE-PROVEN solo-active
+    baseline — the shared unwind ladder behind BOTH the active *follower* and the
+    active *leader* arms (jasper.multiroom.active_leader_config).
 
     Returns the applied path, or None when there is nothing to restore (the
-    common reconcile on a solo-active box — no follower stash, CamillaDSP not on
-    the follower config). Restore order: the stashed prior config, else the
+    common reconcile on a solo-active box — no stash, CamillaDSP not on
+    ``own_config_path``). Restore order: the stashed prior config, else the
     durable solo active baseline YAML on disk — and each candidate is
     RE-PROVEN with ``classify_camilla_graph`` against the saved topology before
     it is loaded. **Never a passive graph** — a flat config on an active sink is
@@ -300,6 +309,13 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
     cannot be re-proven is skipped; if none is provable, CamillaDSP is left on
     its current (safe) graph. Raises on a failed apply (stash kept; the next
     reconcile retries).
+
+    Both arms restore the SAME always-on camilla#1 to the SAME re-proven active
+    baseline; only the stashed-prior path (``stash_path``) and the own-config to
+    exclude (``own_config_path`` — the follower's driver-domain graph, or the
+    leader's program bake) differ. ``log_kind`` tags the structured ``result`` so
+    the two arms stay distinguishable in the journal; ``apply_source`` labels the
+    dsp-apply for the same reason.
     """
     from jasper.active_speaker.baseline_profile import baseline_config_path
     from jasper.active_speaker.runtime_contract import classify_camilla_graph
@@ -311,10 +327,10 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
 
     cam = camilla_factory()
     current = await cam.get_config_file_path(best_effort=True)
-    stash = read_stash(FOLLOWER_PRIOR_STASH)
+    stash = read_stash(stash_path)
 
-    if not stash and current != FOLLOWER_CONFIG_PATH:
-        # Solo-active box that was never an active follower — no churn.
+    if not stash and current != own_config_path:
+        # Solo-active box that was never a bonded active endpoint — no churn.
         return None
 
     # STRICT topology load (fail-closed). The re-proof below keys "is this a
@@ -329,7 +345,7 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
         log_event(
             logger,
             "multiroom.camilla_apply",
-            result="active_follower_restore_topology_unreadable",
+            result=f"{log_kind}_restore_topology_unreadable",
             error=str(exc),
             current=current or "(none)",
             level=logging.WARNING,
@@ -338,12 +354,12 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
 
     # Candidate order: the stashed prior solo config, then the durable solo
     # active baseline YAML on disk. Both must be a genuinely different config
-    # (never the follower config itself).
+    # (never our own endpoint config itself).
     options: list[tuple[str, str]] = []
-    if stash and stash != FOLLOWER_CONFIG_PATH and Path(stash).exists():
+    if stash and stash != own_config_path and Path(stash).exists():
         options.append((stash, "stash"))
     durable = baseline_config_path()
-    if durable.exists() and str(durable) != FOLLOWER_CONFIG_PATH:
+    if durable.exists() and str(durable) != own_config_path:
         options.append((str(durable), "durable_baseline"))
 
     # Re-prove each candidate against the saved topology and load the FIRST that
@@ -361,7 +377,7 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
         log_event(
             logger,
             "multiroom.camilla_apply",
-            result="active_follower_restore_skip_unsafe",
+            result=f"{log_kind}_restore_skip_unsafe",
             candidate=cand,
             via=cand_via,
             classification=graph.classification,
@@ -376,30 +392,47 @@ async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | Non
         log_event(
             logger,
             "multiroom.camilla_apply",
-            result="active_follower_restore_unavailable",
+            result=f"{log_kind}_restore_unavailable",
             current=current or "(none)",
             level=logging.WARNING,
         )
-        _clear_stash(FOLLOWER_PRIOR_STASH)
+        _clear_stash(stash_path)
         return None
 
     await apply_dsp_config(
-        source=RESTORE_SOURCE,
+        source=apply_source,
         candidate_path=candidate,
         load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(
             best_effort=True,
         ),
     )
-    _clear_stash(FOLLOWER_PRIOR_STASH)
+    _clear_stash(stash_path)
     log_event(
         logger,
         "multiroom.camilla_apply",
-        result="active_follower_solo_restored",
+        result=f"{log_kind}_solo_restored",
         path=candidate,
         via=via,
     )
     return candidate
+
+
+async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | None:
+    """Unwind an active *follower*'s CamillaDSP back to its solo-active baseline.
+
+    Thin wrapper over :func:`restore_active_camilla_solo` with the follower's
+    stash + config paths. The paths are read from the module globals HERE (at
+    call time) and passed explicitly — never left to the primitive's def-time
+    defaults — so a test that redirects ``FOLLOWER_PRIOR_STASH`` /
+    ``FOLLOWER_CONFIG_PATH`` is honoured (the reconcile idiom). Kept as the named
+    entry point the reconciler + the follower tests call.
+    """
+    return await restore_active_camilla_solo(
+        camilla_factory=camilla_factory,
+        stash_path=FOLLOWER_PRIOR_STASH,
+        own_config_path=FOLLOWER_CONFIG_PATH,
+    )
 
 
 # ---------- sync wrappers for the oneshot reconciler ----------

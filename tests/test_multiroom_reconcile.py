@@ -1073,12 +1073,20 @@ def test_write_follower_status_round_trips(tmp_path):
     p = str(tmp_path / "grouping-follower-status.json")
     _write_follower_status(active_follower=True, blocked_reason="", path=p)
     assert json.loads(open(p).read()) == {
-        "active_follower": True, "blocked_reason": "",
+        "active_follower": True, "active_leader": False, "blocked_reason": "",
+    }
+    # An active LEADER runs camilla#2 as the bond leader (Slice 5).
+    _write_follower_status(
+        active_follower=False, active_leader=True, blocked_reason="", path=p,
+    )
+    assert json.loads(open(p).read()) == {
+        "active_follower": False, "active_leader": True, "blocked_reason": "",
     }
     # Rewritten every reconcile — a later blocked state replaces the prior one.
     _write_follower_status(active_follower=False, blocked_reason="graph_unprovable", path=p)
     assert json.loads(open(p).read()) == {
-        "active_follower": False, "blocked_reason": "graph_unprovable",
+        "active_follower": False, "active_leader": False,
+        "blocked_reason": "graph_unprovable",
     }
 
 
@@ -1155,3 +1163,182 @@ def test_main_active_follower_precheck_failure_falls_back_to_solo(
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"blocked_reason": "graph_unprovable"' in status
     assert '"active_follower": false' in status
+
+
+# ---------- main(): ACTIVE leader flow (Slice 5 — two CamillaDSP) ----------
+
+
+def _patch_active_leader(monkeypatch, order):
+    """Stub the active-leader config arm + the camilla#2 unit lifecycle into the
+    order recorder. main() from-imports these at call time, so patching the
+    active_leader_config MODULE attributes (and the reconcile module helpers)
+    intercepts them."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    monkeypatch.setattr(
+        alc_mod, "precheck_active_leader_sync",
+        lambda cfg_: order.append("precheck") or ("bake.yml", "crossover.yml"),
+    )
+    monkeypatch.setattr(
+        alc_mod, "apply_active_leader_bake_sync",
+        lambda: order.append("bake") or "bake.yml",
+    )
+    monkeypatch.setattr(
+        alc_mod, "seed_crossover_statefile",
+        lambda *a, **k: order.append("seed") or "crossover-statefile.yml",
+    )
+    monkeypatch.setattr(
+        reconcile_mod, "_arm_crossover_unit",
+        lambda: order.append("arm_camilla2") or True,
+    )
+    monkeypatch.setattr(
+        reconcile_mod, "_disable_crossover_unit",
+        lambda: order.append("disable_camilla2") or True,
+    )
+    return alc_mod
+
+
+def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatch):
+    """An active leader: the readiness GATE runs BEFORE the units (fail-safe);
+    after the units, camilla#1 bakes the wire, the crossover statefile is
+    RE-SEEDED, then camilla#2 is armed (enable --now). snapclient writes the
+    loopback (its own receiver), the leader hosts the stream, and the endpoint
+    status persists active_leader=true."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    # Gate before units; bake + re-seed + arm AFTER the unit plan; seed precedes
+    # the arm (never-flat: a cold camilla#2 start must load the re-proven graph).
+    assert order.index("precheck") < order.index("apply")
+    assert order.index("apply") < order.index("bake") < order.index("seed")
+    assert order.index("seed") < order.index("arm_camilla2")
+    assert "stream_binding" in order  # the leader hosts the stream
+    # snapclient targets the round-trip loopback (the leader is its own receiver),
+    # not the dumb FIFO; the leader still runs snapserver.
+    body = target.read_text()
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
+    assert f"{SERVER_KEY}=" in body and SNAPFIFO in body
+    # endpoint status persisted as an active LEADER.
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"active_leader": true' in status
+
+
+def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkeypatch):
+    """If the readiness gate fails (camilla#1 bake OR camilla#2 driver-domain graph
+    can't be made safe), the box does NOT bond — it fails safe to SOLO: no bake,
+    no camilla#2 arm, snapclient cleared, and the block reason is surfaced for
+    /state (invariant 5 fail-closed + self-recovery)."""
+    import jasper.multiroom.active_leader_config as alc_mod
+    import jasper.multiroom.follower_config as fc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+
+    def _boom(cfg_):
+        raise alc_mod.ActiveLeaderError("crossover_graph_unprovable", "nope")
+
+    monkeypatch.setattr(alc_mod, "precheck_active_leader_sync", _boom)
+    # On a refused FIRST bond camilla#2 was never armed, so the fail-safe restore
+    # takes the (untouched) solo-active follower path — stub it for hermeticity.
+    monkeypatch.setattr(
+        fc_mod, "restore_active_follower_solo_sync",
+        lambda: order.append("active_solo_restore") or None,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "bake" not in order  # never baked the wire
+    assert "arm_camilla2" not in order  # never armed an unprovable crossover
+    assert "stream_binding" not in order  # never became a leader
+    assert "active_solo_restore" in order  # fell back to solo active
+    # snapclient args cleared (fail-safe to solo => no client).
+    assert "JASPER_SNAPCLIENT_ARGS=\n" in target.read_text()
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "crossover_graph_unprovable"' in status
+    assert '"active_leader": false' in status
+
+
+def test_main_active_leader_unbond_disables_camilla2_and_restores(tmp_path, monkeypatch):
+    """Unbond of an active leader (camilla#2 enabled is the discriminator): tear
+    camilla#2 down + restore camilla#1 via the leader stash. The untouched
+    active-follower restore path is NOT taken."""
+    import jasper.multiroom.active_leader_config as alc_mod
+    import jasper.multiroom.follower_config as fc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    # camilla#2 enabled => this box WAS an active leader.
+    monkeypatch.setattr(
+        reconcile_mod, "_unit_is_enabled",
+        lambda unit: unit == reconcile_mod.CROSSOVER_UNIT,
+    )
+    monkeypatch.setattr(
+        alc_mod, "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
+    )
+    monkeypatch.setattr(
+        fc_mod, "restore_active_follower_solo_sync",
+        lambda: order.append("follower_restore") or None,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert "disable_camilla2" in order  # camilla#2 torn down
+    assert "leader_restore" in order  # camilla#1 restored via the leader path
+    assert "follower_restore" not in order  # the follower path is not taken
+    # solo: snapcast cleared (no server, no client).
+    assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
+
+
+def test_main_passive_leader_unchanged_never_arms_camilla2(tmp_path, monkeypatch):
+    """Solo-impact regression: a PASSIVE leader (box not active) keeps the
+    single-camilla pipe bake (apply_bonded_leader_config) and NEVER arms camilla#2
+    — the split did not change the passive-leader path."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    # is_active_speaker_box stays False (the _patch_main_io default).
+    _patch_active_leader(monkeypatch, order)
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert "camilla_bonded" in order  # the unchanged passive-leader apply
+    assert "bake" not in order  # NOT the active-leader bake
+    assert "arm_camilla2" not in order  # camilla#2 never armed on a passive box
+    assert "stream_binding" in order  # still a leader hosting the stream
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"active_leader": false' in status
+
+
+def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
+    tmp_path, monkeypatch,
+):
+    """Solo-impact regression: a solo/active box whose camilla#2 is NOT enabled
+    (never an active leader) takes the untouched active-follower restore path and
+    never disables camilla#2 — the unit-enabled discriminator keeps the follower
+    path byte-identical."""
+    import jasper.multiroom.follower_config as fc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(reconcile_mod, "_unit_is_enabled", lambda unit: False)
+    monkeypatch.setattr(
+        fc_mod, "restore_active_follower_solo_sync",
+        lambda: order.append("follower_restore") or None,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert "follower_restore" in order  # the untouched follower path
+    assert "disable_camilla2" not in order  # camilla#2 never touched
+    assert "leader_restore" not in order
