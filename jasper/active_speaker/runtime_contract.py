@@ -55,6 +55,7 @@ from .graph_safety import (
     view_from_yaml_dict,
 )
 from .environment import (
+    CAMILLA_CLASS_PROGRAM_BAKE,
     DEFAULT_CAMILLA_STATEFILE,
     classify_camilla_config_text,
     parse_camilla_statefile_config_path,
@@ -74,6 +75,12 @@ GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
 GRAPH_GUARDED_COMMISSIONING = "guarded_commissioning"
 GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
 GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
+# The active-leader's camilla#1 program bake: a flat (no-Layer-A) program graph
+# whose playback is a File/pipe sink, not a DAC. Allowed regardless of topology
+# (safe by construction — no DAC, no driver to over-drive); see
+# _flat_graph_allowed and docs/HANDOFF-distributed-active.md "camilla#1 program
+# bake — verifier exemption".
+GRAPH_PROGRAM_BAKE_PIPE = "program_bake_pipe"
 GRAPH_UNKNOWN = "unknown"
 GRAPH_UNSAFE = "unsafe"
 
@@ -439,12 +446,53 @@ def _protected_output_detail(contract: OutputContract) -> str:
     return ", ".join(labels) or "a roleful/protected output"
 
 
+def _playback_is_program_bake_pipe(text: str) -> bool:
+    """True iff a flat graph's ``devices.playback`` is the snapserver File pipe
+    the active-leader's camilla#1 program bake writes.
+
+    This is the load-bearing key for the program-bake exemption: a ``File`` sink
+    has no DAC, so no driver can be over-driven — safe regardless of topology.
+    It reuses :func:`jasper.multiroom.leader_config.playback_is_pipe` (and the
+    same ``SNAPFIFO`` target) verbatim so this exemption and the leader-pipe
+    liveness check cannot disagree about what "pipe-shaped" means. Both symbols
+    are imported lazily — they live in the grouping reconciler chain, which this
+    read-heavy module must not pull eagerly (the leader_config sibling uses the
+    same lazy-import idiom)."""
+    from jasper.multiroom.leader_config import playback_is_pipe
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    return playback_is_pipe(text, SNAPFIFO)
+
+
 def _flat_graph_allowed(
     contract: OutputContract,
     *,
     config_path: str | None,
     summary: dict[str, Any],
+    program_bake_pipe: bool = False,
 ) -> GraphSafety:
+    # Program-bake exemption (Stage B): a flat program graph whose playback is a
+    # File/pipe sink (the active-leader's camilla#1 bake, NOT a DAC) is safe
+    # regardless of the saved speaker topology — no DAC is attached, so no driver
+    # can be over-driven and the full-range-to-tweeter invariant cannot fire.
+    # Narrow and additive: it keys strictly on the File-pipe playback, so an
+    # ALSA-sink flat graph (the dangerous full-range-to-DAC direction) takes the
+    # roleful-topology block below unchanged.
+    if program_bake_pipe:
+        return GraphSafety(
+            classification=GRAPH_PROGRAM_BAKE_PIPE,
+            allowed=True,
+            config_path=config_path,
+            camilla_classification=str(summary.get("classification") or "unknown"),
+            playback_device=summary.get("playback_device"),
+            playback_channels=summary.get("playback_channels"),
+            issues=(),
+            details={
+                "contract_requires_roleful_graph": contract.requires_roleful_graph,
+                "program_bake_pipe": True,
+                "volume_limit_ok": bool(summary.get("volume_limit_ok")),
+            },
+        )
     issues: list[dict[str, str]] = []
     allowed = not contract.requires_roleful_graph
     playback_channels = summary.get("playback_channels")
@@ -1068,11 +1116,25 @@ def classify_camilla_graph(
             "jts_outputd_stereo",
             "jts_legacy_stereo",
             "jts_generated_stereo",
+            # The active-leader camilla#1 program bake is also a flat (no-Layer-A)
+            # program graph; it reaches the flat path so the File-sink exemption
+            # in _flat_graph_allowed can clear it regardless of topology.
+            CAMILLA_CLASS_PROGRAM_BAKE,
         }
         or path_name in {"outputd-cutover.yml", "v1.yml"}
     )
     if is_flat:
-        graph = _flat_graph_allowed(contract, config_path=path_s, summary=summary)
+        # Detect the File/pipe playback ONCE here (this scope has the config
+        # text); _flat_graph_allowed stays text-free. The exemption keys strictly
+        # on the File-pipe sink, so an ALSA-sink flat graph stays subject to the
+        # roleful-topology block.
+        program_bake_pipe = _playback_is_program_bake_pipe(text)
+        graph = _flat_graph_allowed(
+            contract,
+            config_path=path_s,
+            summary=summary,
+            program_bake_pipe=program_bake_pipe,
+        )
     elif camilla_class == "active_startup_candidate":
         graph = _active_graph_allowed(
             text,
@@ -1170,7 +1232,18 @@ def safe_graph_for_current_topology(
         if preferred_path and not _path_matches(preferred_path, current_path)
         else None
     )
-    if current_graph and current_graph.allowed and not contract.requires_roleful_graph:
+    if (
+        current_graph
+        and current_graph.allowed
+        and not contract.requires_roleful_graph
+        # A program-bake pipe is allowed by the verifier (no DAC, no driver to
+        # over-drive) but is NOT a selectable solo graph: its File sink feeds the
+        # snapserver FIFO, not the DAC, so preserving it on a solo speaker would
+        # leave the DAC silent. Selecting/wiring camilla#1 is a later Stage-B
+        # slice; this selector must never pick the pipe bake as a speaker's own
+        # output graph.
+        and current_graph.classification != GRAPH_PROGRAM_BAKE_PIPE
+    ):
         return SafeGraphDecision(
             status="preserve_current",
             selected_config_path=current_path,

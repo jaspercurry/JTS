@@ -26,6 +26,7 @@ from .profile import (
     required_driver_roles,
 )
 from .camilla_yaml import (
+    ACTIVE_PROGRAM_BAKE_SOURCE,
     ACTIVE_STARTUP_CONFIG_NAME,
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
@@ -38,6 +39,7 @@ from .camilla_yaml import (
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
     emit_active_speaker_driver_domain_config,
+    emit_active_speaker_program_bake_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -312,6 +314,7 @@ __all__ = [
     "TONE_PLAYBACK_RESULT_KIND",
     "AUTO_LEVEL_DECISION_KIND",
     "ACTIVE_PLAYBACK_DEVICE_ENV",
+    "ACTIVE_PROGRAM_BAKE_SOURCE",
     "AplayTonePlaybackBackend",
     "ActiveChannelMap",
     "ActiveSpeakerConfigError",
@@ -380,6 +383,7 @@ __all__ = [
     "enabled_audio_backend",
     "emit_active_speaker_baseline_config",
     "emit_active_speaker_driver_domain_config",
+    "emit_active_speaker_program_bake_config",
     "channel_select_mixer_name",
     "load_active_speaker_preset",
     "load_design_draft",
