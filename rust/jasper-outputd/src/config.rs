@@ -156,6 +156,19 @@ pub struct Config {
     /// Program duck applied to CONTENT while voice requests it
     /// (PROGRAM_DUCK_ON). Negative dB; mirrors fanin's knob + fallback.
     pub tts_program_duck_db: f32,
+    /// Set by the reconciler on a 2-channel active-crossover sink — the one
+    /// active case the bare `content_channels == 2` check cannot tell apart
+    /// from a full-range stereo L/R sink (distributed-active Stage B). The real
+    /// invariant for outputd's stereo-only features (the TTS mixer, the
+    /// rate-match bridge, and the dac_content round-trip lane) is "full-range
+    /// stereo L/R sink," NOT "exactly 2 channels": an active 2-way speaker
+    /// (woofer/tweeter) is also 2-channel, so without this marker those
+    /// features would WRONGLY arm on it — mixing / rate-matching / channel-
+    /// picking post-crossover sends full-range audio to the tweeter (unsafe).
+    /// Wider active sinks (composite, >2ch) are already excluded by their
+    /// channel width, so the reconciler does NOT set this for them. Default
+    /// false (solo/passive) is byte-identical to today.
+    pub active_lane: bool,
 }
 
 impl Config {
@@ -404,31 +417,54 @@ impl Config {
             );
         }
 
-        // Stereo-only runtime features are allowlisted to the single-ALSA
-        // stereo path. Composite and wide-active single are both width-exact
-        // passthroughs; accepting a 2-channel bridge/mixer there would mis-size
-        // buffers on live drivers, so fail closed at startup.
-        if content_bridge_mode != ContentBridgeMode::Direct
-            && (sink_mode != SinkMode::SingleAlsa || content_channels != 2)
-        {
+        // Distributed-active belt-and-suspenders: the reconciler marks a
+        // 2-channel active-crossover sink — the one active case channel width
+        // cannot distinguish from a full-range stereo L/R sink. See the
+        // latent-guard hazard in docs/HANDOFF-distributed-active.md.
+        let active_lane = env_bool("JASPER_OUTPUTD_ACTIVE_LANE", false);
+
+        // The shared safety predicate for outputd's stereo-only features: they
+        // may arm ONLY on a full-range stereo L/R sink — single-ALSA, exactly
+        // two channels, and NOT an active-crossover lane. Composite and
+        // wide-active single sinks are excluded by width; a 2-channel active
+        // sink is excluded by the explicit active_lane marker. Mixing or
+        // rate-matching a stereo feed on any of those mis-sizes buffers on live
+        // drivers, or (on an active lane) sends full-range audio to the
+        // tweeter, so fail closed at startup.
+        let is_full_range_stereo_lr_sink =
+            sink_mode == SinkMode::SingleAlsa && content_channels == 2 && !active_lane;
+
+        if content_bridge_mode != ContentBridgeMode::Direct && !is_full_range_stereo_lr_sink {
             anyhow::bail!(
-                "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match requires \
-                 JASPER_OUTPUTD_SINK=single_alsa and JASPER_OUTPUTD_ACTIVE_CHANNELS=2 \
-                 (the rate-match bridge is a stereo-only path)"
+                "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match requires a full-range stereo \
+                 L/R sink: JASPER_OUTPUTD_SINK=single_alsa, JASPER_OUTPUTD_ACTIVE_CHANNELS=2, \
+                 and JASPER_OUTPUTD_ACTIVE_LANE unset (the rate-match bridge is a stereo-only \
+                 path; on an active-crossover lane it would rate-match full-range audio that \
+                 is then split to the tweeter)"
             );
         }
-        if tts_socket_path.is_some() && (sink_mode != SinkMode::SingleAlsa || content_channels != 2)
-        {
+        if tts_socket_path.is_some() && !is_full_range_stereo_lr_sink {
             anyhow::bail!(
-                "JASPER_OUTPUTD_TTS_SOCKET requires JASPER_OUTPUTD_SINK=single_alsa \
-                 and JASPER_OUTPUTD_ACTIVE_CHANNELS=2 (the outputd TTS mixer is \
-                 stereo-only; active-mode voice rides fanin instead)"
+                "JASPER_OUTPUTD_TTS_SOCKET requires a full-range stereo L/R sink: \
+                 JASPER_OUTPUTD_SINK=single_alsa, JASPER_OUTPUTD_ACTIVE_CHANNELS=2, and \
+                 JASPER_OUTPUTD_ACTIVE_LANE unset (the outputd TTS mixer is stereo-only and \
+                 sits post-crossover; on an active-crossover lane — a 2-way speaker is also \
+                 2-channel — it would send full-range speech to the tweeter. Active-mode \
+                 voice rides fanin, upstream of the crossover, instead)"
             );
         }
-        if dac_content_fifo.is_some() && content_channels != 2 {
+        // The dumb round-trip dac_content ChannelPick lane is the third
+        // stereo-L/R-only feature: it must never run on an active-crossover
+        // lane, where picking a full-range channel straight to the DAC would
+        // reach the tweeter post-crossover. (It does not gate on sink_mode here
+        // — single-ALSA is enforced for this lane in the dac_content block
+        // above — so it keeps its own shape rather than the shared predicate.)
+        if dac_content_fifo.is_some() && (content_channels != 2 || active_lane) {
             anyhow::bail!(
                 "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires JASPER_OUTPUTD_ACTIVE_CHANNELS=2 \
-                 (the round-trip lane is a stereo grouping-member path)"
+                 and JASPER_OUTPUTD_ACTIVE_LANE unset (the round-trip lane is a stereo \
+                 grouping-member path; on an active-crossover lane its ChannelPick would \
+                 send a full-range channel to the tweeter)"
             );
         }
 
@@ -463,6 +499,7 @@ impl Config {
             tts_socket_path,
             tts_max_pending_frames,
             tts_program_duck_db,
+            active_lane,
         })
     }
 }
@@ -701,6 +738,8 @@ mod tests {
             // Multi-room round-trip lane is OFF by default (solo contract).
             assert!(cfg.dac_content_fifo.is_none());
             assert_eq!(cfg.dac_content_channel, ChannelPick::Stereo);
+            // Active-crossover lane marker is off by default (solo/passive).
+            assert!(!cfg.active_lane);
         });
     }
 
@@ -801,6 +840,101 @@ mod tests {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.sink_mode, SinkMode::Composite);
                 assert!(cfg.dac_content_fifo.is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn active_lane_rejects_post_crossover_tts_mixer_even_at_two_channels() {
+        // distributed-active Stage B belt-and-suspenders (the recorded latent
+        // guard hazard, HANDOFF-distributed-active.md): an active 2-way speaker
+        // (woofer/tweeter) is ALSO a 2-channel single-ALSA sink, so the bare
+        // `content_channels == 2` check would WRONGLY permit the post-crossover
+        // outputd TTS mixer on it — sending full-range speech to the tweeter.
+        // With JASPER_OUTPUTD_ACTIVE_LANE=1 the TTS mixer must fail closed, and
+        // the error names the full-range-stereo invariant + the active-lane var.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_TTS_SOCKET"), "{err}");
+                assert!(err.contains("JASPER_OUTPUTD_ACTIVE_LANE unset"), "{err}");
+                assert!(err.contains("full-range stereo L/R sink"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn active_lane_rejects_rate_match_bridge_even_at_two_channels() {
+        // Same invariant on the sibling stereo-only feature: the rate-match
+        // content bridge must also refuse to arm on an active-crossover lane.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("CONTENT_BRIDGE=rate_match requires"), "{err}");
+                assert!(err.contains("JASPER_OUTPUTD_ACTIVE_LANE unset"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn passive_stereo_sink_still_arms_the_outputd_tts_mixer() {
+        // No dumb-follower / bonded-member regression: a PASSIVE full-range
+        // stereo L/R sink (active_lane unset) with a TTS socket must STILL parse
+        // — the ordinary bonded-member outputd TTS mixer keeps working. The
+        // active-lane guard narrows ONLY the active case; it must not break the
+        // existing 2-channel mixer the leader case is built on.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                (
+                    "JASPER_OUTPUTD_TTS_SOCKET",
+                    Some("/run/jasper-outputd/tts.sock"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(!cfg.active_lane);
+                assert_eq!(cfg.content_channels, 2);
+                assert_eq!(
+                    cfg.tts_socket_path.as_deref(),
+                    Some("/run/jasper-outputd/tts.sock")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn active_lane_rejects_dac_content_round_trip_lane() {
+        // The third stereo-L/R-only feature (the dumb dac_content ChannelPick
+        // round-trip lane) must also fail closed on an active-crossover lane:
+        // an active 2-way sink is 2-channel, so the bare ACTIVE_CHANNELS==2
+        // check would otherwise permit the lane and pick a full-range channel
+        // straight to the tweeter. (Structurally the reconciler never sets both
+        // on one box; this is the belt-and-suspenders config-level backstop.)
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_DAC_CONTENT_FIFO"), "{err}");
+                assert!(err.contains("JASPER_OUTPUTD_ACTIVE_LANE unset"), "{err}");
             },
         );
     }

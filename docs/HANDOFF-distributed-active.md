@@ -409,8 +409,10 @@ The duck follows for free: point the leader's `JASPER_TTS_OUTPUTD_SOCKET` at
 `outputd-summer` and the in-band duck command rides the same socket.
 `JASPER_OUTPUTD_TTS_SOCKET` on `outputd-final` stays **unset** (its
 post-crossover 2-ch mixer is the full-range-to-tweeter hazard — the recorded
-latent guard hazard; the belt-and-suspenders `config.rs` fix is a non-blocking
-follow-up).
+latent guard hazard, now closed belt-and-suspenders in
+[#925](https://github.com/jaspercurry/JTS/pull/925) via
+`JASPER_OUTPUTD_ACTIVE_LANE`, so the mixer fails closed on an active sink even
+if the socket were set).
 
 **Pair budget — only DAC-side hops force loopbacks.** Pairs are consumed by
 components that demand a real ALSA device, not by stages; our own daemons
@@ -993,15 +995,18 @@ the solo path and does **not** silently drop TTS — it is the *bonded-member*
 mixer, armed only by the reconciler. **No fix needed; this is the foundation the
 leader case extends.**
 
-  > **Latent guard hazard (recorded for Slice 5; not fixed here — this is a
-  > spike).** The outputd TTS-mixer guard rejects `content_channels != 2`, but an
-  > active 2-way speaker can *also* be 2-channel (woofer/tweeter, like `jts3`
-  > today), so the guard would *permit* the outputd mixer on a 2-ch active sink —
+  > **Latent guard hazard — RESOLVED in [#925](https://github.com/jaspercurry/JTS/pull/925).**
+  > The outputd TTS-mixer guard rejected `content_channels != 2`, but an active
+  > 2-way speaker can *also* be 2-channel (woofer/tweeter, like `jts3` today), so
+  > the guard would have *permitted* the outputd mixer on a 2-ch active sink —
   > where mixing post-crossover is full-range to the tweeter (unsafe). Option 3
-  > sidesteps this by construction (the reconciler never arms
-  > `JASPER_OUTPUTD_TTS_SOCKET` on an active leader). Belt-and-suspenders
-  > follow-up: teach the guard that the invariant is "full-range stereo L/R
-  > sink," not "exactly 2 channels."
+  > already sidesteps this by construction (the reconciler never arms
+  > `JASPER_OUTPUTD_TTS_SOCKET` on an active leader); the belt-and-suspenders fix
+  > now also makes it structural: `JASPER_OUTPUTD_ACTIVE_LANE` (set by
+  > `jasper-audio-hardware-reconcile` on a 2-ch active sink) teaches outputd that
+  > the invariant is "full-range stereo L/R sink," not "exactly 2 channels," so
+  > the TTS mixer, the rate-match bridge, and the dac_content lane all fail closed
+  > on an active lane regardless of channel width.
 
 **2. Leader-only voice — RATIFIED.** A bonded follower is voice/AEC-parked
 (`JASPER_GROUPING_VOICE_PARK=1`, set for an active bonded follower in
