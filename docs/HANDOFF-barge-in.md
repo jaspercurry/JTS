@@ -63,6 +63,21 @@ and on-hardware **AEC proof**. Cells: ✅ done / ⚠️ partial / ❌ missing.
 > (on-hardware AEC proof) still gate the per-provider truncate packs
 > (PRs 4–6) and default-on (PR 7); the table below is the pre-PR-2
 > snapshot, kept for the still-open cells.
+>
+> **Update (PR 4 landed, default OFF):** the OpenAI reference pack is
+> wired. After the local flush, `turn_playback._flush_for_interrupt` drives
+> the active provider's seam — `cancel_response` (→ `response.cancel`,
+> guarded to an in-progress response) then `truncate_assistant_audio`
+> (→ `conversation.item.truncate{content_index:0, audio_end_ms}` at the
+> playout ledger's played-ms). The **no-op-if-0 guard** is in the pack:
+> a `max_audio_played_ms == 0` ack (e.g. the ledger of blocker #3 not yet
+> live) WARNs and skips rather than truncating on bytes-received. Grok
+> inherits it; Gemini's pack (PR 5) stays no-op. `send_audio` was
+> **deliberately left half-duplex** — local-VAD flush + cancel/truncate is
+> sufficient for context alignment, and forwarding mic during playback
+> stays out until it can be corroborated by server-VAD (avoids forwarding
+> TTS bleed). So on-device correctness still depends on blocker #3 (real
+> played-ms) and default-on on blocker #4 / PR 7.
 
 | Capability | Core | OpenAI | Gemini | Grok |
 |---|---|---|---|---|
@@ -191,7 +206,7 @@ row is an independently-mergeable PR.
 | 1. Playout ledger → fan-in ack | Wire DAC-clock `audio_played_ms` from the outputd core into the fan-in `FLUSH_SYNC` ack (blocker #3) | `FLUSH_SYNC` ack returns nonzero `max_audio_played_ms` within one output period of the real played duration (the test #532 specifies) |
 | 2. Core spine + drain-tail fix **(✅ landed, default OFF)** | `_handle_playback_frame` branch off `_handle_session_frame` (behind flag) runs Silero on the AEC leg → `LiveTurn.request_local_interrupt()` sets the interrupt event; the `_play_responses` interrupt race now also covers `wait_drained`; `vad_barge_in_threshold` is wired (blockers #1, #2). Enable is the per-provider `JASPER_BARGE_IN_<PROVIDER>` flag read fresh via `provider_state.read_barge_in_enabled`; a turn-start guard hard-disables + WARNs (`barge.disabled_no_reference`) on a no-AEC-reference profile. Provider truncate/forward stays for PRs 4–6. | Flag OFF → byte-identical old behavior (pinning test on the `_input_ended` drop); flag ON + synthetic high-Silero frames → event fires & playback flushes (incl. the drain-tail window) |
 | 3. Contract alignment | Add `cancel_response`/`truncate_assistant_audio`/`supports_provider_vad` to `session.py`; tolerate missing item ids | Session-contract test; `scripts/test-merge` green |
-| 4. OpenAI pack *(reference — most-used; depends on PR 1 ledger)* | `cancel_response`→`response.cancel`; `truncate_assistant_audio`→`conversation.item.truncate(audio_end_ms = ledger played-ms)`; relax `send_audio` post-commit guard only for forward-during-playback (narrow predicate; keep `_released`/`_turn_lost` guards); truncate **no-ops + WARNs if the ledger ack reports `max_audio_played_ms==0`** (never truncate on bytes-received) | `event=barge.truncate` logged with correct `audio_end_ms`; next turn's context matches the truncated transcript |
+| 4. OpenAI pack **(✅ landed, default OFF; reference — most-used)** | `cancel_response`→`response.cancel` (guarded to an in-progress response); `truncate_assistant_audio`→`conversation.item.truncate(audio_end_ms = ledger played-ms)`; truncate **no-ops + WARNs if the ledger ack reports `max_audio_played_ms==0`** (never truncate on bytes-received); the spine (`_flush_for_interrupt`) drives cancel-then-truncate after the local flush. `send_audio` **left unchanged** (half-duplex): local-VAD flush + cancel/truncate is sufficient for context alignment, so forward-during-playback is deferred until server-VAD corroboration. | `event=barge.truncate` logged with correct `audio_end_ms`; next turn's context matches the truncated transcript |
 | 5. Gemini pack **(✅ landed, default OFF)** | Obey `interrupted` (already coded) + set event from local gate; **resolved the server-VAD-on vs manual-VAD choice → option (a): keep manual VAD + NO_INTERRUPTION even when the flag is on, so the daemon's local gate is the single interruption authority and the connection wire config is barge-in-agnostic**; **no truncate** (server self-truncates → the reconcile seam is a *final* no-op, not deferred wiring). Hardware-free contract pinned in `tests/test_gemini_barge_in.py` | `tests/voice_eval/regression/test_barge_in_gemini.py` added but **SKIPPED** (paid + the single-turn harness can't drive audio overlap); on-device proof — speak over Gemini TTS → quiet < ~400 ms — still owed under blocker #4 / PR-7 |
 | 6. Grok pack *(verify)* | No code beyond inheriting the OpenAI pack unless divergence found; truncate gated best-effort; add `tests/voice_eval` Grok scenario | One paid Grok trial confirms inherited cancel/truncate (or a minimal override lands with the observed divergence) |
 | 7. AEC threshold + default-on | On-hardware capture of TTS-bleed vs real-barge Silero distributions on both AEC profiles; set threshold from data; doctor check; runtime self-interrupt-loop guard | bleed-P99 < threshold < real-barge-P10 from captured corpus; defaults flip ON only per profile that passes |
@@ -214,10 +229,13 @@ hardware measurement that might say "chip-AEC only").
   provider-neutral on 2026-06-21 with a "not yet read at runtime" note.
   PR 2 finalizes the comment when it wires the gate.
 - **`event=` logs** via `jasper.log_event`: `barge.detected`
-  (`leg=`, `silero=`, `sustained_ms=`), `barge.truncate`
-  (`provider=`, `audio_end_ms=`), `barge.server_only` (server fired but
-  local didn't — false-barge suspect), `barge.flush_failed` (WARN).
-  Reuse the existing `event=tts_flush.playout_ack`.
+  (`leg=`, `silero=`, `sustained_ms=`), `barge.cancel` (`reason=` — the
+  OpenAI/Grok pack's `response.cancel`), `barge.truncate`
+  (`provider=`, `item_id=`, `audio_end_ms=`), `barge.truncate_skipped`
+  (`reason=zero_played_ms` at WARN — the no-op-if-0 guard; `reason=no_item_id`
+  at DEBUG), `barge.truncate_failed` (WARN — the truncate wire send errored),
+  `barge.server_only` (server fired but local didn't — false-barge suspect),
+  `barge.flush_failed` (WARN). Reuse the existing `event=tts_flush.playout_ack`.
 - **`/state.voice.barge_in`** *(✅ landed PR-2)*: `enabled` (per active
   provider, read **fresh** in jasper-control's aggregator via
   `provider_state.read_barge_in_enabled` — not jasper-voice's

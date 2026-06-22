@@ -195,3 +195,114 @@ def test_flush_failure_warns_and_ends_turn(caplog):
     assert tts.end_segment_calls == 1
     failed = [r for r in caplog.records if "barge.flush_failed" in r.getMessage()]
     assert len(failed) == 1
+
+
+# --- provider reconcile seam wiring (PR-4) -----------------------------
+#
+# After a successful local flush the spine drives the active provider's
+# barge-in pack: cancel_response THEN truncate_assistant_audio, the latter
+# with the flush ack's played-ms. The pack methods are getattr-probed so a
+# turn predating the seam degrades to local-flush-only.
+
+
+class _SeamTurn(_FakeTurn):
+    """Records the reconcile seam calls in order so the test can pin both
+    sequence (cancel before truncate) and arguments."""
+
+    def __init__(self, n_chunks: int = 3) -> None:
+        super().__init__(n_chunks)
+        self.seam_calls: list[tuple] = []
+
+    async def cancel_response(self, reason: str) -> None:
+        self.seam_calls.append(("cancel", reason))
+
+    async def truncate_assistant_audio(
+        self, provider_item_id, audio_played_ms,
+    ) -> None:
+        self.seam_calls.append(("truncate", provider_item_id, audio_played_ms))
+
+
+class _LedgerTts(_BaseTts):
+    """Trips a barge-in on the first chunk and reports a real played-ms in
+    the flush ack — the production fan-in DAC-clock ledger value."""
+
+    def __init__(self, turn: _FakeTurn, *, played_ms: int) -> None:
+        super().__init__()
+        self._turn = turn
+        self._played_ms = played_ms
+
+    async def write_segment(self, *_a, **_k) -> None:
+        if self.write_calls == 0:
+            self._turn.request_local_interrupt()
+        self.write_calls += 1
+
+    async def flush(self):
+        self.flush_calls += 1
+        return {
+            "max_audio_played_ms": self._played_ms,
+            "segments": 1,
+            "flushed_frames": 2,
+        }
+
+
+def test_flush_drives_cancel_then_truncate_with_ledger_ms():
+    turn = _SeamTurn(n_chunks=3)
+    tts = _LedgerTts(turn, played_ms=2750)
+
+    asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
+
+    assert tts.flush_calls == 1
+    # cancel first (stop generation), then truncate with the ack's
+    # played-ms as the heard boundary. The spine carries no provider id,
+    # so it passes None (the OpenAI pack falls back to its own item id).
+    assert turn.seam_calls == [
+        ("cancel", "barge_in"),
+        ("truncate", None, 2750),
+    ]
+
+
+def test_flush_seam_skipped_for_turn_without_capability():
+    """A turn predating the seam (no cancel/truncate methods) still flushes
+    cleanly — the spine getattr-probes and degrades to local-flush-only
+    rather than crashing. _FakeTurn has neither method."""
+    turn = _FakeTurn(n_chunks=2)
+    tts = _ChunkBargeTts(turn)
+
+    # Must not raise despite the turn lacking the seam methods.
+    asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
+    assert tts.flush_calls == 1
+
+
+class _SeamFlushRaisesTts(_BaseTts):
+    """Trips a barge-in on the first chunk, then the flush itself errors."""
+
+    def __init__(self, turn: _FakeTurn) -> None:
+        super().__init__()
+        self._turn = turn
+
+    async def write_segment(self, *_a, **_k) -> None:
+        if self.write_calls == 0:
+            self._turn.request_local_interrupt()
+        self.write_calls += 1
+
+    async def flush(self):
+        self.flush_calls += 1
+        raise RuntimeError("fan-in socket gone")
+
+
+def test_flush_failure_skips_provider_reconcile(caplog):
+    """A failed local flush has no trustworthy played boundary, so the spine
+    must NOT cancel/truncate the provider — doing so could truncate against a
+    guessed ms. The turn still ends, and the failure is logged (not silent)."""
+    turn = _SeamTurn(n_chunks=3)
+    tts = _SeamFlushRaisesTts(turn)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
+
+    assert tts.flush_calls == 1
+    assert turn.seam_calls == [], (
+        "a failed flush must not drive the provider reconcile seam"
+    )
+    failed = [r for r in caplog.records if "barge.flush_failed" in r.getMessage()]
+    assert len(failed) == 1

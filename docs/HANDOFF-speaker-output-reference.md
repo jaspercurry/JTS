@@ -518,12 +518,16 @@ What is still intentionally not done:
 - The chip USB-IN producer is intentionally separate from the software
   speaker monitor. Software AEC/corpus/diagnostics should not depend on
   chip hardware being present.
-- Provider truncation is not yet wired to the local TTS flush and final
-  playout-ledger acknowledgements. The contract is now documented here
-  and in `HANDOFF-voice-providers.md`; the local TTS flush now PRODUCES the
-  `audio_played_ms` and provider item identity (fan-in solo + outputd
-  bonded), so the remaining work is the provider adapters CONSUMING that
-  acknowledgement to issue provider-specific truncate/cancel commands.
+- Provider truncation is wired for the OpenAI/Grok pack (PR-4). The local
+  TTS flush PRODUCES the `audio_played_ms` and provider item identity
+  (fan-in solo + outputd bonded), and `turn_playback._flush_for_interrupt`
+  now drives the active provider's adapter to CONSUME that acknowledgement —
+  `response.cancel` then `conversation.item.truncate(audio_end_ms=played-ms)`,
+  a no-op + WARN when the ledger reports `max_audio_played_ms=0` so it never
+  truncates on bytes-received. The contract is documented here and in
+  `HANDOFF-voice-providers.md`. Remaining: Gemini's obey-`interrupted` pack
+  (PR-5; it self-truncates server-side, so no client truncate), Grok
+  verification (PR-6), and the on-hardware AEC gate before default-on (PR-7).
 - The latest TTS ledger refinements (provider item id over IPC,
   synchronous flush acknowledgement, and DAC-delay-based drain
   accounting) still need Pi validation after an operator-approved

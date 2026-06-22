@@ -12,7 +12,17 @@ changes no runtime behaviour:
     distinct from barge-in support and from ``supports_server_vad()``.
 
 These tests pin that all three shipped adapters (Gemini, OpenAI, and Grok via
-its OpenAI subclass) expose the seam and that the defaults are genuine no-ops.
+its OpenAI subclass) expose the seam and that the cross-provider *tolerance*
+contract holds (a missing item id / no active response is always a clean
+no-op, never a raise).
+
+Note: PR-4 made the OpenAI/Grok pack's seam *live* — `cancel_response` and
+`truncate_assistant_audio` now issue real `response.cancel` /
+`conversation.item.truncate` for an active response + real played-ms. That
+provider-specific behaviour (and its guards) is pinned in
+`tests/test_openai_session.py`; here we pin only the seam shape and the
+no-op/tolerance paths that remain identical across providers (Gemini stays a
+genuine no-op on every path — it self-truncates server-side).
 
 Note on conformance checking: ``LiveTurn`` / ``LiveConnection`` are
 ``@runtime_checkable`` but also declare *optional* server-VAD members that the
@@ -135,11 +145,17 @@ async def test_cancel_response_is_noop(cls):
 @pytest.mark.parametrize("cls", TURN_CLASSES)
 async def test_truncate_tolerates_missing_item_id(cls):
     """Adapters MUST tolerate a missing provider_item_id (Gemini has none;
-    OpenAI may not have observed one yet)."""
+    OpenAI may not have observed one yet) — for any played-ms, with or
+    without a ledger value, and never raise.
+
+    A *populated* id is no longer a universal no-op: post-PR-4 the OpenAI
+    pack sends a real conversation.item.truncate for a real id + positive
+    played-ms. That provider-specific behaviour (and its no-op-if-0 and
+    cancel guards) is pinned in tests/test_openai_session.py; here we pin
+    only the cross-provider tolerance of a *missing* id."""
     turn = _make_turn(cls)
     assert await turn.truncate_assistant_audio(None, 0) is None
-    # A populated id (OpenAI-style) is also accepted and is a no-op here.
-    assert await turn.truncate_assistant_audio("item_abc123", 1500) is None
+    assert await turn.truncate_assistant_audio(None, 1500) is None
 
 
 @pytest.mark.parametrize("cls", CONNECTION_CLASSES)

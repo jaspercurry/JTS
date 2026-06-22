@@ -442,6 +442,228 @@ async def test_release_after_commit_cancels_unfinished_response():
         await conn.stop()
 
 
+# ---------------------------------------------------------------------------
+# Barge-in capability seam (OpenAI reference pack — PR-4).
+#
+# cancel_response -> response.cancel (guarded to an in-progress response);
+# truncate_assistant_audio -> conversation.item.truncate with the playout
+# ledger's played-ms as audio_end_ms, guarded to never truncate on a 0/None
+# played-ms (which would over-count vs. what was heard and error server-side).
+# ---------------------------------------------------------------------------
+
+
+async def test_truncate_assistant_audio_sends_item_truncate_with_played_ms():
+    """The reference-pack truncate sends conversation.item.truncate with
+    content_index 0 and audio_end_ms == the played-ms it was handed (the
+    flush ack's max_audio_played_ms). audio_end_ms is the heard boundary;
+    OpenAI deletes the unspoken transcript past it so context stays aligned."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+
+        baseline = len(sess.sent)
+        await turn.truncate_assistant_audio("item_xyz", 4321)
+
+        trunc = _find_event(sess.sent[baseline:], "conversation.item.truncate")
+        assert trunc is not None, (
+            "truncate_assistant_audio did not send conversation.item.truncate"
+        )
+        assert trunc["item_id"] == "item_xyz"
+        assert trunc["content_index"] == 0
+        assert trunc["audio_end_ms"] == 4321
+    finally:
+        await conn.stop()
+
+
+async def test_truncate_falls_back_to_last_assistant_item_id():
+    """When the daemon spine passes provider_item_id=None (it carries no
+    provider id), the adapter targets its own `_last_assistant_item_id`,
+    captured from response.output_item.added. This is the production path —
+    `_flush_for_interrupt` always passes None."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        # The connection's receive loop sets _last_assistant_item_id from
+        # this event in production.
+        sess.feed({
+            "type": "response.output_item.added",
+            "item": {"type": "message", "id": "item_from_server"},
+        })
+        await _wait_until(
+            lambda: turn._last_assistant_item_id == "item_from_server",
+        )
+
+        baseline = len(sess.sent)
+        await turn.truncate_assistant_audio(None, 1500)
+
+        trunc = _find_event(sess.sent[baseline:], "conversation.item.truncate")
+        assert trunc is not None
+        assert trunc["item_id"] == "item_from_server"
+        assert trunc["audio_end_ms"] == 1500
+    finally:
+        await conn.stop()
+
+
+async def test_truncate_fires_even_after_server_turn_complete():
+    """The most common OpenAI barge-in window: burst delivery finishes the
+    response server-side (server_turn_complete True) while audio is still
+    draining locally, then the user talks over the tail. Truncate MUST still
+    align history to the heard boundary — unlike cancel, it does NOT gate on
+    completion (there is nothing to *cancel*, but there is still unspoken
+    transcript to *trim*)."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        turn._last_assistant_item_id = "item_drain"
+        turn._server_turn_complete = True  # response already done server-side
+
+        baseline = len(sess.sent)
+        await turn.truncate_assistant_audio(None, 3200)
+
+        trunc = _find_event(sess.sent[baseline:], "conversation.item.truncate")
+        assert trunc is not None, (
+            "truncate must fire during the drain tail even after the server "
+            "completed the response — this is the primary barge-in window"
+        )
+        assert trunc["item_id"] == "item_drain"
+        assert trunc["audio_end_ms"] == 3200
+    finally:
+        await conn.stop()
+
+
+async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
+    """CRITICAL GUARD: a 0 played-ms (the production fan-in ack can return
+    max_audio_played_ms=0) means the ledger saw no rendered audio. Truncating
+    on bytes-received instead would push audio_end_ms past the heard boundary
+    and the server errors. So 0 is a no-op + WARN, never a guess."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        turn._last_assistant_item_id = "item_present"  # a real target exists
+
+        baseline = len(sess.sent)
+        with caplog.at_level(
+            logging.WARNING, logger="jasper.voice.openai_session",
+        ):
+            await turn.truncate_assistant_audio(None, 0)
+
+        assert _find_event(
+            sess.sent[baseline:], "conversation.item.truncate",
+        ) is None, "must NOT truncate when the ledger reports 0 played-ms"
+        skipped = [
+            r for r in caplog.records
+            if "barge.truncate_skipped" in r.getMessage()
+            and "zero_played_ms" in r.getMessage()
+        ]
+        assert len(skipped) == 1, (
+            "a 0-played-ms truncate must WARN once, never silently no-op"
+        )
+    finally:
+        await conn.stop()
+
+
+async def test_truncate_noop_when_no_item_id():
+    """No assistant item observed yet (barge-in raced
+    response.output_item.added) and no id passed in → nothing to align, so
+    no conversation.item.truncate is sent."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        assert turn._last_assistant_item_id is None  # nothing captured yet
+
+        baseline = len(sess.sent)
+        await turn.truncate_assistant_audio(None, 2000)
+
+        assert _find_event(
+            sess.sent[baseline:], "conversation.item.truncate",
+        ) is None
+    finally:
+        await conn.stop()
+
+
+async def test_cancel_response_noop_when_no_active_response():
+    """response.cancel errors (response_cancel_not_active) when no response
+    is generating. An uncommitted turn has no active response, so
+    cancel_response must not send anything."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)  # streamed, NOT committed
+
+        baseline = len(sess.sent)
+        await turn.cancel_response("barge_in")
+        assert "response.cancel" not in {
+            event["type"] for event in sess.sent[baseline:]
+        }, "must NOT cancel when there is no active response"
+    finally:
+        await conn.stop()
+
+
+async def test_cancel_response_sends_when_response_in_progress():
+    """After end_input commits the buffer and asks for a response, a
+    response IS in progress (server hasn't completed it), so cancel_response
+    sends response.cancel."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)
+        await turn.end_input()  # commit + response.create → response active
+
+        baseline = len(sess.sent)
+        await turn.cancel_response("barge_in")
+        assert "response.cancel" in {
+            event["type"] for event in sess.sent[baseline:]
+        }
+    finally:
+        await conn.stop()
+
+
+async def test_cancel_response_noop_after_server_turn_complete():
+    """Once the server has completed the response, there is no longer an
+    active response to cancel — cancel_response is a no-op (idempotent
+    against a late/duplicate barge-in)."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)
+        await turn.end_input()
+        # Server says the response finished (set by response.done in
+        # production; pinned directly here to isolate the guard).
+        turn._server_turn_complete = True
+
+        baseline = len(sess.sent)
+        await turn.cancel_response("barge_in")
+        assert "response.cancel" not in {
+            event["type"] for event in sess.sent[baseline:]
+        }
+    finally:
+        await conn.stop()
+
+
 async def test_end_input_sends_commit_and_response_create_in_order():
     """Manual-VAD turn close: ``input_audio_buffer.commit`` then
     ``response.create``. Order matters — sending response.create before

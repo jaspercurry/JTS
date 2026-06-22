@@ -28,20 +28,28 @@ async def _turn_audio_chunks(turn: LiveTurn):
 
 
 async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
-    """Flush local TTS playout in response to an interrupt and clear the
-    turn's interrupted state.
+    """Flush local TTS playout in response to an interrupt, clear the turn's
+    interrupted state, then reconcile the active provider's conversation
+    state to the heard boundary.
 
     The interrupt can come from a provider server-interrupt (Gemini) or
     from local barge-in detection (``WakeLoop._handle_playback_frame`` ->
-    ``turn.request_local_interrupt()``). Either way this only stops *local*
-    playout — it does NOT truncate / cancel the provider's response (a
-    later barge-in increment owns that).
+    ``turn.request_local_interrupt()``). The local TTS flush always happens
+    first (the latency-critical action). After a *clean* flush this drives
+    the provider-pack seam — ``cancel_response`` then
+    ``truncate_assistant_audio`` (jasper/voice/session.py) — with the playout
+    ledger's played-ms, so provider history matches what the listener
+    actually heard. Both are no-ops for a server-self-truncating provider
+    (Gemini); the OpenAI/Grok pack sends ``response.cancel`` +
+    ``conversation.item.truncate``. The seam is getattr-probed, so an adapter
+    without it degrades to local-flush-only.
 
     Returns ``True`` on a clean flush, ``False`` if the flush (or the
-    optional ``on_tts_flush`` hook) errored. On error it emits
-    ``event=barge.flush_failed`` at WARNING — never silently — and the
-    caller stops racing the interrupt and lets the turn end through its
-    normal teardown."""
+    optional ``on_tts_flush`` hook) errored. On a flush error it emits
+    ``event=barge.flush_failed`` at WARNING — never silently — skips the
+    provider reconcile (a failed local flush has no trustworthy played
+    boundary to truncate against), and the caller stops racing the interrupt
+    and lets the turn end through its normal teardown."""
     try:
         ack = await tts.flush()
         flush_handler = getattr(turn, "on_tts_flush", None)
@@ -65,6 +73,25 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
             flushed_frames=ack.get("flushed_frames"),
         )
     turn.clear_interrupted()
+    # Local TTS is now flushed; reconcile the active provider's
+    # conversation state to the heard boundary using the playout ledger's
+    # played-ms from the flush ack. Capability seam (jasper/voice/session.py):
+    # a server-self-truncating provider (Gemini) no-ops both calls; the
+    # OpenAI/Grok pack sends response.cancel then
+    # conversation.item.truncate(audio_end_ms=played-ms). getattr-probed so
+    # an adapter predating the seam degrades to local-flush-only rather than
+    # crashing — same optional-capability handling as request_local_interrupt.
+    # Order matters: cancel stops generation first, then truncate trims
+    # history to what actually played. The truncate's own no-op-if-0 /
+    # missing-id guards live in the pack, so passing the raw ledger value
+    # (0 when unwired/unavailable) is safe here.
+    played_ms = ack.get("max_audio_played_ms") if isinstance(ack, dict) else None
+    cancel = getattr(turn, "cancel_response", None)
+    if callable(cancel):
+        await cancel("barge_in")
+    truncate = getattr(turn, "truncate_assistant_audio", None)
+    if callable(truncate):
+        await truncate(None, int(played_ms or 0))
     return True
 
 
