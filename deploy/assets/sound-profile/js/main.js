@@ -135,6 +135,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     pending: null,
     generation: 0
   };
+  var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
 
   function el(id) { return document.getElementById(id); }
   // Distributed-active Slice 4: a bonded active follower's /sound/ page mounts
@@ -1413,6 +1414,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'Research manufacturer datasheets and reputable measurements. Prefer primary manufacturer data.',
       'Do not invent missing facts. Use null when a value is unknown. Include source URLs for every non-obvious claim.',
       'Focus on safe starting points, not final tuning. Assume JTS will start test signals extremely quiet and the human must approve any listening result.',
+      'Keep each driver notes field concise: safety-relevant details only, 2048 characters or fewer; do not paste a full research report.',
       '',
       'Return only JSON with this shape:',
       '{',
@@ -1430,7 +1432,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '      "recommended_lowpass_hz": 2200,',
       '      "do_not_test_below_hz": 1200,',
       '      "gain_offset_db": -6,',
-      '      "notes": "short safety-relevant notes",',
+      '      "notes": "safety-relevant summary, <= 2048 chars, not a full report",',
       '      "sources": ["https://..."]',
       '    }',
       '  ],',
@@ -1466,6 +1468,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var drivers = Array.isArray(payload.drivers) ? payload.drivers : [];
     var candidates = Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [];
     if (!drivers.length) throw new Error('Driver research must include at least one driver.');
+    drivers.forEach(function(driver, index) {
+      if (!driver || driver.notes == null || driver.notes === '') return;
+      var role = driver.role || 'driver ' + (index + 1);
+      if (typeof driver.notes !== 'string') {
+        throw new Error('Driver research notes for ' + role + ' must be a string.');
+      }
+      var normalized = driver.notes.trim().split(/\s+/).filter(Boolean).join(' ');
+      if (normalized.length > DRIVER_RESEARCH_NOTE_MAX_CHARS) {
+        throw new Error(
+          'Driver research notes for ' + role + ' must be <= ' +
+          DRIVER_RESEARCH_NOTE_MAX_CHARS + ' chars.'
+        );
+      }
+    });
     return {
       driverCount: drivers.length,
       candidateCount: candidates.length,

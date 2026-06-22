@@ -306,7 +306,9 @@ generates a precise prompt for an external assistant, and accepts a bounded
 JSON response with kind `jts_active_crossover_driver_research`. Importing
 that JSON fills the visible fields for operator review; saving persists the
 visible manual settings as first-class draft input and may also preserve the
-bounded research JSON as evidence. Hidden imported values never override
+bounded research JSON as evidence. Per-driver notes are capped at 2048
+characters so they stay a safety-relevant summary; full research reports
+belong outside the design draft. Hidden imported values never override
 user-edited visible settings, and the draft still does not apply filters,
 reload CamillaDSP, or authorize sound.
 Choosing a confirmed active driver in **Test each driver** calls the commission
@@ -731,7 +733,9 @@ can be diagnosed without scraping journal logs.
 
 Last verified: 2026-06-22 (volume-floor global setting and continuous
 calibration-tone endpoints checked against `jasper.sound.settings`,
-`jasper.web.sound_setup`, and the `/sound/` static module. Prior 2026-06-19
-recheck covered config-preservation/refusal updates for graph-carrier dispatch;
-see HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
+`jasper.web.sound_setup`, and the `/sound/` static module; active-crossover
+driver-research note bounds checked against `jasper.active_speaker.design_draft`
+and the `/sound/` static module. Prior 2026-06-19 recheck covered
+config-preservation/refusal updates for graph-carrier dispatch; see
+HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
 active-speaker UI / commission-ramp work.)

@@ -625,6 +625,8 @@ async function testActiveCrossoverFirstStepRender() {
   includes("Add driver and crossover info");
   includes("Working setup");
   includes("Use AI to fill these settings");
+  includes("2048 characters or fewer");
+  includes("do not paste a full research report");
   includes("DAC output assignments");
   includes("Speaker count");
   includes("Speaker type");
@@ -1055,6 +1057,45 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
     fail("Imported research should still be preserved as research evidence", { saved });
   }
   return { visibleCrossoverSettingsWinOverImportedJson: true };
+}
+
+async function testDriverResearchNotesCapExplainsBeforePost() {
+  const designSaves = [];
+  const importedResearch = {
+    artifact_schema_version: 1,
+    kind: "jts_active_crossover_driver_research",
+    drivers: [
+      { role: "woofer", model: "Imported Woofer", notes: "x".repeat(2049) },
+    ],
+    crossover_candidates: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({ status: "ready_for_review" }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(importedResearch));
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length) {
+    fail("Overlong imported driver notes should fail before posting", { designSaves });
+  }
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Driver research notes for woofer must be <= 2048 chars")) {
+    fail("Overlong imported driver notes should explain the 2048 char cap", { statusText });
+  }
+  return { driverResearchNotesCapExplainsBeforePost: true };
 }
 
 async function testWorkingSetupSummaryAvoidsStorageCounts() {
@@ -2067,6 +2108,7 @@ results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
+results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
 results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
 results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
