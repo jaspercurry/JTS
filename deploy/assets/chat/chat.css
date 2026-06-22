@@ -47,6 +47,37 @@ body.stale { opacity: 0.72; }
   gap: 8px;
 }
 
+.chat-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.chat-setting__main {
+  min-width: 0;
+}
+.chat-setting__label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.chat-setting__value {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.chat-clear {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.chat-clear .info-card__note { margin: 0; }
+
 .chat-filter {
   display: flex;
   align-items: flex-end;

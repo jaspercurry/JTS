@@ -124,6 +124,11 @@ EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env
 # nothing disabled (every tool on). Sourced here so jasper-doctor and
 # env_load see it; optional via the leading `-`.
 EnvironmentFile=-/var/lib/jasper/tool_state.env
+# Conversation-history capture toggle and retention written by /chat/.
+# The daemon also reads this file fresh before each capture write so a
+# household toggle takes effect without a restart; sourcing it here keeps
+# systemd/env-load parity and exposes non-default DB paths at startup.
+EnvironmentFile=-/var/lib/jasper/conversation_history.env
 # Multi-device wake arbitration (JASPER_PEERING) written by the Speakers page at
 # http://jts.local/rooms/. jasper-voice is a CLIENT of jasper-control's
 # peering UDS: Config.peering_enabled reads JASPER_PEERING here to decide

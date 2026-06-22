@@ -16,8 +16,23 @@ const NO_ASSISTANT_TRANSCRIPT = "No transcript for this turn.";
 
 export function buildPage(root, handlers, opts = {}) {
   const live = livePill();
+  const capture = titledCard("Capture");
   const filter = titledCard("Filter");
   const history = titledCard("Recent turns");
+  const captureToggle = h("input", {
+    id: "chat-capture",
+    type: "checkbox",
+    "attr:aria-label": "Conversation capture",
+    onchange(e) {
+      handlers.setCapture(e.target.checked);
+    },
+  });
+  const captureStatus = h("p.chat-setting__value", { "attr:aria-live": "polite" });
+  const clearButton = actionButton("Clear history", {
+    variant: "danger",
+    onClick: handlers.clearHistory,
+  });
+  const clearStatus = h("p.info-card__note", { "attr:aria-live": "polite" });
   const sinceInput = h("input", {
     id: "chat-since",
     type: "date",
@@ -29,6 +44,19 @@ export function buildPage(root, handlers, opts = {}) {
     onClick: handlers.showErrorDetails,
   });
   errorDetails.hidden = true;
+
+  capture.body.append(
+    h("div.chat-setting", null,
+      h("div.chat-setting__main", null,
+        h("div.chat-setting__label", null, "Conversation capture"),
+        captureStatus),
+      h("label.toggle", null,
+        captureToggle,
+        h("span.track", { "attr:aria-hidden": "true" }))),
+    h("div.chat-clear", null,
+      clearButton,
+      clearStatus),
+  );
 
   filter.body.append(
     h("form.chat-filter", {
@@ -66,12 +94,23 @@ export function buildPage(root, handlers, opts = {}) {
 
   root.replaceChildren(
     header({ title: "Chat", backHref: "/" }),
-    h("main.app-main.chat-main", null, live.el, filter.section, history.section),
+    h(
+      "main.app-main.chat-main",
+      null,
+      live.el,
+      capture.section,
+      filter.section,
+      history.section,
+    ),
   );
   root.setAttribute("aria-busy", "false");
 
   return {
     staleness: live.label,
+    captureToggle,
+    captureStatus,
+    clearButton,
+    clearStatus,
     filterStatus,
     historyBody,
     errorDetails,
@@ -128,8 +167,24 @@ export function update(refs, payload, state) {
   const snap = payload || {};
   const turns = newestFirst(Array.isArray(snap.turns) ? snap.turns : []);
   const limit = Number.isFinite(snap.limit) ? snap.limit : turns.length;
+  const stats = (snap.stats && typeof snap.stats === "object") ? snap.stats : null;
+  const turnCount = Number.isFinite(stats && stats.turn_count)
+    ? stats.turn_count
+    : turns.length;
+  const captureEnabled = snap.capture_enabled === true;
 
-  if (snap.available === false) {
+  refs.captureToggle.checked = captureEnabled;
+  refs.captureStatus.textContent = captureEnabled
+    ? "New voice turns and research read-outs are being saved locally."
+    : "New voice turns are not being saved.";
+  refs.clearButton.disabled = snap.available === false || turnCount < 1;
+  refs.clearStatus.textContent = turnCount > 0
+    ? `${turnCount} saved ${plural(turnCount, "turn")}.`
+    : "No saved turns.";
+
+  if (!captureEnabled) {
+    refs.staleness.textContent = "Capture off.";
+  } else if (snap.available === false) {
     refs.staleness.textContent = "History store unavailable.";
   } else {
     refs.staleness.textContent = `Live · ${turns.length} ${plural(turns.length, "turn")}`;
@@ -148,9 +203,13 @@ export function update(refs, payload, state) {
 }
 
 function historyContent(snap, turns) {
-  if (snap.available === false) {
+  if (snap.available === false && snap.capture_enabled === true) {
     return h("p.info-card__note", null,
       "The conversation-history store is not available on this speaker yet.");
+  }
+  if (snap.capture_enabled !== true && !turns.length) {
+    return h("p.info-card__note", null,
+      "Conversation capture is off. Existing saved turns stay local until cleared.");
   }
   if (!turns.length) {
     return h("p.info-card__note", null, "No conversation turns match this filter.");

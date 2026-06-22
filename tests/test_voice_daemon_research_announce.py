@@ -430,6 +430,27 @@ async def test_confirmation_open_cancelled_begin_failure_clears_without_reading(
     assert wl._state.name == "WAKE"
 
 
+async def test_confirmation_open_unexpected_begin_failure_resets_window_flags():
+    wl = _wake_loop()
+    job = _job()
+
+    async def _begin_turn(*, pre_roll: bool, text_context: str | None) -> None:
+        assert pre_roll is False
+        assert text_context is not None
+        raise AssertionError("unexpected begin failure")
+
+    wl._begin_turn = _begin_turn
+
+    with pytest.raises(AssertionError):
+        await wl._open_confirmation_window(job)
+
+    assert wl._research_window_active is False
+    assert wl._research_window_job is None
+    assert wl._research_window_decided is False
+    assert wl._research_window_cancelled_by_wake is False
+    assert wl._research_window_opening_done is None
+
+
 async def test_research_done_during_session_is_held_then_drained_on_wake():
     from jasper.voice_daemon import State
 

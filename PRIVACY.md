@@ -51,9 +51,9 @@ conversation-history env file enables capture), JTS stores text-only turns in
 assistant transcript or research report, provider/session metadata, and optional
 feature metadata such as a research job id. It never stores speech audio in this
 database, and capture is skipped while mic mute is active. Capture is
-default-off; until retention/delete controls ship, retained rows stay on the
-speaker unless an operator removes the database or changes it with maintenance
-tooling.
+default-off; retained rows stay on the speaker, are pruned by the configured
+conversation-history retention window and row cap, and can be cleared from
+`/chat/`.
 
 System logs stay in journald on the speaker unless an operator exports them,
 for example with `scripts/fetch-pi-logs.sh`. OpenAI transcript events log

@@ -64,6 +64,7 @@ ENV_FILES = (
     "/var/lib/jasper/transit.env",
     "/var/lib/jasper-intsecrets/home_assistant.env",
     "/var/lib/jasper/tool_state.env",
+    "/var/lib/jasper/conversation_history.env",
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):
     "/var/lib/jasper/aec_mode.env",
     "/var/lib/jasper/fanin.env",

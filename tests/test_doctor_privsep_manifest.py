@@ -29,10 +29,17 @@ from jasper.cli.doctor.privsep import MANIFEST, OUT_OF_SCOPE_NONROOT_UNITS
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# The five Tier-A daemons WS1 dropped to non-root. Removing one from the
+# The non-root daemons whose read sets this privsep guard covers. Removing one from the
 # manifest should be a conscious edit, not a silent drop.
 _EXPECTED_MANIFEST_UNITS = frozenset(
-    {"jasper-control", "jasper-web", "jasper-mux", "jasper-voice", "jasper-input"}
+    {
+        "jasper-control",
+        "jasper-web",
+        "jasper-chat-web",
+        "jasper-mux",
+        "jasper-voice",
+        "jasper-input",
+    }
 )
 
 # The check only reasons about the single `jasper` group dimension, so every

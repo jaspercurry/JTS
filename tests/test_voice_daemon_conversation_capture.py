@@ -11,7 +11,10 @@ import types
 from jasper.conversation_history import (
     CAPTURE_ALIAS_ENV,
     ConversationStore,
+    ConversationTurn,
     DB_PATH_ENV,
+    RETENTION_DAYS_ENV,
+    RETENTION_MAX_ROWS_ENV,
 )
 from jasper.research import DONE, ResearchJob
 
@@ -194,6 +197,63 @@ def test_record_conversation_turn_skips_while_mic_muted(tmp_path, monkeypatch) -
     wl._record_conversation_turn("hello", "hi")
 
     assert store.recent(10) == []
+
+
+def test_record_conversation_turn_enforces_retention_max_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import jasper.voice_daemon as voice_daemon
+
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    monkeypatch.setenv(RETENTION_MAX_ROWS_ENV, "2")
+    timestamps = iter([
+        "2026-06-19T20:10:00Z",
+        "2026-06-19T20:20:00Z",
+        "2026-06-19T20:30:00Z",
+    ])
+    monkeypatch.setattr(
+        voice_daemon,
+        "_conversation_ts_utc",
+        lambda: next(timestamps),
+    )
+
+    wl._record_conversation_turn("first", "one")
+    wl._record_conversation_turn("second", "two")
+    wl._record_conversation_turn("third", "three")
+
+    assert [row.user_text for row in store.recent(10)] == ["third", "second"]
+
+
+def test_record_conversation_turn_enforces_retention_days(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import jasper.voice_daemon as voice_daemon
+
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    monkeypatch.setenv(RETENTION_DAYS_ENV, "1")
+    assert store.add(
+        ConversationTurn(
+            id="old",
+            ts_utc="2026-06-19T20:00:00Z",
+            provider="gemini",
+            user_text="old",
+            assistant_text="old answer",
+            tool_calls_json=None,
+            data_json=None,
+            session_id=1,
+        ),
+    )
+    monkeypatch.setattr(
+        voice_daemon,
+        "_conversation_ts_utc",
+        lambda: "2026-06-21T20:00:00Z",
+    )
+
+    wl._record_conversation_turn("new", "new answer")
+
+    assert [row.user_text for row in store.recent(10)] == ["new"]
 
 
 async def test_research_readback_records_query_report_and_data_json(

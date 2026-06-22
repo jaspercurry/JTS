@@ -8,4 +8,4 @@
 // shape as /system/: page code imports `./api.js`, while the CSRF/header
 // implementation stays owned by /assets/shared/js/http.js.
 
-export { csrfHeaders, jsonHeaders, getJSON } from "../../shared/js/http.js";
+export { csrfHeaders, jsonHeaders, getJSON, postJSON } from "../../shared/js/http.js";
