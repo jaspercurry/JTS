@@ -228,14 +228,18 @@ class LiveTurn(Protocol):
     # daemon observed) that the user interrupted." The two methods below are
     # the matching ACTIONS the daemon takes to reconcile *provider* state
     # after it has already flushed local TTS playback. They are capability-
-    # based, not provider-name-based: which reconciliation a provider needs
-    # is declared by its ``interrupt_reconcile`` kind in
+    # based, not provider-name-based: the daemon's ``_flush_for_interrupt``
+    # dispatches by getattr-probing these methods (an adapter that omits one
+    # degrades to a no-op), so the spine never branches on ``isinstance`` /
+    # provider id. The registry's ``interrupt_reconcile`` kind in
     # ``jasper/voice/catalog.py`` (``needs_client_truncate`` /
-    # ``server_self_truncates`` / ``inherits``), so the barge-in packs branch
-    # on the registry, never on ``isinstance``/provider id. Both are safe
-    # no-ops in adapters that do not need them, so a single daemon code path
-    # works across providers. See the "Provider Interruption Contract" in
-    # docs/HANDOFF-voice-providers.md.
+    # ``server_self_truncates`` / ``inherits``) is the *declared, test-
+    # validated, observable* contract for which reconciliation a provider
+    # needs — resolved once per daemon and surfaced on ``event=barge.detected``
+    # and ``/state.voice.barge_in`` — not the runtime dispatch switch. Both
+    # methods are safe no-ops in adapters that do not need them, so a single
+    # daemon code path works across providers. See the "Provider Interruption
+    # Contract" in docs/HANDOFF-voice-providers.md.
 
     async def cancel_response(self, reason: str) -> None:
         """Explicitly tell the provider to stop generating the in-progress
@@ -285,9 +289,12 @@ class LiveTurn(Protocol):
           the expected value, but ``None`` can still arrive transiently before
           the turn has observed its first audio item — also a no-op.
 
-        Either way the caller does not branch on provider — whether a client
-        truncate is needed at all is the registry's ``interrupt_reconcile``
-        declaration's job. Must be idempotent and must never raise."""
+        Either way the caller does not branch on provider: it getattr-probes
+        this method and the adapter's own implementation decides (Gemini's is
+        a no-op; OpenAI/Grok send the truncate). The registry's
+        ``interrupt_reconcile`` kind *declares and pins* that per provider
+        (and is surfaced in observability) but does not gate this call at
+        runtime. Must be idempotent and must never raise."""
         ...
 
     def request_local_interrupt(self) -> None:
@@ -304,6 +311,22 @@ class LiveTurn(Protocol):
         Distinct from the ``cancel_response`` / ``truncate_assistant_audio``
         seam above: those reconcile *provider* state and are still no-ops in
         this increment; this only arms the local playout flush."""
+        ...
+
+    def drop_pending_audio(self) -> int:
+        """Drop assistant audio buffered for playback but not yet written,
+        returning the number of chunks dropped.
+
+        The *distinct* barge-in signal the OpenAI adapter's queue comment
+        anticipated. A local flush clears the DAC ring (~one write), but
+        burst-delivery providers (OpenAI/Grok) enqueue the whole response's
+        audio up front, so without dropping it the playback loop resumes
+        writing the backlog and the assistant audibly talks over the user.
+        The daemon's ``_flush_for_interrupt`` calls this right after the
+        local flush. Implementations drain their internal playout queue while
+        PRESERVING any terminal end-of-audio sentinel, so the consumer still
+        ends the turn. Optional — getattr-probed; an adapter that streams
+        without an internal buffer omits it. Idempotent; must never raise."""
         ...
 
 

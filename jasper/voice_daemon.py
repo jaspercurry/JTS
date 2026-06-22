@@ -72,6 +72,7 @@ from .voice.prompt import (  # noqa: F401
     SYSTEM_INSTRUCTION,
     _build_system_instruction,
 )
+from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
 from .voice.turn_playback import (  # noqa: F401
     _idle_watchdog,
@@ -994,6 +995,15 @@ class WakeLoop:
         )
         self._barge_in_no_ref_warned: bool = False
         self._barge_in_active: bool = False
+        # Reconciliation kind for the active provider (resolved once — the
+        # provider is fixed for the daemon's life; a switch restarts us).
+        # Consumed by barge.detected + /state so a durable barge-in
+        # (needs_client_truncate: OpenAI/Grok send response.cancel +
+        # conversation.item.truncate) is distinguishable from a cosmetic one
+        # (server_self_truncates: Gemini no-ops the reconcile, so a real-time
+        # provider may resume). Makes the registry's interrupt_reconcile
+        # declaration load-bearing, not test-only metadata.
+        self._barge_in_reconcile = resolve_interrupt_reconcile(cfg.voice_provider)
         self._barge_in_run_started_at: float = 0.0
         self._barge_in_run_peak: float = 0.0
         self._barge_in_signalled_this_run: bool = False
@@ -1278,6 +1288,9 @@ class WakeLoop:
         )
         self._barge_in_no_ref_warned = False
         self._barge_in_active = False
+        # No real provider in the test harness ("test" isn't registered), so
+        # pin a representative reconcile kind so barge.detected / /state work.
+        self._barge_in_reconcile = InterruptReconcile.NEEDS_CLIENT_TRUNCATE
         self._barge_in_run_started_at = 0.0
         self._barge_in_run_peak = 0.0
         self._barge_in_signalled_this_run = False
@@ -2956,10 +2969,12 @@ class WakeLoop:
         """Decide whether in-session barge-in is active for the turn about
         to open, and reset its per-turn run state.
 
-        Reads the per-provider enable flag FRESH from the SSOT file every
-        turn (not the start-time ``Config``) so a wizard / operator toggle
-        takes effect without a daemon restart — jasper-voice is restarted
-        on a *provider* switch but not on a barge-in toggle. DEFAULT OFF.
+        Reads the per-provider enable flag from the SSOT file (not the
+        start-time ``Config``) so a wizard / operator toggle takes effect
+        without a daemon restart — jasper-voice is restarted on a *provider*
+        switch but not on a barge-in toggle. The read is mtime-gated
+        (``read_barge_in_enabled``), so the steady-state per-turn cost is a
+        single ``os.stat``, not a full open+read+parse. DEFAULT OFF.
 
         Self-interrupt-loop guard: when barge-in is requested but the
         primary mic leg has no AEC reference (the ``direct_mic`` profile),
@@ -3038,6 +3053,9 @@ class WakeLoop:
             leg="on",
             silero=f"{self._barge_in_run_peak:.2f}",
             sustained_ms=int(sustained * 1000),
+            # Durable (needs_client_truncate) vs cosmetic (server_self_truncates,
+            # where a real-time provider may resume) — see _barge_in_reconcile.
+            reconcile=self._barge_in_reconcile.value,
         )
         # Set the turn's interrupt event (provider-agnostic; getattr so an
         # adapter without the capability degrades to no local flush rather
@@ -3346,6 +3364,10 @@ class WakeLoop:
             "barge_in_count_session": self._barge_in_count,
             "barge_in_last_at": self._barge_in_last_at,
             "barge_in_last_leg": self._barge_in_last_leg,
+            # Reconcile kind for the active provider so the dashboard can show
+            # whether a barge-in durably stops the assistant (OpenAI/Grok) or
+            # only flushes locally while the server may resume (Gemini).
+            "barge_in_reconcile": self._barge_in_reconcile.value,
             "research": {
                 "configured": self._research_scheduler is not None,
                 "provider": self._research_provider_id,

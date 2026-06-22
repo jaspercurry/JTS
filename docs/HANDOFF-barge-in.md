@@ -78,6 +78,17 @@ and on-hardware **AEC proof**. Cells: ✅ done / ⚠️ partial / ❌ missing.
 > stays out until it can be corroborated by server-VAD (avoids forwarding
 > TTS bleed). So on-device correctness still depends on blocker #3 (real
 > played-ms) and default-on on blocker #4 / PR 7.
+>
+> **Update (integrated review — post-flush replay fixed, default OFF):** the
+> review found the local flush cleared only the DAC ring while burst-delivery
+> providers (OpenAI/Grok) had already queued the whole response in the adapter,
+> so `_play_responses` resumed writing the backlog and the assistant talked over
+> the user. Fixed by a new **`drop_pending_audio()`** seam member (getattr-probed;
+> drains the adapter's playout queue, preserving the terminal sentinel; Grok
+> inherits, Gemini's local path drains too), called from `_flush_for_interrupt`.
+> Also: OpenAI truncate clamps `audio_end_ms` to the per-item received-ms
+> (multi-segment out-of-range guard); the barge-in flag read is mtime-gated; and
+> the provider's `reconcile` kind is surfaced on `event=barge.detected` / `/state`.
 
 | Capability | Core | OpenAI | Gemini | Grok |
 |---|---|---|---|---|
@@ -1118,7 +1129,7 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-06-21 (operational sections — current state + plan —
+Last verified: 2026-06-22 (operational sections — current state + plan —
 verified against the tree at/after `main` d2ef9122 which contains #532;
 provider mechanics rechecked against OpenAI Realtime, Gemini Live, and
 xAI Voice docs. The appendix below is the frozen 2026-05-23 historical

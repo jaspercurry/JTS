@@ -106,8 +106,12 @@ class ProviderCatalogEntry:
     cost_hint: str
     models: tuple[ModelOption, ...]
     voices: tuple[VoiceOption, ...]
-    # Barge-in reconciliation kind — the "pack" capability declaration the
-    # robust-barge-in packs branch on (see ``InterruptReconcile``). REQUIRED,
+    # Barge-in reconciliation kind — the "pack" capability declaration. The
+    # runtime dispatch is the daemon's getattr seam (jasper/voice/session.py),
+    # NOT a branch on this field; this is the declared, test-validated,
+    # observable contract (resolved once per daemon, surfaced on
+    # event=barge.detected / /state) — see ``InterruptReconcile`` and
+    # ``resolve_interrupt_reconcile``. REQUIRED,
     # no default: a correctness-bearing capability is declared per provider,
     # never silently defaulted (same no-silent-fallback stance the active-
     # provider selection takes). A future provider that omits it fails loudly

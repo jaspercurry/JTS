@@ -402,6 +402,23 @@ class GeminiLiveTurn:
         self._interrupted = True
         self._interrupt_event.set()
 
+    def drop_pending_audio(self) -> int:
+        # Distinct barge-in drain for the LOCAL gate: request_local_interrupt
+        # above arms the flush but — unlike the server-interrupt path in
+        # _on_response — does not drain queued audio, so the backlog would
+        # replay. Drop queued chunks, PRESERVING any terminal sentinel.
+        dropped = 0
+        try:
+            while True:
+                item = self._audio_q.get_nowait()
+                if item is None:
+                    self._audio_q.put_nowait(None)
+                    break
+                dropped += 1
+        except asyncio.QueueEmpty:
+            pass
+        return dropped
+
     # Internal — called by the connection's receive loop when it routes
     # an incoming server message to this active turn.
     async def _on_response(self, response) -> None:
