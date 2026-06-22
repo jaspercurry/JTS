@@ -5,9 +5,9 @@
 > 2026-05-26 with the proposal-v3 active speaker commissioning
 > methodology. This is the canonical handoff for JTS speakers where
 > CamillaDSP directly drives woofer, midrange, and/or tweeter
-> amplifier channels. Current JTS production hardware still uses a
-> stereo Apple USB-C dongle passthrough path; active crossover
-> audible hardware ownership is future work.
+> amplifier channels. JTS3 is currently using the active-speaker
+> baseline path on a HiFiBerry DAC8x; other production hardware may
+> still use the stereo passthrough path.
 
 > **Implementation status, 2026-06-03:** A0 schema substrate has
 > started. `jasper.active_speaker` now defines import-cheap,
@@ -205,9 +205,13 @@
 > CamillaDSP. The emitter
 > (`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`)
 > requires an explicit active playback device, keeps `devices.volume_limit`
-> non-positive, inserts baseline headroom and per-driver limiters, rejects
-> positive correction gain, bounds delay/polarity corrections, and records a
-> source comment in the YAML. Per-driver gain prefers an explicit
+> non-positive, emits `active_baseline_headroom` at `0.0 dB` by default,
+> keeps per-driver limiters, rejects positive correction gain, bounds
+> delay/polarity corrections, and records a source comment in the YAML. The
+> runtime gain-chain ledger (`/state.audio.gain_chain`, documented in
+> [HANDOFF-volume.md](HANDOFF-volume.md#state-gain-chain-ledger)) must make
+> any future baseline attenuation visible if this default ever changes.
+> Per-driver gain prefers an explicit
 > `gain_offset_db`; when research gives none but declares sensitivities,
 > `_derive_corrections` fail-safes by attenuating the hotter drivers down to the
 > least-sensitive (reference) driver by the sensitivity gap (e.g. a 108.5 dB horn
@@ -1626,4 +1630,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-19
+Last verified: 2026-06-22

@@ -350,11 +350,14 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   `tests/test_active_speaker_baseline_profile.py`,
   `tests/test_sound_graph_carrier.py`). **On-device validation (jts3,
   2026-06-19, non-destructive):** against jts3's REAL applied mono active-2-way
-  baseline + measured corrections, the flat recompose classifies
-  `GRAPH_APPROVED_ACTIVE_RUNTIME` (headroom −12 dB) and a +6 dB preference
-  (a +4 dB shelf + a +2 dB peak) folds headroom to exactly −18 dB, rides
-  pre-split, keeps `volume_limit: 0.0`, and still classifies APPROVED; jts3's
-  own CamillaDSP 4.1.3 `--check` accepts the EQ'd graph ("Config is valid").
+  baseline + measured corrections, the flat recompose classified
+  `GRAPH_APPROVED_ACTIVE_RUNTIME` with the then-current conservative baseline
+  headroom. Current repo invariant after the zero-baseline-headroom change:
+  flat recompose emits `active_baseline_headroom` at 0 dB, and a +6 dB
+  preference (a +4 dB shelf + a +2 dB peak) folds headroom to exactly −6 dB,
+  rides pre-split, keeps `volume_limit: 0.0`, and still classifies APPROVED;
+  jts3's own CamillaDSP 4.1.3 `--check` accepted the EQ'd graph ("Config is
+  valid") in the prior hardware pass.
   **Still to do (human-gated):** the live load-and-listen audible smoke test
   (it changes playback on a shared lab Pi and needs a human at the speaker) and
   confirming the EQ'd baseline persists across a reconcile, before declaring the
@@ -423,4 +426,4 @@ follower's bonded path via **CamillaDSP re-entry** (`snapclient → loopback
   `tests/test_sound_setup.py`, `tests/test_sound_camilla_yaml.py`,
   `tests/test_active_speaker_runtime_contract.py`
 
-Last verified: 2026-06-19
+Last verified: 2026-06-22
