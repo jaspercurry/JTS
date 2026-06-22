@@ -15,18 +15,17 @@
 
 ## TL;DR — current state
 
-> **Status (2026-06-19).** Layer 0 (the SRO drift estimator) and **chip-ref
-> observe mode** are shipped — PRs #825 / #826 / #832, merged. The first
-> production-path measurement is in: **JTS3 (HiFiBerry DAC8x) is
+> **Status (2026-06-22).** Layer 0 (the SRO drift estimator), **chip-ref
+> observe mode**, and the **verdict-driven reconciler gate** are shipped.
+> The first production-path measurement is in: **JTS3 (HiFiBerry DAC8x) is
 > clock-coherent — 0.157 ppm mean over ~18 min, 36/36 `coherent`** — so the
-> Layer-2 resampler is *not* needed for that DAC. **Chip-AEC is the preferred
-> echo canceller** (a dedicated on-chip DSP doing fixed-beam + AEC, materially
-> better than software AEC3), so the objective is to get *any* suitable DAC
-> onto chip-AEC, not just one. The measurement + safety foundation is the
-> general, DAC-agnostic machinery for that; the next build is the
-> **verdict-driven gate** that turns a good measurement into production
-> chip-AEC automatically. See [Roadmap](#roadmap-productize-chip-aec-across-any-dac)
-> (items 1–3).
+> Layer-2 resampler is *not* needed for that DAC. When outputd reports a
+> locked `reference_outputs.aec_clock.verdict=coherent`, the reconciler may
+> arm production chip-AEC for that DAC. `compensable` / `fallback` /
+> `observing` still degrade visibly to software AEC3. **Chip-AEC is the
+> preferred echo canceller** (a dedicated on-chip DSP doing fixed-beam + AEC,
+> materially better than software AEC3), so the objective is to get *any*
+> suitable DAC onto chip-AEC, not just one.
 
 - **Today:** `jasper-outputd` is the final audio owner; it already writes
   the 16 kHz chip-ref to the XVF USB-IN and exposes per-endpoint timing
@@ -37,10 +36,10 @@
 - **The goal:** plug in any DAC + the XVF3800 mic and have chip-AEC either
   just work or degrade *visibly* to software AEC3 — never brick, never a
   calibration ritual before sound comes out.
-- **The mechanism:** a self-calibrating **digital clock-recovery (SRO)
-  loop** inside outputd, built only as deployed hardware proves it's
-  needed. Most of the code is gated behind a measurement we have not yet
-  run on the production path.
+- **The mechanism:** outputd measures the chip-ref clock relationship and
+  emits a verdict. `coherent` arms chip-AEC directly; a future
+  self-calibrating **digital clock-recovery (SRO) loop** is built only when
+  deployed hardware proves it is needed (`compensable`).
 - **Latency:** this whole effort is on the AEC *reference* side-branch and
   is **latency-neutral for the user**. See [Latency posture](#latency-posture).
 
@@ -168,20 +167,16 @@ observe mode give us the DAC-agnostic *measurement*; these three increments
 turn that into a self-driving production capability. None is foundational
 rework — each builds on what is already merged.
 
-**1. Verdict-driven gate (the keystone — build next).** Today
-`jasper-aec-reconcile`'s `chip_aec_dac_status()` hard-codes `needs_calibration`
-per DAC, so chip-AEC stays gated off even on a DAC that *measured* coherent
-(JTS3). Make the gate **consume the SRO verdict** — the live
-`/state.outputd.reference_outputs.aec_clock.verdict`, or a persisted
-calibration artifact from item 2 — instead of a per-DAC branch: `coherent` →
-arm production chip-AEC; `compensable` → arm chip-AEC *with* Layer 2;
-`untrusted`/`unsupported` → software AEC3, visibly. This closes the loop from
-"measured" → "running in production" for **every** DAC with no per-device
-code, and flips the posture to **chip-AEC-preferred-when-supported** (software
-AEC3 is the graceful floor, not the default). *This is the step that makes the
-HiFiBerry — and any future coherent DAC — actually run chip-AEC.* **Do not**
-hard-code `hifiberry_dac8x = supported`; that per-DAC hack is the exact
-anti-pattern this gate replaces.
+**1. Verdict-driven gate (shipped 2026-06-22).** `jasper-aec-reconcile`
+keeps the Apple USB-C dongle as the static known-good baseline, but other DACs
+can now be promoted by live outputd evidence: locked
+`/state.outputd.reference_outputs.aec_clock.verdict=coherent` arms production
+chip-AEC. `compensable`, `fallback`, `observing`, missing outputd STATUS, or an
+inactive chip-ref writer all remain on software AEC3, visibly. This closes the
+loop from "measured" → "running in production" for coherent DACs such as
+JTS3's HiFiBerry without hard-coding `hifiberry_dac8x = supported`; that
+per-DAC hack is the anti-pattern the gate avoids. `compensable` still awaits
+Layer 2 before it can arm production chip-AEC.
 
 **2. Calibration-artifact persistence + shippable profiles.** Record a DAC's
 measured verdict as a durable per-profile fact (mirror
@@ -340,4 +335,4 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 - Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md)
 - DAC registry: [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
 
-Last verified: 2026-06-19
+Last verified: 2026-06-22
