@@ -297,6 +297,12 @@ inspection, dummy-load/DMM checks, or a future low-level channel test confirms
 the driver. Identity evidence is stored in the topology contract, but it is
 not playback permission and it does not satisfy tweeter protection or
 path-safety blockers by itself.
+The bottom **Reset speaker setup** action is a recovery control. It stops any
+active-speaker tone/session, resets `/var/lib/jasper/output_topology.json` to a
+detected passive hardware draft, kicks audio-hardware reconcile, and clears the
+active-speaker setup/evidence JSON artifacts so stale staged configs,
+measurements, or baseline candidates cannot masquerade as current after the
+topology reset. It does not emit sound or delete generated CamillaDSP YAML.
 The crossover-settings card stores the product-visible starting values for
 active-crossover planning: driver names, sensitivity, safe low test limits,
 per-driver level trim, crossover point, filter family, slope, and build notes.
@@ -734,8 +740,9 @@ can be diagnosed without scraping journal logs.
 Last verified: 2026-06-22 (volume-floor global setting and continuous
 calibration-tone endpoints checked against `jasper.sound.settings`,
 `jasper.web.sound_setup`, and the `/sound/` static module; active-crossover
-driver-research note bounds checked against `jasper.active_speaker.design_draft`
-and the `/sound/` static module. Prior 2026-06-19 recheck covered
+driver-research note bounds checked against `jasper.active_speaker.design_draft`,
+and reset cleanup checked against `jasper.active_speaker.reset` plus the
+`/sound/` reset route. Prior 2026-06-19 recheck covered
 config-preservation/refusal updates for graph-carrier dispatch; see
 HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
 active-speaker UI / commission-ramp work.)

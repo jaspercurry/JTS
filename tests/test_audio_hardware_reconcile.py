@@ -269,6 +269,22 @@ def _active_graph_env(
     return out
 
 
+def _apple_active_graph_env(tmp_path: Path) -> dict[str, str]:
+    env = _active_graph_env(tmp_path, channels=2)
+    from jasper.output_topology import OutputTopology, save_output_topology
+
+    topology_path = Path(env["JASPER_OUTPUT_TOPOLOGY_PATH"])
+    raw = json.loads(topology_path.read_text(encoding="utf-8"))
+    raw["hardware"] = {
+        "device_id": "apple_usb_c_dongle",
+        "device_label": "Apple USB-C audio adapter",
+        "physical_output_count": 2,
+        "card_id": "A",
+    }
+    save_output_topology(OutputTopology.from_mapping(raw), path=topology_path)
+    return env
+
+
 APPLE_LISTING = """
 hw:CARD=A,DEV=0
     Apple USB-C to 3.5mm Headphone Jack, USB Audio
@@ -779,6 +795,29 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     # reads this to fail its stereo-only post-crossover features closed.
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
+
+
+def test_reconcile_single_apple_active_graph_drives_width_two(tmp_path: Path):
+    # A single Apple dongle has exactly the two coherent lanes a mono active
+    # 2-way needs, so a legal loaded active graph should engage the same
+    # outputd-owned active lane as wider coherent single DACs.
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env=_apple_active_graph_env(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
+    assert "mode=single_alsa_active active_channels=2 active_lane_cap=2" in result.stderr
 
 
 def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):

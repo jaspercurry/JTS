@@ -40,16 +40,18 @@ ASSISTANT AUDIO
     -> jasper-fanin, mixed after program duck
     -> jasper-camilla crossover/protection
     -> outputd_content_playback/capture
-       (or outputd_active_content_* for dual Apple active output)
+       (or outputd_active_content_* for active-output profiles)
     -> jasper-outputd final sink
     -> DAC(s) / amp(s) / speaker(s)
 ```
 
 The production paths converge inside `jasper-fanin`, pass through
 CamillaDSP, then enter `jasper-outputd`, which is the only normal writer
-to the physical DAC. The dual Apple active-output profile keeps the same
-TTS/cue semantics, but CamillaDSP emits a four-channel active lane and
-`jasper-outputd` splits it to two Apple DACs.
+to the physical DAC. Active-output profiles keep the same TTS/cue
+semantics: a single Apple dongle can run a width-2 active lane,
+DAC8x-family profiles can run up to width 8, and the dual Apple composite
+emits a four-channel active lane that `jasper-outputd` splits to two
+Apple DACs.
 
 **Bonded multiroom member (Increment 5 PR-2):** the assistant path above
 is the SOLO topology. While a speaker is an active bond member, the
@@ -729,9 +731,10 @@ place to get it right and the most expensive to get wrong later.
 > the ALSA `hw` plugin rejects `channels`/`rate`/`format` as unknown fields, so
 > the width is set by the openers and locked by snd-aloop, with
 > `type plug`/`plughw:` banned. The DAC8x/DAC8x-Studio `DacProfile`s declare the
-> active lane (item 6, `supports_active_outputd_lane=True`,
-> `active_outputd_lane_channels=8` = the cap; the Stage 1 transport carries any
-> width ≤ cap). Because the gate accepts the config's actual width, the existing
+> active lane (item 6, `supports_active_outputd_lane=True`; the Apple USB-C
+> dongle declares `active_outputd_lane_channels=2`, DAC8x/DAC8x-Studio declare
+> `8`, and the Stage 1 transport carries any width ≤ cap). Because the gate
+> accepts the config's actual width, the existing
 > per-speaker emitters (which emit the driver count) engage active mode directly
 > — **no full-width-padding producer is needed.** **Load-bearing hardware fact
 > (verify on jts3 at Stage 3/4):** outputd opening the DAC at W < its physical
@@ -1385,12 +1388,13 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-21 (fan-in solo `FLUSH_SYNC` playout-ledger ack
-verified against rust/jasper-fanin/src/{playout,tts}.rs; active-speaker runtime graph boundary rechecked
-against `jasper.active_speaker.runtime_contract`, install outputd-statefile
-selection, and doctor runtime graph check; Stage-7 outputd loop unification
-previously rechecked against
-rust/jasper-outputd; solo fan-in TTS ownership and bonded-member outputd TTS
-ownership previously rechecked against rust/jasper-outputd and HANDOFF-multiroom;
-voice playback seam path rechecked after `jasper/voice/turn_playback.py`
-extraction).
+Last verified: 2026-06-22 (fan-in solo `FLUSH_SYNC` playout-ledger ack
+previously verified against rust/jasper-fanin/src/{playout,tts}.rs;
+active-speaker runtime graph boundary rechecked against
+`jasper.active_speaker.runtime_contract`, install outputd-statefile selection,
+doctor runtime graph check, `resolve_output_layout`, and the active-lane
+`DacProfile` declarations; Stage-7 outputd loop unification previously
+rechecked against rust/jasper-outputd; solo fan-in TTS ownership and
+bonded-member outputd TTS ownership previously rechecked against
+rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path rechecked
+after `jasper/voice/turn_playback.py` extraction).

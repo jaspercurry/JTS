@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.audio_hardware.dac import (
+    APPLE_USB_C_DONGLE,
     DUAL_APPLE_USB_C_DAC_4CH,
     HIFIBERRY_DAC8X,
     ChannelMapEntry,
@@ -215,6 +216,23 @@ def test_dac8x_resolves_to_outputd_active_lane() -> None:
         ChannelMapEntry(i, i) for i in range(8)
     )
     assert layout.transport_plan.dac_pcms == ("hw:CARD=DAC8,DEV=0",)
+
+
+def test_apple_usb_c_dongle_resolves_to_width_two_outputd_active_lane() -> None:
+    layout = resolve_output_layout(
+        _topology(APPLE_USB_C_DONGLE.id, 2, card_id="Apple")
+    )
+
+    assert layout.playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert layout.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
+    assert layout.transport_channel_count == 2
+    assert layout.transport_plan is not None
+    assert layout.transport_plan.sink == TRANSPORT_SINK_SINGLE_ALSA
+    assert layout.transport_plan.channel_map == (
+        ChannelMapEntry(0, 0),
+        ChannelMapEntry(1, 1),
+    )
+    assert layout.transport_plan.dac_pcms == ("hw:CARD=Apple,DEV=0",)
 
 
 def test_no_active_lane_single_dac_is_missing_without_direct_fallback() -> None:

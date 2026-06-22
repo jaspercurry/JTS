@@ -21,7 +21,6 @@ from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
-    MISSING_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
 )
 from jasper.output_hardware import (
@@ -459,6 +458,8 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./active-speaker/measurements" in js
     assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
+    assert "./output-topology/reset" in js
+    assert "Reset speaker setup" in js
     assert "Test each driver" in js
     assert "Validate and apply" in js
     assert "Save active profile" in js
@@ -1651,9 +1652,9 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
         "jts_active_speaker_playback_route_capability"
     )
     assert envelope["active_playback_route"]["playback_device_source"] == (
-        MISSING_SOURCE
+        "outputd_active_lane"
     )
-    assert envelope["active_playback_route"]["transport_channel_count"] == 0
+    assert envelope["active_playback_route"]["transport_channel_count"] == 2
 
 
 def test_output_hardware_state_only_loaded_inside_conversion_boundary():
@@ -2630,6 +2631,84 @@ def test_sound_output_topology_http_route_rejects_stale_browser_save(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_sound_output_topology_reset_http_route_is_csrf_protected(
+    monkeypatch,
+    tmp_path: Path,
+):
+    calls = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_reset_output_topology_payload",
+        lambda: calls.append(True) or {"output_topology": {"status": "draft"}},
+    )
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(base, "/output-topology/reset", {})
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        assert calls == [True]
+        assert payload["output_topology"]["status"] == "draft"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_reset_output_topology_payload_clears_active_setup_state(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from jasper.cli import output_topology_reset
+
+    state_envs = {
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "preview.json",
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
+        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": "startup-load.json",
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE": "commission-ramp.json",
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE": "baseline.json",
+    }
+    paths = []
+    for env_name, filename in state_envs.items():
+        path = tmp_path / filename
+        path.write_text('{"stale": true}\n', encoding="utf-8")
+        monkeypatch.setenv(env_name, str(path))
+        paths.append(path)
+    monkeypatch.setattr(
+        output_topology_reset,
+        "reset_to_detected_passive",
+        lambda: {"status": "reset"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "idle", "reason": reason},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_output_topology_payload",
+        lambda: {"output_topology": {"status": "draft"}},
+    )
+
+    payload = sound_setup._reset_output_topology_payload()
+
+    assert payload["output_topology"]["status"] == "draft"
+    assert payload["reset"] == {"status": "reset"}
+    assert payload["active_speaker_reset"]["status"] == "cleared"
+    assert len(payload["active_speaker_reset"]["cleared"]) == len(paths)
+    assert all(not path.exists() for path in paths)
 
 
 def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(

@@ -107,7 +107,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var COMMISSION_RAMP_LISTEN_MS = 2300;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 120;
   var outputTopology = {
-    loading: false, saving: false, payload: null, draft: null,
+    loading: false, saving: false, resetting: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
     observedHardware: null,
     revision: null,
@@ -2323,6 +2323,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         renderBaselineProfileCard(),
         ''
       ) +
+      renderOutputTopologyResetAction() +
+    '</div>';
+  }
+  function renderOutputTopologyResetAction() {
+    var busy = outputTopology.loading || outputTopology.saving || outputTopology.resetting;
+    return '<div class="output-setup__actions output-setup__actions--reset">' +
+      '<button type="button" class="btn btn--danger" data-act="reset-output-topology"' +
+        (busy ? ' disabled' : '') + '>' +
+        escapeHtml(outputTopology.resetting ? 'Resetting' : 'Reset speaker setup') +
+      '</button>' +
     '</div>';
   }
   function renderOutputHardwareCard(topology, statusValue) {
@@ -3409,6 +3419,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'toggle-output-subwoofer') { toggleOutputSubwoofer(t.getAttribute('data-mode') || 'add'); }
     else if (act === 'output-step-next') { advanceOutputStep(t.getAttribute('data-step') || ''); }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
+    else if (act === 'reset-output-topology') { resetOutputTopology(); }
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
@@ -3723,6 +3734,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;
+    outputTopology.resetting = false;
     outputTopology.loading = false;
     outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
@@ -4491,6 +4503,48 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       outputTopology.saving = false;
       outputTopology.error = e.message;
       status('Could not save speaker layout: ' + e.message, true);
+    }
+    render();
+  }
+  async function resetOutputTopology() {
+    if (outputTopology.resetting) return;
+    var ok = await jtsConfirm(
+      'Reset speaker setup? This clears the saved active crossover layout and returns this speaker to a detected passive setup. No test tone will play.',
+      {danger: true}
+    );
+    if (!ok) return;
+    stopCommissionAutoRamp('');
+    outputTopology.resetting = true;
+    outputTopology.error = '';
+    patchActiveSpeaker({
+      stagedConfig: null,
+      startupLoad: null,
+      commission: null,
+      commissioningView: null,
+      measurements: null,
+      baselineProfile: null,
+      error: '',
+      commissionBusy: '',
+      commissionError: '',
+      captureBusy: '',
+      captureError: ''
+    });
+    render();
+    try {
+      var resp = await fetch('./output-topology/reset', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'speaker setup reset failed');
+      ingestOutputTopology(payload);
+      outputStepOverride = 'layout';
+      status('Reset speaker setup to the detected passive layout. No sound was played.');
+    } catch (e) {
+      outputTopology.resetting = false;
+      outputTopology.error = e.message;
+      status('Could not reset speaker setup: ' + e.message, true);
     }
     render();
   }
