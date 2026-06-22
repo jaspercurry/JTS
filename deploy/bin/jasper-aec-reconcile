@@ -37,6 +37,7 @@ if [[ -x /opt/jasper/.venv/bin/python ]]; then
 fi
 MIC_PROFILE_PYTHON="${JASPER_MIC_PROFILE_PYTHON:-$DEFAULT_MIC_PROFILE_PYTHON}"
 MIC_PROFILE_STATE_PATH="${JASPER_MIC_PROFILE_STATE_PATH:-/run/jasper-mic-profile/xvf3800.json}"
+OUTPUTD_CONTROL_SOCKET="${JASPER_OUTPUTD_CONTROL_SOCKET:-/run/jasper-outputd/control.sock}"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
@@ -326,7 +327,7 @@ chip_aec_dac_status() {
     esac
 }
 
-chip_aec_dac_detail() {
+chip_aec_dac_static_detail() {
     local dac_id status
     dac_id="$(normalize_output_dac_id "${1:-unknown}")"
     status="$(chip_aec_dac_status "$dac_id")"
@@ -349,8 +350,122 @@ chip_aec_dac_detail() {
     esac
 }
 
+CHIP_AEC_DAC_GATE_DAC=""
+CHIP_AEC_DAC_GATE_OK=0
+CHIP_AEC_DAC_GATE_DETAIL=""
+CHIP_AEC_DAC_GATE_SOURCE=""
+
+outputd_aec_clock_gate_detail() {
+    if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
+        echo "outputd aec_clock unavailable: python not found at ${MIC_PROFILE_PYTHON}"
+        return 1
+    fi
+    local detail rc
+    set +e
+    detail="$("$MIC_PROFILE_PYTHON" - "$OUTPUTD_CONTROL_SOCKET" <<'PY'
+import json
+import socket
+import sys
+
+path = sys.argv[1]
+
+
+def finish(ok: bool, detail: str) -> None:
+    print(detail)
+    raise SystemExit(0 if ok else 1)
+
+
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        sock.connect(path)
+        sock.sendall(b"STATUS\n")
+        chunks = []
+        total = 0
+        while total < 65536:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+except OSError as exc:
+    finish(False, f"outputd aec_clock unavailable: STATUS socket {path}: {exc}")
+
+try:
+    payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+except json.JSONDecodeError as exc:
+    finish(False, f"outputd aec_clock unavailable: invalid STATUS JSON: {exc}")
+
+refs = payload.get("reference_outputs")
+if not isinstance(refs, dict):
+    finish(False, "outputd aec_clock unavailable: STATUS missing reference_outputs")
+clock = refs.get("aec_clock")
+if not isinstance(clock, dict):
+    finish(False, "outputd aec_clock unavailable: STATUS missing reference_outputs.aec_clock")
+writer = refs.get("chip_ref_writer")
+if not isinstance(writer, dict) or not writer.get("enabled"):
+    finish(False, "outputd aec_clock unavailable: chip-ref writer is not active")
+
+verdict = str(clock.get("verdict") or "")
+status = str(clock.get("sro_estimator_status") or "")
+observe = clock.get("observe")
+ppm = clock.get("chip_ref_sro_ppm")
+reason = str(clock.get("verdict_reason") or "").strip()
+detail = (
+    f"outputd aec_clock verdict={verdict or 'missing'} "
+    f"status={status or 'missing'} observe={observe} "
+    f"chip_ref_sro_ppm={ppm} reason={reason}"
+)
+finish(verdict == "coherent" and status == "locked", detail)
+PY
+)"
+    rc=$?
+    set -e
+    echo "$detail"
+    return "$rc"
+}
+
+refresh_chip_aec_dac_gate() {
+    local dac_id status detail
+    dac_id="$(normalize_output_dac_id "${1:-unknown}")"
+    if [[ "$CHIP_AEC_DAC_GATE_DAC" == "$dac_id" ]]; then
+        return
+    fi
+    CHIP_AEC_DAC_GATE_DAC="$dac_id"
+    CHIP_AEC_DAC_GATE_OK=0
+    CHIP_AEC_DAC_GATE_SOURCE=""
+    status="$(chip_aec_dac_status "$dac_id")"
+    if [[ "$status" == "supported" ]]; then
+        CHIP_AEC_DAC_GATE_OK=1
+        CHIP_AEC_DAC_GATE_SOURCE="static"
+        CHIP_AEC_DAC_GATE_DETAIL="$(chip_aec_dac_static_detail "$dac_id")"
+        return
+    fi
+    if detail="$(outputd_aec_clock_gate_detail)"; then
+        CHIP_AEC_DAC_GATE_OK=1
+        CHIP_AEC_DAC_GATE_SOURCE="outputd_aec_clock"
+        CHIP_AEC_DAC_GATE_DETAIL="$detail"
+        return
+    fi
+    CHIP_AEC_DAC_GATE_DETAIL="$(chip_aec_dac_static_detail "$dac_id"); ${detail}"
+}
+
 chip_aec_dac_supported() {
-    [[ "$(chip_aec_dac_status "${1:-unknown}")" == "supported" ]]
+    refresh_chip_aec_dac_gate "${1:-unknown}"
+    [[ "$CHIP_AEC_DAC_GATE_OK" == "1" ]]
+}
+
+chip_aec_dac_detail() {
+    refresh_chip_aec_dac_gate "${1:-unknown}"
+    echo "$CHIP_AEC_DAC_GATE_DETAIL"
+}
+
+log_chip_aec_dac_gate_if_dynamic() {
+    refresh_chip_aec_dac_gate "${1:-unknown}"
+    if [[ "$CHIP_AEC_DAC_GATE_OK" == "1" \
+        && "$CHIP_AEC_DAC_GATE_SOURCE" == "outputd_aec_clock" ]]; then
+        log "outputd aec_clock permits chip-AEC for output_dac=$(normalize_output_dac_id "${1:-unknown}"): ${CHIP_AEC_DAC_GATE_DETAIL}"
+    fi
 }
 
 chip_aec_mic_supported() {
@@ -413,6 +528,7 @@ apply_audio_input_profile() {
             if aec_ready "$AEC_MIC_DEVICE" \
                 && chip_aec_mic_supported \
                 && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID"
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
@@ -435,6 +551,7 @@ apply_audio_input_profile() {
         xvf_chip_aec)
             AEC_MODE="auto"
             if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID"
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
