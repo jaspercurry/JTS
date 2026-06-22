@@ -1381,7 +1381,10 @@ path):
   to accommodate an offset" warning is classified by the AirPlay-health
   sampler (`classify_journal_line` →
   `type=shairport_offset_too_short`, severity `issue`) so it lands in the
-  existing `/system` AirPlay-health event ring with no new journal reads.
+  existing `/system` AirPlay-health event ring with no new journal reads,
+  and rolls into the `shairport_events` counter (like
+  `shairport_oos`/`shairport_broken_pipe`) so it also moves the
+  AirPlay-health status verdict, not just the raw event list.
 
 **Step-0 measurement (2026-06-21).** Mining the persistent shairport
 journals on jts.local found **9 real AP2 (Realtime) sessions, zero
