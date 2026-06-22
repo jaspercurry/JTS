@@ -24,9 +24,16 @@ if "sounddevice" not in sys.modules:
 
 
 class _FakeTurn:
-    def __init__(self, user_text: str | None, assistant_text: str | None) -> None:
+    def __init__(
+        self,
+        user_text: str | None,
+        assistant_text: str | None,
+        *,
+        metadata: dict | str | None = None,
+    ) -> None:
         self._user_text = user_text
         self._assistant_text = assistant_text
+        self._metadata = metadata
 
     def last_chunk_at(self) -> float:
         return 0.0
@@ -60,6 +67,9 @@ class _FakeTurn:
 
     def assistant_transcript(self) -> str | None:
         return self._assistant_text
+
+    def conversation_metadata(self) -> dict | str | None:
+        return self._metadata
 
 
 class _FakeUsageStore:
@@ -134,12 +144,66 @@ async def test_end_turn_records_transcripts_through_single_write_path(
     assert rows[0].data_json is None
 
 
+async def test_end_turn_records_metadata_when_provider_has_no_transcripts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    _put_in_session(
+        wl,
+        _FakeTurn(
+            None,
+            None,
+            metadata={
+                "kind": "voice_turn",
+                "transcripts_available": False,
+                "tools": ["get_weather"],
+            },
+        ),
+    )
+
+    await wl._end_turn_inner("gemini")
+
+    rows = store.recent(10)
+    assert len(rows) == 1
+    assert rows[0].provider == "test"
+    assert rows[0].user_text is None
+    assert rows[0].assistant_text is None
+    assert json.loads(rows[0].data_json or "{}") == {
+        "kind": "voice_turn",
+        "transcripts_available": False,
+        "tools": ["get_weather"],
+    }
+
+
 def test_record_conversation_turn_is_gated_by_capture_env(tmp_path, monkeypatch) -> None:
     wl, store = _wake_loop(tmp_path, monkeypatch, capture=False)
 
     wl._record_conversation_turn("hello", "hi")
 
     assert store.recent(10) == []
+
+
+def test_record_conversation_turn_allows_metadata_only_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+
+    wl._record_conversation_turn(
+        None,
+        None,
+        data_json={"kind": "voice_turn", "transcripts_available": False},
+    )
+
+    rows = store.recent(10)
+    assert len(rows) == 1
+    assert rows[0].user_text is None
+    assert rows[0].assistant_text is None
+    assert json.loads(rows[0].data_json or "{}") == {
+        "kind": "voice_turn",
+        "transcripts_available": False,
+    }
 
 
 def test_record_conversation_turn_lazily_opens_store_after_capture_enabled(

@@ -7,9 +7,9 @@
 > OpenAI user/assistant transcript path, Grok user transcript path,
 > `jasper-chat-web`, `GET /data.json`, `/state.chat`, doctor check,
 > nginx/install/landing wiring, static ES-module renderer, household
-> capture toggle, clear-all action, and write-time retention pruning are
-> implemented as of 2026-06-22; Gemini transcript capture remains
-> deferred.
+> capture toggle, clear-all action, write-time retention pruning, and
+> Gemini metadata-only capture are implemented as of 2026-06-22; Gemini
+> transcript capture remains deferred.
 > Grounded in code reads against `main` on 2026-06-19 and refreshed
 > against the current tree on 2026-06-22. **Last updated: 2026-06-22.**
 
@@ -58,13 +58,15 @@ Per provider, today:
 |---|---|---|---|
 | **OpenAI** | captured (input transcription, `gpt-4o-mini-transcribe`, set in `_session_config`) | captured (`assistant_transcript()` from `response.*audio_transcript.delta`) | **stop discarding** — surface both |
 | **Grok** | captured (inherits OpenAI input transcription) | **no native path** (the one real gap) | user text only in v1; assistant text deferred |
-| **Gemini** *(default)* | not requested | not requested | **net-new**: add `input_audio_transcription` + `output_audio_transcription` to the `LiveConnectConfig` and parse them in `_on_response` |
+| **Gemini** *(default)* | not requested | not requested | metadata-only rows implemented; full transcript capture still requires `input_audio_transcription` + `output_audio_transcription` in the `LiveConnectConfig` and parsing in `_on_response` |
 
-Because Gemini is the default provider, lighting it up is **required for v1
-to not be a dud** — and it is the only net-new *provider* work. It costs zero
-resident RAM (text arrives in-band over the existing websocket) and pennies/
-month; confirm the exact Gemini text-output rate and any latency on-device
-before relying on it.
+Because Gemini is the default provider, full transcript capture remains the
+thing that makes `/chat` useful as a read-back surface on a stock install.
+The interim metadata-only row prevents Gemini turns from disappearing entirely
+and can show tool names, but it does not satisfy the perceived-command/reply
+vision. Full transcript capture costs zero resident RAM (text arrives in-band
+over the existing websocket) and pennies/month; confirm the exact Gemini
+text-output rate and any latency on-device before relying on it.
 
 ### The capture seam (the one genuinely-new low-level extension point)
 
@@ -76,9 +78,9 @@ is where conversation capture hooks — **one write path for all three
 providers.**
 
 What differs per provider is only *how the turn object exposes its text*.
-Add a small optional transcript capability beside `LiveTurn`
-(`ConversationTranscriptTurn` in `jasper/voice/session.py`), with WakeLoop
-probing the methods via `getattr`:
+Add small optional capture capabilities beside `LiveTurn`
+(`ConversationTranscriptTurn` and `ConversationMetadataTurn` in
+`jasper/voice/session.py`), with WakeLoop probing the methods via `getattr`:
 
 ```
 user_transcript() -> str | None        # the perceived command (ASR)
@@ -95,6 +97,12 @@ assistant_transcript() -> str | None    # what the model said
 The daemon reads whatever the accessors return at `_end_turn_inner` and writes
 a row. **The host owns the write; the provider only declares its text** — the
 indirection invariant from the doctrine, applied.
+
+Providers without transcripts may expose `conversation_metadata() ->
+dict[str, Any] | None` instead. The metadata must stay bounded and privacy-safe;
+Gemini currently uses it for `{"kind": "voice_turn",
+"transcripts_available": false}` and optional tool names so `/chat` can show a
+turn happened without leaking prompts, arguments, or provider payloads.
 
 > Borrow the *vocabulary* of `jasper/voice/trace.py` (which already
 > distinguishes model-emitted `text_out` from an STT transcription) but not
@@ -223,7 +231,7 @@ on-device Gemini-transcript and end-to-end checks, called out explicitly).
 | Phase | Goal | HW needed |
 |---|---|---|
 | **1 — Foundation** | `ConversationStore` (cloned, pytest-covered: CRUD, fail-soft, retention, mic-mute gate) + the optional turn transcript capability (`user_transcript()`/`assistant_transcript()`) + the `_end_turn_inner` capture hook, gated by a default-off wizard flag. OpenAI/Grok stop discarding (surface what they already capture). Registers no UI yet. | none |
-| **2 — Gemini transcripts** | Add `input_audio_transcription` + `output_audio_transcription` to the Gemini `LiveConnectConfig` and parse in `_on_response`. Lights up the default provider. | on-device cost/latency check |
+| **2 — Gemini transcripts** | Metadata-only rows are implemented as an interim fallback. Add `input_audio_transcription` + `output_audio_transcription` to the Gemini `LiveConnectConfig` and parse in `_on_response` for full read-back value on the default provider. | on-device cost/latency check |
 | **3 — The `/chat` page** | `jasper-chat-web` service + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check + static ES-module paired-turn renderer, research badge, null-assistant note, and date filter. **Implemented.** | on-device browser pass |
 | **4 — Retention + privacy controls** | TTL pruner + row cap + clear-all delete + the wizard opt-in polish. The scoped PRIVACY.md paragraph keeps public docs truthful now that capture can be enabled in-product. **Implemented; per-row delete deferred.** | none |
 | **5 — Richness (deferred, triggered)** | Surface `tool_calls_json` and links/rich content on the page (the `data_json` column pays off). A narrow Grok assistant-text fallback **only** if Grok usage matters. Search/filter. | none |
@@ -276,8 +284,8 @@ unavailable path is a logged no-op that never raises into the turn).
 2. **Capture default** — confirmed default-**off**, opt-in via the wizard
    (reverses the no-store posture only on explicit consent).
 3. **Gemini transcription in v1** — recommended **yes** (it's the default
-   provider; without it the page is empty on a stock install). Gate on the
-   on-device cost/latency check.
+   provider; without it the page only has metadata on a stock install). Gate on
+   the on-device cost/latency check.
 4. **Per-member attribution** — single household view for v1 (no voice
    diarization, per household norms); revisit only if asked.
 5. **Route name** — `/chat` (matches the ask; free in code today) vs `/history`

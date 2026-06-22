@@ -87,10 +87,13 @@ speak only to those interfaces; the per-provider adapters are:
 Conversation-history capture is an optional turn capability, not a provider
 branch in WakeLoop. Providers that natively receive text transcripts expose
 `ConversationTranscriptTurn.user_transcript()` / `assistant_transcript()` on
-their turn objects; WakeLoop probes those methods at teardown and writes
-through the daemon-held `ConversationStore` only when the opt-in capture gate is
-enabled. Providers without native transcript support can omit the capability and
-still satisfy `LiveTurn`; the `/chat/` page renders the missing side honestly.
+their turn objects; WakeLoop probes those methods at teardown and writes through
+the daemon-held `ConversationStore` only when the opt-in capture gate is
+enabled. Providers without native transcript support can either omit the
+capability and still satisfy `LiveTurn`, or expose
+`ConversationMetadataTurn.conversation_metadata()` for bounded, privacy-safe
+metadata such as "transcripts unavailable" and tool names; the `/chat/` page
+renders the missing side honestly.
 
 Daemon-initiated confirmation windows use the provider-neutral
 `LiveTurn.send_text_context()` hook. It adds a text-only routing instruction to

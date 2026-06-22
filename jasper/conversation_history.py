@@ -24,6 +24,7 @@ CAPTURE_ALIAS_ENV = "JASPER_CONVERSATION_CAPTURE"
 RETENTION_DAYS_ENV = "JASPER_CONVERSATION_HISTORY_RETENTION_DAYS"
 RETENTION_MAX_ROWS_ENV = "JASPER_CONVERSATION_HISTORY_MAX_ROWS"
 SETTINGS_FILE_MODE = 0o644
+STORE_FILE_MODE = 0o660
 _STORE_ERRORS = (OSError, sqlite3.Error)
 _TURN_COLUMNS = (
     "id",
@@ -118,6 +119,7 @@ class ConversationStore:
                     "CREATE INDEX IF NOT EXISTS idx_conversation_turns_recent "
                     "ON conversation_turns (ts_utc DESC, id DESC)"
                 )
+                _chmod_store(db_path)
         except _STORE_ERRORS as e:
             self._warn(
                 "conversation history store unavailable (%s): %s",
@@ -406,6 +408,34 @@ def prune_for_settings(
 def _read_only_uri(db_path: str) -> str:
     path = os.path.abspath(db_path)
     return f"file:{urllib.parse.quote(path, safe='/')}?mode=ro"
+
+
+def _chmod_store(db_path: str) -> None:
+    try:
+        store_stat = os.stat(db_path)
+    except OSError as e:
+        logger.warning(
+            "conversation history store stat failed (%s): %s",
+            db_path,
+            e,
+        )
+        return
+    current_mode = store_stat.st_mode & 0o777
+    if (current_mode & 0o060) == 0o060 and store_stat.st_uid != os.geteuid():
+        return
+    try:
+        os.chmod(db_path, STORE_FILE_MODE)
+    except OSError as e:
+        try:
+            if (os.stat(db_path).st_mode & 0o060) == 0o060:
+                return
+        except OSError:
+            pass
+        logger.warning(
+            "conversation history store chmod failed (%s): %s",
+            db_path,
+            e,
+        )
 
 
 def _env_bool(value: str | None, *, default: bool) -> bool:

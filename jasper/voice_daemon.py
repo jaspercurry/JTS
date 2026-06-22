@@ -1724,7 +1724,7 @@ class WakeLoop:
         """
         if self._mic_muted:
             return
-        if user_text is None and assistant_text is None:
+        if user_text is None and assistant_text is None and data_json is None:
             return
         try:
             settings = read_conversation_settings()
@@ -1754,6 +1754,8 @@ class WakeLoop:
                 data_text = None
         elif data_json is not None:
             data_text = str(data_json)
+        if user_text is None and assistant_text is None and data_text is None:
+            return
 
         ts_utc = _conversation_ts_utc()
         self._conversation_turn_seq = (
@@ -3722,6 +3724,7 @@ class WakeLoop:
                 self._record_conversation_turn(
                     _optional_turn_text(self._turn, "user_transcript"),
                     _optional_turn_text(self._turn, "assistant_transcript"),
+                    data_json=_optional_turn_data_json(self._turn),
                 )
             # Per-turn no-audio detection. Splits into two distinct
             # phenomena, gated on whether the wake loop explicitly ended
@@ -3859,6 +3862,24 @@ def _optional_turn_text(turn: object, method_name: str) -> str | None:
         return None
     text = str(text).strip()
     return text or None
+
+
+def _optional_turn_data_json(turn: object) -> dict | str | None:
+    getter = getattr(turn, "conversation_metadata", None)
+    if not callable(getter):
+        return None
+    try:
+        data = getter()
+    except (RuntimeError, TypeError, ValueError) as e:
+        logger.debug("conversation capture: conversation_metadata failed: %s", e)
+        return None
+    if data is None or isinstance(data, (dict, str)):
+        return data
+    logger.debug(
+        "conversation capture: conversation_metadata returned unsupported %s",
+        type(data).__name__,
+    )
+    return None
 
 
 def _active_voice(*args, **kwargs):

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from ..tools import ToolRegistry
 
@@ -346,6 +346,20 @@ class ConversationTranscriptTurn(Protocol):
 
     def assistant_transcript(self) -> str | None:
         """Return the text the provider emitted for assistant speech."""
+        ...
+
+
+@runtime_checkable
+class ConversationMetadataTurn(Protocol):
+    """Optional metadata-only capture capability for conversation history.
+
+    Some providers do not expose stable in-band transcript text for a live
+    turn. They may still expose bounded, privacy-safe metadata so the local
+    history can show that a turn happened instead of silently omitting it.
+    """
+
+    def conversation_metadata(self) -> dict[str, Any] | None:
+        """Return bounded metadata for a captured turn."""
         ...
 
 
