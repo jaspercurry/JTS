@@ -379,6 +379,13 @@ provider-name-based:
 - `truncate_assistant_audio(provider_item_id, audio_played_ms)` for
   providers that need conversation history aligned to WebSocket
   playout.
+- `drop_pending_audio()` (returns the count dropped) for providers with an
+  internal playout buffer: after the local TTS flush, the spine drains the
+  adapter's queued-but-unwritten assistant audio so a burst-delivery provider
+  (OpenAI/Grok stream the whole response up front) does not replay the backlog
+  over the user — the local flush alone clears only the DAC ring. Optional
+  (getattr-probed); an adapter that streams without a buffer omits it.
+  Preserves any terminal end-of-audio sentinel so the consumer still ends.
 - `supports_provider_vad()` remains separate from barge-in support:
   provider VAD can help detect or commit turns, but local TTS flush is
   still required to stop audible audio immediately.
@@ -386,6 +393,13 @@ provider-name-based:
   has no OpenAI-style item id for audio truncation; OpenAI emits one and
   JTS already carries it through the outputd-compatible TTS IPC used by
   fan-in.
+- The active provider's reconciliation kind is surfaced at runtime — on
+  `event=barge.detected` (`reconcile=`) and
+  `/state.voice.barge_in.barge_in_reconcile` — so a durable barge-in
+  (`needs_client_truncate`: OpenAI/Grok cancel+truncate) is distinguishable
+  from a cosmetic one (`server_self_truncates`: Gemini no-ops the reconcile and
+  a real-time server may resume). This makes the registry's
+  `interrupt_reconcile` declaration load-bearing, not test-only metadata.
 
 This seam landed in code as of PR-3 (added **behaviour-neutral**):
 `LiveTurn.cancel_response()` / `LiveTurn.truncate_assistant_audio()` and
@@ -574,7 +588,7 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-21 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
+Last verified: 2026-06-22 (barge-in interruption contract re-verified against `jasper/voice/session.py`, `jasper/voice/turn_playback.py`, and the adapters — added the `drop_pending_audio()` seam member and the `reconcile`/`barge_in_reconcile` observability after the integrated-review remediation; unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
 barge-in capability seam: PR-3 landed it behaviour-neutral
 (`LiveTurn.cancel_response`/`truncate_assistant_audio` +
 `LiveConnection.supports_provider_vad` + catalog `interrupt_reconcile`);

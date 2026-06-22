@@ -61,6 +61,11 @@ CONNECTION_CLASSES = (
 # Members the barge-in seam adds, plus the daemon-facing interrupt EVENT
 # methods PR-3 must keep on the turn.
 TURN_SEAM_METHODS = ("cancel_response", "truncate_assistant_audio")
+# drop_pending_audio (A1) is part of the seam but OPTIONAL: the spine
+# getattr-probes it, so only providers with an internal playout buffer
+# implement it. Both of JTS's turn adapters are queue-backed, so both expose
+# it; an adapter that streams without a buffer may omit it.
+TURN_OPTIONAL_SEAM_METHODS = ("drop_pending_audio",)
 TURN_EVENT_METHODS = ("interrupted", "wait_for_interrupt", "clear_interrupted")
 CONNECTION_SEAM_METHODS = ("supports_provider_vad",)
 
@@ -121,6 +126,20 @@ def test_turn_adapters_expose_seam(cls):
     # The seam actions are coroutines; the daemon awaits them.
     assert inspect.iscoroutinefunction(cls.cancel_response)
     assert inspect.iscoroutinefunction(cls.truncate_assistant_audio)
+
+
+@pytest.mark.parametrize("cls", TURN_CLASSES)
+def test_buffered_turn_adapters_drain_pending_audio(cls):
+    """drop_pending_audio (A1) stops post-flush replay on burst-delivery
+    providers. Both queue-backed adapters expose it and return the dropped
+    count (0 on an empty queue), and it is declared on the Protocol. It is
+    synchronous (the spine calls it inline after the flush, not awaited)."""
+    for name in TURN_OPTIONAL_SEAM_METHODS:
+        assert hasattr(LiveTurn, name), f"LiveTurn missing {name}"
+    turn = _make_turn(cls)
+    assert not inspect.iscoroutinefunction(cls.drop_pending_audio)
+    result = turn.drop_pending_audio()
+    assert isinstance(result, int) and result == 0  # empty queue → nothing
 
 
 @pytest.mark.parametrize("cls", CONNECTION_CLASSES)

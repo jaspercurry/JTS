@@ -247,17 +247,49 @@ def resolve_barge_in_enabled(provider: str, env: Mapping[str, str]) -> bool:
     return raw in _TRUTHY
 
 
+# read_barge_in_enabled runs once per turn-open on jasper-voice's event
+# loop. A full open+read+parse of the SSOT file every turn would expose the
+# latency-sensitive turn-open path to a stalled /var/lib FS even when
+# barge-in is OFF (the common case). Gate the parse on the file's mtime+size:
+# the steady state is a single os.stat, and a wizard/operator toggle (which
+# rewrites the file) bumps the mtime and forces a re-parse — so live toggle
+# still works without a daemon restart. Keyed by path; in production it holds a
+# single entry (one SSOT file), and the mtime+size key makes a stale read
+# impossible. (Across a pytest session it accumulates one entry per distinct tmp
+# path — harmless: every key is mtime-stamped, so no stale value is ever served.)
+_ENV_FILE_STATE_CACHE: dict[str, tuple[tuple[int, int], object]] = {}
+
+
+def _read_env_file_state_mtime_cached(path: str):
+    try:
+        st = os.stat(path)
+    except OSError:
+        # Missing/unreadable: drop any stale entry and let the uncached
+        # reader return its fail-soft FileState(loaded=False).
+        _ENV_FILE_STATE_CACHE.pop(path, None)
+        return read_env_file_state(path)
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _ENV_FILE_STATE_CACHE.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    state = read_env_file_state(path)
+    _ENV_FILE_STATE_CACHE[path] = (key, state)
+    return state
+
+
 def read_barge_in_enabled(provider: str, path: str | None = None) -> bool:
-    """Read ``provider``'s barge-in enable flag fresh from the SSOT file.
+    """Read ``provider``'s barge-in enable flag from the SSOT file.
 
     Default OFF for an unset flag, an unknown provider, or a
     missing/unreadable file — mirrors :func:`read_active_provider`'s
-    fail-soft contract. Re-reads the file on every call so a wizard /
-    operator toggle takes effect without restarting a long-lived reader.
+    fail-soft contract. Mtime-gated (:func:`_read_env_file_state_mtime_cached`):
+    the steady state is a single ``os.stat`` and the file is re-parsed only
+    when it changes, so a wizard / operator toggle still takes effect without
+    restarting a long-lived reader — without an open+read+parse every call.
     """
     if provider not in VALID_PROVIDER_IDS:
         return False
-    file_state = read_env_file_state(_resolve_path(path))
+    file_state = _read_env_file_state_mtime_cached(_resolve_path(path))
     if not file_state.loaded:
         return False
     return resolve_barge_in_enabled(provider, file_state.values)
