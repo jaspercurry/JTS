@@ -102,15 +102,16 @@ RestartSec=2
 #   * journalctl -k (Wi-Fi scan-suppression diagnostics) — the `systemd-journal`
 #     supplementary group (also fail-soft, so non-load-bearing).
 #   * NL80211 scan-repair (jasper/wifi_scan_repair.py) — intentionally NOT given
-#     CAP_NET_ADMIN; it degrades fail-soft (the /wifi/ page keeps "Join by name").
+#     CAP_NET_ADMIN; /wifi/scan asks jasper-control's broker to start the
+#     root-only jasper-wifi-scan-repair.service helper instead.
 #   * systemctl restarts after a wizard save — already routed through
 #     jasper-control's restart broker (manage_units); once non-root the broker
 #     is the only path (geteuid()!=0 removes the direct-systemctl fallback).
 #
 # CapabilityBoundingSet= drops ALL caps (the privileged ops go through polkit /
 # the broker / D-Bus groups, never a capability — and the scan-repair cap is
-# deliberately withheld). SystemCallFilter=@system-service blocks the dangerous
-# syscall classes while permitting fork/execve, so the nmcli / busctl /
+# deliberately withheld from this web process). SystemCallFilter=@system-service
+# blocks the dangerous syscall classes while permitting fork/execve, so the nmcli / busctl /
 # journalctl children it spawns exec cleanly. ProtectKernelLogs stays OMITTED
 # (below) for the same diagnostic-subprocess caution as jasper-control.
 User=jasper-web

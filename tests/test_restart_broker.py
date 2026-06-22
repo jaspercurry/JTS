@@ -96,6 +96,7 @@ def test_managed_units_excludes_tier_b_reconcilers():
     tier_b = {
         "jasper-wifi-guardian.service",
         "jasper-wifi-recover.service",
+        "jasper-wifi-scan-repair.service",
         "jasper-audio-hardware-reconcile.service",
         "jasper-dac-init.service",
         "jasper-headphone-monitor.service",
@@ -112,6 +113,7 @@ def test_start_only_units_are_not_general_managed_units():
     broker."""
     assert restart_broker.START_ONLY_UNITS == frozenset({
         "jasper-audio-hardware-reconcile.service",
+        "jasper-wifi-scan-repair.service",
     })
     assert restart_broker.START_ONLY_UNITS.isdisjoint(restart_broker.MANAGED_UNITS)
 
@@ -223,6 +225,20 @@ def test_start_only_unit_allows_start(broker):
     assert resp["ok"] is True
     assert calls == [
         ["systemctl", "start", "jasper-audio-hardware-reconcile.service"],
+    ]
+
+
+def test_wifi_scan_repair_helper_allows_start_only(broker):
+    sock_path, calls, _ = broker
+    resp = restart_broker.request_restart(
+        "jasper-wifi-scan-repair.service",
+        verb="start",
+        no_block=False,
+        socket_path=sock_path,
+    )
+    assert resp["ok"] is True
+    assert calls == [
+        ["systemctl", "start", "jasper-wifi-scan-repair.service"],
     ]
 
 

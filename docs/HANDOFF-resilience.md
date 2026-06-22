@@ -1001,6 +1001,13 @@ layer is a periodic nudge around that same policy:
   with `event=wifi_recover.scan_repair_skip` if the venv python is
   absent), then call the guardian. `jasper-doctor`'s
   `check_wifi_recover_timer` warns if the timer is disabled.
+- **Scan-suppression helper for the web wizard**:
+  `jasper-wifi-scan-repair.service` is a root-only oneshot that runs the
+  same bounded `jasper.wifi_scan_repair` primitive. `/wifi/scan` starts it
+  through jasper-control's restart broker when the web process is non-root,
+  then retries the scan only when the helper records an acknowledged repair.
+  This keeps `jasper-web` cap-less while preserving the connected-but-
+  scan-suppressed recovery path.
 - **Write hooks** in the `/wifi/` wizard
   ([`jasper/web/wifi_setup.py`](../jasper/web/wifi_setup.py)) —
   `connect_new` writes from the PSK on the wire, `connect_saved`
@@ -1269,4 +1276,5 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-15
+Last verified: 2026-06-22 (Wi-Fi scan-suppression root helper path verified on
+`jts3.local`; broader resilience doc last fully reviewed 2026-06-15)
