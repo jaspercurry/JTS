@@ -133,6 +133,7 @@ docs = [
   "docs/HANDOFF-resilience.md",
   "docs/install-update-resilience-plan.md",
   "docs/HANDOFF-install-update-transaction.md",
+  "docs/install-hardware-tier-and-staleness.md",
 ]
 requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",

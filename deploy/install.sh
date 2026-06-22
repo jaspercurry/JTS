@@ -150,6 +150,114 @@ detect_default_install_profile() {
     esac
 }
 
+# Detect the box's hardware tier (RAM / CPU / arch) once, up front. This
+# is ORTHOGONAL to the install profile above: the profile is the product
+# role (does this box run the voice brain?), the tier is hardware
+# capability (how do I build safely here?). jts2 — a 1 GB Pi 5 on the
+# `full` profile — is the proof they differ: small hardware, full role.
+#
+# Pure reporter: prints one normalized line and mutates nothing, so the
+# dry-run plan, the real-install preflight, and tests can all call it.
+# The tier names the RAM region the box is in for OBSERVABILITY — an OOM
+# in a later build step is then self-evident in the deploy transcript. It
+# is the first step toward one shared tier vocabulary for the build knobs
+# that today read RAM independently (rust-daemons.sh's low-memory flip;
+# _webrtc_compile_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
+# this helper is Workstream A; this change does NOT alter any build behavior.
+# See docs/install-hardware-tier-and-staleness.md.
+#
+# Seams (all default to the real system; injectable so tests can drive
+# the whole SKU matrix with no hardware):
+#   JASPER_HW_MEMINFO_FILE  (default /proc/meminfo)
+#   JASPER_HW_NPROC         (default `nproc`)
+#   JASPER_HW_ARCH          (default `uname -m`)
+detect_hardware_tier() {
+    local meminfo="${JASPER_HW_MEMINFO_FILE:-/proc/meminfo}"
+    local mem_kb
+    mem_kb="$(awk '/^MemTotal:/ { print $2; exit }' "${meminfo}" 2>/dev/null || true)"
+    case "${mem_kb}" in
+        ""|*[!0-9]*) mem_kb=0 ;;
+    esac
+    # Declare then assign (not `local x="$(...)"`) so ShellCheck SC2155
+    # doesn't fire and a subshell failure can't be masked.
+    local cpus
+    cpus="${JASPER_HW_NPROC:-$(nproc 2>/dev/null || echo 1)}"
+    case "${cpus}" in
+        ""|*[!0-9]*) cpus=1 ;;
+    esac
+    local arch
+    arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    [[ -n "${arch}" ]] || arch="unknown"
+
+    # The low boundary REUSES rust-daemons.sh's threshold (one source of
+    # truth) so the label can't drift from the build knob it describes —
+    # below it, the Rust low-memory build profile is already active.
+    # install.sh always sources rust-daemons.sh, so the var is set; the
+    # :- fallback only guards a partial source in a stray test context.
+    # The 2 GB split is the one tier-owned constant: it separates the jts2
+    # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
+    # headroom.
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-786432}"
+    local tier
+    if (( mem_kb == 0 )); then
+        tier="unknown"
+    elif (( mem_kb < low_kb )); then
+        tier="low"
+    elif (( mem_kb < 2097152 )); then
+        tier="constrained"
+    else
+        tier="standard"
+    fi
+    printf 'ram_mb=%d cpus=%s arch=%s tier=%s\n' "$(( mem_kb / 1024 ))" "${cpus}" "${arch}" "${tier}"
+}
+
+# True when the detected/injected arch is a 64-bit ARM target JTS ships
+# prebuilt binaries for (CamillaDSP aarch64, librespot arm64 .deb,
+# CamillaGUI aarch64). 32-bit Pi OS (armv7l/armhf) — an easy Imager
+# mis-pick on a Zero 2 W, which is arm64-capable but often imaged 32-bit
+# — has no prebuilt path and fails deep in a fetch today.
+_hardware_tier_arch_supported() {
+    local arch
+    arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    case "${arch}" in
+        aarch64|arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Real-install preflight: log the detected tier (so the deploy transcript
+# names it — closes the "failure wasn't self-evident" gap when a later
+# build OOMs) and fail fast on an unsupported architecture before any
+# mutation. A read-only preflight, like require_root; runs after the
+# --dry-run early return so it never trips on x86 CI dry-runs.
+hardware_tier_preflight() {
+    local tier_line
+    tier_line="$(detect_hardware_tier)"
+    echo "  hardware tier: ${tier_line}"
+    logger -t jasper-install -- "event=hardware_tier.detected ${tier_line}" 2>/dev/null || true
+
+    if _hardware_tier_arch_supported; then
+        return 0
+    fi
+    local arch
+    arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    if _is_truthy "${JASPER_ALLOW_UNSUPPORTED_ARCH:-0}"; then
+        echo "  WARN: unsupported architecture '${arch}'; JASPER_ALLOW_UNSUPPORTED_ARCH=1 set —" >&2
+        echo "  proceeding, but the prebuilt CamillaDSP/librespot/CamillaGUI fetches will likely fail" >&2
+        return 0
+    fi
+    cat >&2 <<EOF
+ERROR: unsupported architecture '${arch}'.
+
+JTS ships prebuilt 64-bit ARM binaries (CamillaDSP aarch64, librespot
+arm64, CamillaGUI aarch64) and is supported only on 64-bit Raspberry Pi
+OS (Trixie). Re-flash with the 64-bit image, or set
+JASPER_ALLOW_UNSUPPORTED_ARCH=1 to attempt the install anyway (expect
+the prebuilt fetches to fail).
+EOF
+    return 2
+}
+
 # The RAW first line of the marker, before normalization. Used only to
 # detect a legacy endpoint/satellite marker so the migration to streambox
 # can be logged once. Mirrors jasper.install_profile._normalize_with_migration_log.
@@ -256,6 +364,11 @@ Run for real from a Pi-local checkout:
    - A legacy persisted endpoint/satellite marker normalizes to
      streambox, so the box auto-migrates to the streambox install path.
 
+Hardware tier (detected on this host): $(detect_hardware_tier)
+  - Informational; orthogonal to the profile. The real install fails
+    fast on a non-arm64 architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1.
+    See docs/install-hardware-tier-and-staleness.md.
+
 2. System packages
    - apt-get update.
    - Streambox renderer/DSP stack runtime/build packages:
@@ -359,6 +472,13 @@ Profile guard:
   - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
 
+Hardware tier (detected on this host): $(detect_hardware_tier)
+  - Informational; orthogonal to the profile. Build strategy keys off
+    RAM (the Rust low-memory profile under 768 MB; the WebRTC AEC3 -j
+    cap budgets ~1.5 GB/job). The real install fails fast on a non-arm64
+    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. See
+    docs/install-hardware-tier-and-staleness.md.
+
 1. System packages
    - apt-get update.
    - Core runtime/build packages:
@@ -443,7 +563,7 @@ Profile guard:
      site files) superseded by the GitHub Pages OAuth bounce page.
 
 5. Services and live actions
-   - Create the `jasper` group and the non-root service users
+   - Create the \`jasper\` group and the non-root service users
      (jasper-voice / jasper-mux / jasper-input / jasper-control /
      jasper-web) the Tier-A daemons drop to, plus the Phase 4
      secret-compartment groups.
@@ -1960,6 +2080,7 @@ main() {
     if install_profile_legacy_marker_migrating; then
         echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=streambox source=marker"
     fi
+    hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
         persist_install_profile "${install_profile}"

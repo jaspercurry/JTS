@@ -294,6 +294,15 @@ design note + scoped PR; flag what needs a real plug/unplug hardware pass.
 
 ### Workstream D — Hardware-tier awareness, cross-tier testing, and the stale-update question
 
+> **Design note + recommendation delivered:**
+> [`install-hardware-tier-and-staleness.md`](install-hardware-tier-and-staleness.md).
+> Bottom line: tier ≠ profile (add detected RAM/CPU/arch up front,
+> orthogonal to full/streambox); migrations are convergent so far-behind
+> is *not* a migration-pile-up risk — it amplifies risk via cold build
+> caches, so stepwise updates are **rejected** in favour of safe builds
+> (A) + atomic updates (B); plus a cross-SKU test strategy and a scoped
+> tier-detection + arch-guard change in `deploy/install.sh`.
+
 ```text
 Read docs/install-update-resilience-plan.md for full context (the hardware-tier
 and version-skew axes; the install-profile prior art).
