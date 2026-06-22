@@ -67,21 +67,12 @@ DEFAULT_SMOOTHING_FRACTION = 24
 SILENT_PEAK_DBFS = -45.0  # at/below this the capture is effectively silent
 PRESENT_MIN_SEPARATION_DB = 0.0  # in-band must be at least as strong as out
 OUT_OF_BAND_SEPARATION_DB = -3.0  # clearly more energy outside the band
-DEFAULT_NULL_THRESHOLD_DB = 6.0  # crossover suckout that flags polarity/delay
-
-# Reverse-polarity null-depth pass gate (L2 phase-aware crossover alignment).
-# The canonical method (docs/HANDOFF-active-speaker-dsp.md "Delay, Phase, and
-# Null Verification") inverts one adjacent driver and sweeps the crossover band:
-# a strong, centred null proves the branches meet in phase on the design axis.
-# A healthy LR4 reaches a deep null; below ~20 dB warrants a delay / polarity /
-# wiring / hardware investigation. Used only when ``expect_null=True``.
-REVERSE_NULL_MIN_DB = 20.0  # reverse-polarity null this deep counts as aligned
-REVERSE_NULL_STRONG_DB = 25.0  # a "strong pass" the proposal can highlight
+DEFAULT_NULL_THRESHOLD_DB = 6.0  # a crossover null this deep is "present"
 
 # Surfaced frequency-response curve (per-driver + summed), so the maintainer can
 # eyeball Fc/slope by hand. Downsampled log-spaced so the JSON stays small. This
-# module never auto-rewrites Fc/slope — it only proposes level/delay/polarity and
-# surfaces the evidence.
+# module never auto-rewrites Fc/slope — it only surfaces the evidence; the
+# polarity proposal lives in crossover_alignment.py.
 FR_CURVE_MAX_POINTS = 72
 
 # Overlap-band level (L1 phone level matching). For a per-driver near-field
@@ -167,12 +158,8 @@ class DriverAcousticResult:
     # the trim math (jasper.active_speaker.baseline_profile) can fail closed.
     overlap_levels: tuple[dict[str, Any], ...] = ()
     # L2 calibrated-mic evidence. ``calibrated`` is True when a real measurement
-    # mic's calibration curve was applied to the magnitude. ``arrival_s`` is the
-    # direct-sound arrival time (seconds, recording time base) — the relative
-    # delta between two drivers is the "delay whichever arrives earlier" estimate
-    # (None when the capture was unusable). ``fr_curve`` is the downsampled
-    # (calibrated) magnitude response surfaced for the maintainer.
-    arrival_s: float | None = None
+    # mic's calibration curve was applied to the magnitude. ``fr_curve`` is the
+    # downsampled (calibrated) magnitude response surfaced for the maintainer.
     fr_curve: dict[str, Any] | None = None
     calibrated: bool = False
 
@@ -190,7 +177,6 @@ class DriverAcousticResult:
             "mic_clipping": self.mic_clipping,
             "quality": self.quality,
             "overlap_levels": [dict(entry) for entry in self.overlap_levels],
-            "arrival_s": self.arrival_s,
             "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
         }
@@ -290,10 +276,10 @@ def _capture_to_magnitude(
     has_mic_calibration: bool,
     calibration: "CalibrationCurve | None" = None,
 ):
-    """Shared capture → (quality, freqs, smoothed_magnitude_db, arrival_idx).
+    """Shared capture → (quality, freqs, smoothed_magnitude_db) pipeline.
 
-    Returns ``(quality, None, None, None)`` when the capture fails quality gating
-    — deconvolving an unsafe (clipped / too short / wrong rate) capture would
+    Returns ``(quality, None, None)`` when the capture fails quality gating —
+    deconvolving an unsafe (clipped / too short / wrong rate) capture would
     fabricate a curve, so we stop and report the failure instead.
 
     When ``calibration`` is supplied (an L2 calibrated measurement mic), the
@@ -301,8 +287,7 @@ def _capture_to_magnitude(
     ``correction.calibration.apply_calibration_curve`` the room-correction path
     uses, so the surfaced FR is calibrated and the null-depth shoulders (taken at
     different frequencies) are corrected rather than relying on the additive cal
-    cancelling. ``arrival_idx`` is the direct-sound peak sample index (recording
-    time base) for the L2 delay estimate.
+    cancelling.
     """
     import numpy as np
 
@@ -330,7 +315,7 @@ def _capture_to_magnitude(
         truncated_from_samples=raw_capture_samples,
     )
     if report.failed:
-        return report, None, None, None
+        return report, None, None
 
     reference, _ = sweep_mod.synchronized_swept_sine(
         f1=float(sweep_meta["f1"]),
@@ -339,7 +324,7 @@ def _capture_to_magnitude(
         sample_rate=sample_rate,
         amplitude_dbfs=float(sweep_meta["amplitude_dbfs"]),
     )
-    ir, arrival_idx = deconv.deconvolve_with_arrival(
+    ir = deconv.deconvolve(
         captured.astype(np.float64),
         reference.astype(np.float64),
         sample_rate=sr,
@@ -350,7 +335,7 @@ def _capture_to_magnitude(
     )
     if calibration is not None:
         smoothed = calibration_mod.apply_calibration_curve(freqs, smoothed, calibration)
-    return report, freqs, smoothed, arrival_idx
+    return report, freqs, smoothed
 
 
 def _band_mean_db(freqs, mag_db, lo_hz: float, hi_hz: float) -> float | None:
@@ -491,7 +476,7 @@ def analyze_driver_capture(
     if not (0 < lo < hi):
         raise DriverAcousticsError(f"invalid passband_hz: {passband_hz!r}")
 
-    report, freqs, mag_db, arrival_idx = _capture_to_magnitude(
+    report, freqs, mag_db = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
         calibration=calibration,
     )
@@ -499,12 +484,6 @@ def analyze_driver_capture(
     mic_clipping = report.clipped_fraction >= 1e-4
     silent = report.peak_dbfs <= SILENT_PEAK_DBFS
     calibrated = calibration is not None
-    sample_rate = int(sweep_meta["sample_rate"])
-    arrival_s = (
-        float(arrival_idx) / sample_rate
-        if arrival_idx is not None and sample_rate > 0
-        else None
-    )
 
     if freqs is None:
         return DriverAcousticResult(
@@ -522,7 +501,6 @@ def analyze_driver_capture(
                 None, None, overlap_fcs,
                 capture_usable=False, silent=silent, mic_clipping=mic_clipping,
             ),
-            arrival_s=None,
             fr_curve=None,
             calibrated=calibrated,
         )
@@ -573,9 +551,6 @@ def analyze_driver_capture(
             freqs, mag_db, overlap_fcs,
             capture_usable=True, silent=silent, mic_clipping=mic_clipping,
         ),
-        # A silent capture's IR peak is noise, not an arrival — null it so the
-        # delay estimate never reads garbage.
-        arrival_s=(arrival_s if not silent else None),
         fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
     )
@@ -597,14 +572,16 @@ def analyze_summed_crossover(
     octave-away shoulders, which cancels the unknown absolute reference.
 
     Two capture kinds, selected by ``expect_null`` (the canonical reverse-polarity
-    method in docs/HANDOFF-active-speaker-dsp.md):
+    method in docs/HANDOFF-active-speaker-dsp.md). Both use the same
+    ``null_threshold_db`` to decide whether a null is *present*; the per-capture
+    verdict is a "did a null form?" signal, and the cap-independent polarity call
+    (reverse-vs-in-phase margin) lives in ``crossover_alignment``:
 
     * ``expect_null=False`` (normal, in-phase): a correct crossover sums flat, so
       a deep null (``>= null_threshold_db``) is the polarity/delay PROBLEM.
     * ``expect_null=True`` (one adjacent driver inverted): a correct, time-aligned
       crossover now CANCELS, so a deep null (``>= null_threshold_db``) is the PASS
-      signal and a shallow one flags delay/polarity/wiring/hardware. Pass
-      ``null_threshold_db=REVERSE_NULL_MIN_DB`` for this mode.
+      signal and a shallow one flags delay/polarity/wiring/hardware.
 
     ``calibration`` (L2 calibrated mic) corrects the magnitude before the shoulder
     comparison; ``has_mic_calibration`` alone only relaxes the quality gate.
@@ -616,7 +593,7 @@ def analyze_summed_crossover(
             f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
         )
 
-    report, freqs, mag_db, _arrival_idx = _capture_to_magnitude(
+    report, freqs, mag_db = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
         calibration=calibration,
     )

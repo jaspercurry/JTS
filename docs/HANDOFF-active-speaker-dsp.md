@@ -1189,17 +1189,20 @@ Delay alignment is measured, not guessed.
   measured in-phase sum and the reverse-polarity null are both
   captured after loading the actual CamillaDSP profile.
 
-> **Implementation (L2, landed 2026-06-21).** The calibrated-mic delay/polarity
-> proposal that implements this section lives in
+> **Implementation (L2, landed 2026-06-21, corrected 2026-06-21).** The
+> calibrated-mic **polarity** proposal that implements this section lives in
 > [`jasper/active_speaker/crossover_alignment.py`](../jasper/active_speaker/crossover_alignment.py)
-> (the `phase_aware` gate + the measured "delay the earlier arriver" + reverse-null
-> polarity proposal) and `driver_acoustics`'s calibrated capture
-> (`analyze_summed_crossover(expect_null=…)`, `deconv.deconvolve_with_arrival`). The
-> operational write-up + the `/active-speaker/crossover-alignment` preview/confirm
-> routes are in [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
-> "L2 calibrated crossover alignment". The interactive delay-walk optimizer (step
-> delay to maximize the reverse-polarity null) is the documented follow-up; L2 ships
-> the single-shot estimate + the null check that seed and validate it.
+> (the `phase_aware` gate + the reverse-vs-in-phase null-margin polarity call) and
+> `driver_acoustics`'s calibrated capture (`analyze_summed_crossover(expect_null=…)`).
+> The operational write-up + the `/active-speaker/crossover-alignment` preview route
+> are in [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md) "L2
+> calibrated crossover alignment". **The delay VALUE is deliberately NOT proposed
+> from per-driver IR arrivals** — JTS's near-field captures are browser-recorded
+> with no sample-sync to playback, so an arrival delta is capture jitter, not
+> time-of-flight (consistent with "impulse response … [is] not [a] substitute for
+> phase-aware summation" above). The delay value comes from the timing-locked
+> reverse-polarity null **walk**, the documented follow-up; L2 ships the polarity
+> proposal + the in-phase-null delay *status* that flags when to run it.
 
 ## CamillaDSP Profile Architecture
 

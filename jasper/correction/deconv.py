@@ -127,40 +127,6 @@ def deconvolve(
     Returns:
       ir (float32): the room impulse response, windowed.
     """
-    ir, _peak_idx = deconvolve_with_arrival(
-        captured,
-        sweep,
-        sample_rate,
-        pre_arrival_ms=pre_arrival_ms,
-        post_arrival_ms=post_arrival_ms,
-        epsilon_relative=epsilon_relative,
-        max_capture_seconds=max_capture_seconds,
-    )
-    return ir
-
-
-def deconvolve_with_arrival(
-    captured: np.ndarray,
-    sweep: np.ndarray,
-    sample_rate: int,
-    *,
-    pre_arrival_ms: float = DEFAULT_PRE_ARRIVAL_MS,
-    post_arrival_ms: float = DEFAULT_POST_ARRIVAL_MS,
-    epsilon_relative: float = DEFAULT_EPSILON_RELATIVE,
-    max_capture_seconds: float | None = None,
-) -> tuple[np.ndarray, int]:
-    """Like :func:`deconvolve`, but also return the direct-arrival sample index.
-
-    The windowed IR :func:`deconvolve` returns is re-centred on the arrival peak,
-    which erases the absolute time-of-flight. The second return value is that peak
-    index in the *recording's own time base* (the argmax of |h| before windowing).
-    Two captures deconvolved against the SAME reference sweep share that time base,
-    so the difference of their peak indices is the drivers' relative acoustic
-    arrival offset — the "delay whichever source arrives earlier" signal. It is an
-    estimate (separate near-field captures are not loop-back timing-locked, so
-    capture-start jitter and unequal mic distance enter), validated downstream by
-    the reverse-polarity null-depth check; never an authoritative auto-apply.
-    """
     if captured.ndim != 1 or sweep.ndim != 1:
         raise ValueError(
             f"captured and sweep must be 1-D; got shapes "
@@ -217,7 +183,7 @@ def deconvolve_with_arrival(
         "deconv: n_pad=%d peak_idx=%d ir_len=%d pre=%d post=%d eps=%.3g",
         n_pad, peak_idx, len(ir), pre_samples, post_samples, eps,
     )
-    return ir, peak_idx
+    return ir
 
 
 def magnitude_response(
