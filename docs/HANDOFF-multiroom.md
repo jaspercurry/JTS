@@ -1799,11 +1799,12 @@ front-run the complexity nor forget where it belongs.
    **Stage D (observability) — BUILT 2026-06-21.** The tight regime is now
    visible JTS-side without reading the journal by hand:
    `/state.grouping.airplay_latency_fit` (computed budget-vs-need, fail-soft,
-   `{"applicable": false}` off the bonded-leader path), a grouping doctor
-   check (`check_grouping_airplay_latency`), and the AirPlay-health event
-   ring classifying shairport's "too short to accommodate an offset" warning.
-   See `jasper/multiroom/airplay_latency.py` and HANDOFF-airplay.md "JTS-side
-   observability". The Step-0 measurement (jts.local: 9/9 observed sessions
+   `{"applicable": false}` off the bonded-leader path), the same field on
+   `/rooms.json` rendered as an "AirPlay lip-sync" row in the `/rooms` bond
+   card, a grouping doctor check (`check_grouping_airplay_latency`), and the
+   AirPlay-health event ring classifying shairport's "too short to accommodate
+   an offset" warning. See `jasper/multiroom/airplay_latency.py` and
+   HANDOFF-airplay.md "JTS-side observability". The Step-0 measurement (jts.local: 9/9 observed sessions
    on the default ~2.0 s budget) showed the free regime dominates, so the
    surface is scoped down (quiet when comfortable, journal read only when
    actually a bonded leader). Still owed: the per-app **video** budget sweep

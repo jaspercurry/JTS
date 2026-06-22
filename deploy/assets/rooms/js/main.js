@@ -42,6 +42,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
+import { airplayLipSyncRow } from "./grouping-view.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -212,21 +213,15 @@ function groupingBody(g) {
   if (g.buffer_ms != null) rows.push(defRow("Buffer", g.buffer_ms + " ms"));
   if (g.codec) rows.push(defRow("Codec", g.codec));
   // Bonded-leader AirPlay lip-sync (jasper.multiroom.airplay_latency): a row
-  // only when this speaker is an active bonded leader (applicable). Quiet
-  // "Synced" badge when the offset fits; an amber "Lagging ~N ms" badge + a
-  // note (pushed below) when the sender's budget can't absorb the bonded
-  // round-trip. Solo/follower => applicable:false => no row at all.
-  const fit = g.airplay_latency_fit && typeof g.airplay_latency_fit === "object"
-    ? g.airplay_latency_fit : null;
-  const fitTight = fit && fit.applicable && fit.tight === true;
-  const fitLagMs = fit ? Math.round((fit.residual_lag_sec || 0) * 1000) : 0;
-  if (fit && fit.applicable) {
-    const fitBadge = h(
-      "span.badge", null, fitTight ? "Lagging ~" + fitLagMs + " ms" : "Synced",
-    );
-    fitBadge.style.setProperty(
-      "--tone", fitTight ? "var(--status-warn)" : "var(--status-ok)",
-    );
+  // only when this speaker is an active bonded leader. The presentation
+  // DECISION is the pure airplayLipSyncRow (unit-tested); here we just build
+  // the DOM. Quiet "Synced" badge when the offset fits; amber "Lagging ~N ms"
+  // badge + a note (pushed below) when the sender's budget can't absorb the
+  // bonded round-trip. Solo/follower => null => no row at all.
+  const fitRow = airplayLipSyncRow(g.airplay_latency_fit);
+  if (fitRow) {
+    const fitBadge = h("span.badge", null, fitRow.label);
+    fitBadge.style.setProperty("--tone", fitRow.tone);
     rows.push([h("dt", null, "AirPlay lip-sync"), h("dd", null, fitBadge)]);
   }
   // Runtime health (jasper.multiroom.state.derive_grouping_runtime):
@@ -248,13 +243,8 @@ function groupingBody(g) {
   if (rt && rt.detail) {
     out.push(h("p.info-card__note", null, String(rt.detail)));
   }
-  if (fitTight) {
-    out.push(h("p.info-card__note", null,
-      "AirPlay audio plays ~" + fitLagMs + " ms after video: the sender's "
-      + "latency budget is too short for the bonded round-trip. The sender's "
-      + "budget can't be changed locally; if the Snapcast buffer was raised "
-      + "above its default, lowering it reduces the lag.",
-    ));
+  if (fitRow && fitRow.note) {
+    out.push(h("p.info-card__note", null, fitRow.note));
   }
   return h("div", null, ...out);
 }

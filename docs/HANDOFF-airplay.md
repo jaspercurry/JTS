@@ -1386,8 +1386,11 @@ path):
   speaker is an active bonded leader (the journal is read ONLY in that rare
   case, gated behind a one-line config parse, so a solo speaker pays nothing;
   and even a leader's read is TTL-cached via `cached_notified_frames` so the
-  ~5–7 s page polls cannot spawn a `journalctl` per request — all callers
-  share one cached read). The gate is the shared `config.is_active_leader` —
+  ~5–7 s page polls cannot spawn a `journalctl` per request — bounded to ~2
+  reads/TTL per process, and `/state` (jasper-control) and `/rooms.json`
+  (jasper-web) are separate daemons so each keeps its own cache: ~4/min worst
+  case with both pages open on a bonded leader, still negligible). The gate is
+  the shared `config.is_active_leader` —
   the SAME predicate the reconciler uses to WRITE the offset
   (`airplay_grouping_env`), so the surface can never claim a fit for an offset
   that is not armed. The reader (`read_notified_frames`) is fail-soft: an

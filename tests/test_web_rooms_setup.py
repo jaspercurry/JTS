@@ -31,6 +31,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
+import subprocess
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -2141,3 +2143,25 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     assert leader_body["peer_name"] == "JTS3"
     assert follower_body["peer_addr"] == ""
     assert follower_body["peer_name"] == ""
+
+
+_NODE = shutil.which("node")
+_GROUPING_VIEW_TEST = _REPO / "tests" / "js" / "rooms_grouping_view_test.mjs"
+
+
+def test_grouping_view_pure_helpers_via_node():
+    """The /rooms bond-card presentation logic (grouping-view.js
+    airplayLipSyncRow) is a dependency-free module unit-tested with node —
+    mirroring active_speaker_ui_test.mjs. Covers the AirPlay-lip-sync row
+    branches (no row off-leader, Synced vs Lagging, ms formatting) that the
+    DOM-assembly in main.js consumes. Skips when node isn't on PATH."""
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_GROUPING_VIEW_TEST)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["ok"] is True
