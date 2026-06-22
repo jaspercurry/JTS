@@ -66,18 +66,23 @@ if grep -qiE 'Notified latency is' "$tmp"; then
     grep -ioE 'Notified latency is [0-9]+ frames' "$tmp" | sort -u | while read -r line; do
         frames="$(printf '%s' "$line" | grep -oE '[0-9]+')"
         # AirPlay frames are 44100 Hz; total scheduled latency adds shairport's
-        # fixed +11035 (the value the backend offset lives inside).
+        # fixed +11035 (the value the backend offset lives inside). The
+        # canonical, unit-tested home of these constants (77175 / 11035 / 44100
+        # / the 0.5 s backend buffer) is jasper/multiroom/airplay_latency.py —
+        # keep this awk in sync with it if a shairport rate/firmware change lands.
         secs="$(awk -v f="$frames" 'BEGIN{printf "%.3f", (f+11035)/44100}')"
         echo "    ${line}  -> ~${secs}s total scheduled latency"
     done
-    echo "TIGHT-REGIME CHECK  : compare that budget against 150 ms + your"
-    echo "    Snapcast buffer_ms (default 400 ms => need ~0.55 s). If the"
-    echo "    budget is below that, expect bounded residual lip-sync lag when bonded."
+    echo "TIGHT-REGIME CHECK  : shairport drops the offset (audio plays late) when"
+    echo "    the budget < 150 ms + buffer_ms + shairport's 0.5 s backend buffer"
+    echo "    (default buffer_ms 400 => need ~0.55 s => threshold ~1.05 s). Below"
+    echo "    that, expect bounded residual lip-sync lag (~the full need) when bonded."
 elif [[ -n "$stream" ]]; then
     echo "Negotiated latency  : DEFAULT (no 'Notified latency' line)"
-    echo "    => 77175 frames (~1.75 s) + 11035 = ~2.0 s budget. FREE regime:"
-    echo "    a bonded leader's ~150 ms + Snapcast buffer_ms fits with >1 s"
-    echo "    to spare; a bond-aware offset fully hides it."
+    echo "    => 77175 frames (~1.75 s) + 11035 = ~2.0 s budget. With the default"
+    echo "    buffer_ms (400) that clears the ~1.05 s threshold with ~0.95 s to"
+    echo "    spare (FREE regime). NB: a buffer_ms above ~1350 would be tight even"
+    echo "    at this default budget — check jasper-doctor / /state if you raised it."
 else
     echo "No AirPlay session detected in the window."
     echo "    Start AirPlay audio to ${PI_HOST} and re-run. If you saw a"

@@ -189,6 +189,9 @@ function summarizeAnomalies(s) {
   if (s.shairport_packet_drops) parts.push(s.shairport_packet_drops + " packet drops");
   if (s.shairport_sync_errors) parts.push(s.shairport_sync_errors + " sync corrections");
   if (s.shairport_underruns) parts.push(s.shairport_underruns + " shairport underruns");
+  // shairport_events buckets out-of-sequence / broken-pipe / offset-too-short
+  // (bonded-leader lip-sync) — surfaced here so those counts are not invisible.
+  if (s.shairport_events) parts.push(s.shairport_events + " shairport events");
   if (s.fanin_airplay_xruns) parts.push(s.fanin_airplay_xruns + " AirPlay fan-in xruns");
   if (s.fanin_output_xruns) parts.push(s.fanin_output_xruns + " output xruns");
   if (s.camilla_short_reads) parts.push(s.camilla_short_reads + " Camilla short reads");

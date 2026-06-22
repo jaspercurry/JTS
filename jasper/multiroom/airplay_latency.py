@@ -73,10 +73,21 @@ SHAIRPORT_FIXED_ADD_FRAMES = 11035
 AIRPLAY_FRAME_RATE_HZ = 44100
 # The solo speaker's fixed downstream delay above the AP2 anchor baseline
 # (CamillaDSP + fan-in + outputd). The derived solo offset is ~-0.1493 s;
-# 0.150 is the documented round-number estimate the probe's tight-regime
-# threshold uses. First-order on purpose — this surface flags the regime,
-# it does not re-derive the offset.
+# 0.150 is the documented round-number estimate the tight-regime threshold
+# uses. First-order on purpose — this surface flags the regime, it does not
+# re-derive the offset. GROUND TRUTH for the real per-box value:
+# derive_audio_backend_latency_offset in deploy/bin/jasper-apply-airplay-mode
+# (a live sum of target_level/chunksize/fan-in/outputd frames). Re-check this
+# constant if those pipeline buffer defaults change materially.
 PIPELINE_FIXED_DELAY_SEC = 0.150
+# shairport's own desired output backend buffer
+# (audio_backend_buffer_desired_length_in_seconds in
+# deploy/shairport-sync.conf.template) — it sits ALONGSIDE the offset inside
+# the AP2 budget. shairport refuses (and DROPS) the whole latency offset when
+# budget < |offset| + this buffer, so the bonded-leader need must clear
+# need + this term, not just need. Verified against shairport-sync rtp.c
+# (rtp_ap2_control_receiver: net_latency<=0 → "too short" + offset dropped).
+SHAIRPORT_BACKEND_BUFFER_SEC = 0.5
 
 # Float slack so an exactly-fits budget is not reported as tight.
 _FIT_EPSILON_SEC = 1e-6
@@ -85,7 +96,10 @@ _FIT_EPSILON_SEC = 1e-6
 # bond is long-lived; a 30-minute window comfortably covers the current /
 # most-recent AirPlay session without scanning the whole journal.
 _JOURNAL_LOOKBACK = "-30min"
-_JOURNAL_TIMEOUT_SEC = 5
+# Matches airplay_health.SUBPROCESS_TIMEOUT_SEC and the other /state probes:
+# the read returns tiny server-side-filtered output (-g) and never legitimately
+# needs longer, so a 2 s cap bounds the worst-case cold-window /state stall.
+_JOURNAL_TIMEOUT_SEC = 2
 
 _NOTIFIED_RE = re.compile(r"Notified latency is (\d+) frames")
 
@@ -99,8 +113,10 @@ class BondedAirplayLatencyFit:
     budget_source: str  # "journal" (a Notified-latency line) | "default"
     budget_sec: float  # AP2 latency budget the sender authored
     need_sec: float  # ~150 ms pipeline + buffer_ms the offset must hide
-    tight: bool  # budget cannot fully accommodate the need
-    residual_lag_sec: float  # bounded lip-sync lag when tight (0 when it fits)
+    tight: bool  # budget cannot fit need + shairport's backend buffer
+    # When tight, shairport DROPS the whole offset, so the entire need is
+    # uncompensated → realized lip-sync lag == need_sec (not the shortfall).
+    residual_lag_sec: float
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -123,6 +139,16 @@ def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLate
     as absent — the same fail-safe direction as
     ``jasper-apply-airplay-mode``'s offset clamp: never assume a smaller
     budget than the default from a garbage reading.
+
+    The tight condition mirrors shairport's own (verified against
+    rtp.c ``rtp_ap2_control_receiver``): shairport applies the negative
+    backend offset only while ``budget >= |offset| + backend_buffer``; below
+    that it logs "stream latency too short to accommodate an offset" and
+    DROPS the offset entirely. So this surface flags tight at
+    ``budget < need + SHAIRPORT_BACKEND_BUFFER_SEC`` and, because the offset
+    is dropped wholesale when that happens, reports the realized lag as the
+    FULL ``need`` (the whole pipeline+buffer delay goes uncompensated), not
+    the shortfall.
     """
     if notified_frames is None or notified_frames <= 0:
         frames = AP2_DEFAULT_NOTIFIED_FRAMES
@@ -133,8 +159,7 @@ def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLate
 
     budget_sec = (frames + SHAIRPORT_FIXED_ADD_FRAMES) / AIRPLAY_FRAME_RATE_HZ
     need_sec = PIPELINE_FIXED_DELAY_SEC + max(0, buffer_ms) / 1000.0
-    shortfall = need_sec - budget_sec
-    tight = shortfall > _FIT_EPSILON_SEC
+    tight = (need_sec + SHAIRPORT_BACKEND_BUFFER_SEC) - budget_sec > _FIT_EPSILON_SEC
     return BondedAirplayLatencyFit(
         buffer_ms=buffer_ms,
         negotiated_frames=frames,
@@ -142,7 +167,7 @@ def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLate
         budget_sec=budget_sec,
         need_sec=need_sec,
         tight=tight,
-        residual_lag_sec=shortfall if tight else 0.0,
+        residual_lag_sec=need_sec if tight else 0.0,
     )
 
 
@@ -208,6 +233,11 @@ def read_notified_frames(
 # playback) on a 1 GB Pi. The cache bounds that to <=1 read per TTL across all
 # callers, and caches the fail-soft None so a wedged journalctl is not hammered.
 # Mirrors the _source_availability_cache pattern in control/state_aggregate.py.
+# Deliberately NOT keyed on bond identity: the is_active_leader gate in
+# bonded_airplay_latency_snapshot suppresses reads entirely while solo/follower,
+# so the only staleness window is a sub-TTL unbond→rebond, whose worst case is a
+# fail-soft, safe-direction value for <=30 s — not worth a cache-invalidation
+# hook on every bond transition.
 _NOTIFIED_FRAMES_TTL_SEC = 30.0
 _notified_frames_cache: tuple[float, int | None] | None = None
 _notified_frames_lock = threading.Lock()
@@ -219,7 +249,10 @@ def cached_notified_frames(
     reader: Callable[[], int | None] = read_notified_frames,
 ) -> int | None:
     """:func:`read_notified_frames` behind a process-wide TTL cache (monotonic
-    clock, thread-safe). ``now`` / ``reader`` are injectable for tests."""
+    clock). The lock guards the cache slot only; the reader runs OUTSIDE the
+    lock so a slow journalctl cannot serialize concurrent /state requests — so
+    concurrent callers may double-read on a cold window (harmless). ``now`` /
+    ``reader`` are injectable for tests."""
     global _notified_frames_cache
     with _notified_frames_lock:
         cached = _notified_frames_cache

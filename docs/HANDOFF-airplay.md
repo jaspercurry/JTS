@@ -1367,7 +1367,18 @@ path):
   pure `assess_fit(buffer_ms, notified_frames)` computes the budget
   (`(frames + 11035) / 44100`; the default 77175 when no `Notified
   latency` line) vs. the need (`~150 ms + buffer_ms`) and flags
-  `tight` + a bounded `residual_lag_sec`. Surfaced fail-soft at
+  `tight` + a bounded `residual_lag_sec`. **The tight test mirrors
+  shairport's own** (verified against `rtp.c` `rtp_ap2_control_receiver`,
+  `net_latency <= 0`): shairport applies the negative offset only while
+  `budget ≥ |offset| + audio_backend_buffer_desired_length` (0.5 s in
+  `shairport-sync.conf.template`); below that it logs "too short" and
+  **drops the offset entirely**. So `tight` fires at
+  `budget < need + 0.5 s` and `residual_lag_sec` is the FULL `need` (the
+  whole pipeline+buffer delay goes uncompensated), not the shortfall.
+  Consequence: with the default `buffer_ms` (400 → need ~0.55 s) the
+  threshold is ~1.05 s, far under the ~2.0 s default budget; but a
+  `buffer_ms` above ~1350 ms is tight **even at the default budget**.
+  Surfaced fail-soft at
   `/state.grouping.airplay_latency_fit` — `{"applicable": false}` unless
   this speaker is an active bonded leader (the journal is read ONLY in
   that rare case, gated behind a one-line config parse, so a solo speaker
@@ -1381,8 +1392,12 @@ path):
   a false warn.
 - **Doctor check** — `check_grouping_airplay_latency` (grouping domain)
   skips (`ok`, "n/a") on solo/follower and warns only when a bonded
-  leader's budget is genuinely too short, naming the residual lag and the
-  remediation (lower `buffer_ms` on `/rooms`).
+  leader's budget is genuinely too short, naming the residual lag. The
+  remediation is honest about the lever that exists: the sender budget is
+  AP2-authored (not growable locally), and `buffer_ms` has **no wizard
+  control** (it lives in `grouping.env` as `JASPER_GROUPING_BUFFER_MS`,
+  default 400), so the warn says to lower that env value if it was raised —
+  it does **not** point at a non-existent `/rooms` knob.
 - **Reactive ground truth** — shairport's own "stream latency … too short
   to accommodate an offset" warning is classified by the AirPlay-health
   sampler (`classify_journal_line` →
@@ -1399,6 +1414,10 @@ journals on jts.local found **9 real AP2 (Realtime) sessions, zero
 logged. Every observed session used the default ~2.0 s budget (the free
 regime). This is why the surface above is deliberately scoped down (quiet
 when comfortable, gated journal reads) rather than an always-on detector.
+(That measurement is about the *sender* budget; the corrected tight test
+also makes the regime reachable from JTS's side via a `buffer_ms` raised
+above ~1350 ms even at the default budget — a config the household controls
+and the doctor/`/state` now flag.)
 Caveat / still owed: those sessions are audio-app AirPlay; a per-app
 **video** sweep (Apple TV app, YouTube/Safari, QuickTime across a couple
 of iOS/macOS versions) with `scripts/airplay-latency-probe.sh` is a
