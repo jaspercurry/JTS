@@ -60,6 +60,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_REGISTRY_PATH = "/var/lib/jasper-intsecrets/spotify/accounts.json"
@@ -84,10 +86,17 @@ _CACHE_HANDLER_CLS = None
 
 
 def build_cache_handler(cache_path: str):
-    """Return a spotipy ``CacheFileHandler`` that re-chmods the token cache to
-    0640 (group-readable) after every write, so the dropped non-root
-    Spotify readers can read the token jasper-voice persisted. Pass it to
+    """Return a spotipy ``CacheFileHandler`` that publishes token caches
+    atomically at 0640 (group-readable), so every dropped non-root Spotify
+    reader can read refreshed tokens. Pass it to
     ``SpotifyPKCE(cache_handler=...)`` in place of ``cache_path=...``.
+
+    We intentionally do not call spotipy's stock in-place writer. Existing
+    cache files may be owned by a different service user (or by root after a
+    migration) and mode 0640, so another jasper-intsecrets member can read but
+    cannot truncate them. Publishing a fresh tempfile into the group-writable
+    setgid cache directory preserves the final 0640 mode while letting voice,
+    control, mux, and web all refresh tokens.
 
     spotipy is imported lazily (the wheel is absent in some hardware-free test
     envs); the subclass is built once and memoized on the module."""
@@ -97,14 +106,12 @@ def build_cache_handler(cache_path: str):
 
         class _GroupReadableCacheFileHandler(CacheFileHandler):
             def save_token_to_cache(self, token_info):  # noqa: ANN001
-                super().save_token_to_cache(token_info)
-                try:
-                    os.chmod(self.cache_path, SPOTIFY_CACHE_FILE_MODE)
-                except OSError as exc:  # best-effort: never break a token save
-                    logger.warning(
-                        "spotify cache chmod 0640 failed for %s: %s",
-                        self.cache_path, exc,
-                    )
+                atomic_write_text(
+                    self.cache_path,
+                    json.dumps(token_info),
+                    mode=SPOTIFY_CACHE_FILE_MODE,
+                    group_from_parent=True,
+                )
 
         _CACHE_HANDLER_CLS = _GroupReadableCacheFileHandler
     return _CACHE_HANDLER_CLS(cache_path=cache_path)

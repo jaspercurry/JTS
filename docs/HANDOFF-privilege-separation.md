@@ -247,8 +247,8 @@ the dropped readers would not lose access. Phase 4a/4b later narrowed those
 again: Google moved to `jasper-secrets`; Spotify moved to `jasper-intsecrets`
 because voice/control/mux/web can all refresh tokens. The regression that led to
 the cache-mode guard is still relevant: before
-[`jasper.accounts.build_cache_handler`](../jasper/accounts.py) re-chmodded
-spotipy's `0600` writes, dropped readers logged "Couldn't read cache" on every
+[`jasper.accounts.build_cache_handler`](../jasper/accounts.py) published
+spotipy caches at `0640`, dropped readers logged "Couldn't read cache" on every
 poll (22k+/day on jasper-control) and reported linked accounts as needs-relink.
 Cross-user `/run` sockets work via the shared
 `jasper` group. A UNIX socket
@@ -672,10 +672,13 @@ group would isolate it; deferred). Spotify (creds + cache) is read by all of
 **The key 4a-vs-4b difference: Spotify is read-WRITE, Google was read-only.**
 spotipy persists refreshed tokens via `accounts.build_cache_handler` (the
 `_GroupReadableCacheFileHandler` in [`jasper/accounts.py`](../jasper/accounts.py),
-which re-chmods `0640` after every `save_token_to_cache`). voice, control
-(`volume_ops`), and mux all build routers that refresh → **all WRITE the cache**.
-So unlike 4a (voice read-only, no write grant), **4b has
-`/var/lib/jasper-intsecrets` in `ReadWritePaths` on voice + control + mux + web**.
+which atomically publishes a fresh `0640` cache file in the group-writable
+setgid cache directory). Do not switch this back to spotipy's stock in-place
+writer: existing cache files can be `root:jasper-intsecrets 0640`, which lets
+dropped services read but not truncate them. voice, control (`volume_ops`), and
+mux all build routers that refresh → **all WRITE the cache**. So unlike 4a
+(voice read-only, no write grant), **4b has `/var/lib/jasper-intsecrets` in
+`ReadWritePaths` on voice + control + mux + web**.
 
 **`accounts.json` bakes absolute paths** — like google's `token_path`, spotify's
 `accounts.json` stores absolute `cache_path` values
@@ -914,6 +917,8 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-06-21 (core-audio daemon root-surface section + the privsep
-read-access doctor check added 2026-06-21; the always-on core-audio daemons' root
-+ `StartLimitAction=reboot` status verified on `jts.local` that day)
+Last verified: 2026-06-22 (Spotify token cache write contract re-checked
+against `jasper.accounts.build_cache_handler` and live `jts3.local`
+`/var/lib/jasper-intsecrets/spotify/caches` permissions; core-audio daemon
+root-surface section + privsep read-access doctor check were last verified
+2026-06-21 on `jts.local`)
