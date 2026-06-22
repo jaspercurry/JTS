@@ -323,6 +323,12 @@ from .privsep import (
     check_input_readable_inputs,
     check_household_secret_readable,
 )
+from . import secret_compartments as secret_compartments
+from .secret_compartments import (
+    COMPARTMENTS as SECRET_COMPARTMENTS,
+    check_jasper_secrets_compartment,
+    check_jasper_intsecrets_compartment,
+)
 
 _STREAMBOX_OMITTED_DOCTOR_GROUPS = frozenset({
     "voice",
@@ -416,6 +422,10 @@ __all__ = [
     "check_voice_readable_inputs",
     "check_input_readable_inputs",
     "check_household_secret_readable",
+    "secret_compartments",
+    "SECRET_COMPARTMENTS",
+    "check_jasper_secrets_compartment",
+    "check_jasper_intsecrets_compartment",
     "check_env_file",
     "check_speaker_name",
     "check_state_dir",

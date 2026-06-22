@@ -21,6 +21,8 @@ chmod) runs for real against tmp paths.
 """
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -223,6 +225,38 @@ def test_google_tree_move_rewrites_accounts_json_token_path(tmp_path: Path):
     assert (secrets / "google_credentials.env").exists()
     assert not (state / "google_credentials.env").exists()
     assert not (secrets / "google" / "accounts.json.bak").exists()
+
+
+def test_phase4a_retightens_over_exposed_voice_keys_mode(tmp_path: Path):
+    """A pre-existing voice_keys.env manually widened to o+r (0644) must be
+    re-narrowed to 0640 on the next deploy. migrate_voice_keys_split only chmods
+    when it WRITES the file; the key here is already split, so without the
+    re-assert re-tighten the 0644 would survive — a silent confidentiality
+    regression. The key value must be preserved (mode-only change)."""
+    _etc, _state, secrets = _prep(tmp_path)
+    keys = secrets / "voice_keys.env"
+    keys.write_text("GEMINI_API_KEY=AIza-x\n")
+    os.chmod(keys, 0o644)
+
+    proc = _run(tmp_path, "migrate_secrets_phase4a")
+    assert proc.returncode == 0, proc.stderr
+
+    assert stat.S_IMODE(keys.stat().st_mode) == 0o640, "voice_keys.env must re-narrow to 0640"
+    assert _kv(keys) == {"GEMINI_API_KEY": "AIza-x"}, "the key value must be preserved"
+
+
+def test_phase4a_retighten_is_idempotent_for_correct_voice_keys(tmp_path: Path):
+    """An already-0640 voice_keys.env stays 0640 (the re-tighten is a no-op when
+    the mode is already correct)."""
+    _etc, _state, secrets = _prep(tmp_path)
+    keys = secrets / "voice_keys.env"
+    keys.write_text("OPENAI_API_KEY=sk-x\n")
+    os.chmod(keys, 0o640)
+
+    proc = _run(tmp_path, "migrate_secrets_phase4a")
+    assert proc.returncode == 0, proc.stderr
+
+    assert stat.S_IMODE(keys.stat().st_mode) == 0o640
 
 
 def test_secrets_migration_is_idempotent(tmp_path: Path):
