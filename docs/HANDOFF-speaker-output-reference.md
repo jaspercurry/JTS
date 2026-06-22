@@ -409,15 +409,27 @@ What exists:
   synchronous `FLUSH_SYNC` path for interruption and bounds this ack
   wait; on timeout it closes the ordered TTS socket so a late stale ack
   cannot be mistaken for a later flush.
-- Playout ledger: the off-path outputd core still contains the richer
-  per-segment ledger shape: active assistant/cue segments plus bounded
-  recent terminal history; provider item id; flushed frames; and
-  `audio_played_ms` estimated from the output clock and DAC delay rather
-  than treating written frames as heard frames. The packaged fan-in TTS
-  ack currently reports queue-level flush facts and an empty events list
-  (`max_audio_played_ms=0`, `events=[]`). Robust provider truncation
-  therefore still needs the final playout-ledger slice wired to the
-  active TTS/final-output path.
+- Playout ledger: outputd's core carries the DAC-clock-true per-segment
+  ledger (provider item id, flushed frames, and `audio_played_ms` estimated
+  from the output clock and DAC delay rather than treating written frames as
+  heard frames), used on a bonded multiroom member where assistant audio
+  mixes at the final output stage. In the solo packaged topology the
+  assistant path is owned by `jasper-fanin` (pre-CamillaDSP), which now
+  carries its OWN per-segment playout ledger
+  ([`rust/jasper-fanin/src/playout.rs`](../rust/jasper-fanin/src/playout.rs)):
+  the `FLUSH_SYNC` ack reports per-segment provider item id, queued/flushed
+  frames, and a real `max_audio_played_ms` plus `events[]` — replacing the
+  former hardcoded `max_audio_played_ms=0` / `events=[]`. Because fan-in
+  cannot see the DAC clock, its `audio_played_ms` is the MIX-COMMIT count:
+  frames popped into the program toward snd-aloop, paced by the blocking
+  snd-aloop write and therefore DAC-rate-paced, NOT a queued-frame estimate.
+  It over-reads true acoustic playout by the FIXED downstream pipeline depth
+  (CamillaDSP + the snd-aloop rings + outputd's content ring + the DAC
+  buffer/hw delay), which is the conservative direction for truncation;
+  closing that offset to exact DAC-clock precision (subtracting outputd's
+  reported DAC delay) is the remaining follow-up. Robust provider truncation
+  therefore now needs the provider adapters wired to CONSUME this
+  acknowledgement.
 - Runtime unit: `deploy/systemd/jasper-outputd.service` is enabled by
   `deploy/install.sh` and sets the ALSA/socket defaults.
   Optional lab retuning belongs in `/var/lib/jasper/outputd.env`; the
@@ -484,9 +496,10 @@ What is still intentionally not done:
   chip hardware being present.
 - Provider truncation is not yet wired to the local TTS flush and final
   playout-ledger acknowledgements. The contract is now documented here
-  and in `HANDOFF-voice-providers.md`; implementation still needs to
-  produce/consume the needed `audio_played_ms` and provider item
-  identity for provider-specific truncate/cancel commands.
+  and in `HANDOFF-voice-providers.md`; the local TTS flush now PRODUCES the
+  `audio_played_ms` and provider item identity (fan-in solo + outputd
+  bonded), so the remaining work is the provider adapters CONSUMING that
+  acknowledgement to issue provider-specific truncate/cancel commands.
 - The latest TTS ledger refinements (provider item id over IPC,
   synchronous flush acknowledgement, and DAC-delay-based drain
   accounting) still need Pi validation after an operator-approved
@@ -1334,8 +1347,18 @@ datum: how much assistant audio was actually heard.
   socket only for active bonded members. Solo stays fan-in-owned, while a
   bonded member mixes its own assistant audio in outputd after the
   snapcast round trip and before reference publication.
+- 2026-06-21: Wired the solo fan-in TTS `FLUSH_SYNC` ack to a real
+  per-segment playout ledger (`rust/jasper-fanin/src/playout.rs`),
+  replacing the hardcoded `max_audio_played_ms=0` / `events=[]`. fan-in is
+  pre-CamillaDSP and cannot see the DAC clock, so its `audio_played_ms` is
+  the mix-commit count (frames committed to the snd-aloop program,
+  DAC-rate-paced) and over-reads true playout by the fixed downstream
+  pipeline depth — the conservative direction for truncation. Exact
+  DAC-clock precision (subtracting outputd's reported DAC delay) and the
+  provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-18 (active-speaker runtime graph boundary rechecked
+Last verified: 2026-06-21 (fan-in solo `FLUSH_SYNC` playout-ledger ack
+verified against rust/jasper-fanin/src/{playout,tts}.rs; active-speaker runtime graph boundary rechecked
 against `jasper.active_speaker.runtime_contract`, install outputd-statefile
 selection, and doctor runtime graph check; Stage-7 outputd loop unification
 previously rechecked against

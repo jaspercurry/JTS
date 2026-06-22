@@ -739,8 +739,10 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   surviving `OutputCore` engine (assistant segments, loudness profiles,
   saturating mix, `PlayoutLedger`); the `FLUSH_SYNC` barge-in ack now
   carries DAC-true `audio_played_ms` + per-segment events from
-  `commit_prepared_period_with_dac_delay` (fanin's ack hardcodes 0 — the
-  outputd port makes it honest). EVERY bonded member's voice flips its TTS
+  `commit_prepared_period_with_dac_delay`. fanin's solo ack now carries its
+  own per-segment playout ledger too (`rust/jasper-fanin/src/playout.rs`),
+  but a mix-commit estimate that over-reads by the downstream pipeline
+  depth; outputd's port is the DAC-true one. EVERY bonded member's voice flips its TTS
   socket to its own outputd (inv-3: the leader's TTS never enters the
   shared stream — each speaker's OWN replies mix locally, post-round-trip,
   pre-reference, which is exactly inv-A's tap requirement; `PROGRAM_DUCK`

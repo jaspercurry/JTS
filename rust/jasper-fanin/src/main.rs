@@ -24,6 +24,7 @@
 mod config;
 mod loudness;
 mod mixer;
+mod playout;
 mod state;
 mod tts;
 mod watchdog;
