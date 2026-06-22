@@ -1,0 +1,226 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Bonded-leader AirPlay latency-fit assessment — OBSERVABILITY ONLY.
+
+This module does not touch the offset derivation (that lives in
+``deploy/bin/jasper-apply-airplay-mode``), the reconciler write path, or
+any audio path. It only answers a question for ``/state`` and
+``jasper-doctor``: *when this speaker is an active bonded leader receiving
+AirPlay, does its hidden downstream delay fit inside the budget the
+AirPlay sender negotiated?*
+
+Why this can fail to fit (the "Stage D" gap deferred in
+``docs/HANDOFF-airplay.md`` "AirPlay 2 latency is sender-authored — the
+bonded-leader consequence" and ``docs/HANDOFF-multiroom.md`` open
+question #2):
+
+  - AP2 latency is **sender-authored**: the sender ships a PTP anchor and
+    delays its own on-screen video to match. The receiver compensates its
+    own hidden downstream delay by feeding frames early
+    (``audio_backend_latency_offset_in_seconds``), but realized early-play
+    is capped by the pre-roll the sender's budget provides.
+  - A bonded LEADER plays its own channel through the Snapcast round-trip,
+    inserting ``buffer_ms`` (default 400 ms) on top of the ~150 ms solo
+    pipeline. ``jasper-grouping-reconcile`` folds that into the offset, but
+    if the sender's budget is smaller than ~150 ms + ``buffer_ms`` the
+    offset cannot fully fit and playout lands with bounded residual
+    lip-sync lag.
+
+The negotiated budget is knowable only from shairport's journal: shairport
+logs ``Notified latency is N frames.`` **only when N != 77175**, so the
+ABSENCE of that line means the default 77175 frames (~1.75 s; ~2.0 s with
+shairport's fixed +11035) — the comfortable/"free" regime. Empirically
+(jts.local, 2026-06-21) every observed real AP2 session used the default
+budget, so the tight regime is expected to be rare; this surface is
+deliberately quiet (warns only when the budget genuinely does not fit) and
+cheap (the journal is read only when this speaker is actually a bonded
+leader). The authoritative *reactive* signal — shairport's own "stream
+latency too short to accommodate an offset" warning — is surfaced
+separately through the AirPlay health sampler's event ring
+(:func:`jasper.control.airplay_health.classify_journal_line`).
+
+Pure/IO split mirrors the rest of the multiroom package
+(:func:`jasper.multiroom.state.derive_grouping_runtime` pure +
+``read_unit_active_states`` IO): :func:`assess_fit` is a PURE, total
+function of (buffer_ms, notified_frames); :func:`read_notified_frames` is
+the thin, bounded, fail-soft journal edge (injectable for tests).
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from .config import GroupingConfig, is_active_member
+
+# --- shairport / AP2 contract constants ---
+# All cross-checked against the live shairport-sync binary's format strings
+# and scripts/airplay-latency-probe.sh / docs/HANDOFF-airplay.md.
+
+# shairport's default notified latency; the ABSENCE of a "Notified latency"
+# line in the journal means the sender used exactly this value.
+AP2_DEFAULT_NOTIFIED_FRAMES = 77175
+# Fixed term shairport adds inside the PTP anchor (the value the backend
+# latency offset lives inside): set_ptp_anchor_info(..., frame_1 - 11035
+# - added_latency, ...).
+SHAIRPORT_FIXED_ADD_FRAMES = 11035
+# AP2 RTP audio frame clock.
+AIRPLAY_FRAME_RATE_HZ = 44100
+# The solo speaker's fixed downstream delay above the AP2 anchor baseline
+# (CamillaDSP + fan-in + outputd). The derived solo offset is ~-0.1493 s;
+# 0.150 is the documented round-number estimate the probe's tight-regime
+# threshold uses. First-order on purpose — this surface flags the regime,
+# it does not re-derive the offset.
+PIPELINE_FIXED_DELAY_SEC = 0.150
+
+# Float slack so an exactly-fits budget is not reported as tight.
+_FIT_EPSILON_SEC = 1e-6
+
+# How far back to look for the sender's most-recent notified latency. A
+# bond is long-lived; a 30-minute window comfortably covers the current /
+# most-recent AirPlay session without scanning the whole journal.
+_JOURNAL_LOOKBACK = "-30min"
+_JOURNAL_TIMEOUT_SEC = 5
+
+_NOTIFIED_RE = re.compile(r"Notified latency is (\d+) frames")
+
+
+@dataclass(frozen=True)
+class BondedAirplayLatencyFit:
+    """Result of :func:`assess_fit`. All times in seconds."""
+
+    buffer_ms: int
+    negotiated_frames: int
+    budget_source: str  # "journal" (a Notified-latency line) | "default"
+    budget_sec: float  # AP2 latency budget the sender authored
+    need_sec: float  # ~150 ms pipeline + buffer_ms the offset must hide
+    tight: bool  # budget cannot fully accommodate the need
+    residual_lag_sec: float  # bounded lip-sync lag when tight (0 when it fits)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "buffer_ms": self.buffer_ms,
+            "negotiated_frames": self.negotiated_frames,
+            "budget_source": self.budget_source,
+            "budget_sec": round(self.budget_sec, 6),
+            "need_sec": round(self.need_sec, 6),
+            "tight": self.tight,
+            "residual_lag_sec": round(self.residual_lag_sec, 6),
+        }
+
+
+def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLatencyFit:
+    """Does the bonded-leader downstream delay fit the AP2 budget? PURE.
+
+    ``notified_frames`` is the sender-notified latency in frames, or None
+    when no ``Notified latency`` line was seen (which, by shairport's
+    contract, means the default budget). A non-positive value is treated
+    as absent — the same fail-safe direction as
+    ``jasper-apply-airplay-mode``'s offset clamp: never assume a smaller
+    budget than the default from a garbage reading.
+    """
+    if notified_frames is None or notified_frames <= 0:
+        frames = AP2_DEFAULT_NOTIFIED_FRAMES
+        source = "default"
+    else:
+        frames = notified_frames
+        source = "journal"
+
+    budget_sec = (frames + SHAIRPORT_FIXED_ADD_FRAMES) / AIRPLAY_FRAME_RATE_HZ
+    need_sec = PIPELINE_FIXED_DELAY_SEC + max(0, buffer_ms) / 1000.0
+    shortfall = need_sec - budget_sec
+    tight = shortfall > _FIT_EPSILON_SEC
+    return BondedAirplayLatencyFit(
+        buffer_ms=buffer_ms,
+        negotiated_frames=frames,
+        budget_source=source,
+        budget_sec=budget_sec,
+        need_sec=need_sec,
+        tight=tight,
+        residual_lag_sec=shortfall if tight else 0.0,
+    )
+
+
+def _default_journal_run(unit: str, lookback: str) -> subprocess.CompletedProcess:
+    # `-g` filters server-side so the read stays cheap even over a 30-min
+    # window; jasper-control has the systemd-journal supplementary group, so
+    # this resolves the shairport (system unit) journal without sudo.
+    return subprocess.run(
+        [
+            "journalctl",
+            "-u",
+            unit,
+            "--since",
+            lookback,
+            "--no-pager",
+            "-o",
+            "cat",
+            "-g",
+            "Notified latency is",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=_JOURNAL_TIMEOUT_SEC,
+        check=False,
+    )
+
+
+def read_notified_frames(
+    *,
+    unit: str = "shairport-sync",
+    lookback: str = _JOURNAL_LOOKBACK,
+    runner: Callable[[str, str], subprocess.CompletedProcess] | None = None,
+) -> int | None:
+    """Most-recent sender-notified AP2 latency (frames) from shairport's
+    journal within ``lookback``, or None when no such line exists.
+
+    None is the documented "default budget" signal, NOT an error sentinel:
+    shairport only logs the line for a non-default value, so absence
+    genuinely means the default ~2.0 s budget. Thin IO, bounded (one
+    filtered journalctl read, no follow/poll), and fail-soft — any error
+    (no journalctl, timeout, permission) resolves to None so the caller
+    assumes the default (comfortable) budget rather than a false warning.
+    """
+    run = runner or _default_journal_run
+    try:
+        proc = run(unit, lookback)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    frames: int | None = None
+    for match in _NOTIFIED_RE.finditer(proc.stdout or ""):
+        try:
+            frames = int(match.group(1))
+        except ValueError:
+            continue
+    return frames
+
+
+def bonded_airplay_latency_snapshot(
+    *,
+    config_loader: Callable[[], GroupingConfig] | None = None,
+    frames_reader: Callable[[], int | None] | None = None,
+) -> dict[str, object] | None:
+    """Fail-soft ``/state`` snapshot of the bonded-leader AirPlay latency fit.
+
+    Returns ``{"applicable": False}`` on solo / follower / invalid configs —
+    the common case — WITHOUT reading the journal (the bonded-leader gate
+    is one tiny env-file parse). Only an active bonded leader triggers the
+    journal read and returns the full fit. Returns None only if the read
+    itself errors, matching the per-section nullability of ``/state``.
+    Total: never raises.
+    """
+    from .config import load_config
+
+    load = config_loader or load_config
+    try:
+        cfg = load()
+        if not (is_active_member(cfg) and cfg.role == "leader"):
+            return {"applicable": False}
+        read = frames_reader or read_notified_frames
+        fit = assess_fit(cfg.buffer_ms, read())
+        return {"applicable": True, **fit.to_dict()}
+    except Exception:  # noqa: BLE001 — observability must never break /state
+        return None

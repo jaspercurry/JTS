@@ -22,6 +22,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..multiroom.airplay_latency import bonded_airplay_latency_snapshot
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
@@ -655,6 +656,16 @@ async def _get_state(
         logger.exception("grouping state read failed")
         grouping_state = None
 
+    # Bonded-leader AirPlay latency fit (Stage D observability — see
+    # jasper/multiroom/airplay_latency.py). Nested under the grouping
+    # section because it is the bonded-leader consequence. read_grouping_state
+    # stays a tiny env parse; the (gated) journal read lives here. The snapshot
+    # is total (returns {"applicable": False} on solo without touching the
+    # journal, None only on its own read error), so the whole grouping section
+    # survives a broken read.
+    if isinstance(grouping_state, dict):
+        grouping_state["airplay_latency_fit"] = bonded_airplay_latency_snapshot()
+
     # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
     # os.environ — jasper-control isn't restarted on a /transit/ save, only
     # jasper-voice is). read_transit_state is itself total, but guard the
@@ -844,8 +855,11 @@ async def _get_state(
         # Multiroom grouping (off by default). null only if the fresh
         # read itself errored; otherwise a JSON-able snapshot of the
         # wizard-owned grouping.env (enabled / role / channel / bond_id /
-        # leader_addr / buffer_ms / codec / error). See
-        # jasper/multiroom/state.py + docs/HANDOFF-multiroom.md.
+        # leader_addr / buffer_ms / codec / error), PLUS airplay_latency_fit:
+        # the bonded-leader AirPlay tight-regime observability ({applicable:
+        # false} unless this speaker is an active bonded leader). See
+        # jasper/multiroom/state.py + jasper/multiroom/airplay_latency.py +
+        # docs/HANDOFF-multiroom.md / docs/HANDOFF-airplay.md.
         "grouping": grouping_state,
         # Transit city packs (which cities' transit is enabled). null only
         # if the fresh read itself errored; otherwise {packs: [{id, label,

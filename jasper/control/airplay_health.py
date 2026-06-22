@@ -170,6 +170,25 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
                 "title": "AirPlay output error",
                 "detail": "shairport output transport error",
             }
+        # The bonded-leader tight-regime ground truth: shairport could not
+        # fully apply the backend latency offset (the Snapcast round-trip
+        # delay does not fit the sender's negotiated AP2 budget), so this
+        # leader's own audio lands after the AirPlay anchor → bounded
+        # residual lip-sync lag. Matches the stable substring of shairport's
+        # warning ("... it too short to accommodate an offset ..." — the "it"
+        # is shairport's own typo). The proactive computed counterpart is
+        # jasper/multiroom/airplay_latency.py + the grouping doctor check.
+        if "too short to accommodate an offset" in line:
+            return {
+                "type": "shairport_offset_too_short",
+                "subsystem": "shairport",
+                "severity": "issue",
+                "title": "AirPlay latency budget too short",
+                "detail": (
+                    "sender's AirPlay budget too short for the offset "
+                    "(bonded-leader lip-sync lag)"
+                ),
+            }
         return None
 
     if unit == CAMILLA_UNIT:
