@@ -7,10 +7,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import tempfile
+import types
 from pathlib import Path
-
-import pytest
 
 from jasper.accounts import (
     Account,
@@ -27,6 +27,22 @@ def _tmp_registry() -> str:
     os.close(fd)
     os.unlink(path)
     return path
+
+
+def _install_fake_spotipy_cache_handler(monkeypatch):
+    from jasper import accounts as accounts_mod
+
+    class FakeCacheFileHandler:
+        def __init__(self, cache_path=None, *args, **kwargs):
+            self.cache_path = cache_path
+
+    spotipy_mod = types.ModuleType("spotipy")
+    cache_handler_mod = types.ModuleType("spotipy.cache_handler")
+    cache_handler_mod.CacheFileHandler = FakeCacheFileHandler
+    monkeypatch.setitem(sys.modules, "spotipy", spotipy_mod)
+    monkeypatch.setitem(sys.modules, "spotipy.cache_handler", cache_handler_mod)
+    monkeypatch.setattr(accounts_mod, "_CACHE_HANDLER_CLS", None)
+    return accounts_mod
 
 
 def test_registry_load_missing_returns_empty():
@@ -236,19 +252,15 @@ def test_add_or_update_preserves_existing_playlists():
     assert a.playlists == {"spotify:playlist:abc": "Discover Weekly"}
 
 
-def test_build_cache_handler_writes_group_readable_cache():
+def test_build_cache_handler_writes_group_readable_cache(monkeypatch):
     """The Spotify token cache must stay group-readable (0640) so every
     jasper-intsecrets member that builds a Spotify router can read refreshed
-    tokens. spotipy's stock CacheFileHandler writes it 0600 owner-only (the
-    dropped readers then log "Couldn't read cache" on every poll);
-    build_cache_handler re-chmods 0640 after every save. Pinned so a future edit
-    can't silently drop the chmod and re-break the readers."""
-    pytest.importorskip("spotipy")
+    tokens. Pinned so a future edit can't silently drop the mode and re-break
+    the readers."""
+    _install_fake_spotipy_cache_handler(monkeypatch)
     with tempfile.TemporaryDirectory() as d:
         cache_path = os.path.join(d, "jasper.json")
         handler = build_cache_handler(cache_path)
-        # spotipy CacheFileHandler.save_token_to_cache json-dumps the dict; the
-        # subclass chmods 0640 afterward regardless of the writer's umask.
         handler.save_token_to_cache({
             "access_token": "x", "refresh_token": "y",
             "token_type": "Bearer", "expires_at": 0, "scope": "",
@@ -259,3 +271,45 @@ def test_build_cache_handler_writes_group_readable_cache():
             f"spotify cache mode {oct(mode)} != 0640 (group read) — the "
             "non-root readers would log 'Couldn't read cache'"
         )
+
+
+def test_build_cache_handler_replaces_readonly_existing_cache(monkeypatch, tmp_path):
+    """Re-link must recover when the old cache is readable but not writable.
+
+    This is the production failure shape from a migrated cache:
+    ``root:jasper-intsecrets 0640``. jasper-web can read it through the group,
+    but spotipy's stock in-place writer cannot truncate it. The JTS handler
+    must publish a replacement through the group-writable cache directory.
+    """
+    _install_fake_spotipy_cache_handler(monkeypatch)
+    cache_path = tmp_path / "Jasper.json"
+    cache_path.write_text('{"refresh_token": "revoked"}')
+    cache_path.chmod(0o440)
+
+    handler = build_cache_handler(str(cache_path))
+    handler.save_token_to_cache({
+        "access_token": "fresh", "refresh_token": "fresh-refresh",
+        "token_type": "Bearer", "expires_at": 1, "scope": "",
+    })
+
+    data = json.loads(cache_path.read_text())
+    assert data["access_token"] == "fresh"
+    assert stat.S_IMODE(cache_path.stat().st_mode) == SPOTIFY_CACHE_FILE_MODE
+
+
+def test_build_cache_handler_save_failure_propagates(monkeypatch, tmp_path):
+    """OAuth callbacks must not claim success if the token never hit disk."""
+    accounts_mod = _install_fake_spotipy_cache_handler(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise OSError("disk denied")
+
+    monkeypatch.setattr(accounts_mod, "atomic_write_text", boom)
+    handler = build_cache_handler(str(tmp_path / "Jasper.json"))
+
+    try:
+        handler.save_token_to_cache({"access_token": "fresh"})
+    except OSError as exc:
+        assert "disk denied" in str(exc)
+    else:
+        raise AssertionError("token cache write failure was swallowed")

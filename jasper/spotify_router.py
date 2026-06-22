@@ -186,8 +186,8 @@ def build_clients(
                 redirect_uri=redirect_uri,
                 scope=SPOTIFY_SCOPE,
                 # cache_handler (not cache_path) so a refresh-on-read rewrites
-                # the token cache group-`jasper`-readable (0640) — the non-root
-                # jasper-control reader needs it; see accounts.build_cache_handler.
+                # the token cache group-`jasper-intsecrets`-readable (0640);
+                # see accounts.build_cache_handler.
                 cache_handler=build_cache_handler(cache_path),
                 open_browser=False,
             )
