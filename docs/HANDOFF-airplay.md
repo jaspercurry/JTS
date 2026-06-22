@@ -1270,6 +1270,95 @@ that takes 100 ms to process audio should use `-0.1`, so shairport feeds
 the backend 100 ms early. We use the same principle for CamillaDSP's
 hidden fixed buffer and outputd's invisible DAC queue.
 
+### AirPlay 2 latency is sender-authored — the bonded-leader consequence
+
+*Added 2026-06-21 from a source-level review (shairport-sync master) of
+how AirPlay sets the latency and where the offset acts. Resolves
+multi-room open question #2 (`HANDOFF-multiroom.md` §9).*
+
+**AP1 and AP2 invert the latency contract.** In AP1/RAOP the *receiver*
+advertised a floor (`Audio-Latency: 11025`, ~0.25 s) that the sender
+added to its own figure. In AP2 the receiver advertises
+`Audio-Latency: 0` and the **sender authors the whole timeline**: it
+picks the latency (from the stream type it chose plus its own network
+assessment), ships it as the PTP anchor (`SETRATEANCHORI` →
+`rtp_ap2_control_receiver` → `set_ptp_anchor_info`), and delays its
+*own* on-screen video by that same number to hold lip-sync (Apple patent
+US 11,196,899, "Synchronization of wireless-audio to video"). The
+receiver is *informed, not consulted* — the one theoretical
+receiver→sender lever (`outputLatencyMicros` in the GET /info plist) is
+not emitted by shairport and is ignored by the one inspectable AP2
+sender, so it is not something to rely on. The sender does **not** measure
+our real hardware latency; it *assumes* sound emerges at the anchor time.
+The entire burden of landing sound on the anchor — and thus any
+uncompensated downstream delay — is the receiver's, and surfaces as
+audio-late lip-sync.
+
+**Our offset is local, and universal across AP2 stream types.**
+`audio_backend_latency_offset_in_seconds` never goes on the wire. In the
+AP2 path it is folded into the PTP anchor *unconditionally*
+(`set_ptp_anchor_info(conn, clock_id, frame_1 - 11035 - added_latency,
+…)`), and AP2 playout time is computed purely from that anchor
+(`frame_to_ptp_local_time` reads `anchor_rtptime`/`anchor_local_time`,
+**not** `conn->latency`). So a single static offset shifts playout by
+exactly `added_latency / rate` for **both** AP2 stream types — realtime
+(ALAC) and buffered (AAC) — with no stream-type branch around the anchor
+math. The `net_latency <= 0` guard clamps only `conn->latency`, which in
+PTP mode governs the packet-resend window, **not** playout — so an
+over-budget offset is *not dropped* for AP2: shairport warns and
+continues, the anchor still shifts, and realized early-play is bounded
+only by the physical pre-roll the sender provides (too small a budget →
+bounded residual lag, never a crash or corruption). (AirPlay 1/NTP is a
+genuinely different path — `rtp_control_receiver` folds the offset
+through `conn->latency` into the NTP anchor — but AP1's ~2 s budget makes
+any realistic offset fit trivially.) Verified against shairport-sync
+master: `rtp_ap2_control_receiver`, `frame_to_ptp_local_time`,
+`set_ptp_anchor_info`, `rtp_control_receiver` in rtp.c; `buffer_get_frame`
+in player.c.
+
+**The bonded-leader gap.** A bonded leader plays its *own* channel
+through the Snapcast round-trip ("a follower of itself"), inserting the
+Snapcast playout buffer (`cfg.buffer_ms`, default 400 ms —
+`jasper/multiroom/config.py`) into the leader's own path to its DAC. That
+delay is invisible to the solo offset derivation
+(`derive_audio_backend_latency_offset` in
+`deploy/bin/jasper-apply-airplay-mode` reads CamillaDSP + fan-in +
+outputd only — no Snapcast term) and is never recomputed on bond (the
+grouping reconciler never calls `jasper-apply-airplay-mode`). So a bonded
+leader receiving AirPlay emits ~`buffer_ms` after the anchor → its audio
+lags the sender's video by ~the Snapcast buffer.
+
+**Fix shape — conditional, with a hard solo-untouched invariant.** Make
+the offset bond-aware: add a Snapcast term to the derived offset *only
+while this speaker is an active bonded leader*, and re-render + restart
+shairport on bond/unbond (the reconciler's compare-before-write →
+restart-on-change idiom). **INVARIANT — a solo or follower speaker gets
+zero AirPlay-timing change from this feature**: the Snapcast term is 0
+when this speaker is not a bonded leader, so the derived value stays the
+current `-0.149333`, shairport is not restarted on a no-op solo
+reconcile, and the bonded term is torn down (offset restored to the solo
+value) on unbond. Whether the fix fully restores lip-sync then depends on
+the sender's negotiated budget vs. the total hidden delay (~150 ms
+pipeline + `buffer_ms`): the AP2 offset shifts the anchor regardless, but
+realized early-play is capped by the sender's pre-roll, so a too-small
+budget degrades to bounded residual lag (≈ the shortfall) with a
+shairport warning. Measure the real per-app budget before assuming the
+free regime.
+
+**Measuring the negotiated budget (no config change needed).** shairport
+runs at `log_verbosity = 2` on JTS (diagnostics block in
+`deploy/shairport-sync.conf.template`), so the journal already names both
+the stream type and any non-default latency:
+- Stream type — `Connection N. AP2 Realtime Audio Stream.` /
+  `… AP2 Buffered Audio Stream.` (rtsp.c).
+- Negotiated latency — `Notified latency is N frames.`, emitted only when
+  `N != 77175`; **absence means the default 77175 frames (≈1.75 s; ~2.0 s
+  with the +11035 shairport adds) = the comfortable/free regime.** A
+  printed `N` below the frames-equivalent of `150 ms + buffer_ms` is the
+  tight regime.
+
+`scripts/airplay-latency-probe.sh` captures this during a live session.
+
 ### What shairport logs actually mean
 
 The two log messages in [Pattern B](#pattern-b--shairport-resync_threshold-misfire-the-classic)

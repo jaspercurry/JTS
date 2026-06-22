@@ -1772,11 +1772,25 @@ front-run the complexity nor forget where it belongs.
    its full mix and the TTS-separation work would vanish — so this decision is
    load-bearing for the inv-2 build. Time-synced whole-house announcements
    (TTS on the buffered path) remain a future, separate feature if ever wanted.
-2. **AirPlay 2 sync expectation.** Route AirPlay through the
-   Snapcast FIFO like every source (uniform, simpler), giving up
-   shairport/nqptp's free PTP sample-alignment? A native PTP
-   carve-out only earns its keep if sample-perfect AirPlay
-   multi-room is a hard requirement.
+2. **AirPlay 2 sync expectation — ANALYZED 2026-06-21; build pending.**
+   A receiver cannot grow the AP2 latency budget — AP2 latency is
+   sender-authored (full mechanism in
+   [HANDOFF-airplay.md](HANDOFF-airplay.md) "AirPlay 2 latency is
+   sender-authored — the bonded-leader consequence"). So the plan is
+   NEITHER to route AirPlay through the Snapcast FIFO NOR a PTP
+   carve-out: the bonded leader keeps shairport/nqptp's native AP2 path
+   and compensates the Snapcast round-trip locally with a **bond-aware**
+   `audio_backend_latency_offset_in_seconds` (the offset shifts the AP2
+   PTP anchor identically for realtime and buffered streams). INVARIANT:
+   the Snapcast term is added ONLY while this speaker is an active bonded
+   leader and torn down on unbond — solo/follower speakers are
+   byte-for-byte unaffected. The remaining sub-question — which only
+   decides whether bonded lip-sync is fully recovered or degrades to
+   bounded residual lag — is the sender's negotiated budget vs. the
+   ~150 ms + `buffer_ms` hidden delay; measure it per-app on-device with
+   `scripts/airplay-latency-probe.sh` before sizing `buffer_ms`. The
+   build hook is `reconcile.py` step 5 (`if active_leader:`), where the
+   bonded CamillaDSP config is already applied.
 3. **When does multi-*room* (>1 room) actually arrive?** The whole
    `Group`/election deferral rests on "one pair/room for now." A
    third room being imminent reorders the roadmap.
