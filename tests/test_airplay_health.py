@@ -141,6 +141,35 @@ def test_offset_too_short_warning_rolls_into_shairport_events() -> None:
     assert summary["shairport_events"] >= 1
 
 
+def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
+    """End-to-end pin of the 'moves the status verdict, not just the event list'
+    promise: drive the full journal -> classify -> record -> status path and
+    assert the AirPlay-health status becomes 'watch' (the 30 m shairport_events
+    verdict), with the audio path otherwise healthy."""
+    now = [2000.0]
+
+    def journal(unit: str, _since: float, _now: float) -> list[str]:
+        if unit == "shairport-sync":
+            return [
+                "The stream latency (0.300000 seconds) it too short to accommodate "
+                "an offset of 1.050000 seconds and a backend buffer of 0.500000 "
+                "seconds."
+            ]
+        return []
+
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(),
+        journal_reader=journal,
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+    sampler._tick()
+    snap = sampler.snapshot()
+    assert snap["status"] == "watch"
+    assert snap["summary_30m"]["shairport_events"] >= 1
+
+
 def test_tiny_camilla_short_reads_are_ignored_as_recovered_partials() -> None:
     assert (
         classify_journal_line(

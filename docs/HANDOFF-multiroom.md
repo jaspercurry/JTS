@@ -1787,7 +1787,10 @@ front-run the complexity nor forget where it belongs.
    byte-for-byte unaffected. The remaining sub-question — which only
    decides whether bonded lip-sync is fully recovered or degrades to
    bounded residual lag — is the sender's negotiated budget vs. the
-   ~150 ms + `buffer_ms` hidden delay; measure it per-app on-device with
+   ~150 ms + `buffer_ms` hidden delay *plus shairport's own 0.5 s backend
+   buffer* (shairport drops the offset, not just trims it, once
+   budget < need + 0.5 s — see HANDOFF-airplay.md "JTS-side observability");
+   measure it per-app on-device with
    `scripts/airplay-latency-probe.sh` before sizing `buffer_ms`. The
    build hook is `reconcile.py` step 5 (`if active_leader:`), where the
    bonded CamillaDSP config is already applied.

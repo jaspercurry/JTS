@@ -128,12 +128,12 @@ def check_grouping_rate_adjust() -> CheckResult:
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_leader, load_config
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    if not (is_active_member(cfg) and cfg.role == "leader"):
+    if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
@@ -165,14 +165,14 @@ def check_grouping_leader_pipe() -> CheckResult:
     an empty FIFO and every member (including the leader's own round-trip)
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for (HANDOFF-multiroom.md §2, Increment 5)."""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_leader, load_config
     from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
     from .correction import _active_camilla_config_path
 
     label = "grouping: leader pipe"
     cfg = load_config()
-    if not (is_active_member(cfg) and cfg.role == "leader"):
+    if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
@@ -467,19 +467,28 @@ def check_grouping_airplay_latency() -> CheckResult:
     if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
+    from ...multiroom.airplay_latency import SHAIRPORT_BACKEND_BUFFER_SEC
+
     fit = assess_fit(cfg.buffer_ms, read_notified_frames())
     budget_desc = (
-        f"budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs need "
-        f"~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms})"
+        f"budget ~{fit.budget_sec:.3f}s ({fit.budget_source}) vs "
+        f"need ~{fit.need_sec:.3f}s (150 ms + buffer_ms={cfg.buffer_ms}) + "
+        f"shairport backend buffer {SHAIRPORT_BACKEND_BUFFER_SEC:.1f}s"
     )
     if fit.tight:
+        # No local control grows the budget (AP2 latency is sender-authored)
+        # and buffer_ms has no wizard knob, so the remediation is honest about
+        # the lever that exists: lower JASPER_GROUPING_BUFFER_MS (default 400)
+        # in /var/lib/jasper/grouping.env if it was raised. Do NOT point at a
+        # /rooms control — none writes buffer_ms.
         return CheckResult(
             label, "warn",
             f"AirPlay budget too short for the bonded round-trip: {budget_desc} "
-            f"=> ~{fit.residual_lag_sec * 1000:.0f} ms residual lip-sync lag. "
-            "Lower the Snapcast buffer_ms on http://jts.local/rooms, or expect "
-            "bounded lag while bonded; shairport also logs 'stream latency too "
-            "short to accommodate an offset'.",
+            f"=> shairport drops the offset => ~{fit.residual_lag_sec * 1000:.0f} ms "
+            "residual lip-sync lag (it also logs 'stream latency too short to "
+            "accommodate an offset'). The sender's budget can't be grown locally; "
+            "if JASPER_GROUPING_BUFFER_MS (grouping.env, default 400) was raised, "
+            "lowering it shrinks the need.",
         )
     return CheckResult(label, "ok", f"fits — {budget_desc}")
 
@@ -505,7 +514,7 @@ def check_crossover_unit_installed() -> CheckResult:
 
     A missing or unparseable unit on an active leader is a real gap (the
     reconciler PR would have nothing to arm), so it warns."""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_leader, load_config
     from ...output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -513,7 +522,7 @@ def check_crossover_unit_installed() -> CheckResult:
 
     label = "grouping: crossover unit"
     cfg = load_config()
-    if not (is_active_member(cfg) and cfg.role == "leader"):
+    if not is_active_leader(cfg):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     # Active/roleful topology is the second half of "active leader": only a

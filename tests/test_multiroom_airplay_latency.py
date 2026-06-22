@@ -48,7 +48,8 @@ def _reset_frames_cache():
 
 def test_default_budget_is_the_free_regime():
     """Absence of a Notified-latency line => default 77175 frames => ~2.0 s
-    budget, which comfortably hides the default 0.55 s need."""
+    budget, which clears the 0.55 s need + 0.5 s shairport backend buffer
+    (~1.05 s threshold) with ~0.95 s to spare."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=None)
     assert fit.budget_source == "default"
     assert fit.negotiated_frames == al.AP2_DEFAULT_NOTIFIED_FRAMES
@@ -58,31 +59,49 @@ def test_default_budget_is_the_free_regime():
     assert fit.residual_lag_sec == 0.0
 
 
-def test_even_max_buffer_fits_the_default_budget():
-    """The gating insight: the default budget hides even the maximum
-    buffer_ms (1500 ms => 1.65 s need < ~2.0 s), so the tight regime cannot
-    arise from buffer size alone at the default budget."""
-    fit = al.assess_fit(buffer_ms=1500, notified_frames=None)
-    assert fit.need_sec == pytest.approx(1.65, abs=1e-9)
-    assert fit.tight is False
+def test_high_buffer_is_tight_even_at_the_default_budget():
+    """Corrected math: shairport's tight condition is budget < need + 0.5 s
+    backend buffer. So a buffer_ms near its max is tight EVEN at the default
+    ~2.0 s budget (need 1.65 + 0.5 = 2.15 > 2.0002), and shairport drops the
+    whole offset => residual lag is the FULL need, not a shortfall. A mid-high
+    buffer_ms (1300) still fits, pinning the ~1350 ms boundary."""
+    tight = al.assess_fit(buffer_ms=1500, notified_frames=None)
+    assert tight.need_sec == pytest.approx(1.65, abs=1e-9)
+    assert tight.tight is True
+    assert tight.residual_lag_sec == pytest.approx(1.65, abs=1e-9)
+
+    fits = al.assess_fit(buffer_ms=1300, notified_frames=None)
+    assert fits.tight is False
 
 
-def test_small_negotiated_budget_is_tight_with_bounded_residual():
+def test_small_negotiated_budget_is_tight_residual_is_full_need():
+    """When shairport drops the offset, the entire pipeline+buffer delay is
+    uncompensated, so residual_lag_sec == need_sec (not need - budget)."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=5000)
     assert fit.budget_source == "journal"
     # (5000 + 11035) / 44100 ≈ 0.3636 s budget vs 0.55 s need.
     assert fit.budget_sec == pytest.approx(0.36361, abs=1e-4)
     assert fit.tight is True
-    assert fit.residual_lag_sec == pytest.approx(0.55 - fit.budget_sec, abs=1e-9)
+    assert fit.residual_lag_sec == pytest.approx(0.55, abs=1e-9)
 
 
-def test_exactly_fitting_budget_is_not_tight():
-    # frames where (frames + 11035)/44100 == 0.55 exactly (the 0.55 s need).
-    exact = int(round(0.55 * al.AIRPLAY_FRAME_RATE_HZ)) - al.SHAIRPORT_FIXED_ADD_FRAMES
-    fit = al.assess_fit(buffer_ms=400, notified_frames=exact)
-    assert fit.budget_sec == pytest.approx(0.55, abs=1e-9)
-    assert fit.tight is False
-    assert fit.residual_lag_sec == 0.0
+def test_backend_buffer_band_is_tight_against_production_05s_buffer():
+    """The band the old (buffer-omitting) math wrongly called 'fits': a budget
+    between need (0.55 s) and need + 0.5 s (1.05 s). shairport DOES warn and
+    drop the offset there. Pins the fix against the production 0.5 s backend
+    buffer, not just the synthetic 0.1 s classifier string."""
+    # frames=24245 -> budget = (24245+11035)/44100 = 0.8 s, inside (0.55, 1.05).
+    fit = al.assess_fit(buffer_ms=400, notified_frames=24245)
+    assert fit.budget_sec == pytest.approx(0.8, abs=1e-4)
+    assert fit.tight is True  # old math: 0.55 > 0.8 -> False (the bug)
+    assert fit.residual_lag_sec == pytest.approx(0.55, abs=1e-9)
+
+
+def test_budget_just_above_need_plus_backend_buffer_is_not_tight():
+    # frames=40000 -> budget = 51035/44100 ≈ 1.157 s > 1.05 s threshold.
+    assert al.assess_fit(buffer_ms=400, notified_frames=40000).tight is False
+    # frames=30000 -> budget = 41035/44100 ≈ 0.930 s < 1.05 s threshold.
+    assert al.assess_fit(buffer_ms=400, notified_frames=30000).tight is True
 
 
 @pytest.mark.parametrize("bad", [0, -1, -77175])
@@ -229,6 +248,12 @@ def test_doctor_warns_when_budget_too_short(monkeypatch):
     assert res.status == "warn"
     assert "residual" in res.detail.lower()
     assert "buffer_ms" in res.detail
+    # residual is the FULL need (shairport drops the offset): 0.55 s -> 550 ms.
+    # Pins the s->ms scaling in the doctor f-string.
+    assert "550 ms" in res.detail
+    # Remediation must NOT point at a non-existent /rooms buffer_ms control.
+    assert "/rooms" not in res.detail
+    assert "JASPER_GROUPING_BUFFER_MS" in res.detail
 
 
 # ---------- AirPlay-health classification of the ground-truth warning ----------
