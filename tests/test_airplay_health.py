@@ -114,6 +114,26 @@ def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
     assert underrun["severity"] == "issue"
 
 
+def test_offset_too_short_warning_rolls_into_shairport_events() -> None:
+    """The bonded-leader tight-regime warning must affect the AirPlay-health
+    status, not just sit in the raw event list — i.e. it has to roll into the
+    `shairport_events` bucket like its siblings (shairport_oos /
+    shairport_broken_pipe). Without the EVENT_BUCKET_FIELD mapping the event
+    would be invisible to `_status_locked`'s 30 m verdict."""
+    too_short = (
+        "The stream latency (0.300000 seconds) it too short to accommodate an "
+        "offset of 0.550000 seconds and a backend buffer of 0.100000 seconds."
+    )
+    ev = classify_journal_line("shairport-sync", too_short)
+    assert ev is not None and ev["type"] == "shairport_offset_too_short"
+
+    now = [1000.0]
+    sampler = _sampler(time_fn=lambda: now[0])
+    sampler._record_event(now[0], ev)
+    summary = sampler._summary_locked(window_sec=1800.0)
+    assert summary["shairport_events"] >= 1
+
+
 def test_tiny_camilla_short_reads_are_ignored_as_recovered_partials() -> None:
     assert (
         classify_journal_line(

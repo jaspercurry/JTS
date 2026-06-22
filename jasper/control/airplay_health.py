@@ -85,6 +85,7 @@ EVENT_BUCKET_FIELD = {
     "shairport_sync_negative": "shairport_sync_errors",
     "shairport_underrun": "shairport_underruns",
     "shairport_broken_pipe": "shairport_events",
+    "shairport_offset_too_short": "shairport_events",
     "fanin_airplay_xrun": "fanin_airplay_xruns",
     "fanin_output_xrun": "fanin_output_xruns",
     "camilla_short_read": "camilla_short_reads",
@@ -170,14 +171,16 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
                 "title": "AirPlay output error",
                 "detail": "shairport output transport error",
             }
-        # The bonded-leader tight-regime ground truth: shairport could not
-        # fully apply the backend latency offset (the Snapcast round-trip
-        # delay does not fit the sender's negotiated AP2 budget), so this
-        # leader's own audio lands after the AirPlay anchor → bounded
-        # residual lip-sync lag. Matches the stable substring of shairport's
+        # shairport could not fully apply the backend latency offset — the
+        # configured offset exceeds the sender's negotiated AP2 latency
+        # budget, so output plays late. The classifier has no bond context,
+        # so the detail states only the fact shairport reported; the expected
+        # trigger is a bonded LEADER whose Snapcast round-trip pushes the
+        # offset past a tight budget (the proactive, bond-aware diagnosis +
+        # remediation lives in jasper/multiroom/airplay_latency.py + the
+        # grouping doctor check). Matches the stable substring of shairport's
         # warning ("... it too short to accommodate an offset ..." — the "it"
-        # is shairport's own typo). The proactive computed counterpart is
-        # jasper/multiroom/airplay_latency.py + the grouping doctor check.
+        # is shairport's own typo).
         if "too short to accommodate an offset" in line:
             return {
                 "type": "shairport_offset_too_short",
@@ -185,8 +188,8 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
                 "severity": "issue",
                 "title": "AirPlay latency budget too short",
                 "detail": (
-                    "sender's AirPlay budget too short for the offset "
-                    "(bonded-leader lip-sync lag)"
+                    "configured offset exceeds the sender's AirPlay latency "
+                    "budget — output plays late"
                 ),
             }
         return None
