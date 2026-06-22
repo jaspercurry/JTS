@@ -271,13 +271,19 @@ class LiveTurn(Protocol):
         and ``audio_played_ms`` (how much actually left the speaker) — to
         truncate history at the heard boundary.
 
-        ``provider_item_id`` MUST be tolerated as ``None``. Gemini has no
-        OpenAI-style per-response audio item id, and even an OpenAI turn may
-        not have observed one yet; in that case (and for providers that
-        reconcile server-side) this is a no-op. The caller does not branch
-        on provider — whether a client truncate is needed is the registry's
-        ``interrupt_reconcile`` declaration's job. Must be idempotent and
-        must never raise."""
+        ``provider_item_id`` MUST be tolerated as ``None`` — for two distinct
+        reasons, so a ``None`` here is not always an edge case:
+
+        - For a ``server_self_truncates`` provider (Gemini) it is the *normal*
+          value on *every* call: Gemini has no OpenAI-style per-response audio
+          item id and reconciles its own history, so this is always a no-op.
+        - For a ``needs_client_truncate`` provider (OpenAI/Grok) a real id is
+          the expected value, but ``None`` can still arrive transiently before
+          the turn has observed its first audio item — also a no-op.
+
+        Either way the caller does not branch on provider — whether a client
+        truncate is needed at all is the registry's ``interrupt_reconcile``
+        declaration's job. Must be idempotent and must never raise."""
         ...
 
     def request_local_interrupt(self) -> None:
