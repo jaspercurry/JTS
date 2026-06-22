@@ -405,6 +405,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-mic-fusion-architecture.md  Design/plan (draft): pluggable-mic boundary + N-leg wake fusion
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
+  HANDOFF-hotplug-resilience.md  Runtime mic/DAC/satellite attach-detach convergence (no crash-loop)
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
   HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
   HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
@@ -726,6 +727,17 @@ reference. Currently:
   `jasper/control/{shairport,system}_supervisor.py`, or the
   `Type=notify` / `WatchdogSec=` / `StartLimitAction=` blocks in
   any service unit.
+- [`HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md) —
+  Runtime hardware attach/detach convergence ("treat it like a
+  computer"): mic/XVF3800, output DAC/dongle, satellites can be
+  plugged/unplugged while running and the speaker converges both
+  directions with no redeploy, restart, or crash-loop. The mic
+  presence-gate (`jasper-voice` `ConditionPathExists` on a reconciler-
+  written marker + a clean `66` exit), why the output owner and
+  satellites already converge, and the plug/unplug hardware-pass
+  checklist. Read before touching the no-mic/no-DAC park paths in
+  `deploy/bin/jasper-aec-reconcile`, `jasper-voice.service`, or the
+  `ConditionPathExists`/`ExecCondition` device gates.
 - [`HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md) —
   Design + shipped implementation (T5.1 + T5.2, May 2026) for
   closing the Tier 5 liveness gap exposed by the 2026-05-23

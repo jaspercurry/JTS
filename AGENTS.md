@@ -2160,6 +2160,25 @@ clears stale UDP back to a direct mic candidate and stops voice rather
 than letting it watchdog-loop on an unfed socket. Future direct mics can
 be added to `JASPER_MIC_DEVICE_CANDIDATES` without changing this logic.
 
+**No-mic park is gated, not just stopped.** The reconciler is also the
+single writer of a persistent **negative** marker
+(`/var/lib/jasper/voice-input-absent`): created on every no-usable-mic
+path, removed whenever a mic is present (including the custom-mic path,
+which is never gated). `jasper-voice.service` carries
+`ConditionPathExists=!/var/lib/jasper/voice-input-absent`, so a no-mic
+box never start-crash-loops into `StartLimitAction=reboot` — PID 1 skips
+the start cleanly (the same clean-skip the output owner gets from its
+`ExecCondition` DAC gate). As a backstop, a primary-mic open failure
+exits `66` (`VOICE_MIC_UNAVAILABLE_EXIT`, in the unit's
+`SuccessExitStatus`/`RestartPreventExitStatus`) so the daemon parks
+instead of looping. Plug-in recovers via the existing udev →
+`jasper-aec-reconcile` → `restart_voice` path. The marker path is
+duplicated as a literal in the unit, the reconciler, and
+[`jasper/voice/input_presence.py`](jasper/voice/input_presence.py)
+(pinned by `tests/test_voice_input_gate.py`). Full design — including
+why output and satellites needed no change — is
+[`docs/HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md).
+
 The bridge→voice transport is UDP localhost (`udp:9876`) since
 May 2026; the prior snd-aloop `LoopbackAEC` topology was retired
 for resilience reasons — see

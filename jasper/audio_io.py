@@ -42,6 +42,25 @@ if TYPE_CHECKING:
     import sounddevice as sd
 
 
+class InputDeviceUnavailable(RuntimeError):
+    """The primary microphone input could not be opened at startup.
+
+    Raised by the voice daemon's leg factory when the must-have "on"
+    wake leg's device won't open (absent card, PortAudio "No input
+    device matching ...", busy capture, or a malformed/unbindable UDP
+    transport). The daemon's ``main()`` catches it and exits
+    ``VOICE_MIC_UNAVAILABLE_EXIT`` so systemd parks the unit cleanly
+    instead of crash-looping toward ``StartLimitAction=reboot``. See
+    ``docs/HANDOFF-hotplug-resilience.md`` "Layer 2"."""
+
+    def __init__(self, device: str, cause: BaseException | None = None) -> None:
+        self.device = device
+        detail = f": {type(cause).__name__}: {cause}" if cause is not None else ""
+        super().__init__(
+            f"primary microphone input {device!r} unavailable{detail}"
+        )
+
+
 def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     """Dump environmental state when a sounddevice stream open fails.
 

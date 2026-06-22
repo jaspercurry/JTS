@@ -31,6 +31,22 @@ StartLimitIntervalSec=300
 # can leave the next boot in EXT4 "orphan cleanup" state.
 StartLimitAction=reboot
 
+# Microphone-presence gate (docs/HANDOFF-hotplug-resilience.md "Layer 1").
+# jasper-aec-reconcile is the single writer of this PERSISTENT NEGATIVE
+# marker: it exists only when the reconciler positively determined there
+# is no usable mic. The `!` makes this "run UNLESS the marker exists", so
+# it FAILS OPEN — a fresh box, or one where the reconciler never ran,
+# starts voice exactly as before. When the marker IS present, PID 1 skips
+# the start cleanly (ActiveState=inactive, NOT counted as a start, NOT
+# subject to Restart=, NEVER escalates to StartLimitAction=reboot above) —
+# the same clean-skip the output owner relies on (jasper-outputd.service
+# ExecCondition). This is what stops a no-mic box from crash-looping into
+# a reboot; on plug-in, udev → jasper-aec-reconcile removes the marker and
+# restart_voice brings us up. Marker path is duplicated as a literal in
+# deploy/bin/jasper-aec-reconcile and jasper/voice/input_presence.py; the
+# agreement is pinned by tests/test_voice_input_gate.py.
+ConditionPathExists=!/var/lib/jasper/voice-input-absent
+
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
 # emit `READY=1` (via sdnotify, see jasper/watchdog.py) before
@@ -148,12 +164,19 @@ WorkingDirectory=/opt/jasper
 # exhaustion so systemd's outer loop (this `Restart=on-failure` +
 # the StartLimitBurst above) grants another full budget.
 Restart=on-failure
-# Missing JASPER_VOICE_PROVIDER is first-time setup state, not a crash.
-# jasper-voice exits EX_CONFIG (78) with an operator message; systemd
-# should park it cleanly so it cannot consume the StartLimitAction=reboot
-# budget before the /voice wizard is configured.
-SuccessExitStatus=78
-RestartPreventExitStatus=78
+# Two exit codes mean "intentionally idle, not a crash" — park the unit
+# cleanly (treated as success, no auto-restart) so neither can consume the
+# StartLimitAction=reboot budget above:
+#   78 (EX_CONFIG)  — JASPER_VOICE_PROVIDER unset/invalid (first-time setup
+#                     state, before the /voice wizard is configured).
+#   66 (EX_NOINPUT) — primary microphone could not be opened at startup
+#                     (VOICE_MIC_UNAVAILABLE_EXIT). The ConditionPathExists
+#                     marker above pre-empts the common no-mic case; this is
+#                     the backstop for custom/present-but-unopenable/first-boot
+#                     mics. jasper-aec-reconcile (udev) restarts us on plug-in.
+#                     See docs/HANDOFF-hotplug-resilience.md "Layer 2".
+SuccessExitStatus=66 78
+RestartPreventExitStatus=66 78
 # 5 s backoff (was 2 s). Audio-device transients (dongle enumerate
 # blip, ALSA card reorder) typically settle within a few seconds; a
 # longer backoff means fewer wasted restart cycles before the device

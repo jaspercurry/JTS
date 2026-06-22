@@ -31,6 +31,7 @@ from ...output_hardware import (
     OutputHardwareState,
     load_state as _load_output_hardware_state,
 )
+from ...voice.input_presence import voice_parked_no_mic
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -230,6 +231,19 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             "mic capture", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
+        )
+    # Intentionally idle, not broken: the AEC reconciler found no usable
+    # mic and parked jasper-voice behind its ConditionPathExists gate.
+    # Report ok+expected (mirrors the bonded-follower idiom above) so a
+    # mic-less box / a unit mid-unplug isn't a red doctor line. A genuine
+    # open failure (marker ABSENT but the device won't open — custom or
+    # busy mic) still falls through to the probe + its fail below. See
+    # docs/HANDOFF-hotplug-resilience.md "Layer 3".
+    if voice_parked_no_mic():
+        return CheckResult(
+            "mic capture", "ok",
+            "no microphone present (expected) — jasper-voice is parked by "
+            "the AEC reconciler; plug a mic and it starts automatically",
         )
     # UDP transport: no PortAudio probe possible. The bridge's
     # heartbeat (Tier 1) and `check_aec_bridge_running` already cover

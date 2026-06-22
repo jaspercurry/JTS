@@ -296,6 +296,10 @@ docs = [
   "docs/HANDOFF-prompting.md",
   "docs/HANDOFF-audible-feedback.md",
   "docs/HANDOFF-speaker-output-reference.md",
+  # Mic presence-gate: a jasper-voice.service / audio_io / daemon_main change
+  # near the no-mic park path must route here (ConditionPathExists marker +
+  # exit-66 park + the cross-component convergence model).
+  "docs/HANDOFF-hotplug-resilience.md",
   "docs/HANDOFF-vad-experiments.md",
   "docs/HANDOFF-persistent-live-session.md",
   # Canonical doc for the tool-platform boundary (packs, catalog, dispatch,
@@ -384,6 +388,9 @@ docs = [
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
   "docs/HANDOFF-aec.md",
   "docs/HANDOFF-barge-in.md",
+  # The reconciler is the single writer of the mic presence-gate marker;
+  # a change to its park/start paths must route here.
+  "docs/HANDOFF-hotplug-resilience.md",
   "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-xvf3800.md",
   "docs/HANDOFF-mic-quality-v2.md",

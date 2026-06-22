@@ -141,8 +141,12 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
 def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():
     unit = VOICE_UNIT_PATH.read_text()
     assert _value_for(unit, "StartLimitAction") == "reboot"
-    assert _value_for(unit, "SuccessExitStatus") == "78"
-    assert _value_for(unit, "RestartPreventExitStatus") == "78"
+    # 78 (provider unconfigured) parks cleanly. 66 (no usable mic) parks
+    # the same way and now shares these lists — the exact "66 78" set is
+    # pinned by tests/test_voice_input_gate.py; here we only assert this
+    # test's own concern, that 78 stays a clean-park code.
+    assert "78" in _value_for(unit, "SuccessExitStatus").split()
+    assert "78" in _value_for(unit, "RestartPreventExitStatus").split()
 
 
 def test_voice_daemon_maps_unconfigured_provider_to_ex_config():

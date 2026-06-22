@@ -696,6 +696,10 @@ async def _get_state(
         logger.exception("conversation history state read failed")
         chat_state = None
 
+    # Lazy import (mirrors read_active_provider_state above) so jasper-control
+    # doesn't pull jasper.voice.* at module load. Cheap file stat per /state.
+    from ..voice.input_presence import voice_parked_no_mic
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -744,6 +748,13 @@ async def _get_state(
                 "last_leg": (voice_st or {}).get("barge_in_last_leg"),
             },
             "reachable": voice_st is not None,
+            # Disambiguates reachable:false. True when the AEC reconciler
+            # parked voice for a missing microphone (its ConditionPathExists
+            # marker is present) — i.e. "intentionally idle, no mic", NOT
+            # "crashed". Read fresh from the marker each call (jasper-control
+            # isn't restarted on a mic plug/unplug). See
+            # docs/HANDOFF-hotplug-resilience.md "Layer 3".
+            "parked_no_mic": voice_parked_no_mic(),
         },
         "audio": {
             "main_volume_db": camilla_st["main_volume_db"],
