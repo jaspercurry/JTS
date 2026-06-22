@@ -75,7 +75,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             # nginx strips the /chat/ prefix so we see "/" and "/data.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
@@ -92,7 +92,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path not in ("/capture", "/clear"):

@@ -194,6 +194,7 @@ def test_decorated_checks_are_total_without_systemctl(monkeypatch):
     for fn in (
         privsep.check_control_readable_inputs,
         privsep.check_web_readable_inputs,
+        privsep.check_chat_web_readable_inputs,
         privsep.check_mux_readable_inputs,
         privsep.check_voice_readable_inputs,
     ):

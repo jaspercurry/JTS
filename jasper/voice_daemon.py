@@ -1760,7 +1760,7 @@ class WakeLoop:
         if store.add(turn):
             try:
                 prune_for_settings(store, settings, anchor_ts_utc=ts_utc)
-            except Exception as e:  # noqa: BLE001
+            except (OSError, RuntimeError, ValueError) as e:
                 logger.warning(
                     "conversation capture: retention prune failed (%s: %s)",
                     type(e).__name__,
