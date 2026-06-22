@@ -276,12 +276,12 @@ class OpenAIRealtimeTurn:
         # is exactly what OpenAI's STT model received.
         self._debug_wav = None
         self._debug_wav_path: str | None = None
-        # The most recent assistant audio item id seen, kept for
-        # potential `conversation.item.truncate(item_id=..., audio_end_ms=...)`
-        # calls when implementing real barge-in. Today the daemon uses
-        # NO_INTERRUPTION-equivalent semantics (model talks to completion),
-        # so this stays unused; recorded so the field is ready when
-        # someone wires up barge-in for real.
+        # The most recent assistant audio item id seen (set from
+        # `response.output_item.added`). `truncate_assistant_audio` uses
+        # it as the `conversation.item.truncate` target when the daemon's
+        # barge-in spine doesn't carry a provider id — see the barge-in
+        # capability seam below. Unused when barge-in is off (the
+        # default), since nothing then drives a flush + truncate.
         self._last_assistant_item_id: str | None = None
         self._server_vad_active: bool = False
         self._server_speech_started: bool = False
@@ -527,38 +527,108 @@ class OpenAIRealtimeTurn:
         self._interrupted = False
         self._interrupt_event.clear()
 
-    # ---- Barge-in capability seam (behaviour-neutral stubs) ----
+    # ---- Barge-in capability seam (OpenAI reference pack) ----
     #
-    # Reconciliation kind for OpenAI is `needs_client_truncate` (catalog).
-    # The wire calls these will make in a later PR already exist privately:
-    # `OpenAIRealtimeConnection._cancel_response()` (response.cancel) and a
-    # conversation.item.truncate using `self._last_assistant_item_id` plus
-    # the final playout ledger's played-ms. They stay no-ops here so this
-    # PR is behaviour-neutral — nothing in the daemon calls them yet.
+    # Reconciliation kind for OpenAI is `needs_client_truncate` (catalog):
+    # the WebSocket transport keeps the whole generated assistant turn
+    # server-side, so after JTS flushes local TTS on a barge-in the client
+    # must (1) stop generation with `response.cancel` and (2) trim the
+    # conversation item to the *heard* boundary with
+    # `conversation.item.truncate`. The daemon's `_flush_for_interrupt`
+    # spine calls these — in this order — once the local flush has the
+    # playout ledger's played-ms; Gemini's pack no-ops both. Grok inherits
+    # this whole pack via `GrokRealtimeConnection`.
 
     async def cancel_response(self, reason: str) -> None:
-        # No-op stub: the barge-in packs (later PRs) wire this to
-        # `self._conn._cancel_response()`. `reason` is reserved for the
-        # structured-log line the real implementation will emit.
-        return None
+        """Stop the in-progress OpenAI response (the local/manual cancel).
+
+        Guard: `response.cancel` errors with `response_cancel_not_active`
+        when no response is generating, so only send while one is. The
+        "response in progress" predicate mirrors `release()`'s: the input
+        buffer is committed, the server hasn't completed the response, and
+        the connection is still up. Idempotent and never raises —
+        `_cancel_response()` swallows wire errors at DEBUG."""
+        if not (
+            self._committed
+            and not self._server_turn_complete
+            and not self._turn_lost
+        ):
+            # No active response — cancelling now would trip the server's
+            # noisy response_cancel_not_active error.
+            return
+        log_event(logger, "barge.cancel", reason=reason)
+        await self._conn._cancel_response()
 
     async def truncate_assistant_audio(
         self, provider_item_id: str | None, audio_played_ms: int,
     ) -> None:
-        # No-op stub. The real call (later PRs) sends
-        # conversation.item.truncate(item_id=provider_item_id,
-        # audio_end_ms=audio_played_ms). `provider_item_id` MUST be
-        # tolerated as None — the ledger may not have observed
-        # `self._last_assistant_item_id` yet — in which case the real
-        # implementation skips the truncate rather than send an invalid id.
-        return None
+        """Align OpenAI conversation history to what the listener heard.
+
+        Sends `conversation.item.truncate{item_id, content_index:0,
+        audio_end_ms}`. `item_id` falls back to the turn's own
+        `_last_assistant_item_id` (captured from
+        `response.output_item.added`) so the daemon spine never has to
+        carry a provider id; `None` is tolerated (a barge-in that raced
+        the first item event leaves nothing to truncate — a no-op).
+
+        CRITICAL GUARD: `audio_end_ms` MUST be the ms *actually rendered*
+        per the playout ledger, never bytes-received. A `0` from the
+        ledger means it observed no rendered audio (the production fan-in
+        ack can return `max_audio_played_ms=0`); truncating anyway would
+        send an `audio_end_ms` past the heard boundary, which OpenAI
+        rejects as out-of-range and which desyncs the conversation
+        context. So a non-positive played-ms is a no-op + WARN, never a
+        bytes-received guess. Idempotent and never raises."""
+        if self._turn_lost:
+            return
+        item_id = provider_item_id or self._last_assistant_item_id
+        if not item_id:
+            # Barge-in raced response.output_item.added — no assistant
+            # item to align yet. Nothing to truncate.
+            log_event(
+                logger, "barge.truncate_skipped",
+                reason="no_item_id", level=logging.DEBUG,
+            )
+            return
+        if audio_played_ms <= 0:
+            log_event(
+                logger, "barge.truncate_skipped",
+                reason="zero_played_ms", item_id=item_id,
+                level=logging.WARNING,
+            )
+            return
+        audio_end_ms = int(audio_played_ms)
+        log_event(
+            logger, "barge.truncate",
+            # getattr-guarded so the log can't itself raise (e.g. a turn
+            # built with a stub connection, or a torn-down `_conn`); the
+            # send below is what actually needs a live connection, and it
+            # is wrapped. Grok overrides PROVIDER_NAME to "grok".
+            provider=getattr(self._conn, "PROVIDER_NAME", "openai"),
+            item_id=item_id, audio_end_ms=audio_end_ms,
+        )
+        try:
+            await self._conn._send_event({
+                "type": "conversation.item.truncate",
+                "item_id": item_id,
+                "content_index": 0,
+                "audio_end_ms": audio_end_ms,
+            })
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                logger, "barge.truncate_failed",
+                item_id=item_id, error=type(e).__name__, detail=str(e),
+                level=logging.WARNING,
+            )
 
     def request_local_interrupt(self) -> None:
-        # Local barge-in (PR-2 spine): flush playout without an OpenAI-side
-        # conversation.item.truncate / response.cancel (the seam above owns
-        # provider cancellation in a later PR). OpenAI/Grok never set
-        # _interrupt_event from the server side, so this is the only path
-        # that arms the playback flush race for these providers.
+        # Local barge-in (PR-2 spine): arm the local playback flush only —
+        # this does NOT itself send conversation.item.truncate / response.cancel.
+        # Provider reconciliation is the seam above (cancel_response /
+        # truncate_assistant_audio), which the daemon's _flush_for_interrupt
+        # drives *after* the flush. OpenAI/Grok never set _interrupt_event from
+        # the server side, so this is the only path that arms the flush race
+        # for these providers.
         self._interrupted = True
         self._interrupt_event.set()
 
@@ -1775,7 +1845,8 @@ class OpenAIRealtimeConnection:
                 turn._on_assistant_text_done(text)
             return
 
-        # Track the assistant audio item id for future barge-in support.
+        # Track the assistant audio item id — truncate_assistant_audio's
+        # conversation.item.truncate target on a barge-in.
         if etype == "response.output_item.added":
             item = _event_field(event, "item") or {}
             if isinstance(item, dict) and item.get("type") == "message":

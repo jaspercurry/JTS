@@ -29,8 +29,15 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # latency-fit /state snapshot (jasper/multiroom/airplay_latency.py) carries the
 # same fail-soft "observability must never break /state" guard every sibling
 # /state section does.
-MAX_NOQA_MARKERS = 798
-MAX_BLE001_MARKERS = 618
+# 2026-06-21 (+1 suppression marker, blind-except): the OpenAI barge-in pack's
+# truncate_assistant_audio wraps the conversation.item.truncate wire send so
+# the LiveTurn seam can honour its "must never raise" contract while still
+# surfacing the failure as event=barge.truncate_failed (WARN) — the same
+# guarded-wire-send idiom as the adjacent _cancel_response.
+MAX_NOQA_MARKERS = 799
+MAX_BLE001_MARKERS = 619
+# (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
+# latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
 _BROAD_EXCEPT = re.compile(
     r"^\s*except (?:BaseException|Exception)(?: as [A-Za-z_][A-Za-z0-9_]*)?:"

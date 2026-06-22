@@ -364,15 +364,16 @@ provider-name-based:
   deliberately does **not** cancel/truncate the provider. The daemon
   drives it from in-session Silero VAD behind the default-OFF
   `JASPER_BARGE_IN_<PROVIDER>` flag. The provider-cancel seam below
-  (`cancel_response` / `truncate_assistant_audio`) is present as the
-  PR-3 no-op stubs; wiring it to real provider calls is the pending
-  step for OpenAI (PR-4) and Grok (PR-6). **Gemini's reconcile is
-  finalised as a no-op (PR-5)**: `server_self_truncates` has no client
-  truncate/cancel call to make, and JTS keeps Gemini on manual VAD +
-  `NO_INTERRUPTION` even with barge-in enabled, so the daemon's local
-  gate is the sole interruption authority (option (a) in
-  [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Gemini pack"; pinned by
-  `tests/test_gemini_barge_in.py`).
+  (`cancel_response` / `truncate_assistant_audio`) is now **wired for
+  OpenAI (PR-4)**: after the local flush, `_flush_for_interrupt` drives
+  `cancel_response` then `truncate_assistant_audio` with the flush ack's
+  played-ms. **Grok inherits that pack** (its paid verification is PR-6).
+  **Gemini's reconcile is finalised as a no-op (PR-5)**:
+  `server_self_truncates` has no client truncate/cancel call to make, and
+  JTS keeps Gemini on manual VAD + `NO_INTERRUPTION` even with barge-in
+  enabled, so the daemon's local gate is the sole interruption authority
+  (option (a) in [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Gemini pack";
+  pinned by `tests/test_gemini_barge_in.py`).
 - `cancel_response(reason)` for explicit local interruption/manual
   cancellation.
 - `truncate_assistant_audio(provider_item_id, audio_played_ms)` for
@@ -386,12 +387,19 @@ provider-name-based:
   JTS already carries it through the outputd-compatible TTS IPC used by
   fan-in.
 
-This seam is present in code as of PR-3, added **behaviour-neutral**:
+This seam landed in code as of PR-3 (added **behaviour-neutral**):
 `LiveTurn.cancel_response()` / `LiveTurn.truncate_assistant_audio()` and
 `LiveConnection.supports_provider_vad()` live in
-[`jasper/voice/session.py`](../jasper/voice/session.py), with no-op
-defaults in every adapter (Grok inherits OpenAI's) so no runtime behaviour
-changed — the robust-barge-in packs (later PRs) supply the wire calls.
+[`jasper/voice/session.py`](../jasper/voice/session.py). **PR-4 wired the
+OpenAI pack** (the reference): `cancel_response` → `response.cancel`
+(guarded to an in-progress response, so it can't trip the server's
+`response_cancel_not_active`), and `truncate_assistant_audio` →
+`conversation.item.truncate{content_index:0, audio_end_ms}` using the
+playout ledger's played-ms — a **no-op + WARN when that played-ms is 0**, so
+it never truncates on bytes-received (an out-of-range `audio_end_ms` errors
+server-side and desyncs context). Grok inherits it; Gemini keeps the no-op
+default (it self-truncates server-side). It stays default-OFF behind the
+per-provider flag, so no household behaviour changed.
 Which reconciliation a provider needs is a declarative registry field, not
 a provider-name branch: `ProviderCatalogEntry.interrupt_reconcile` in
 [`jasper/voice/catalog.py`](../jasper/voice/catalog.py)
@@ -567,8 +575,12 @@ These have all been surfaced and rejected in design reviews:
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
 Last verified: 2026-06-21 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
-barge-in capability seam landed behaviour-neutral in PR-3 —
-`LiveTurn.cancel_response`/`truncate_assistant_audio` +
-`LiveConnection.supports_provider_vad` + catalog `interrupt_reconcile`,
-pinned by `tests/test_voice_barge_in_contract.py` and
+barge-in capability seam: PR-3 landed it behaviour-neutral
+(`LiveTurn.cancel_response`/`truncate_assistant_audio` +
+`LiveConnection.supports_provider_vad` + catalog `interrupt_reconcile`);
+PR-4 wired the OpenAI/Grok pack to real `response.cancel` +
+`conversation.item.truncate` with the played-ms no-op-if-0 guard, driven
+by `turn_playback._flush_for_interrupt` — pinned by
+`tests/test_openai_session.py`, `tests/test_turn_playback_barge_in.py`, and
+`tests/test_voice_barge_in_contract.py`, registry by
 `tests/test_voice_catalog.py`)

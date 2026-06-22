@@ -812,6 +812,69 @@ class VoiceEvalHarness:
             response_audio_path=wav_path,
         )
 
+    async def ask_with_barge_in(
+        self,
+        prompt: str,
+        *,
+        turn_timeout_sec: float = 30.0,
+    ) -> int:
+        """Run a turn, then BARGE IN right after the first audio chunk.
+
+        Models the production robust-barge-in path: once local TTS is
+        flushed, the daemon's ``turn_playback._flush_for_interrupt`` drives
+        the active provider's pack — ``cancel_response`` then
+        ``truncate_assistant_audio(None, played_ms)`` — with the playout
+        ledger's played-ms. We reproduce that call sequence here, after the
+        first audio chunk arrives (the model is audibly speaking).
+
+        The harness bypasses ALSA, so there is no DAC-clock ledger: the
+        played-ms here is the consumed-bytes proxy (bytes / 48 at 24 kHz
+        mono int16, the same factor the adapter logs use). Barging in after
+        the FIRST chunk keeps ``audio_end_ms`` well under the generated
+        length, so a real OpenAI session accepts the truncate rather than
+        rejecting it as out-of-range.
+
+        Returns the played-ms passed to ``truncate_assistant_audio`` (0 if
+        no chunk arrived before the timeout — which the pack no-ops + WARNs
+        on, by contract)."""
+        audio_path = await tts.synth(prompt, cache_dir=self.audio_cache_dir)
+        prompt_pcm = _load_wav_pcm(audio_path)
+        connection = await self._ensure_connection()
+        turn = await asyncio.wait_for(
+            connection.acquire_turn(), timeout=turn_timeout_sec,
+        )
+        played_ms = 0
+        try:
+            needs_end_input = await _send_pcm_to_turn(
+                turn, prompt_pcm, provider=self.cfg.voice_provider,
+            )
+            if needs_end_input:
+                await turn.end_input()
+
+            async def _barge_after_first_chunk() -> None:
+                nonlocal played_ms
+                consumed = 0
+                async for chunk in turn.audio_out():
+                    consumed += len(chunk)
+                    # 24 kHz mono int16 → 48 bytes/ms.
+                    played_ms = int(consumed / 48)
+                    # User talks over the assistant: in production the local
+                    # flush happens first (audio plumbing the harness skips),
+                    # then the spine reconciles the provider. Drive that
+                    # reconcile directly: cancel generation, then truncate
+                    # history to what was heard.
+                    await turn.cancel_response("voice_eval_barge")
+                    await turn.truncate_assistant_audio(None, played_ms)
+                    return
+
+            await asyncio.wait_for(
+                _barge_after_first_chunk(), timeout=turn_timeout_sec,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await turn.release()
+        return played_ms
+
     # --- assertion helpers --------------------------------------------
 
     @staticmethod
