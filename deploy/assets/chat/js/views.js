@@ -227,19 +227,23 @@ function historyContent(snap, turns) {
 }
 
 function renderTurnCell(turn, col) {
+  const metadata = parseDataJson(turn && turn.data_json);
   if (col.key === "time") {
     return h("time", { dateTime: textOrEmpty(turn.ts_utc) },
       formatTimestamp(turn.ts_utc));
   }
   if (col.key === "provider") {
     const parts = [h("span.chat-provider__name", null, providerLabel(turn.provider))];
-    if (isResearchTurn(turn)) parts.push(badge("Research", "warn"));
+    if (isResearchMetadata(metadata)) parts.push(badge("Research", "warn"));
     return h("div.chat-provider", null, parts);
   }
-  return h("div.chat-pair", null,
-    transcriptBlock("User", turn.user_text, NO_USER_TRANSCRIPT),
-    h("div.chat-pair__connector", { "attr:aria-hidden": "true" }, "->"),
-    transcriptBlock("Assistant", turn.assistant_text, NO_ASSISTANT_TRANSCRIPT),
+  return h("div.chat-pair-stack", null,
+    h("div.chat-pair", null,
+      transcriptBlock("User", turn.user_text, NO_USER_TRANSCRIPT),
+      h("div.chat-pair__connector", { "attr:aria-hidden": "true" }, "->"),
+      transcriptBlock("Assistant", turn.assistant_text, NO_ASSISTANT_TRANSCRIPT),
+    ),
+    metadataNote(metadata),
   );
 }
 
@@ -251,9 +255,34 @@ function transcriptBlock(label, text, missingText) {
   );
 }
 
-function isResearchTurn(turn) {
-  const parsed = parseDataJson(turn && turn.data_json);
+function isResearchMetadata(parsed) {
   return !!(parsed && parsed.kind === "research");
+}
+
+function metadataNote(parsed) {
+  if (!parsed || parsed.kind !== "voice_turn") return null;
+  const notes = [];
+  const tools = toolNames(parsed);
+  if (tools.length) {
+    notes.push(`${tools.length === 1 ? "Tool" : "Tools"}: ${tools.join(", ")}`);
+  }
+  if (parsed.transcripts_available === false) {
+    notes.push("Transcript text is not available for this provider.");
+  }
+  return notes.length ? h("p.chat-turn-meta", null, notes.join(" ")) : null;
+}
+
+function toolNames(parsed) {
+  if (!Array.isArray(parsed.tools)) return [];
+  return parsed.tools
+    .map((tool) => {
+      if (typeof tool === "string") return tool;
+      if (tool && typeof tool === "object") return tool.name;
+      return "";
+    })
+    .map(textOrEmpty)
+    .map((tool) => tool.trim())
+    .filter(Boolean);
 }
 
 function parseDataJson(raw) {

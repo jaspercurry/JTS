@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 
+from jasper import conversation_history as history_module
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
     CAPTURE_ALIAS_ENV,
@@ -91,6 +92,34 @@ def test_schema_has_reserved_columns_and_recent_index(tmp_path):
         "session_id",
     } <= columns
     assert "idx_conversation_turns_recent" in indexes
+
+
+def test_store_create_makes_database_group_writable(tmp_path):
+    db_path = tmp_path / "history.db"
+    store = ConversationStore(str(db_path))
+    store.close()
+
+    assert (db_path.stat().st_mode & 0o060) == 0o060
+
+
+def test_store_chmod_is_quiet_when_foreign_owner_file_is_group_writable(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    db_path = tmp_path / "history.db"
+    db_path.write_text("", encoding="utf-8")
+    db_path.chmod(0o660)
+    monkeypatch.setattr(
+        history_module.os,
+        "geteuid",
+        lambda: db_path.stat().st_uid + 1,
+    )
+    caplog.set_level(logging.WARNING, logger=history_module.logger.name)
+
+    history_module._chmod_store(str(db_path))
+
+    assert "conversation history store chmod failed" not in caplog.text
 
 
 def test_recent_orders_newest_first_with_limit_and_since_filter(tmp_path):

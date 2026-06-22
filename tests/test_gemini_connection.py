@@ -1037,3 +1037,41 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
         await turn.release()
     finally:
         await conn.stop()
+
+
+async def test_tool_round_metadata_captures_tool_name_without_args_or_payload():
+    from jasper.tools import tool as tool_decorator
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+
+    @tool_decorator()
+    def get_weather(location: str = "") -> dict:
+        """."""
+        return {"location": location or "Brooklyn", "temperature": 62}
+    registry.register(get_weather)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.sessions[0]
+        turn = await conn.acquire_turn()
+
+        sess.feed(_Resp(tool_call=_ToolCall(function_calls=[
+            _FC(name="get_weather", id="fc-1", args={"location": "Home"}),
+        ])))
+        await _wait_until(
+            lambda: len(sess.sent_tool_responses) >= 1,
+            timeout=2.0,
+        )
+
+        metadata = turn.conversation_metadata()
+        assert metadata == {
+            "kind": "voice_turn",
+            "transcripts_available": False,
+            "tools": ["get_weather"],
+        }
+        assert "Home" not in repr(metadata)
+        assert "temperature" not in repr(metadata)
+
+        await turn.release()
+    finally:
+        await conn.stop()

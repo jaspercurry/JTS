@@ -143,6 +143,10 @@ body.stale { opacity: 0.72; }
   gap: 12px;
   align-items: start;
 }
+.chat-pair-stack {
+  display: grid;
+  gap: 8px;
+}
 .chat-pair__connector {
   margin-top: 22px;
   color: var(--muted);
@@ -177,6 +181,11 @@ body.stale { opacity: 0.72; }
 .chat-transcript--missing .chat-transcript__text {
   color: var(--muted);
   font-style: italic;
+}
+.chat-turn-meta {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 time {

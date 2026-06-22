@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 import sys
 import threading
 import types
@@ -178,6 +179,9 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     assert 'from "/assets/shared/js/dialog.js"' in main
     assert 'JSON.parse(raw)' in views
     assert 'parsed.kind === "research"' in views
+    assert 'parsed.kind !== "voice_turn"' in views
+    assert "Transcript text is not available for this provider." in views
+    assert 'Tool" : "Tools"' in views
     assert '"attr:aria-label": "Conversation capture"' in views
     assert "No transcript for this turn." in views
 
@@ -239,6 +243,7 @@ def test_capture_enable_writes_settings_file_and_initializes_db(
     payload = json.loads(body)
     assert payload["capture_enabled"] is True
     assert db_path.exists() is True
+    assert stat.S_IMODE(db_path.stat().st_mode) & stat.S_IWGRP
     text = settings_path.read_text(encoding="utf-8")
     assert f"{CAPTURE_ALIAS_ENV}=1" in text
     assert f"{DB_PATH_ENV}={db_path}" in text
