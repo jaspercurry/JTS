@@ -222,10 +222,19 @@ from .driver_acoustics import (
 from .commissioning_capture import (
     DRIVER_VERDICT_TO_OUTCOME,
     SUMMED_VERDICT_TO_OUTCOME,
+    build_crossover_alignment_proposal,
     driver_passband_hz,
     primary_crossover_fc_hz,
     record_driver_acoustic_capture,
     record_summed_acoustic_capture,
+)
+from .crossover_alignment import (
+    MAGNITUDE_ONLY,
+    PHASE_AWARE,
+    CrossoverAlignmentProposal,
+    ResolvedMode,
+    propose_crossover_alignment,
+    resolve_measurement_mode,
 )
 
 __all__ = [
@@ -253,6 +262,13 @@ __all__ = [
     "primary_crossover_fc_hz",
     "record_driver_acoustic_capture",
     "record_summed_acoustic_capture",
+    "build_crossover_alignment_proposal",
+    "CrossoverAlignmentProposal",
+    "ResolvedMode",
+    "MAGNITUDE_ONLY",
+    "PHASE_AWARE",
+    "propose_crossover_alignment",
+    "resolve_measurement_mode",
     "CALIBRATION_LEVEL_KIND",
     "COMMISSION_RAMP_MAX_LEVEL_DBFS",
     "DEFAULT_PRESET_RESOURCE",

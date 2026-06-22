@@ -1189,6 +1189,18 @@ Delay alignment is measured, not guessed.
   measured in-phase sum and the reverse-polarity null are both
   captured after loading the actual CamillaDSP profile.
 
+> **Implementation (L2, landed 2026-06-21).** The calibrated-mic delay/polarity
+> proposal that implements this section lives in
+> [`jasper/active_speaker/crossover_alignment.py`](../jasper/active_speaker/crossover_alignment.py)
+> (the `phase_aware` gate + the measured "delay the earlier arriver" + reverse-null
+> polarity proposal) and `driver_acoustics`'s calibrated capture
+> (`analyze_summed_crossover(expect_null=…)`, `deconv.deconvolve_with_arrival`). The
+> operational write-up + the `/active-speaker/crossover-alignment` preview/confirm
+> routes are in [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
+> "L2 calibrated crossover alignment". The interactive delay-walk optimizer (step
+> delay to maximize the reverse-polarity null) is the documented follow-up; L2 ships
+> the single-shot estimate + the null check that seed and validate it.
+
 ## CamillaDSP Profile Architecture
 
 The future active speaker path should use bounded profile templates,

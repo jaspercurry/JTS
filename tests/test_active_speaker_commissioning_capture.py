@@ -132,10 +132,14 @@ def _capture_driver(
 ):
     seen: dict = {}
 
-    def fake_analyze(wav, meta, *, passband_hz, overlap_fcs=(), has_mic_calibration):
+    def fake_analyze(
+        wav, meta, *, passband_hz, overlap_fcs=(), has_mic_calibration,
+        calibration=None,
+    ):
         seen["passband_hz"] = passband_hz
         seen["overlap_fcs"] = tuple(overlap_fcs)
         seen["wav"] = wav
+        seen["calibration"] = calibration
         return result
 
     out = record_driver_acoustic_capture(
