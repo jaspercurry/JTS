@@ -15,11 +15,13 @@ this. This test pins the manifest against the committed unit files, mirroring
 
 1. the compartments cover exactly the two known Phase 4 groups, each created by
    service-users.sh;
-2. each compartment's declared members equal the set of Tier-A units whose unit
-   file declares that compartment group in ``SupplementaryGroups=`` (so a revoked
-   or granted group can't drift the membership);
-3. NO unit anywhere in deploy/ declares a compartment group without being listed as
-   a member (catches a new non-root daemon joining a secret group);
+2. each compartment's declared members equal the set of Tier-A units whose
+   effective Unix identity has that compartment group. "Effective" includes
+   direct ``SupplementaryGroups=`` and units that share a secret-bearing
+   ``User=`` (``jasper-chat-web`` runs as ``jasper-web``);
+3. NO unit anywhere in deploy/ has effective access to a compartment group
+   without being listed as a member (catches a new non-root daemon joining a
+   secret group);
 4. every declared secret file lives under its compartment directory.
 """
 from __future__ import annotations
@@ -61,6 +63,33 @@ def _user(unit_file: Path) -> str:
     return user
 
 
+def _effective_compartment_groups_by_user() -> dict[str, set[str]]:
+    """Compartment groups a Unix user effectively carries.
+
+    Install-time ``usermod -aG`` grants supplementary groups to the Unix user,
+    so a second unit running as that same user can read the compartment even if
+    its unit file does not repeat ``SupplementaryGroups=``. The manifest must
+    model that effective identity, not only each unit's local directives.
+    """
+
+    out: dict[str, set[str]] = {}
+    for rel in _TIER_A_UNIT_FILE.values():
+        unit_file = ROOT / rel
+        user = _user(unit_file)
+        if not user or user == "root":
+            continue
+        out.setdefault(user, set()).update(
+            _EXPECTED_COMPARTMENT_GROUPS & _supp_groups(unit_file)
+        )
+    return out
+
+
+def _effective_supp_groups(unit_file: Path) -> set[str]:
+    direct = _supp_groups(unit_file)
+    inherited = _effective_compartment_groups_by_user().get(_user(unit_file), set())
+    return direct | inherited
+
+
 def test_compartments_cover_exactly_the_two_phase4_groups():
     assert {c.group for c in COMPARTMENTS} == _EXPECTED_COMPARTMENT_GROUPS
 
@@ -74,18 +103,22 @@ def test_compartment_groups_are_created_by_install():
 
 
 def test_members_mirror_the_units_supplementary_groups():
-    """Each compartment's members == the Tier-A units whose unit file declares that
-    compartment group. The drift catch: revoke a group from a unit, or grant one,
-    and this fails until COMPARTMENTS matches."""
+    """Each compartment's members == the Tier-A units whose effective identity
+    carries that compartment group.
+
+    The drift catch: revoke a group from a user/unit, grant one, or add a unit
+    that shares a secret-bearing Unix user, and this fails until COMPARTMENTS
+    matches.
+    """
     for comp in COMPARTMENTS:
         from_units = {
             unit
             for unit, rel in _TIER_A_UNIT_FILE.items()
-            if comp.group in _supp_groups(ROOT / rel)
+            if comp.group in _effective_supp_groups(ROOT / rel)
         }
         assert set(comp.member_units) == from_units, (
             f"{comp.group}: manifest members {sorted(comp.member_units)} but the "
-            f"units declaring the group are {sorted(from_units)} — update "
+            f"units with effective access are {sorted(from_units)} — update "
             "secret_compartments.COMPARTMENTS to match the unit files."
         )
 
@@ -99,14 +132,21 @@ def test_members_are_real_tier_a_units():
 
 
 def test_no_unit_joins_a_compartment_group_without_membership():
-    """Scan every deploy unit: any unit declaring a compartment group in its
-    SupplementaryGroups MUST be a declared member. Catches a new non-root daemon
-    added to a secret group without updating COMPARTMENTS (which would leave it out
-    of the availability set AND mis-classified as a leak target)."""
+    """Scan every deploy unit: any unit with effective access to a compartment
+    group MUST be a declared member.
+
+    Catches both direct ``SupplementaryGroups=`` edits and a new non-root daemon
+    running as a secret-bearing Unix user without updating COMPARTMENTS (which
+    would leave it out of the availability set AND mis-classified as a leak
+    target).
+    """
     members_by_group = {c.group: set(c.member_units) for c in COMPARTMENTS}
     offenders: list[str] = []
     for unit_file in sorted(ROOT.glob("deploy/**/*.service")):
-        supp = _supp_groups(unit_file)
+        user = _user(unit_file)
+        if not user or user == "root":
+            continue
+        supp = _effective_supp_groups(unit_file)
         for group in _EXPECTED_COMPARTMENT_GROUPS & supp:
             if unit_file.stem not in members_by_group[group]:
                 offenders.append(f"{unit_file.stem} -> {group}")
