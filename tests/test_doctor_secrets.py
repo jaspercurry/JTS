@@ -124,6 +124,29 @@ def test_happy_path_passes(tmp_path: Path):
     assert "1 secret(s) readable only by jasper-voice" in result.detail
 
 
+def test_happy_path_deduplicates_shared_unix_user_members(tmp_path: Path):
+    d = tmp_path / "jasper-secrets"
+    dir_st = _mk_dir(d, 0o2770)
+    f_st = _mk_file(d / "voice_keys.env", 0o640)
+    comp = _comp(d, "voice_keys.env", group=_group_name(dir_st))
+    members = [
+        _ident(101, {dir_st.st_gid, f_st.st_gid}, "jasper-web"),
+        _ident(102, {dir_st.st_gid, f_st.st_gid}, "jasper-voice"),
+        _ident(101, {dir_st.st_gid, f_st.st_gid}, "jasper-web"),
+    ]
+
+    result = sc._classify_compartment(
+        "secret compartment: jasper-secrets",
+        comp,
+        members,
+        non_members=[],
+    )
+
+    assert result.status == "ok", result.detail
+    assert "readable only by jasper-web, jasper-voice" in result.detail
+    assert "jasper-web, jasper-voice, jasper-web" not in result.detail
+
+
 def test_world_readable_file_fails_over_exposure(tmp_path: Path):
     d = tmp_path / "jasper-secrets"
     _mk_dir(d, 0o2770)

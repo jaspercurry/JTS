@@ -70,6 +70,7 @@ import argparse
 import asyncio
 import base64
 import binascii
+import hashlib
 import html
 import json
 import logging
@@ -94,6 +95,7 @@ from jasper.output_topology import (
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
+    topology_path,
 )
 from jasper.output_hardware import load_state as load_output_hardware_state
 from jasper.active_speaker.commission_wiring import (
@@ -185,6 +187,10 @@ VOLUME_FLOOR_TONE_STARTUP_CHECK_S = 0.08
 _live_draft_unavailable_log_at: dict[str, float] = {}
 
 
+class OutputTopologyRevisionConflict(ValueError):
+    """Raised when a browser posts a topology based on stale saved state."""
+
+
 def _camilla():
     from jasper.camilla import CamillaController
 
@@ -259,11 +265,23 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     return hardware.to_dict() if hardware is not None else None
 
 
+def _output_topology_revision() -> str:
+    """Content revision for optimistic concurrency on /sound topology writes."""
+
+    target = topology_path()
+    try:
+        data = target.read_bytes()
+    except FileNotFoundError:
+        return "missing"
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
 def _output_topology_payload() -> dict[str, Any]:
     topology = load_output_topology()
 
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
+        "topology_revision": _output_topology_revision(),
         "output_hardware": _output_hardware_dict(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
@@ -271,7 +289,19 @@ def _output_topology_payload() -> dict[str, Any]:
     }
 
 
-def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
+def _save_output_topology_payload(
+    raw: dict[str, Any],
+    *,
+    require_revision: bool = False,
+) -> dict[str, Any]:
+    if require_revision:
+        expected_revision = str(raw.get("topology_revision") or "")
+        current_revision = _output_topology_revision()
+        if not expected_revision or expected_revision != current_revision:
+            raise OutputTopologyRevisionConflict(
+                "speaker layout changed in another session; refresh hardware "
+                "before saving"
+            )
     raw_topology = raw.get("output_topology", raw)
     topology = OutputTopology.from_mapping(raw_topology)
     topology, guards_changed = _active_speaker_request_missing_software_guards(topology)
@@ -292,6 +322,7 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
+        "topology_revision": _output_topology_revision(),
         "output_hardware": _output_hardware_dict(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
@@ -4760,7 +4791,18 @@ def _make_handler(
                     return
                 if path == "/output-topology":
                     try:
-                        self._send_json(_save_output_topology_payload(raw))
+                        self._send_json(
+                            _save_output_topology_payload(raw, require_revision=True)
+                        )
+                    except OutputTopologyRevisionConflict as e:
+                        logger.warning(
+                            "event=sound.output_topology_save result=conflict "
+                            "error=%s",
+                            type(e).__name__,
+                        )
+                        payload = _output_topology_payload()
+                        payload["error"] = str(e)
+                        self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except OSError as e:
                         logger.exception(
                             "event=sound.output_topology_save result=error "

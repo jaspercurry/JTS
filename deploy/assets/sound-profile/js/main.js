@@ -110,6 +110,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
     observedHardware: null,
+    revision: null,
     identitySaving: '', protectionSaving: '',
     error: '', dirty: false, touched: false
   };
@@ -3718,6 +3719,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
+    outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;
@@ -4466,10 +4468,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var resp = await fetch('./output-topology', {
         method: 'POST',
         headers: jsonHeaders(),
-        body: JSON.stringify({output_topology: outputTopology.draft})
+        body: JSON.stringify({
+          output_topology: outputTopology.draft,
+          topology_revision: outputTopology.revision
+        })
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'speaker layout save failed');
+      if (!resp.ok) {
+        if (resp.status === 409 && payload.output_topology) {
+          ingestOutputTopology(payload);
+          outputTopology.error = payload.error || 'Speaker layout changed; refresh before saving.';
+          status(outputTopology.error, true);
+          render();
+          return;
+        }
+        throw new Error(payload.error || 'speaker layout save failed');
+      }
       ingestOutputTopology(payload);
       if (options.nextStep) outputStepOverride = options.nextStep;
       status('Saved speaker layout. No sound was played.');
