@@ -364,15 +364,19 @@ class GeminiLiveTurn:
         self._interrupted = False
         self._interrupt_event.clear()
 
-    # ---- Barge-in capability seam (behaviour-neutral stubs) ----
+    # ---- Barge-in capability seam (Gemini pack — final no-op) ----
     #
     # Reconciliation kind for Gemini is `server_self_truncates` (catalog):
-    # START_OF_ACTIVITY_INTERRUPTS drops the unspoken tail server-side, and
-    # Gemini has no OpenAI-style per-response audio item id to truncate
+    # START_OF_ACTIVITY_INTERRUPTS would drop the unspoken tail server-side,
+    # and Gemini has no OpenAI-style per-response audio item id to truncate
     # against. Both methods are therefore genuine no-ops for Gemini, not
-    # just deferred wiring — they exist so the daemon's barge-in path stays
-    # one code path across providers. Local TTS flush still happens at the
-    # daemon layer.
+    # just deferred wiring (robust-barge-in PR-5 finalises them as no-ops) —
+    # they exist so the daemon's barge-in path stays one code path across
+    # providers. Note JTS runs Gemini with manual VAD + NO_INTERRUPTION (see
+    # _build_config's barge-in resolution), so the server does not even
+    # self-interrupt / self-truncate in normal operation: the daemon's local
+    # gate (request_local_interrupt, below) is the sole interruption
+    # authority and the local TTS flush happens at the daemon layer.
 
     async def cancel_response(self, reason: str) -> None:
         # No-op: Gemini interruption is provider-side generation state;
@@ -1022,9 +1026,17 @@ class GeminiLiveConnection:
             # will both fire on the model's own bleed-through. With
             # NO_INTERRUPTION the server ignores user activity until
             # turn_complete, so the model always finishes its sentence.
-            # Trade-off: real barge-in is disabled. Fix path is hardware
-            # AEC — XVF3800 USB-IN as AEC reference, requires CamillaDSP-
-            # routed playback architecture (TODO: future work).
+            #
+            # Barge-in (flag JASPER_BARGE_IN_GEMINI, DEFAULT OFF) keeps THIS
+            # config — manual VAD + NO_INTERRUPTION — even when enabled:
+            # option (a) of docs/HANDOFF-barge-in.md "Gemini pack". The
+            # daemon's local Silero-on-AEC gate (request_local_interrupt) is
+            # the sole interruption authority, so this connection never reads
+            # the flag and the flag-OFF/-ON payloads are identical. We do NOT
+            # enable server VAD (option b): it would re-open the
+            # self-interrupt-on-bleed loop this line prevents. The doc owns the
+            # full rationale + the played-vs-sent gap; pinned by
+            # tests/test_gemini_barge_in.py.
             # Manual VAD: client owns turn boundaries via activity_start
             # / activity_end markers. This is the canonical multi-turn
             # pattern on a persistent connection — each pair is one

@@ -366,7 +366,13 @@ provider-name-based:
   `JASPER_BARGE_IN_<PROVIDER>` flag. The provider-cancel seam below
   (`cancel_response` / `truncate_assistant_audio`) is present as the
   PR-3 no-op stubs; wiring it to real provider calls is the pending
-  step (PRs 4–6).
+  step for OpenAI (PR-4) and Grok (PR-6). **Gemini's reconcile is
+  finalised as a no-op (PR-5)**: `server_self_truncates` has no client
+  truncate/cancel call to make, and JTS keeps Gemini on manual VAD +
+  `NO_INTERRUPTION` even with barge-in enabled, so the daemon's local
+  gate is the sole interruption authority (option (a) in
+  [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Gemini pack"; pinned by
+  `tests/test_gemini_barge_in.py`).
 - `cancel_response(reason)` for explicit local interruption/manual
   cancellation.
 - `truncate_assistant_audio(provider_item_id, audio_played_ms)` for
