@@ -29,7 +29,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     FilterSpec,
     PeqFilter,
-    total_positive_boost_db,
 )
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
@@ -466,24 +465,15 @@ def _emit_baseline_filter_definitions(
     output_trim_db: float = 0.0,
 ) -> str:
     lines: list[str] = []
-    # Program-domain headroom for the pre-split preference EQ (Layer C). The
-    # preference filters sit DOWNSTREAM of this gain (see _emit_baseline_pipeline),
-    # so folding their worst-case additive boost into this single attenuation
-    # guarantees the corrected program stays <= unity at the split input: a
-    # +B dB band lands at -(headroom) regardless of B. This reuses the exact
-    # mechanism emit_sound_config uses for room boosts (total_positive_boost_db).
-    # The fold keeps the emitted gain <= -boost_sum, so the runtime classifier's
-    # "headroom present and non-positive" baseline invariant holds by construction.
-    #
-    # output_trim_db (the household's manual headroom + loudness-match attenuation)
-    # folds into the SAME gain so the active path honours it exactly like the
-    # stereo emit_sound_config path. Like the stereo path it applies ONLY when the
-    # profile actually has EQ: a flat profile can't clip from EQ and plays at
-    # unity, so a configured trim is ignored (keeps the no-EQ baseline
-    # byte-identical). A trim is a (non-negative) attenuation, clamped here.
-    boost_db = total_positive_boost_db(preference_filters)
+    # Program-domain headroom for the pre-split preference EQ (Layer C). This
+    # gain is the active graph's single place for explicit common attenuation:
+    # baseline headroom, plus the household's manual headroom / loudness-match
+    # output_trim_db when a profile has EQ. Preference boosts themselves ride at
+    # unity, matching the stereo /sound policy: boosts boost. Driver safety comes
+    # from placement (pre-split, upstream of crossover/limiters/tweeter HP) and
+    # the 0 dB volume ceiling, not from an automatic boost-derived preamp.
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
-    total_headroom_db = baseline_headroom_db + boost_db + trim_db
+    total_headroom_db = baseline_headroom_db + trim_db
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(
@@ -1020,11 +1010,11 @@ def emit_active_speaker_baseline_config(
     ``preference_filters`` (Layer C) is the program-domain preference EQ band
     list — the same ``FilterSpec`` objects ``build_sound_filters`` produces for
     the stereo emitter. When non-empty, each ``.active()`` band is emitted on
-    the program channels [0, 1] strictly *before* the split mixer, and its
-    worst-case additive boost is folded into ``active_baseline_headroom`` so the
-    corrected program cannot exceed unity at the split input (see the placement
-    + headroom rationale in ``docs/HANDOFF-dsp-graph-carrier.md``). The empty
-    default keeps every existing caller byte-identical.
+    the program channels [0, 1] strictly *before* the split mixer. Preference
+    boosts ride at unity, matching ``emit_sound_config``: the active graph keeps
+    them safe by placing them upstream of every crossover/limiter/tweeter HP and
+    preserving the 0 dB volume ceiling. The empty default keeps every existing
+    caller byte-identical.
 
     ``output_trim_db`` is the household's manual headroom + loudness-match
     attenuation (``jasper.sound.settings.output_trim_db``), folded into the same

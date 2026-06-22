@@ -167,8 +167,10 @@ owners already expose:
 Important stage semantics:
 
 - `active_baseline_headroom` is emitted by the active-speaker baseline config
-  and is currently `0.0 dB` by default. If it ever appears as attenuation, it
-  is visible in this ledger and included in `common_static_gain_db`.
+  and is currently `0.0 dB` by default. Active preference boosts should not
+  move this stage; only explicit output trim or match-loudness attenuation
+  should. If it ever appears as attenuation, it is visible in this ledger and
+  included in `common_static_gain_db`.
 - `active_mono_fold_down` reports `gain_db=0.0` in the common total even though
   each L/R source feed is `-6 dB`; correlated mono sums back to unity, while
   hard-panned content is quieter. The per-source gains are listed in

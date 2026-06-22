@@ -208,7 +208,11 @@
 > non-positive, emits `active_baseline_headroom` at `0.0 dB` by default,
 > keeps per-driver limiters, rejects positive correction gain, bounds
 > delay/polarity corrections, and records a source comment in the YAML. The
-> runtime gain-chain ledger (`/state.audio.gain_chain`, documented in
+> active preference-EQ path keeps boosts at unity, matching the ordinary
+> `/sound` path; explicit output trim or match-loudness attenuation is the
+> only preference-layer global attenuation folded into
+> `active_baseline_headroom`. The runtime gain-chain ledger
+> (`/state.audio.gain_chain`, documented in
 > [HANDOFF-volume.md](HANDOFF-volume.md#state-gain-chain-ledger)) must make
 > any future baseline attenuation visible if this default ever changes.
 > Per-driver gain prefers an explicit
@@ -962,9 +966,10 @@ recomposes the baseline (via
 [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py)) with
 the preference bands wired on the program channels `[0, 1]` **strictly before
 the split mixer** — upstream of every per-driver crossover, limiter, and
-tweeter high-pass — and folds their worst-case additive boost into the single
-`active_baseline_headroom` gain so the corrected program cannot exceed unity at
-the split input. The recomposed graph re-proves as
+tweeter high-pass. Preference boosts ride at unity, matching the ordinary
+`/sound` path; only explicit `output_trim_db` (manual headroom or
+match-loudness attenuation) folds into the single
+`active_baseline_headroom` gain. The recomposed graph re-proves as
 `GRAPH_APPROVED_ACTIVE_RUNTIME` (the protection contract is independently
 re-verified — see
 [HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)). Layer B room

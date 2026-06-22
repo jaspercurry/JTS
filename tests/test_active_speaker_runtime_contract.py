@@ -312,7 +312,7 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     assert graph.details["unmuted_outputs"] == [0, 1]
 
 
-# --- PR-3: preference EQ folds into the active baseline, pre-split -------
+# --- PR-3: preference EQ rides at unity in the active baseline, pre-split ---
 
 @pytest.mark.parametrize(
     "layout,mode,way",
@@ -325,12 +325,12 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
 )
 def test_baseline_with_preference_eq_stays_approved(layout, mode, way) -> None:
     # Keystone (invariant 2), emitter-level: emit the real active baseline with a
-    # preference SHELF folded in, feed it back through the SAME classifier for the
-    # SAME topology -> still GRAPH_APPROVED_ACTIVE_RUNTIME. Folding EQ never breaks
-    # the protection contract. Cover stereo + 3-way because the classifier's
-    # per-output name collection gathers the pre-split [0,1] pref names into
-    # outputs 0/1 but not the right-channel/higher outputs — an asymmetry that
-    # only manifests beyond mono-2-way.
+    # preference SHELF inserted pre-split, feed it back through the SAME classifier
+    # for the SAME topology -> still GRAPH_APPROVED_ACTIVE_RUNTIME. Adding EQ
+    # never breaks the protection contract. Cover stereo + 3-way because the
+    # classifier's per-output name collection gathers the pre-split [0,1] pref
+    # names into outputs 0/1 but not the right-channel/higher outputs — an
+    # asymmetry that only manifests beyond mono-2-way.
     topology = _active_topology(layout, mode)
     prefs = (
         FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
@@ -346,11 +346,12 @@ def test_baseline_with_preference_eq_stays_approved(layout, mode, way) -> None:
     assert graph.allowed is True
 
 
-def test_baseline_preference_boost_folds_into_headroom() -> None:
-    # Invariant 4 (emitter-side): a +N dB preference boost reduces the pre-split
-    # headroom by >= total_positive_boost_db(prefs) and keeps volume_limit 0.0.
-    # Tested with a SHELF (summing a shelf's band gain is the conservative bound
-    # and the easy-to-get-wrong case).
+def test_baseline_preference_boost_rides_at_unity() -> None:
+    # Invariant 4 (emitter-side): a +N dB preference boost does not add hidden
+    # program attenuation. It rides at unity just like the stereo /sound path,
+    # while the active graph keeps it safe by placing EQ pre-split and preserving
+    # volume_limit 0.0. Tested with a SHELF because that was the easy-to-get-wrong
+    # bass/treble boost case.
     import re
 
     flat = _active_baseline_yaml("mono", 2)
@@ -371,17 +372,15 @@ def test_baseline_preference_boost_folds_into_headroom() -> None:
         assert match is not None
         return float(match.group(1))
 
-    # +5 shelf + +3 peak = +8 dB worst-case boost; headroom drops by >= 8 dB and
-    # stays non-positive. (0 dB baseline -> 8 dB attenuation.)
-    assert _headroom_db(flat) - _headroom_db(boosted) >= 8.0 - 1e-6
-    assert _headroom_db(boosted) <= 0.0
+    assert _headroom_db(flat) == 0.0
+    assert _headroom_db(boosted) == 0.0
     assert "volume_limit: 0.0" in boosted
 
 
 def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
     # output_trim_db (manual headroom + loudness match) folds into the SAME
-    # active_baseline_headroom gain as the boost, so the active path honours the
-    # household's loudness setting exactly like emit_sound_config. It applies
+    # active_baseline_headroom gain, so the active path honours the household's
+    # loudness setting exactly like emit_sound_config. It applies
     # ONLY when the profile has EQ (mirrors the stereo path): a flat profile
     # plays at unity and ignores the trim.
     import re
@@ -397,9 +396,9 @@ def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
     prefs = (
         FilterSpec(name="pref_pk", biquad_type="Peaking", freq=2000.0, gain=2.0, q=1.0),
     )
-    # With EQ: -(0 baseline + 2 boost + 4 trim) = -6.
+    # With EQ: -(0 baseline + 4 trim) = -4. Preference boosts ride at unity.
     with_eq = _active_baseline_yaml("mono", 2, preference_filters=prefs, output_trim_db=4.0)
-    assert _headroom_db(with_eq) == -6.0
+    assert _headroom_db(with_eq) == -4.0
     assert _headroom_db(with_eq) <= 0.0
     assert classify_camilla_graph(
         topology=_active_topology("mono", "active_2_way"), text=with_eq
