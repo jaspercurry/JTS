@@ -56,7 +56,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import GROUPING_ENV_FILE, GroupingConfig, is_active_member, load_config
+from .config import GROUPING_ENV_FILE, GroupingConfig, is_active_leader, load_config
 
 
 def member_camilla_kwargs(
@@ -83,7 +83,7 @@ def member_camilla_kwargs(
     """
     if cfg is None:
         cfg = load_config(path)
-    if is_active_member(cfg) and cfg.role == "leader":
+    if is_active_leader(cfg):
         from .reconcile import SNAPFIFO
 
         out = {

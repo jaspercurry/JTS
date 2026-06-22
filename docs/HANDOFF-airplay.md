@@ -1371,8 +1371,14 @@ path):
   `/state.grouping.airplay_latency_fit` — `{"applicable": false}` unless
   this speaker is an active bonded leader (the journal is read ONLY in
   that rare case, gated behind a one-line config parse, so a solo speaker
-  pays nothing). The reader (`read_notified_frames`) is fail-soft: an
-  unreadable journal resolves to the default budget, never a false warn.
+  pays nothing; and even a leader's read is TTL-cached via
+  `cached_notified_frames` so the 5 s `/state` poll cannot spawn a
+  `journalctl` per request). The gate is the shared
+  `config.is_active_leader` — the SAME predicate the reconciler uses to
+  WRITE the offset (`airplay_grouping_env`), so the surface can never claim
+  a fit for an offset that is not armed. The reader (`read_notified_frames`)
+  is fail-soft: an unreadable journal resolves to the default budget, never
+  a false warn.
 - **Doctor check** — `check_grouping_airplay_latency` (grouping domain)
   skips (`ok`, "n/a") on solo/follower and warns only when a bonded
   leader's budget is genuinely too short, naming the residual lag and the
