@@ -133,7 +133,7 @@ until such hardware exists.
 | Box | DAC | Clock topology | What it proves |
 |---|---|---|---|
 | **JTS** | Apple USB-C dongle (single) | Coherent — DAC + mic + reference all on USB SOF (~1 ppm) | The coherent path: SRO ≈ 0, loop is a no-op, chip-AEC "just works." Regression guard that we never break the working case. |
-| **JTS3** | HiFiBerry DAC8x (I2S HAT) | **Measured coherent** — the DAC8x is I2S-clock-coherent with the XVF (shares the Pi clock root), *not* a free-running crystal | **✅ MEASURED 2026-06-19: 0.157 ppm mean, 36/36 `coherent`.** Layer 2 not needed for it. First DAC validated through the general pipeline; production chip-AEC awaits the verdict-driven gate ([Roadmap](#roadmap-productize-chip-aec-across-any-dac) item 1). |
+| **JTS3** | HiFiBerry DAC8x (I2S HAT) | **Measured coherent** — the DAC8x is I2S-clock-coherent with the XVF (shares the Pi clock root), *not* a free-running crystal | **✅ MEASURED 2026-06-19: 0.157 ppm mean, 36/36 `coherent`.** Layer 2 not needed for it. First DAC validated through the general pipeline; production chip-AEC can arm through the shipped verdict-driven gate when outputd reports locked `coherent`. Persistent known-good profile promotion remains the next step ([Roadmap](#roadmap-productize-chip-aec-across-any-dac) item 2). |
 | **JTS5** | Dual Apple USB-C (composite) | Likely coherent per child (both on USB SOF) + inter-child sync | **The composite box.** Tests the composite *reference fold* and the inter-child delay-divergence guard. Most-likely-coherent composite shape, so it tests fold > drift. Verifies fail-closed when composite can't support chip-AEC. |
 
 Per-box verdict: **JTS3 → `coherent` (measured, 0.157 ppm).** JTS (Apple) →
@@ -214,9 +214,11 @@ YAGNI lines, to resist over-engineering:
 
 ## Layer 0 + observe mode (shipped — reference)
 
-> ✅ Shipped in #826 / #832. The detail below is the reference for the `/state`
-> shape, observe mode, and the JTS3 measurement procedure. The **next** build
-> is the verdict-driven gate — see [Roadmap](#roadmap-productize-chip-aec-across-any-dac).
+> ✅ Layer 0 shipped in #826 / #832; the verdict-driven gate shipped on
+> 2026-06-22. The detail below remains the reference for the `/state` shape,
+> observe mode, and the JTS3 measurement procedure. The next build is
+> persistent known-good profile promotion — see
+> [Roadmap](#roadmap-productize-chip-aec-across-any-dac).
 
 **outputd (`rust/jasper-outputd`):** add an `aec_clock` block under
 `reference_outputs` in `state.rs`, computed from the four existing counters:
