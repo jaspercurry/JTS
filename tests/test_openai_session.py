@@ -574,6 +574,41 @@ async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
         await conn.stop()
 
 
+async def test_truncate_clamps_to_item_received_ms(caplog):
+    """C1: the playout ledger reports a turn-WIDE max played-ms. On a
+    multi-segment (tool-using) turn an earlier item can out-play the
+    in-flight one, so the max would exceed THIS item's duration — the
+    out-of-range case OpenAI rejects. truncate clamps audio_end_ms to what
+    this item actually received."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        turn._last_assistant_item_id = "item_short"
+        # This item received only 1000 ms of audio...
+        turn._received_ms_by_item["item_short"] = 1000.0
+        baseline = len(sess.sent)
+        with caplog.at_level(
+            logging.DEBUG, logger="jasper.voice.openai_session",
+        ):
+            # ...but the turn-wide ledger max is 5000 ms (an earlier item
+            # out-played this one).
+            await turn.truncate_assistant_audio(None, 5000)
+        ev = _find_event(sess.sent[baseline:], "conversation.item.truncate")
+        assert ev is not None, "truncate must still be sent (clamped, not skipped)"
+        assert ev["audio_end_ms"] == 1000, (
+            "audio_end_ms must be clamped to the item's received duration, "
+            f"not the turn-wide max; got {ev['audio_end_ms']}"
+        )
+        assert any(
+            "barge.truncate_clamped" in r.getMessage() for r in caplog.records
+        ), "a clamp must be observable"
+    finally:
+        await conn.stop()
+
+
 async def test_truncate_noop_when_no_item_id():
     """No assistant item observed yet (barge-in raced
     response.output_item.added) and no id passed in → nothing to align, so

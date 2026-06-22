@@ -236,6 +236,8 @@ ignore = ["E701", "E731", "E402"]
 # uint16). Ruff resolves those forward-ref strings as names and
 # false-flags them as undefined; they are already `# type: ignore`.
 "jasper/bluetooth/agent.py" = ["F821"]
+# BaseHTTPRequestHandler dispatch methods intentionally use do_GET/do_POST.
+"jasper/web/chat_setup.py" = ["N802"]
 
 [tool.mypy]
 python_version = "3.11"

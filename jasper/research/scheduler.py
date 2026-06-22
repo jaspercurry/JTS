@@ -17,6 +17,7 @@ import logging
 import os
 import sqlite3
 import time
+import urllib.parse
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -80,33 +81,49 @@ class ResearchStartResult:
 class ResearchJobStore:
     """Fail-soft SQLite persistence for research jobs."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(
+        self,
+        db_path: str = DEFAULT_DB_PATH,
+        *,
+        read_only: bool = False,
+        warn_unavailable: bool = True,
+    ):
         self._db_path = db_path
+        self._read_only = read_only
+        self._warn_unavailable = warn_unavailable
         self._conn: sqlite3.Connection | None = None
         conn: sqlite3.Connection | None = None
         try:
-            parent = os.path.dirname(db_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            conn = sqlite3.connect(db_path, isolation_level=None)
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS research_jobs ("
-                "  id TEXT PRIMARY KEY,"
-                "  query TEXT NOT NULL,"
-                "  status TEXT NOT NULL,"
-                "  result TEXT,"
-                "  error TEXT,"
-                "  created_at REAL NOT NULL,"
-                "  finished_at REAL,"
-                "  announced INTEGER NOT NULL DEFAULT 0,"
-                "  read INTEGER NOT NULL DEFAULT 0"
-                ")"
-            )
+            if read_only:
+                conn = sqlite3.connect(
+                    _read_only_uri(db_path),
+                    isolation_level=None,
+                    uri=True,
+                )
+            else:
+                parent = os.path.dirname(db_path)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                conn = sqlite3.connect(db_path, isolation_level=None)
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS research_jobs ("
+                    "  id TEXT PRIMARY KEY,"
+                    "  query TEXT NOT NULL,"
+                    "  status TEXT NOT NULL,"
+                    "  result TEXT,"
+                    "  error TEXT,"
+                    "  created_at REAL NOT NULL,"
+                    "  finished_at REAL,"
+                    "  announced INTEGER NOT NULL DEFAULT 0,"
+                    "  read INTEGER NOT NULL DEFAULT 0"
+                    ")"
+                )
         except (OSError, sqlite3.Error) as e:
-            log_event(
-                logger, "research.store_unavailable",
-                level=logging.WARNING, db_path=db_path, err=str(e),
-            )
+            if warn_unavailable:
+                log_event(
+                    logger, "research.store_unavailable",
+                    level=logging.WARNING, db_path=db_path, err=str(e),
+                )
             if conn is not None:
                 try:
                     conn.close()
@@ -120,9 +137,13 @@ class ResearchJobStore:
     def available(self) -> bool:
         return self._conn is not None
 
+    @property
+    def db_path(self) -> str:
+        return self._db_path
+
     def add(self, job: ResearchJob) -> bool:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._read_only:
             return False
         try:
             conn.execute(
@@ -138,7 +159,7 @@ class ResearchJobStore:
 
     def update(self, job: ResearchJob) -> bool:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._read_only:
             return False
         try:
             conn.execute(
@@ -178,9 +199,20 @@ class ResearchJobStore:
         return _job_from_row(row) if row is not None else None
 
     def all(self) -> list[ResearchJob]:
+        jobs, _error = self.all_with_error()
+        return jobs
+
+    def all_with_error(self) -> tuple[list[ResearchJob], str | None]:
+        """Return all jobs plus a query error for health/status callers.
+
+        The scheduler path keeps ``all()`` fail-soft and empty-on-error. /state
+        and doctor need to distinguish an empty table from a malformed store,
+        so they use this checked variant and surface only bounded, prompt-free
+        error text.
+        """
         conn = self._conn
         if conn is None:
-            return []
+            return [], "unavailable"
         try:
             rows = conn.execute(
                 "SELECT id, query, status, result, error, created_at, "
@@ -189,8 +221,8 @@ class ResearchJobStore:
             ).fetchall()
         except sqlite3.Error as e:
             logger.warning("research store all failed: %s", e)
-            return []
-        return [_job_from_row(row) for row in rows]
+            return [], str(e)
+        return [_job_from_row(row) for row in rows], None
 
     def prune_terminal(self, keep: int) -> int:
         """Delete ANNOUNCED terminal (done/failed) rows beyond the newest
@@ -199,7 +231,7 @@ class ResearchJobStore:
         re-announces unannounced terminal jobs, so deleting one would silently
         drop a result the user was promised. Returns rows deleted. Fail-soft."""
         conn = self._conn
-        if conn is None or keep < 0:
+        if conn is None or self._read_only or keep < 0:
             return 0
         try:
             cur = conn.execute(
@@ -380,6 +412,10 @@ class ResearchScheduler:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
         self._started = False
+
+    def close(self) -> None:
+        """Close the underlying SQLite store during daemon shutdown."""
+        self._store.close()
 
     def submit(self, query: str) -> ResearchStartResult:
         query = (query or "").strip()
@@ -588,6 +624,11 @@ def _row_values(job: ResearchJob) -> tuple:
         int(job.announced),
         int(job.read),
     )
+
+
+def _read_only_uri(db_path: str) -> str:
+    path = os.path.abspath(db_path)
+    return f"file:{urllib.parse.quote(path, safe='/')}?mode=ro"
 
 
 def _job_from_row(row: tuple) -> ResearchJob:

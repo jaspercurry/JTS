@@ -287,6 +287,10 @@ from .web import (
     check_control_token,
     check_web_design_assets,
 )
+from . import research as research
+from .research import (
+    check_research,
+)
 from . import peering as peering
 from .peering import (
     check_peering_mode,
@@ -399,6 +403,7 @@ __all__ = [
     "network",
     "correction",
     "web",
+    "research",
     "peering",
     "grouping",
     "satellites",
@@ -565,6 +570,7 @@ __all__ = [
     "check_conversation_history",
     "check_web_design_assets",
     "check_control_token",
+    "check_research",
     "check_peering_mode",
     "check_peering_discovery",
     "_local_peer_id",

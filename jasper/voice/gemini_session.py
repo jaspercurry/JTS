@@ -227,6 +227,11 @@ class GeminiLiveTurn:
         # idle watchdog to close the turn promptly without racing
         # mid-response chunk gaps.
         self._server_turn_complete = False
+        # Gemini Live does not currently expose final text transcripts through
+        # this adapter. Keep bounded metadata so conversation history can show
+        # that an opt-in captured turn happened without storing tool args or
+        # result payloads.
+        self._tool_call_names: list[str] = []
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost:
@@ -351,6 +356,15 @@ class GeminiLiveTurn:
         # which is what we've always done for Gemini.
         return None
 
+    def conversation_metadata(self) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "kind": "voice_turn",
+            "transcripts_available": False,
+        }
+        if self._tool_call_names:
+            metadata["tools"] = list(self._tool_call_names)
+        return metadata
+
     def turn_lost(self) -> bool:
         return self._turn_lost
 
@@ -401,6 +415,23 @@ class GeminiLiveTurn:
         # cancel_response / truncate_assistant_audio seam above stays no-op.
         self._interrupted = True
         self._interrupt_event.set()
+
+    def drop_pending_audio(self) -> int:
+        # Distinct barge-in drain for the LOCAL gate: request_local_interrupt
+        # above arms the flush but — unlike the server-interrupt path in
+        # _on_response — does not drain queued audio, so the backlog would
+        # replay. Drop queued chunks, PRESERVING any terminal sentinel.
+        dropped = 0
+        try:
+            while True:
+                item = self._audio_q.get_nowait()
+                if item is None:
+                    self._audio_q.put_nowait(None)
+                    break
+                dropped += 1
+        except asyncio.QueueEmpty:
+            pass
+        return dropped
 
     # Internal — called by the connection's receive loop when it routes
     # an incoming server message to this active turn.
@@ -502,6 +533,11 @@ class GeminiLiveTurn:
         this (chunks arrive on a hot path and read the loop clock
         once inline for the ``_last_chunk_at`` companion update)."""
         self._last_activity_at = asyncio.get_event_loop().time()
+
+    def _record_tool_call_name(self, name: str | None) -> None:
+        cleaned = str(name or "").strip()
+        if cleaned:
+            self._tool_call_names.append(cleaned)
 
     def _on_connection_lost(self) -> None:
         """Called by the connection when the underlying WS dropped while
@@ -1701,6 +1737,8 @@ class GeminiLiveConnection:
         responses = []
         t0 = _time.monotonic()
         for fc in tool_call.function_calls:
+            if turn is not None:
+                turn._record_tool_call_name(fc.name)
             payload = await dispatch_tool(
                 self._registry, fc.name, dict(fc.args or {}),
             )

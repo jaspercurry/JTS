@@ -283,6 +283,11 @@ class OpenAIRealtimeTurn:
         # capability seam below. Unused when barge-in is off (the
         # default), since nothing then drives a flush + truncate.
         self._last_assistant_item_id: str | None = None
+        # Per-item received audio (ms), keyed by assistant item id. Lets
+        # truncate_assistant_audio clamp the turn-wide ledger played-ms to the
+        # target item's own duration (C1). Per-turn dict, discarded at turn
+        # end; a tool-using turn holds only its handful of item ids.
+        self._received_ms_by_item: dict[str, float] = {}
         self._server_vad_active: bool = False
         self._server_speech_started: bool = False
         self._server_speech_stopped: bool = False
@@ -598,6 +603,20 @@ class OpenAIRealtimeTurn:
             )
             return
         audio_end_ms = int(audio_played_ms)
+        received_ms = self._received_ms_by_item.get(item_id)
+        if received_ms is not None and audio_end_ms > received_ms:
+            # C1: the playout ledger reports a turn-WIDE max played-ms, but a
+            # multi-segment (tool-using) turn can carry an earlier item whose
+            # ledger ms exceeds THIS in-flight item's audio. Truncating the
+            # item past its own received duration is the out-of-range case the
+            # server rejects. Clamp to what this item actually received — an
+            # upper bound on what could have been heard (truncates down).
+            log_event(
+                logger, "barge.truncate_clamped",
+                item_id=item_id, requested_ms=audio_end_ms,
+                clamped_ms=int(received_ms), level=logging.DEBUG,
+            )
+            audio_end_ms = int(received_ms)
         log_event(
             logger, "barge.truncate",
             # getattr-guarded so the log can't itself raise (e.g. a turn
@@ -631,6 +650,25 @@ class OpenAIRealtimeTurn:
         # for these providers.
         self._interrupted = True
         self._interrupt_event.set()
+
+    def drop_pending_audio(self) -> int:
+        # The "distinct signal" anticipated by _on_response_done's sentinel
+        # comment. A local-barge flush clears the DAC ring, but the response
+        # was burst-delivered into _audio_q, so the play loop would resume
+        # writing the backlog and the assistant would talk over the user.
+        # Drain the queued chunks now, PRESERVING any terminal None sentinel
+        # so audio_out_chunks still ends the turn.
+        dropped = 0
+        try:
+            while True:
+                item = self._audio_q.get_nowait()
+                if item is None:
+                    self._audio_q.put_nowait(None)
+                    break
+                dropped += 1
+        except asyncio.QueueEmpty:
+            pass
+        return dropped
 
     # ---- Server VAD ----
 
@@ -696,9 +734,16 @@ class OpenAIRealtimeTurn:
                 "%d bytes ~%.0fms audio)",
                 first_ms, chunk_bytes, chunk_bytes / 48.0,
             )
+        item_id = self._last_assistant_item_id
+        if item_id:
+            # 24 kHz mono pcm16 = 48 bytes/ms. Accumulate per item so a later
+            # truncate can clamp to THIS item's received duration (C1).
+            self._received_ms_by_item[item_id] = (
+                self._received_ms_by_item.get(item_id, 0.0) + chunk_bytes / 48.0
+            )
         await self._audio_q.put(AudioOutChunk(
             pcm=data,
-            provider_item_id=self._last_assistant_item_id,
+            provider_item_id=item_id,
         ))
 
     def _note_activity(self) -> None:

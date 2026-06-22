@@ -174,6 +174,26 @@ def test_state_group_write_flags_group_unwritable(tmp_path):
     assert "usage.db" in res.detail
 
 
+def test_state_group_write_checks_conversation_history_db(
+    tmp_path, monkeypatch,
+):
+    import grp
+    import types as _types
+
+    usage = tmp_path / "usage.db"
+    history = tmp_path / "conversation_history.db"
+    history.write_text("x", encoding="utf-8")
+    history.chmod(0o640)  # readable by /chat, not writable by jasper-voice
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: _types.SimpleNamespace(gr_name="jasper"),
+    )
+
+    res = _classify_state_group_write(usage)
+
+    assert res.status == "warn"
+    assert "conversation_history.db" in res.detail
+
+
 def test_state_group_write_ok_when_group_jasper_and_writable(tmp_path, monkeypatch):
     import grp
     import types as _types

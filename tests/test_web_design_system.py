@@ -62,6 +62,7 @@ def test_app_css_carries_shared_primitives():
     for marker in (
         "@font-face", "--primary:", ".page", ".eyebrow",
         ".segmented", ".btn", ".sr-only", "prefers-reduced-motion",
+        "[hidden] { display: none !important; }",
     ):
         assert marker in css, f"app.css missing shared primitive: {marker}"
 

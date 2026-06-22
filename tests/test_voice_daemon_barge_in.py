@@ -163,6 +163,10 @@ def test_barge_in_telemetry_surfaces_through_session_status():
     assert base["barge_in_count_session"] == 0
     assert base["barge_in_last_at"] is None
     assert base["barge_in_last_leg"] is None
+    # D2: the active provider's reconcile kind is surfaced so the dashboard
+    # can tell a durable barge-in (OpenAI/Grok truncate) from a cosmetic one
+    # (Gemini no-op, server may resume).
+    assert base["barge_in_reconcile"] == "needs_client_truncate"
 
     async def drive() -> None:
         await wl._handle_session_frame(_frame())  # arm

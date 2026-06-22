@@ -11,7 +11,10 @@ import types
 from jasper.conversation_history import (
     CAPTURE_ALIAS_ENV,
     ConversationStore,
+    ConversationTurn,
     DB_PATH_ENV,
+    RETENTION_DAYS_ENV,
+    RETENTION_MAX_ROWS_ENV,
 )
 from jasper.research import DONE, ResearchJob
 
@@ -21,9 +24,16 @@ if "sounddevice" not in sys.modules:
 
 
 class _FakeTurn:
-    def __init__(self, user_text: str | None, assistant_text: str | None) -> None:
+    def __init__(
+        self,
+        user_text: str | None,
+        assistant_text: str | None,
+        *,
+        metadata: dict | str | None = None,
+    ) -> None:
         self._user_text = user_text
         self._assistant_text = assistant_text
+        self._metadata = metadata
 
     def last_chunk_at(self) -> float:
         return 0.0
@@ -57,6 +67,9 @@ class _FakeTurn:
 
     def assistant_transcript(self) -> str | None:
         return self._assistant_text
+
+    def conversation_metadata(self) -> dict | str | None:
+        return self._metadata
 
 
 class _FakeUsageStore:
@@ -131,12 +144,66 @@ async def test_end_turn_records_transcripts_through_single_write_path(
     assert rows[0].data_json is None
 
 
+async def test_end_turn_records_metadata_when_provider_has_no_transcripts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    _put_in_session(
+        wl,
+        _FakeTurn(
+            None,
+            None,
+            metadata={
+                "kind": "voice_turn",
+                "transcripts_available": False,
+                "tools": ["get_weather"],
+            },
+        ),
+    )
+
+    await wl._end_turn_inner("gemini")
+
+    rows = store.recent(10)
+    assert len(rows) == 1
+    assert rows[0].provider == "test"
+    assert rows[0].user_text is None
+    assert rows[0].assistant_text is None
+    assert json.loads(rows[0].data_json or "{}") == {
+        "kind": "voice_turn",
+        "transcripts_available": False,
+        "tools": ["get_weather"],
+    }
+
+
 def test_record_conversation_turn_is_gated_by_capture_env(tmp_path, monkeypatch) -> None:
     wl, store = _wake_loop(tmp_path, monkeypatch, capture=False)
 
     wl._record_conversation_turn("hello", "hi")
 
     assert store.recent(10) == []
+
+
+def test_record_conversation_turn_allows_metadata_only_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+
+    wl._record_conversation_turn(
+        None,
+        None,
+        data_json={"kind": "voice_turn", "transcripts_available": False},
+    )
+
+    rows = store.recent(10)
+    assert len(rows) == 1
+    assert rows[0].user_text is None
+    assert rows[0].assistant_text is None
+    assert json.loads(rows[0].data_json or "{}") == {
+        "kind": "voice_turn",
+        "transcripts_available": False,
+    }
 
 
 def test_record_conversation_turn_lazily_opens_store_after_capture_enabled(
@@ -194,6 +261,63 @@ def test_record_conversation_turn_skips_while_mic_muted(tmp_path, monkeypatch) -
     wl._record_conversation_turn("hello", "hi")
 
     assert store.recent(10) == []
+
+
+def test_record_conversation_turn_enforces_retention_max_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import jasper.voice_daemon as voice_daemon
+
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    monkeypatch.setenv(RETENTION_MAX_ROWS_ENV, "2")
+    timestamps = iter([
+        "2026-06-19T20:10:00Z",
+        "2026-06-19T20:20:00Z",
+        "2026-06-19T20:30:00Z",
+    ])
+    monkeypatch.setattr(
+        voice_daemon,
+        "_conversation_ts_utc",
+        lambda: next(timestamps),
+    )
+
+    wl._record_conversation_turn("first", "one")
+    wl._record_conversation_turn("second", "two")
+    wl._record_conversation_turn("third", "three")
+
+    assert [row.user_text for row in store.recent(10)] == ["third", "second"]
+
+
+def test_record_conversation_turn_enforces_retention_days(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import jasper.voice_daemon as voice_daemon
+
+    wl, store = _wake_loop(tmp_path, monkeypatch)
+    monkeypatch.setenv(RETENTION_DAYS_ENV, "1")
+    assert store.add(
+        ConversationTurn(
+            id="old",
+            ts_utc="2026-06-19T20:00:00Z",
+            provider="gemini",
+            user_text="old",
+            assistant_text="old answer",
+            tool_calls_json=None,
+            data_json=None,
+            session_id=1,
+        ),
+    )
+    monkeypatch.setattr(
+        voice_daemon,
+        "_conversation_ts_utc",
+        lambda: "2026-06-21T20:00:00Z",
+    )
+
+    wl._record_conversation_turn("new", "new answer")
+
+    assert [row.user_text for row in store.recent(10)] == ["new"]
 
 
 async def test_research_readback_records_query_report_and_data_json(

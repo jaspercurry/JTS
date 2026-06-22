@@ -21,6 +21,8 @@ import logging
 import sys
 import types as _types
 
+from jasper.voice.session import AudioOutChunk
+
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
 
@@ -54,6 +56,65 @@ class _FakeTurn:
 
     def clear_interrupted(self) -> None:
         self._interrupt_event.clear()
+
+
+class _QueueTurn:
+    """Burst-delivery model: chunks sit in a queue (like the OpenAI/Grok
+    adapter's ``_audio_q``) so ``drop_pending_audio`` can actually drain the
+    backlog. A plain generator (``_FakeTurn``) cannot model the post-flush
+    replay that A1 fixes, which is why the chunk-loop test above could pass
+    while the assistant talked over the user."""
+
+    def __init__(self, n_chunks: int = 5) -> None:
+        self._q: asyncio.Queue = asyncio.Queue()
+        for _ in range(n_chunks):
+            self._q.put_nowait(AudioOutChunk(pcm=bytes(8)))
+        self._q.put_nowait(None)  # terminal end-of-audio sentinel
+        self._interrupt_event = asyncio.Event()
+        self.cleared = 0
+        self.dropped_calls = 0
+
+    async def audio_out_chunks(self):
+        while True:
+            chunk = await self._q.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    async def wait_for_interrupt(self) -> None:
+        await self._interrupt_event.wait()
+
+    def request_local_interrupt(self) -> None:
+        self._interrupt_event.set()
+
+    def clear_interrupted(self) -> None:
+        self.cleared += 1
+        self._interrupt_event.clear()
+
+    def drop_pending_audio(self) -> int:
+        # Same shape as the real adapters: drain queued chunks, preserve the
+        # terminal sentinel so audio_out_chunks still ends the turn.
+        self.dropped_calls += 1
+        dropped = 0
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item is None:
+                self._q.put_nowait(None)
+                break
+            dropped += 1
+        return dropped
+
+    async def cancel_response(self, reason: str) -> None:
+        pass
+
+    async def truncate_assistant_audio(self, provider_item_id, audio_played_ms) -> None:
+        pass
+
+    async def release(self) -> None:
+        pass
 
 
 class _BaseTts:
@@ -124,6 +185,29 @@ def test_local_barge_in_chunk_loop_flushes():
 
     assert tts.flush_calls == 1
     # _flush_for_interrupt cleared the interrupted state afterward.
+    assert not turn._interrupt_event.is_set()
+
+
+def test_local_barge_in_drops_buffered_audio_no_replay():
+    """A1 regression: after a local-barge flush, the play loop must NOT
+    resume writing the provider's already-buffered backlog.
+
+    Burst-delivery providers (OpenAI/Grok) enqueue the whole response up
+    front, so without ``drop_pending_audio`` the flush is cosmetic — the loop
+    keeps writing the queued chunks and the assistant audibly talks over the
+    user. With the bug every queued chunk reaches the speaker (write_calls ==
+    5); the fix drains the backlog so only the pre-interrupt boundary chunk(s)
+    land (write_calls <= 2 — the +1 is the single chunk that can race through
+    before the interrupt branch is taken)."""
+    turn = _QueueTurn(n_chunks=5)
+    tts = _ChunkBargeTts(turn)  # trips the interrupt during the first write
+
+    asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
+
+    assert tts.flush_calls == 1
+    assert turn.dropped_calls >= 1
+    # The backlog behind the interrupt was dropped, not replayed.
+    assert tts.write_calls <= 2
     assert not turn._interrupt_event.is_set()
 
 

@@ -1001,7 +1001,11 @@ async def run() -> None:
             timer_scheduler.set_on_fire(wake_loop.announce_timer)
             await timer_scheduler.start()
             if research_scheduler is not None:
-                wake_loop.set_research_scheduler(research_scheduler)
+                wake_loop.set_research_scheduler(
+                    research_scheduler,
+                    provider_id=active_research.provider_id,
+                    model=str(getattr(active_research.client, "model", "")),
+                )
                 research_scheduler.set_on_done(wake_loop.announce_research_ready)
                 await research_scheduler.start()
             control_socket = await _start_control_socket(
@@ -1025,6 +1029,7 @@ async def run() -> None:
         await timer_scheduler.stop()
         if research_scheduler is not None:
             await research_scheduler.stop()
+            research_scheduler.close()
         if active_research is not None:
             await active_research.aclose()
         # Wake-event store close — moved out of the inner async-with

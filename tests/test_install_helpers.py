@@ -410,6 +410,7 @@ def test_install_enables_wifi_recover_timer_with_now():
     install_sh = installer_text()
     assert "jasper-wifi-recover.service" in install_sh
     assert "jasper-wifi-recover.timer" in install_sh
+    assert "jasper-wifi-scan-repair.service" in install_sh
     assert "systemctl enable --now jasper-wifi-recover.timer" in install_sh
 
 

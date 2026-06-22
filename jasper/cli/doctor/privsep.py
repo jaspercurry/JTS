@@ -161,6 +161,19 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         ),
     ),
     DaemonReadSpec(
+        unit="jasper-chat-web",
+        unit_file="deploy/jasper-chat-web.service",
+        user="jasper-web",
+        group="jasper",
+        supplementary_groups=(),
+        paths=(
+            # /chat/ re-reads these fresh so the browser toggle takes effect
+            # without restarting jasper-voice or jasper-chat-web.
+            "/var/lib/jasper/conversation_history.env",
+            "/var/lib/jasper/conversation_history.db",
+        ),
+    ),
+    DaemonReadSpec(
         unit="jasper-mux",
         unit_file="deploy/systemd/jasper-mux.service",
         user="jasper-mux",
@@ -444,6 +457,13 @@ def check_web_readable_inputs() -> CheckResult:
     files it renders (the #901 bt_roles.json surface). Skips on streambox, where
     jasper-web runs as root."""
     return _check_daemon("jasper-web")
+
+
+@doctor_check(order=23.565, group="privsep")
+def check_chat_web_readable_inputs() -> CheckResult:
+    """jasper-chat-web must be able to read the conversation-history settings
+    and SQLite store it renders and mutates."""
+    return _check_daemon("jasper-chat-web")
 
 
 @doctor_check(order=23.57, group="privsep")

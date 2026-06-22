@@ -22,7 +22,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
-from ..multiroom.airplay_latency import bonded_airplay_latency_snapshot
+from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
@@ -134,6 +134,15 @@ def _conversation_history_state() -> dict[str, Any] | None:
         }
     finally:
         store.close()
+
+
+def _research_state(
+    runtime: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Read privacy-safe async-research state."""
+    from ..research.state import snapshot
+
+    return snapshot(runtime=runtime)
 
 
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
@@ -667,18 +676,12 @@ async def _get_state(
         grouping_state = None
 
     # Bonded-leader AirPlay latency fit (Stage D observability — see
-    # jasper/multiroom/airplay_latency.py). Composed HERE (the /state
-    # aggregator's job) rather than inside read_grouping_state, which stays a
-    # tiny env parse; the gated journal read is /state-scoped. Non-mutating
-    # spread so the canonical reader's return is never modified in place. The
-    # snapshot is total (returns {"applicable": False} on solo without
-    # touching the journal, None only on its own read error), so the whole
-    # grouping section survives a broken read.
-    if isinstance(grouping_state, dict):
-        grouping_state = {
-            **grouping_state,
-            "airplay_latency_fit": bonded_airplay_latency_snapshot(),
-        }
+    # jasper/multiroom/airplay_latency.py). The shared composer (also used by
+    # /rooms.json) attaches it non-mutatingly; read_grouping_state stays a pure
+    # config projection and the gated, cached journal read lives behind the
+    # helper. Total (returns {"applicable": False} on solo without touching the
+    # journal), so the grouping section survives a broken read.
+    grouping_state = with_airplay_latency_fit(grouping_state)
 
     # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
     # os.environ — jasper-control isn't restarted on a /transit/ save, only
@@ -720,6 +723,12 @@ async def _get_state(
     except (ImportError, OSError, RuntimeError, ValueError):
         logger.exception("conversation history state read failed")
         chat_state = None
+
+    try:
+        research_state = _research_state((voice_st or {}).get("research"))
+    except (ImportError, OSError, RuntimeError, ValueError):
+        logger.exception("research state read failed")
+        research_state = None
 
     # Lazy import (mirrors read_active_provider_state above) so jasper-control
     # doesn't pull jasper.voice.* at module load. Cheap file stat per /state.
@@ -895,4 +904,7 @@ async def _get_state(
         # is unavailable while capture is enabled, or if the state read
         # itself fails. See jasper.conversation_history.
         "chat": chat_state,
+        # Async research summary. Counts and timestamps only; no prompt or
+        # answer text leaves the local store through /state.
+        "research": research_state,
     }

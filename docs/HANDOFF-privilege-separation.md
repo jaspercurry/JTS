@@ -235,7 +235,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-mux | `jasper-mux` | `jasper-intsecrets` | **3b-1 + 4b (LANDED)** | broker client (librespot recovery); shared broad file is `speaker_volume.json`; Spotify token refresh writes the 4b compartment |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
 | jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
-| jasper-web | `jasper-web` | `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` scan-repair withheld (degrades fail-soft) — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
+| jasper-web | `jasper-web` | `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` withheld and scan repair routed through a start-only root helper — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
 `/var/lib/jasper` becomes `root:jasper 0770` (group-aware `ensure_state_dir`,
@@ -247,8 +247,8 @@ the dropped readers would not lose access. Phase 4a/4b later narrowed those
 again: Google moved to `jasper-secrets`; Spotify moved to `jasper-intsecrets`
 because voice/control/mux/web can all refresh tokens. The regression that led to
 the cache-mode guard is still relevant: before
-[`jasper.accounts.build_cache_handler`](../jasper/accounts.py) re-chmodded
-spotipy's `0600` writes, dropped readers logged "Couldn't read cache" on every
+[`jasper.accounts.build_cache_handler`](../jasper/accounts.py) published
+spotipy caches at `0640`, dropped readers logged "Couldn't read cache" on every
 poll (22k+/day on jasper-control) and reported linked accounts as needs-relink.
 Cross-user `/run` sockets work via the shared
 `jasper` group. A UNIX socket
@@ -461,10 +461,12 @@ before the drop:
 - **`journalctl -k`** (Wi-Fi scan-suppression diagnostics) — the
   **`systemd-journal` group** (also fail-soft: returns `None`, so non-load-bearing).
 - **NL80211 scan-repair** ([`jasper/wifi_scan_repair.py`](../jasper/wifi_scan_repair.py))
-  needs `CAP_NET_ADMIN`; the cap is **deliberately withheld** — the most
-  network-exposed daemon stays cap-less and the repair **degrades fail-soft**
-  (the netlink send is `try/except`-wrapped → `event=wifi_scan_repair.attempt_failed`
-  WARNING → the `/wifi/` page keeps "Join by name").
+  needs `CAP_NET_ADMIN`; the cap is **deliberately withheld** from
+  `jasper-web` — the most network-exposed daemon stays cap-less. The
+  connected `/wifi/scan` path starts the fixed root helper
+  `jasper-wifi-scan-repair.service` through jasper-control's scoped restart
+  broker; if that start or repair fails, the `/wifi/` page keeps
+  "Join by name".
 - **Group-writable dirs for atomic replace.** `os.replace()` needs write on the
   *directory*, so `/etc/bluetooth` (the BlueZ name persists across the rename's
   `bluetooth.service` restart, so `main.conf` is load-bearing, not just the
@@ -672,10 +674,13 @@ group would isolate it; deferred). Spotify (creds + cache) is read by all of
 **The key 4a-vs-4b difference: Spotify is read-WRITE, Google was read-only.**
 spotipy persists refreshed tokens via `accounts.build_cache_handler` (the
 `_GroupReadableCacheFileHandler` in [`jasper/accounts.py`](../jasper/accounts.py),
-which re-chmods `0640` after every `save_token_to_cache`). voice, control
-(`volume_ops`), and mux all build routers that refresh → **all WRITE the cache**.
-So unlike 4a (voice read-only, no write grant), **4b has
-`/var/lib/jasper-intsecrets` in `ReadWritePaths` on voice + control + mux + web**.
+which atomically publishes a fresh `0640` cache file in the group-writable
+setgid cache directory). Do not switch this back to spotipy's stock in-place
+writer: existing cache files can be `root:jasper-intsecrets 0640`, which lets
+dropped services read but not truncate them. voice, control (`volume_ops`), and
+mux all build routers that refresh → **all WRITE the cache**. So unlike 4a
+(voice read-only, no write grant), **4b has `/var/lib/jasper-intsecrets` in
+`ReadWritePaths` on voice + control + mux + web**.
 
 **`accounts.json` bakes absolute paths** — like google's `token_path`, spotify's
 `accounts.json` stores absolute `cache_path` values
@@ -777,6 +782,7 @@ Rules for all Tier-B slices:
 | Apple dongle udev fast path + [`99-jasper-apple-dongle.rules`](../deploy/udev/99-jasper-apple-dongle.rules) | Apple dongle sound-card / USB add | udev runs the hotplug `amixer -c $card sset Headphone 100% unmute` fast path as root and writes USB autosuspend `power/control=on`; it also triggers `jasper-dongle-recover.service`. | **Root exception remains:** the immediate `RUN+=amixer` repair path stayed root-owned to preserve hotplug recovery. A later PR can replace it with a fixed root helper or systemd oneshot if real replug/`udevadm test` validation proves the replacement preserves Headphone repinning. |
 | `jasper-wifi-guardian.service` + [`deploy/bin/jasper-wifi-guardian`](../deploy/bin/jasper-wifi-guardian) | boot after NetworkManager wait-online | Read the root-only PSK stash, inspect NM state, run `nmcli connection up`, `nmcli dev wifi connect`, and cleanup of broken profiles. | `jasper-recon` could own the stash plus a narrow NetworkManager polkit rule parallel to `jasper-web`, but the failed-connect/recreate path is lockout-sensitive. Not first without Wi-Fi hardware validation. |
 | `jasper-wifi-recover.service` + timer + [`deploy/bin/jasper-wifi-recover`](../deploy/bin/jasper-wifi-recover) | periodic (~3 min) timer, manual operator retry | If Wi-Fi is active, exit after one NM read. If Wi-Fi is down, inspect recent kernel logs for brcmfmac scan suppression, run the bounded `jasper.wifi_scan_repair` CLI when warranted, then invoke the Wi-Fi guardian. | Keep root with the guardian for now. The scan-repair and guardian handoff are lockout-sensitive and should move only after the Wi-Fi recovery slice has hardware validation under a narrower user/polkit/root-helper design. |
+| `jasper-wifi-scan-repair.service` + [`jasper/wifi_scan_repair.py`](../jasper/wifi_scan_repair.py) | `/wifi/scan` after brcmfmac scan-suppression evidence | Root-only oneshot sends the bounded `NL80211_CMD_CRIT_PROTOCOL_STOP` repair and records rate-limit state. `jasper-web` may only `start` it through `START_ONLY_UNITS`; it is not generally restartable/stoppable. | Keep root. This is the narrow helper shape chosen specifically so `jasper-web` does not regain `CAP_NET_ADMIN`. |
 | `jasper-aec-init.service` + `jasper-aec-init` | boot and AEC reconcile restarts | Raw XVF3800 USB control writes through `xvf_host`; `amixer` on the `Array` UAC mixer; volatile chip profile only, with `SAVE_CONFIGURATION` and `REBOOT` deliberately forbidden. | Needs a hardware-gated design. Either `jasper-recon` gets a device-specific udev group for the XVF control endpoint plus `audio`, or a root helper owns the raw USB writes. Brick-loop hazards mean this is not an early slice. |
 | `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
 | `jasper-audio-hardware-reconcile.service` + [`deploy/bin/jasper-audio-hardware-reconcile`](../deploy/bin/jasper-audio-hardware-reconcile) | install, boot, udev sound add/remove | Detect output hardware, write `/var/lib/jasper/outputd.env` and `/run/jasper-output-hardware/output_hardware.json`, render `/etc/jasper/asoundrc.jasper.template`, toggle `jasper-dac-init`/monitor, and kick outputd/AEC reconcile. | Split policy from root apply. Rendering `/etc/jasper/*` and unit orchestration should stay behind a fixed root helper; state observation can move to `jasper-recon`. |
@@ -914,6 +920,9 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-06-21 (core-audio daemon root-surface section + the privsep
-read-access doctor check added 2026-06-21; the always-on core-audio daemons' root
-+ `StartLimitAction=reboot` status verified on `jts.local` that day)
+Last verified: 2026-06-22 (Spotify token cache write contract re-checked
+against `jasper.accounts.build_cache_handler` and live `jts3.local`
+`/var/lib/jasper-intsecrets/spotify/caches` permissions; Wi-Fi scan-suppression
+helper privilege boundary verified on `jts3.local`; core-audio daemon
+root-surface section + privsep read-access doctor check were last verified
+2026-06-21 on `jts.local`)

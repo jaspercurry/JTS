@@ -166,6 +166,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
             "${SYSTEMD_DIR}/jasper-wifi-recover.service"
             "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
+            "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
             "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
@@ -190,6 +191,9 @@ install_resilience_identity_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
         "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
@@ -562,6 +566,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
         "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
