@@ -10,6 +10,7 @@ Wants=network-online.target
 Type=notify
 WatchdogSec=30s
 EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/conversation_history.env
 # Args ignored when socket-activated (the daemon adopts the inherited
 # fd) but kept for direct CLI invocation in dev.
 ExecStart=/opt/jasper/.venv/bin/jasper-chat-web --host 127.0.0.1 --port 8787
@@ -17,7 +18,8 @@ Restart=on-failure
 RestartSec=2
 
 # Hardening — reads /etc/jasper/jasper.env plus the conversation-history
-# state file / SQLite DB under /var/lib/jasper. The web process is read-only.
+# settings/SQLite DB under /var/lib/jasper. The web process mutates only
+# the household-owned capture toggle and clear-history action.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true

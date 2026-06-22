@@ -49,6 +49,7 @@ from .conversation_history import (
     ConversationStore,
     ConversationTurn,
     make_turn_id,
+    prune_for_settings,
     read_settings as read_conversation_settings,
 )
 from .watchdog import Heartbeat
@@ -829,6 +830,8 @@ class WakeLoop:
         )
         self._conversation_turn_seq = 0
         self._research_scheduler: ResearchScheduler | None = None
+        self._research_provider_id: str | None = None
+        self._research_model: str | None = None
         self._pending_research: list[ResearchJob] = []
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
@@ -1205,6 +1208,8 @@ class WakeLoop:
         self._conversation_store_path = None
         self._conversation_turn_seq = 0
         self._research_scheduler = None
+        self._research_provider_id = None
+        self._research_model = None
         self._pending_research = []
         self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
         self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
@@ -1341,11 +1346,17 @@ class WakeLoop:
         return await self.play_cue(slug)
 
     def set_research_scheduler(
-        self, scheduler: ResearchScheduler | None,
+        self,
+        scheduler: ResearchScheduler | None,
+        *,
+        provider_id: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Wire the research scheduler so announcements can mark jobs
         announced only after the wake loop has attempted the spoken path."""
         self._research_scheduler = scheduler
+        self._research_provider_id = provider_id
+        self._research_model = model
 
     async def announce_timer(self, timer: "Timer") -> None:
         """Public hook called by `TimerScheduler` when a timer fires.
@@ -1391,27 +1402,30 @@ class WakeLoop:
         for idx, pending in enumerate(self._pending_research):
             if pending.id == job.id:
                 self._pending_research[idx] = job
-                logger.info(
-                    "research announce: coalesced pending job id=%s status=%s",
-                    job.id,
-                    job.status,
+                log_event(
+                    logger,
+                    "research.announce_pending_coalesced",
+                    job_id=job.id,
+                    status=job.status,
                 )
                 return
         self._pending_research.append(job)
         if len(self._pending_research) > self._research_pending_cap:
             dropped = self._pending_research.pop(0)
-            logger.warning(
-                "research announce: dropped pending job id=%s status=%s "
-                "after pending queue exceeded cap=%d",
-                dropped.id,
-                dropped.status,
-                self._research_pending_cap,
+            log_event(
+                logger,
+                "research.announce_pending_dropped",
+                job_id=dropped.id,
+                status=dropped.status,
+                cap=self._research_pending_cap,
+                level=logging.WARNING,
             )
-        logger.info(
-            "research announce: held until idle id=%s status=%s pending=%d",
-            job.id,
-            job.status,
-            len(self._pending_research),
+        log_event(
+            logger,
+            "research.announce_held",
+            job_id=job.id,
+            status=job.status,
+            pending=len(self._pending_research),
         )
 
     async def _drain_pending_research(self) -> None:
@@ -1439,39 +1453,49 @@ class WakeLoop:
         if job.status == DONE and job.result:
             text = RESEARCH_READY_CONFIRMATION_TEXT
         elif job.status == DONE:
-            logger.warning(
-                "research announce: done job missing result id=%s",
-                job.id,
+            log_event(
+                logger,
+                "research.announce_missing_result",
+                job_id=job.id,
+                level=logging.WARNING,
             )
             text = RESEARCH_EMPTY_RESULT_TEXT
         elif job.status == FAILED:
             text = None
         else:
-            logger.warning(
-                "research announce: skipped unexpected status id=%s status=%s",
-                job.id,
-                job.status,
+            log_event(
+                logger,
+                "research.announce_skipped",
+                job_id=job.id,
+                status=job.status,
+                reason="unexpected_status",
+                level=logging.WARNING,
             )
             return
 
         if job.status == FAILED:
             remaining = self._research_failure_cooldown_remaining()
             if remaining > 0:
-                logger.warning(
-                    "research announce: suppressed failed job id=%s by "
-                    "cooldown remaining=%.1fs",
-                    job.id,
-                    remaining,
+                log_event(
+                    logger,
+                    "research.announce_suppressed",
+                    job_id=job.id,
+                    status=job.status,
+                    reason="failure_cooldown",
+                    remaining_s=round(remaining, 1),
+                    level=logging.WARNING,
                 )
                 self._mark_research_announced(job, read=False)
                 return
 
         if job.status == FAILED:
-            logger.info(
-                "research announce: id=%s status=%s cue=%s",
-                job.id,
-                job.status,
-                RESEARCH_FAILED_CUE_SLUG,
+            log_event(
+                logger,
+                "research.announce",
+                job_id=job.id,
+                status=job.status,
+                mode="cue",
+                cue=RESEARCH_FAILED_CUE_SLUG,
             )
             played = await self._play_cue(RESEARCH_FAILED_CUE_SLUG)
         else:
@@ -1479,18 +1503,22 @@ class WakeLoop:
             # Log shape, not content: a research result can carry personal
             # material (medical/financial queries) and the journal is
             # persistent. Full text stays at DEBUG (cue manager) only.
-            logger.info(
-                "research announce: id=%s status=%s text_len=%d",
-                job.id,
-                job.status,
-                len(text),
+            log_event(
+                logger,
+                "research.announce",
+                job_id=job.id,
+                status=job.status,
+                mode="confirmation",
+                text_len=len(text),
             )
             played = await self._play_dynamic_text(text)
         if not played:
-            logger.warning(
-                "research announce: playback failed id=%s status=%s",
-                job.id,
-                job.status,
+            log_event(
+                logger,
+                "research.announce_playback_failed",
+                job_id=job.id,
+                status=job.status,
+                level=logging.WARNING,
             )
             return
         if job.status == FAILED:
@@ -1531,11 +1559,13 @@ class WakeLoop:
         self._research_window_cancelled_by_wake = False
         opening_done = asyncio.Event()
         self._research_window_opening_done = opening_done
+        reset_window = True
         try:
             await self._begin_turn(
                 pre_roll=False,
                 text_context=_research_confirmation_instruction(job),
             )
+            reset_window = False
             if self._research_window_cancelled_by_wake:
                 await self._end_turn("research_window_wake")
                 return
@@ -1556,10 +1586,6 @@ class WakeLoop:
                     e,
                 )
                 await self._cleanup_after_failed_begin()
-                self._research_window_active = False
-                self._research_window_job = None
-                self._research_window_decided = False
-                self._research_window_cancelled_by_wake = False
                 return
             logger.exception(
                 "research confirmation window failed; reading immediately "
@@ -1567,13 +1593,14 @@ class WakeLoop:
                 job.id,
                 e,
             )
-            self._research_window_active = False
-            self._research_window_job = None
-            self._research_window_decided = False
-            self._research_window_cancelled_by_wake = False
             await self._cleanup_after_failed_begin()
             await self._read_research_job_immediately(job)
         finally:
+            if reset_window:
+                self._research_window_active = False
+                self._research_window_job = None
+                self._research_window_decided = False
+                self._research_window_cancelled_by_wake = False
             if self._research_window_opening_done is opening_done:
                 self._research_window_opening_done = None
             opening_done.set()
@@ -1730,7 +1757,15 @@ class WakeLoop:
             data_json=data_text,
             session_id=session_id,
         )
-        store.add(turn)
+        if store.add(turn):
+            try:
+                prune_for_settings(store, settings, anchor_ts_utc=ts_utc)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "conversation capture: retention prune failed (%s: %s)",
+                    type(e).__name__,
+                    e,
+                )
 
     async def _play_dynamic_text(self, text: str) -> bool:
         """Speak arbitrary `text` through the cue manager, with
@@ -3311,6 +3346,13 @@ class WakeLoop:
             "barge_in_count_session": self._barge_in_count,
             "barge_in_last_at": self._barge_in_last_at,
             "barge_in_last_leg": self._barge_in_last_leg,
+            "research": {
+                "configured": self._research_scheduler is not None,
+                "provider": self._research_provider_id,
+                "model": self._research_model,
+                "pending_announcements": len(self._pending_research),
+                "confirmation_window_active": self._research_window_active,
+            },
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:

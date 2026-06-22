@@ -9,10 +9,11 @@ extension contracts, the decision tree) lives in
 > **Status: living plan.** Forward-looking roadmap for the async
 > "research this and tell me later" capability and the modular
 > text-LLM-provider layer it rides on. Phase 1 foundation, Phase 2
-> voice wiring, and Phase 3 etiquette/failure hardening are implemented;
-> Phase 4 remains roadmap. Grounded in a
+> voice wiring, and Phase 3 etiquette/failure hardening are implemented,
+> including privacy-safe `/state.research` and `jasper-doctor`
+> observability; Phase 4 remains roadmap. Grounded in a
 > 6-agent research pass (web-verified API capabilities + codebase reads)
-> on 2026-06-19. **Last updated: 2026-06-21.**
+> on 2026-06-19. **Last updated: 2026-06-22.**
 
 ---
 
@@ -189,7 +190,7 @@ Each phase is independently shippable and hardware-free-testable.
 |---|---|---|
 | **1 — Foundation** | `jasper/research/` provider registry + `ResearchScheduler` + store as pure pytest-covered units. No daemon wiring, no tool, no audio. Mergeable, registers nothing. **Implemented.** | ~1 day |
 | **2 — Wire + demo** | `research(query)` tool, `ToolDeps.research_scheduler`, one `CapabilityPack`, `announce_research_ready`, OpenAI call (≤30 s prompt + char cap), spend integration, regression scenario. **Implemented; earliest the headline UX works.** | ~1–1.5 days |
-| **3 — Etiquette + dedicated failure cues** | Hold-and-read-when-idle (don't drop mid-conversation like a timer); rate-limited `research_failed` cue; not-configured kickoff decline; tests pinning retry/deferral semantics. **Implemented; production-safe after this.** | ~1 day |
+| **3 — Etiquette + dedicated failure cues** | Hold-and-read-when-idle (don't drop mid-conversation like a timer); rate-limited `research_failed` cue; not-configured kickoff decline; privacy-safe `/state.research` + doctor check; tests pinning retry/deferral semantics. **Implemented; production-safe after this.** | ~1 day |
 | **4 — Anthropic (v2, deferred)** | One module + one registry entry + `anthropic` dep + key line. Build only when you add an Anthropic key. | ~½ day |
 
 ### First PR (Phase 1) — `research: text-provider registry + background-job scheduler (HW-free)`
@@ -246,11 +247,11 @@ background-mode + poll), then announces readiness through the existing
 timer-fire announcement path and opens a short no-wake-word confirmation
 window before reading the ≤30 s answer — reusing ~80% of what already
 exists, adding a small `jasper/research/` provider registry, a scheduler,
-a store, usage accounting, and an announce method. Etiquette hardening,
-the `research_failed` cue, and the not-configured prompt redirect are
-implemented; Anthropic, full barge-in, and an interaction history log
-are deferred, each behind its own trigger.**
+a store, usage accounting, an announce method, and privacy-safe state/doctor
+observability. Etiquette hardening, the `research_failed` cue, and the
+not-configured prompt redirect are implemented; Anthropic, full barge-in, and
+richer interaction history are deferred, each behind its own trigger.**
 
 ---
 
-Last verified: 2026-06-21
+Last verified: 2026-06-22

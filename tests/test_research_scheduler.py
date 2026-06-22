@@ -112,6 +112,16 @@ def test_store_fail_soft_when_sqlite_unavailable(tmp_path):
     store.close()
 
 
+def test_scheduler_close_closes_owned_store(tmp_path):
+    path = str(tmp_path / "research.db")
+    store = ResearchJobStore(path)
+    sched = ResearchScheduler(BlockingClient(), store=store)
+
+    sched.close()
+
+    assert store.add(_job("closed")) is False
+
+
 class BlockingClient:
     def __init__(self) -> None:
         self.started = 0

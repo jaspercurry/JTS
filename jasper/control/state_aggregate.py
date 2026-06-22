@@ -136,6 +136,15 @@ def _conversation_history_state() -> dict[str, Any] | None:
         store.close()
 
 
+def _research_state(
+    runtime: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Read privacy-safe async-research state."""
+    from ..research.state import snapshot
+
+    return snapshot(runtime=runtime)
+
+
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
@@ -721,6 +730,12 @@ async def _get_state(
         logger.exception("conversation history state read failed")
         chat_state = None
 
+    try:
+        research_state = _research_state((voice_st or {}).get("research"))
+    except (ImportError, OSError, RuntimeError, ValueError):
+        logger.exception("research state read failed")
+        research_state = None
+
     # Lazy import (mirrors read_active_provider_state above) so jasper-control
     # doesn't pull jasper.voice.* at module load. Cheap file stat per /state.
     from ..voice.input_presence import voice_parked_no_mic
@@ -895,4 +910,7 @@ async def _get_state(
         # is unavailable while capture is enabled, or if the state read
         # itself fails. See jasper.conversation_history.
         "chat": chat_state,
+        # Async research summary. Counts and timestamps only; no prompt or
+        # answer text leaves the local store through /state.
+        "research": research_state,
     }

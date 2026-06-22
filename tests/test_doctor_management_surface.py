@@ -25,6 +25,8 @@ from jasper.conversation_history import (
     make_turn_id,
 )
 from jasper.cli.doctor import web as doctor_web
+from jasper.cli.doctor import research as doctor_research
+from jasper.research import DONE, ResearchJob, ResearchJobStore
 
 
 def _install_nginx_site(monkeypatch, tmp_path):
@@ -160,3 +162,57 @@ def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
 
     assert r.status == "ok"
     assert "1 turns" in r.detail
+
+
+def test_research_check_ok_when_disabled(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(tmp_path / "missing.db"))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "ok"
+    assert "disabled" in r.detail
+
+
+def test_research_check_warns_when_configured_store_missing(monkeypatch, tmp_path):
+    db_path = tmp_path / "missing.db"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "warn"
+    assert "openai configured" in r.detail
+    assert str(db_path) in r.detail
+    assert db_path.exists() is False
+
+
+def test_research_check_ok_with_existing_store_without_private_text(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "research.db"
+    store = ResearchJobStore(str(db_path))
+    assert store.add(
+        ResearchJob(
+            id="done1",
+            query="private prompt",
+            status=DONE,
+            result="private answer",
+            error=None,
+            created_at=1.0,
+            finished_at=2.0,
+            announced=True,
+            read=False,
+        ),
+    )
+    store.close()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "ok"
+    assert "openai configured" in r.detail
+    assert "private prompt" not in r.detail
+    assert "private answer" not in r.detail
