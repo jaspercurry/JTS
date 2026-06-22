@@ -5,8 +5,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # jasper-camilla-crossover-guard — keep camilla#2 (the endpoint-crossover
-# instance, :1235) from looping on a dead bonded pipe, and ALWAYS repair
-# it to a TWEETER-SAFE driver-domain graph — never flat.
+# instance, :1235) from looping on a dead bonded pipe, and when it repairs
+# that, repair ONLY to a TWEETER-SAFE driver-domain graph — never flat. (A
+# non-pipe / solo statefile is left untouched: like the camilla#1 pipe-guard
+# this acts ONLY on a dead bonded pipe. It does not convert a flat statefile,
+# so the never-flat guarantee for an ARMED camilla#2 is owned by the
+# reconciler's arm-time seed, not by this guard — see install.sh
+# ensure_crossover_camilla_statefile.)
 #
 # Runs as ExecStartPre= on jasper-camilla-crossover.service. Mirrors
 # jasper-camilla-pipe-guard (the camilla#1 guard) in shape: pure bash,

@@ -35,9 +35,13 @@ Type=simple
 # statefile with a positional config's path on every start, which would
 # defeat the persistence story. camilla#2 uses its OWN statefile
 # (crossover-statefile.yml) so it never collides with camilla#1's
-# outputd-statefile.yml. install.sh seeds it to a re-proven driver-
-# domain (Layer-A-intact) baseline so first start has a tweeter-safe
-# config to load.
+# outputd-statefile.yml. install.sh seeds it via the active-speaker
+# runtime contract; on a roleful (active) topology — the only topology
+# where camilla#2 is ever armed — that is the driver-domain (Layer-A-
+# intact) baseline. On an ordinary box the seed is flat, but the unit is
+# never enabled there; the reconciler PR that arms camilla#2 owns seeding
+# the exact driver-domain baseline at arm time (the guard repairs a dead
+# bonded pipe, not a flat statefile).
 #
 # Crossover guard: if the statefile points at a dead bonded pipe,
 # repair to the re-proven DRIVER-DOMAIN baseline (Layer A intact),

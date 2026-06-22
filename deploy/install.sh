@@ -1131,8 +1131,11 @@ ensure_crossover_camilla_statefile() {
     # SEAM FLAGGED FOR THE RECONCILER PR: on an ORDINARY (non-active) box
     # the contract returns flat, so this would seed flat into a file named
     # crossover-statefile.yml. That is BENIGN today because camilla#2 is
-    # INERT there (the unit is never enabled) AND the crossover guard
-    # re-proves the same never-flat contract at every start. The later
+    # INERT there (the unit is never enabled), so the flat seed is never
+    # loaded. NOTE: the crossover guard does NOT convert a flat statefile —
+    # it acts only on a dead bonded pipe — so the driver-domain guarantee
+    # for an ARMED camilla#2 rests on the reconciler seeding it at arm time,
+    # not on the guard. The later
     # reconciler PR — which knows when the box is actually an active
     # leader — should refine this to seed the EXACT driver-domain baseline
     # (not whatever runtime-safe-graph returns for a non-roleful topology)
