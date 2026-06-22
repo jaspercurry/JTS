@@ -74,6 +74,7 @@ _STEP_TO_PLAN_MARKER = {
     "install_nginx_site": "nginx config",
     "install_camillagui": "CamillaGUI",
     "regenerate_audio_cues": "Regenerate audio cues",
+    "write_build_manifest": "build.txt verified-install marker",
     "run_doctor_summary": "jasper-doctor as a final non-blocking health summary",
 }
 

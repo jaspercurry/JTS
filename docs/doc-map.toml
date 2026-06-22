@@ -132,11 +132,13 @@ docs = [
   "docs/HANDOFF-supply-chain.md",
   "docs/HANDOFF-resilience.md",
   "docs/install-update-resilience-plan.md",
+  "docs/HANDOFF-install-update-transaction.md",
 ]
 requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
   "A build/download/provenance input or runtime install location changes.",
   "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes (see the install-update-resilience planning brief).",
+  "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change (see HANDOFF-install-update-transaction.md).",
 ]
 verification = [
   "bash scripts/doc-freshness.sh 90 --all",

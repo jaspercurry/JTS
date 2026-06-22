@@ -1005,3 +1005,205 @@ def test_full_install_editable_pip_install_keeps_full_extra():
     # With the endpoint tier removed there is no bare base-package editable
     # install any more — every profile pulls an extras-tagged install.
     assert text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}"') == 0
+
+
+# ----------------------------------------------------------------------
+# Build manifest = the VERIFIED-INSTALL success marker (Workstream B,
+# problem #4). On jts2 (2026-06-21) the manifest was written EARLY, before
+# an OOM-killed build aborted install.sh, so the box advertised a SHA it
+# wasn't cleanly running and misled the deploy direction-guard. The fix:
+# write the manifest as the FINAL mutation in main(), gated by set -e, so
+# a mid-install abort leaves the prior good manifest untouched.
+# ----------------------------------------------------------------------
+
+_PYTHON_RUNTIME_LIB = _INSTALL_LIB_DIR / "python-runtime.sh"
+
+
+def _run_install_snippet(
+    snippet: str,
+    *,
+    state_dir: Path | None = None,
+    repo_dir: Path | None = None,
+    deploy_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Source install.sh and run a snippet with a deterministic build-SHA
+    environment. Clears any inherited JASPER_DEPLOY_* so precedence tests
+    don't pick up a value from the CI runner, then exports the requested
+    ones and overrides STATE_DIR/REPO_DIR to scratch paths."""
+    prelude = [
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+        "unset JASPER_DEPLOY_SHA JASPER_DEPLOY_SHA_FULL JASPER_DEPLOY_BRANCH",
+    ]
+    for key, val in (deploy_env or {}).items():
+        prelude.append(f"export {key}={shlex.quote(val)}")
+    if state_dir is not None:
+        prelude.append(f"STATE_DIR={shlex.quote(str(state_dir))}")
+    if repo_dir is not None:
+        prelude.append(f"REPO_DIR={shlex.quote(str(repo_dir))}")
+    script = " && ".join([*prelude, snippet])
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_write_build_manifest_records_sha_and_verified_status(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    result = _run_install_snippet(
+        "write_build_manifest",
+        state_dir=state,
+        deploy_env={
+            "JASPER_DEPLOY_SHA": "abc1234",
+            "JASPER_DEPLOY_SHA_FULL": "abc1234deadbeef",
+            "JASPER_DEPLOY_BRANCH": "main",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = (state / "build.txt").read_text(encoding="utf-8")
+    assert "JASPER_GIT_SHA=abc1234" in manifest
+    assert "JASPER_GIT_SHA_FULL=abc1234deadbeef" in manifest
+    assert "JASPER_GIT_BRANCH=main" in manifest
+    assert "JASPER_INSTALL_AT=" in manifest
+    # The honest "install process completed" claim the deploy verifier reads.
+    assert "JASPER_INSTALL_STATUS=ok" in manifest
+
+
+def test_write_build_manifest_preserves_prior_full_and_branch(tmp_path):
+    """With no deploy env and no git, the full SHA + branch fall back to a
+    prior manifest. Exercises the `[[ -z x ]] && x=$(grep …)` fallback
+    lines under set -euo pipefail (sourcing install.sh enables it), proving
+    they don't abort, and that the marker is still re-stamped status=ok."""
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "build.txt").write_text(
+        "JASPER_GIT_SHA=cafe123\nJASPER_GIT_SHA_FULL=cafe123456789\n"
+        "JASPER_GIT_BRANCH=release\nJASPER_INSTALL_AT=2026-01-01T00:00:00-00:00\n"
+        "JASPER_INSTALL_STATUS=ok\n",
+        encoding="utf-8",
+    )
+    result = _run_install_snippet(
+        "write_build_manifest",
+        state_dir=state,
+        repo_dir=tmp_path / "not-a-git-repo",  # no env, no git → prior manifest
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = (state / "build.txt").read_text(encoding="utf-8")
+    assert "JASPER_GIT_SHA=cafe123" in manifest
+    assert "JASPER_GIT_SHA_FULL=cafe123456789" in manifest
+    assert "JASPER_GIT_BRANCH=release" in manifest
+    assert "JASPER_INSTALL_STATUS=ok" in manifest
+
+
+def test_write_build_manifest_is_atomic_tempfile_rename():
+    """The success marker must be written tempfile-then-rename so a torn
+    write (power loss mid-`cat`) can't leave a half-line the direction
+    guard misreads. Mirrors persist_install_profile."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert "build.txt.tmp.$$" in text
+    assert 'mv -f "${tmp}" "${STATE_DIR}/build.txt"' in text
+
+
+def test_resolve_build_sha_short_prefers_deploy_env(tmp_path):
+    result = _run_install_snippet(
+        "resolve_build_sha_short",
+        state_dir=tmp_path,
+        repo_dir=tmp_path,  # non-git, so the env var must be what's used
+        deploy_env={"JASPER_DEPLOY_SHA": "feedface"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "feedface"
+
+
+def test_resolve_build_sha_short_falls_back_to_prior_manifest(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "build.txt").write_text(
+        "JASPER_GIT_SHA=deadbee\nJASPER_GIT_SHA_FULL=deadbeef00\n"
+        "JASPER_GIT_BRANCH=main\nJASPER_INSTALL_STATUS=ok\n",
+        encoding="utf-8",
+    )
+    result = _run_install_snippet(
+        "resolve_build_sha_short",
+        state_dir=state,
+        repo_dir=tmp_path / "not-a-git-repo",  # no env, no git → prior manifest
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "deadbee"
+
+
+def test_resolve_build_sha_short_unknown_when_nothing_available(tmp_path):
+    result = _run_install_snippet(
+        "resolve_build_sha_short",
+        state_dir=tmp_path,  # no build.txt
+        repo_dir=tmp_path / "not-a-git-repo",  # no env, no git
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "unknown"
+
+
+def test_build_manifest_not_written_during_python_runtime_install():
+    """The early write (the bug) is gone: neither install_jasper nor
+    install_streambox_jasper *calls* write_build_manifest — it's main()'s
+    final step now. (Comment references to it are fine; a bare-command
+    invocation is the regression we forbid.)"""
+    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
+    call_lines = [
+        ln for ln in python_runtime.splitlines()
+        if ln.strip() == "write_build_manifest"
+    ]
+    assert not call_lines, (
+        "write_build_manifest must not be CALLED from the python-runtime "
+        "install steps (it is main()'s final, verified-success step): "
+        f"{call_lines}"
+    )
+
+
+def test_build_manifest_is_the_final_main_mutation():
+    """In both main() paths the manifest is written immediately before the
+    (non-mutating) run_doctor_summary, after the build steps, and nothing
+    mutating runs after it — so reaching it means every build/install step
+    succeeded under set -e (the load-bearing invariant behind problem #4)."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    # Adjacency: write_build_manifest directly precedes run_doctor_summary
+    # in both the full and streambox paths (whitespace-tolerant).
+    adjacency = re.findall(r"write_build_manifest\n\s*run_doctor_summary", text)
+    assert len(adjacency) == 2, adjacency
+
+    # Bounded main() body (def line to its column-0 closing brace), so the
+    # file's trailing `if main "$@"` guard isn't counted.
+    match = re.search(r"\nmain\(\) \{\n(.*?)\n\}", text, re.DOTALL)
+    assert match is not None, "could not locate main() body"
+    body = match.group(1)
+    # The Rust final-output owner (a required, OOM-capable build) is built
+    # before the manifest is stamped.
+    assert body.index("build_install_jasper_outputd") < body.index(
+        "write_build_manifest"
+    )
+    # run_doctor_summary is the TERMINAL step: nothing mutating follows the
+    # manifest stamp. After the last run_doctor_summary call, only branch-
+    # closing tokens remain (return 0 / fi / comments / whitespace).
+    tail = body[body.rindex("run_doctor_summary") + len("run_doctor_summary"):]
+    leftover = [
+        ln.strip()
+        for ln in tail.splitlines()
+        if ln.strip()
+        and not ln.strip().startswith("#")
+        and ln.strip() not in {"return 0", "fi"}
+    ]
+    assert not leftover, f"unexpected steps after run_doctor_summary: {leftover}"
+
+
+def test_landing_page_app_css_version_uses_resolved_build_sha():
+    """Now that build.txt is written last, the landing-page cache-bust must
+    resolve the SHA directly (deploy env → git → prior manifest), not read
+    the not-yet-updated manifest — or a deploy would ship the prior SHA's
+    cache key and browsers wouldn't bust the /assets cache."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    start = text.index("install_management_static_assets() {")
+    fn = text[start: text.index("\ninstall_nginx_site() {", start)]
+    assert 'app_css_ver="$(resolve_build_sha_short)"' in fn
+    # The old direct manifest read for the cache-bust version is gone.
+    assert "grep -E '^JASPER_GIT_SHA='" not in fn
