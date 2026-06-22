@@ -3880,7 +3880,7 @@ def _make_handler(
                             )[0],
                         )
                     )
-                except Exception as e:  # noqa: BLE001
+                except (ValueError, OSError, KeyError) as e:
                     logger.exception(
                         "event=sound.active_speaker_crossover_alignment result=error"
                     )

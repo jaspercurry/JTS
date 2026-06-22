@@ -331,8 +331,11 @@ def _present_arrival_s(record: Any) -> float | None:
     acoustic = record.get("acoustic")
     if not isinstance(acoustic, Mapping) or acoustic.get("verdict") != VERDICT_PRESENT:
         return None
+    raw_arrival = acoustic.get("arrival_s")
+    if raw_arrival is None:
+        return None
     try:
-        out = float(acoustic.get("arrival_s"))
+        out = float(raw_arrival)
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
@@ -368,8 +371,11 @@ def _summed_null_depths(
     acoustic = summed_record.get("acoustic")
     if not isinstance(acoustic, Mapping):
         return None, None
+    raw_depth = acoustic.get("null_depth_db")
+    if raw_depth is None:
+        return None, None
     try:
-        depth = float(acoustic.get("null_depth_db"))
+        depth = float(raw_depth)
     except (TypeError, ValueError):
         return None, None
     if not math.isfinite(depth):
