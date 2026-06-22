@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -453,6 +454,28 @@ class CamillaController:
                 logger.warning("camilla unavailable; reload skipped: %s", e)
                 return False
             raise
+
+
+def crossover_controller() -> CamillaController:
+    """A :class:`CamillaController` bound to camilla#2 — the endpoint-crossover
+    CamillaDSP instance (``:1235``) on an active leader.
+
+    The always-on camilla#1 controller is constructed directly as
+    ``CamillaController(cfg.camilla_host, cfg.camilla_port)`` (voice daemon /
+    web setup / control server). This factory is the camilla#2 analogue: it
+    reads the same env vars the matching :class:`~jasper.config.Config` fields
+    parse (``JASPER_CAMILLA2_HOST`` / ``JASPER_CAMILLA2_PORT``, defaults
+    ``127.0.0.1`` / ``1235``). It reads ``os.environ`` directly rather than
+    constructing ``Config.from_env()`` — mirroring ``leader_config._camilla``
+    and ``cli.active_speaker._camilla_controller`` — so a low-level controller
+    handle never trips ``Config``'s voice-provider validation.
+
+    INERT today: camilla#2 (``jasper-camilla-crossover.service``) is not yet
+    enabled, so nothing constructs this controller in production. It ships now
+    so the later reconciler PR has a typed handle ready."""
+    host = os.environ.get("JASPER_CAMILLA2_HOST", "127.0.0.1")
+    port = int(os.environ.get("JASPER_CAMILLA2_PORT", "1235"))
+    return CamillaController(host, port)
 
 
 class CueDuck:

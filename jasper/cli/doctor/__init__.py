@@ -294,6 +294,7 @@ from .peering import (
 )
 from . import grouping as grouping
 from .grouping import (
+    check_crossover_unit_installed,
     check_grouping,
     check_grouping_channel_pick,
     check_grouping_household_credential,
@@ -565,6 +566,7 @@ __all__ = [
     "check_peering_mode",
     "check_peering_discovery",
     "_local_peer_id",
+    "check_crossover_unit_installed",
     "check_grouping",
     "check_grouping_channel_pick",
     "check_grouping_household_credential",

@@ -223,6 +223,14 @@ class Config:
 
     camilla_host: str
     camilla_port: int
+    # camilla#2 — the endpoint-crossover CamillaDSP instance on an active
+    # leader (docs/HANDOFF-distributed-active.md "Stage B"). Coexists with
+    # the always-on camilla#1 (camilla_host/port above, :1234). Dormant
+    # until a later reconciler arms jasper-camilla-crossover.service; these
+    # fields just give code a typed handle to its websocket + statefile.
+    camilla2_host: str
+    camilla2_port: int
+    camilla2_statefile: str
     duck_db: float
     duck_transport: str
     idle_timeout_sec: int
@@ -646,6 +654,12 @@ class Config:
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
+            camilla2_host=_env("JASPER_CAMILLA2_HOST", "127.0.0.1"),
+            camilla2_port=_env_int("JASPER_CAMILLA2_PORT", 1235),
+            camilla2_statefile=_env(
+                "JASPER_CAMILLA2_STATEFILE",
+                "/var/lib/camilladsp/crossover-statefile.yml",
+            ),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this
