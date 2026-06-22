@@ -18,9 +18,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tests.install_surface import installer_text
 
@@ -1319,11 +1322,37 @@ def test_build_sandbox_props_is_inverse_of_audio_daemon_policy(tmp_path):
     jts-audio.slice and pi-run-diagnostic.sh forbid swap; a build must
     not, or a big -O3 TU can't complete on a 1 GB Pi."""
     props = _build_sandbox_props(tmp_path)
-    assert "--property=OOMScoreAdjust=900" in props  # positive == kill me first
+    # OOMScoreAdjust is an exec property that a `systemd-run --scope` unit
+    # REJECTS ("Unknown assignment"), which broke every deploy; the positive
+    # "kill me first" oom_score_adj is applied to the build process via choom
+    # instead (see test_build_sandbox_oom_prefix_*). Pin its ABSENCE from the
+    # scope property list so the regression cannot return.
+    assert "OOMScoreAdjust" not in props
     assert "--property=CPUWeight=20" in props
     assert "--property=IOWeight=20" in props
     assert "--property=MemoryAccounting=yes" in props
     assert "MemorySwapMax" not in props  # swap allowed — the inverse invariant
+
+
+@pytest.mark.skipif(
+    shutil.which("choom") is None,
+    reason="choom (util-linux) absent on this host; verified on the Linux Pi/CI",
+)
+def test_build_sandbox_oom_prefix_uses_choom_kill_me_first():
+    """The build's positive "kill me first" oom_score_adj is applied via choom
+    — the scope-compatible substitute for the OOMScoreAdjust exec property a
+    `systemd-run --scope` unit cannot take (the #922 deploy-breaker). choom
+    ships in util-linux, present on the Linux CI runner and the Pi.
+    (Fail-open when choom is absent is a one-line `command -v` guard in
+    build_sandbox_oom_prefix — the build runs without the bias, never blocked.)"""
+    r = _run_contained_build("build_sandbox_oom_prefix")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["choom", "-n", "900", "--"]
+    r2 = _run_contained_build(
+        "build_sandbox_oom_prefix",
+        extra_env={"JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ": "750"},
+    )
+    assert r2.stdout.split() == ["choom", "-n", "750", "--"]
 
 
 def test_build_sandbox_props_soft_memory_high_leaves_headroom(tmp_path):
@@ -1352,16 +1381,11 @@ def test_build_sandbox_props_hard_caps_are_opt_in(tmp_path):
     assert "--property=RuntimeMaxSec=45min" in opted
 
 
-def test_build_sandbox_props_oom_adj_is_overridable(tmp_path):
-    props = _build_sandbox_props(tmp_path, extra_env={
-        "JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ": "1000"})
-    assert "--property=OOMScoreAdjust=1000" in props
-    assert "--property=OOMScoreAdjust=900" not in props
-
-
 def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
-    """If MemTotal is unreadable, MemoryHigh is omitted but OOMScoreAdjust
-    (the cgroup-controller-independent protection) is always present."""
+    """If MemTotal is unreadable, MemoryHigh is omitted but the cgroup-
+    controller-independent scope properties (CPU/IO weight + accounting) are
+    always present. (The OOM bias rides choom, not a property — see
+    test_build_sandbox_oom_prefix_uses_choom_kill_me_first.)"""
     env = os.environ.copy()
     env["JASPER_BUILD_MEMINFO_FILE"] = str(tmp_path / "does-not-exist")
     result = subprocess.run(
@@ -1370,7 +1394,9 @@ def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
         capture_output=True, text=True, timeout=5, env=env,
     )
     assert result.returncode == 0, result.stderr
-    assert "--property=OOMScoreAdjust=900" in result.stdout
+    assert "--property=CPUWeight=20" in result.stdout
+    assert "--property=IOWeight=20" in result.stdout
+    assert "OOMScoreAdjust" not in result.stdout
     assert "MemoryHigh" not in result.stdout
     assert "MemorySwapMax" not in result.stdout
 
@@ -1490,8 +1516,8 @@ def test_run_contained_build_invokes_systemd_run_scope_with_policy(tmp_path):
     """Force containment with a stub systemd-run on PATH and assert the
     invocation contract: --scope, the inverse-policy properties, the --
     separator, and the verbatim command. Without this, a refactor could
-    silently drop OOMScoreAdjust (the load-bearing protection) or add a
-    swap cap, and the rest of the suite would stay green."""
+    silently re-add the OOMScoreAdjust property a --scope unit rejects, or
+    add a swap cap, and the rest of the suite would stay green."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     stub = bindir / "systemd-run"
@@ -1516,7 +1542,9 @@ def test_run_contained_build_invokes_systemd_run_scope_with_policy(tmp_path):
     args = [ln[len("ARG="):] for ln in result.stdout.splitlines()
             if ln.startswith("ARG=")]
     assert "--scope" in args
-    assert "--property=OOMScoreAdjust=900" in args
+    # The OOMScoreAdjust exec property a --scope unit rejects must NOT be here
+    # (the #922 deploy-breaker); the OOM bias rides choom in the command instead.
+    assert not any("OOMScoreAdjust" in a for a in args)
     assert "--property=MemoryAccounting=yes" in args
     # Inverse-policy: a build must never get a swap cap.
     assert not any("MemorySwapMax" in a for a in args)
