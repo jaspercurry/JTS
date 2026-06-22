@@ -433,24 +433,35 @@ class AirPlayHealthSampler:
             self._warmup_active = within_warmup
             self._suppressed_reason = reason
 
-    def _airplay_active_now(self) -> bool:
-        """Best-effort 'AirPlay is currently streaming' read for grace arming.
+    def _airplay_streaming(self) -> bool | None:
+        """Authoritative "is a sender streaming?" — shairport's MPRIS
+        PlaybackStatus. Single source of truth shared by the dashboard
+        status (`_status_locked`) and the connect-grace
+        (`_airplay_active_now`).
 
-        Uses the fan-in airplay frame rate (primary) and the MPRIS
-        playing flag (fallback), mirroring the activity test in
-        _status_locked so the connect-grace arms on the same notion of
-        'active' the dashboard status uses.
+        NOT the fan-in frame rate: the airplay input lane free-runs at
+        ~48 kHz of SILENCE whenever the pipeline is up (fan-in clocks every
+        lane off the always-on DAC loop), so the rate reads "active" even at
+        idle. Returns ``True``/``False``, or ``None`` when the MPRIS probe is
+        unavailable — so callers can tell idle from unknown. Freshness is
+        bounded by the MPRIS sample interval (~30 s).
         """
-        fanin = self._current_fanin if isinstance(self._current_fanin, dict) else {}
-        airplay = fanin.get("airplay")
-        rate = (
-            _as_float(airplay.get("frames_per_sec"))
-            if isinstance(airplay, dict) else None
-        )
-        if rate is not None and rate >= 1000.0:
-            return True
-        mpris = self._current_mpris if isinstance(self._current_mpris, dict) else {}
-        return mpris.get("playing") is True
+        mpris = self._current_mpris if isinstance(self._current_mpris, dict) else None
+        if not mpris:
+            return None
+        playing = mpris.get("playing")
+        return playing if isinstance(playing, bool) else None
+
+    def _airplay_active_now(self) -> bool:
+        """Whether a sender is actively streaming, for arming the connect
+        grace. Keyed on `_airplay_streaming()` (shairport MPRIS) — never the
+        always-on silent frame rate — so the idle->active transition the
+        grace watches reflects a real session start, not the pipeline simply
+        coming up. Detection therefore lags up to one MPRIS sample interval;
+        the boot warmup is the primary post-restart smoother, the connect
+        grace a best-effort session-establish one.
+        """
+        return self._airplay_streaming() is True
 
     def _sample_fanin(self, now: float, *, suppress_events: bool = False) -> None:
         status = self._fanin_probe()
@@ -702,15 +713,13 @@ class AirPlayHealthSampler:
         ):
             return "issue", "recent audio-path recovery event"
 
-        # Is AirPlay actually streaming? The fan-in airplay INPUT lane
-        # free-runs at ~48 kHz of SILENCE whenever the pipeline is up —
-        # even with no sender connected — because fan-in clocks every lane
-        # off the always-on DAC loop. So the frame rate cannot tell idle
-        # from playback; shairport's PlaybackStatus (MPRIS) is the
-        # authoritative "a sender is streaming" signal, and the frame rate
-        # is only a corroborating fault check once we know audio *should*
-        # be flowing. See docs/HANDOFF-airplay.md.
-        mpris_playing = (self._current_mpris or {}).get("playing")
+        # Is AirPlay actually streaming? Use the authoritative MPRIS signal
+        # (`_airplay_streaming`) — NOT the fan-in frame rate, which free-runs
+        # ~48 kHz of silence whenever the pipeline is up and so reads
+        # "active" even at idle. The frame rate is only a corroborating
+        # fault check once we know audio *should* be flowing. See
+        # docs/HANDOFF-airplay.md.
+        mpris_playing = self._airplay_streaming()
         airplay = fanin.get("airplay", {})
         airplay_rate = (
             _as_float(airplay.get("frames_per_sec"))
