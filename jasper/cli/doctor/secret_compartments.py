@@ -25,12 +25,12 @@ WS1 Phase 4a/4b moved the real secrets into two sibling compartments OUTSIDE the
 ``/var/lib/jasper`` StateDirectory (whose recursive chown would force them back to
 group ``jasper``):
 
-- ``/var/lib/jasper-secrets`` (group ``jasper-secrets``, members voice + web) — the
-  3 LLM API keys (``voice_keys.env``), ``google_credentials.env``, the Google OAuth
-  token tree.
+- ``/var/lib/jasper-secrets`` (group ``jasper-secrets``, members voice + web
+  surfaces) — the 3 LLM API keys (``voice_keys.env``),
+  ``google_credentials.env``, the Google OAuth token tree.
 - ``/var/lib/jasper-intsecrets`` (group ``jasper-intsecrets``, members voice + control
-  + mux + web) — ``home_assistant.env``, ``spotify_credentials.env``, the Spotify token
-  cache.
+  + mux + web surfaces) — ``home_assistant.env``, ``spotify_credentials.env``,
+  the Spotify token cache.
 
 Static tests (``test_secret_env_modes``, ``test_install_secrets_migration``,
 ``test_systemd_hardening``) pin the install/writer *code*; nothing checked the **live
@@ -94,13 +94,16 @@ class SecretCompartment:
     files: tuple[str, ...] = field(default_factory=tuple)
 
 
-# The universe of leak targets is the five Tier-A non-root daemons privsep already
-# models (jasper-control/-web/-mux/-voice/-input). A compartment's NON-members are
-# this universe minus its members — exactly the daemons Phase 4 documents losing the
-# secret (4a: mux/control/input; 4b: input). The recon-tier oneshots
+# The universe of leak targets is the Tier-A non-root daemons privsep already
+# models. A compartment's NON-members are this universe minus its members —
+# exactly the daemons Phase 4 documents losing the secret (4a: mux/control/input;
+# 4b: input). Units that intentionally share a compartment-holding Unix identity
+# are members even when their own unit file does not repeat SupplementaryGroups:
+# e.g. jasper-chat-web runs as the jasper-web user, and that user is in both
+# compartment groups on disk. The recon-tier oneshots
 # (privsep.OUT_OF_SCOPE_NONROOT_UNITS) are in no compartment group and run as
-# jasper-recon, so they are not leak targets; world-exposure is caught by the o-bit
-# test independently.
+# jasper-recon, so they are not leak targets; world-exposure is caught by the
+# o-bit test independently.
 _UNIVERSE_UNITS: tuple[str, ...] = tuple(sorted(s.unit for s in privsep.MANIFEST))
 
 
@@ -108,7 +111,7 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
     SecretCompartment(
         group="jasper-secrets",
         directory="/var/lib/jasper-secrets",
-        member_units=("jasper-voice", "jasper-web"),
+        member_units=("jasper-chat-web", "jasper-voice", "jasper-web"),
         files=(
             # The 3 LLM API keys split out of voice_provider.env (Phase 4a).
             "/var/lib/jasper-secrets/voice_keys.env",
@@ -121,7 +124,13 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
     SecretCompartment(
         group="jasper-intsecrets",
         directory="/var/lib/jasper-intsecrets",
-        member_units=("jasper-voice", "jasper-control", "jasper-mux", "jasper-web"),
+        member_units=(
+            "jasper-chat-web",
+            "jasper-control",
+            "jasper-mux",
+            "jasper-voice",
+            "jasper-web",
+        ),
         files=(
             "/var/lib/jasper-intsecrets/home_assistant.env",
             "/var/lib/jasper-intsecrets/spotify_credentials.env",
