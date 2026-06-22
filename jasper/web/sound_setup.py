@@ -3602,95 +3602,14 @@ def _active_speaker_crossover_alignment_payload(
     proposal = result.get("proposal") if isinstance(result.get("proposal"), dict) else {}
     logger.info(
         "event=sound.active_speaker_crossover_alignment status=%s mode=%s "
-        "authorized=%s delay_target=%s polarity_action=%s",
+        "authorized=%s polarity_action=%s delay_status=%s",
         result.get("status"),
         (result.get("mode") or {}).get("mode"),
         proposal.get("authorized"),
-        proposal.get("delay_target_role"),
         proposal.get("polarity_action"),
+        proposal.get("delay_status"),
     )
     return result
-
-
-def _active_speaker_crossover_alignment_confirm_payload(
-    raw: dict[str, Any],
-) -> dict[str, Any]:
-    """Confirm + apply an L2 delay/polarity refinement into the baseline source.
-
-    Gated independently of the client: applying a measurement-derived
-    delay/polarity requires ``phase_aware`` (a calibrated mic). The confirmed
-    values are recorded onto the group's summed validation (the existing mechanism
-    ``baseline_profile._derive_corrections`` folds into the per-driver corrections —
-    delay clamped 0..20 ms, polarity = mixer ``inverted``; level stays L1's
-    attenuation-only job and the 0 dB ceiling is preserved). Returns the recompiled
-    baseline candidate so the operator previews the folded change — which re-proves
-    the runtime_contract tweeter guard — before the durable apply.
-    """
-    from jasper.active_speaker.calibration_level import load_calibration_level_state
-    from jasper.active_speaker.measurement import record_summed_validation
-
-    if not isinstance(raw, dict):
-        raise ValueError("crossover alignment confirm request must be an object")
-    _curve, calibration_id, mode = _active_speaker_capture_calibration(raw)
-    if mode.get("mode") != "phase_aware":
-        logger.info(
-            "event=sound.active_speaker_crossover_alignment_confirm status=blocked "
-            "reason=requires_calibrated_mic"
-        )
-        return {
-            "status": "blocked",
-            "reason": "requires_calibrated_mic",
-            "measurement_mode": mode,
-            "message": (
-                "delay/polarity changes need a calibrated measurement mic "
-                "(phase_aware)"
-            ),
-        }
-    group_id = str(raw.get("speaker_group_id") or "").strip()
-    polarity = str(raw.get("polarity") or "normal").strip().lower()
-    summed_raw = {
-        "speaker_group_id": group_id,
-        "outcome": "blend_ok",
-        "operator_listening_check": True,
-        "summed_test_id": _summed_test_id_from_capture(raw),
-        "playback_id": _playback_id_from_capture(raw),
-        "polarity": polarity,
-        "delay_ms": raw.get("delay_ms"),
-        "delay_target_role": raw.get("delay_target_role"),
-        "notes": "L2 calibrated crossover alignment (confirmed)",
-    }
-    topology = load_output_topology()
-    measurement = record_summed_validation(
-        topology, summed_raw, calibration_level=load_calibration_level_state(),
-    )
-    # Surface the recompiled baseline (the folded delay/polarity + the re-proven
-    # tweeter guard) as a preview — but the validation is already persisted, so a
-    # baseline-compile hiccup must not turn a successful confirm into an error.
-    try:
-        baseline = _active_speaker_baseline_profile_payload(write=False)
-    except (ValueError, OSError, KeyError) as e:
-        logger.warning(
-            "event=sound.active_speaker_crossover_alignment_confirm "
-            "baseline_preview_failed error=%s",
-            type(e).__name__,
-        )
-        baseline = {"status": "preview_unavailable", "error": str(e)}
-    logger.info(
-        "event=sound.active_speaker_crossover_alignment_confirm status=%s "
-        "group_id=%s polarity=%s delay_ms=%s baseline=%s",
-        measurement.get("status"),
-        group_id,
-        polarity,
-        raw.get("delay_ms"),
-        baseline.get("status"),
-    )
-    return {
-        "status": "ok",
-        "measurement_mode": mode,
-        "calibration_id": calibration_id,
-        "measurement": measurement,
-        "baseline": baseline,
-    }
 
 
 def _active_speaker_baseline_profile_payload(
@@ -4022,7 +3941,6 @@ def _make_handler(
                 "/active-speaker/summed-test",
                 "/active-speaker/summed-validation",
                 "/active-speaker/summed-capture",
-                "/active-speaker/crossover-alignment",
                 "/active-speaker/baseline-profile",
                 "/active-speaker/baseline-profile/apply",
                 "/output-topology",
@@ -4175,19 +4093,6 @@ def _make_handler(
                     except OSError as e:
                         logger.exception(
                             "event=sound.active_speaker_summed_capture "
-                            "result=error error=%s",
-                            type(e).__name__,
-                        )
-                        self._send_json({"error": str(e)}, status=502)
-                    return
-                if path == "/active-speaker/crossover-alignment":
-                    try:
-                        self._send_json(
-                            _active_speaker_crossover_alignment_confirm_payload(raw)
-                        )
-                    except OSError as e:
-                        logger.exception(
-                            "event=sound.active_speaker_crossover_alignment_confirm "
                             "result=error error=%s",
                             type(e).__name__,
                         )

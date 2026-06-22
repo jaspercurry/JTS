@@ -47,7 +47,6 @@ from .driver_acoustics import (
     ANALYSIS_HI_HZ,
     ANALYSIS_LO_HZ,
     DEFAULT_NULL_THRESHOLD_DB,
-    REVERSE_NULL_MIN_DB,
     SUMMED_BLEND_OK,
     SUMMED_POLARITY_OR_DELAY_PROBLEM,
     VERDICT_OUT_OF_BAND,
@@ -264,17 +263,15 @@ def record_summed_acoustic_capture(
             "acoustic": None,
             "measurement": None,
         }
-    # A reverse-polarity capture (one driver inverted) WANTS a deep null, so it is
-    # judged against the higher reverse-polarity pass gate, not the in-phase
-    # suckout threshold. An explicit non-default null_threshold_db wins.
-    threshold_db = null_threshold_db
-    if expect_null and null_threshold_db == DEFAULT_NULL_THRESHOLD_DB:
-        threshold_db = REVERSE_NULL_MIN_DB
+    # Both capture kinds judge "is a null present?" against the same threshold; for
+    # a reverse-polarity capture (one driver inverted) a present null is the PASS,
+    # for an in-phase one it is the PROBLEM. The cap-independent polarity call
+    # (reverse-vs-in-phase margin) is the proposal's job, not this per-capture verdict.
     result = analyze(
         captured_wav,
         sweep_meta,
         crossover_fc_hz=fc,
-        null_threshold_db=threshold_db,
+        null_threshold_db=null_threshold_db,
         expect_null=expect_null,
         has_mic_calibration=has_mic_calibration,
         calibration=calibration,
@@ -320,29 +317,6 @@ def record_summed_acoustic_capture(
         "acoustic": acoustic,
         "measurement": measurement,
     }
-
-
-def _present_arrival_s(record: Any) -> float | None:
-    """The per-driver direct-sound arrival time (s) from a usable 'present' record.
-
-    Mirrors :func:`baseline_profile._overlap_level_at`'s fail-closed shape:
-    requires the acoustic verdict to be ``present`` (the driver actually produced
-    sound) and a finite arrival, else None — a silent/unusable capture contributes
-    no delay estimate.
-    """
-    if not isinstance(record, Mapping):
-        return None
-    acoustic = record.get("acoustic")
-    if not isinstance(acoustic, Mapping) or acoustic.get("verdict") != VERDICT_PRESENT:
-        return None
-    raw_arrival = acoustic.get("arrival_s")
-    if raw_arrival is None:
-        return None
-    try:
-        out = float(raw_arrival)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def _acoustic_calibrated(record: Any) -> bool | None:
@@ -396,23 +370,25 @@ def build_crossover_alignment_proposal(
     requested_mode: str = PHASE_AWARE,
     speaker_group_id: str | None = None,
 ) -> dict[str, Any]:
-    """Propose a SAFE per-crossover delay/polarity refinement from measurement state.
+    """Propose a SAFE crossover polarity refinement (+ delay status) from state.
 
-    A pure read: it walks the recorded per-driver arrivals + the summed-crossover
-    null depth for the PRIMARY (lowest) crossover and asks
+    A pure read: it walks the recorded summed-crossover null depths (in-phase and,
+    if captured, reverse-polarity) for the PRIMARY (lowest) crossover and asks
     :func:`crossover_alignment.propose_crossover_alignment`.
 
     The phase_aware gate is enforced AT THE DATA: ``requested_mode`` is granted
-    only when every contributing capture was taken with a calibrated mic
+    only when the contributing summed capture was taken with a calibrated mic
     (``acoustic.calibrated``); otherwise it downgrades to ``magnitude_only`` and
-    the proposal is unauthorized (no delay/polarity). So a phone capture can never
-    yield a phase/delay decision even if phase_aware is requested. Never raises on
-    thin/empty state; returns ``{status, mode, proposal, ...}``.
+    the proposal is unauthorized (no polarity/delay decision). So a phone capture
+    can never yield a phase decision even if phase_aware is requested. Never raises
+    on thin/empty state; returns ``{status, mode, proposal, ...}``.
 
-    Multi-group (stereo-pair) delay/polarity *emission* is deferred (see
+    Scope: ONE crossover (the primary / lowest). A 3-way's upper crossover needs
+    its own summed-null capture and is out of scope for this increment. Multi-group
+    (stereo-pair) polarity/delay *emission* is also deferred (see
     ``baseline_profile``'s ``group_specific_delay_not_applied``); the proposal
-    still computes for one group so a mono/single-group speaker (e.g. jts3's
-    active_mono_2way) gets the full L2 refinement.
+    computes for one group, so a mono/single-group speaker (jts3's
+    active_mono_2way) gets the full L2 polarity refinement.
     """
     regions = sorted(
         (r for r in preset.crossover_regions if r.fc_hz and r.fc_hz > 0),
@@ -460,8 +436,6 @@ def build_crossover_alignment_proposal(
     lower_rec = by_group_role.get((group, lower_role))
     upper_rec = by_group_role.get((group, upper_role))
     summed_rec = summed_by_group.get(group)
-    lower_arrival_s = _present_arrival_s(lower_rec)
-    upper_arrival_s = _present_arrival_s(upper_rec)
     in_phase_null, reverse_null = _summed_null_depths(summed_rec)
 
     # The phase_aware gate at the data layer: every contributing capture must be
@@ -485,8 +459,6 @@ def build_crossover_alignment_proposal(
         crossover_fc_hz=fc,
         lower_role=lower_role,
         upper_role=upper_role,
-        lower_arrival_s=lower_arrival_s,
-        upper_arrival_s=upper_arrival_s,
         in_phase_null_depth_db=in_phase_null,
         reverse_null_depth_db=reverse_null,
     )
