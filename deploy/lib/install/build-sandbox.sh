@@ -102,10 +102,16 @@ _build_sandbox_default_memory_high() {
 # systemd. $1 = human label.
 build_sandbox_props() {
     local label="${1:-build}"
+    # NOTE: OOMScoreAdjust is intentionally NOT a --property here. It is an
+    # exec/service property that a transient `systemd-run --scope` unit
+    # REJECTS ("Unknown assignment: OOMScoreAdjust=..."), which fails the
+    # whole build. The build's positive "kill me first" oom_score_adj is
+    # applied to the build process via choom instead (build_sandbox_oom_prefix),
+    # and the scope's children inherit it. MemoryAccounting / CPUWeight /
+    # IOWeight / MemoryHigh ARE valid scope (cgroup) properties and stay here.
     printf '%s\n' \
         "--property=Description=JTS contained build: ${label}" \
         "--property=MemoryAccounting=yes" \
-        "--property=OOMScoreAdjust=${JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ:-900}" \
         "--property=CPUWeight=${JASPER_BUILD_SANDBOX_CPU_WEIGHT:-20}" \
         "--property=IOWeight=${JASPER_BUILD_SANDBOX_IO_WEIGHT:-20}"
     # NOTE: deliberately NO MemorySwapMax=0 — builds may legitimately need
@@ -125,6 +131,18 @@ build_sandbox_props() {
     [[ -n "${JASPER_BUILD_SANDBOX_RUNTIME_MAX:-}" ]] \
         && printf '%s\n' "--property=RuntimeMaxSec=${JASPER_BUILD_SANDBOX_RUNTIME_MAX}"
     return 0
+}
+
+# Emit the argv PREFIX that gives the contained build its positive
+# "kill me first" oom_score_adj. OOMScoreAdjust is an exec property a
+# `systemd-run --scope` unit cannot take, so we set it on the build
+# process with choom (util-linux), which the build and its children
+# inherit. Pure (reads only env + PATH) so it is unit-testable without
+# systemd. FAIL-OPEN: emits nothing when choom is unavailable, so the
+# build still runs (just without the OOM bias) rather than being blocked.
+build_sandbox_oom_prefix() {
+    command -v choom >/dev/null 2>&1 || return 0
+    printf '%s\n' choom -n "${JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ:-900}" --
 }
 
 # Emit a structured event line to both stdout (deploy transcript) and
@@ -191,8 +209,16 @@ run_contained_build() {
     sanitized="$(printf '%s' "${label}" | tr -c 'a-zA-Z0-9_-' '_')"
     unit="jts-build-${sanitized}-$$.scope"
     _build_sandbox_log "contained" "label=${label} unit=${unit}"
-    systemd-run --scope --quiet --collect \
-        "--unit=${unit}" \
-        "${props[@]}" \
-        -- "$@"
+    local -a run=(
+        systemd-run --scope --quiet --collect
+        "--unit=${unit}" "${props[@]}" --
+    )
+    # choom sets the build's oom_score_adj (the scope-compatible substitute
+    # for the OOMScoreAdjust property a --scope unit rejects). Empty when
+    # choom is unavailable; guarded so an empty array is safe under set -u.
+    local -a oom_prefix=()
+    mapfile -t oom_prefix < <(build_sandbox_oom_prefix)
+    [[ ${#oom_prefix[@]} -gt 0 ]] && run+=("${oom_prefix[@]}")
+    run+=("$@")
+    "${run[@]}"
 }
