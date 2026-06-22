@@ -364,15 +364,19 @@ class GeminiLiveTurn:
         self._interrupted = False
         self._interrupt_event.clear()
 
-    # ---- Barge-in capability seam (behaviour-neutral stubs) ----
+    # ---- Barge-in capability seam (Gemini pack — final no-op) ----
     #
     # Reconciliation kind for Gemini is `server_self_truncates` (catalog):
-    # START_OF_ACTIVITY_INTERRUPTS drops the unspoken tail server-side, and
-    # Gemini has no OpenAI-style per-response audio item id to truncate
+    # START_OF_ACTIVITY_INTERRUPTS would drop the unspoken tail server-side,
+    # and Gemini has no OpenAI-style per-response audio item id to truncate
     # against. Both methods are therefore genuine no-ops for Gemini, not
-    # just deferred wiring — they exist so the daemon's barge-in path stays
-    # one code path across providers. Local TTS flush still happens at the
-    # daemon layer.
+    # just deferred wiring (robust-barge-in PR-5 finalises them as no-ops) —
+    # they exist so the daemon's barge-in path stays one code path across
+    # providers. Note JTS runs Gemini with manual VAD + NO_INTERRUPTION (see
+    # _build_config's barge-in resolution), so the server does not even
+    # self-interrupt / self-truncate in normal operation: the daemon's local
+    # gate (request_local_interrupt, below) is the sole interruption
+    # authority and the local TTS flush happens at the daemon layer.
 
     async def cancel_response(self, reason: str) -> None:
         # No-op: Gemini interruption is provider-side generation state;
@@ -1022,9 +1026,37 @@ class GeminiLiveConnection:
             # will both fire on the model's own bleed-through. With
             # NO_INTERRUPTION the server ignores user activity until
             # turn_complete, so the model always finishes its sentence.
-            # Trade-off: real barge-in is disabled. Fix path is hardware
-            # AEC — XVF3800 USB-IN as AEC reference, requires CamillaDSP-
-            # routed playback architecture (TODO: future work).
+            #
+            # Barge-in resolution (robust-barge-in PR-5, "Gemini pack").
+            # JTS now supports full-duplex barge-in behind the per-provider
+            # JASPER_BARGE_IN_GEMINI flag (DEFAULT OFF). When the household
+            # enables it we DELIBERATELY keep this config unchanged — manual
+            # VAD (disabled=True) AND NO_INTERRUPTION — rather than switching
+            # to interruptible server VAD. This is option (a) of
+            # docs/HANDOFF-barge-in.md "Gemini pack": the single interruption
+            # authority is the daemon's local Silero-on-AEC gate
+            # (WakeLoop._handle_playback_frame -> turn.request_local_interrupt),
+            # which flushes audible TTS with no server round-trip. Enabling
+            # server VAD (option b) would re-introduce the exact
+            # self-interrupt-on-bleed loop this NO_INTERRUPTION line prevents
+            # — there is still no software bleed/speech distinguisher and
+            # AEC-clean-enough is hardware-gated and unproven (blocker #4 in
+            # HANDOFF-barge-in.md). So the connection's wire config is
+            # barge-in-AGNOSTIC: the flag is owned and read fresh by the
+            # daemon, never by this connection, and the flag-OFF and flag-ON
+            # payloads are byte-identical. Two accepted consequences: (1)
+            # server_content.interrupted (parsed in _on_response) does not
+            # fire under manual VAD + NO_INTERRUPTION in normal operation —
+            # that path stays wired as the defensive / forward-compatible
+            # reconciliation for any provider-side interrupt, while the local
+            # gate is the production driver; (2) Gemini history reflects what
+            # it SENT, not what JTS played, and there is no client truncate
+            # call (interrupt_reconcile=server_self_truncates), so the
+            # reconcile seam (cancel_response / truncate_assistant_audio) is a
+            # genuine no-op and the played-vs-sent gap is bounded by keeping
+            # the local playback buffer short. Pinned by
+            # tests/test_gemini_barge_in.py. Deeper stop-and-stay-stopped
+            # barge-in is hardware AEC (XVF3800 USB-IN reference) — future work.
             # Manual VAD: client owns turn boundaries via activity_start
             # / activity_end markers. This is the canonical multi-turn
             # pattern on a persistent connection — each pair is one
