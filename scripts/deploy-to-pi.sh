@@ -52,6 +52,13 @@ SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 SUDO_INTERACTIVE=0
 HOSTNAME_FOR_INSTALL=""
 REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-}"
+# Pi-clock epoch captured immediately before install.sh, so the post-
+# install OOM-collateral scan can bound its journal window precisely
+# (laptop and Pi clocks differ). 0 = not captured (scan skips).
+DEPLOY_START_EPOCH=0
+# Set to 1 by report_oom_collateral when a live production daemon was
+# OOM-killed during the install window (problem #2/#5).
+OOM_PRODUCTION_HIT=0
 
 cd "$REPO_ROOT"
 
@@ -322,6 +329,107 @@ finish_airplay_health_maintenance() {
     mark_airplay_health_maintenance "${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC}"
 }
 
+# Surface collateral OOM kills during the install window — even when the
+# install itself succeeded. Problem #2/#5 (the plan): on jts2 a source
+# build OOM-killed nginx AND jasper-voice, and the deploy tooling exited
+# silently; the collateral was only discoverable by SSHing in to read the
+# journal. We bound the kernel-log scan to the Pi-clock epoch captured at
+# install start, parse it with the pure _lib helpers, print what died, and
+# set OOM_PRODUCTION_HIT when a live production daemon was the victim.
+# Reading the kernel journal needs root, and `ssh -tt` (interactive sudo)
+# corrupts captured output, so the caller gates this on passwordless sudo.
+report_oom_collateral() {
+    local since_epoch="$1"
+    local journal units comms entry
+    # journalctl accepts a formatted timestamp reliably across versions;
+    # format the epoch on the Pi (GNU date). grep || true keeps an empty
+    # match from tripping the remote shell, and the whole read is
+    # best-effort (a missing journal must not fail a good deploy).
+    journal="$(run_remote_sudo "journalctl -k --since \"\$(date -d @${since_epoch} '+%Y-%m-%d %H:%M:%S')\" --no-pager 2>/dev/null | grep -iE 'out of memory|oom-kill|oom_reaper|killed process' || true" 2>/dev/null || true)"
+    if [[ -z "$journal" ]]; then
+        return 0
+    fi
+    units="$(oom_killed_units "$journal")"
+    comms="$(oom_killed_comms "$journal")"
+    echo "  ⚠ OOM kills detected in the kernel log during the install window:" >&2
+    if [[ -n "$comms" ]]; then
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            echo "      • process killed: ${entry}" >&2
+        done <<< "$comms"
+    fi
+    if [[ -n "$units" ]]; then
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            if oom_unit_is_production "$entry"; then
+                echo "      ✗ PRODUCTION daemon killed: ${entry}" >&2
+                OOM_PRODUCTION_HIT=1
+            else
+                echo "      • unit killed: ${entry}" >&2
+            fi
+        done <<< "$units"
+    fi
+    if [[ "$OOM_PRODUCTION_HIT" != "1" ]]; then
+        echo "      (no live production daemon among the victims — likely a"  >&2
+        echo "       build process; Workstream A bounds build memory.)"       >&2
+    fi
+}
+
+# Prove the build manifest advanced to the commit we just deployed, with a
+# verified-ok status. install.sh writes the manifest ONLY as its final
+# step (write_build_manifest), so a match is end-to-end proof the install
+# ran to completion — and a MISMATCH means it didn't, even if the ssh
+# command happened to return 0. This is the deploy-side guard for problem
+# #4 (on jts2 the manifest was written early and lied after an OOM abort).
+# Caller gates on passwordless sudo (clean manifest capture).
+verify_manifest_advanced() {
+    local manifest installed_full installed_status expected
+    manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
+    installed_full="$(build_manifest_value "$manifest" JASPER_GIT_SHA_FULL)"
+    installed_status="$(build_manifest_value "$manifest" JASPER_INSTALL_STATUS)"
+    expected="${SHA_FULL}${DIRTY}"
+    if [[ "$installed_full" == "$expected" && "$installed_status" == "ok" ]]; then
+        echo "  ✓ build manifest advanced to ${SHA}${DIRTY} (status=ok, verified install)"
+        return 0
+    fi
+    finish_airplay_health_maintenance
+    trap - EXIT
+    cat <<EOF >&2
+─────────────────────────────────────────────────────────────
+ DEPLOY VERIFICATION FAILED: the build manifest did not advance
+ to the deployed commit on ${PI_HOST}.
+   expected: ${expected} (status=ok)
+   on Pi:    ${installed_full:-<none>} (status=${installed_status:-<none>})
+ install.sh writes the manifest only as its final step, so this
+ means the install did not run to completion (a half-updated box).
+ The Pi still advertises its prior good build to the next deploy.
+ Diagnose on the Pi:
+   sudo /opt/jasper/.venv/bin/jasper-doctor
+   journalctl -u jasper-control -n 120 --no-pager
+─────────────────────────────────────────────────────────────
+EOF
+    exit 1
+}
+
+# Broadened post-deploy health (ADVISORY — does not gate the deploy).
+# The management-surface probe only exercises the web path; this surfaces
+# voice / AEC bridge / renderer health via jasper-doctor so a daemon that
+# is down — for a real bug OR because its hardware is absent — is never
+# silently hidden behind a green deploy (problems #5/#7). Non-gating on
+# purpose: the broken-vs-idle reclassification of a missing-hardware
+# daemon (e.g. no mic → jasper-voice cleanly parked) lands in Workstream
+# C; until it does, a doctor ✗ here is informational, not a deploy abort.
+# Runs post-restart/reconcile (the authoritative runtime state), unlike
+# install.sh's own pre-restart doctor summary.
+surface_system_health() {
+    echo "==> Post-deploy system health (advisory; does not gate the deploy)"
+    echo "    Covers voice, AEC bridge, and renderers. A function idle"
+    echo "    because its hardware is absent (e.g. no mic) may read ! or ✗"
+    echo "    here today; Workstream C reclassifies those as expected-idle."
+    run_remote_sudo '/opt/jasper/.venv/bin/jasper-doctor 2>/dev/null || true' \
+        2>/dev/null || echo "    (jasper-doctor unavailable — skipped)"
+}
+
 # Capture git info BEFORE rsync (which excludes .git/).
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
     echo "deploy-to-pi: $REPO_ROOT is not a git checkout" >&2
@@ -451,7 +559,56 @@ if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
     install_env="${install_env} JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote "$JASPER_ACCEPT_INSTALL_PROFILE_CHANGE")"
 fi
 
-run_remote_sudo "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")"
+# Capture the Pi's clock right before install so the post-install OOM scan
+# can bound its kernel-log window precisely (plain ssh, no sudo needed).
+DEPLOY_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
+[[ -z "$DEPLOY_START_EPOCH" ]] && DEPLOY_START_EPOCH=0
+
+# Run install.sh but DON'T let set -e abort before we surface collateral:
+# capture the exit code, always scan for OOM kills in the install window,
+# then decide. (Problem #5: a failed build that OOM-killed live daemons
+# must not exit silently.)
+install_rc=0
+run_remote_sudo "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")" || install_rc=$?
+
+if [[ "$SUDO_INTERACTIVE" != "1" && "$DEPLOY_START_EPOCH" != "0" ]]; then
+    report_oom_collateral "$DEPLOY_START_EPOCH"
+fi
+
+if [[ "$install_rc" -ne 0 ]]; then
+    finish_airplay_health_maintenance
+    trap - EXIT
+    echo "─────────────────────────────────────────────────────────────" >&2
+    echo " DEPLOY FAILED: install.sh exited ${install_rc} on ${PI_HOST}." >&2
+    if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
+        echo " A live production daemon was OOM-killed during the build"   >&2
+        echo " (see above) — the build is unbounded for this box's RAM."   >&2
+        echo " Workstream A bounds it; for now free RAM and re-deploy."     >&2
+    fi
+    echo " The build manifest was NOT advanced, so the Pi still"           >&2
+    echo " advertises its prior good build to the next deploy (no"         >&2
+    echo " half-updated lie). Diagnose on the Pi:"                         >&2
+    echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                     >&2
+    echo "   journalctl -u jasper-control -n 120 --no-pager"               >&2
+    echo "─────────────────────────────────────────────────────────────" >&2
+    exit "$install_rc"
+fi
+
+# install.sh returned success, but a production daemon may have been
+# collaterally OOM-killed mid-build (report_oom_collateral already printed
+# a loud per-unit ✗ warning above). We SURFACE this, we do not gate on it:
+# the build OOM is HISTORY, while pass/fail is decided by END STATE — the
+# management-surface probe (nginx/control), verify_manifest_advanced, and
+# the advisory doctor below. A daemon that systemd already restarted must
+# not fail an otherwise-healthy deploy (the inverse false-failure trap on a
+# 1 GB Pi); one still down is caught by those end-state gates. Problem #5
+# asks the tooling to "say so, not exit silently" — surfacing satisfies it.
+if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
+    echo "  ⚠ a live production daemon was OOM-killed during the build (above)." >&2
+    echo "    The deploy continues; end-state health is checked below. If the" >&2
+    echo "    box is now unhealthy the gates will fail. Free RAM / Workstream A" >&2
+    echo "    bounds build memory so this stops happening." >&2
+fi
 
 echo "==> Build manifest now on Pi:"
 run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null || echo "(not present)"'
@@ -591,6 +748,21 @@ echo \"management-surface probe failed: last HTTP status \$code\" >&2; exit 1"
         echo "─────────────────────────────────────────────────────────────" >&2
         exit 1
     fi
+fi
+
+# Verified-install gate + broadened health surfacing. Both read the Pi
+# over ssh and so need a clean capture: under interactive sudo, `ssh -tt`
+# merges the password prompt into stdout and corrupts the manifest read
+# and the doctor output. Skip with a notice, mirroring the identity and
+# deploy-direction guards above; passwordless sudo (BRINGUP Phase 2.5) is
+# the posture that gets fully-verified deploys.
+if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
+    echo "==> Post-deploy verification: manifest + health checks skipped"
+    echo "    (interactive sudo cannot capture them cleanly — enable"
+    echo "     passwordless sudo for full verification, BRINGUP Phase 2.5)"
+else
+    verify_manifest_advanced
+    surface_system_health
 fi
 
 finish_airplay_health_maintenance

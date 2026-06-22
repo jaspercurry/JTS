@@ -294,7 +294,8 @@ Run for real from a Pi-local checkout:
      /var/lib/jasper-intsecrets, /opt/camilladsp, /etc/camilladsp,
      /var/lib/camilladsp, /usr/share/jasper-web, and feature-specific
      state directories.
-   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
+   - Write the /var/lib/jasper/build.txt verified-install marker
+     (written LAST, only on full success) with deploy SHA/branch metadata.
    - Copy the jasper Python package, pyproject.toml, landing pages,
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
@@ -407,7 +408,8 @@ Profile guard:
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
      /opt/camilladsp, /etc/camilladsp, /var/lib/camilladsp,
      /usr/share/jasper-web, and feature-specific state directories.
-   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata
+   - Write the /var/lib/jasper/build.txt verified-install marker
+     (written LAST, only on full success) with deploy SHA/branch metadata
      when available.
    - Write /var/lib/jasper/voice_provider_ids from the Python voice
      catalog so boot/hotplug shell can validate providers without
@@ -1105,37 +1107,73 @@ install_alsa() {
     echo "  Wrote /etc/asound.conf with fan-in, outputd lanes, and jasper_out rollback path"
 }
 
-write_build_manifest() {
-    # Build manifest — captures the git SHA + install timestamp at the
-    # moment install.sh ran. The /system dashboard and deploy verifier
-    # read this to show/prove which checkout is installed.
-    local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
-    local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
-    local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
-    if [[ "${git_sha}" == "unknown" ]] && command -v git >/dev/null 2>&1 && \
+# Resolve the short build SHA for THIS install run, with the same
+# precedence write_build_manifest uses: deploy env var (the normal
+# laptop-driven path) → git in the rsynced checkout (Pi-local installs) →
+# the prior manifest → "unknown". Factored out so the landing page's
+# app.css cache-bust and the build manifest agree by construction even
+# though the manifest is now written LAST (see write_build_manifest).
+resolve_build_sha_short() {
+    local sha="${JASPER_DEPLOY_SHA:-}"
+    if [[ -z "${sha}" ]] && command -v git >/dev/null 2>&1 && \
        { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
-        git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
-        git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
-        git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+        sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || true)
     fi
-    if [[ "${git_sha}" == "unknown" && -f "${STATE_DIR}/build.txt" ]]; then
-        local prior_sha
-        prior_sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-        if [[ -n "${prior_sha}" && "${prior_sha}" != "unknown" ]]; then
-            git_sha="${prior_sha}"
-            git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-            git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-            echo "  preserving build manifest from prior install: ${git_sha} on ${git_branch}"
-        fi
+    if [[ -z "${sha}" && -f "${STATE_DIR}/build.txt" ]]; then
+        sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)
     fi
-    cat > "${STATE_DIR}/build.txt" <<EOF
+    printf '%s\n' "${sha:-unknown}"
+}
+
+write_build_manifest() {
+    # Build manifest = the VERIFIED-INSTALL success marker, NOT a "we
+    # started installing X" note. It is written ONCE, as the final
+    # mutation in main(), so `set -euo pipefail` guarantees every
+    # build/install/migration step above ran to completion before this
+    # line is reached. A mid-install abort (e.g. the OOM-killed WebRTC
+    # build on jts2, 2026-06-21) therefore leaves the PRIOR good manifest
+    # untouched — so the deploy direction-guard and the /system "Software"
+    # card never advertise a SHA the box is not cleanly running. This
+    # closes problem #4 in docs/install-update-resilience-plan.md, where
+    # the manifest was written EARLY and lied after the build failed.
+    #
+    # JASPER_INSTALL_STATUS=ok records exactly that honest claim: the
+    # install process for this SHA completed. (Runtime subsystem health —
+    # is voice up? is the mic present? — is a separate layer the deploy
+    # verifier surfaces post-restart; the install can't attest to it
+    # because it doesn't restart the hardware-gated daemons.)
+    local git_sha git_full git_branch
+    git_sha="$(resolve_build_sha_short)"
+    git_full="${JASPER_DEPLOY_SHA_FULL:-}"
+    git_branch="${JASPER_DEPLOY_BRANCH:-}"
+    if [[ ( -z "${git_full}" || -z "${git_branch}" ) ]] && command -v git >/dev/null 2>&1 && \
+       { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
+        [[ -z "${git_full}" ]] && git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || true)
+        [[ -z "${git_branch}" ]] && git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    fi
+    if [[ ( -z "${git_full}" || -z "${git_branch}" ) && -f "${STATE_DIR}/build.txt" ]]; then
+        [[ -z "${git_full}" ]] && git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)
+        [[ -z "${git_branch}" ]] && git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)
+    fi
+    git_full="${git_full:-unknown}"
+    git_branch="${git_branch:-unknown}"
+
+    # Atomic write: this is the success marker, so a torn write (power loss
+    # mid-cat) must never leave a half-line the direction-guard misreads.
+    # Mirrors persist_install_profile's tempfile+rename. STATE_DIR already
+    # exists by the end of main(); we don't re-`install -d` it so we can't
+    # clobber the group-writable widening done earlier in the run.
+    local tmp="${STATE_DIR}/build.txt.tmp.$$"
+    cat > "${tmp}" <<EOF
 JASPER_GIT_SHA=${git_sha}
 JASPER_GIT_SHA_FULL=${git_full}
 JASPER_GIT_BRANCH=${git_branch}
 JASPER_INSTALL_AT=$(date -Iseconds)
+JASPER_INSTALL_STATUS=ok
 EOF
-    chmod 0644 "${STATE_DIR}/build.txt"
-    echo "  Build manifest: ${git_sha} on ${git_branch}"
+    chmod 0644 "${tmp}"
+    mv -f "${tmp}" "${STATE_DIR}/build.txt"
+    echo "  Build manifest (verified install): ${git_sha} on ${git_branch}"
 }
 
 # Generic "delete-and-append" rewrite of one KEY=value line in
@@ -1418,9 +1456,13 @@ install_management_static_assets() {
     install -m 0644 "${index_src}" /usr/share/jasper-web/index.html
     # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
     # query string) so a deploy busts the year-immutable /assets cache.
-    # The landing page is static HTML, so we substitute at install time;
-    # build.txt was written earlier in this run.
-    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
+    # The landing page is static HTML, so we substitute at install time.
+    # Resolve the SHA directly (deploy env → git → prior manifest) rather
+    # than reading build.txt: the manifest is now written LAST, as the
+    # verified-install marker, so it still holds the PRIOR SHA at this
+    # point in the run. resolve_build_sha_short returns the same value the
+    # manifest will record, so the cache key matches the installed build.
+    app_css_ver="$(resolve_build_sha_short)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
     sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
     # Bake the install profile's capability map into the landing page so its
@@ -1949,6 +1991,12 @@ main() {
         provision_correction_tls
         install_streambox_nginx_site
         widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+        # Final mutation: stamp the verified-install manifest only now that
+        # every step above succeeded (set -e). run_doctor_summary below is
+        # non-mutating diagnostics — keep write_build_manifest the LAST
+        # state change so a failure anywhere above leaves the prior good
+        # manifest. See write_build_manifest + problem #4 in the plan.
+        write_build_manifest
         run_doctor_summary
         return 0
     fi
@@ -1982,6 +2030,12 @@ main() {
     install_camillagui
     regenerate_audio_cues
     widen_control_secret_env_modes  # WS1 3b-2: secret env group-jasper readable for the spawned doctor
+    # Final mutation: stamp the verified-install manifest only now that
+    # every step above succeeded (set -e). run_doctor_summary below is
+    # non-mutating diagnostics — keep write_build_manifest the LAST state
+    # change so a failure anywhere above leaves the prior good manifest.
+    # See write_build_manifest + problem #4 in the plan.
+    write_build_manifest
     run_doctor_summary
 }
 

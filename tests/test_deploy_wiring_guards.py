@@ -45,6 +45,7 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
+_DEPLOY_TO_PI = _REPO / "scripts" / "deploy-to-pi.sh"
 
 _INSTALL_SCRIPTS = [_DEPLOY / "install.sh", *sorted((_DEPLOY / "lib" / "install").glob("*.sh"))]
 
@@ -276,4 +277,102 @@ def test_wizard_socket_ports_match_nginx_upstreams():
     assert not stale, (
         f"Stale parity-allowlist entries: {stale} — the exception no longer "
         "exists; remove it so the allowlists only shrink."
+    )
+
+
+# ----------------------------------------------------------------------
+# 5 — deploy-to-pi.sh post-install verification wiring (Workstream B)
+# ----------------------------------------------------------------------
+#
+# The transactional-update fix rests on deploy-to-pi.sh actually invoking
+# three pieces after install.sh: surface collateral OOM kills, gate on the
+# build manifest having advanced to the deployed SHA, and surface runtime
+# health. These guard against a refactor silently dropping any of them —
+# the failure mode would be a green deploy that hides exactly the problems
+# (#2/#4/#5/#7) this work closed. The behavior of the helpers themselves is
+# pinned in test_deploy_oom_collateral.py and test_lib_deploy_direction.py.
+
+
+def test_deploy_captures_install_rc_so_collateral_is_always_surfaced():
+    """install.sh must run with its exit code captured (not under bare
+    set -e), so report_oom_collateral runs even when the build failed —
+    otherwise an OOM-killed build would abort the deploy before surfacing
+    the collateral (problem #5)."""
+    text = _DEPLOY_TO_PI.read_text()
+    assert re.search(
+        r'run_remote_sudo "\$\{install_env\} bash[^\n]*"\s*\|\|\s*install_rc=\$\?',
+        text,
+    ), "install.sh invocation must capture its exit code with || install_rc=$?"
+    assert "report_oom_collateral" in text
+
+
+def test_deploy_defines_and_calls_post_install_verification():
+    """The three post-install verification helpers must be both defined
+    and called."""
+    text = _DEPLOY_TO_PI.read_text()
+    for fn in (
+        "report_oom_collateral",
+        "verify_manifest_advanced",
+        "surface_system_health",
+    ):
+        assert f"{fn}() {{" in text, f"{fn} is not defined in deploy-to-pi.sh"
+        # Called at least once in addition to its definition.
+        assert text.count(fn) >= 2, f"{fn} is defined but never called"
+
+
+def test_deploy_captures_pi_clock_for_oom_window():
+    """The OOM scan bounds its kernel-log window to the Pi's clock at
+    install start — captured before the install run."""
+    text = _DEPLOY_TO_PI.read_text()
+    assert "DEPLOY_START_EPOCH=" in text
+    assert "date +%s" in text
+    # The capture must precede the install invocation it bounds.
+    assert text.index("DEPLOY_START_EPOCH=\"$(ssh_remote") < text.index(
+        "|| install_rc=$?"
+    )
+
+
+def test_deploy_manifest_gate_checks_verified_status_and_sha():
+    """verify_manifest_advanced must confirm BOTH the deployed full SHA and
+    the JASPER_INSTALL_STATUS=ok marker — proving the install ran to
+    completion, not just that some manifest exists (problem #4)."""
+    text = _DEPLOY_TO_PI.read_text()
+    start = text.index("verify_manifest_advanced() {")
+    body = text[start: text.index("\n}", start)]
+    assert "build_manifest_value" in body
+    assert "JASPER_GIT_SHA_FULL" in body
+    assert "JASPER_INSTALL_STATUS" in body
+    assert 'installed_status" == "ok"' in body
+    assert "exit 1" in body  # a non-advanced manifest fails the deploy
+
+
+def test_deploy_production_oom_is_surfaced_not_gated_on_success():
+    """A production-daemon OOM during the build is SURFACED loudly, but a
+    daemon systemd already restarted must NOT fail an otherwise-healthy
+    deploy (the inverse false-failure trap). Pass/fail is owned by the
+    end-state gates (management probe + verify_manifest_advanced); the OOM
+    is history. So OOM_PRODUCTION_HIT may be referenced in the scan and the
+    install-FAILURE block, but never in a success-path exit gate. The
+    success path begins at the "Build manifest now on Pi" marker."""
+    text = _DEPLOY_TO_PI.read_text()
+    assert "report_oom_collateral" in text  # surfacing happens
+    success_path = text[text.index("Build manifest now on Pi"):]
+    assert "OOM_PRODUCTION_HIT" not in success_path, (
+        "a production-OOM that recovered must not gate an otherwise-healthy "
+        "deploy — surface it, let the management-probe + manifest gates decide"
+    )
+
+
+def test_deploy_verification_skipped_cleanly_under_interactive_sudo():
+    """The manifest read + doctor capture corrupt under `ssh -tt`, so they
+    must be guarded by the same passwordless-sudo gate as the identity and
+    direction guards — skipping with a notice rather than mis-verifying."""
+    text = _DEPLOY_TO_PI.read_text()
+    # The verify+surface calls live in the else-branch of a SUDO_INTERACTIVE
+    # check that prints a skip notice in the then-branch.
+    assert re.search(
+        r'if \[\[ "\$SUDO_INTERACTIVE" == "1" \]\]; then[\s\S]*?'
+        r'manifest \+ health checks skipped[\s\S]*?else[\s\S]*?'
+        r'verify_manifest_advanced[\s\S]*?surface_system_health[\s\S]*?fi',
+        text,
     )

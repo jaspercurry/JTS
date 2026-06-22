@@ -223,6 +223,14 @@ real-hardware confirmation.
 
 ### Workstream B — Atomic, verifiable, recoverable updates
 
+> **Status: landed (2026-06-21).** The build manifest is now the
+> verified-install marker (written last, gated by `set -e`); deploy
+> verification surfaces OOM collateral + post-restart voice/AEC/renderer
+> health and gates on the manifest advancing. Full A-B generations were
+> analysed and deferred. Operational truth + the rollback decision:
+> [HANDOFF-install-update-transaction.md](HANDOFF-install-update-transaction.md).
+> The prompt below is preserved as the originating brief.
+
 ```text
 Read docs/install-update-resilience-plan.md for full context (problems #3, #4,
 #5, #7; the deploy direction-guard / manifest / verification prior art).

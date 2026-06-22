@@ -649,10 +649,14 @@ This is the **only** supported deploy path. It does, in order:
 4. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
    set — rsyncs the Python source from the remote checkout into
    `/opt/jasper/`, then `pip install -e`'s `/opt/jasper` into
-   `/opt/jasper/.venv` (the runtime). Also writes
-   `/var/lib/jasper/build.txt`, migrates units to socket
-   activation, conditionally enables AEC on 6-ch firmware. See
-   "Runtime Python lives in /opt/jasper" below.
+   `/opt/jasper/.venv` (the runtime). Writes the
+   `/var/lib/jasper/build.txt` **verified-install marker as its FINAL
+   step** (only on full success, `JASPER_INSTALL_STATUS=ok`), so a
+   mid-install abort leaves the prior good manifest rather than a SHA the
+   box isn't cleanly running — the direction-guard reads an honest value.
+   Also migrates units to socket activation, conditionally enables AEC on
+   6-ch firmware. See "Runtime Python lives in /opt/jasper" below and
+   [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 5. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
    mic/AEC reconciler restart or park `jasper-voice` according to the
@@ -667,6 +671,17 @@ This is the **only** supported deploy path. It does, in order:
    class). `jasper-doctor`'s `check_management_surface` runs the same
    probe on-Pi. Skipped under `SKIP_RESTART=1` (no restart, nothing
    new to verify).
+7. Broadened post-deploy verification (passwordless-sudo deploys only —
+   `ssh -tt` can't capture cleanly). Surfaces any **OOM collateral** during
+   the install window (a build that OOM-killed a live daemon is reported,
+   not silent — problem #5), **gates** on the manifest having advanced to
+   the deployed SHA+`status=ok` (problem #4), and **surfaces** `jasper-doctor`
+   health covering voice/AEC/renderers (problem #7, advisory — the
+   broken-vs-idle reclassification of missing-hardware daemons is the
+   hot-plug workstream's job). On install failure the deploy exits *before*
+   restarting daemons, so live services keep serving the prior build.
+   Canonical doc:
+   [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 
 **Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
 That flow exists historically but misses:
