@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Per-driver commissioning safety: the protection-while-audible assertion.
 
 The single-audio-path commissioning loads, one driver at a time, a config where

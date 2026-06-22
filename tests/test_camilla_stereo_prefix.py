@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the neutral stereo-prefix builder.
 
 ``build_stereo_prefix`` (jasper.camilla_stereo_prefix) is the shared

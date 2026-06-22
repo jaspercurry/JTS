@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reset the AirPlay receive chain on the Pi. Use when the Pi shows up
 # in your Mac's AirPlay picker but won't accept connections, or when
 # audio plays for a moment then drops. Both symptoms are typically

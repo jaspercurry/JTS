@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for `jasper.audio_buffer.drain_acquire_buffer`.
 
 Behavior under test (the regression fix from the 2026-05-09 timer

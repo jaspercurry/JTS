@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Live device-list observer.
 
 Subscribes to bluez's ObjectManager and Device1 PropertiesChanged signals

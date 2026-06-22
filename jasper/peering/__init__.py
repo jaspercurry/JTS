@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Multi-device wake-word arbitration ("peering") for JTS.
 
 When a household runs multiple JTS speakers on the same LAN, all of

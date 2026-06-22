@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.peering.transport — encoding / decoding only.
 
 Socket-level tests (real multicast send/recv) would need network and

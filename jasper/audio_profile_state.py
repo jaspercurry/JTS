@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only audio profile classification.
 
 This module is intentionally small and side-effect-free. It does not

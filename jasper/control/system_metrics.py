@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """System metrics sampler for jasper-control.
 
 Polls /proc and vcgencmd at a fixed cadence (5s for cheap metrics —

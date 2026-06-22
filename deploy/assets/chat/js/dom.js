@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // dom.js — tiny DOM builder copied from the /system/ static module graph.
 //
 // String children become text nodes, so untrusted conversation transcripts,

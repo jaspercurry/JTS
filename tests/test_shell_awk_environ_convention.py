@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Repo-wide drift guard: env-file *values* go into awk via ENVIRON, never -v.
 
 POSIX leaves ``awk -v var=value`` free to process escape sequences in the
@@ -56,16 +60,19 @@ _SHELL_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _is_bash_file(path: Path) -> bool:
-    """Shebang-detected bash, plus the shebang-less source-only libs
-    that mark themselves with a `# shellcheck shell=bash` first line
-    (e.g. scripts/_lib.sh)."""
+    """Shebang-detected bash, plus the shebang-less source-only libs that
+    mark themselves with a `# shellcheck shell=bash` directive near the top
+    (e.g. scripts/_lib.sh). That directive may now sit just below an SPDX
+    license header, so scan the first several lines rather than only line 1."""
     try:
-        first = path.open("rb").readline().decode("utf-8", "replace").strip()
+        with path.open("rb") as fh:
+            head = [fh.readline().decode("utf-8", "replace").strip() for _ in range(8)]
     except OSError:
         return False
+    first = head[0] if head else ""
     if first.startswith("#!"):
         return bool(re.search(r"\b(?:ba)?sh\b", first))
-    return first.replace(" ", "") == "#shellcheckshell=bash"
+    return any(ln.replace(" ", "") == "#shellcheckshell=bash" for ln in head)
 
 
 def _bash_files() -> list[Path]:

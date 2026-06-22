@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Synthesize prompt audio via OpenAI's TTS, cached on disk.
 
 The harness needs to inject *user* audio into the voice loop. We

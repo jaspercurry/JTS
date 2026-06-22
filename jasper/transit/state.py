@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Fresh SSOT read of the transit city-pack toggle for /state surfaces.
 
 Mirrors ``jasper.multiroom.state.read_grouping_state``: the wizard owns

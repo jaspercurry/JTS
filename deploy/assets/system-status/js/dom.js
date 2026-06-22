@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // dom.js — tiny hyperscript helper, zero dependencies.
 //
 // h("div.foo", { onclick: fn }, "hello", child)

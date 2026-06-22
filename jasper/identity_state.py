@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read the speaker's *effective* network identity.
 
 ``jasper-identity-reconcile`` (a boot + 5-min systemd timer, the single

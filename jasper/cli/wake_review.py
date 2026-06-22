@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-wake-review — Build a listening-review package from scoring output.
 
 Consumes a `jasper-wake-score` CSV + the corpus directory it scored,

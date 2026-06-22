@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Routes Spotify commands to the right account.
 
 Decides which household member's spotipy client should handle a given

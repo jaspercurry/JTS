@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Voice-eval harness — opens a real `LiveConnection`, feeds in
 synthesized prompt audio, captures the resulting tool calls, audio
 out, and spoken text. Writes a human-readable transcript per run.

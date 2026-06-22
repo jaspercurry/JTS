@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for `jasper.transit.geocode`.
 
 The geocoder fans out across two OSM-backed services (Nominatim primary,

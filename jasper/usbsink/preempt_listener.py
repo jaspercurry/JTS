@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Localhost HTTP receiver for the mux preempt protocol.
 
 jasper-mux POSTs to http://127.0.0.1:JASPER_USBSINK_PREEMPT_PORT/preempt

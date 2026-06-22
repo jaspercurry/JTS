@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """BlueZ pairing agent for JTS.
 
 JTS is a headless speaker: it has no trusted local display or keyboard, and

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Mic-backed driver/summed acoustic analysis.
 
 These tests pin the verdict logic that replaces the old hand-passed

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Rust daemon build/install helpers for deploy/install.sh.
 #
 # Functions assume install.sh globals (REPO_DIR, BUILD_USER) and

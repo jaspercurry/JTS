@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bring-up preflight contract for active-speaker commissioning.
 
 This module answers a narrow product question before audible driver work:

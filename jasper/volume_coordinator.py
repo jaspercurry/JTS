@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Source-aware volume coordinator.
 
 The user perceives "speaker volume" as a single number 0-100. Underneath,

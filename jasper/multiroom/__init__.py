@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Multiroom speaker grouping ("bonds") for JTS.
 
 When a household wants two or more JTS speakers to play the same audio

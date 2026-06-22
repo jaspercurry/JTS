@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Renderer state poller + AirPlay-pause control.
 
 Consults each renderer daemon directly for its playback state:

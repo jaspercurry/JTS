@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bounded repair for Pi 5 brcmfmac Wi-Fi scan suppression.
 
 The Pi 5's brcmfmac firmware can leave BRCMF_SCAN_STATUS_SUPPRESS set

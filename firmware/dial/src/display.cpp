@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // LovyanGFX + LVGL bring-up for the GC9A01 round display. Pin
 // assignments come from include/config.h, which mirrors the CrowPanel
 // HMI factory firmware.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Helpers for cross-reset audio buffering in the wake → turn flow.
 
 When the daemon receives a wake event during a long-running idle

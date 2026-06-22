@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rate-matched bridge for the post-Camilla content lane.
 //!
 //! The DAC remains the final graph driver. This bridge absorbs small

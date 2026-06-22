@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # One-time setup: log librespot in as a Spotify account so cold-start
 # "Hey Jarvis, play X" works without needing a phone to claim the
 # speaker first.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pair-balance measurement core (jasper/multiroom/balance.py) —
 equal-loudness ramp method.
 

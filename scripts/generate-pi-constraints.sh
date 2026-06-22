@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Generate deploy/constraints-pi.txt from the LIVE Pi's resolved
 # dependency set, so install.sh can replay exactly those versions on
 # the next deploy instead of letting open-ranged pyproject deps

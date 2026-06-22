@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Comprehensive XVF3800 chip + Pi-side diagnostic capture for
 # cross-Pi or cross-chip diff workflows.
 #
@@ -36,7 +41,9 @@ HOST=""
 LABEL=""
 
 usage() {
-    sed -n '2,30p' "$0"
+    # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
+    # extracted doc block is the original prose, not the license text.
+    sed '2,6d' "$0" | sed -n '2,30p'
 }
 
 while [[ $# -gt 0 ]]; do

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Persist + restore the speaker's volume setting across daemon restarts.
 
 The Pi is stationary. Speaker volume should not reset on every reboot.

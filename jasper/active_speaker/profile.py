@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Validated data model for active speaker baseline commissioning.
 
 Active speaker commissioning is the Layer-A speaker baseline: channel map,

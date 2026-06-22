@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Spotify playlist URL/URI normalisation.
 
 Users paste links from Spotify desktop's Share → Copy link, which

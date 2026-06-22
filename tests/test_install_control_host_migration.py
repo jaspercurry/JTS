@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test the install.sh `migrate_control_host_bind_seed` shell helper.
 
 The helper prunes the seeded-default `JASPER_CONTROL_HOST=0.0.0.0` line

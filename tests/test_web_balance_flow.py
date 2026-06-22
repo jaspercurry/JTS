@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pair-balance walkthrough flow (jasper/web/balance_flow.py).
 
 Drives the handler layer against a REAL background asyncio loop (the

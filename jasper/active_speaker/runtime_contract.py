@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Runtime safety contract for roleful active-speaker CamillaDSP graphs.
 
 This flat graph maps full-range stereo directly to DAC outputs. It is

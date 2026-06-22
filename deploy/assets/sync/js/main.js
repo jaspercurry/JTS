@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Stereo-pair sync measurement. The server plays the marker through the
 // bonded chain; this page records a short mono WAV and uploads it for
 // correlation analysis.

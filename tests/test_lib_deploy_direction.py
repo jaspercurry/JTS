@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test scripts/_lib.sh deploy-direction helpers — the downgrade guard.
 
 Multiple checkouts/worktrees (and multiple agent sessions) deploy to the

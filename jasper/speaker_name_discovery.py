@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Best-effort duplicate checks for speaker display names.
 
 Deliberately NOT routed through ``jasper.mdns.browse_once``. The one-shot

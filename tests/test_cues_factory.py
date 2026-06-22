@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Catalog ↔ cue-TTS-factory completeness contract.
 
 AGENTS.md promises that cue WAVs are baked from the *active provider's*

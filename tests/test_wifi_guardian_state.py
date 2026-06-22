@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.control.wifi_guardian_state.snapshot().
 
 Verifies the /state.resilience.wifi_guardian block surfaces the right

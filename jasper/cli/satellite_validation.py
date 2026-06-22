@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Phase 1.3 mic validation harness — single-file, throwaway.
 
 Self-contained CLI for measuring wake-word reliability on the Pi-side

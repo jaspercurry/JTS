@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Assistant/cue playout ledger.
 //!
 //! The ledger records what Python asked to play and what the output

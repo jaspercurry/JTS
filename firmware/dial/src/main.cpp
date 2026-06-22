@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Jasper Dial — Phase 1 firmware
 //
 // Encoder rotation → POST /volume/adjust to jasper-control on the Pi.

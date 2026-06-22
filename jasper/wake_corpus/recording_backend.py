@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Recording engine for the wake-corpus recorder.
 
 ``RecordingBackend`` + its capture task, the per-clip metadata shape, and

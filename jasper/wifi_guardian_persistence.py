@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Persist + restore the WiFi profile guardian stash.
 2026-05-23 incident: a USB-C power yank during a power-splitter swap
 left the Pi's root ext4 partition with an in-flight write to

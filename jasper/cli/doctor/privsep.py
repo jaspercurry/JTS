@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-doctor checks — privilege-separation read access.
 
 WS1 dropped jasper-control/-web/-mux/-voice/-input to non-root (each runs as

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only environment evidence for active-speaker bring-up.
 
 This module gathers facts that are useful before any active crossover config is

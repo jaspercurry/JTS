@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Correction strategy and target-profile orchestration.
 
 This module is the boundary between "raw measurement math" and

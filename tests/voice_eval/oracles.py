@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Independent ground-truth fetchers for the voice-eval harness.
 
 Each oracle hits the underlying data source directly — bypassing

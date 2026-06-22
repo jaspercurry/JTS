@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """HTTP control surface for external clients (dial, future wall switches,
 home automation). Bound to LAN so an ESP32 dial on the household network
 can drive volume / transport / session.

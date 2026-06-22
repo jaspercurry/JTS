@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end MeasurementSession test on synthetic data.
 
 Synthesizes a "room" with a known modal peak, runs the full session

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Build openWakeWord-compatible negative feature arrays from a wake corpus bundle.
 #
 # Examples:

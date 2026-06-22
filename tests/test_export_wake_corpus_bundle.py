@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/_export_wake_corpus_bundle.py."""
 from __future__ import annotations
 

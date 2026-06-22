@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // components.js — small chat-page UI primitives.
 //
 // These mirror the /system/ module graph and build everything with dom.js so

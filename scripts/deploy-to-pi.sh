@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Deploy the local checkout to the Pi and run install.sh, capturing
 # the git SHA/branch up front so the /system dashboard's "Software"
 # card shows the real version instead of "unknown".

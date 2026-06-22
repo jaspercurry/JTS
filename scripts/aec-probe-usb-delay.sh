@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Estimate bulk reference-to-mic delay for the cheap USB corpus mic.
 #
 # This is an operator probe, not production code. It plays a short,

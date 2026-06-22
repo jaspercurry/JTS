@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Lightweight AirPlay health sampler for the /system dashboard.
 
 The sampler runs inside jasper-control, next to SystemSampler, but is

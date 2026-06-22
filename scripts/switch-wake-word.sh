@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Flip the wake-word model the daemon loads. Models are defined in
 # jasper/wake_models.py — this script just looks one up by key, writes
 # /var/lib/jasper/wake_model.env on the Pi, and restarts jasper-voice.

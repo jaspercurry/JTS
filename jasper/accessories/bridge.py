@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """evdev → jasper-control HTTP bridge for HID accessories.
 
 Watches /dev/input/event* for any device matching `registry.KNOWN_DEVICES`

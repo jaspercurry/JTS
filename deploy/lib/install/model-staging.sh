@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Model asset staging helpers for deploy/install.sh.
 #
 # install_jasper calls these after the venv + editable install exist.

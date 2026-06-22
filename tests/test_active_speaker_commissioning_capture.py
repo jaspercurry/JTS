@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The mic-backed acoustic verdict -> commissioning measurement wire (gap-1).
 
 ``driver_acoustics.analyze_driver_capture`` / ``analyze_summed_crossover`` had no

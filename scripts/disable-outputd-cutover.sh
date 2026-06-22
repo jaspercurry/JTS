@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Stop the outputd service on the active Pi before, or immediately
 # after, rolling back to a pre-outputd release/branch.
 #

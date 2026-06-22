@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Acoustic trust evidence for room-correction captures.
 
 `quality.py` answers "is this WAV structurally safe to analyze?",

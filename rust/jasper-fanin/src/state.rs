@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! UDS STATUS endpoint — surfaces daemon state for the
 //! `/state` aggregator (`jasper-control`) and `jasper-doctor`.
 //!

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Capability-pack registry (Pattern 2 — registry, not typed Config).
 
 `_build_registry` in jasper/voice/daemon_main.py used to hardcode one

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tool catalog wizard at /tools/.
 
 Browse + search the first-party voice tool packs and turn packs/tools on/off.

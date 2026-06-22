@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Minimal persistence — `{mac: handler_id}` at /var/lib/jasper/bt_roles.json.
 
 BlueZ owns the pair database (link keys, alias, trust flag). The one

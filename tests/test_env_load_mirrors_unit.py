@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """ENV_FILES must be a superset of EVERY unit's persistent EnvironmentFile=.
 
 A CLI that builds Config.from_env() via env_load (chiefly jasper-doctor, which

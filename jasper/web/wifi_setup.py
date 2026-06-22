@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """/wifi/ — Wi-Fi network management.
 
 Phone-Settings-style page:

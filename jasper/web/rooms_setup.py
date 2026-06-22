@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """/rooms/ — the "Speakers" surface: directory + wake-response toggle.
 
 To the household, "my other speakers" is ONE concern, so the read-only

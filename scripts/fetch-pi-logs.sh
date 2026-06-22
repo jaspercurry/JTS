@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Pull recent logs + relevant configs from the Pi into ./logs/ for
 # inspection by Claude Code (or anything else).
 #

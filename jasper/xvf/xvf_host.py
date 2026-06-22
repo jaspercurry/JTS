@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """JTS-owned USB control helper for the XMOS XVF3800.
 
 This module implements the small XVF3800 control surface JTS uses for

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Drift guard: every install step in main() is described by the dry run.
 
 `bash deploy/install.sh --dry-run` is contributor-facing safety gear

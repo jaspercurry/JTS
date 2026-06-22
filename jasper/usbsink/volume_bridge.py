@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Observe the host's volume slider via ALSA mixer, route to JTS.
 
 The UAC2 gadget exposes the host's volume slider as ALSA mixer

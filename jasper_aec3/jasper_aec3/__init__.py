@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """WebRTC AEC3 Python bindings for jasper-aec-bridge.
 
 Two engines:

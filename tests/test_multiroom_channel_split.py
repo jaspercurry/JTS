@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the P1.2 channel-split CamillaDSP fragment generator.
 
 These assert the DSP-correctness + safety invariants documented in

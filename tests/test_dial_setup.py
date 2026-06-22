@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free tests for jasper.web.dial_setup.
 
 Pins the firmware-status surface that the /dial/ wizard uses to tell

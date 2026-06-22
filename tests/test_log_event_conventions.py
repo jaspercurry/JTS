@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Conventions guard: operational ``event=`` lines go through ``jasper.log_event``.
 
 JTS logs operational events as ``event=<domain>.<action> k=v k=v`` lines so

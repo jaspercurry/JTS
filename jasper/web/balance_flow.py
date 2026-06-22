@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pair-balance wizard flow (`/balance/*`) — the one-speaker-at-a-time
 equal-loudness walkthrough (#23 P2, redesigned after live use).
 

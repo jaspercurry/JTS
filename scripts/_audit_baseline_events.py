@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Event-level audit of the 10-condition reference baseline across the
 four legs (raw mic / AEC3 / DTLN-128 / DTLN-256).
 

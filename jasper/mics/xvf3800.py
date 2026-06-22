@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Seeed ReSpeaker XVF3800 (USB UA variant) — mic profile.
 
 Canonical reference: docs/HANDOFF-xvf3800.md (hardware identity,

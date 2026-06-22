@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Probe XVF3800 chip-reference format, level, and output-channel behavior.
 #
 # This is a diagnostic-only hardware probe. It briefly stops the bridge and

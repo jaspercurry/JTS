@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # shellcheck shell=bash
 # WS1 Phase 3b/first Tier-B slice — dedicated non-root service users + the
 # shared `jasper` group. Tier-A daemons dropped from root: jasper-voice /

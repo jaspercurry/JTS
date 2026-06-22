@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the connection supervisor's tight-retry-loop escalation cue.
 
 Covers `_FailureFingerprint`, `_maybe_fire_escalation_cue`, and the end-

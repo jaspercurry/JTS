@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test the WS1 group-writable heal for shared state —
 `heal_shared_state_modes` in deploy/lib/install/env-migrations.sh.
 

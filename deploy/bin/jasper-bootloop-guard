@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Cross-boot circuit breaker for the T5.1 StartLimitAction=reboot ladder.
 #
 # The gap (audit C1): jasper-camilla / -outputd / -fanin / -voice /

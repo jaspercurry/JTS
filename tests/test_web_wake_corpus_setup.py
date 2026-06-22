@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Canonical-design-system regression for /wake-corpus/.
 
 The wake-corpus recorder (jasper.web.wake_corpus_setup) migrated from a

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Safety-session substrate for future active-speaker test tones.
 
 This module deliberately does not generate audio, load CamillaDSP configs, or

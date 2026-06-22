@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Renderer install steps for deploy/install.sh: librespot (raspotify
 # .deb), nqptp + shairport-sync (AirPlay 2) source builds, bluez
 # config, the USB gadget dtoverlay, and the AirPlay WiFi power-save

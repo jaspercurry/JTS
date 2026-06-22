@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure state machine for multi-device wake arbitration.
 
 The state machine has zero I/O. It accepts timestamped events

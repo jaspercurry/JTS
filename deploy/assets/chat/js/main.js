@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /chat/ dashboard entry point.
 //
 // Reads the CSRF meta tag like the other migrated pages, fetches data.json via

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Operator tooling around correction session bundles.
 
 Bundles are the durable evidence boundary for correction, FIR, and

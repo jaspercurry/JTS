@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Coverage for the accessory registry — small, declarative, but the
 bridge daemon's whole behaviour pivots on `lookup()` returning the
 right entry, so worth one test pass.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Programmatic audio-quality analyzer for browser-recorded wake corpus WAVs.
 
 This is the repeatable implementation of

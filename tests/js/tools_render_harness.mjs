@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Renders a deliberately malicious tool object through the /tools/ catalog's
 // render.js and reports whether every untrusted field was HTML-escaped before
 // landing in the card markup. The /tools/ catalog is the marketplace's future

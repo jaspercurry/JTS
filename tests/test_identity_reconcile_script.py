@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test the deploy/bin/jasper-identity-reconcile shell script.
 
 The reconciler is the single writer of /var/lib/jasper/identity.env —

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Mute privacy + cue observability unit tests for WakeLoop.
 
 - mute_mic() must drop ALREADY-buffered room audio (pre-roll, acquire

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Render and install the Avahi service file for `_jasper-peer._udp`.
 
 Avahi (the system mDNS-SD daemon installed on Pi OS by default) is

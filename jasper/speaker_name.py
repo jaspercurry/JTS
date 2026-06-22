@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Canonical speaker display-name state.
 
 This is the user-facing name shown by renderer surfaces such as

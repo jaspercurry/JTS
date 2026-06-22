@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared AEC3 corpus-sweep definitions.
 
 The wake-corpus recorder can ask jasper-aec-bridge to run a bounded

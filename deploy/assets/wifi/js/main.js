@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /wifi/ network management (Wi-Fi settings).
 //
 // This is the live, fetch-driven half of the page: it polls ./state every 7 s,

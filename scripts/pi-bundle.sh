@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Run ON THE PI. Bundles logs + configs + ALSA state into a single
 # tarball at /tmp/jasper-bundle-<TS>.tar.gz, ready to scp off-device.
 #

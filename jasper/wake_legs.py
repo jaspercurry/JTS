@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Single source of truth for wake-detection / corpus audio "legs".
 
 A *leg* is one named audio stream the AEC bridge emits over UDP and a

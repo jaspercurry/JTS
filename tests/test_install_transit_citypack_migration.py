@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test install.sh city-pack seeding in migrate_transit_config.
 
 The transit rewiring (jasper.transit city packs) added a JASPER_TRANSIT_CITIES

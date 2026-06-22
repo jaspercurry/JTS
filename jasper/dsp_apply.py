@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared CamillaDSP config validation and apply lifecycle.
 
 Generated DSP configs are safety-critical: a bad reload can silence

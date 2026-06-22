@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin the landing page's WS1 control-token delivery for the mic-mute button.
 
 The static landing page (deploy/index.html) is served by nginx straight from

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free tests for the /wake/ wizard (jasper.web.wake_setup).
 
 Covers the canonical-design migration (app.css link, .app-header, CSRF

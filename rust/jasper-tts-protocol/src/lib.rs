@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! The JTS assistant/TTS protocol and shared playout policy.
 //!
 //! Newline-framed text commands with binary AUDIO payloads, spoken by

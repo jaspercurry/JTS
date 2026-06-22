@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Stage protected active-speaker startup configs without loading hardware.
 
 This module turns a saved physical output topology plus a designer-authored

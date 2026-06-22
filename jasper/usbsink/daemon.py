@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """USB sink daemon orchestration.
 
 Wires the audio bridge together with the systemd watchdog and the

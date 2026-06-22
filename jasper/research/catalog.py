@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Catalog of text LLM providers usable by the async research tool."""
 from __future__ import annotations
 

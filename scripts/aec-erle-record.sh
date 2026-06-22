@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Capture the AEC bridge's mic input + AEC output + reference signal
 # for offline ERLE analysis. Uses the bridge's own JASPER_AEC_DEBUG_RECORD_DIR
 # debug mode (added in PR #150) — couldn't use a parallel `arecord` because

@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Jasper Curry
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 // mDNS service discovery for jasper-control. Replaces the
 // hardcoded JASPER_HOST/JASPER_PORT pair so the dial finds whichever
 // Pi answers `_jasper-control._tcp` rather than depending on a

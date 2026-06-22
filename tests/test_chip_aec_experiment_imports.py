@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Smoke test: the chip-AEC experimental daemon module still imports.
 
 This test exists to catch passive bit-rot. `jasper.chip_aec_experiment`

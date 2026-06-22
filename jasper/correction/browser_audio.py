@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Browser audio-path preflight report for room correction.
 
 The browser can grant a microphone while silently changing capture

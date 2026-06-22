@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper-noise-capture — passive noise corpus collection for training.
 
 Captures long-form mic audio with NO human speech in the room, for use

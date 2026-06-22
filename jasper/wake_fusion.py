@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """The wake-leg fire-decision seam (Phase 1.2).
 
 A single thin place that decides the threshold a leg must clear to fire, so

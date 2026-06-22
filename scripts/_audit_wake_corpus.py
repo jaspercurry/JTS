@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Audit the browser-recorded wake-word gold corpus.
 
 Reads the recorder layout produced by `jasper-wake-corpus-web`:

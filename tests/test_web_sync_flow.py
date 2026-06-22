@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Handler-level tests for the acoustic-sync apply path.
 
 The signal/analysis math is covered by test_multiroom_sync_measure.py; this

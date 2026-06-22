@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Build the WebRTC AEC3 pybind11 extension(s).
 
 Builds two parallel pybind11 modules:

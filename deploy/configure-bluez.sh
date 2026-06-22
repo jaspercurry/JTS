@@ -1,4 +1,9 @@
 #!/bin/sh
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Configure /etc/bluetooth/main.conf for Jasper speaker mode.
 #
 # Idempotent: each sed line replaces the existing key (whether

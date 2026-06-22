@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bridge + leg orchestration for the wake-corpus recorder.
 
 Pure-function / systemctl layer extracted verbatim from

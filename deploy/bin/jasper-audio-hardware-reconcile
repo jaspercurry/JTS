@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reconcile JTS output-DAC role with the ALSA hardware currently present.
 #
 # This is the output-hardware counterpart to jasper-aec-reconcile:

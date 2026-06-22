@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared helpers for the JTS web setup pages.
 
 Every wizard under `jasper/web/` (Spotify, voice, transit, wake, …)

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Risk-category flags on tools — `untrusted_output` / `consequential`.
 
 These are DECLARATIVE prompt-injection risk categories for the planned tool

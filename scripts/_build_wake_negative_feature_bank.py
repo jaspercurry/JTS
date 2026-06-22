@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Build openWakeWord-compatible negative feature banks from a corpus bundle.
 
 This is the negative-hours companion to ``scripts/build-wake-feature-bank.sh``.

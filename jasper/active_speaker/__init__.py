@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Active-speaker crossover commissioning substrate.
 
 This package is intentionally pure Python and import-cheap. It models the

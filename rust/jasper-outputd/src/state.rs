@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Local STATUS socket for outputd observability.
 //!
 //! The socket mirrors the fan-in daemon's shape: one command per

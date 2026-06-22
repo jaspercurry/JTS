@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared CamillaDSP YAML *emission* primitives — the single home for
 the leaf helpers that turn a value into a line of CamillaDSP config.
 

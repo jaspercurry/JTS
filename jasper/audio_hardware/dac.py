@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Static DAC profile registry for JTS output hardware.
 
 This module is deliberately IO-free. It describes known output hardware

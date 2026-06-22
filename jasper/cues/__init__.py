@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Audio-cue subsystem: pre-rendered TTS messages the daemon plays
 when it would otherwise fall silent on a wake-blocking failure,
 plus dynamic-text rendering for variable-content cues like timer

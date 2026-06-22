@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // views.js — build-once / update-on-fetch rendering for /chat/.
 //
 // The conversation store treats transcript text and data_json as untrusted.

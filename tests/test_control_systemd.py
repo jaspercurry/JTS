@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Lock down the jasper-control.service systemd unit shape.
 
 jasper-control persists small state files under /var/lib/jasper — the

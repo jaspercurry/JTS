@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free guard: the sum of model-facing tool description tokens
 across the FULL shipped registry must stay well under OpenAI Realtime's
 16,384-token instructions+tools ceiling. Adding a verbose tool can't

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression: _end_turn must be idempotent / non-reentrant.
 
 Before the fix, _end_turn ran a multi-second teardown (telemetry,

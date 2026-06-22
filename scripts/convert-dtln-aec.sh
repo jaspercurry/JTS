@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Convert breizhn/DTLN-aec TFLite models to ONNX so they can run with
 # the onnxruntime that ships in the JTS Pi venv (tflite-runtime has no
 # Python 3.13 wheel — see install.sh comment + docs/HANDOFF-mic-quality-v2.md

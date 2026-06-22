@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Protocol-level liveness supervisor for shairport-sync — Tier 3
 of the JTS resilience ladder.
 

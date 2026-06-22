@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // components.js — composable UI pieces built on the shared design system
 // (app.css). Everything returns DOM nodes via dom.js, so text content is
 // escaped by construction — there is no innerHTML path.

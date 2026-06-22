@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.renderer.RendererClient.
 
 Mocks at the I/O boundary: tmp_path-backed librespot state file

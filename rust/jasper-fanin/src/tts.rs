@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pre-DSP TTS IPC for active-speaker topologies.
 //!
 //! The wire protocol intentionally matches `jasper-outputd`'s TTS

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Active wireless follower CamillaDSP apply + solo restore — the grouping
 reconciler's *active-follower* arm (distributed-active Slice 3,
 docs/HANDOFF-distributed-active.md "The active follower (gap 2)").

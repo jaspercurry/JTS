@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Global sound-output settings (distinct from per-profile EQ).
 
 These shape the single output gain stage shared by every preference

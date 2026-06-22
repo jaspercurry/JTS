@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Integration tests for jasper.peering.daemon.
 
 Exercises the orchestrator end-to-end with mocked transport +

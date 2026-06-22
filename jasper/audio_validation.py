@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Persistent audio validation artifacts and readiness snapshots.
 
 Validation artifacts are small JSON files that record whether a

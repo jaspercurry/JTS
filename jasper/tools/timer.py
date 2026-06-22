@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Timer voice tools — set, list, cancel kitchen timers.
 
 Backed by `jasper.timers.TimerScheduler`, which owns persistence,

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the /spotify/ wizard after its migration to the canonical look.
 
 1. Each of the wizard's page states (setup, redirect-URI, manual pre-warn,

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """/speaker/ — user-facing renderer display name.
 
 Single setting: the name shown in AirPlay, Spotify Connect, Bluetooth,

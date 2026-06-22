@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Multiroom grouping reconciler — pure plan + thin systemctl entrypoint.
 
 The reconciler is the single writer of the snapcast unit state. It reads

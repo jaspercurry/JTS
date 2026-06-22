@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Persisted active-speaker design draft.
 
 The design draft is the durable bridge between the user-facing output map and

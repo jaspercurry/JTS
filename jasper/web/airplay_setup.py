@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """AirPlay sync mode toggle at /airplay/.
 
 Single setting: synced (default, glitch-free since the resync_threshold

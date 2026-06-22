@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the /transit/ wizard after its migration to the canonical look.
 
 Companion to tests/test_transit_setup.py (which covers the full state /

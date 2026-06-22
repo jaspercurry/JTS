@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.cli.noise_capture's pure helpers + streaming-to-WAV.
 
 Hardware-dependent bits (systemctl orchestration, real UDP) are

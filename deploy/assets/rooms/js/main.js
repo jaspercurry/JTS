@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — the /rooms/ "Speakers" surface. Directory + wake-response.
 //
 // Fetches /rooms.json on load and re-polls every 7 s. Renders:

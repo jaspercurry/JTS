@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared shairport-sync MPRIS PlaybackStatus probe with subprocess hygiene.
 
 Both `/state`'s AirPlay row and the Tier 3 ShairportSupervisor's

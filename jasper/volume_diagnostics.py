@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Cheap volume-policy diagnostics for `/state`.
 
 This module is deliberately not a control path. The coordinator writes a

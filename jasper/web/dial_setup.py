@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """User-initiated rotary-dial onboarding wizard. Public surface:
 http://jts.local/dial/ — visible there because nginx reverse-proxies
 /dial/ → http://127.0.0.1:8766/.

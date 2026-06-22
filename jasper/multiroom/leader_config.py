@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Bonded-leader CamillaDSP regeneration + solo restore — the grouping
 reconciler's config-apply arm (Increment 5, HANDOFF-multiroom.md §2).
 

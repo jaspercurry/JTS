@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Conversation-history dashboard at /chat/.
 
 Read-only page shell plus JSON data endpoint for captured voice turns.

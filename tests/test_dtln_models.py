@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Hardware-free sanity tests for the DTLN model registry.
 
 Mirrors the shape of tests/test_wake_setup.py's "Registry sanity"

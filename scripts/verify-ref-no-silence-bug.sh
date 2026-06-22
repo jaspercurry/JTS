@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Verify that the AEC bridge's reference signal is no longer being
 # poisoned by alternating-silence frames (the bug we fixed via
 # "carry last_ref_bytes forward instead of falling back to silence").

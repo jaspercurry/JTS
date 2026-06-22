@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.control.system_metrics.
 
 Stdlib-only; runs anywhere with a /proc filesystem (i.e. Linux CI).

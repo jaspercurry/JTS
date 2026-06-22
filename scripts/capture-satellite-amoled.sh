@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Record a clip from the AMOLED satellite mic over USB-CDC.
 #
 # Reset the satellite (RTS toggle) → wait for [stream-start] → capture

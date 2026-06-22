@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.control.client — the typed jasper-control client.
 
 Two things matter: (1) the client must not drift from the server's route

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! ALSA fan-in mixer — the core work loop.
 //!
 //! Reads from N capture PCMs (one per renderer's snd-aloop substream

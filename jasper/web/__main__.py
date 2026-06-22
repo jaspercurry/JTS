@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Entry point for the jasper-web systemd unit.
 
 Starts the setup wizards for this install profile in a single process —

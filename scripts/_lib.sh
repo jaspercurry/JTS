@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # shellcheck shell=bash
 # Shared header for laptop-side scripts. Source from a script with:
 #

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // sections.js — data → view builders, one per dashboard card. Each takes a
 // slice of the /system/snapshot and returns DOM (or, for the in-place audio
 // toggle, mutates its refs). Pure: no fetching, no polling — views.js owns

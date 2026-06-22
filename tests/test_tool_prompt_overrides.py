@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper.tool_prompt_overrides — wizard-owned prompt override state."""
 from __future__ import annotations
 

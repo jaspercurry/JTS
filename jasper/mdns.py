@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """One-shot mDNS-SD browse primitive — the single place JTS resolves a
 service type into the live set of instances on the LAN.
 

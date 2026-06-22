@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Software AEC bridge — `jasper-aec-bridge` (Python).
 
 REPLACES the CamillaDSP-based aec-bridge. Default production echo

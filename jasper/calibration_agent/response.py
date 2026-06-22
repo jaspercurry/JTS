@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic response contract for the future calibration advisor.
 
 The model is allowed to propose bounded actions, but this module is

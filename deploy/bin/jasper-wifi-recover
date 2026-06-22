@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Periodic WiFi recovery nudge for transient AP/driver loss.
 #
 # This is deliberately NOT a resident daemon. It is run by

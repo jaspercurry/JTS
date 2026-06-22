@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Measurement-session state machine.
 
 Phase 2: multi-position MMM averaging + verify pass.

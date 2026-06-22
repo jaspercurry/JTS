@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /tools/ catalog wizard behaviour.
 //
 // Fetches /tools/catalog.json (voice's catalog metadata with the fresh

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Explicit maintainer check for optional ESP32 satellite firmware.
 #
 # Normal JTS installs do not build these projects: most speakers do not

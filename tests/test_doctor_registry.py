@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard the jasper-doctor registry's ordering invariant.
 
 The doctor decomposition (the jasper/cli/doctor/ package) preserves the exact

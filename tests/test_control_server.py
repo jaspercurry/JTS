@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Route-level tests for jasper.control.server.
 
 Spins the ThreadingHTTPServer on a random port. The volume routes go

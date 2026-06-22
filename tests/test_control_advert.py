@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.control_advert.
 
 This module renders the always-on ``_jasper-control._tcp`` mDNS advert

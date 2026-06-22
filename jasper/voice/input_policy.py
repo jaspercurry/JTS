@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Resolve the effective speech-input policy for voice providers.
 
 The hardware/reconciler layer owns devices and audio profiles. Provider

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Run DTLN-aec offline against a (mic, ref) WAV pair, writing the
 cleaned mono output to a new WAV. Mirrors breizhn/DTLN-aec's
 run_aec.py algorithm verbatim but uses onnxruntime instead of the

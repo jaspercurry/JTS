@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Operator-only Pi 5 Wi-Fi scan repair experiments.
 
 This script keeps the disruptive experiments out of the household

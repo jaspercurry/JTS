@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Reconnect backoff schedule — tests don't need the Gemini SDK so
 they live here rather than in test_gemini_connection.py (which is
 all skipped without google-genai installed)."""

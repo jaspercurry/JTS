@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Render the system-wide ALSA config from the persisted JTS audio-quality
 # preference. Web toggles only mutate /var/lib/jasper/audio_quality.env;
 # this script turns that small state file into the real asound.conf.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Graph-carrier dispatch for preference-EQ apply over any loaded CamillaDSP graph.
 
 The ``/sound`` preference-EQ apply path must re-emit the running CamillaDSP

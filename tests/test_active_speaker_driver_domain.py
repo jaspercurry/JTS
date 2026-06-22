@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Driver-domain-only active emit variant — the follower's relocated Layer A.
 
 Covers the emitter half of distributed-active Slice 2 and pins **invariant 4**

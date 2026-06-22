@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """inv-5 (docs/HANDOFF-multiroom.md §2) — the bonded LEADER's local CamillaDSP
 runs rate_adjust OFF, because snapclient's sample-stuffing is the single
 rate-tracker for the synced chain (two rate-adjusters oscillate). A follower's

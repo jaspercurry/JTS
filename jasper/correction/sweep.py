@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Synchronized swept-sine (ESS) generation per Novak et al. 2015.
 
 Why synchronized rather than vanilla Farina ESS: with a synchronized

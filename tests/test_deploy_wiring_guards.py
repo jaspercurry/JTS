@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Deploy-domain wiring guards — pin the install/systemd/nginx promises.
 
 Four structural invariants in the deploy/ tree that were previously

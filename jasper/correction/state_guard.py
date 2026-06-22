@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """State-transition guards for room-correction measurement sessions."""
 from __future__ import annotations
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.mux_mode_persistence — the durable source-selection
 mode file that lets a household's manual source pin survive jasper-mux's
 Restart=always deploy/restart cycle.

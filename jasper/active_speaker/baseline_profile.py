@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Compile and apply accepted active-speaker baseline profiles.
 
 The baseline profile is the handoff from commissioning into normal playback:

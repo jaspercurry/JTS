@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Heartbeat with progress sentinel — the JTS-standard Tier 1/2
 //! watchdog pattern.
 //!

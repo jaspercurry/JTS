@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure active-speaker setup helpers for /sound/.
 //
 // This module deliberately contains no DOM or fetch state. The large sound

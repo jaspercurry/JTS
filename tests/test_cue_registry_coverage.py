@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Guard: cue registry and cue play sites must match exactly, both ways.
 
 AGENTS.md ("No silent failure paths"): a failure path that would leave

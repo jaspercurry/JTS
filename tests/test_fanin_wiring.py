@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Config-shape tests for the fan-in audio topology.
 
 These read deploy-time files directly and lock down the production

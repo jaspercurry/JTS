@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Validate/apply runtime AEC3 sweep configs.
 
 This CLI is intentionally small and stdlib-only. It gives operators

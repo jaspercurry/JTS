@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Build the AMOLED satellite firmware and stage it to a known path.
 # Idempotent. Safe to re-run. Mirrors firmware/dial/build.sh.
 #

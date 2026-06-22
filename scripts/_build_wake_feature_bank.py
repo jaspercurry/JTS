@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Build openWakeWord-compatible positive feature banks from a corpus bundle.
 
 This is the second Phase 0 slice for custom wake-word training. It consumes

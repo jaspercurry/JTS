@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Grouping member-config policy — the ONE place that decides what a bonded
 member's local CamillaDSP config needs.
 

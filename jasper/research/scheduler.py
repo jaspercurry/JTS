@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Async research job scheduler and SQLite persistence.
 
 Hardware-free Phase 1 foundation only: no voice tool registration, no

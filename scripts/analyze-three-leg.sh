@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Weekly review of the wake-event corpus — which configured wake legs
 # (AEC3, chip-direct, DTLN-aec, opt-in chip-AEC beams) are actually
 # firing, where they disagree, and which events are worth listening to.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Citi Bike regression scenarios.
 
 Same three-assertion shape as the other transit scenarios:

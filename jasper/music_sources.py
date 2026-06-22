@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Canonical music-source metadata.
 
 All music/content sources enter the speaker through jasper-fanin and

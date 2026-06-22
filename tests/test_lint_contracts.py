@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Static lint-policy guards.
 
 These tests do not replace Ruff. They pin the project-level lint contract

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Diagnostic timing probe for outputd/chip-ref/XVF capture paths.
 
 The normal entry point runs from a laptop and ships this file to the Pi

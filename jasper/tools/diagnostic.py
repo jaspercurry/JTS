@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Diagnostic / self-observation tools.
 
 One tool today: ``flag_recent_issue``. Lets the user point at the

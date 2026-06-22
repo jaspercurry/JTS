@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Post-round-trip TTS IPC for the final-output owner — the bonded-member
 //! voice path (docs/HANDOFF-multiroom.md §2, Increment 5 PR-2).
 //!

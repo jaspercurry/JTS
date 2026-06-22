@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Mic-backed acoustic analysis for active-speaker driver checks.
 
 The driver-check step in the active-crossover flow has, until now, recorded

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Catch-all handler. Matches anything; runs last in the registry.
 
 Used for BLE-only sensors, GATT peripherals, and any device we

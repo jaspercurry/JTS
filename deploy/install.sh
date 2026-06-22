@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Install jasper voice daemon + always-on CamillaDSP on a Raspberry Pi.
 #
 # Source-builds shairport-sync (AirPlay 2) + nqptp, drops in

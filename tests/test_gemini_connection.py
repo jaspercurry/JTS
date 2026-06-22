@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Reconnect state-machine tests for `GeminiLiveConnection`.
 
 These tests exercise the persistent-single Live connection without

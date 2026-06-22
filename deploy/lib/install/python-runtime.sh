@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Python runtime install steps for deploy/install.sh.
 #
 # Extracted from install.sh; functions assume install.sh globals and

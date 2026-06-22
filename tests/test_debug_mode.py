@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for jasper.debug_mode — the runtime debug-logging SSOT.
 
 Covers the pure resolver, the auto-expiry semantics, the pure

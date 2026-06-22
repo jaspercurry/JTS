@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // AEC3 v2.1 binding — REVISION 3 (2026-05-22 night)
 // Full tuning surface: all knobs the research surfaced.
 

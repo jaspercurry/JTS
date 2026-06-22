@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """CLI entrypoint for the JTS Bluetooth no-code pairing agent."""
 from __future__ import annotations
 

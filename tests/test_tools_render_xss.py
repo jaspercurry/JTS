@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 r"""XSS regression guard for the /tools/ catalog renderer.
 
 render.js builds card/detail markup from catalog fields (name, summary,

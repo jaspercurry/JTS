@@ -28,6 +28,7 @@ permissively licensed alternative.
 | NYC MTA subway station data | `jasper/data/mta_stations.csv`, refreshed by `scripts/refresh-mta-stations.sh` | <https://data.ny.gov/Transportation/Subway-Stations/39hk-dx4f> | Needs dataset terms verification | Record the dataset terms and attribution expected by data.ny.gov before public data redistribution. |
 | Figtree web font | `deploy/assets/fonts/figtree-*.woff2`, `deploy/assets/fonts/OFL-Figtree.txt` | <https://fonts.google.com/specimen/Figtree> / <https://github.com/erikdkennedy/figtree> | SIL Open Font License 1.1 | Vendored locally for the management landing page so `jts.local` does not call Google Fonts at runtime. |
 | Outfit web font | `deploy/assets/fonts/outfit-*.woff2`, `deploy/assets/fonts/OFL-Outfit.txt` | <https://fonts.google.com/specimen/Outfit> / <https://github.com/Outfitio/Outfit-Fonts> | SIL Open Font License 1.1 | Vendored locally for the management landing page so `jts.local` does not call Google Fonts at runtime. |
+| LVGL display config (firmware) | `firmware/dial/include/lv_conf.h` | <https://github.com/lvgl/lvgl> (derived from `lv_conf_template.h`) | MIT License (LVGL upstream) | Checked-in build config derived from LVGL's template; its `#define` surface is LVGL's, so it is intentionally NOT given a JTS Apache SPDX header by the first-party sweep. The LVGL library itself is a firmware build dependency — see the "ESP32 firmware libraries" row below. |
 
 ### Vendored Web Font Provenance
 

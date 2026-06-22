@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the wake-leg registry (``jasper.wake_legs``).
 
 PR 0.1 of the mic-fusion architecture

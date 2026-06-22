@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // main.js — /voice/ page behaviour.
 //
 // The page is server-rendered: every form POSTs to its own endpoint and the

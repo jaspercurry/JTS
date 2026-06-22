@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for jasper.citibike and jasper.transit.providers.citibike.
 
 All hardware-free; httpx network calls mocked via MockTransport. The

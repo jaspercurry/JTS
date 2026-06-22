@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Core for the JTS outputd final-output owner.
 //!
 //! This crate models the contracts from

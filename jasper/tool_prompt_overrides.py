@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Wizard-owned SSOT for user-edited tool prompts.
 
 Stored as JSON under /var/lib/jasper because prompts are multi-line text,

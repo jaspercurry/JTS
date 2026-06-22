@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Timer scheduler with SQLite persistence.
 
 Timers survive daemon restart — on startup, future timers are restored

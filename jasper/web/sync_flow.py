@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Stereo-pair acoustic sync flow (`/sync/*`).
 
 Handler layer only. The signal generation and analysis live in

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the UAC2 gadget device-name byte patcher.
 
 The module under test lives in deploy/usbsink/ (it runs at early boot

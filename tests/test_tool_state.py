@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """jasper.tool_state — wizard-owned SSOT for tool UI state.
 
 Fail-safe (missing/unreadable/malformed -> nothing disabled for configured

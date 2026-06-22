@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Phase 4: ear test. Capture audio files for side-by-side A/B listening.
 #
 # Outputs land in captures/chip-aec-experiment/<timestamp>/ on the laptop.

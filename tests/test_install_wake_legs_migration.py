@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Test install.sh migrate_wake_legs_config — the chip-AEC promotion's
 hand-set-var migration (and the raw/DTLN translation it extends).
 

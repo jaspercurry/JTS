@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Log flight recorder — Tier C of the observability plan.
 
 Keeps the last N DEBUG+ log records per daemon in a bounded in-RAM ring
