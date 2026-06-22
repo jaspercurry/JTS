@@ -78,16 +78,21 @@ def _read_camilla_config(path: Any, warnings: list[str]) -> dict[str, Any] | Non
         return None
     try:
         import yaml  # type: ignore[import-untyped]
-    except Exception as e:  # noqa: BLE001
+    except ImportError as e:
         warnings.append(f"camilla_config_yaml_unavailable:{e}")
         return None
+    config_path = Path(path)
     try:
-        config_path = Path(path)
         if not config_path.is_file():
             warnings.append(f"camilla_config_missing:{path}")
             return None
-        blob = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except Exception as e:  # noqa: BLE001
+        raw_config = config_path.read_text(encoding="utf-8")
+    except OSError as e:
+        warnings.append(f"camilla_config_unreadable:{path}:{e}")
+        return None
+    try:
+        blob = yaml.safe_load(raw_config)
+    except yaml.YAMLError as e:
         warnings.append(f"camilla_config_unreadable:{path}:{e}")
         return None
     if not isinstance(blob, dict):
