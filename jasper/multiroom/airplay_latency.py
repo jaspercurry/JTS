@@ -226,12 +226,16 @@ def read_notified_frames(
 
 
 # Short TTL cache over the journal read. The negotiated budget changes only
-# per AirPlay session (minutes apart), but jasper-control's /state is polled
-# every ~5 s — and by several clients concurrently on its ThreadingHTTPServer.
-# Without this, an active bonded leader would spawn a `journalctl` scanning a
-# verbose 30-min journal on every poll, during the busiest moment (bonded
-# playback) on a 1 GB Pi. The cache bounds that to <=1 read per TTL across all
-# callers, and caches the fail-soft None so a wedged journalctl is not hammered.
+# per AirPlay session (minutes apart), but the consuming pages poll often
+# (jasper-control's /state ~5 s, the /rooms wizard's /rooms.json ~7 s), each
+# concurrently on its ThreadingHTTPServer. Without this, an active bonded
+# leader would spawn a `journalctl` scanning a verbose 30-min journal on every
+# poll, during the busiest moment (bonded playback) on a 1 GB Pi. The cache
+# caches the fail-soft None too so a wedged journalctl is not hammered.
+# NB: this is module-global, so it is PER PROCESS — and the two consumers run
+# in DIFFERENT daemons (/state in jasper-control, /rooms.json in jasper-web),
+# so each keeps its own cache. Worst case with both pages open on a bonded
+# leader is ~2 reads/TTL per process (~4/min total), not 1 — still negligible.
 # Mirrors the _source_availability_cache pattern in control/state_aggregate.py.
 # Deliberately NOT keyed on bond identity: the is_active_leader gate in
 # bonded_airplay_latency_snapshot suppresses reads entirely while solo/follower,
@@ -248,9 +252,10 @@ def cached_notified_frames(
     now: Callable[[], float] = time.monotonic,
     reader: Callable[[], int | None] = read_notified_frames,
 ) -> int | None:
-    """:func:`read_notified_frames` behind a process-wide TTL cache (monotonic
-    clock). The lock guards the cache slot only; the reader runs OUTSIDE the
-    lock so a slow journalctl cannot serialize concurrent /state requests — so
+    """:func:`read_notified_frames` behind a per-process TTL cache (monotonic
+    clock; the cache is module-global, so each daemon that imports this keeps
+    its own). The lock guards the cache slot only; the reader runs OUTSIDE the
+    lock so a slow journalctl cannot serialize concurrent requests — so
     concurrent callers may double-read on a cold window (harmless). ``now`` /
     ``reader`` are injectable for tests."""
     global _notified_frames_cache
