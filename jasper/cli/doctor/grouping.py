@@ -111,11 +111,15 @@ def check_grouping_rate_adjust() -> CheckResult:
     snapclient's sample-stuffing is the single rate-tracker for the synced
     chain; a second rate-adjuster in the leader's CamillaDSP (the one
     daemon writing the shared stream) fights it and oscillates (the
-    documented ``rate_adjust`` + ``AsyncSinc`` trap). A FOLLOWER is
-    deliberately out of scope (canonical model, Increment 5): its local
-    CamillaDSP is not in the bonded playback path — it feeds only the
-    inv-B fallback lane, an ALSA loopback with a real clock, where
-    rate_adjust=true is CORRECT. This reads the ACTIVE config, so it
+    documented ``rate_adjust`` + ``AsyncSinc`` trap). The no-rate-adjust rule is
+    SPECIFIC to the leader's pipe-writing CamillaDSP (a File/pipe sink has no
+    output clock, so snapclient is the sole tracker). A FOLLOWER is out of this
+    check's scope because it correctly runs ``rate_adjust: true``: a passive
+    follower's CamillaDSP sits outside the bonded path, and an ACTIVE follower's
+    CamillaDSP IS in the bonded path (distributed-active Slice 3 — it captures
+    the round-trip loopback and runs Layer A) but is itself the sole rate-tracker
+    of that loopback, so ``rate_adjust: true`` is REQUIRED there, not forbidden.
+    This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""

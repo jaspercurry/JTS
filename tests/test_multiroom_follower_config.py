@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
@@ -31,6 +32,20 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+# Clock-seam guard imports — the active follower's CamillaDSP is the sole
+# rate-tracker of the snapclient round-trip loopback (see the clock-seam tests
+# at the end of this file).
+from jasper.active_speaker import (
+    ActiveSpeakerPreset,
+    emit_active_speaker_driver_domain_config,
+)
+from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE
+from jasper.multiroom.reconcile import (
+    GROUPING_LOOPBACK_CAPTURE,
+    GROUPING_LOOPBACK_CAPTURE_FORMAT,
+)
+from tests.test_active_speaker_profile import _two_way_preset
 
 
 def _cfg(channel: str = "left") -> GroupingConfig:
@@ -290,3 +305,57 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 
     assert restored is None
     assert cam.loaded == []
+
+
+# --- follower clock-seam guard -----------------------------------------------
+# docs/HANDOFF-distributed-active.md "Clock domain + fail-closed" calls the
+# active follower's loopback clock seam safety-critical, but the 2026-06-21
+# over-engineering pressure-test found it unpinned by any test. The active
+# follower's CamillaDSP is the SOLE rate-tracker of the snapclient round-trip
+# loopback it captures, so the seam must hold: chunksize >= 1024 (512 -> EPIPE
+# underruns on a Pi), NO resampler (the rate_adjust+AsyncSinc oscillation trap,
+# CamillaDSP #207), enable_rate_adjust true, and a RAW hw: loopback capture (a
+# plug: device would silently insert a resampler). The follower inherits the
+# SHARED DEFAULT_CHUNKSIZE (it passes no chunksize override), so a solo-side
+# retune to 512 would silently regress it — these guards fail first.
+
+
+def _follower_driver_domain_devices() -> dict:
+    """The follower's driver-domain ``devices`` block, emitted exactly as the
+    reconciler feeds it (raw round-trip loopback capture, shared chunksize
+    default — `build_baseline_profile_candidate` passes no chunksize override)."""
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+    text = emit_active_speaker_driver_domain_config(
+        preset,
+        playback_device="hw:CARD=DAC8x,DEV=0",
+        program_channel="left",
+        capture_device=GROUPING_LOOPBACK_CAPTURE,
+        capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
+    )
+    return yaml.safe_load(text)["devices"]
+
+
+def test_follower_clock_seam_chunksize_at_least_1024() -> None:
+    # The shared default the follower inherits; 512 -> EPIPE underruns.
+    assert DEFAULT_CHUNKSIZE >= 1024
+    assert _follower_driver_domain_devices()["chunksize"] >= 1024
+
+
+def test_follower_clock_seam_no_resampler_rate_adjust_on() -> None:
+    devices = _follower_driver_domain_devices()
+    # The follower is the sole rate-tracker of the loopback it captures.
+    assert devices["enable_rate_adjust"] is True
+    # No resampler when capture rate == playback rate (the oscillation trap).
+    assert "resampler" not in devices
+    assert "resampler_type" not in devices
+
+
+def test_follower_clock_seam_raw_hw_loopback_capture() -> None:
+    # A plug: capture would insert a resampler and break bit-perfect tracking;
+    # the round-trip loopback must be raw hw + bit-exact format.
+    assert GROUPING_LOOPBACK_CAPTURE.startswith("hw:")
+    assert "plug" not in GROUPING_LOOPBACK_CAPTURE
+    assert GROUPING_LOOPBACK_CAPTURE_FORMAT == "S16_LE"
+    devices = _follower_driver_domain_devices()
+    assert devices["capture"]["type"] == "Alsa"
+    assert devices["capture"]["device"] == GROUPING_LOOPBACK_CAPTURE
