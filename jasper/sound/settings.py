@@ -44,6 +44,18 @@ from .profile import SoundProfile, loudness_compensation_db
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "DEFAULT_VOLUME_FLOOR_DB",
+    "HEADROOM_TRIM_MAX_DB",
+    "SETTINGS_PATH",
+    "SoundSettings",
+    "VOLUME_FLOOR_MAX_DB",
+    "VOLUME_FLOOR_MIN_DB",
+    "load_sound_settings",
+    "output_trim_db",
+    "save_sound_settings",
+]
+
 SETTINGS_PATH = "/var/lib/jasper/sound_settings.json"
 
 # Bound on the manual headroom trim. ±12 dB mirrors the per-band EQ range;

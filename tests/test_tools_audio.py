@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from jasper.tools.audio import (
     VOLUME_MAX_DB,
     VOLUME_MIN_DB,
