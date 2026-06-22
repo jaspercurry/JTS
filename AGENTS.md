@@ -1349,8 +1349,12 @@ validated on hardware: after a scan is classified as
 sends `NL80211_CMD_CRIT_PROTOCOL_STOP` to `wlan0`, waits briefly, and
 retries the scan. This does not intentionally drop WiFi and is
 rate-limited by `/var/lib/jasper/wifi_scan_repair.json` so page reloads
-or repeated button taps do not spam the radio. Structured logs use
-`event=wifi_scan_repair.*`.
+or repeated button taps do not spam the radio. Because `jasper-web` runs
+without `CAP_NET_ADMIN`, the page asks jasper-control's restart broker to
+`start` the fixed root helper `jasper-wifi-scan-repair.service`; when run
+as root (tests/operator shell), the same Python helper can execute
+in-process. Structured logs use `event=wifi_scan_repair.*` plus the broker's
+`event=restart_broker.*` line for the unit start.
 
 The same NetworkManager profile-hardening triple —
 `connection.autoconnect=yes`, `connection.autoconnect-retries=0` (NM's

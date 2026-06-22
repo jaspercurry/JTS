@@ -128,6 +128,7 @@ MANAGED_UNITS = frozenset({
 # just enough for graph transitions to request a bounded reconciliation pass.
 START_ONLY_UNITS = frozenset({
     "jasper-audio-hardware-reconcile.service",
+    "jasper-wifi-scan-repair.service",
 })
 
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS

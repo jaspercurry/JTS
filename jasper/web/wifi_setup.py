@@ -64,6 +64,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .. import wifi_guardian_persistence, wifi_scan_repair
+from ..control.restart_broker import manage_units
 from ..log_event import log_event
 from ._common import (
     begin_request,
@@ -101,8 +102,25 @@ _ROLLBACK_WAIT = 20
 _ROLLBACK_TIMEOUT = 30
 _SCAN_HEALTH_JOURNAL_LINES = 120
 _SCAN_REPAIR_IFACE = os.environ.get("JASPER_WIFI_SCAN_REPAIR_IFACE", "wlan0")
+_SCAN_REPAIR_UNIT = os.environ.get(
+    "JASPER_WIFI_SCAN_REPAIR_UNIT", "jasper-wifi-scan-repair.service",
+)
 _SCAN_REPAIR_RETRY_DELAYS = (2.0, 3.0)
 _NM_AUTOCONNECT_RETRIES_FOREVER = "0"
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _env_truthy(name: str) -> bool:
@@ -118,6 +136,7 @@ def _env_truthy(name: str) -> bool:
 _HIDE_SCAN_WHEN_SUPPRESSED = _env_truthy(
     "JASPER_WIFI_HIDE_SCAN_WHEN_SUPPRESSED",
 )
+_SCAN_REPAIR_ROOT_TIMEOUT = _env_float("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", 20.0)
 
 
 # ============================================================
@@ -624,15 +643,74 @@ def _scan_networks_report_once(
     )
 
 
+def _read_scan_repair_state() -> dict[str, Any]:
+    """Read the repair helper's rate-limit state, best-effort."""
+    try:
+        raw = json.loads(wifi_scan_repair.DEFAULT_STATE_PATH.read_text(
+            encoding="utf-8",
+        ))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _root_scan_repair_result(iface: str) -> dict[str, Any]:
+    started_at = time.time()
+    resp = manage_units(
+        _SCAN_REPAIR_UNIT,
+        verb="start",
+        reason="wifi-scan-suppressed",
+        no_block=False,
+        timeout=_SCAN_REPAIR_ROOT_TIMEOUT,
+    )
+    result: dict[str, Any] = {
+        "iface": iface,
+        "attempted": False,
+        "reason": "root_unit_start_failed",
+        "unit": _SCAN_REPAIR_UNIT,
+        "broker": resp,
+    }
+    if not resp.get("ok"):
+        return result
+
+    result["reason"] = "root_unit_started"
+    state = _read_scan_repair_state()
+    state_iface = state.get("iface")
+    last_attempt_at = _float_or_none(state.get("lastAttemptAt")) or 0.0
+    if state_iface == iface and last_attempt_at >= started_at - 1.0:
+        result["attempted"] = True
+        result["ack"] = bool(state.get("lastAck"))
+        if state.get("lastReason"):
+            result["reason"] = str(state["lastReason"])
+        if state.get("error"):
+            result["error"] = str(state["error"])
+    elif state.get("nextAllowedAt") is not None:
+        next_allowed_at = _float_or_none(state.get("nextAllowedAt"))
+        remaining = (
+            max(0.0, next_allowed_at - time.time())
+            if next_allowed_at is not None
+            else 0.0
+        )
+        result["reason"] = "cooldown"
+        result["cooldownRemaining"] = round(remaining, 3)
+    return result
+
+
+def _repair_scan_suppression(iface: str) -> dict[str, Any]:
+    """Run the bounded scan repair directly as root or via the root helper."""
+    if os.geteuid() == 0:
+        return wifi_scan_repair.maybe_repair_scan_suppression(iface).to_dict()
+    return _root_scan_repair_result(iface)
+
+
 def scan_networks_report(*, allow_repair: bool = True) -> dict[str, Any]:
     """Trigger a fresh scan and optionally repair Pi 5 scan suppression."""
     report = _scan_networks_report_once()
     if not allow_repair or report["scan"].get("reason") != "driver_scan_suppressed":
         return report
 
-    repair = wifi_scan_repair.maybe_repair_scan_suppression(_SCAN_REPAIR_IFACE)
-    repair_dict = repair.to_dict()
-    if not (repair.attempted and repair.ack):
+    repair_dict = _repair_scan_suppression(_SCAN_REPAIR_IFACE)
+    if not (repair_dict.get("attempted") and repair_dict.get("ack")):
         report["scan"]["repair"] = repair_dict
         return report
 

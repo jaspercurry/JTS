@@ -1,0 +1,14 @@
+[Unit]
+Description=Repair Pi 5 brcmfmac Wi-Fi scan suppression
+Documentation=file:/opt/jasper/AGENTS.md
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+Environment=JASPER_WIFI_SCAN_REPAIR_IFACE=wlan0
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.wifi_scan_repair --iface ${JASPER_WIFI_SCAN_REPAIR_IFACE} --json
+# Bounded: one rate-limited NL80211_CMD_CRIT_PROTOCOL_STOP attempt.
+TimeoutStartSec=20
+StandardOutput=journal
+StandardError=journal

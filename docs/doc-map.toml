@@ -428,6 +428,7 @@ code = [
   "deploy/systemd/jasper-wifi-guardian.service",
   "deploy/systemd/jasper-wifi-recover.service",
   "deploy/systemd/jasper-wifi-recover.timer",
+  "deploy/systemd/jasper-wifi-scan-repair.service",
   "scripts/experiments/wifi-scan-repair.py",
 ]
 docs = [
@@ -439,7 +440,7 @@ requires_docs_when = [
   "Wi-Fi lockout protection, scan suppression repair, rollback behavior, guardian persistence, or NetworkManager recovery semantics change.",
 ]
 verification = [
-  "pytest tests/test_wifi_setup_scan_health.py tests/test_wifi_setup_guardian_hooks.py tests/test_wifi_scan_repair.py tests/test_wifi_guardian_persistence.py tests/test_wifi_guardian_script.py tests/test_wifi_recover_script.py",
+  "pytest tests/test_wifi_setup_scan_health.py tests/test_wifi_setup_guardian_hooks.py tests/test_wifi_scan_repair.py tests/test_wifi_guardian_persistence.py tests/test_wifi_guardian_script.py tests/test_wifi_recover_script.py tests/test_restart_broker.py tests/test_polkit_jasper_control.py",
 ]
 
 [[subsystem]]
