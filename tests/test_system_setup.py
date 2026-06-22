@@ -452,7 +452,10 @@ def test_modules_preserve_metric_logic() -> None:
     js = _system_js()
     assert "System total · shown / unshown / free" in js
     assert "throttling now" in js
-    assert "MPRIS playing" in js
+    # The "Now" line gates the raw frame rate on shairport playback (the
+    # airplay lane free-runs silence at idle); this is the playing-but-no-
+    # frames fallback branch.
+    assert "no fan-in frames" in js
     assert "samplerate_medium" in js
     assert "samplerate_best" in js
     assert "cgroup_enable=memory" in js

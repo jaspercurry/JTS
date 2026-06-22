@@ -270,8 +270,11 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
     assert shairport_calls[0][1] == 1005.0
 
 
-def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
+def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
+    # While AirPlay IS streaming, recoverable Camilla short reads are a
+    # non-fatal warning (watch), not a hard issue.
     now = [2000.0]
+    frames = [0, 240000]
 
     def journal(unit: str, _since: float, _now: float) -> list[str]:
         if unit == "jasper-camilla":
@@ -282,7 +285,61 @@ def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
         return []
 
     sampler = _sampler(
-        fanin_probe=lambda: _fanin_status(),
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=journal,
+        mpris_probe=lambda: {"playing": True},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()            # records short reads + frame baseline
+    now[0] += 5.0
+    sampler._tick()            # frame rate now ~48 kHz
+    snap = sampler.snapshot()
+
+    assert snap["status"] == "watch"
+    assert snap["summary_5m"]["camilla_short_reads"] == 2
+    assert snap["summary_5m"]["camilla_playback_underruns"] == 0
+
+
+def test_idle_silence_at_full_rate_reads_inactive_not_ok() -> None:
+    # The airplay input lane free-runs at ~48 kHz of SILENCE with no
+    # sender, so a high frame rate must NOT read as "AirPlay path clean".
+    # shairport PlaybackStatus (MPRIS) is authoritative -> inactive.
+    # (2026-06-22 report: idle JTS2 showing frames with nothing playing.)
+    now = [4000.0]
+    frames = [0, 240000]
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=lambda _unit, _since, _now: [],
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+
+    assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
+    assert snap["status"] == "inactive"
+    assert snap["reason"] == "AirPlay not currently streaming"
+
+
+def test_idle_camilla_short_reads_do_not_escalate_to_watch() -> None:
+    # Benign Camilla short reads can occur on the idle (silence) pipeline.
+    # With AirPlay not streaming they must read "inactive", never "watch" —
+    # but they are still RECORDED for history/diagnostics.
+    now = [5000.0]
+
+    def journal(unit: str, _since: float, _now: float) -> list[str]:
+        if unit == "jasper-camilla":
+            return ["Capture read 586 frames instead of the requested 1024"]
+        return []
+
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=240000),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
@@ -292,9 +349,53 @@ def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
     sampler._tick()
     snap = sampler.snapshot()
 
-    assert snap["status"] == "watch"
-    assert snap["summary_5m"]["camilla_short_reads"] == 2
-    assert snap["summary_5m"]["camilla_playback_underruns"] == 0
+    assert snap["status"] == "inactive"
+    assert snap["reason"] == "AirPlay not currently streaming"
+    assert snap["summary_5m"]["camilla_short_reads"] == 1
+
+
+def test_mpris_unavailable_reads_unknown_not_guessed_ok() -> None:
+    # If the shairport MPRIS probe fails, the silent free-running rate
+    # can't substitute -> unknown, not a guessed "ok".
+    now = [6000.0]
+    frames = [0, 240000]
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=lambda _unit, _since, _now: [],
+        mpris_probe=lambda: None,
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+
+    assert snap["status"] == "unknown"
+    assert "playback status unavailable" in snap["reason"]
+
+
+def test_playing_but_frames_not_arriving_is_issue() -> None:
+    # shairport reports playing but the airplay lane is barely advancing
+    # (sender stalled / substream broke) -> a real fault, not "ok".
+    now = [7000.0]
+    frames = [0, 500]  # ~100 frames/s over 5 s, well under the 1000 floor
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
+        journal_reader=lambda _unit, _since, _now: [],
+        mpris_probe=lambda: {"playing": True},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    snap = sampler.snapshot()
+
+    assert snap["status"] == "issue"
+    assert "not receiving frames" in snap["reason"]
 
 
 def test_fanin_input_buffer_regression_is_issue() -> None:

@@ -702,18 +702,44 @@ class AirPlayHealthSampler:
         ):
             return "issue", "recent audio-path recovery event"
 
-        mpris = self._current_mpris or {}
+        # Is AirPlay actually streaming? The fan-in airplay INPUT lane
+        # free-runs at ~48 kHz of SILENCE whenever the pipeline is up —
+        # even with no sender connected — because fan-in clocks every lane
+        # off the always-on DAC loop. So the frame rate cannot tell idle
+        # from playback; shairport's PlaybackStatus (MPRIS) is the
+        # authoritative "a sender is streaming" signal, and the frame rate
+        # is only a corroborating fault check once we know audio *should*
+        # be flowing. See docs/HANDOFF-airplay.md.
+        mpris_playing = (self._current_mpris or {}).get("playing")
         airplay = fanin.get("airplay", {})
         airplay_rate = (
             _as_float(airplay.get("frames_per_sec"))
             if isinstance(airplay, dict) else None
         )
-        if mpris.get("playing") is True and airplay_rate is not None:
-            if airplay_rate < 1000.0:
-                return "issue", "MPRIS playing but fan-in is not receiving frames"
-        if mpris.get("playing") is True and airplay_rate is None:
-            return "unknown", "waiting for fan-in frame-rate baseline"
 
+        if mpris_playing is False:
+            # Nothing streaming. Idle-pipeline artifacts — benign Camilla
+            # short reads, content EAGAIN, the silent 48 kHz frame flow —
+            # must NOT escalate to "watch"/"ok": they are the always-on
+            # loopback clocking silence, not anything a listener can hear.
+            # Returning here, before the non-fatal-warning branch below,
+            # keeps an idle speaker reading "inactive".
+            return "inactive", "AirPlay not currently streaming"
+        if mpris_playing is None:
+            # shairport PlaybackStatus unavailable (probe error / before the
+            # first MPRIS sample). The silent free-running rate can't stand
+            # in for it, so report unknown rather than guess "ok".
+            return "unknown", "AirPlay playback status unavailable"
+
+        # shairport reports it IS playing from here.
+        if airplay_rate is None:
+            return "unknown", "waiting for fan-in frame-rate baseline"
+        if airplay_rate < 1000.0:
+            return "issue", "AirPlay reports playing but fan-in is not receiving frames"
+
+        # Streaming and receiving frames: surface recent non-fatal warnings
+        # (short reads, soft events) that happened *while actively
+        # streaming* — meaningful now, unlike the idle case above.
         if (
             summary_30m["shairport_events"] > 0
             or summary_30m["fanin_airplay_xruns"] > 0
@@ -722,15 +748,6 @@ class AirPlayHealthSampler:
             or summary_30m["camilla_playback_underruns"] > 0
         ):
             return "watch", "recent non-fatal audio-path warning"
-
-        if mpris.get("playing") is False and (
-            airplay_rate is None or airplay_rate < 1000.0
-        ):
-            return "inactive", "AirPlay not currently streaming"
-        if airplay_rate is None:
-            return "unknown", "waiting for fan-in frame-rate baseline"
-        if airplay_rate is not None and airplay_rate < 1000.0:
-            return "inactive", "AirPlay not currently streaming"
         return "ok", "AirPlay path clean"
 
     def _history_locked(self) -> dict[str, list[Any]]:
