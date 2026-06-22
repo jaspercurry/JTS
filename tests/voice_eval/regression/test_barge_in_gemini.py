@@ -59,17 +59,13 @@ pytestmark = pytest.mark.skip(
     ),
 )
 
-# pass^3 if/when a barge-in-capable harness exists; kept for shape parity
-# with the other regression scenarios. Unused while skipped.
-PASS_K = 3
 
-
-async def test_interrupt_mid_tts_gemini(harness) -> None:
-    """PLACEHOLDER (skipped). Intended on-device check: while Gemini TTS is
-    playing, a user utterance over it flushes local TTS in < ~400 ms with no
-    second wake word and without self-interrupting on bleed.
+async def test_interrupt_mid_tts_gemini() -> None:
+    """PLACEHOLDER (skipped at module level). Intended on-device check: while
+    Gemini TTS is playing, a user utterance over it flushes local TTS in
+    < ~400 ms with no second wake word and without self-interrupting on
+    bleed.
 
     Requires a barge-in-capable harness extension (audio overlap + AEC-clean
     mic) that does not exist hardware-free. See the module docstring for the
     cost + on-device ownership."""
-    pytest.skip("on-device / paid; not expressible in the single-turn harness")
