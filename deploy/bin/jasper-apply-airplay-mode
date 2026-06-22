@@ -7,7 +7,10 @@
 #   - audio_backend_latency_offset_in_seconds derived from the active
 #     CamillaDSP config's samplerate/chunksize/target_level, the
 #     fan-in output buffer, jasper-outputd's optional content bridge,
-#     plus jasper-outputd's DAC buffer
+#     plus jasper-outputd's DAC buffer; AND, only while this speaker is
+#     an active bonded leader, the Snapcast round-trip playout buffer
+#     (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC, written by
+#     jasper-grouping-reconcile). Absent on solo/follower => unchanged.
 #   - output_device fixed to `shairport_substream`, AirPlay's private
 #     fan-in lane
 #
@@ -39,6 +42,13 @@
 #                                 packaged defaults before loading this
 #                                 retune file.
 #                                 Default: /var/lib/jasper/outputd.env.
+#   JASPER_GROUPING_AIRPLAY_ENV_FILE — optional reconciler-owned file
+#                                 carrying JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
+#                                 the bonded-leader Snapcast round-trip
+#                                 delay folded into the offset. Absent on
+#                                 solo/follower (the common case) => the
+#                                 offset is byte-identical to before.
+#                                 Default: /var/lib/jasper/grouping-airplay.env.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -55,6 +65,10 @@ CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-state
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
 FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
+# Reconciler-owned env file (jasper-grouping-reconcile) carrying the
+# bonded-leader AirPlay offset delta. ABSENT/empty on solo + followers,
+# so a non-bonded speaker derives the byte-identical solo offset.
+GROUPING_AIRPLAY_ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/grouping-airplay.env}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 DEFAULT_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES=4096
 
@@ -212,6 +226,30 @@ outputd_content_bridge_latency_frames() {
     fi
 }
 
+bonded_extra_delay_sec() {
+    # Extra fixed downstream delay (SECONDS) to fold into the offset while
+    # this speaker is an active bonded LEADER: the Snapcast round-trip
+    # playout buffer its own output gains over solo. Written by
+    # jasper-grouping-reconcile into GROUPING_AIRPLAY_ENV_FILE as
+    # JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC. ABSENT/empty on solo and
+    # followers => 0.0 => byte-identical solo offset. A non-numeric or
+    # negative value is ignored (0.0) so a bad write can never advance
+    # playout PAST the anchor (a worse desync than the lag we correct).
+    local value
+    value="$(env_file_value "$GROUPING_AIRPLAY_ENV_FILE" \
+        JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC || true)"
+    value="${value//[[:space:]]/}"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    if [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        printf '%s\n' "$value"
+    else
+        printf '0.0\n'
+    fi
+}
+
 derive_audio_backend_latency_offset() {
     local config
     local sample_rate
@@ -220,6 +258,7 @@ derive_audio_backend_latency_offset() {
     local fanin_output_buffer
     local outputd_content_bridge
     local outputd_dac_buffer
+    local bonded_extra_sec
 
     config="$(camilla_config_path)"
     if [[ ! -r "$config" ]]; then
@@ -262,12 +301,18 @@ derive_audio_backend_latency_offset() {
     # explicitly.
     outputd_dac_buffer="$(outputd_dac_buffer_frames)"
 
+    # Bonded-leader-only extra delay (seconds): the Snapcast round-trip
+    # playout buffer. 0.0 unless jasper-grouping-reconcile wrote it for an
+    # active bonded leader, so solo + follower offsets are unchanged.
+    bonded_extra_sec="$(bonded_extra_delay_sec)"
+
     awk -v sample_rate="$sample_rate" \
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
         -v fanin_output_buffer="$fanin_output_buffer" \
         -v outputd_content_bridge="$outputd_content_bridge" \
-        -v outputd_dac_buffer="$outputd_dac_buffer" '
+        -v outputd_dac_buffer="$outputd_dac_buffer" \
+        -v bonded_extra_sec="$bonded_extra_sec" '
         BEGIN {
             if (sample_rate <= 0) {
                 printf "0.000000"
@@ -291,7 +336,9 @@ derive_audio_backend_latency_offset() {
             # shairport feeds this many frames early so audio still emerges
             # from the speaker at the AirPlay-scheduled time.
             invisible_frames = (target_level - chunksize) + fanin_output_buffer + outputd_content_bridge + outputd_dac_buffer
-            offset = -(invisible_frames / sample_rate)
+            # bonded_extra_sec is a wall-clock buffer (the Snapcast round-
+            # trip on a bonded leader), added in seconds; 0 on solo.
+            offset = -((invisible_frames / sample_rate) + bonded_extra_sec)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0
             }

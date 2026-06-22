@@ -55,7 +55,10 @@ general = {
     // output buffer setting, outputd_content_bridge comes from
     // JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES only when
     // JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match, and outputd_dac_buffer
-    // comes from JASPER_OUTPUTD_DAC_BUFFER_FRAMES. The retired renderer-side and
+    // comes from JASPER_OUTPUTD_DAC_BUFFER_FRAMES. While this speaker is an
+    // active bonded leader, jasper-grouping-reconcile also folds in the
+    // Snapcast round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC);
+    // it is absent on solo/follower, so the solo value is unchanged. The retired renderer-side and
     // final-output dmix path is gone from the outputd topology; shairport
     // writes its private fan-in lane while jasper-fanin handles
     // WiFi burst absorption and jasper-outputd owns the DAC.

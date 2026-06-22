@@ -38,7 +38,7 @@ from pathlib import Path
 
 from .. import atomic_io
 from ..log_event import log_event
-from .config import GroupingConfig, load_config
+from .config import GroupingConfig, is_active_member, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,11 @@ logger = logging.getLogger(__name__)
 
 SNAPSERVER_UNIT = "jasper-snapserver.service"
 SNAPCLIENT_UNIT = "jasper-snapclient.service"
+# shairport-sync is the AirPlay receiver. A FOLLOWER parks it (below); a
+# LEADER keeps it running and gets its backend latency offset re-derived
+# on bond/unbond (a bonded leader folds in the Snapcast round-trip buffer
+# — see airplay_grouping_env + main()).
+SHAIRPORT_UNIT = "shairport-sync.service"
 
 # The renderer/source stack a bonded FOLLOWER parks (dumb-follower
 # profile, HANDOFF-multiroom Increment 5). A follower's local sources
@@ -60,7 +65,7 @@ SNAPCLIENT_UNIT = "jasper-snapclient.service"
 # jasper-aec-reconcile (single-writer rule), which parks them per role
 # in the PR-B increment.
 FOLLOWER_PARKED_UNITS = (
-    "shairport-sync.service",
+    SHAIRPORT_UNIT,
     "nqptp.service",
     "librespot.service",
     "bluealsa-aplay.service",
@@ -205,6 +210,17 @@ OUTPUTD_UNIT = "jasper-outputd.service"
 VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_TTS_SOCKET_ENV = "JASPER_TTS_OUTPUTD_SOCKET"
 VOICE_UNIT = "jasper-voice.service"
+
+# Reconciler-owned PERSISTENT env file the shairport-sync unit's
+# ExecStartPre (jasper-apply-airplay-mode) layers when deriving the AirPlay
+# backend latency offset. Holds the bonded-leader-only Snapcast round-trip
+# delay; EMPTY (no keys) for solo/follower so the offset stays
+# byte-identical to the solo value (and an empty body avoids a spurious
+# shairport restart on a fresh solo speaker — see _write_outputd_env).
+# Persistent (NOT /run) so a bonded leader boots with the bonded offset
+# already derived. mode 0644, no secret.
+AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
+AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 
 # jasper-aec-reconcile is the SINGLE owner of jasper-voice +
 # jasper-aec-bridge unit state (it already parks voice when the provider
@@ -562,6 +578,33 @@ def voice_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     return {}
 
 
+def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
+    """shairport's bonded-leader AirPlay latency-offset delta. PURE.
+
+    Only an ACTIVE bonded LEADER both receives AirPlay AND plays its own
+    channel through the Snapcast round-trip ("a follower of itself"), so
+    only a leader's shairport must fold the Snapcast playout buffer into
+    its backend latency offset to keep the leader's OWN output landing on
+    the AirPlay anchor (lip-sync). Everyone else — solo, follower
+    (shairport parked), invalid — gets an EMPTY dict, which clears the file
+    to the byte-identical solo offset (the disable-clears-stale idiom). An
+    empty body (no keys) also avoids a spurious shairport restart on a
+    fresh solo speaker's first reconcile (see _write_outputd_env's
+    old-is-None-and-empty guard).
+
+    The value is the Snapcast buffer in seconds — the DOMINANT new delay
+    the bonded leader's own output gains over solo. It is deliberately a
+    first-order estimate: the solo offset's fan-in / CamillaDSP / outputd
+    terms still apply in the bonded path, and the residual (CamillaDSP
+    pipe-sink fill, the member content FIFO) is second-order and
+    acoustically calibrated alongside snapclient --latency.
+    jasper-apply-airplay-mode ADDS this to the solo-derived offset.
+    """
+    if is_active_member(cfg) and cfg.role == "leader":
+        return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
+    return {}
+
+
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:
     """The FIFO path the leader's MUSIC PRODUCER must feed, or "" when this
     role needs no producer. PURE.
@@ -905,7 +948,10 @@ def main(argv: list[str] | None = None) -> int:
     restart-on-change; the doctor's `TTS lane` check guards the two
     files' agreement), and (d) drives the CamillaDSP config swap
     through jasper.multiroom.leader_config — the bonded pipe config on
-    an active leader, the solo restore otherwise.
+    an active leader, the solo restore otherwise, and (e) re-derives
+    shairport's AirPlay backend latency offset for a bonded leader
+    (grouping-airplay.env + restart-on-change) so the leader's own
+    output lands on the AirPlay anchor.
 
     `--reason` is a free-text trigger source (systemd / wizard / manual)
     echoed into the structured log for correlation, mirroring
@@ -1125,8 +1171,46 @@ def main(argv: list[str] | None = None) -> int:
     if voice_changed and voice_ok and not _restart_unit(AEC_RECONCILE_UNIT):
         rc = 1
 
+    # 3c. shairport's bonded-leader AirPlay offset delta
+    # (grouping-airplay.env): written + restart-on-change. A bonded leader
+    # folds the Snapcast round-trip buffer into its backend latency offset
+    # so its OWN output lands on the AirPlay anchor (lip-sync); solo and
+    # follower clear it to the byte-identical solo offset. The re-derivation
+    # itself happens in shairport's ExecStartPre (jasper-apply-airplay-mode
+    # reads this file), so the restart in step 4b is what applies it.
+    airplay_env = airplay_grouping_env(cfg)
+    airplay_changed, airplay_ok = _write_outputd_env(
+        airplay_env, path=AIRPLAY_GROUPING_ENV_FILE,
+    )
+    log_event(
+        logger,
+        "multiroom.reconcile.airplay_env",
+        path=AIRPLAY_GROUPING_ENV_FILE,
+        changed=airplay_changed,
+        ok=airplay_ok,
+        extra_delay_sec=airplay_env.get(AIRPLAY_BONDED_EXTRA_DELAY_ENV, "(solo)"),
+    )
+    if not airplay_ok:
+        rc = 1
+
     # 4. The unit plan (stops before starts).
     rc = max(rc, _apply(decision))
+
+    # 4b. Re-derive shairport's backend latency offset on a bond/unbond
+    # that changed it. shairport's ExecStartPre runs
+    # jasper-apply-airplay-mode, which reads grouping-airplay.env, so a
+    # restart re-derives the offset (bonded leader: solo terms + Snapcast
+    # buffer; unbonded: the unchanged solo value). Skip a bonded FOLLOWER —
+    # the plan PARKED its shairport (stopped) and restarting would un-park
+    # it; a follower receives no AirPlay anyway. A leader keeps shairport
+    # running (the plan does not touch it); a solo/unbonded speaker only
+    # reaches here on the bonded->solo transition (airplay_changed). One
+    # restart, only on a real offset change — never on the steady-state
+    # solo reconcile.
+    is_bonded_follower = active and cfg.role == "follower"
+    if airplay_changed and airplay_ok and not is_bonded_follower:
+        if not _restart_unit(SHAIRPORT_UNIT):
+            rc = 1
 
     # 5. Bonded apply LAST (snapserver is up → the pipe has its reader).
     if active_leader:

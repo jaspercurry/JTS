@@ -40,6 +40,7 @@ def _render(
     outputd_env: object = None,
     fanin_output_buffer_frames: int | None = None,
     jasper_env_content: str = "",
+    grouping_airplay_content: str | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     template = tmp_path / "shairport-sync.conf.template"
     target = tmp_path / "shairport-sync.conf"
@@ -50,6 +51,7 @@ def _render(
     outputd_env_path = tmp_path / "outputd.env"
     jasper_env_path = tmp_path / "jasper.env"
     speaker_env = tmp_path / "speaker_name.env"
+    grouping_airplay_env = tmp_path / "grouping-airplay.env"
 
     template.write_text(
         textwrap.dedent(
@@ -75,6 +77,13 @@ def _render(
     jasper_env_path.write_text(jasper_env_content)
     speaker_env.write_text('JASPER_SPEAKER_NAME="Unit Test"\n')
 
+    # Bonded-leader AirPlay offset delta. None = no file (solo/follower —
+    # the common case), so the offset stays byte-identical to before.
+    if grouping_airplay_content is not None:
+        grouping_airplay_env.write_text(grouping_airplay_content)
+    else:
+        grouping_airplay_env = tmp_path / "no-grouping-airplay.env"
+
     if outputd_env is NO_OUTPUTD_ENV:
         outputd_env_path = tmp_path / "no-outputd.env"
     else:
@@ -93,6 +102,7 @@ def _render(
             "JASPER_SPEAKER_NAME_FILE": str(speaker_env),
             "JASPER_CAMILLA_STATEFILE": str(statefile),
             "JASPER_CAMILLA_DEFAULT_CONFIG": str(camilla),
+            "JASPER_GROUPING_AIRPLAY_ENV_FILE": str(grouping_airplay_env),
         }
     )
 
@@ -326,6 +336,69 @@ def test_airplay_renderer_reads_fanin_output_buffer_from_env_file(tmp_path: Path
 
     # CamillaDSP 1024 + fan-in output 1024 + outputd DAC 3072 = 5120 frames.
     assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+
+
+_PROD_CAMILLA = """
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 2048
+"""
+
+
+def test_airplay_solo_offset_unchanged_without_grouping_env(tmp_path: Path):
+    # INVARIANT: a solo/follower speaker (no grouping-airplay.env) gets the
+    # byte-identical production offset. The bonded Snapcast term must never
+    # leak into a non-bonded speaker's AirPlay timing.
+    rendered, _ = _render(tmp_path, _PROD_CAMILLA)
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+
+
+def test_airplay_bonded_leader_adds_snapcast_buffer(tmp_path: Path):
+    # Active bonded leader: jasper-grouping-reconcile writes the Snapcast
+    # playout buffer (400 ms default) as the extra delay. The offset becomes
+    # the solo 0.149333 + 0.400 = 0.549333, so the leader's own output lands
+    # back on the AirPlay anchor despite the round-trip buffer.
+    rendered, result = _render(
+        tmp_path,
+        _PROD_CAMILLA,
+        grouping_airplay_content="JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=0.400000\n",
+    )
+    assert "audio_backend_latency_offset_in_seconds = -0.549333;" in rendered
+    assert "latency offset -0.549333s" in result.stderr
+
+
+def test_airplay_empty_grouping_env_is_solo(tmp_path: Path):
+    # A cleared (empty) grouping-airplay.env — the unbonded state the
+    # reconciler writes on unbond — is treated as solo, not an error.
+    rendered, _ = _render(tmp_path, _PROD_CAMILLA, grouping_airplay_content="")
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+
+
+def test_airplay_blank_bonded_delay_value_is_solo(tmp_path: Path):
+    rendered, _ = _render(
+        tmp_path,
+        _PROD_CAMILLA,
+        grouping_airplay_content="JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=\n",
+    )
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+
+
+def test_airplay_ignores_garbage_bonded_delay(tmp_path: Path):
+    # A non-numeric or negative bonded delay is ignored (0.0): a bad write
+    # must never advance playout PAST the anchor (a worse desync than lag).
+    for bad in ("not-a-number", "-0.4", "1e3", "0.4 0.4"):
+        rendered, _ = _render(
+            tmp_path,
+            _PROD_CAMILLA,
+            grouping_airplay_content=(
+                f"JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC={bad}\n"
+            ),
+        )
+        assert (
+            "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+        ), f"garbage value {bad!r} should fall back to the solo offset"
 
 
 def test_renderer_device_placeholder_validated(tmp_path: Path):

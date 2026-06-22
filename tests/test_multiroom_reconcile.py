@@ -20,6 +20,7 @@ import os
 from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.reconcile import (
+    AIRPLAY_BONDED_EXTRA_DELAY_ENV,
     SNAPCLIENT_UNIT,
     SNAPFIFO,
     SNAPSERVER_UNIT,
@@ -27,6 +28,7 @@ from jasper.multiroom.reconcile import (
     UnitIntent,
     _assemble_args,
     _write_args_file,
+    airplay_grouping_env,
     desired_snapfifo_path,
     main,
     plan,
@@ -98,6 +100,39 @@ def _desired(plan_: ReconcilePlan, unit: str) -> str:
     matches = [i.desired for i in plan_.intents if i.unit == unit]
     assert len(matches) == 1, f"expected exactly one intent for {unit}, got {matches}"
     return matches[0]
+
+
+# ---------- airplay_grouping_env(): bonded-leader-only offset delta ----------
+
+
+def test_airplay_grouping_env_leader_adds_snapcast_buffer():
+    # An active bonded leader folds its Snapcast playout buffer (400 ms
+    # default) into shairport's backend latency offset.
+    assert airplay_grouping_env(_leader()) == {
+        AIRPLAY_BONDED_EXTRA_DELAY_ENV: "0.400000"
+    }
+
+
+def test_airplay_grouping_env_leader_tracks_buffer_ms():
+    assert airplay_grouping_env(_leader(buffer_ms=250)) == {
+        AIRPLAY_BONDED_EXTRA_DELAY_ENV: "0.250000"
+    }
+
+
+def test_airplay_grouping_env_follower_is_empty():
+    # A follower parks shairport (no AirPlay receiver), so no offset delta.
+    assert airplay_grouping_env(_follower()) == {}
+
+
+def test_airplay_grouping_env_solo_is_empty():
+    # INVARIANT: a solo speaker gets NO bonded term — the empty dict clears
+    # grouping-airplay.env to the byte-identical solo offset.
+    assert airplay_grouping_env(_disabled()) == {}
+
+
+def test_airplay_grouping_env_invalid_is_empty():
+    # A fail-LOUD invalid config is not an active member -> no offset delta.
+    assert airplay_grouping_env(_invalid()) == {}
 
 
 # ---------- plan(): disabled => stop both ----------
@@ -599,6 +634,10 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         str(tmp_path / "grouping-voice.env"),
     )
     monkeypatch.setattr(
+        reconcile_mod, "AIRPLAY_GROUPING_ENV_FILE",
+        str(tmp_path / "grouping-airplay.env"),
+    )
+    monkeypatch.setattr(
         reconcile_mod, "MEMBER_CONTENT_FIFO",
         str(tmp_path / "member-content.fifo"),
     )
@@ -719,7 +758,8 @@ def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch)
     # decides restart-vs-park from the derived flag + provider + mic.
     assert order == [
         "write", "outputd_restart", "restart:jasper-aec-reconcile.service",
-        "apply", "camilla_bonded", "stream_binding",
+        "apply", "restart:shairport-sync.service", "camilla_bonded",
+        "stream_binding",
     ]
 
 
@@ -771,6 +811,53 @@ def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkey
     assert "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n" in env
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=\n" in env
     assert "outputd_restart" in order  # env changed bonded→cleared ⇒ restart
+
+
+def test_main_leader_writes_airplay_offset_and_restarts_shairport(tmp_path, monkeypatch):
+    """A bonded leader folds the Snapcast buffer into its AirPlay offset
+    (grouping-airplay.env) and restarts shairport — AFTER the unit plan —
+    so ExecStartPre re-derives the offset."""
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    assert main([]) == 0
+    env = (tmp_path / "grouping-airplay.env").read_text()
+    assert "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=0.400000" in env
+    assert "restart:shairport-sync.service" in order
+    assert order.index("apply") < order.index("restart:shairport-sync.service")
+
+
+def test_main_solo_writes_no_airplay_offset_and_skips_shairport_restart(tmp_path, monkeypatch):
+    """INVARIANT: a solo speaker that was never bonded writes NO bonded key
+    and never restarts shairport — its AirPlay offset stays byte-identical."""
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    assert main([]) == 0
+    assert "restart:shairport-sync.service" not in order
+    p = tmp_path / "grouping-airplay.env"
+    # Empty body on a fresh file is not written at all (no spurious churn).
+    assert not p.exists() or "BONDED_EXTRA_DELAY" not in p.read_text()
+
+
+def test_main_unbond_restarts_shairport_to_restore_solo_offset(tmp_path, monkeypatch):
+    """bonded leader -> solo: the airplay offset env clears and shairport is
+    restarted so its offset reverts to the solo value (restore-on-unbond — a
+    stranded bonded offset would make solo audio play early)."""
+    _patch_main_io(monkeypatch, tmp_path, _leader())
+    assert main([]) == 0                                  # bond writes the delta
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    assert main([]) == 0                                  # unbond clears it
+    assert "restart:shairport-sync.service" in order
+    assert "BONDED_EXTRA_DELAY" not in (
+        tmp_path / "grouping-airplay.env"
+    ).read_text()
+
+
+def test_main_follower_does_not_restart_shairport(tmp_path, monkeypatch):
+    """A bonded FOLLOWER's shairport is PARKED by the plan; the airplay-offset
+    path must never restart (un-park) it."""
+    _target, order = _patch_main_io(
+        monkeypatch, tmp_path, _follower(leader_addr="192.168.1.50")
+    )
+    assert main([]) == 0
+    assert "restart:shairport-sync.service" not in order
 
 
 def test_main_nonleader_skips_stream_binding(tmp_path, monkeypatch):
