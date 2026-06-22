@@ -108,7 +108,7 @@ keeps its own detailed contract doc; this table is the map.
 | **Sources** | a music/audio source | enters the real-time fan-in topology; touches the hot Rust path, mux arbitration, and the loud-output safety chain | [`HANDOFF-source-capabilities.md`](HANDOFF-source-capabilities.md), [`audio-paths.md`](audio-paths.md) |
 | **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (realtime `LiveConnection` for voice; a simpler request→text layer for background work) | [`HANDOFF-voice-providers.md`](HANDOFF-voice-providers.md), [`research-tool-plan.md`](research-tool-plan.md) |
 | **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | [`HANDOFF-audio-capability-platform.md`](HANDOFF-audio-capability-platform.md), [`AGENTS.md` Config ownership](../AGENTS.md#config-ownership--which-pattern-for-a-new-dac--mic--provider--city) |
-| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`research-tool-plan.md`](research-tool-plan.md), [`HANDOFF-calibration-agent.md`](HANDOFF-calibration-agent.md) *(its first two instances)* |
+| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md), [`research-tool-plan.md`](research-tool-plan.md), [`HANDOFF-calibration-agent.md`](HANDOFF-calibration-agent.md) *(its instances)* |
 
 The first four are mature and shipped to varying degrees. The fifth — the
 **Feature** — is the one with no agreed contract yet, and it is the gap this
@@ -156,15 +156,16 @@ audible cue (a proactive Feature that fails must speak), a `/state` section, a
 
 **Build discipline (this matters):** do **not** build a generic Feature
 framework speculatively. Build the next instance —
-[`conversation-history`](research-tool-plan.md) is the chosen first deliberate
-Feature — *concretely*, extracting each shared host facility (a storage
+[`conversation-history`](conversation-history-plan.md) is the chosen first
+deliberate Feature — *concretely*, extracting each shared host facility (a storage
 helper, a web-mount helper, a scheduler helper) only when a **second** caller
 needs it. Let the *contract* crystallize last. Even Backstage got its
 composition contract right only on the second iteration, by evolving it.
 
-> Status: the Feature contract is **not built yet**. `conversation-history`
-> is its first proving instance; the helpers get extracted from what
-> `research` and the calibration agent already duplicate.
+> Status: the generic Feature *contract* is **not built yet** (by design —
+> it crystallizes on the second instance). Its first proving instance,
+> `conversation-history`, has substantially shipped; the shared helpers get
+> extracted from what it, `research`, and the calibration agent duplicate.
 
 ---
 
