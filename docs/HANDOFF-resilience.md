@@ -10,6 +10,11 @@ implementation in `jasper/watchdog.py`,
 The goal: the speaker runs unattended in someone's home for years
 and recovers from any failure without human intervention.
 
+Runtime hardware that can be attached/detached while running (mic,
+output DAC/dongle, satellites) has its own convergence contract — clean
+park on unplug, automatic come-up on plug-in, never a crash-loop — in
+[HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
+
 ---
 
 ## The 2026-05-11 incident

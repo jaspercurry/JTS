@@ -84,6 +84,14 @@ logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
+# Primary microphone could not be opened at startup (os.EX_NOINPUT). A
+# DISTINCT code from EX_CONFIG (78) so the unit, doctor, and /state can
+# tell "no usable mic" from "no provider configured". Listed in
+# jasper-voice.service's SuccessExitStatus + RestartPreventExitStatus so
+# the daemon parks cleanly (waiting for the AEC reconciler / udev to
+# restart it on plug-in) instead of crash-looping toward
+# StartLimitAction=reboot. See docs/HANDOFF-hotplug-resilience.md "Layer 2".
+VOICE_MIC_UNAVAILABLE_EXIT = 66
 
 
 def _synthetic_audio_profile(

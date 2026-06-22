@@ -56,6 +56,13 @@ def _run_reconcile(
                 tmp_path / "grouping-voice.env"
             ),
             "JASPER_ASOUND_ROOT": str(tmp_path / "asound"),
+            # Redirect the voice-input-absent marker into tmp so the no-mic
+            # paths (mark_voice_input_absent) never touch the real
+            # /var/lib/jasper on the test host. Per-test overrides via
+            # extra_env still win (the marker cases assert on this path).
+            "JASPER_VOICE_INPUT_ABSENT_MARKER": str(
+                tmp_path / "voice-input-absent"
+            ),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
             # Hermetic: always source the repo's shared env-file lib, never
@@ -1012,3 +1019,101 @@ def test_reconcile_unparks_voice_when_flag_absent(tmp_path: Path) -> None:
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-voice.service" in commands
     assert "enable jasper-voice.service" in commands
+
+
+# --- microphone-presence marker (docs/HANDOFF-hotplug-resilience.md) ----
+# The reconciler is the single writer of the persistent NEGATIVE marker
+# jasper-voice.service gates on (ConditionPathExists=!<marker>). These pin
+# both convergence directions: marker CREATED whenever voice is parked for
+# no mic, REMOVED whenever a mic is present (incl. the custom-mic path,
+# which must never be gated by us). _run_reconcile already redirects the
+# marker into tmp_path (see its env setup), so these just locate the file.
+
+def _marker(tmp_path: Path) -> Path:
+    return tmp_path / "voice-input-absent"
+
+
+def test_reconcile_marks_voice_input_absent_when_no_mic(tmp_path: Path) -> None:
+    # No card present at all + a stale udp device -> the no-candidate-mic
+    # park path. Voice must be gated off so it can't boot-start and
+    # crash-loop into StartLimitAction=reboot.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _marker(tmp_path).exists(), result.stderr
+    assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_reconcile_marks_voice_input_absent_when_aec_disabled_no_mic(
+    tmp_path: Path,
+) -> None:
+    # The AEC-disabled branch has its own no-mic stop path; it must mark too.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path, mode="disabled")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _marker(tmp_path).exists(), result.stderr
+
+
+def test_reconcile_clears_marker_when_6ch_present(tmp_path: Path) -> None:
+    # A stale marker (box previously had no mic) must be removed the moment
+    # the 6-channel Array reappears, so the ConditionPathExists gate opens.
+    _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    _marker(tmp_path).write_text("reason=stale\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not _marker(tmp_path).exists(), result.stderr
+    assert "restart jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_reconcile_clears_marker_when_direct_mic_present(tmp_path: Path) -> None:
+    # 2-channel Array -> direct-mic (no AEC) path still (re)starts voice, so
+    # the marker must clear here too.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=2)
+    _marker(tmp_path).write_text("reason=stale\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not _marker(tmp_path).exists(), result.stderr
+    assert "restart jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_reconcile_clears_marker_for_custom_mic(tmp_path: Path) -> None:
+    # Custom JASPER_MIC_DEVICE: the reconciler leaves voice config alone and
+    # must NOT gate the operator's device — clear any stale marker so voice
+    # can start and try it (the daemon's exit-66 park is the safety net).
+    _write_env(tmp_path, "hw:9,0")  # not an owned value
+    _write_mode(tmp_path)
+    _marker(tmp_path).write_text("reason=stale\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "leaving voice config untouched" in result.stderr
+    assert not _marker(tmp_path).exists(), result.stderr
+
+
+def test_reconcile_check_only_does_not_touch_marker(tmp_path: Path) -> None:
+    # --check-aec-ready is the bridge's ExecCondition: a pure read, it must
+    # never create or remove the marker.
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _marker(tmp_path).write_text("reason=preexisting\n")
+
+    result = _run_reconcile(tmp_path, "--check-aec-ready")
+
+    # No card -> not aec-ready -> exit 1, but the marker is untouched.
+    assert result.returncode == 1
+    assert _marker(tmp_path).read_text() == "reason=preexisting\n"

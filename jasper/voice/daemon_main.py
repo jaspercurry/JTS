@@ -16,7 +16,12 @@ from jasper.log_event import log_event
 
 from .. import flight_recorder, transit
 from ..accounts import Registry, maybe_migrate_legacy
-from ..audio_io import TtsPlayout, make_mic_capture, make_tts_playout
+from ..audio_io import (
+    InputDeviceUnavailable,
+    TtsPlayout,
+    make_mic_capture,
+    make_tts_playout,
+)
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
 from ..camilla import CamillaController, Ducker
 from ..config import Config, VoiceProviderNotConfigured
@@ -56,6 +61,7 @@ from ..watchdog import Heartbeat
 from ..weather import WeatherClient
 from ..voice_daemon import (
     CAPTURE_RING_FRAMES,
+    VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     ContentActivityTracker,
@@ -866,12 +872,20 @@ async def run() -> None:
         # jasper.wake_legs + cfg.mic_device* via _configured_wake_legs().
         #
         # Resilience asymmetry: the primary "on" (AEC3) leg is must-have
-        # — it carries session audio + the Tier-1 heartbeat, so a
-        # mic-open failure there is fatal (re-raised → systemd
-        # Restart=on-watchdog + the AEC reconciler's mic-presence gate
-        # recover us). Optional "off"/"dtln" legs are best-effort: a
-        # mic-open failure is logged and that leg is skipped so the
-        # speaker keeps waking on the healthy legs.
+        # — it carries session audio + the Tier-1 heartbeat. A mic-open
+        # failure there is fatal-but-CLEAN: re-raised as
+        # InputDeviceUnavailable so main() exits VOICE_MIC_UNAVAILABLE_EXIT
+        # and systemd PARKS the unit (SuccessExitStatus +
+        # RestartPreventExitStatus) instead of crash-looping toward
+        # StartLimitAction=reboot. The AEC reconciler's marker gate
+        # (ConditionPathExists) keeps us from even starting when it knows
+        # the mic is absent; this exit is the backstop for the cases the
+        # marker can't pre-empt (custom mic, present-but-unopenable, first
+        # boot before any reconcile). Plug-in recovery: udev →
+        # jasper-aec-reconcile → restart_voice. See
+        # docs/HANDOFF-hotplug-resilience.md. Optional "off"/"dtln" legs
+        # are best-effort: a mic-open failure is logged and that leg is
+        # skipped so the speaker keeps waking on the healthy legs.
         async with contextlib.AsyncExitStack() as stack:
             legs: list[_LegRuntime] = []
             for spec, device in _configured_wake_legs(cfg):
@@ -885,7 +899,7 @@ async def run() -> None:
                     )
                 except Exception as exc:  # noqa: BLE001
                     if spec.token == "on":
-                        raise
+                        raise InputDeviceUnavailable(str(device), exc) from exc
                     log_event(
                         logger,
                         "wake.leg_skipped",
@@ -1041,6 +1055,25 @@ async def run() -> None:
 def main() -> None:
     try:
         asyncio.run(run())
+    except InputDeviceUnavailable as e:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        # Intentionally idle, not a crash: the primary mic could not be
+        # opened. Exit VOICE_MIC_UNAVAILABLE_EXIT so jasper-voice.service
+        # parks the unit cleanly (SuccessExitStatus + RestartPreventExitStatus)
+        # rather than restart-looping into StartLimitAction=reboot. The AEC
+        # reconciler (udev-triggered) restarts us when a mic reappears.
+        log_event(
+            logger,
+            "voice.mic_unavailable",
+            device=e.device,
+            detail=str(e),
+            level=logging.WARNING,
+        )
+        print(str(e), file=sys.stderr)
+        sys.exit(VOICE_MIC_UNAVAILABLE_EXIT)
     except VoiceProviderNotConfigured as e:
         logging.basicConfig(
             level=logging.INFO,
