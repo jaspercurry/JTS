@@ -62,8 +62,15 @@ def _fanin_status(
 
 
 def _sampler(**kwargs) -> AirPlayHealthSampler:
-    """Build a sampler isolated from live Pi maintenance markers."""
+    """Build a sampler isolated from live Pi maintenance markers.
+
+    Warmup + connect-grace default OFF here so the classification tests
+    below exercise steady-state behaviour at small clock values; the
+    warmup / connect-grace suppression has its own dedicated tests.
+    """
     kwargs.setdefault("maintenance_suppress_path", None)
+    kwargs.setdefault("warmup_sec", 0.0)
+    kwargs.setdefault("connect_grace_sec", 0.0)
     return AirPlayHealthSampler(**kwargs)
 
 
@@ -210,6 +217,8 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
         maintenance_suppress_path=str(marker),
+        warmup_sec=0.0,
+        connect_grace_sec=0.0,
         time_fn=lambda: now[0],
     )
 
@@ -437,3 +446,99 @@ def test_system_snapshot_endpoint_fails_soft_when_airplay_snapshot_raises(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
+    # A reboot's content-xrun + AirPlay-resync settling must NOT flip the
+    # dashboard straight to "issue: recent audio-path recovery event"
+    # during the warmup window (the 2026-06-21 post-reboot dashboard).
+    now = [1000.0]
+    statuses = [
+        _fanin_status(airplay_frames=0, airplay_xruns=5, output_frames=0),
+        _fanin_status(
+            airplay_frames=240000, airplay_xruns=7, output_frames=240000,
+        ),
+        _fanin_status(
+            airplay_frames=6000000, airplay_xruns=9, output_frames=6000000,
+        ),
+    ]
+    sampler = AirPlayHealthSampler(
+        fanin_probe=lambda: statuses.pop(0),
+        journal_reader=lambda u, _s, _n: (
+            ["recovering from a previous underrun"]
+            if u == "shairport-sync" else []
+        ),
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=None,
+        warmup_sec=120.0,
+        connect_grace_sec=0.0,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()            # t=1000, within warmup (started_at=1000)
+    now[0] += 5.0
+    sampler._tick()            # t=1005, still within warmup
+
+    snap = sampler.snapshot()
+    assert snap["warmup_active"] is True
+    assert snap["suppressed_reason"] == "warmup"
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 0
+    assert snap["summary_5m"]["shairport_underruns"] == 0
+    assert snap["events"] == []
+    assert snap["status"] != "issue"
+
+    # Past the warmup window a genuine recovery event surfaces again.
+    now[0] = 1000.0 + 121.0
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["warmup_active"] is False
+    assert snap["suppressed_reason"] is None
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 2
+    assert snap["status"] == "issue"
+
+
+def test_airplay_connect_grace_suppresses_session_establish() -> None:
+    # When a sender connects, the PTP-anchor settle emits expected
+    # sync-correction bursts; a per-session grace keeps them off the
+    # dashboard, but a sync error AFTER the grace still surfaces.
+    now = [5000.0]
+    fanin = {"v": _fanin_status(airplay_frames=0, airplay_xruns=0)}
+    mpris = {"playing": False}
+    journal = {"shairport-sync": []}
+
+    sampler = AirPlayHealthSampler(
+        fanin_probe=lambda: fanin["v"],
+        journal_reader=lambda u, _s, _n: list(journal.get(u, [])),
+        mpris_probe=lambda: dict(mpris),
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=None,
+        warmup_sec=0.0,
+        connect_grace_sec=45.0,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()            # idle baseline, not active
+    assert sampler.snapshot()["suppressed_reason"] is None
+
+    # Sender connects: frames flow -> idle->active transition arms grace.
+    now[0] += 5.0
+    fanin["v"] = _fanin_status(airplay_frames=240000, airplay_xruns=0)
+    mpris["playing"] = True
+    journal["shairport-sync"] = ["rtp.c sync: Large negative sync error"]
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["suppressed_reason"] == "airplay_connect"
+    assert snap["summary_5m"]["shairport_sync_errors"] == 0
+    assert snap["events"] == []
+
+    # Grace expires; the same establish-class event would now be real.
+    now[0] += 50.0
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["suppressed_reason"] is None
+    assert snap["summary_5m"]["shairport_sync_errors"] >= 1
+    assert snap["status"] == "issue"
