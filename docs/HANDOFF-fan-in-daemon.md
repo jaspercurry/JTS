@@ -514,7 +514,10 @@ shared `rust/jasper-tts-protocol` crate both daemons import) so assistant
 audio mixes post-round-trip instead of riding the synced stream. One
 contract delta to know when comparing acks: both daemons now return a
 per-segment playout ledger in the `FLUSH_SYNC` ack (provider item id,
-flushed frames, `max_audio_played_ms`, `events[]`), but the drain point
+flushed frames, `max_audio_played_ms`, `events[]`) — the ack KEY shape is a
+single contract in `jasper-tts-protocol` (`FLUSH_SYNC_ACK_KEYS` /
+`FLUSH_SYNC_ACK_EVENT_KEYS`, each daemon guard-tested against it) so the two
+renderers cannot drift under the one Python consumer — but the drain point
 differs. outputd drains against the real DAC `snd_pcm_delay`, so its
 `audio_played_ms` is DAC-true. fan-in sits pre-CamillaDSP and cannot see
 the DAC, so its ledger ([`rust/jasper-fanin/src/playout.rs`](../rust/jasper-fanin/src/playout.rs))

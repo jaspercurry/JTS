@@ -1272,6 +1272,64 @@ mod tests {
     }
 
     #[test]
+    fn flush_sync_ack_satisfies_shared_key_contract() {
+        // The FLUSH_SYNC ack key shape is a shared wire contract
+        // (jasper-tts-protocol) so fan-in's solo ack and outputd's
+        // bonded-member ack cannot drift apart under the one Python
+        // consumer. outputd has the mirror of this test.
+        use jasper_tts_protocol::{FLUSH_SYNC_ACK_EVENT_KEYS, FLUSH_SYNC_ACK_KEYS};
+
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        // A flushed segment so the `events` array is non-empty and its keys
+        // are exercised too.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("item-x".to_string()),
+                profile: None,
+            },
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![7i16; 4 * (CHANNELS as usize)]),
+        })
+        .unwrap();
+        mixer.drain_commands();
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 1,
+                ack: Some(ack_tx),
+            })
+            .unwrap();
+        mixer.prepare_period();
+
+        let line = ack_rx.try_recv().expect("flush ack").to_json_line();
+        for key in FLUSH_SYNC_ACK_KEYS {
+            assert!(
+                line.contains(&format!("\"{key}\":")),
+                "fan-in ack missing top-level key {key}: {line}"
+            );
+        }
+        for key in FLUSH_SYNC_ACK_EVENT_KEYS {
+            assert!(
+                line.contains(&format!("\"{key}\":")),
+                "fan-in ack missing event key {key}: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn program_duck_command_marks_period_active_until_restore() {
         let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
         let mut mixer = TtsMixer::new(TtsInput {
