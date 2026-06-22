@@ -1492,6 +1492,7 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            active_lane: false,
         }
     }
 
