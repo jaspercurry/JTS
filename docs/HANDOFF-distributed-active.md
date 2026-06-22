@@ -35,6 +35,19 @@ Two JTS capabilities cannot be combined today, and the combination is
   [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md)). Sending
   a full-range feed to a tweeter can destroy it.
 
+**Product requirement (why the active leader is v1, not flagship-only —
+confirmed by the owner 2026-06-21).** The household runs **multiple
+active-crossover speakers** and needs **full any-role flexibility**: any
+speaker, active or passive, must work as either **leader or follower**. So an
+*active speaker leading a pair* is a v1 requirement, not a "someday" feature —
+this was pressure-tested for over-engineering on 2026-06-21 and the active
+leader was confirmed *earned*, not gold-plating. The only thing genuinely
+hardware-gated is **validating** the two-active *matched pair* (Stage C, which
+needs a second commissioned active speaker); the active-leader mechanism
+(Stage B) does **not** block on that — it ships and validates against an
+active-leader + passive-follower rig (the buildable target). Build for that
+rig; validate the matched pair when the hardware exists.
+
 Today an active-crossover speaker **refuses to bond**, fail-closed:
 `apply_bonded_leader_config` routes the loaded config through the graph
 carrier and an active (roleful) graph is rejected
