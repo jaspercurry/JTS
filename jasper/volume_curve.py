@@ -59,6 +59,7 @@ def configured_volume_floor_db() -> float:
         from .sound import settings as sound_settings
 
         settings_path = sound_settings._settings_path(None)
+        signature: tuple[str, int | None, int | None]
         try:
             stat = settings_path.stat()
             signature = (str(settings_path), stat.st_mtime_ns, stat.st_size)
