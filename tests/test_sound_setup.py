@@ -41,6 +41,7 @@ from jasper.sound.profile import (
     save_profile,
 )
 from jasper.sound.settings import SoundSettings, load_sound_settings
+from jasper.volume_curve import percent_to_db
 from jasper.web import sound_setup
 
 from ._web_test_helpers import (
@@ -150,6 +151,80 @@ class FakeCamillaWithoutLiveRaw:
         self.set_calls.append(path)
         self.loaded_path = path
         return True
+
+
+class FakeVolumeCamilla:
+    def __init__(self, db: float = -18.0, muted: bool = True) -> None:
+        self.db = db
+        self.muted = muted
+        self.events: list[tuple[str, float | bool, bool]] = []
+
+    async def get_volume_and_mute(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, bool]:
+        return self.db, self.muted
+
+    async def set_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        self.events.append(("volume", db, best_effort))
+        self.db = db
+        return True
+
+    async def set_main_mute(
+        self, muted: bool, *, best_effort: bool = False,
+    ) -> bool:
+        self.events.append(("mute", muted, best_effort))
+        self.muted = muted
+        return True
+
+
+class BlockingVolumeCamilla(FakeVolumeCamilla):
+    def __init__(
+        self,
+        *,
+        db: float = -18.0,
+        muted: bool = True,
+        block_on_volume_call: int,
+    ) -> None:
+        super().__init__(db=db, muted=muted)
+        self.block_on_volume_call = block_on_volume_call
+        self.volume_calls = 0
+        self.volume_call_entered = asyncio.Event()
+        self.release_volume_call = asyncio.Event()
+
+    async def set_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        self.volume_calls += 1
+        self.events.append(("volume", db, best_effort))
+        if self.volume_calls == self.block_on_volume_call:
+            self.volume_call_entered.set()
+            await self.release_volume_call.wait()
+        self.db = db
+        return True
+
+
+class FakeVolumeFloorToneRunner:
+    instances: list["FakeVolumeFloorToneRunner"] = []
+
+    def __init__(self, wav_path: Path, *, on_finish=None) -> None:
+        self.wav_path = wav_path
+        self.on_finish = on_finish
+        self.started = False
+        self.stopped = False
+        self.error: str | None = None
+        FakeVolumeFloorToneRunner.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    @property
+    def running(self) -> bool:
+        return self.started and not self.stopped and self.error is None
 
 
 _SOUND_MODULE = (
@@ -304,6 +379,8 @@ def test_follower_block_set_is_content_dsp_only():
         "/audition",
         "/live-draft",
         "/settings",
+        "/volume-floor/audition",
+        "/volume-floor/stop",
         "/profiles/save",
         "/profiles/rename",
         "/profiles/delete",
@@ -369,6 +446,7 @@ def test_sound_module_preserves_editor_behaviour():
     for path in (
         "./preview", "./live-draft", "./apply",
         "./profiles/save", "./profiles/rename", "./profiles/delete",
+        "./volume-floor/audition", "./volume-floor/stop",
     ):
         assert path in js, f"sound module no longer references {path}"
     assert "dsp_write_epoch: dspWriteEpoch" in js
@@ -385,6 +463,11 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Validate and apply" in js
     assert "Save active profile" in js
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
+    assert "Start tone" in js
+    assert "Stop tone" in js
+    assert "pagehide" in js
+    assert "scheduleVolumeFloorToneUpdate(floor);" in js
+    assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
     assert "function defaultOutputStep()" in js
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
@@ -544,6 +627,12 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Confirm each DAC output after you check the wiring." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
+    assert "observedHardware" in js
+    assert "Saved speaker topology" in js
+    assert "Currently attached hardware" in js
+    assert "Hardware mismatch" in js
+    assert "Saved topology expects" in js
+    assert "Detected output hardware" not in js
     assert "supported" in js
     assert "needs attention" not in js
     assert "Confirm output" in js
@@ -606,6 +695,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Speaker layout is a draft." in js
     assert "active-speaker-issues--warning" in js
     assert "renderIssueList(issues, 5)" in js
+    assert "function outputClockHardwareBlockers()" in js
+    assert "dual_apple_observed_" in js
+    assert "dual_apple_usb_topology_mismatch" in js
     assert "function crossoverPreviewDisplayStatus(payload)" in js
     assert "JTS still checks the setup before any sound." in js
     assert "Starter stereo" not in js
@@ -1794,6 +1886,187 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
     assert payload["safety"]["sound_tests_allowed"] is False
 
 
+def test_sound_output_topology_payload_separates_saved_dual_from_observed_single(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple stereo active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 2,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 3,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
+    })
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    envelope = sound_setup._output_topology_payload()
+    payload = envelope["output_topology"]
+
+    assert payload["hardware"]["device_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert payload["hardware"]["physical_output_count"] == 4
+    assert envelope["output_hardware"]["profile_id"] == APPLE_USB_C_DONGLE_DEVICE_ID
+    assert envelope["output_hardware"]["physical_output_count"] == 2
+    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock_blocked"
+    assert "dual_apple_observed_profile_mismatch" in {
+        issue["code"] for issue in envelope["clock_domain"]["issues"]
+    }
+    assert envelope["clock_domain"]["composite_clock_supported"] is False
+    assert envelope["clock_domain"]["coherent_physical_output_count"] == 0
+    assert envelope["output_hardware"]["profile_id"] != payload["hardware"]["device_id"]
+
+
+def test_sound_output_topology_payload_blocks_wrong_dual_apple_serials(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple",
+        "name": "Dual Apple active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [],
+        "routing": {},
+    })
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="WRONGLEFTSERIAL",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="WRONGRIGHTSERIAL",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    envelope = sound_setup._output_topology_payload()
+
+    assert envelope["output_hardware"]["profile_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert envelope["output_hardware"]["physical_output_count"] == 4
+    assert envelope["output_hardware"]["status"] == "ready"
+    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock_blocked"
+    assert "dual_apple_observed_serial_mismatch" in {
+        issue["code"] for issue in envelope["clock_domain"]["issues"]
+    }
+    assert envelope["clock_domain"]["composite_clock_supported"] is False
+    assert envelope["clock_domain"]["coherent_physical_output_count"] == 0
+
+
 def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     monkeypatch,
     tmp_path: Path,
@@ -2803,7 +3076,7 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     )
 
     payload = await sound_setup._apply_settings(
-        SoundSettings(match_loudness=True),
+        SoundSettings(match_loudness=True, volume_floor_db=-24.0),
         profile_path=profile_path,
         library_path=tmp_path / "lib.json",
         config_dir=config_dir,
@@ -2815,8 +3088,140 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     assert payload["output_trim_db"] > 0
     assert "warning" not in payload
     assert load_sound_settings(settings_path).match_loudness is True
+    assert load_sound_settings(settings_path).volume_floor_db == -24.0
     # The profile JSON is untouched: not re-stamped, not overwritten.
     assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
+
+
+async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
+    tmp_path: Path, monkeypatch,
+):
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    fake = FakeVolumeCamilla(db=-18.0, muted=True)
+    session = sound_setup._VolumeFloorToneSession()
+
+    payload = await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+
+    assert payload == {
+        "ok": True,
+        "active": True,
+        "continuous": True,
+        "status": "started",
+        "volume_floor_db": -24.0,
+        "percent": 1,
+        "db": -24.0,
+    }
+    assert len(FakeVolumeFloorToneRunner.instances) == 1
+    assert FakeVolumeFloorToneRunner.instances[0].started is True
+    assert fake.events[0] == (
+        "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), False,
+    )
+    assert fake.events[1] == ("mute", False, False)
+    assert fake.db == pytest.approx(-24.0)
+    assert fake.muted is False
+    assert not settings_path.exists()
+
+    payload = await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -36.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+
+    assert payload["status"] == "updated"
+    assert payload["volume_floor_db"] == -36.0
+    assert len(FakeVolumeFloorToneRunner.instances) == 1
+    assert fake.events[-2:] == [
+        ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), False),
+        ("mute", False, False),
+    ]
+    assert fake.db == pytest.approx(-36.0)
+    assert fake.muted is False
+
+    stop_payload = await sound_setup._stop_volume_floor_tone(
+        camilla_factory=lambda: fake,
+        reason="stop",
+        session=session,
+    )
+
+    assert stop_payload == {
+        "ok": True,
+        "active": False,
+        "status": "stopped",
+        "reason": "stop",
+        "volume_floor_db": -36.0,
+    }
+    assert FakeVolumeFloorToneRunner.instances[0].stopped is True
+    assert fake.events[-2:] == [
+        ("mute", True, True),
+        ("volume", pytest.approx(-18.0), True),
+    ]
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
+    assert not settings_path.exists()
+
+
+async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
+    tmp_path: Path, monkeypatch,
+):
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    fake = BlockingVolumeCamilla(block_on_volume_call=2)
+    session = sound_setup._VolumeFloorToneSession()
+
+    await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+    runner = FakeVolumeFloorToneRunner.instances[0]
+
+    update_task = asyncio.create_task(
+        sound_setup._audition_volume_floor(
+            {"volume_floor_db": -36.0},
+            camilla_factory=lambda: fake,
+            session=session,
+            runner_factory=FakeVolumeFloorToneRunner,
+        )
+    )
+    await asyncio.wait_for(fake.volume_call_entered.wait(), timeout=1.0)
+
+    stop_task = asyncio.create_task(
+        sound_setup._stop_volume_floor_tone(
+            camilla_factory=lambda: fake,
+            reason="stop",
+            session=session,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert runner.stopped is True
+    assert stop_task.done() is False
+
+    fake.release_volume_call.set()
+    update_payload = await asyncio.wait_for(update_task, timeout=1.0)
+    stop_payload = await asyncio.wait_for(stop_task, timeout=1.0)
+
+    assert update_payload["active"] is False
+    assert update_payload["status"] == "stale"
+    assert stop_payload["status"] == "stopped"
+    assert fake.events[-2:] == [
+        ("mute", True, True),
+        ("volume", pytest.approx(-18.0), True),
+    ]
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
 
 
 async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(

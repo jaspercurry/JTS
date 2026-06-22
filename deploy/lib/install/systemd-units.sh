@@ -67,6 +67,12 @@ install_local_audio_graph_unit_files() {
         "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
         /usr/local/sbin/jasper-audio-hardware-reconcile
     install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-output-hardware-hotplug" \
+        /usr/local/sbin/jasper-output-hardware-hotplug
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-outputd-failure-reconcile" \
+        /usr/local/sbin/jasper-outputd-failure-reconcile
+    install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
         /usr/local/sbin/jasper-camilla-pipe-guard
     # camilla#2's crossover guard. Like the pipe-guard it breaks a dead-pipe
@@ -522,6 +528,12 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
         /usr/local/sbin/jasper-audio-hardware-reconcile
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-output-hardware-hotplug" \
+        /usr/local/sbin/jasper-output-hardware-hotplug
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-outputd-failure-reconcile" \
+        /usr/local/sbin/jasper-outputd-failure-reconcile
 
     # jasper-fanin: per-renderer snd-aloop substream fan-in daemon.
     # **Production default** as of 2026-05-26 — replaces the

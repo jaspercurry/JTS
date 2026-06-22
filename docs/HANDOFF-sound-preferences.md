@@ -28,7 +28,8 @@ While a speaker is an active bonded follower, `/sound/` is a delegated
 surface: the page shows a leader-owned notice and does not load the
 preference-EQ editor. Content-DSP mutation routes reject with HTTP 409
 instead of changing local sound state (`/sound/apply`, `/sound/audition`,
-`/sound/live-draft`, `/sound/settings`, and the profile-library writes).
+`/sound/live-draft`, `/sound/settings`, `/sound/volume-floor/audition`,
+`/sound/volume-floor/stop`, and the profile-library writes).
 This is intentional: the leader renders content EQ, room correction, and
 volume shaping for the paired image. Local active-speaker/driver-DSP
 routes remain separate because crossover and driver protection belong to
@@ -166,8 +167,8 @@ This is deliberately separate from `output_trim_db`: that trim compensates
 only the preference layer and is skipped on a flat sound profile, so it
 would not protect room boosts on a household that has set no preference EQ.
 
-Two opt-in, default-off global settings (distinct from per-profile EQ)
-feed that trim. They are owned by `/sound/` at
+Three global output settings (distinct from per-profile EQ) are owned by
+`/sound/` at
 `/var/lib/jasper/sound_settings.json` (`jasper/sound/settings.py`),
 fail-soft to the do-nothing defaults — a missing or corrupt file never
 alters the sound:
@@ -180,6 +181,11 @@ alters the sound:
 - **Extra headroom** — a manual 0–12 dB digital attenuation
   (`headroom_trim_db`, clamped) for listeners running JTS at full digital
   volume into their own amplifier.
+- **Volume floor** — the dB value for the user-visible 1% volume point
+  (`volume_floor_db`, clamped to −60..−10 dB, default −50 dB). 0% remains
+  a hard CamillaDSP mute. The Advanced `/sound/` control can start a
+  continuous 1% calibration tone, update that tone as the slider moves, and
+  stop it explicitly or on page leave before saving.
 
 The emitter applies one `output_trim_db = headroom_trim + (loudness
 compensation when match-loudness is on)` as the `sound_preamp` gain, and
@@ -390,8 +396,9 @@ graph, and it still does not emit audio or authorize playback.
   metric, and `loudness_compensation_db` (the loudness-weighted gain the
   opt-in match-loudness setting applies).
 - `jasper/sound/settings.py` — import-cheap global output settings
-  (`SoundSettings`: `headroom_trim_db`, `match_loudness`) persisted to
-  `/var/lib/jasper/sound_settings.json`, fail-soft to the do-nothing defaults.
+  (`SoundSettings`: `headroom_trim_db`, `match_loudness`,
+  `volume_floor_db`) persisted to `/var/lib/jasper/sound_settings.json`,
+  fail-soft to the do-nothing defaults.
 - `jasper/sound/camilla_yaml.py` — CamillaDSP YAML emitter and
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
@@ -543,13 +550,37 @@ convention other wizards follow.
 
 1. Requires the shared JSON CSRF header (route-checked before CSRF).
 2. Clamps and saves the global `SoundSettings`
-   (`headroom_trim_db`, `match_loudness`) to
+   (`headroom_trim_db`, `match_loudness`, `volume_floor_db`) to
    `/var/lib/jasper/sound_settings.json`.
 3. Re-applies the active profile through the `/sound/apply` path so the new
    output trim takes effect immediately and persists in `sound_current.yml`.
-4. Saves the settings **before** the re-apply, so a failed re-apply still
-   sticks (returned as an error; the saved setting takes effect on the next
-   apply).
+4. Asks the source-aware volume coordinator to re-apply the current
+   `listening_level` to Camilla when the active source is Camilla-master, so a
+   saved `volume_floor_db` affects the current source without unguarding
+   Spotify/Bluetooth push-mode handoffs.
+5. Saves the settings **before** the re-apply/reconcile, so a failed DSP
+   reload or volume reconcile still sticks and takes effect on the next apply
+   or volume change.
+
+`/sound/volume-floor/audition`:
+
+1. Requires the shared JSON CSRF header (route-checked before CSRF).
+2. Merges the proposed `volume_floor_db` with the currently saved
+   `SoundSettings` without persisting it.
+3. Starts or updates a continuous 1 kHz calibration tone through
+   `correction_substream`, sets CamillaDSP `main_volume` to the proposed 1%
+   floor, and unmutes while the tone is active.
+4. Preserves the pre-tone Camilla volume/mute state for restore. If the user
+   was muted, restore mutes first and then puts the previous dB value back
+   underneath the mute.
+
+`/sound/volume-floor/stop`:
+
+1. Requires the shared JSON CSRF header (route-checked before CSRF).
+2. Stops the continuous floor-calibration tone and restores the pre-tone
+   Camilla volume/mute state. The browser calls this from the Stop button and
+   best-effort on `pagehide`; the backend also bounds tone playback with a
+   safety timeout.
 
 `/sound/apply` (`Save to Speaker` in the UI):
 
@@ -700,8 +731,11 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-22 (active-crossover driver-research note bounds
-checked against `jasper.active_speaker.design_draft` and the `/sound/` static
-module. Prior 2026-06-19 recheck covered config-preservation/refusal updates
-for graph-carrier dispatch; see HANDOFF-dsp-graph-carrier.md. Prior recheck
-2026-06-18 after the active-speaker UI / commission-ramp work.)
+Last verified: 2026-06-22 (volume-floor global setting and continuous
+calibration-tone endpoints checked against `jasper.sound.settings`,
+`jasper.web.sound_setup`, and the `/sound/` static module; active-crossover
+driver-research note bounds checked against `jasper.active_speaker.design_draft`
+and the `/sound/` static module. Prior 2026-06-19 recheck covered
+config-preservation/refusal updates for graph-carrier dispatch; see
+HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
+active-speaker UI / commission-ramp work.)

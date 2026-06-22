@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Refresh output-hardware state after jasper-outputd fails.
+#
+# Runs from jasper-outputd.service ExecStopPost. A dual-Apple child DAC can
+# disappear while the saved env still names its ALSA PCM; outputd then fails
+# before systemd restarts it. Reconcile here with --no-restart so the next
+# built-in Restart=on-failure attempt reads the current single-DAC/fake env
+# instead of replaying stale dual-DAC config. This helper is deliberately
+# fail-open and always exits 0.
+
+set -uo pipefail
+
+RESULT="${SERVICE_RESULT:-unknown}"
+STATUS="${EXIT_STATUS:-}"
+RECONCILE="${JASPER_AUDIO_HARDWARE_RECONCILE:-/usr/local/sbin/jasper-audio-hardware-reconcile}"
+
+log() {
+    local outcome="$1"
+    shift || true
+    echo "event=outputd.failure_reconcile.${outcome} result=${RESULT} exit_status=${STATUS:-none} ${*}" >&2
+}
+
+if [[ "$RESULT" == "success" || "$RESULT" == "condition" || "$STATUS" == "78" ]]; then
+    log skip reason=non_retrying_stop
+    exit 0
+fi
+
+if [[ ! -x "$RECONCILE" ]]; then
+    log skip reason=reconciler_unavailable path="$RECONCILE"
+    exit 0
+fi
+
+if "$RECONCILE" --reason outputd-failure --no-restart; then
+    log ok reason=reconciled
+else
+    rc=$?
+    log failed reason=reconciler_nonzero rc="$rc"
+fi
+
+exit 0

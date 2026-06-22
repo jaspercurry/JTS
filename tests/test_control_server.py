@@ -37,6 +37,7 @@ from jasper.control.server import (
     _db_to_percent,
     _delta_db_to_delta_percent,
     _make_handler,
+    _percent_to_db,
 )
 
 
@@ -1291,7 +1292,7 @@ def test_get_volume(server_with_coordinator):
     assert status == 200
     assert body["percent"] == 60
     # `db` is computed from percent for back-compat
-    assert body["db"] == round((60 / 100) * (VOLUME_MAX_DB - VOLUME_MIN_DB) + VOLUME_MIN_DB, 3)
+    assert body["db"] == round(_percent_to_db(60), 3)
     assert ("get", None) in fake.calls
 
 
@@ -1335,7 +1336,7 @@ def test_volume_set_legacy_db(server_with_coordinator):
     base, fake = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {"db": -25.0})
     assert status == 200
-    # -25 dB → 50% (midpoint of -50..0 span)
+    # Under the default floor, -25 dB rounds to 50%.
     assert body["percent"] == 50
     assert ("set", 50) in fake.calls
 

@@ -1167,9 +1167,8 @@ def _make_handler(
 
         def _volume_payload(self, percent: int) -> dict[str, Any]:
             # `db` is computed for back-compat with the dial firmware
-            # which reads `percent` but logs `db`. The legacy 50 dB
-            # scale is still the lingua franca for clients that haven't
-            # been updated.
+            # which reads `percent` but logs `db`. Use the same calibrated
+            # curve as the live audio path so diagnostics match what is heard.
             return {"db": round(_percent_to_db(percent), 3), "percent": percent}
 
         def _maybe_forward_volume_to_leader(self) -> bool:

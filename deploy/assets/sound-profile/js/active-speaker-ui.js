@@ -40,10 +40,12 @@ export function activeSpeakerStepState(step, ctx) {
   ctx = ctx || {};
   var hasLayout = !!ctx.hasLayout;
   var dirty = !!ctx.dirty;
+  var hardwareMatchesSaved = ctx.hardwareMatchesSaved !== false;
   var driverChecksComplete = !!(
     ctx.driverChecksComplete || ctx.driverMeasurementsComplete
   );
-  if (step === 'layout') return hasLayout && !dirty ? 'done' : 'active';
+  if (step === 'layout') return hasLayout && !dirty && hardwareMatchesSaved ? 'done' : 'active';
+  if (!hardwareMatchesSaved) return 'todo';
   if (step === 'research') return hasLayout && !dirty ?
     (ctx.driverResearchSatisfied ? 'done' : 'active') : 'todo';
   if (step === 'map') return ctx.outputIdentityComplete ? 'done' :
@@ -60,7 +62,7 @@ export function defaultActiveSpeakerStep(ctx) {
   var driverChecksComplete = !!(
     ctx.driverChecksComplete || ctx.driverMeasurementsComplete
   );
-  if (!ctx.hasLayout || ctx.dirty) return 'layout';
+  if (!ctx.hasLayout || ctx.dirty || ctx.hardwareMatchesSaved === false) return 'layout';
   if (!ctx.driverResearchSatisfied) return 'research';
   if (!ctx.outputIdentityComplete) return 'map';
   if (!driverChecksComplete) return 'safety';

@@ -4,8 +4,14 @@
 # such as the Apple dongle mixer monitor, and updates JTS-owned ALSA/env
 # state only for recognized output hardware.
 #
-# Key this to sound control nodes, not a specific USB id, so future
-# supported DACs can be added to the reconciler policy without changing
-# the udev trigger surface.
+# Key the generic trigger to sound control nodes, not a specific USB id,
+# so future supported DACs can be added to the reconciler policy without
+# changing the steady-state trigger surface. Apple USB-C dongle removal
+# also has a USB-device RUN helper below: on some remove paths the
+# disappearing ALSA control node does not activate SYSTEMD_WANTS, and the
+# output role would otherwise stay stale until reboot.
 
 ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"
+
+ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="5ac/110a/*", RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"
+ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="05ac/110a/*", RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"

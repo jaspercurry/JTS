@@ -10,16 +10,20 @@ from jasper.sound.profile import SimpleEq, SoundProfile
 from jasper.sound.settings import (
     HEADROOM_TRIM_MAX_DB,
     SoundSettings,
+    VOLUME_FLOOR_MAX_DB,
+    VOLUME_FLOOR_MIN_DB,
     load_sound_settings,
     output_trim_db,
     save_sound_settings,
 )
+from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
 
 
 def test_defaults_are_the_do_nothing_state():
     s = SoundSettings()
     assert s.headroom_trim_db == 0.0
     assert s.match_loudness is False
+    assert s.volume_floor_db == DEFAULT_VOLUME_FLOOR_DB
 
 
 def test_missing_file_fails_soft_to_defaults(tmp_path: Path):
@@ -34,10 +38,18 @@ def test_corrupt_file_fails_soft_to_defaults(tmp_path: Path):
 
 def test_round_trip(tmp_path: Path):
     p = tmp_path / "sound_settings.json"
-    save_sound_settings(SoundSettings(headroom_trim_db=6.0, match_loudness=True), p)
+    save_sound_settings(
+        SoundSettings(
+            headroom_trim_db=6.0,
+            match_loudness=True,
+            volume_floor_db=-24.0,
+        ),
+        p,
+    )
     loaded = load_sound_settings(p)
     assert loaded.headroom_trim_db == 6.0
     assert loaded.match_loudness is True
+    assert loaded.volume_floor_db == -24.0
 
 
 def test_saved_file_is_group_readable_0640(tmp_path: Path):
@@ -59,6 +71,21 @@ def test_headroom_trim_is_clamped_nonnegative_and_safe():
     assert (
         SoundSettings.from_mapping({"headroom_trim_db": "garbage"}).headroom_trim_db
         == 0.0
+    )
+
+
+def test_volume_floor_is_clamped_to_audible_safe_range():
+    assert (
+        SoundSettings.from_mapping({"volume_floor_db": -90}).volume_floor_db
+        == VOLUME_FLOOR_MIN_DB
+    )
+    assert (
+        SoundSettings.from_mapping({"volume_floor_db": 0}).volume_floor_db
+        == VOLUME_FLOOR_MAX_DB
+    )
+    assert (
+        SoundSettings.from_mapping({"volume_floor_db": "garbage"}).volume_floor_db
+        == DEFAULT_VOLUME_FLOOR_DB
     )
 
 

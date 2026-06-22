@@ -14,6 +14,9 @@ profile, so they live apart from :class:`~jasper.sound.profile.SoundProfile`:
 - ``match_loudness`` — when on, each profile is turned down by its
   loudness-weighted gain so switching profiles compares tone, not volume.
   ``False`` by default.
+- ``volume_floor_db`` — the calibrated audible floor for the global
+  1..100% speaker-volume curve. 0% remains a true mute; 1% maps to this
+  floor. The default preserves the original shipped curve.
 
 Single source of truth: ``/var/lib/jasper/sound_settings.json``,
 wizard-owned (the ``/sound/`` page). Absence or corruption fails soft to
@@ -31,9 +34,27 @@ from pathlib import Path
 from typing import Any
 
 from ..atomic_io import atomic_write_text
+from ..volume_curve import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_FLOOR_MAX_DB,
+    VOLUME_FLOOR_MIN_DB,
+    normalize_volume_floor_db,
+)
 from .profile import SoundProfile, loudness_compensation_db
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "DEFAULT_VOLUME_FLOOR_DB",
+    "HEADROOM_TRIM_MAX_DB",
+    "SETTINGS_PATH",
+    "SoundSettings",
+    "VOLUME_FLOOR_MAX_DB",
+    "VOLUME_FLOOR_MIN_DB",
+    "load_sound_settings",
+    "output_trim_db",
+    "save_sound_settings",
+]
 
 SETTINGS_PATH = "/var/lib/jasper/sound_settings.json"
 
@@ -72,6 +93,7 @@ class SoundSettings:
 
     headroom_trim_db: float = 0.0
     match_loudness: bool = False
+    volume_floor_db: float = DEFAULT_VOLUME_FLOOR_DB
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SoundSettings":
@@ -81,12 +103,16 @@ class SoundSettings:
         return cls(
             headroom_trim_db=round(trim, 3),
             match_loudness=_coerce_bool(raw.get("match_loudness"), False),
+            volume_floor_db=normalize_volume_floor_db(
+                raw.get("volume_floor_db", DEFAULT_VOLUME_FLOOR_DB)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "headroom_trim_db": round(self.headroom_trim_db, 3),
             "match_loudness": self.match_loudness,
+            "volume_floor_db": round(self.volume_floor_db, 3),
         }
 
 

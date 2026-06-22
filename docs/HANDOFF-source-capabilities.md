@@ -274,8 +274,8 @@ Finish the Spotify quiet-at-100% fix and validate on hardware:
 - Spotify Connect at 100% after AirPlay should land with Camilla at
   `0.0 dB` once Spotify volume push or confirmed source observation
   succeeds. The 0% case is the intentional exception: Camilla keeps
-  `main_mute=true` plus the −50 dB floor so push-mode zero mutes
-  content.
+  `main_mute=true` plus the calibrated floor (default −50 dB) so
+  push-mode zero mutes content.
 - Failed Spotify push should stay `degraded_safe`, never louder.
 - AirPlay should remain Camilla-master.
 

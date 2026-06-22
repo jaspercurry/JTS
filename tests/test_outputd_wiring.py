@@ -216,6 +216,8 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
+    assert "deploy/bin/jasper-output-hardware-hotplug" in install_sh
+    assert "deploy/bin/jasper-outputd-failure-reconcile" in install_sh
     assert "deploy/lib/jasper-asound-render.sh" in install_sh
     assert "/usr/local/lib/jasper/jasper-asound-render.sh" in install_sh
     assert "99-jasper-audio-hardware-reconcile.rules" in install_sh
@@ -228,6 +230,12 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "jasper-headphone-monitor.service" not in before_line
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
+    assert 'ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="5ac/110a/*"' in rule
+    assert 'ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="05ac/110a/*"' in rule
+    assert 'RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"' in rule
+    hotplug = (REPO / "deploy" / "bin" / "jasper-output-hardware-hotplug").read_text()
+    assert "--no-block start jasper-audio-hardware-reconcile.service" in hotplug
+    assert "event=audio_hardware_hotplug.reconcile_requested" in hotplug
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
     # The cutover gate is width-aware and shared by the composite + single
     # active paths (renamed from dual_apple_active_graph_status). It now trusts
@@ -438,6 +446,9 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
         REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
     ).read_text()
     recover_script = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    failure_reconcile = (
+        REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
+    ).read_text()
 
     assert "StartLimitAction=reboot" in outputd_unit
     assert "Restart=on-failure" in outputd_unit
@@ -451,6 +462,13 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert "outputd_backend=$$backend" in outputd_unit
     assert "exit 1" in outputd_unit
     assert "ExecStartPre=/bin/sh -c" not in outputd_unit
+    assert "ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile" in outputd_unit
+    assert "--reason outputd-failure --no-restart" in failure_reconcile
+    assert 'RESULT="${SERVICE_RESULT:-unknown}"' in failure_reconcile
+    assert 'STATUS="${EXIT_STATUS:-}"' in failure_reconcile
+    assert '"$RESULT" == "success"' in failure_reconcile
+    assert '"$RESULT" == "condition"' in failure_reconcile
+    assert '"$STATUS" == "78"' in failure_reconcile
 
     assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
     assert 'device: "outputd_content_playback"' in cutover

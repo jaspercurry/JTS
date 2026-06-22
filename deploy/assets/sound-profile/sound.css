@@ -290,8 +290,9 @@
     font-weight: 600; font-size: 13px; list-style: none;
   }
   .advanced > summary::-webkit-details-marker { display: none; }
-  .headroom-control { display: flex; align-items: center; gap: 12px; }
-  .headroom-range { flex: 1; accent-color: var(--primary); }
+  .btn--compact { min-height: 34px; padding: 0 12px; font-size: 12px; }
+  .headroom-control { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .headroom-range { flex: 1 1 12rem; accent-color: var(--primary); }
   .headroom-readout {
     min-width: 4.5rem; text-align: right;
     font-variant-numeric: tabular-nums; color: var(--foreground);

@@ -40,13 +40,16 @@ For every hot-pluggable component, all four must hold:
 
 | Component | Owner | Unplug | Plug-in | Notes |
 |---|---|---|---|---|
-| **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park (ExecCondition) | udev → reconcile/recover restart | **Already converged** — the pattern the mic side now copies |
-| **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park (this PR) | udev → reconcile restart | **Fixed here.** Was the gap: crash-loop → reboot |
+| **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22.** ALSA control events plus Apple USB remove helper wake reconcile; outputd refreshes env before retry |
+| **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park | udev → reconcile restart | **Fixed 2026-06-21.** Was the original gap: crash-loop → reboot |
 | **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
 
-The only gap was the **microphone**. This PR closes it by adopting the
-exact pattern the output owner already uses.
+The original Workstream C gap was the **microphone**. A later JTS5
+dual-Apple unplug incident found one output-side edge too: when one Apple
+DAC disappeared, the reconciler did not always run before `outputd`
+restarted against stale dual-DAC env. The output side now has the same
+two-direction convergence guarantee.
 
 ## The mechanism (mic)
 
@@ -156,18 +159,49 @@ visible (doctor/journal), not retried into a reboot.
 - **Journal.** PID 1 logs the condition skip; the reconciler logs the
   marker write with its reason.
 
-## Why the output side needed no change
+## Output side repair (2026-06-22)
 
-[`jasper-outputd.service`](../deploy/systemd/jasper-outputd.service)
-already gates on the DAC card with an `ExecCondition` that parks the unit
-cleanly when `/proc/asound/$JASPER_AUDIO_DAC_CARD` is gone, and the
-[`99-jasper-audio-hardware-reconcile.rules`](../deploy/udev/99-jasper-audio-hardware-reconcile.rules)
-udev rule (plus
-[`jasper-dongle-recover.service`](../deploy/systemd/jasper-dongle-recover.service)
-for the Apple dongle) `reset-failed`s and restarts it when a DAC
-returns. `jasper-camilla` writes only to snd-aloop in the outputd
-topology, so an absent DAC does not crash it. Output is already
-bidirectional; the mic side simply adopts the same shape.
+The output owner still has a start-time `ExecCondition`: if the resolved
+final-output card in `JASPER_AUDIO_DAC_CARD` is gone, and the backend is
+not `fake`, `jasper-outputd.service` parks cleanly before the Rust process
+opens ALSA. That catches the simple "configured card vanished" case.
+
+The JTS5 dual-Apple incident exposed a subtler case: with two Apple USB-C
+DACs saved as one four-channel profile, unplugging one child can leave
+`JASPER_AUDIO_DAC_CARD` naming the surviving child. The `ExecCondition`
+passes, but outputd then fails while opening the stale second child PCM
+(`JASPER_OUTPUTD_DUAL_DAC_B_PCM`, e.g. `hw:CARD=A_1,DEV=0`). If the
+reconciler has not already rewritten `/var/lib/jasper/outputd.env`, the
+normal `Restart=on-failure` attempt repeats the stale dual-DAC config and
+can hit the restart burst.
+
+The repaired output ladder is:
+
+1. **udev add/change/remove on ALSA control nodes** still triggers
+   `jasper-audio-hardware-reconcile.service` through
+   `SYSTEMD_WANTS`. This remains the generic surface for current and
+   future output hardware.
+2. **Apple USB remove** additionally runs
+   [`jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug),
+   which asks systemd to start the reconciler with `--no-block`. This
+   covers remove paths where the disappearing `controlC*` device does not
+   activate `SYSTEMD_WANTS`.
+3. **outputd failure** runs
+   [`jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile)
+   from `ExecStopPost`. It skips normal stops, `ExecCondition` parks, and
+   `EX_CONFIG=78`; for retryable failures it invokes
+   `jasper-audio-hardware-reconcile --reason outputd-failure --no-restart`.
+   The next built-in `Restart=on-failure` attempt then reads fresh
+   `outputd.env` (single-Apple `single_alsa` when one DAC remains, or
+   `fake` when none remain).
+
+`/sound/` also keeps the saved speaker topology separate from the current
+observed hardware. A saved dual-Apple active topology is not silently
+deleted when one DAC is unplugged; the page shows the saved topology, the
+currently attached hardware, and a mismatch blocker before active-speaker
+commissioning actions. `jasper-doctor` uses the same split: "Output
+hardware state" reports the current reconciler-owned hardware, while
+"active speaker output hardware" owns saved-topology mismatch.
 
 ## Why satellites needed no change
 
@@ -185,7 +219,7 @@ the same `ConditionPathExists`/`ExecCondition` gate.
 
 ## Verified vs needs-hardware
 
-**Verified hardware-free (this PR's tests):**
+**Verified hardware-free (tests):**
 
 - Reconciler creates the marker on the no-mic paths, removes it on the
   mic-present paths, and removes it for a custom mic
@@ -196,6 +230,16 @@ the same `ConditionPathExists`/`ExecCondition` gate.
   ([`tests/test_voice_input_gate.py`](../tests/test_voice_input_gate.py)).
 - `main()` exits `66` on `InputDeviceUnavailable`; the doctor reports
   expected-idle when the marker is present.
+- Output hardware hotplug and outputd-failure helpers request reconcile
+  without blocking udev/systemd, skip non-retrying stops, and preserve
+  the outputd `EX_CONFIG=78` park
+  ([`tests/test_output_recovery_scripts.py`](../tests/test_output_recovery_scripts.py),
+  [`tests/test_outputd_wiring.py`](../tests/test_outputd_wiring.py),
+  [`tests/test_outputd_systemd.py`](../tests/test_outputd_systemd.py)).
+- `/sound/` and `jasper-doctor` keep current output hardware readiness
+  separate from saved active-speaker topology mismatch
+  ([`tests/test_sound_setup.py`](../tests/test_sound_setup.py),
+  [`tests/test_doctor.py`](../tests/test_doctor.py)).
 
 **Needs a real plug/unplug hardware pass (flag for the next on-Pi
 session):**
@@ -217,8 +261,15 @@ session):**
    does not report voice healthy (Workstream B owns broadening that
    verification; this PR ensures the parked state is *correct and
    labelled*).
-5. **Output DAC unplug/replug** still converges (regression check —
-   unchanged by this PR, but exercise it on the same pass).
+5. **Output DAC unplug/replug** converges in both directions. For the
+   dual-Apple case, unplug one child and confirm:
+   `journalctl -u jasper-audio-hardware-reconcile` shows a hotplug or
+   outputd-failure reconcile, `/run/jasper-output-hardware/output_hardware.json`
+   reports the single remaining Apple DAC, `/var/lib/jasper/outputd.env`
+   switches to `JASPER_OUTPUTD_SINK=single_alsa`, and `jasper-outputd`
+   restarts without reaching the start limit. `/sound/` should show
+   "Saved speaker topology" separately from "Currently attached hardware"
+   and block active-speaker actions with a saved/attached mismatch.
 
 ## Files
 
@@ -229,5 +280,9 @@ session):**
 - [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) — raise on primary mic-open failure, exit 66
 - [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — marker-aware `check_mic_capture`
 - [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `voice.parked_no_mic`
+- [`deploy/udev/99-jasper-audio-hardware-reconcile.rules`](../deploy/udev/99-jasper-audio-hardware-reconcile.rules) — output-DAC add/remove/change triggers
+- [`deploy/bin/jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug) — Apple USB remove reconciler request
+- [`deploy/bin/jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile) — outputd retry-time env refresh
+- [`deploy/systemd/jasper-outputd.service`](../deploy/systemd/jasper-outputd.service) — output device gate + failure-time reconcile hook
 
-Last verified: 2026-06-21
+Last verified: 2026-06-22

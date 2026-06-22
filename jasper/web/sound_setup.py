@@ -47,6 +47,9 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/channel-identity mark/clear physical identity evidence
   POST /active-speaker/channel-protection mark/clear tweeter protection evidence
   POST /output-topology save a complete speaker/DAC topology draft
+  POST /settings persist global sound settings
+  POST /volume-floor/audition start/update a non-persistent 1% floor tone
+  POST /volume-floor/stop stop the non-persistent 1% floor tone
   POST /profiles/save save or update a named custom profile
   POST /profiles/rename rename a named custom profile
   POST /profiles/delete delete a named custom profile
@@ -127,10 +130,13 @@ from jasper.sound.profile import (
 from jasper.sound.settings import (
     HEADROOM_TRIM_MAX_DB,
     SoundSettings,
+    VOLUME_FLOOR_MAX_DB,
+    VOLUME_FLOOR_MIN_DB,
     load_sound_settings,
     output_trim_db as _output_trim,  # aliased so local `output_trim_db` vars don't shadow it
     save_sound_settings,
 )
+from jasper.volume_curve import percent_to_db
 
 from ._common import (
     begin_request,
@@ -151,6 +157,8 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
     "/audition",
     "/live-draft",
     "/settings",
+    "/volume-floor/audition",
+    "/volume-floor/stop",
     "/profiles/save",
     "/profiles/rename",
     "/profiles/delete",
@@ -166,6 +174,13 @@ CAPTURE_FILE_MODE = 0o640
 DEFAULT_ACTIVE_SPEAKER_CAPTURE_DIR = Path("/var/lib/jasper/active_speaker_captures")
 ACTIVE_SPEAKER_CAPTURE_DIR_ENV = "JASPER_ACTIVE_SPEAKER_CAPTURE_DIR"
 LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
+VOLUME_FLOOR_TONE_ALSA_DEVICE = "correction_substream"
+VOLUME_FLOOR_TONE_FREQ_HZ = 1000.0
+VOLUME_FLOOR_TONE_SOURCE_DBFS = -12.0
+VOLUME_FLOOR_TONE_CHUNK_DURATION_S = 8.0
+VOLUME_FLOOR_TONE_MAX_DURATION_S = 10 * 60.0
+VOLUME_FLOOR_TONE_SAMPLE_RATE = 48000
+VOLUME_FLOOR_TONE_STARTUP_CHECK_S = 0.08
 
 _live_draft_unavailable_log_at: dict[str, float] = {}
 
@@ -213,6 +228,8 @@ def _state_payload(
             "cut_max_q": CUT_MAX_Q,
             "simple_bands": simple_bands_payload(),
             "headroom_trim_max_db": HEADROOM_TRIM_MAX_DB,
+            "volume_floor_min_db": VOLUME_FLOOR_MIN_DB,
+            "volume_floor_max_db": VOLUME_FLOOR_MAX_DB,
         },
         "last_dsp_apply": last_dsp_apply,
         "dsp_write_epoch": dsp_write_epoch_from_state(last_dsp_apply),
@@ -233,10 +250,10 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     embedding it raw 502s ``/sound/output-topology`` on any Pi that has a
     populated state file. ``to_dict`` is the single conversion boundary.
 
-    The page JS reads the topology's own ``hardware`` block, not this
-    envelope key — this is the observed-hardware evidence surface (added
-    with the state in #498), consumed via curl today and mirrored by
-    ``/state`` as ``audio.output_hardware``.
+    The page keeps this envelope key separate from the topology's own
+    ``hardware`` block: topology hardware is the saved speaker contract,
+    while this object is the currently observed attachment state. It is also
+    mirrored by ``/state`` as ``audio.output_hardware``.
     """
     hardware = load_output_hardware_state()
     return hardware.to_dict() if hardware is not None else None
@@ -503,9 +520,11 @@ async def _apply_settings(
     """
     save_sound_settings(settings)
     logger.info(
-        "event=sound.settings headroom_trim=%.1f match_loudness=%s",
+        "event=sound.settings headroom_trim=%.1f match_loudness=%s "
+        "volume_floor_db=%.1f",
         settings.headroom_trim_db,
         settings.match_loudness,
+        settings.volume_floor_db,
     )
     profile = load_profile(profile_path)
     payload = _state_payload(
@@ -523,7 +542,7 @@ async def _apply_settings(
             persist_profile=False,
             output_trim_db=_output_trim(profile, settings),
         )
-    except Exception as e:  # noqa: BLE001
+    except (OSError, RuntimeError, ValueError, TypeError) as e:
         logger.exception("sound settings re-apply failed")
         payload["warning"] = f"Saved, but applying to the speaker failed: {e}"
         return payload
@@ -531,7 +550,552 @@ async def _apply_settings(
     payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
     payload["last_dsp_apply"] = apply_state.to_dict()
     payload["dsp_write_epoch"] = apply_state.op_id
+    try:
+        reconciled = await _reconcile_volume_curve_after_settings(
+            camilla_factory=camilla_factory,
+        )
+        if reconciled:
+            payload["volume_reconciled"] = True
+    except (AttributeError, OSError, RuntimeError) as e:
+        logger.warning("volume floor saved but volume reconcile failed: %s", e)
+        payload["volume_warning"] = (
+            "Saved, but the current volume will use the new floor on the next "
+            f"volume change: {e}"
+        )
     return payload
+
+
+async def _reconcile_volume_curve_after_settings(
+    *,
+    camilla_factory: Callable[[], Any] = _camilla,
+) -> bool:
+    """Apply the newly saved floor to the current listening level when safe.
+
+    The source-aware coordinator owns the same guardrails as the normal volume
+    path. ``maybe_reconcile_camilla`` only writes for camilla-master sources
+    (idle/AirPlay/USB), so changing the floor cannot accidentally unguard a
+    Spotify/Bluetooth push-mode handoff.
+    """
+    from jasper.renderer import RendererClient
+    from jasper.volume_coordinator import VolumeCoordinator
+    from jasper.volume_persistence import VolumePersistence
+
+    coord = VolumeCoordinator(
+        camilla=camilla_factory(),
+        persistence=VolumePersistence(
+            os.environ.get(
+                "JASPER_VOLUME_STATE_PATH",
+                "/var/lib/jasper/speaker_volume.json",
+            )
+        ),
+        backend=RendererClient(
+            librespot_state_path=os.environ.get(
+                "JASPER_LIBRESPOT_STATE",
+                "/run/librespot/state.json",
+            ),
+        ),
+    )
+    try:
+        coord.load_persisted_level()
+        await coord.maybe_reconcile_camilla()
+        return True
+    finally:
+        await coord.aclose()
+
+
+def _volume_floor_tone_wav_path() -> Path:
+    from jasper.correction.playback import _ensure_tone_wav
+
+    return _ensure_tone_wav(
+        freq_hz=VOLUME_FLOOR_TONE_FREQ_HZ,
+        duration_s=VOLUME_FLOOR_TONE_CHUNK_DURATION_S,
+        dbfs=VOLUME_FLOOR_TONE_SOURCE_DBFS,
+        sample_rate=VOLUME_FLOOR_TONE_SAMPLE_RATE,
+        cache_dir=Path(
+            os.environ.get(
+                "JASPER_VOLUME_FLOOR_TONE_DIR",
+                "/var/lib/jasper/correction/tones",
+            )
+        ),
+    )
+
+
+class _LoopingVolumeFloorTone:
+    """Small `aplay` loop independent of per-request asyncio loops."""
+
+    def __init__(
+        self,
+        wav_path: str | Path,
+        *,
+        on_finish: Callable[[Any, str], None] | None = None,
+        alsa_device: str = VOLUME_FLOOR_TONE_ALSA_DEVICE,
+        max_duration_s: float = VOLUME_FLOOR_TONE_MAX_DURATION_S,
+    ) -> None:
+        self._wav_path = Path(wav_path)
+        self._alsa_device = alsa_device
+        self._max_duration_s = max_duration_s
+        self._on_finish = on_finish
+        self._stop = threading.Event()
+        self._proc_lock = threading.Lock()
+        self._error_lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._error: str | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="jts-volume-floor-tone",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._terminate_current()
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=2.0)
+
+    @property
+    def error(self) -> str | None:
+        with self._error_lock:
+            return self._error
+
+    @property
+    def running(self) -> bool:
+        return self._thread.is_alive() and not self._stop.is_set() and not self.error
+
+    def _set_error(self, message: str) -> None:
+        with self._error_lock:
+            self._error = message
+
+    def _terminate_current(self) -> None:
+        with self._proc_lock:
+            proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=0.75)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=0.75)
+            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+        except ProcessLookupError:
+            pass
+
+    def _run(self) -> None:
+        deadline = time.monotonic() + self._max_duration_s
+        finish_reason = ""
+        try:
+            while not self._stop.is_set():
+                if time.monotonic() >= deadline:
+                    finish_reason = "timeout"
+                    self._set_error("volume floor tone safety timeout")
+                    break
+                try:
+                    proc = subprocess.Popen(
+                        [
+                            "aplay",
+                            "-D",
+                            self._alsa_device,
+                            "-q",
+                            str(self._wav_path),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except OSError as exc:
+                    finish_reason = "error"
+                    self._set_error(str(exc))
+                    logger.exception(
+                        "event=sound.volume_floor_tone action=play result=error"
+                    )
+                    break
+
+                with self._proc_lock:
+                    self._proc = proc
+
+                rc: int | None = None
+                while True:
+                    rc = proc.poll()
+                    if rc is not None:
+                        break
+                    if self._stop.is_set():
+                        self._terminate_current()
+                        break
+                    if time.monotonic() >= deadline:
+                        finish_reason = "timeout"
+                        self._set_error("volume floor tone safety timeout")
+                        self._terminate_current()
+                        break
+                    time.sleep(0.05)
+
+                with self._proc_lock:
+                    if self._proc is proc:
+                        self._proc = None
+
+                if self._stop.is_set():
+                    finish_reason = "stopped"
+                    break
+                if finish_reason:
+                    break
+                if rc not in (0, None):
+                    finish_reason = "error"
+                    self._set_error(f"aplay exited with rc={rc}")
+                    logger.warning(
+                        "event=sound.volume_floor_tone action=play result=error rc=%s",
+                        rc,
+                    )
+                    break
+                # Natural EOF of the short cached WAV: immediately loop it.
+        finally:
+            if finish_reason in {"error", "timeout"} and self._on_finish:
+                self._on_finish(self, finish_reason)
+
+
+class _VolumeFloorToneSession:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._camilla_op_lock = threading.Lock()
+        self._runner: Any | None = None
+        self._original_db: float | None = None
+        self._original_mute: bool | None = None
+        self._floor_db: float | None = None
+        self._camilla_factory: Callable[[], Any] | None = None
+        self._starting = False
+        self._cancel_start = False
+        self._generation = 0
+
+    async def _acquire_camilla_op_lock(self) -> None:
+        await asyncio.to_thread(self._camilla_op_lock.acquire)
+
+    async def start_or_update(
+        self,
+        raw: dict[str, Any],
+        *,
+        camilla_factory: Callable[[], Any],
+        runner_factory: Callable[..., Any] | None = None,
+    ) -> dict[str, Any]:
+        settings = SoundSettings.from_mapping({
+            **load_sound_settings().to_dict(),
+            "volume_floor_db": raw.get("volume_floor_db"),
+        })
+        floor_db = settings.volume_floor_db
+        await self._stop_if_finished(camilla_factory=camilla_factory)
+
+        runner_factory = runner_factory or _LoopingVolumeFloorTone
+        started_runner: Any | None = None
+        runner: Any | None
+        generation: int
+        action: str
+        while True:
+            with self._lock:
+                if self._runner is not None:
+                    runner = self._runner
+                    generation = self._generation
+                    action = "update"
+                    break
+                if not self._starting:
+                    self._starting = True
+                    self._cancel_start = False
+                    runner = None
+                    generation = self._generation
+                    action = "start"
+                    break
+            await asyncio.sleep(0.02)
+
+        if action == "start":
+            original: tuple[float, bool] | None = None
+            acquired_camilla_op = False
+            try:
+                runner = runner_factory(
+                    _volume_floor_tone_wav_path(),
+                    on_finish=self._runner_finished,
+                )
+                await self._acquire_camilla_op_lock()
+                acquired_camilla_op = True
+                camilla = camilla_factory()
+                original = await camilla.get_volume_and_mute(best_effort=True)
+                if original is None:
+                    raise RuntimeError("CamillaDSP volume state is unavailable")
+                await camilla.set_volume_db(percent_to_db(1, floor_db=floor_db))
+                await camilla.set_main_mute(False)
+                with self._lock:
+                    cancelled = self._cancel_start
+                    self._starting = False
+                    self._cancel_start = False
+                    if not cancelled:
+                        self._original_db, self._original_mute = original
+                        self._camilla_factory = camilla_factory
+                        self._runner = runner
+                        self._floor_db = floor_db
+                        self._generation += 1
+                if cancelled:
+                    await self._restore_snapshot(
+                        camilla_factory=camilla_factory,
+                        original_db=original[0],
+                        original_mute=original[1],
+                    )
+                    return self._inactive_payload(
+                        floor_db=floor_db,
+                        status="stopped",
+                    )
+                try:
+                    runner.start()
+                except (OSError, RuntimeError):
+                    with self._lock:
+                        if self._runner is runner:
+                            self._clear_active_locked()
+                            self._generation += 1
+                    await self._restore_snapshot(
+                        camilla_factory=camilla_factory,
+                        original_db=original[0],
+                        original_mute=original[1],
+                    )
+                    original = None
+                    raise
+                started_runner = runner
+            except (OSError, RuntimeError):
+                with self._lock:
+                    self._starting = False
+                    self._cancel_start = False
+                if original is not None:
+                    await self._restore_snapshot(
+                        camilla_factory=camilla_factory,
+                        original_db=original[0],
+                        original_mute=original[1],
+                    )
+                raise
+            finally:
+                if acquired_camilla_op:
+                    self._camilla_op_lock.release()
+        else:
+            await self._acquire_camilla_op_lock()
+            try:
+                with self._lock:
+                    active = self._runner is runner and self._generation == generation
+                if not active:
+                    return self._inactive_payload(
+                        floor_db=floor_db,
+                        status="stale",
+                    )
+                camilla = camilla_factory()
+                await camilla.set_volume_db(percent_to_db(1, floor_db=floor_db))
+                await camilla.set_main_mute(False)
+                with self._lock:
+                    if self._runner is runner and self._generation == generation:
+                        self._floor_db = floor_db
+                    else:
+                        return self._inactive_payload(
+                            floor_db=floor_db,
+                            status="stale",
+                        )
+            finally:
+                self._camilla_op_lock.release()
+
+        if started_runner is not None:
+            await asyncio.sleep(VOLUME_FLOOR_TONE_STARTUP_CHECK_S)
+            error = getattr(started_runner, "error", None)
+            if error:
+                await self.stop(
+                    camilla_factory=camilla_factory,
+                    reason="startup_failed",
+                )
+                raise RuntimeError(str(error))
+
+        logger.info(
+            "event=sound.volume_floor_tone action=%s floor_db=%.1f result=ok",
+            action,
+            floor_db,
+        )
+        return {
+            "ok": True,
+            "active": True,
+            "continuous": True,
+            "status": "started" if action == "start" else "updated",
+            "volume_floor_db": floor_db,
+            "percent": 1,
+            "db": round(percent_to_db(1, floor_db=floor_db), 3),
+        }
+
+    def _inactive_payload(self, *, floor_db: float, status: str) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "active": False,
+            "continuous": False,
+            "status": status,
+            "volume_floor_db": floor_db,
+            "percent": 1,
+            "db": round(percent_to_db(1, floor_db=floor_db), 3),
+        }
+
+    async def stop(
+        self,
+        *,
+        camilla_factory: Callable[[], Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        original_db: float | None
+        original_mute: bool | None
+        with self._lock:
+            starting = self._starting
+            if starting:
+                self._cancel_start = True
+            runner = self._runner
+            floor_db = self._floor_db
+            original_db = self._original_db
+            original_mute = self._original_mute
+            if runner is not None:
+                self._clear_active_locked()
+                self._generation += 1
+        if runner is not None:
+            runner.stop()
+        if original_db is not None and original_mute is not None:
+            await self._acquire_camilla_op_lock()
+            try:
+                await self._restore_snapshot(
+                    camilla_factory=camilla_factory,
+                    original_db=original_db,
+                    original_mute=original_mute,
+                )
+            finally:
+                self._camilla_op_lock.release()
+        status = "stopped" if runner is not None or starting else "idle"
+        logger.info(
+            "event=sound.volume_floor_tone action=stop reason=%s status=%s",
+            reason,
+            status,
+        )
+        payload = {"ok": True, "active": False, "status": status, "reason": reason}
+        if floor_db is not None:
+            payload["volume_floor_db"] = floor_db
+        return payload
+
+    async def _stop_if_finished(
+        self,
+        *,
+        camilla_factory: Callable[[], Any],
+    ) -> None:
+        with self._lock:
+            runner = self._runner
+            finished = runner is not None and not getattr(runner, "running", False)
+        if finished:
+            await self.stop(camilla_factory=camilla_factory, reason="expired")
+
+    def _runner_finished(self, runner: Any, reason: str) -> None:
+        original_db: float | None
+        original_mute: bool | None
+        with self._lock:
+            if self._runner is not runner:
+                return
+            camilla_factory = self._camilla_factory
+            floor_db = self._floor_db
+            original_db = self._original_db
+            original_mute = self._original_mute
+            self._clear_active_locked()
+            self._generation += 1
+        if camilla_factory is None:
+            return
+        try:
+            asyncio.run(
+                self._restore_after_runner_finish(
+                    camilla_factory=camilla_factory,
+                    reason=reason,
+                    floor_db=floor_db,
+                    original_db=original_db,
+                    original_mute=original_mute,
+                )
+            )
+        except (OSError, RuntimeError):
+            logger.exception(
+                "event=sound.volume_floor_tone action=restore result=error "
+                "reason=%s",
+                reason,
+            )
+
+    async def _restore_after_runner_finish(
+        self,
+        *,
+        camilla_factory: Callable[[], Any],
+        reason: str,
+        floor_db: float | None,
+        original_db: float | None,
+        original_mute: bool | None,
+    ) -> None:
+        if original_db is not None and original_mute is not None:
+            await self._acquire_camilla_op_lock()
+            try:
+                await self._restore_snapshot(
+                    camilla_factory=camilla_factory,
+                    original_db=original_db,
+                    original_mute=original_mute,
+                )
+            finally:
+                self._camilla_op_lock.release()
+        logger.warning(
+            "event=sound.volume_floor_tone action=restore reason=%s floor_db=%s",
+            reason,
+            "" if floor_db is None else f"{floor_db:.1f}",
+        )
+
+    async def _restore_snapshot(
+        self,
+        *,
+        camilla_factory: Callable[[], Any],
+        original_db: float,
+        original_mute: bool,
+    ) -> None:
+        camilla = camilla_factory()
+        if original_mute:
+            await camilla.set_main_mute(True, best_effort=True)
+            await camilla.set_volume_db(original_db, best_effort=True)
+        else:
+            await camilla.set_volume_db(original_db, best_effort=True)
+            await camilla.set_main_mute(False, best_effort=True)
+
+    def _clear_active_locked(self) -> None:
+        self._runner = None
+        self._original_db = None
+        self._original_mute = None
+        self._floor_db = None
+        self._camilla_factory = None
+
+
+_VOLUME_FLOOR_TONE_SESSION = _VolumeFloorToneSession()
+
+
+async def _audition_volume_floor(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any] = _camilla,
+    session: _VolumeFloorToneSession | None = None,
+    runner_factory: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Start or update a held tone at the proposed 1% volume floor.
+
+    This is intentionally non-persistent. The user can drag the floor slider,
+    hear the 1% reference continuously, and only the existing /settings save
+    path commits the chosen floor.
+    """
+    return await (session or _VOLUME_FLOOR_TONE_SESSION).start_or_update(
+        raw,
+        camilla_factory=camilla_factory,
+        runner_factory=runner_factory,
+    )
+
+
+async def _stop_volume_floor_tone(
+    *,
+    camilla_factory: Callable[[], Any] = _camilla,
+    reason: str = "stop",
+    session: _VolumeFloorToneSession | None = None,
+) -> dict[str, Any]:
+    return await (session or _VOLUME_FLOOR_TONE_SESSION).stop(
+        camilla_factory=camilla_factory,
+        reason=reason,
+    )
 
 
 async def _audition_profile(
@@ -3921,6 +4485,8 @@ def _make_handler(
                 "/live-draft",
                 "/preview",
                 "/settings",
+                "/volume-floor/audition",
+                "/volume-floor/stop",
                 "/active-speaker/design-draft",
                 "/active-speaker/crossover-preview",
                 "/active-speaker/stop",
@@ -4220,6 +4786,34 @@ def _make_handler(
                         self._send_json({"error": str(e)}, status=502)
                         return
                     self._send_json(payload)
+                    return
+                if path == "/volume-floor/audition":
+                    try:
+                        self._send_json(
+                            asyncio.run(
+                                _audition_volume_floor(
+                                    raw,
+                                    camilla_factory=camilla_factory,
+                                )
+                            )
+                        )
+                    except (OSError, RuntimeError, ValueError, TypeError) as e:
+                        logger.exception("volume floor audition failed")
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/volume-floor/stop":
+                    try:
+                        self._send_json(
+                            asyncio.run(
+                                _stop_volume_floor_tone(
+                                    camilla_factory=camilla_factory,
+                                    reason=str(raw.get("reason") or "stop"),
+                                )
+                            )
+                        )
+                    except (OSError, RuntimeError, ValueError, TypeError) as e:
+                        logger.exception("volume floor tone stop failed")
+                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path.startswith("/profiles/"):
                     try:

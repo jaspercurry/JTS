@@ -241,8 +241,9 @@ Two notes:
   maps to `main_volume` for IDLE, AirPlay, and USB sink; for Spotify
   and BT, `main_volume` stays pinned at 0 dB and the source slider
   carries `listening_level`. `listening_level=0` is special on every
-  music source: Camilla also asserts `main_mute` and the −50 dB floor
-  so content mute means silent content rather than "very quiet."
+  music source: Camilla also asserts `main_mute` and the calibrated
+  volume floor (default −50 dB) so content mute means silent content
+  rather than "very quiet."
 
 ## Assistant Loudness Matching
 

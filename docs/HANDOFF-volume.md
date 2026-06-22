@@ -45,8 +45,8 @@ When the voice tool / dial / "louder" wants to change volume:
    `airplay > spotify > bluetooth > usbsink > idle`.
 3. Decides whether the source is **push-mode** (it has a slider we
    can drive — camilla pinned at 0 dB) or **camilla-as-master** (we
-   can't drive its slider — camilla carries listening_level on the
-   −50..0 dB scale). The decision lives in the source registry at
+   can't drive its slider — Camilla carries `listening_level` on the
+   calibrated 1..100% dB curve). The decision lives in the source registry at
    `jasper/music_sources.py` (`VolumeMode`), consumed by
    `_camilla_carries_level(source)`:
    - **IDLE** → camilla-as-master
@@ -57,7 +57,8 @@ When the voice tool / dial / "louder" wants to change volume:
    - **USBSINK** → camilla-as-master (the host slider is observed
      one-way by `jasper-usbsink`, not driven by JTS)
 4. Pushes the level to the right attenuator:
-   - **AirPlay** → CamillaDSP `main_volume` (linear over −50..0 dB)
+   - **AirPlay** → CamillaDSP `main_volume` (1% maps to the calibrated
+     floor, default −50 dB; 100% maps to 0 dB)
    - **Spotify** → Spotify Web API `PUT /me/player/volume` via the multi-account `spotify_router` (librespot 0.8.0 has no local control HTTP, so we go through Spotify's cloud → spirc → librespot, ~200-800ms latency, also propagates to all Spotify clients so the app slider visibly moves)
    - **Bluetooth** → `org.bluez.MediaTransport1.Volume` property on the active a2dpsnk path (uint16 0..127)
    - **USB sink** → CamillaDSP `main_volume`
@@ -68,13 +69,21 @@ When the voice tool / dial / "louder" wants to change volume:
    canonical level until a later handoff or recovery path can clear it.
    `listening_level=0` is the explicit exception: the source slider is
    still pushed to zero, but Camilla also asserts `main_mute` and stores
-   the −50 dB floor so content/music "0%" is actually muted, not just
-   the renderer's lowest slider value. Assistant speech is governed by
-   the voice/mic policy and outputd path, not by source volume.
+   the calibrated floor (default −50 dB) so content/music "0%" is actually
+   muted, not just the renderer's lowest slider value. Assistant speech is
+   governed by the voice/mic policy and outputd path, not by source volume.
    In camilla-as-master mode (idle, AirPlay, USB), `main_volume` IS the
    user-facing knob. The same 0% rule applies there: the normal
-   −50..0 dB curve remains unchanged for 1-100%, while 0% additionally
-   sets Camilla's `main_mute`.
+   calibrated 1-100% curve applies, while 0% additionally sets Camilla's
+   `main_mute`.
+
+The audible curve is configured by `/sound/` advanced settings:
+`volume_floor_db` is the dB value for 1%, clamped to −60..−10 dB and
+defaulting to −50 dB. The page can start a continuous 1% calibration tone,
+update CamillaDSP `main_volume` as the floor slider moves, and stop the tone
+explicitly or on page leave; only `/sound/settings` saves the chosen floor.
+JTS never maps the user slider above 0 dB; raising the floor only compresses
+the quiet end of the slider for low-sensitivity speakers.
 
 ### Bonded-follower volume proxy (stereo pairs)
 
@@ -493,8 +502,8 @@ Multiple guardrails sit on top:
 - `CamillaController.set_volume_db` validates every Python write and
   clamps positive gain to 0 dB as runtime defense in depth.
 - `VolumeCoordinator` treats 0% as Camilla `main_mute=true` plus the
-  normal −50 dB floor; nonzero unmute writes the safe dB target before
-  clearing `main_mute`.
+  calibrated floor (default −50 dB); nonzero unmute writes the safe dB
+  target before clearing `main_mute`.
 - `jasper-doctor` checks the active Camilla config for
   `devices.volume_limit <= 0` and fails if it is missing or positive.
 - `/state.audio` exposes Camilla playback RMS, playback peak, and
@@ -543,7 +552,7 @@ rules for raw active-source transitions:
 
 | Edge | What happens |
 |---|---|
-| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | push level to new source first; confirm Camilla's push-mode carrier only after the push succeeds (`0 dB` for 1-100%, `main_mute=true` + −50 dB for 0%) |
+| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | push level to new source first; confirm Camilla's push-mode carrier only after the push succeeds (`0 dB` for 1-100%, `main_mute=true` + calibrated floor for 0%) |
 | push-mode → camilla-as-master (e.g. Spotify → AirPlay) | camilla → percent_to_db(level) and `main_mute=(level == 0)` (take over) |
 | push → push (e.g. Spotify → BT) | push level to new source; keep/clear Camilla's 0% content mute as needed |
 | camilla → camilla (idle ↔ AirPlay) | no change; camilla already carries level |
@@ -647,4 +656,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-21 (gain-chain ledger checked against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-06-22 (volume floor calibration checked against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

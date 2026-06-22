@@ -22,21 +22,25 @@ from typing import TYPE_CHECKING
 
 from . import tool
 from ..control.client import AsyncControlClient, ControlError
+from ..volume_curve import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_CEILING_DB,
+    db_to_percent,
+    percent_to_db,
+)
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeCoordinator
 
 
-# Re-exported for tests + control daemon — same dB scale as CamillaDSP
-# and volume_persistence. Most callers shouldn't need these directly:
-# the coordinator handles unit conversion internally.
-VOLUME_MIN_DB = -50.0
-VOLUME_MAX_DB = 0.0
+# Re-exported for tests + legacy callers. The effective floor can be
+# calibrated in /sound/; these constants are the shipped default.
+VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
+VOLUME_MAX_DB = VOLUME_CEILING_DB
 
 # Step used in the system instruction's "volume up / down" guidance.
-# 10 listening-level points = ~5 dB on the legacy camilla scale and
-# matches Sonos/Echo/HomePod step size. Keep this here so the
-# system prompt's example doesn't drift from the tool default.
+# 10 listening-level points is about 5 dB on the default curve; a calibrated
+# floor intentionally changes the dB-per-step so the useful range fills 1..100.
 DEFAULT_STEP_PERCENT = 10
 
 logger = logging.getLogger(__name__)
@@ -70,15 +74,11 @@ def _pair_follower_active() -> bool:
 
 
 def _percent_to_db(percent: int) -> float:
-    p = max(0, min(100, int(percent)))
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return VOLUME_MIN_DB + (span * p / 100.0)
+    return percent_to_db(percent)
 
 
 def _db_to_percent(db: float) -> int:
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    p = (float(db) - VOLUME_MIN_DB) / span * 100.0
-    return max(0, min(100, round(p)))
+    return db_to_percent(db)
 
 
 def make_audio_tools(coordinator: "VolumeCoordinator"):

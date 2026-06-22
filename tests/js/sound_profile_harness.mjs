@@ -382,6 +382,10 @@ function setupHarness(fetchHandler, options = {}) {
     },
   };
   globalThis.window = {
+    _listeners: {},
+    addEventListener(ev, fn) {
+      (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+    },
     setTimeout,
     clearTimeout,
     location: { href: "" },
