@@ -22,7 +22,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
-from ..multiroom.airplay_latency import bonded_airplay_latency_snapshot
+from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
@@ -676,18 +676,12 @@ async def _get_state(
         grouping_state = None
 
     # Bonded-leader AirPlay latency fit (Stage D observability — see
-    # jasper/multiroom/airplay_latency.py). Composed HERE (the /state
-    # aggregator's job) rather than inside read_grouping_state, which stays a
-    # tiny env parse; the gated journal read is /state-scoped. Non-mutating
-    # spread so the canonical reader's return is never modified in place. The
-    # snapshot is total (returns {"applicable": False} on solo without
-    # touching the journal, None only on its own read error), so the whole
-    # grouping section survives a broken read.
-    if isinstance(grouping_state, dict):
-        grouping_state = {
-            **grouping_state,
-            "airplay_latency_fit": bonded_airplay_latency_snapshot(),
-        }
+    # jasper/multiroom/airplay_latency.py). The shared composer (also used by
+    # /rooms.json) attaches it non-mutatingly; read_grouping_state stays a pure
+    # config projection and the gated, cached journal read lives behind the
+    # helper. Total (returns {"applicable": False} on solo without touching the
+    # journal), so the grouping section survives a broken read.
+    grouping_state = with_airplay_latency_fit(grouping_state)
 
     # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
     # os.environ — jasper-control isn't restarted on a /transit/ save, only

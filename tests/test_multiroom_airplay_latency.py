@@ -211,6 +211,29 @@ def test_snapshot_is_fail_soft_on_loader_error():
     assert al.bonded_airplay_latency_snapshot(config_loader=boom) is None
 
 
+# ---------- with_airplay_latency_fit: the shared display composer ----------
+
+
+def test_with_airplay_latency_fit_attaches_without_mutating(monkeypatch):
+    """The composer /state and /rooms.json both use: attaches the fit to a NEW
+    dict (the canonical reader's return is never mutated in place)."""
+    monkeypatch.setattr(
+        al, "bonded_airplay_latency_snapshot",
+        lambda: {"applicable": True, "tight": True, "residual_lag_sec": 0.55},
+    )
+    base = {"enabled": True, "role": "leader"}
+    out = al.with_airplay_latency_fit(base)
+    assert out is not base
+    assert "airplay_latency_fit" not in base  # original untouched
+    assert out["airplay_latency_fit"]["tight"] is True
+    assert out["enabled"] is True
+
+
+def test_with_airplay_latency_fit_passes_through_non_dict():
+    # A fail-soft None grouping read must pass straight through, not crash.
+    assert al.with_airplay_latency_fit(None) is None
+
+
 # ---------- doctor check ----------
 
 

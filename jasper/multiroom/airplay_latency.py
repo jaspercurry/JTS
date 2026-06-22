@@ -297,3 +297,24 @@ def bonded_airplay_latency_snapshot(
         return {"applicable": True, **fit.to_dict()}
     except Exception:  # noqa: BLE001 — observability must never break /state
         return None
+
+
+def with_airplay_latency_fit(
+    grouping_state: dict[str, object] | None,
+) -> dict[str, object] | None:
+    """Attach ``airplay_latency_fit`` to a grouping snapshot dict, returning a
+    NEW dict (the canonical reader's return is never mutated). No-op for a
+    non-dict (a fail-soft ``None`` grouping read passes straight through).
+
+    This is the ONE composition the display aggregators share — ``/state``
+    (``control.state_aggregate``) and ``/rooms.json`` (``web.rooms_setup``)
+    both wrap ``read_grouping_state()`` with it, so the bonded-leader fit
+    appears identically on both surfaces without each re-deriving it. The
+    grouping CONFIG snapshot (``read_grouping_state``) stays a pure projection;
+    the (gated, cached) journal read lives only behind this helper. ``GET
+    /grouping`` deliberately does NOT wrap — its consumers (the follower's
+    pair-channel check, ``/unbond`` discovery) don't need the fit.
+    """
+    if not isinstance(grouping_state, dict):
+        return grouping_state
+    return {**grouping_state, "airplay_latency_fit": bonded_airplay_latency_snapshot()}

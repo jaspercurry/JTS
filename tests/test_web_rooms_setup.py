@@ -108,7 +108,7 @@ class _FakeHandler:
         return [v for n, v in self.sent_headers if n.lower() == name.lower()]
 
 
-def _patch_discovery(monkeypatch, *, speakers, grouping=None,
+def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
                      self_name="JTS",
                      self_hostname="jts-living.local", self_room="living",
                      self_addrs=frozenset({"192.168.1.5"}),
@@ -140,6 +140,14 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None,
     monkeypatch.setattr(
         rooms_setup, "read_grouping_state",
         lambda *a, **k: dict(grouping if grouping is not None else _OFF_GROUPING),
+    )
+    # The airplay-fit composer reads the real /var/lib/jasper files; stub it so
+    # the page stays hermetic. Default {applicable: False}; pass airplay_fit= to
+    # simulate an active bonded leader (e.g. a tight regime).
+    _fit = dict(airplay_fit) if airplay_fit is not None else {"applicable": False}
+    monkeypatch.setattr(
+        rooms_setup, "with_airplay_latency_fit",
+        lambda g: g if not isinstance(g, dict) else {**g, "airplay_latency_fit": _fit},
     )
     monkeypatch.setattr(rooms_setup, "_discover_speakers", lambda *a, **k: list(speakers))
     # _build_rooms_payload calls _discover_speakers_cached(), which memoizes
@@ -293,7 +301,9 @@ def test_rooms_json_shape(monkeypatch):
     assert s["hostname"] == "jts-living.local"
     assert s["room"] == "living"
     assert s["address"] == "192.168.1.5"
-    assert s["grouping"] == _OFF_GROUPING
+    # grouping = the read_grouping_state dict + the airplay-fit composer's key
+    # ({applicable: false} on a solo speaker).
+    assert s["grouping"] == {**_OFF_GROUPING, "airplay_latency_fit": {"applicable": False}}
     # peering defaults to off/off when no peering.env exists (patched empty here).
     assert s["peering"] == {"enabled": False, "primary": False}
 
@@ -307,6 +317,24 @@ def test_rooms_json_shape(monkeypatch):
     assert p["address"] == "192.168.1.9"
     assert p["home_url"] == "http://jts-bedroom.local/"
     assert p["system_url"] == "http://jts-bedroom.local/system/"
+
+
+def test_rooms_json_carries_tight_airplay_fit_for_a_bonded_leader(monkeypatch):
+    """An active bonded leader in the tight regime surfaces airplay_latency_fit
+    on /rooms.json so the bond card can warn (the rooms JS renders it)."""
+    leader = {**_OFF_GROUPING, "enabled": True, "role": "leader", "bond_id": "lr"}
+    _patch_discovery(
+        monkeypatch, speakers=[], grouping=leader,
+        airplay_fit={
+            "applicable": True, "tight": True, "residual_lag_sec": 0.55,
+            "buffer_ms": 400, "budget_sec": 0.36, "need_sec": 0.55,
+        },
+    )
+    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
+    fit = data["self"]["grouping"]["airplay_latency_fit"]
+    assert fit["applicable"] is True
+    assert fit["tight"] is True
+    assert fit["residual_lag_sec"] == 0.55
 
 
 def test_rooms_json_peer_links_never_fall_back_to_raw_ip(monkeypatch):

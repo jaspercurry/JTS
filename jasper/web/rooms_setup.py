@@ -90,6 +90,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .. import identity
 from ..control import household_credential
 from ..mdns import browse_once
+from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.state import parse_grouping_response, read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
@@ -372,7 +373,8 @@ def _build_rooms_payload() -> dict:
     Shape (consumed by /assets/rooms/js/main.js):
       {
         "self": {name, hostname, room, address,
-                 grouping: <read_grouping_state() dict>,
+                 grouping: <read_grouping_state() dict
+                            + airplay_latency_fit: {applicable, tight?, …}>,
                  peering: {enabled, primary}},
         "peers": [{name, room, address, home_url, system_url}, ...]
       }
@@ -388,7 +390,11 @@ def _build_rooms_payload() -> dict:
         "hostname": me.hostname,
         "room": me.room,
         "address": _self_address(own),
-        "grouping": read_grouping_state(),
+        # with_airplay_latency_fit attaches airplay_latency_fit ({applicable:
+        # false} unless this speaker is an active bonded leader) — the same
+        # composer /state uses, so /rooms shows the bonded-leader lip-sync
+        # status without re-deriving it.
+        "grouping": with_airplay_latency_fit(read_grouping_state()),
         "peering": _read_peering_block(),
     }
 

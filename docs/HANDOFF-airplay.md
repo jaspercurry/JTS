@@ -1378,18 +1378,27 @@ path):
   Consequence: with the default `buffer_ms` (400 → need ~0.55 s) the
   threshold is ~1.05 s, far under the ~2.0 s default budget; but a
   `buffer_ms` above ~1350 ms is tight **even at the default budget**.
-  Surfaced fail-soft at
-  `/state.grouping.airplay_latency_fit` — `{"applicable": false}` unless
-  this speaker is an active bonded leader (the journal is read ONLY in
-  that rare case, gated behind a one-line config parse, so a solo speaker
-  pays nothing; and even a leader's read is TTL-cached via
-  `cached_notified_frames` so the 5 s `/state` poll cannot spawn a
-  `journalctl` per request). The gate is the shared
-  `config.is_active_leader` — the SAME predicate the reconciler uses to
-  WRITE the offset (`airplay_grouping_env`), so the surface can never claim
-  a fit for an offset that is not armed. The reader (`read_notified_frames`)
-  is fail-soft: an unreadable journal resolves to the default budget, never
-  a false warn.
+  Surfaced fail-soft on BOTH `/state.grouping.airplay_latency_fit` and
+  `/rooms.json` (`self.grouping.airplay_latency_fit`) — both wrap
+  `read_grouping_state()` with the one shared composer
+  `airplay_latency.with_airplay_latency_fit`, so the two surfaces agree and
+  neither re-derives it. The value is `{"applicable": false}` unless this
+  speaker is an active bonded leader (the journal is read ONLY in that rare
+  case, gated behind a one-line config parse, so a solo speaker pays nothing;
+  and even a leader's read is TTL-cached via `cached_notified_frames` so the
+  ~5–7 s page polls cannot spawn a `journalctl` per request — all callers
+  share one cached read). The gate is the shared `config.is_active_leader` —
+  the SAME predicate the reconciler uses to WRITE the offset
+  (`airplay_grouping_env`), so the surface can never claim a fit for an offset
+  that is not armed. The reader (`read_notified_frames`) is fail-soft: an
+  unreadable journal resolves to the default budget, never a false warn.
+  `GET /grouping` deliberately stays unwrapped — its consumers don't need it.
+- **Household-facing card** — the `/rooms` page renders an "AirPlay lip-sync"
+  row inside the bond card (only on an active bonded leader): a quiet
+  "Synced" badge when it fits, an amber "Lagging ~N ms" badge + a one-line
+  explanation when tight. Source: the `groupingBody` renderer in
+  `deploy/assets/rooms/js/main.js`. (Solo/follower → `applicable:false` →
+  the row isn't drawn.)
 - **Doctor check** — `check_grouping_airplay_latency` (grouping domain)
   skips (`ok`, "n/a") on solo/follower and warns only when a bonded
   leader's budget is genuinely too short, naming the residual lag. The
