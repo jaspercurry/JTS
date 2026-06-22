@@ -718,6 +718,65 @@ cleanly with no move lines, proving the idempotent re-run path. The Spotify
 `invalid_grant` warning is pre-existing revoked-token state, not a migration
 failure.
 
+### On-disk posture verification — `jasper-doctor` (the live-box guard)
+
+The static tests above pin the install/writer **code**; nothing checked the
+**live box**. A manual `chmod`, a half-applied migration, a backup restore, or a
+future writer that forgets `SECRET_ENV_MODE` drifts on disk with no runtime
+signal — in *either* direction. Two `jasper-doctor` checks in
+[`jasper/cli/doctor/secret_compartments.py`](../jasper/cli/doctor/secret_compartments.py)
+(`check_jasper_secrets_compartment`, `check_jasper_intsecrets_compartment`; group
+`privsep`, orders 23.6 / 23.61) close that gap. They are the **secret-side
+complement** to the read-side privsep check
+([`privsep.py`](../jasper/cli/doctor/privsep.py)), which deliberately excludes the
+compartments because a secret has a **two-sided** contract a one-sided "must be
+readable" check can't express:
+
+1. **Availability** — readable by the daemons IN the compartment. A `0600`-root or
+   wrong-group secret silently breaks the Gmail / Calendar / Spotify / HA tools and
+   looks *identical* to "not configured" (the #900/#901 fail-soft class).
+2. **Confidentiality** — NOT readable *outside* it. If a secret regresses to `o+r`
+   (world) or group `jasper` (the shared group every daemon holds), the
+   compartmentalization silently dissolves. privsep's check **passes** an
+   over-readable secret (more access satisfies "readable"), so it structurally
+   cannot catch this — which is why this is a distinct check.
+
+Like privsep, the checks run as **root**, so they reason about each compartment
+member's / non-member's *identity* (uid + group set, resolved from the unit's live
+`systemctl show`) against each path's `stat` owner/group/mode — never `os.access`.
+Per compartment they verify the dir is `2770` group `<compartment>` and not
+world/non-member-traversable, and that every present secret file is group
+`<compartment>` `0640`, readable by the member daemons, and readable by *no one
+else*. Non-members are the rest of privsep's Tier-A universe (4a:
+mux/control/input; 4b: input) — exactly the daemons Phase 4 documents losing the
+secret. They skip cleanly when `systemctl` is unavailable (dev host) or the
+compartment dir is absent (nothing configured), and a member running as root (the
+streambox `jasper-web`) self-drops from the availability set.
+
+**Severity is a deliberate divergence (owner-confirmed).** Every other doctor
+permission check WARNs on drift. Here *under*-permission (availability — a member
+can't read; a re-deploy heals it) WARNs, but *over*-permission (a non-member or the
+world CAN read; the compartment dissolved) **FAILs** — louder than WARN, because a
+confidentiality regression is invisible everywhere else. Reports are strictly
+secret-free (owner / group / octal-mode / daemon-name only; never a byte of the
+value — mirrors `check_control_token`).
+
+**Install-side re-tighten.** `migrate_secrets_phase4a`'s unconditional re-assert
+block already `chown -R`'s the whole compartment to `jasper-secrets` and re-chmods
+`google_credentials.env` / `accounts.json` / the token tree to `0640` every deploy;
+`migrate_voice_keys_split` only chmods `voice_keys.env` when it *writes* it, so on
+the idempotent re-run a manually-widened `voice_keys.env` would survive. A one-line
+`chmod 0640 "${SECRETS_DIR}/voice_keys.env"` after the split closes that mode gap so
+a re-deploy heals an over-exposed key; the doctor FAILs on it until it does.
+
+Pinned by [`tests/test_doctor_secrets.py`](../tests/test_doctor_secrets.py)
+(hardware-free: 0640-correct PASSES, `o+r` / broad-group FAILs over-exposure,
+member-can't-read WARNs, FAIL outranks WARN, secret value never in output),
+[`tests/test_doctor_secrets_manifest.py`](../tests/test_doctor_secrets_manifest.py)
+(the member list mirrors the units' `SupplementaryGroups=`; no unit joins a
+compartment group without membership), and the two re-tighten cases in
+[`tests/test_install_secrets_migration.py`](../tests/test_install_secrets_migration.py).
+
 ## Remaining WS1 scope (2026-06-17)
 
 ### Streambox `jasper-web` drop
@@ -923,6 +982,9 @@ permissions check.
 Last verified: 2026-06-22 (Spotify token cache write contract re-checked
 against `jasper.accounts.build_cache_handler` and live `jts3.local`
 `/var/lib/jasper-intsecrets/spotify/caches` permissions; Wi-Fi scan-suppression
-helper privilege boundary verified on `jts3.local`; core-audio daemon
-root-surface section + privsep read-access doctor check were last verified
-2026-06-21 on `jts.local`)
+helper privilege boundary verified on `jts3.local`; the secret-compartment
+on-disk posture doctor check + `voice_keys.env` re-tighten added 2026-06-21,
+hardware-free tests only — on-Pi `jasper-doctor` run still owed; core-audio
+daemon root-surface section + privsep read-access doctor check were last
+verified 2026-06-21 on `jts.local`, with the always-on core-audio daemons'
+root + `StartLimitAction=reboot` status verified there that day)
