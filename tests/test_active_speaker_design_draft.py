@@ -151,6 +151,46 @@ def test_driver_research_cannot_weaken_human_review_requirements():
     }
 
 
+def test_driver_research_notes_allow_detailed_safety_summary():
+    raw = _research()
+    raw["drivers"][1]["notes"] = "x" * 2048
+
+    payload = build_design_draft(_topology(), driver_research=raw)
+
+    assert len(payload["driver_research"]["drivers"][1]["notes"]) == 2048
+
+
+def test_driver_research_notes_remain_bounded():
+    raw = _research()
+    raw["drivers"][1]["notes"] = "x" * 2049
+
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="driver.notes must be <= 2048 chars",
+    ):
+        build_design_draft(_topology(), driver_research=raw)
+
+
+def test_manual_driver_notes_use_same_bound():
+    manual_settings = {
+        "drivers": [
+            {"role": "tweeter", "notes": "x" * 2048},
+        ],
+        "crossover_candidates": [],
+    }
+
+    payload = build_design_draft(_topology(), manual_settings=manual_settings)
+
+    assert len(payload["manual_settings"]["drivers"][0]["notes"]) == 2048
+
+    manual_settings["drivers"][0]["notes"] = "x" * 2049
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="manual_settings.driver.notes must be <= 2048 chars",
+    ):
+        build_design_draft(_topology(), manual_settings=manual_settings)
+
+
 def test_manual_crossover_settings_can_replace_ai_research():
     payload = build_design_draft(
         _topology(),
