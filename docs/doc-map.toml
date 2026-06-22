@@ -130,6 +130,7 @@ docs = [
   "QUICKSTART.md",
   "BRINGUP.md",
   "docs/HANDOFF-supply-chain.md",
+  "docs/HANDOFF-build-sandbox.md",
   "docs/HANDOFF-resilience.md",
   "docs/install-update-resilience-plan.md",
   "docs/HANDOFF-install-update-transaction.md",

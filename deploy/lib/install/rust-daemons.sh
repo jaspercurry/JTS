@@ -112,7 +112,13 @@ build_install_rust_daemon() {
         echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; lto=false, codegen-units=16, jobs=1)"
     fi
 
-    sudo -u "${BUILD_USER}" -H env "${cargo_env[@]}" bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
+    # Contain the sudo -> pi -> cargo -> rustc subtree: cargo manages its
+    # own -j (CARGO_BUILD_JOBS via the low-memory profile above), but the
+    # LTO link step can still spike RAM; the scope makes an OOM kill this
+    # build, never a live daemon. cargo_env stays inside the command so
+    # the user-drop + profile env are unaffected by the scope.
+    run_contained_build "${name}" -- \
+        sudo -u "${BUILD_USER}" -H env "${cargo_env[@]}" bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
         || { echo "  ${name} build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/${name}"
