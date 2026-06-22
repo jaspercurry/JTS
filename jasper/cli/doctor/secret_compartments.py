@@ -161,6 +161,17 @@ def _is_glob(pattern: str) -> bool:
     return any(c in pattern for c in "*?[")
 
 
+def _unique_names(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Pure, hardware-free classifiers (unit-tested with tmp files + synthetic ids).
 # --------------------------------------------------------------------------- #
@@ -182,12 +193,14 @@ def _file_over_exposed_to(
     for nm in non_members:
         if _process_can_read(st, nm.uid, nm.gids):
             exposed.append(nm.user)
-    return exposed
+    return _unique_names(exposed)
 
 
 def _file_unreadable_by(st: os.stat_result, members: list[_Identity]) -> list[str]:
     """Which member daemons CANNOT read this stat'd file (the availability side)."""
-    return [m.user for m in members if not _process_can_read(st, m.uid, m.gids)]
+    return _unique_names([
+        m.user for m in members if not _process_can_read(st, m.uid, m.gids)
+    ])
 
 
 def _classify_compartment(
@@ -231,9 +244,9 @@ def _classify_compartment(
     # over-exposure: combined with a file bit it reaches the secret. Reuse the
     # read primitive against the execute bits by testing each precedence tier.
     dir_world = bool(dir_st.st_mode & (_stat.S_IROTH | _stat.S_IWOTH | _stat.S_IXOTH))
-    dir_exposed_to = [
+    dir_exposed_to = _unique_names([
         nm.user for nm in non_members if _dir_traversable_by(dir_st, nm.uid, nm.gids)
-    ]
+    ])
     if dir_world or dir_exposed_to:
         who = ", ".join(dir_exposed_to + (["world"] if dir_world else []))
         fails.append(
@@ -248,9 +261,9 @@ def _classify_compartment(
             "group); re-deploy to heal"
         )
     else:
-        unreach = [
+        unreach = _unique_names([
             m.user for m in members if not _dir_traversable_by(dir_st, m.uid, m.gids)
-        ]
+        ])
         if unreach:
             warns.append(
                 f"dir {comp.directory} ({dir_group} {oct(dir_mode)}) not traversable "
@@ -290,7 +303,8 @@ def _classify_compartment(
         return CheckResult(label, "fail", detail)
     if warns:
         return CheckResult(label, "warn", "; ".join(_truncate(warns)))
-    member_names = ", ".join(m.user for m in members) or "no members resolved"
+    member_names = ", ".join(_unique_names([m.user for m in members]))
+    member_names = member_names or "no members resolved"
     return CheckResult(
         label,
         "ok",

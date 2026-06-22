@@ -323,7 +323,10 @@
 > flat/passive path — leaving a consistent passive-topology + flat-graph box the
 > L0 gate accepts. It uses only the supported generator/persistence functions
 > (never hand-edited JSON) and is safe-by-construction: it never produces the
-> dangerous roleful-topology + flat-graph combination. Implementation:
+> dangerous roleful-topology + flat-graph combination. `/sound/output-topology`
+> GET/POST carries a content revision; a browser page loaded before the reset
+> gets `409 Conflict` instead of being allowed to replay the old active topology.
+> Implementation:
 > `jasper/cli/output_topology_reset.py`.
 > `jasper.active_speaker.bringup` and
 > `/sound/active-speaker/bringup-preflight` now make the product fork explicit:
@@ -1635,4 +1638,7 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-22
+Last verified: 2026-06-22 (topology reset recovery and stale
+`/sound/output-topology` POST guard checked against
+`jasper.web.sound_setup`; active-speaker commissioning state checked
+against the focused `/sound/` tests)

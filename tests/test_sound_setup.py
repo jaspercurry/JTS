@@ -628,6 +628,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
     assert "observedHardware" in js
+    assert "topology_revision" in js
+    assert "resp.status === 409" in js
     assert "Saved speaker topology" in js
     assert "Currently attached hardware" in js
     assert "Hardware mismatch" in js
@@ -2297,6 +2299,35 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
     )
     assert payload["channel_identity"]["verified_channel_count"] == 1
     assert payload["clock_domain"]["status"] == "single_device_clock"
+    assert payload["topology_revision"].startswith("sha256:")
+
+
+def test_sound_output_topology_save_rejects_stale_revision(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    stale = sound_setup._output_topology_payload()
+    active_topology = _active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested"
+    )
+
+    save_output_topology(new_topology_draft(), path=path)
+
+    with pytest.raises(sound_setup.OutputTopologyRevisionConflict):
+        sound_setup._save_output_topology_payload(
+            {
+                "output_topology": active_topology,
+                "topology_revision": stale["topology_revision"],
+            },
+            require_revision=True,
+        )
+
+    current = json.loads(path.read_text(encoding="utf-8"))
+    assert current["speaker_groups"] == []
 
 
 def test_sound_channel_identity_route_marks_saved_topology_only(
@@ -2534,6 +2565,7 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
         get_payload = json.loads(get_resp.read().decode("utf-8"))
         assert get_payload["output_topology"]["status"] == "draft"
+        assert get_payload["topology_revision"] == "missing"
         # Stage 2: the DAC8x declares an active outputd lane, so the route
         # resolves to that lane (not a direct-DAC route) at its full width.
         assert get_payload["active_playback_route"]["playback_device_source"] == (
@@ -2544,12 +2576,57 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         post_resp = request_with_csrf(
             base,
             "/output-topology",
-            json.dumps(get_payload["output_topology"]).encode("utf-8"),
+            json.dumps({
+                "output_topology": get_payload["output_topology"],
+                "topology_revision": get_payload["topology_revision"],
+            }).encode("utf-8"),
             content_type="application/json",
         )
         post_payload = json.loads(post_resp.read().decode("utf-8"))
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
+        assert post_payload["topology_revision"].startswith("sha256:")
         assert post_payload["active_playback_route"]["transport_channel_count"] == 8
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sound_output_topology_http_route_rejects_stale_browser_save(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        old_payload = sound_setup._save_output_topology_payload(
+            _active_speaker_mono_topology_payload(
+                protection_status="software_guard_requested"
+            )
+        )
+        save_output_topology(new_topology_draft(), path=path)
+
+        resp = request_with_csrf(
+            base,
+            "/output-topology",
+            json.dumps({
+                "output_topology": old_payload["output_topology"],
+                "topology_revision": old_payload["topology_revision"],
+            }).encode("utf-8"),
+            content_type="application/json",
+            expect_status=409,
+        )
+        conflict = json.loads(resp.read().decode("utf-8"))
+        saved = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "changed in another session" in conflict["error"]
+        assert conflict["output_topology"]["speaker_groups"] == []
+        assert saved["speaker_groups"] == []
     finally:
         server.shutdown()
         server.server_close()
@@ -2736,7 +2813,17 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
                 }
             ],
         }
-        json_post_with_csrf(base, "/output-topology", topology)
+        topology_state = json.loads(
+            urllib.request.urlopen(f"{base}/output-topology").read().decode("utf-8")
+        )
+        json_post_with_csrf(
+            base,
+            "/output-topology",
+            {
+                "output_topology": topology,
+                "topology_revision": topology_state["topology_revision"],
+            },
+        )
         json_post_with_csrf(
             base,
             "/active-speaker/design-draft",
