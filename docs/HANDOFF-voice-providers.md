@@ -357,6 +357,16 @@ Sources:
 The provider-neutral interface is capability-based, not
 provider-name-based:
 
+- `request_local_interrupt()` — **landed (PR-2)** on `LiveTurn`
+  (`jasper/voice/session.py`; implemented by the Gemini and OpenAI/Grok
+  adapters). It is the local-flush trigger only: it sets the turn's
+  interrupt event so `_play_responses` flushes audible TTS, and
+  deliberately does **not** cancel/truncate the provider. The daemon
+  drives it from in-session Silero VAD behind the default-OFF
+  `JASPER_BARGE_IN_<PROVIDER>` flag. The provider-cancel seam below
+  (`cancel_response` / `truncate_assistant_audio`) is present as the
+  PR-3 no-op stubs; wiring it to real provider calls is the pending
+  step (PRs 4–6).
 - `cancel_response(reason)` for explicit local interruption/manual
   cancellation.
 - `truncate_assistant_audio(provider_item_id, audio_played_ms)` for

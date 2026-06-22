@@ -23,9 +23,52 @@ async def _turn_audio_chunks(turn: LiveTurn):
         yield AudioOutChunk(pcm=pcm)
 
 
+async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
+    """Flush local TTS playout in response to an interrupt and clear the
+    turn's interrupted state.
+
+    The interrupt can come from a provider server-interrupt (Gemini) or
+    from local barge-in detection (``WakeLoop._handle_playback_frame`` ->
+    ``turn.request_local_interrupt()``). Either way this only stops *local*
+    playout — it does NOT truncate / cancel the provider's response (a
+    later barge-in increment owns that).
+
+    Returns ``True`` on a clean flush, ``False`` if the flush (or the
+    optional ``on_tts_flush`` hook) errored. On error it emits
+    ``event=barge.flush_failed`` at WARNING — never silently — and the
+    caller stops racing the interrupt and lets the turn end through its
+    normal teardown."""
+    try:
+        ack = await tts.flush()
+        flush_handler = getattr(turn, "on_tts_flush", None)
+        if callable(flush_handler):
+            await flush_handler(ack)
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            logger,
+            "barge.flush_failed",
+            error=type(e).__name__,
+            detail=str(e),
+            level=logging.WARNING,
+        )
+        return False
+    if ack is not None:
+        log_event(
+            logger,
+            "tts_flush.playout_ack",
+            max_audio_played_ms=ack.get("max_audio_played_ms"),
+            segments=ack.get("segments"),
+            flushed_frames=ack.get("flushed_frames"),
+        )
+    turn.clear_interrupted()
+    return True
+
+
 async def _play_responses(
     turn: LiveTurn,
     tts: TtsPlayout,
+    *,
+    barge_in_enabled: bool = False,
 ) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -33,17 +76,28 @@ async def _play_responses(
     buffer. Without this, ALSA/sounddevice buffering causes 100-300ms of
     overrun where the model talks over the user.
 
-    Cleanup contract: both per-iteration helpers (the interrupt waiter
-    and the in-flight write) MUST be cancelled and awaited before this
-    function returns, otherwise they leak as `Task destroyed but it is
-    pending` warnings. The waiter is held alive by a reference cycle
-    through `turn._interrupt_event`, so dropping the local without
+    ``barge_in_enabled`` (default False) extends the interrupt race to the
+    drain-tail window below. With it False the function is byte-identical
+    to its pre-barge-in shape: the chunk-loop race is unchanged (it still
+    handles Gemini's server-interrupt), and the drain tail is a plain
+    ``wait_drained()``. With it True a barge-in arriving *after* the last
+    chunk was written — the common case for burst-delivery providers that
+    stream every chunk before playout finishes — still flushes, instead of
+    being swallowed until the tail drains on its own.
+
+    Cleanup contract: the per-iteration helpers (the interrupt waiter, the
+    in-flight write, and the drain waiter) MUST be cancelled and awaited
+    before this function returns, otherwise they leak as `Task destroyed
+    but it is pending` warnings. The waiter is held alive by a reference
+    cycle through `turn._interrupt_event`, so dropping the local without
     explicit cleanup means GC eventually breaks the cycle and Task.__del__
-    fires. The OpenAI / Grok adapters never set `_interrupt_event` (no
-    barge-in implemented), so the waiter is always pending at turn end
-    and the leak would fire every turn without this try/finally."""
+    fires. Providers that implement no interrupt at all leave the waiter
+    pending at turn end, so the leak would fire every turn without this
+    try/finally."""
     interrupt_task: asyncio.Task | None = None
     write_task: asyncio.Task | None = None
+    drain_task: asyncio.Task | None = None
+    flush_failed = False
     try:
         async for chunk in _turn_audio_chunks(turn):
             if interrupt_task is None or interrupt_task.done():
@@ -65,19 +119,11 @@ async def _play_responses(
                     await write_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-                ack = await tts.flush()
-                flush_handler = getattr(turn, "on_tts_flush", None)
-                if callable(flush_handler):
-                    await flush_handler(ack)
-                if ack is not None:
-                    log_event(
-                        logger,
-                        "tts_flush.playout_ack",
-                        max_audio_played_ms=ack.get("max_audio_played_ms"),
-                        segments=ack.get("segments"),
-                        flushed_frames=ack.get("flushed_frames"),
-                    )
-                turn.clear_interrupted()
+                if not await _flush_for_interrupt(turn, tts):
+                    # Flush errored (already WARNed). Stop racing the
+                    # interrupt and fall through to the normal turn end.
+                    flush_failed = True
+                    break
                 interrupt_task = None
             elif write_task in done:
                 try:
@@ -102,9 +148,26 @@ async def _play_responses(
         # Anchors on samples queued (not network arrivals), so an
         # OpenAI-style burst delivery and a Gemini-style real-time
         # pacing both end the turn at the right moment.
-        await tts.wait_drained()
+        if barge_in_enabled and not flush_failed:
+            # Race a late barge-in against the drain. wait_drained is a
+            # single timed sleep, so cancelling it mid-wait is free.
+            if interrupt_task is None or interrupt_task.done():
+                interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
+            drain_task = asyncio.create_task(tts.wait_drained())
+            done, _ = await asyncio.wait(
+                {drain_task, interrupt_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if interrupt_task in done:
+                # drain_task is still pending; the finally block below
+                # cancels and awaits it (a single timed sleep, free to
+                # cancel). Flush the residual tail, then end the turn.
+                await _flush_for_interrupt(turn, tts)
+                interrupt_task = None
+        else:
+            await tts.wait_drained()
     finally:
-        for t in (interrupt_task, write_task):
+        for t in (interrupt_task, write_task, drain_task):
             if t is None or t.done():
                 continue
             t.cancel()

@@ -177,6 +177,24 @@ The output-side invariant lives here: **provider truncation must be
 driven from the final playout ledger, not provider event arrival time or
 queued-frame estimates**.
 
+**Status (2026-06-21).** Steps 1-3 — the provider-agnostic *detection +
+local-flush spine* — have landed behind a per-provider feature flag that
+**defaults OFF**. While the assistant is speaking,
+`WakeLoop._handle_playback_frame` (in `jasper/voice_daemon.py`) runs local
+Silero VAD on the AEC-cleaned "on" leg and, on a sustained speech run at
+or above `JASPER_VAD_BARGE_IN_THRESHOLD`, calls
+`LiveTurn.request_local_interrupt()`, which `_play_responses` races (now
+including the `wait_drained()` drain-tail window) to `flush()` local TTS.
+The flag is `JASPER_BARGE_IN_<PROVIDER>` in
+`/var/lib/jasper/voice_provider.env`, read fresh per turn via
+`jasper.voice.provider_state.read_barge_in_enabled` (never an os.environ
+cache); a runtime guard hard-disables it for the session when the active
+profile has no AEC reference (`direct_mic`), to avoid self-tripping on
+un-cancelled TTS bleed. Step 4 — **provider cancel/truncate** — is
+deliberately *not* wired yet: a real-time provider may resume speaking
+after the local flush until that increment lands. Off-device validation
+cannot exercise false-barge from TTS bleed; that is a hardware step.
+
 ## Codebase Validation
 
 Rechecked against the current tree on 2026-06-01:
@@ -186,7 +204,13 @@ Rechecked against the current tree on 2026-06-01:
   its semantics: `write_segment()`/`write()`, `end_segment()`,
   `flush()`, `expected_drain_at()`, and `wait_drained()`.
 - `jasper/voice/turn_playback.py` + `_play_responses` races each TTS
-  write against provider interruption and calls `flush()` on interruption.
+  write against the turn's interrupt event — set by a provider
+  server-interrupt or, with barge-in enabled, by the daemon's local
+  `request_local_interrupt()` — and calls `flush()` (via the shared
+  `_flush_for_interrupt`, which emits `event=barge.flush_failed` on a
+  failed flush rather than crashing the turn). When `barge_in_enabled`,
+  the same race also covers the `wait_drained()` drain-tail window; with
+  it off the function is byte-identical to its pre-barge-in shape.
   `_idle_watchdog` and `jasper/voice_daemon.py`'s `_end_turn` rely on
   `expected_drain_at()` to
   avoid ending a turn before queued audio drains.

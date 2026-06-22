@@ -617,12 +617,16 @@ class Config:
             tts_drain_tail_sec=_env_float(
                 "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
             ),
-            # Silero VAD probability threshold for barge-in gating.
-            # While the model is producing TTS, mic frames are only
-            # forwarded to Gemini if Silero says speech_prob >= this.
-            # 0.5 = standard Silero default; raise to 0.7 if music
-            # bleed false-triggers barge-in, lower if real speech
-            # is being missed.
+            # Silero speech-probability threshold for in-session barge-in.
+            # While the assistant is speaking, a sustained run of
+            # AEC-cleaned mic frames at or above this value flushes local
+            # TTS so the user can talk over the reply. 0.5 = Silero
+            # default; raise to 0.7 if music/TTS bleed false-triggers,
+            # lower if real interrupts are missed. Only consulted when
+            # barge-in is enabled for the active provider (per-provider
+            # JASPER_BARGE_IN_<PROVIDER> flag in voice_provider.env, set
+            # directly today, default OFF); see
+            # jasper.voice.provider_state.read_barge_in_enabled.
             vad_barge_in_threshold=_env_float(
                 "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
             ),

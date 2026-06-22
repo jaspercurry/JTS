@@ -280,6 +280,22 @@ class LiveTurn(Protocol):
         must never raise."""
         ...
 
+    def request_local_interrupt(self) -> None:
+        """Locally signal a user barge-in WITHOUT telling the provider.
+
+        Sets the same interrupt event :meth:`wait_for_interrupt` resolves
+        on, so the playback path flushes local TTS immediately. This is the
+        provider-agnostic *detection + flush* spine: it deliberately does
+        NOT truncate / cancel the provider's in-flight response (a later
+        barge-in increment owns that). Optional — the daemon probes it with
+        ``getattr`` and degrades to no local flush for adapters that omit
+        it.
+
+        Distinct from the ``cancel_response`` / ``truncate_assistant_audio``
+        seam above: those reconcile *provider* state and are still no-ops in
+        this increment; this only arms the local playout flush."""
+        ...
+
 
 @runtime_checkable
 class ConversationTranscriptTurn(Protocol):

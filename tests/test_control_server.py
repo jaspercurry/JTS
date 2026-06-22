@@ -1830,6 +1830,10 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     provider_file = tmp_path / "voice_provider.env"
     provider_file.write_text(
         "JASPER_VOICE_PROVIDER=openai\nJASPER_OPENAI_MODEL=gpt-realtime-2\n"
+        # Per-provider barge-in flag lives in the same wizard-owned SSOT
+        # file; /state must read it fresh (jasper-control isn't restarted
+        # on a toggle). openai=on, gemini absent — proves per-provider.
+        "JASPER_BARGE_IN_OPENAI=1\n"
     )
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")  # stale env, must be ignored
@@ -1856,6 +1860,12 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     # tool_packs is the same shape of curated pull-through (jasper-doctor's
     # check_tool_packs cross-checks it against the static registry).
     assert "tool_packs" in body["voice"]
+    # barge_in.enabled is read FRESH per active provider (openai) from the
+    # same wizard file — the regression guard for the fresh-reader rationale.
+    # Voice is unreachable here, so the firing stats are null.
+    assert body["voice"]["barge_in"]["enabled"] is True
+    assert body["voice"]["barge_in"]["count_session"] is None
+    assert body["voice"]["barge_in"]["last_at"] is None
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None

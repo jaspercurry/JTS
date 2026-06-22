@@ -385,6 +385,15 @@ class GeminiLiveTurn:
         # branch.
         return None
 
+    def request_local_interrupt(self) -> None:
+        # Local barge-in (PR-2 spine): flush playout without a provider-side
+        # cancel. Mirrors the server-interrupt path's state writes (below) so
+        # _play_responses' flush + clear_interrupted cycle is identical; the
+        # only difference is the trigger source (daemon VAD vs server). The
+        # cancel_response / truncate_assistant_audio seam above stays no-op.
+        self._interrupted = True
+        self._interrupt_event.set()
+
     # Internal — called by the connection's receive loop when it routes
     # an incoming server message to this active turn.
     async def _on_response(self, response) -> None:
