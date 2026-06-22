@@ -181,19 +181,10 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
-            try:
-                settings = write_settings(capture_enabled=enabled)
-            except (OSError, ValueError) as e:
-                logger.exception("could not write conversation-history settings")
-                _json_response(
-                    self,
-                    {"error": f"could not save settings: {e}"},
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
-                return
             stats = None
             if enabled:
-                store = ConversationStore(settings.db_path)
+                candidate = read_settings()
+                store = ConversationStore(candidate.db_path)
                 try:
                     stats = store.stats()
                     if not store.available or stats is None:
@@ -210,6 +201,16 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                         return
                 finally:
                     store.close()
+            try:
+                settings = write_settings(capture_enabled=enabled)
+            except (OSError, ValueError) as e:
+                logger.exception("could not write conversation-history settings")
+                _json_response(
+                    self,
+                    {"error": f"could not save settings: {e}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
             _json_response(
                 self,
                 {

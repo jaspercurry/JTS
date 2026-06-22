@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from jasper.control import state_aggregate
 from jasper.research import DONE, FAILED, RUNNING, ResearchJob, ResearchJobStore
@@ -109,6 +110,34 @@ def test_research_state_counts_timestamps_and_omits_private_text(tmp_path) -> No
     assert "private running prompt" not in rendered
     assert "private answer text" not in rendered
     assert "provider included sensitive detail" not in rendered
+
+
+def test_research_state_marks_query_failure_unavailable_without_private_text(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "research.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE wrong_table (query TEXT, result TEXT, error TEXT)")
+    conn.execute(
+        "INSERT INTO wrong_table VALUES ('private prompt', 'private answer', 'private error')",
+    )
+    conn.close()
+
+    snap = snapshot(
+        environ={
+            "JASPER_RESEARCH_DB": str(db_path),
+            "OPENAI_API_KEY": "sk-test",
+        },
+    )
+
+    assert snap["store"]["available"] is False
+    assert snap["store"]["path"] == str(db_path)
+    assert "no such table" in snap["store"]["error"]
+    assert snap["counts"] is None
+    rendered = json.dumps(snap)
+    assert "private prompt" not in rendered
+    assert "private answer" not in rendered
+    assert "private error" not in rendered
 
 
 def test_research_state_uses_voice_runtime_provider_without_secret_read(

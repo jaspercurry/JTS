@@ -199,9 +199,20 @@ class ResearchJobStore:
         return _job_from_row(row) if row is not None else None
 
     def all(self) -> list[ResearchJob]:
+        jobs, _error = self.all_with_error()
+        return jobs
+
+    def all_with_error(self) -> tuple[list[ResearchJob], str | None]:
+        """Return all jobs plus a query error for health/status callers.
+
+        The scheduler path keeps ``all()`` fail-soft and empty-on-error. /state
+        and doctor need to distinguish an empty table from a malformed store,
+        so they use this checked variant and surface only bounded, prompt-free
+        error text.
+        """
         conn = self._conn
         if conn is None:
-            return []
+            return [], "unavailable"
         try:
             rows = conn.execute(
                 "SELECT id, query, status, result, error, created_at, "
@@ -210,8 +221,8 @@ class ResearchJobStore:
             ).fetchall()
         except sqlite3.Error as e:
             logger.warning("research store all failed: %s", e)
-            return []
-        return [_job_from_row(row) for row in rows]
+            return [], str(e)
+        return [_job_from_row(row) for row in rows], None
 
     def prune_terminal(self, keep: int) -> int:
         """Delete ANNOUNCED terminal (done/failed) rows beyond the newest

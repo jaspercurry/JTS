@@ -25,10 +25,12 @@ def check_research() -> CheckResult:
     store = snap.get("store")
     if not isinstance(store, dict) or store.get("available") is not True:
         path = store.get("path") if isinstance(store, dict) else "unknown"
+        error = store.get("error") if isinstance(store, dict) else None
+        suffix = f": {error}" if isinstance(error, str) and error else ""
         return CheckResult(
             label,
             "warn",
-            f"{provider_id} configured but research store unavailable at {path}",
+            f"{provider_id} configured but research store unavailable at {path}{suffix}",
         )
 
     counts = snap.get("counts")

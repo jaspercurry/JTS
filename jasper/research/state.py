@@ -37,20 +37,24 @@ def snapshot(
         warn_unavailable=False,
     )
     try:
-        store_available = store.available
-        jobs = store.all() if store_available else []
+        store_open = store.available
+        jobs, store_error = store.all_with_error() if store_open else ([], None)
     finally:
         store.close()
 
+    store_available = store_open and store_error is None
     counts = _counts(jobs) if store_available else None
+    store_state: dict[str, Any] = {
+        "available": store_available,
+        "path": db_path,
+    }
+    if store_error is not None:
+        store_state["error"] = _bounded_error(store_error)
     return {
         "schema_version": SCHEMA_VERSION,
         "enabled": bool(provider and provider["configured"]),
         "provider": provider,
-        "store": {
-            "available": store_available,
-            "path": db_path,
-        },
+        "store": store_state,
         "counts": counts,
         "oldest_created_at": _oldest_created_at(jobs),
         "newest_created_at": _newest_created_at(jobs),
@@ -177,3 +181,8 @@ def _text_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _bounded_error(value: object) -> str:
+    text = str(value or "unavailable").replace("\n", " ").replace("\r", " ").strip()
+    return text[:160] or "unavailable"

@@ -13,6 +13,7 @@ scripts/deploy-to-pi.sh.
 from __future__ import annotations
 
 import io
+import sqlite3
 import urllib.error
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -185,6 +186,25 @@ def test_research_check_warns_when_configured_store_missing(monkeypatch, tmp_pat
     assert "openai configured" in r.detail
     assert str(db_path) in r.detail
     assert db_path.exists() is False
+
+
+def test_research_check_warns_when_configured_store_query_fails(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "research.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE wrong_table (query TEXT)")
+    conn.close()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_RESEARCH_DB", str(db_path))
+
+    r = doctor_research.check_research()
+
+    assert r.status == "warn"
+    assert "openai configured" in r.detail
+    assert str(db_path) in r.detail
+    assert "no such table" in r.detail
 
 
 def test_research_check_ok_with_existing_store_without_private_text(

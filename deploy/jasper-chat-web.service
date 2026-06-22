@@ -9,6 +9,9 @@ Wants=network-online.target
 [Service]
 Type=notify
 WatchdogSec=30s
+User=jasper-web
+Group=jasper
+UMask=0007
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/conversation_history.env
 # Args ignored when socket-activated (the daemon adopts the inherited
@@ -17,15 +20,17 @@ ExecStart=/opt/jasper/.venv/bin/jasper-chat-web --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=2
 
-# Hardening — reads /etc/jasper/jasper.env plus the conversation-history
-# settings/SQLite DB under /var/lib/jasper. The web process mutates only
-# the household-owned capture toggle and clear-history action.
-ProtectSystem=full
+# Hardening — reads /etc/jasper/jasper.env plus mutates the
+# conversation-history settings/SQLite DB under /var/lib/jasper.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jasper
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
 
-# Small process: stdlib http.server + read-only SQLite queries.
+# Small process: stdlib http.server + local SQLite/settings updates.
 MemoryHigh=60M
 MemoryMax=90M
 

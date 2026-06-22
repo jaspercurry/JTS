@@ -178,6 +178,7 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     assert 'from "/assets/shared/js/dialog.js"' in main
     assert 'JSON.parse(raw)' in views
     assert 'parsed.kind === "research"' in views
+    assert '"attr:aria-label": "Conversation capture"' in views
     assert "No transcript for this turn." in views
 
     combined = "\n".join([main, views, components])
@@ -242,6 +243,39 @@ def test_capture_enable_writes_settings_file_and_initializes_db(
     assert f"{CAPTURE_ALIAS_ENV}=1" in text
     assert f"{DB_PATH_ENV}={db_path}" in text
     assert read_settings(path=str(settings_path), environ={}).capture_enabled is True
+
+
+def test_capture_enable_does_not_persist_when_db_initialization_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "not-a-database"
+    db_path.mkdir()
+    settings_path = tmp_path / "conversation_history.env"
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
+    monkeypatch.setenv(DB_PATH_ENV, str(db_path))
+    srv = chat_setup.make_server(("127.0.0.1", 0))
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    try:
+        status, body = _http_post_json(
+            f"{base}/capture",
+            {"enabled": True},
+            headers=_csrf_headers(base),
+        )
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+    assert status == 500
+    assert "could not be initialized" in json.loads(body)["error"]
+    assert settings_path.exists() is False
+    assert read_settings(
+        path=str(settings_path),
+        environ={DB_PATH_ENV: str(db_path)},
+    ).capture_enabled is False
 
 
 def test_capture_disable_stops_future_capture_without_clearing_rows(

@@ -22,6 +22,7 @@ export function buildPage(root, handlers, opts = {}) {
   const captureToggle = h("input", {
     id: "chat-capture",
     type: "checkbox",
+    "attr:aria-label": "Conversation capture",
     onchange(e) {
       handlers.setCapture(e.target.checked);
     },
