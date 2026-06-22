@@ -78,8 +78,8 @@ def test_percent_db_round_trip_at_endpoints():
     assert _db_to_percent(VOLUME_MAX_DB) == 100
 
 
-def test_percent_to_db_is_linear_midpoint():
-    assert _percent_to_db(50) == pytest.approx((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2)
+def test_percent_to_db_round_trips_nonzero_slider_values():
+    assert _db_to_percent(_percent_to_db(50)) == 50
 
 
 def test_percent_clamped_out_of_range():

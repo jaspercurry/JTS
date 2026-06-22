@@ -41,6 +41,7 @@ from jasper.sound.profile import (
     save_profile,
 )
 from jasper.sound.settings import SoundSettings, load_sound_settings
+from jasper.volume_curve import percent_to_db
 from jasper.web import sound_setup
 
 from ._web_test_helpers import (
@@ -150,6 +151,80 @@ class FakeCamillaWithoutLiveRaw:
         self.set_calls.append(path)
         self.loaded_path = path
         return True
+
+
+class FakeVolumeCamilla:
+    def __init__(self, db: float = -18.0, muted: bool = True) -> None:
+        self.db = db
+        self.muted = muted
+        self.events: list[tuple[str, float | bool, bool]] = []
+
+    async def get_volume_and_mute(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, bool]:
+        return self.db, self.muted
+
+    async def set_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        self.events.append(("volume", db, best_effort))
+        self.db = db
+        return True
+
+    async def set_main_mute(
+        self, muted: bool, *, best_effort: bool = False,
+    ) -> bool:
+        self.events.append(("mute", muted, best_effort))
+        self.muted = muted
+        return True
+
+
+class BlockingVolumeCamilla(FakeVolumeCamilla):
+    def __init__(
+        self,
+        *,
+        db: float = -18.0,
+        muted: bool = True,
+        block_on_volume_call: int,
+    ) -> None:
+        super().__init__(db=db, muted=muted)
+        self.block_on_volume_call = block_on_volume_call
+        self.volume_calls = 0
+        self.volume_call_entered = asyncio.Event()
+        self.release_volume_call = asyncio.Event()
+
+    async def set_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        self.volume_calls += 1
+        self.events.append(("volume", db, best_effort))
+        if self.volume_calls == self.block_on_volume_call:
+            self.volume_call_entered.set()
+            await self.release_volume_call.wait()
+        self.db = db
+        return True
+
+
+class FakeVolumeFloorToneRunner:
+    instances: list["FakeVolumeFloorToneRunner"] = []
+
+    def __init__(self, wav_path: Path, *, on_finish=None) -> None:
+        self.wav_path = wav_path
+        self.on_finish = on_finish
+        self.started = False
+        self.stopped = False
+        self.error: str | None = None
+        FakeVolumeFloorToneRunner.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    @property
+    def running(self) -> bool:
+        return self.started and not self.stopped and self.error is None
 
 
 _SOUND_MODULE = (
@@ -304,6 +379,8 @@ def test_follower_block_set_is_content_dsp_only():
         "/audition",
         "/live-draft",
         "/settings",
+        "/volume-floor/audition",
+        "/volume-floor/stop",
         "/profiles/save",
         "/profiles/rename",
         "/profiles/delete",
@@ -369,6 +446,7 @@ def test_sound_module_preserves_editor_behaviour():
     for path in (
         "./preview", "./live-draft", "./apply",
         "./profiles/save", "./profiles/rename", "./profiles/delete",
+        "./volume-floor/audition", "./volume-floor/stop",
     ):
         assert path in js, f"sound module no longer references {path}"
     assert "dsp_write_epoch: dspWriteEpoch" in js
@@ -385,6 +463,11 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Validate and apply" in js
     assert "Save active profile" in js
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
+    assert "Start tone" in js
+    assert "Stop tone" in js
+    assert "pagehide" in js
+    assert "scheduleVolumeFloorToneUpdate(floor);" in js
+    assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
     assert "function defaultOutputStep()" in js
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
@@ -2803,7 +2886,7 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     )
 
     payload = await sound_setup._apply_settings(
-        SoundSettings(match_loudness=True),
+        SoundSettings(match_loudness=True, volume_floor_db=-24.0),
         profile_path=profile_path,
         library_path=tmp_path / "lib.json",
         config_dir=config_dir,
@@ -2815,8 +2898,140 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     assert payload["output_trim_db"] > 0
     assert "warning" not in payload
     assert load_sound_settings(settings_path).match_loudness is True
+    assert load_sound_settings(settings_path).volume_floor_db == -24.0
     # The profile JSON is untouched: not re-stamped, not overwritten.
     assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
+
+
+async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
+    tmp_path: Path, monkeypatch,
+):
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    fake = FakeVolumeCamilla(db=-18.0, muted=True)
+    session = sound_setup._VolumeFloorToneSession()
+
+    payload = await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+
+    assert payload == {
+        "ok": True,
+        "active": True,
+        "continuous": True,
+        "status": "started",
+        "volume_floor_db": -24.0,
+        "percent": 1,
+        "db": -24.0,
+    }
+    assert len(FakeVolumeFloorToneRunner.instances) == 1
+    assert FakeVolumeFloorToneRunner.instances[0].started is True
+    assert fake.events[0] == (
+        "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), False,
+    )
+    assert fake.events[1] == ("mute", False, False)
+    assert fake.db == pytest.approx(-24.0)
+    assert fake.muted is False
+    assert not settings_path.exists()
+
+    payload = await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -36.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+
+    assert payload["status"] == "updated"
+    assert payload["volume_floor_db"] == -36.0
+    assert len(FakeVolumeFloorToneRunner.instances) == 1
+    assert fake.events[-2:] == [
+        ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), False),
+        ("mute", False, False),
+    ]
+    assert fake.db == pytest.approx(-36.0)
+    assert fake.muted is False
+
+    stop_payload = await sound_setup._stop_volume_floor_tone(
+        camilla_factory=lambda: fake,
+        reason="stop",
+        session=session,
+    )
+
+    assert stop_payload == {
+        "ok": True,
+        "active": False,
+        "status": "stopped",
+        "reason": "stop",
+        "volume_floor_db": -36.0,
+    }
+    assert FakeVolumeFloorToneRunner.instances[0].stopped is True
+    assert fake.events[-2:] == [
+        ("mute", True, True),
+        ("volume", pytest.approx(-18.0), True),
+    ]
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
+    assert not settings_path.exists()
+
+
+async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
+    tmp_path: Path, monkeypatch,
+):
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    fake = BlockingVolumeCamilla(block_on_volume_call=2)
+    session = sound_setup._VolumeFloorToneSession()
+
+    await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+    runner = FakeVolumeFloorToneRunner.instances[0]
+
+    update_task = asyncio.create_task(
+        sound_setup._audition_volume_floor(
+            {"volume_floor_db": -36.0},
+            camilla_factory=lambda: fake,
+            session=session,
+            runner_factory=FakeVolumeFloorToneRunner,
+        )
+    )
+    await asyncio.wait_for(fake.volume_call_entered.wait(), timeout=1.0)
+
+    stop_task = asyncio.create_task(
+        sound_setup._stop_volume_floor_tone(
+            camilla_factory=lambda: fake,
+            reason="stop",
+            session=session,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert runner.stopped is True
+    assert stop_task.done() is False
+
+    fake.release_volume_call.set()
+    update_payload = await asyncio.wait_for(update_task, timeout=1.0)
+    stop_payload = await asyncio.wait_for(stop_task, timeout=1.0)
+
+    assert update_payload["active"] is False
+    assert update_payload["status"] == "stale"
+    assert stop_payload["status"] == "stopped"
+    assert fake.events[-2:] == [
+        ("mute", True, True),
+        ("volume", pytest.approx(-18.0), True),
+    ]
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
 
 
 async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(

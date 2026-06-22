@@ -271,8 +271,7 @@ def test_save_listening_level_without_main_volume_derives_it(tmp_path):
     p.save_listening_level(50)
     rec = p.load()
     assert rec is not None
-    # 50% on -50..0 dB scale → -25 dB
-    assert rec.main_volume_db == -25.0
+    assert rec.main_volume_db == round(percent_to_db(50), 2)
 
 
 def test_v1_migration_derives_listening_level(tmp_path):
@@ -287,6 +286,25 @@ def test_v1_migration_derives_listening_level(tmp_path):
     rec = VolumePersistence(str(path)).load()
     assert rec is not None
     assert rec.listening_level == 70
+
+
+def test_v1_migration_uses_historical_default_curve(tmp_path, monkeypatch):
+    """V1 files predate the calibratable floor, so decode them with the
+    original shipped curve rather than any current sound setting."""
+    settings_path = tmp_path / "sound_settings.json"
+    settings_path.write_text(json.dumps({"volume_floor_db": -20.0}))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "main_volume_db": -25.0,
+        "updated_at": "2026-05-05T10:00:00Z",
+    }))
+
+    rec = VolumePersistence(str(path)).load()
+
+    assert rec is not None
+    assert rec.listening_level == 50
 
 
 def test_listening_level_out_of_range_rejected(tmp_path):

@@ -11,14 +11,20 @@ import os
 from typing import Any, Awaitable, Callable, Optional
 
 from .uds import _voice_socket_command
+from ..volume_curve import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_CEILING_DB,
+    db_to_percent,
+    delta_db_to_delta_percent,
+    percent_to_db,
+)
 
 logger = logging.getLogger(__name__)
 
-# Same range jasper.tools.audio uses for the voice-driven volume tools.
-# Percent↔dB is the normal attenuation curve. VolumeCoordinator layers
-# Camilla main_mute on top at 0% so content/music 0% is a real mute.
-VOLUME_MIN_DB = -50.0
-VOLUME_MAX_DB = 0.0
+# Back-compat names for legacy clients/tests. The effective floor can be
+# calibrated in /sound/; these constants are the shipped default.
+VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
+VOLUME_MAX_DB = VOLUME_CEILING_DB
 SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
 
 
@@ -27,23 +33,19 @@ def _clamp_db(db: float) -> float:
 
 
 def _db_to_percent(db: float) -> int:
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return max(0, min(100, round((float(db) - VOLUME_MIN_DB) / span * 100.0)))
+    return db_to_percent(db)
 
 
 def _percent_to_db(percent: int) -> float:
-    p = max(0, min(100, int(percent)))
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return VOLUME_MIN_DB + (span * p / 100.0)
+    return percent_to_db(percent)
 
 
 def _delta_db_to_delta_percent(delta_db: float) -> int:
     """Convert a legacy-scale dB delta to a listening-level percent
     delta. The dial firmware sends fixed deltas like ±2.5 dB per
-    encoder tick; we map those onto the 0-100 percent scale using
-    the same 50 dB span the camilla-only path used. ±5 dB == ±10pp."""
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return round(float(delta_db) / span * 100.0)
+    encoder tick; we map those onto the calibrated 1..100 percent span.
+    With the default 50 dB floor, ±5 dB remains about ±10pp."""
+    return delta_db_to_delta_percent(delta_db)
 
 
 def _spotify_redirect_uri() -> str:

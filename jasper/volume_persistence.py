@@ -54,26 +54,20 @@ from pathlib import Path
 from typing import Any
 
 from .atomic_io import atomic_write_text
+from .volume_curve import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_CEILING_DB,
+    VOLUME_FLOOR_MIN_DB,
+    db_to_percent,
+    percent_to_db,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# Camilla's main_volume range. Mirrors the percent↔dB mapping in
-# tools/audio.py — keep these in sync if either side changes.
-VOLUME_MIN_DB = -50.0
-VOLUME_MAX_DB = 0.0
-
-
-def db_to_percent(db: float) -> int:
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    p = (float(db) - VOLUME_MIN_DB) / span * 100.0
-    return max(0, min(100, round(p)))
-
-
-def percent_to_db(percent: float) -> float:
-    p = max(0, min(100, float(percent)))
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return VOLUME_MIN_DB + span * p / 100.0
+# Back-compat names for callers/tests that import the old fixed range.
+VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
+VOLUME_MAX_DB = VOLUME_CEILING_DB
 
 
 @dataclass(frozen=True)
@@ -155,7 +149,7 @@ class VolumePersistence:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning("volume persistence: parse failed (%s)", e)
             return None
-        if not (VOLUME_MIN_DB - 1.0 <= db <= VOLUME_MAX_DB + 1.0):
+        if not (VOLUME_FLOOR_MIN_DB - 1.0 <= db <= VOLUME_MAX_DB + 1.0):
             # Out of plausible range — refuse rather than restore a
             # bogus value that could cause loud / silent surprise.
             logger.warning(
@@ -164,9 +158,10 @@ class VolumePersistence:
             )
             return None
         # listening_level + last_used_at — schema v2. v1 files lack
-        # both; migrate by deriving listening_level from main_volume_db.
-        # That value was the user's last commanded volume under the
-        # Camilla-only path, so the migration preserves intent.
+        # both; migrate by deriving listening_level from main_volume_db using
+        # the historical default curve. That value was the user's last
+        # commanded volume under the Camilla-only path, so the migration
+        # preserves intent even if a calibrated floor setting now exists.
         listening_level: int | None = None
         try:
             raw_level = data.get("listening_level")
@@ -183,7 +178,7 @@ class VolumePersistence:
         except (TypeError, ValueError):
             listening_level = None
         if listening_level is None:
-            listening_level = db_to_percent(db)
+            listening_level = db_to_percent(db, floor_db=DEFAULT_VOLUME_FLOOR_DB)
             logger.info(
                 "volume persistence: deriving listening_level=%d%% from v1 "
                 "main_volume_db=%.1f (migration)",

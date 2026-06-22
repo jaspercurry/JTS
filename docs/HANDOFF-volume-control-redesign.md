@@ -103,7 +103,7 @@ The dispatch rules are not uniform:
 
 | Active source | Current action |
 |---|---|
-| Idle | Set CamillaDSP `main_volume` using the `-50..0 dB` mapping |
+| Idle | Set CamillaDSP `main_volume` using the calibrated 1..100% curve (default `-50..0 dB`) |
 | AirPlay | Set CamillaDSP `main_volume`; do not push to the AirPlay sender |
 | Spotify | Push Spotify Connect volume through Spotify Web API; keep Camilla at `0 dB` |
 | Bluetooth | Push BlueZ/BlueALSA AVRCP absolute volume; keep Camilla at `0 dB` |
