@@ -172,9 +172,12 @@ function defRow(label, value) {
 
 // ---------------------------------------------------------------------------
 // Grouping status → a key/value list (or a single "off (solo)" line).
-// Shape from jasper.multiroom.state.read_grouping_state():
+// Shape from jasper.multiroom.state.read_grouping_state() + the airplay-fit
+// composer (jasper.multiroom.airplay_latency.with_airplay_latency_fit):
 //   {enabled, role, channel, bond_id, leader_addr, buffer_ms, codec, error,
-//    runtime?: {health, detail, units}}  -- runtime present only when enabled
+//    runtime?: {health, detail, units},   -- runtime present only when enabled
+//    airplay_latency_fit?: {applicable, tight?, residual_lag_sec?, …}}
+//      -- applicable:true only on an active bonded leader; null on read error
 // ---------------------------------------------------------------------------
 function groupingBody(g) {
   if (!g || typeof g !== "object") {
@@ -208,6 +211,24 @@ function groupingBody(g) {
   }
   if (g.buffer_ms != null) rows.push(defRow("Buffer", g.buffer_ms + " ms"));
   if (g.codec) rows.push(defRow("Codec", g.codec));
+  // Bonded-leader AirPlay lip-sync (jasper.multiroom.airplay_latency): a row
+  // only when this speaker is an active bonded leader (applicable). Quiet
+  // "Synced" badge when the offset fits; an amber "Lagging ~N ms" badge + a
+  // note (pushed below) when the sender's budget can't absorb the bonded
+  // round-trip. Solo/follower => applicable:false => no row at all.
+  const fit = g.airplay_latency_fit && typeof g.airplay_latency_fit === "object"
+    ? g.airplay_latency_fit : null;
+  const fitTight = fit && fit.applicable && fit.tight === true;
+  const fitLagMs = fit ? Math.round((fit.residual_lag_sec || 0) * 1000) : 0;
+  if (fit && fit.applicable) {
+    const fitBadge = h(
+      "span.badge", null, fitTight ? "Lagging ~" + fitLagMs + " ms" : "Synced",
+    );
+    fitBadge.style.setProperty(
+      "--tone", fitTight ? "var(--status-warn)" : "var(--status-ok)",
+    );
+    rows.push([h("dt", null, "AirPlay lip-sync"), h("dd", null, fitBadge)]);
+  }
   // Runtime health (jasper.multiroom.state.derive_grouping_runtime):
   //   {health: "ok"|"degraded"|…, detail}. Present when grouping is on.
   // A degraded bond — a follower that can't reach its leader, or (until the
@@ -226,6 +247,14 @@ function groupingBody(g) {
   ];
   if (rt && rt.detail) {
     out.push(h("p.info-card__note", null, String(rt.detail)));
+  }
+  if (fitTight) {
+    out.push(h("p.info-card__note", null,
+      "AirPlay audio plays ~" + fitLagMs + " ms after video: the sender's "
+      + "latency budget is too short for the bonded round-trip. The sender's "
+      + "budget can't be changed locally; if the Snapcast buffer was raised "
+      + "above its default, lowering it reduces the lag.",
+    ));
   }
   return h("div", null, ...out);
 }
