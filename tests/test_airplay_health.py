@@ -652,14 +652,21 @@ def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
 def test_airplay_connect_grace_suppresses_session_establish() -> None:
     # When a sender connects, the PTP-anchor settle emits expected
     # sync-correction bursts; a per-session grace keeps them off the
-    # dashboard, but a sync error AFTER the grace still surfaces.
+    # dashboard. Connect detection is MPRIS-driven (the frame rate
+    # free-runs silence and so can't mark a real session start), so it is
+    # bounded by the ~30 s MPRIS sample interval — advance past it.
     now = [5000.0]
-    fanin = {"v": _fanin_status(airplay_frames=0, airplay_xruns=0)}
+    frames = [0]
+
+    def fanin_probe():
+        frames[0] += 480000   # keep the rate well above the 1000 floor
+        return _fanin_status(airplay_frames=frames[0])
+
     mpris = {"playing": False}
     journal = {"shairport-sync": []}
 
     sampler = AirPlayHealthSampler(
-        fanin_probe=lambda: fanin["v"],
+        fanin_probe=fanin_probe,
         journal_reader=lambda u, _s, _n: list(journal.get(u, [])),
         mpris_probe=lambda: dict(mpris),
         camilla_probe=lambda: None,
@@ -669,23 +676,24 @@ def test_airplay_connect_grace_suppresses_session_establish() -> None:
         time_fn=lambda: now[0],
     )
 
-    sampler._tick()            # idle baseline, not active
+    sampler._tick()            # t=5000 idle baseline (MPRIS sampled: not playing)
     assert sampler.snapshot()["suppressed_reason"] is None
 
-    # Sender connects: frames flow -> idle->active transition arms grace.
-    now[0] += 5.0
-    fanin["v"] = _fanin_status(airplay_frames=240000, airplay_xruns=0)
+    # Sender connects; advance past the MPRIS interval so it re-samples
+    # playing and the idle->active transition arms the grace.
     mpris["playing"] = True
     journal["shairport-sync"] = ["rtp.c sync: Large negative sync error"]
+    now[0] += 31.0             # t=5031: MPRIS -> playing -> arm grace
     sampler._tick()
 
     snap = sampler.snapshot()
     assert snap["suppressed_reason"] == "airplay_connect"
-    assert snap["summary_5m"]["shairport_sync_errors"] == 0
+    assert snap["summary_5m"]["shairport_sync_errors"] == 0   # establish burst suppressed
     assert snap["events"] == []
 
-    # Grace expires; the same establish-class event would now be real.
-    now[0] += 50.0
+    # Grace (45 s) expires; the establish-class sync error is no longer
+    # suppressed and surfaces (a sync error is a hard 5 m recovery event).
+    now[0] += 46.0             # t=5077: past grace, still playing
     sampler._tick()
 
     snap = sampler.snapshot()
