@@ -65,6 +65,7 @@ from ..multiroom.config import (
     BondMember,
     format_roster,
     validate_grouping,
+    validate_roster,
 )
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
@@ -1830,6 +1831,16 @@ def _make_handler(
                     if isinstance(m, dict)
                 )
                 roster_str = format_roster(roster_members)
+                # Validate the roster whenever it is present — INCLUDING a
+                # disabled request, which skips validate_grouping below. The
+                # persisted roster is the _unbond disable list, so a member with
+                # an injected foreign addr or a malformed channel must never land
+                # on disk (it would become an unbond disable target / orphan).
+                # The enabled path re-checks via validate_grouping (idempotent).
+                roster_err = validate_roster(roster_members)
+                if roster_err:
+                    self._send_json({"error": roster_err}, status=400)
+                    return
             # Validate an ENABLED request up front via the SHARED
             # validate_grouping (same rule the config loader applies on
             # read) so we never persist a fail-loud config. A disabled

@@ -301,6 +301,16 @@ def _parse_crossover_hz(raw: str) -> float:
         return DEFAULT_CROSSOVER_HZ
 
 
+def _scrub_roster_field(value: str) -> str:
+    """Replace the roster delimiters ("|" ",") and any control char (ord < 32)
+    with a space so an untrusted value can never RESHAPE the serialization — a
+    "|"/"," in the middle of a field would otherwise inject an extra member, and
+    a stray delimiter would split (drop) the record. Caller strips + length-caps.
+    A valid addr (IP/host) or channel (left/right/sub/...) never contains these,
+    so scrubbing only ever neutralises a malformed/hostile value."""
+    return "".join(" " if (c in "|," or ord(c) < 32) else c for c in value)
+
+
 def format_roster(members) -> str:
     """Serialize an iterable of :class:`BondMember` into the env-file value
     for JASPER_GROUPING_ROSTER: ``addr|name|channel`` entries joined by ",".
@@ -308,22 +318,21 @@ def format_roster(members) -> str:
     PUBLIC (mirrors :func:`validate_grouping`): the cross-package write contract
     used by jasper.control.server to build the env string — not a private detail.
 
-    Members with an empty addr are skipped (a roster slot with no address
-    is meaningless). The NAME is sanitized — the "|" / "," delimiters and
-    any control char (ord < 32) become a space, then it's stripped and
-    truncated to 64 chars — so an untrusted directory name can't reshape
-    the serialization. The channel is passed through (validated elsewhere).
-    Inverse of :func:`_parse_roster`."""
+    Members with an empty addr are skipped (a roster slot with no address is
+    meaningless). ALL THREE fields are sanitized via :func:`_scrub_roster_field`
+    — the "|"/"," delimiters and control chars become a space — then stripped and
+    length-capped, so NO untrusted field (addr, an mDNS directory name, or a
+    channel) can reshape the serialization (inject or drop a member). Sanitizing
+    is defence-in-depth under :func:`validate_grouping`, which the writer runs
+    whenever a roster is present. Inverse of :func:`_parse_roster`."""
     out: list[str] = []
     for m in members:
-        addr = str(m.addr).strip()
+        addr = _scrub_roster_field(str(m.addr)).strip()[:64]
         if not addr:
             continue
-        name = str(m.name)
-        name = "".join(
-            " " if (c in "|," or ord(c) < 32) else c for c in name
-        ).strip()[:64]
-        out.append(f"{addr}|{name}|{str(m.channel).strip()}")
+        name = _scrub_roster_field(str(m.name)).strip()[:64]
+        channel = _scrub_roster_field(str(m.channel)).strip()[:32]
+        out.append(f"{addr}|{name}|{channel}")
     return ",".join(out)
 
 
@@ -460,10 +469,25 @@ def validate_grouping(
             "JASPER_GROUPING_PEER_NAME must be printable and at most "
             "64 characters"
         )
-    # Roster (leader only): every member's addr must be a private/loopback
-    # IPv4 (same SSRF-driven rule as peer_addr above), its channel a known
-    # one, its name bounded printable text. Fail LOUD naming the bad field
-    # on the FIRST bad member. An empty roster is valid.
+    # Roster (leader only): delegate to validate_roster — the SAME rule the writer
+    # runs whenever a roster is present (including a DISABLED request), so an
+    # unvalidated member can never be persisted.
+    return validate_roster(roster)
+
+
+def validate_roster(roster: tuple[BondMember, ...]) -> str | None:
+    """Validate a bond roster independently of the enabled-grouping fields.
+
+    Every member's addr must be a private/loopback IPv4 (the SSRF-driven rule,
+    same as peer_addr), its channel a known one, its name bounded printable text.
+    Returns an error naming the bad field on the FIRST bad member, or None. An
+    empty roster is valid.
+
+    PUBLIC and standalone (NOT gated on enabled): jasper.control.server calls this
+    whenever a roster key is present — including a `disabled` /grouping/set, whose
+    full validate_grouping is skipped — so a roster member with an injected foreign
+    addr or a malformed channel can never be persisted (it would otherwise become an
+    _unbond disable target, or — if a delimiter split it — an orphaned member)."""
     for m in roster:
         try:
             ip = ipaddress.ip_address(m.addr)

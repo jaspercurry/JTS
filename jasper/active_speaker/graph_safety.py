@@ -578,6 +578,58 @@ def sub_guard_present(
     return lp_ok and gain_ok and limiter_ok and wired
 
 
+def sub_audible_guard_present(
+    view: GraphView,
+    *,
+    channels: set[int] | frozenset[int],
+    lowpass_name: str,
+    limiter_name: str,
+    limiter_clip_ceiling_db: float,
+) -> bool:
+    """True iff an AUDIBLE subwoofer output is band-limited AND excursion-limited
+    (LOOSE, fail-closed) — the commissioning/startup analogue of
+    :func:`sub_guard_present`.
+
+    The durable-baseline sub lane carries a non-positive ``Gain`` filter, so
+    :func:`sub_guard_present` also proves ``gain <= 0``. The commissioning/startup
+    sub lane has NO gain filter (the hard mute / startup limiter own the level),
+    so this predicate proves only the two that MUST hold for an *unmuted* sub —
+    mirroring :func:`tweeter_guard_present` (high-pass -> low-pass):
+
+    - low-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyLowpass`` with **any
+      positive** ``freq`` and ``order`` absent or ``>= 2`` (the band-limit);
+    - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
+      *ceiling*, not equality) and a truthy ``soft_clip`` (excursion);
+    - both wired to exactly ``channels`` in one pipeline step.
+
+    A sub output must NEVER carry a full-range / low-pass-absent feed while
+    audible; fails closed (missing filter / wrong type / unwired -> ``False``)."""
+    lowpass = view.filters.get(lowpass_name)
+    limiter = view.filters.get(limiter_name)
+    lp_params = lowpass.params if lowpass else {}
+    limiter_params = limiter.params if limiter else {}
+    lp_freq = float_value(lp_params.get("freq"))
+    lp_order = float_value(lp_params.get("order"))
+    limiter_clip = float_value(limiter_params.get("clip_limit"))
+    lp_ok = (
+        (lowpass.type if lowpass else None) == "BiquadCombo"
+        and str(lp_params.get("type") or "") == "LinkwitzRileyLowpass"
+        and lp_freq is not None
+        and lp_freq > 0.0
+        and (lp_order is None or lp_order >= 2.0)
+    )
+    limiter_ok = (
+        (limiter.type if limiter else None) == "Limiter"
+        and limiter_clip is not None
+        and limiter_clip <= limiter_clip_ceiling_db
+        and truthy_bool(limiter_params.get("soft_clip"))
+    )
+    wired = pipeline_contains_chain(
+        view, channels=channels, required_names=(lowpass_name, limiter_name)
+    )
+    return lp_ok and limiter_ok and wired
+
+
 def mains_highpass_present(
     view: GraphView,
     *,

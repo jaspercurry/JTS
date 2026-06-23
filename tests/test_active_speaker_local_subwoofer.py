@@ -524,6 +524,45 @@ def test_sub_baseline_reproof_blocks_split_crossover_corner(topology_fn, preset_
     assert "active_baseline_bass_mgmt_corner_split" in {i["code"] for i in graph.issues}
 
 
+def test_commissioning_reproof_blocks_audible_sub_without_band_limit() -> None:
+    """A subwoofer output that is UNMUTED (audible) in a commissioning/startup
+    graph MUST be band-limited (LR4 low-pass) + excursion-limited — the
+    non-baseline analogue of the baseline sub guard. The honest emitter keeps the
+    sub muted in the commissioning sequence, but restore_active_camilla_solo loads
+    a guarded_commissioning graph off disk, so a corrupted/tampered statefile that
+    unmutes the sub AND drops its low-pass (a full-range feed to a powered sub)
+    must be rejected — mirroring the tweeter audible guard. (This is the
+    commissioning-path counterpart to the baseline sub-guard tamper tests above,
+    which only protect the durable-baseline class.)"""
+    from jasper.active_speaker.camilla_yaml import (
+        emit_active_speaker_commissioning_config,
+    )
+
+    preset = _active_2way_sub_preset()
+    topology = _active_2way_sub_topology()
+    sub_idx = preset.local_subwoofer.physical_output_index
+    honest = emit_active_speaker_commissioning_config(
+        preset, playback_device="hw:TEST,0", audible_outputs={sub_idx}
+    )
+    # An HONESTLY audible sub (LP + limiter present) is allowed — the guard must
+    # not false-positive on the legitimate audible-sub commissioning graph.
+    assert classify_camilla_graph(topology=topology, text=honest).allowed is True
+    chain = "[as_sub_lowpass, as_sub_startup_limiter]"
+    assert chain in honest  # the sub's wired protective chain — anchor present
+    # Drop the band-limit -> full-range feed to a powered sub -> rejected.
+    no_lp = classify_camilla_graph(
+        topology=topology, text=honest.replace(chain, "[as_sub_startup_limiter]")
+    )
+    assert no_lp.allowed is False
+    assert "active_graph_unprotected_sub_audible" in {i["code"] for i in no_lp.issues}
+    # Drop the excursion limiter -> rejected too.
+    no_lim = classify_camilla_graph(
+        topology=topology, text=honest.replace(chain, "[as_sub_lowpass]")
+    )
+    assert no_lim.allowed is False
+    assert "active_graph_unprotected_sub_audible" in {i["code"] for i in no_lim.issues}
+
+
 # --------------------------------------------------------------------------- #
 # User-settable crossover Fc threading + passive-mains+sub build path.
 # --------------------------------------------------------------------------- #

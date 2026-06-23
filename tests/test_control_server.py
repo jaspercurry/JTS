@@ -1049,6 +1049,28 @@ def test_grouping_set_follower_requires_leader_addr(
     assert _GROUPING_KICK not in popens
 
 
+def test_grouping_set_disabled_path_validates_roster_no_persist(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """A `disabled` /grouping/set still VALIDATES a roster it carries. The
+    disabled path skips validate_grouping, but the persisted roster IS the unbond
+    disable list, so a member with a foreign/public addr must be rejected 400 and
+    nothing persisted — closing the disabled-path roster-injection hole (an
+    injected foreign addr would otherwise become an unbond disable target)."""
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": False,
+        "roster": [{"addr": "8.8.8.8", "name": "x", "channel": "sub"}],
+    })
+
+    assert status == 400
+    assert "ROSTER" in body["error"]
+    assert not env.exists()           # nothing persisted on a rejected request
+    assert _GROUPING_KICK not in popens
+
+
 # ---------- GET /grouping (the dissolve-flow read endpoint) ----------
 
 

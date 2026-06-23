@@ -63,6 +63,7 @@ from .camilla_yaml import (
     sub_baseline_gain_name,
     sub_baseline_limiter_name,
     sub_lowpass_name,
+    sub_startup_limiter_name,
 )
 
 __all__ = [
@@ -78,6 +79,7 @@ __all__ = [
     "sub_baseline_gain_name",
     "sub_baseline_limiter_name",
     "sub_lowpass_name",
+    "sub_startup_limiter_name",
     # Raw-dict accessors (owned here).
     "filter_spec",
     "filter_params",

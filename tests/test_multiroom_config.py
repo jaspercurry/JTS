@@ -691,6 +691,61 @@ def test_format_roster_sanitizes_name_and_skips_empty_addr():
     assert _format_roster((BondMember(addr="", name="x", channel="sub"),)) == ""
 
 
+def test_format_roster_sanitizes_addr_and_channel_no_inject_or_drop():
+    """The serialization invariant holds for ALL three fields, not just name: a
+    "|"/"," in addr or channel can neither INJECT an extra member (a foreign addr
+    smuggled mid-field) nor DROP one (a stray delimiter splitting the record)."""
+    from jasper.multiroom.config import (
+        BondMember,
+        _parse_roster,
+        format_roster,
+        validate_roster,
+    )
+
+    # addr injection: an unsanitized "10.0.0.5|x|sub,192.168.99.99" would parse
+    # into TWO members (the 2nd a foreign LAN IP). Sanitized -> ONE member, whose
+    # now-mangled addr validate_roster rejects (so it never becomes a target).
+    inject = _parse_roster(format_roster((
+        BondMember(addr="10.0.0.5|x|sub,192.168.99.99", name="R", channel="right"),
+    )))
+    assert len(inject) == 1
+    assert validate_roster(inject) is not None
+
+    # channel injection: same shape via the channel field -> still ONE member.
+    assert len(_parse_roster(format_roster((
+        BondMember(addr="10.0.0.5", name="R", channel="sub,1.2.3.4|y|sub"),
+    )))) == 1
+
+    # DROP: a stray "|" in one member's channel must NOT split/drop the OTHER
+    # member (the sub) on round-trip — both survive, both addrs intact.
+    drop = _parse_roster(format_roster((
+        BondMember(addr="10.0.0.7", name="Right", channel="right"),
+        BondMember(addr="10.0.0.8", name="Sub", channel="sub|oops"),
+    )))
+    assert len(drop) == 2
+    assert {m.addr for m in drop} == {"10.0.0.7", "10.0.0.8"}
+
+
+def test_validate_roster_rejects_foreign_addr_and_bad_channel():
+    """validate_roster (the standalone, not-enabled-gated validator the writer
+    runs on every roster) rejects a public/foreign addr and an unknown channel,
+    and accepts an empty / clean roster."""
+    from jasper.multiroom.config import BondMember, validate_roster
+
+    assert validate_roster(()) is None
+    assert validate_roster((
+        BondMember(addr="192.168.1.8", name="Sub", channel="sub"),
+    )) is None
+    # Public IP — the SSRF rule rejects it.
+    assert validate_roster((
+        BondMember(addr="8.8.8.8", name="x", channel="sub"),
+    )) is not None
+    # Unknown channel.
+    assert validate_roster((
+        BondMember(addr="10.0.0.5", name="x", channel="bogus"),
+    )) is not None
+
+
 def test_parse_roster_skips_malformed_entries():
     """_parse_roster is total: entries without exactly addr|name|channel, or
     with an empty addr, are silently skipped; the good ones survive."""

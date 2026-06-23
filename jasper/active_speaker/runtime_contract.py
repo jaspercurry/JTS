@@ -52,6 +52,7 @@ from .graph_evidence import (
     sub_baseline_gain_name as _sub_baseline_gain_name,
     sub_baseline_limiter_name as _sub_baseline_limiter_name,
     sub_lowpass_name as _sub_lowpass_name,
+    sub_startup_limiter_name as _sub_startup_limiter_name,
 )
 from .graph_safety import (
     GraphView,
@@ -60,6 +61,7 @@ from .graph_safety import (
     float_value as _float_value,
     mains_highpass_present,
     pipeline_contains_chain,
+    sub_audible_guard_present,
     sub_guard_present,
     truthy_bool as _truthy_bool,
     tweeter_guard_present,
@@ -887,6 +889,36 @@ def _active_graph_evidence(
             "active_graph_unprotected_tweeter_audible",
             "active graph unmutes a tweeter output without proving software protection",
         ))
+
+    # Local-subwoofer audible-protection guard (commissioning/startup) — the
+    # non-baseline analogue of the baseline sub re-proof below. A sub output that
+    # is UNMUTED (audible) MUST be band-limited (LR4 low-pass) + excursion-limited;
+    # a full-range feed to a powered sub is exactly the corrupted/tampered-statefile
+    # hazard the re-proof exists to catch (the honest emitter keeps the sub muted in
+    # the commissioning sequence, but restore_active_camilla_solo loads a
+    # guarded_commissioning graph off disk). The baseline path proves the sub
+    # separately — with its non-positive gain — inside is_baseline_like; the
+    # commissioning sub lane has no gain filter, so only LP + limiter are provable.
+    # Gated not-baseline-like so a baseline graph (different limiter name) is never
+    # tripped by this check. Mirrors the tweeter audible guard above.
+    if not is_baseline_like:
+        for index in sorted(unmuted_outputs & sub_outputs):
+            if not sub_audible_guard_present(
+                view,
+                channels={index},
+                lowpass_name=_sub_lowpass_name(),
+                limiter_name=_sub_startup_limiter_name(),
+                limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_graph_unprotected_sub_audible",
+                    (
+                        "active graph unmutes a subwoofer output without proving "
+                        "the band-limit + excursion limiter on DAC output "
+                        f"{index + 1}"
+                    ),
+                ))
 
     if is_baseline_like:
         if is_baseline:
