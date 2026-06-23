@@ -700,7 +700,7 @@
     margin-top: 10px;
   }
   .output-role {
-    display: grid; grid-template-columns: minmax(0, 1fr);
+    display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(11rem, 0.8fr) auto;
     gap: 8px; align-items: center; padding: 8px 0;
     border-top: 1px solid var(--border);
   }
@@ -719,6 +719,32 @@
   .output-role__text small {
     grid-column: 1 / -1;
     font-size: 11px; color: var(--muted-foreground);
+  }
+  .output-role__select {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .output-role__select span {
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+  }
+  .output-role__select select {
+    width: 100%;
+    min-height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--background);
+    color: var(--foreground);
+    font: inherit;
+    font-size: 13px;
+    padding: 0 10px;
+  }
+  .output-role__select select:disabled {
+    opacity: 0.7;
   }
   .output-role__actions {
     display: flex; flex-wrap: wrap; justify-content: flex-start;
@@ -766,8 +792,12 @@
     }
     .output-setup__actions { justify-content: stretch; }
     .output-setup__actions .btn { flex: 1 1 9rem; }
+    .output-role {
+      grid-template-columns: minmax(0, 1fr);
+    }
     .output-role,
     .output-role__text,
+    .output-role__select,
     .output-step__summary,
     .output-identity-row,
     .output-role__actions { justify-content: stretch; }
@@ -815,20 +845,3 @@
     flex-wrap: wrap; gap: 8px; min-height: 42px; align-items: stretch;
   }
   .commission-card__actions .btn { min-height: 40px; }
-  .driver-capture-list {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-    margin-top: 2px;
-  }
-  .driver-capture-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 0;
-    border-top: 1px solid var(--border);
-  }
-  .driver-capture-row .active-speaker-actions {
-    justify-content: flex-end;
-  }
