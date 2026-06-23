@@ -306,6 +306,7 @@ from .grouping import (
     check_grouping_leader_pipe,
     check_grouping_local_vs_wireless_sub,
     check_grouping_pair_channels,
+    check_grouping_snapcast_installed,
     check_grouping_tts_lane,
     check_grouping_rate_adjust,
 )
@@ -592,6 +593,7 @@ __all__ = [
     "check_grouping_leader_pipe",
     "check_grouping_local_vs_wireless_sub",
     "check_grouping_pair_channels",
+    "check_grouping_snapcast_installed",
     "check_grouping_tts_lane",
     "check_grouping_rate_adjust",
     "check_dial_heartbeat",

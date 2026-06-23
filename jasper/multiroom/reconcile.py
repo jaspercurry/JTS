@@ -1401,43 +1401,40 @@ def main(argv: list[str] | None = None) -> int:
             )
             rc = 1
     elif active_speaker_leader:
-        # Active leader (two CamillaDSP): camilla#1 bakes the program domain to
-        # the wire (apply AFTER snapserver — the pipe reader exists), camilla#2
-        # runs this box's own Layer-A crossover on the round-tripped stream (arm
-        # AFTER snapclient — the loopback has its writer). Both configs were built
-        # + re-proven by the readiness gate above. The crossover statefile is
-        # RE-SEEDED with the re-proven driver-domain graph BEFORE enabling the
-        # unit — the never-flat guarantee for an armed camilla#2 (the crossover
-        # guard repairs a dead pipe, NOT a flat statefile). camilla#2 keeps
-        # enable_rate_adjust ON: the music-only validated active-follower seam, no
-        # outputd-summer yet (HANDOFF-distributed-active.md "Sequencing" step 1).
-        # SAFETY — the camilla#1/#2 DAC handoff (2026-06-23 JTS5 incident). The
-        # bake moves camilla#1 from its solo-active DAC baseline to a File/FIFO
-        # sink (RELEASING the DAC); camilla#2 then TAKES the DAC. Arming camilla#2
-        # while camilla#1 still holds the DAC is a device conflict, and camilla#1
-        # carries StartLimitAction=reboot, so that conflict REBOOT-LOOPS the box.
-        # Two gates make this fail-closed: (1) do NOT bake onto a reader-less pipe
-        # — verify snapserver actually started (its File sink writes the snapfifo,
-        # which has no reader if snapserver is missing/failed, as on a box with no
-        # Snapcast installed); (2) arm camilla#2 ONLY if the bake succeeded
-        # (camilla#1 has provably moved off the DAC). Any failure leaves camilla#1
-        # on its safe solo-active baseline and camilla#2 un-armed — the box stays
-        # solo-active, never a two-instance DAC fight.
-        bake_ok = False
+        # Active leader = two CamillaDSP: camilla#1 bakes the program domain to the
+        # wire, camilla#2 runs this box's own Layer-A crossover on the round-trip.
+        #
+        # WIRE-UP GUARD (2026-06-23 JTS5 incident — the single top-of-path
+        # precondition). The two-instance setup is viable ONLY if the wire is up.
+        # camilla#1's bake writes a File/FIFO sink that needs snapserver as its
+        # reader, and ONLY a successful bake moves camilla#1 off the DAC so
+        # camilla#2 can take it. If snapserver did not start (no Snapcast
+        # installed, or a failed start in step 4 — the precheck snapcast gate
+        # catches a missing binary, this catches a failed start), bail here and
+        # STAY SOLO-ACTIVE: camilla#1 keeps the DAC on its safe solo baseline,
+        # camilla#2 stays un-armed. Otherwise the two instances fight for the DAC
+        # and camilla#1 (StartLimitAction=reboot) reboot-loops the box.
         if not _unit_is_active(SNAPSERVER_UNIT):
             log_event(
                 logger,
-                "multiroom.reconcile.camilla_failed",
-                action="active_leader_bake_apply",
-                error=(
-                    "snapserver is not active — refusing to bake camilla#1 onto a "
-                    "reader-less pipe or arm camilla#2 (would fight camilla#1 for "
-                    "the DAC and reboot-loop the box)"
+                "multiroom.reconcile.active_leader_blocked",
+                reason="snapserver_not_active",
+                detail=(
+                    "active-leader wire is down; staying solo-active "
+                    "(camilla#1 keeps the DAC, camilla#2 un-armed)"
                 ),
                 level=logging.ERROR,
             )
             rc = 1
         else:
+            # Wire is up. camilla#1 bakes to the now-readable pipe; THEN — only if
+            # that bake provably released the DAC — camilla#2 is armed onto it. The
+            # statefile is RE-SEEDED with the re-proven driver-domain graph BEFORE
+            # enabling the unit (the never-flat guarantee; the crossover guard
+            # repairs a dead pipe, not a flat statefile). camilla#2 keeps
+            # enable_rate_adjust ON — the validated active-follower seam, no
+            # outputd-summer yet (HANDOFF-distributed-active.md "Sequencing" 1).
+            bake_ok = False
             try:
                 from .active_leader_config import (
                     apply_active_leader_bake_sync,
@@ -1462,20 +1459,19 @@ def main(argv: list[str] | None = None) -> int:
                     level=logging.ERROR,
                 )
                 rc = 1
-        # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably moved
-        # camilla#1 off the DAC. Otherwise leave camilla#2 un-armed (camilla#1
-        # keeps the DAC on its solo-active baseline) — no two-instance DAC fight.
-        if bake_ok:
-            if not _arm_crossover_unit():
+            # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
+            # released the DAC — otherwise leave it un-armed (no DAC fight).
+            if bake_ok:
+                if not _arm_crossover_unit():
+                    rc = 1
+            else:
+                log_event(
+                    logger,
+                    "multiroom.reconcile.camilla",
+                    result="active_leader_crossover_arm_skipped",
+                    reason="bake_not_applied",
+                )
                 rc = 1
-        else:
-            log_event(
-                logger,
-                "multiroom.reconcile.camilla",
-                result="active_leader_crossover_arm_skipped",
-                reason="bake_not_applied",
-            )
-            rc = 1
 
     if active_leader:
         # 6. The stream-binding pin (ANY leader hosts the stream; runs after the

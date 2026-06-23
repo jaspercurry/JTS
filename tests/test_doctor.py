@@ -254,6 +254,36 @@ def test_check_grouping_off_is_ok(monkeypatch):
     assert "single-speaker" in r.detail
 
 
+def test_check_snapcast_off_skips(monkeypatch):
+    """Grouping off → snapcast deliberately not installed; skip (ok)."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    r = doctor.check_grouping_snapcast_installed()
+    assert r.status == "ok"
+    assert "grouping off" in r.detail
+
+
+def test_check_snapcast_present_is_ok(monkeypatch):
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    r = doctor.check_grouping_snapcast_installed()
+    assert r.status == "ok"
+    assert "present" in r.detail
+
+
+def test_check_snapcast_missing_fails_with_remediation(monkeypatch):
+    """The JTS5 root state (2026-06-23): grouping enabled but the snapcast
+    binaries were never installed (no automated install path exists). Surface
+    it as a FAIL carrying the install command, so it can't stay invisible until
+    a bond reboot-loops the box."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    r = doctor.check_grouping_snapcast_installed()
+    assert r.status == "fail"
+    assert "snapserver" in r.detail and "snapclient" in r.detail
+    assert "apt install" in r.detail
+
+
 def test_check_household_credential_solo_is_ok(monkeypatch):
     # Solo short-circuits before reading the secret file (a lone speaker needs
     # no household credential).
