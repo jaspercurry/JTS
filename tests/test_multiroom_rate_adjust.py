@@ -375,6 +375,21 @@ def test_sub_corner_check_warns_when_env_missing(monkeypatch):
     assert "not wired with the low-pass corner" in r.detail
 
 
+def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
+    """N2: an active-speaker box bonds via CamillaDSP (active endpoint), which
+    clears the outputd dumb lane — the SUB_HZ env is correctly absent there.
+    The check must be n/a, NOT a false 'corner missing' warn."""
+    import jasper.multiroom.reconcile as recmod
+    monkeypatch.setattr(recmod, "is_active_speaker_box", lambda: True)
+    r = _sub_corner_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="sub",
+                 bond_id="b", leader_addr="jts.local"),
+    )
+    assert r.status == "ok"
+    assert "active-speaker box" in r.detail
+
+
 def test_sub_corner_check_warns_when_corner_absent(monkeypatch, tmp_path):
     from jasper.multiroom.reconcile import (
         MEMBER_CONTENT_FIFO,

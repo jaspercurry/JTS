@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 
 import {
+  addSubPlan,
   airplayLipSyncRow,
   createFaceCopy,
   subCornerLabel,
@@ -90,6 +91,76 @@ assert.equal(subCornerLabel(-50), "80 Hz low-pass");
   const unknown = createFaceCopy("zzz");
   assert.equal(unknown.button, "Create stereo pair");
   assert.deepEqual(unknown, pair);
+}
+
+// addSubPlan: decide whether to offer "add a subwoofer" on a bonded leader,
+// and (when shown) the existing-members list to re-post as the SAME bond.
+{
+  // Leader/left with a RIGHT sibling in the roster (no sub) → show, and the
+  // members reconstruct leader(left) + follower(right).
+  const rosterPair = addSubPlan({
+    enabled: true, bond_id: "bond-1", role: "leader", channel: "left",
+    self_addr: "192.168.1.5",
+    roster: [{ addr: "192.168.1.9", name: "Right", channel: "right" }],
+  });
+  assert.equal(rosterPair.show, true, JSON.stringify(rosterPair));
+  assert.deepEqual(rosterPair.members, [
+    { addr: "192.168.1.5", role: "leader", channel: "left" },
+    { addr: "192.168.1.9", role: "follower", channel: "right", name: "Right" },
+  ]);
+
+  // A group that ALREADY contains a sub → no panel.
+  const hasSub = addSubPlan({
+    enabled: true, bond_id: "bond-1", role: "leader", channel: "left",
+    self_addr: "192.168.1.5",
+    roster: [
+      { addr: "192.168.1.9", name: "Right", channel: "right" },
+      { addr: "192.168.1.8", name: "Sub", channel: "sub" },
+    ],
+  });
+  assert.equal(hasSub.show, false);
+  assert.equal(hasSub.reason, "already has a sub");
+
+  // A FOLLOWER (not the leader) → no panel.
+  const follower = addSubPlan({
+    enabled: true, bond_id: "bond-1", role: "follower", channel: "right",
+    self_addr: "192.168.1.9", leader_addr: "jts.local",
+  });
+  assert.equal(follower.show, false);
+
+  // A MONO leader (not a stereo channel) → no panel.
+  const mono = addSubPlan({
+    enabled: true, bond_id: "bond-1", role: "leader", channel: "mono",
+    self_addr: "192.168.1.5",
+  });
+  assert.equal(mono.show, false);
+  assert.equal(mono.reason, "not a stereo leader");
+
+  // Not bonded → no panel.
+  assert.equal(addSubPlan({ enabled: false }).show, false);
+  assert.equal(addSubPlan({}).show, false);
+  assert.equal(addSubPlan(null).show, false);
+
+  // LEGACY pair: no roster, peer_addr+peer_name only, leader on "left" →
+  // reconstruct the sibling on the OPPOSITE channel (right).
+  const legacy = addSubPlan({
+    enabled: true, bond_id: "bond-1", role: "leader", channel: "left",
+    self_addr: "192.168.1.5",
+    peer_addr: "192.168.1.9", peer_name: "JTS3",
+  });
+  assert.equal(legacy.show, true);
+  assert.deepEqual(legacy.members, [
+    { addr: "192.168.1.5", role: "leader", channel: "left" },
+    { addr: "192.168.1.9", role: "follower", channel: "right", name: "JTS3" },
+  ]);
+
+  // Legacy pair, leader on "right" → sibling reconstructed as "left".
+  const legacyRight = addSubPlan({
+    enabled: true, bond_id: "bond-1", role: "leader", channel: "right",
+    self_addr: "192.168.1.5",
+    peer_addr: "192.168.1.9", peer_name: "JTS3",
+  });
+  assert.equal(legacyRight.members[1].channel, "left");
 }
 
 console.log(JSON.stringify({ ok: true }));

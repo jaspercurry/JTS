@@ -288,9 +288,12 @@ Increment 6 (per-follower calibration). What exists:
   fallback for older peering env files. See §8 "Friendly names + identity".
 
 Not yet built (P1+, post-spike): the `BondedSet` entity, satellite
-calibration, **2.1 / sub / >2-member bond setup on `/rooms/`** (the
-stereo-pair one-flow landed — `/bond` fans config out to both members;
-the multi-member channel/leader picker is the remaining UI), the
+calibration, **arbitrary >2-member multi-room bonds on `/rooms/`** (the
+stereo-pair one-flow landed — `/bond` fans config out to all members —
+and 2026-06-23 added an "add a subwoofer to a pair" flow [a 2.1 system:
+left + right + sub] backed by the N-member `JASPER_GROUPING_ROSTER`; what
+remains is a general multi-member channel/leader picker for groups beyond
+pair-plus-sub), the
 **leader's own snapclient → outputd content lane** (§2 inv. 2 — so the
 leader plays the *buffered* stream in sync with followers, not its direct
 unsynced output), and the on-device end-to-end + acoustic sync validation.
@@ -1890,7 +1893,20 @@ never a fall-back to inference a foreign claimer could satisfy.
 Roster-less (pre-roster) bonds keep the legacy inference, whose
 ambiguity error now suggests re-pairing to record the roster. Unbond
 with a roster disables self + the recorded sibling only (best-effort
-at its last known address when offline). Regression tests:
+at its last known address when offline).
+**Extended 2026-06-23 (N-member roster — "add a sub to a pair"):** the
+leader now also records EVERY follower (not just the L/R sibling) in a
+new leader-only key `JASPER_GROUPING_ROSTER` (`addr|name|channel`
+entries, comma-joined; serialized name sanitized; each addr SSRF-checked
+as private/loopback IPv4 in `validate_grouping`; same preserve/clear
+contract). `_save_bond` records it for any N while keeping
+`PEER_ADDR/_NAME` = the primary L/R sibling (so swap/trim stay on the
+stereo pair). `_unbond` takes a full-roster path — disable self + EVERY
+recorded member — so a 2.1's sub is never orphaned (the legacy single-
+sibling/discovery path remains for pre-roster bonds). `/rooms/` gains an
+"Add a subwoofer" affordance on a bonded stereo-pair leader (pure
+`addSubPlan` in grouping-view.js) that re-posts the SAME bond_id with the
+existing members + the new `channel=sub` follower. Regression tests:
 tests/test_web_rooms_setup.py (foreign-claimer matrix, DHCP
 rediscovery, named unreachable error, unbond containment, bond-body
 roster), test_web_balance_flow.py (start survives a foreign claimer),

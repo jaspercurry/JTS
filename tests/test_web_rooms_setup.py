@@ -2179,6 +2179,103 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     assert follower_body["peer_name"] == ""
 
 
+def _drive_bond(members, monkeypatch):
+    """Drive POST /bond, returning {addr: body} of the fanned-out members."""
+    posts: list[tuple[str, dict]] = []
+
+    def fake_member_post(addr, body, known=None, *, token=None, household=None):
+        posts.append((addr, body))
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
+                        fake_member_post)
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/bond")
+    payload = json.dumps({"members": members}).encode()
+    h.headers["Content-Length"] = str(len(payload))
+    h.rfile = BytesIO(payload)
+    handler_cls.do_POST(h)
+    return h, {addr: body for addr, body in posts}
+
+
+def test_bond_three_members_records_full_roster_with_lr_primary(monkeypatch):
+    """A 2.1 bond [leader/left, follower/right, follower/sub] sends the LEADER
+    a roster of BOTH followers (right + sub) and a peer_addr pointing at the
+    RIGHT follower (the L/R sibling) — NOT the sub — so swap/trim stay on the
+    stereo pair. Each follower gets an explicit empty roster."""
+    h, bodies = _drive_bond([
+        {"addr": "", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right",
+         "name": "Right"},
+        {"addr": "192.168.1.8", "role": "follower", "channel": "sub",
+         "name": "Sub", "crossover_hz": 90},
+    ], monkeypatch)
+    assert h.status == 200
+    leader_body = bodies[""]
+    assert leader_body["roster"] == [
+        {"addr": "192.168.1.9", "name": "Right", "channel": "right"},
+        {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
+    ]
+    # Primary L/R sibling = the RIGHT follower, never the sub.
+    assert leader_body["peer_addr"] == "192.168.1.9"
+    assert leader_body["peer_name"] == "Right"
+    # Both followers carry an explicit empty roster (no stale roster after a
+    # role flip).
+    assert bodies["192.168.1.9"]["roster"] == []
+    assert bodies["192.168.1.8"]["roster"] == []
+
+
+def test_bond_two_member_pair_sets_peer_and_single_roster(monkeypatch):
+    """A 2-member stereo pair still sets peer_addr=the follower AND a
+    one-entry roster naming it (so unbond's roster path disables it too)."""
+    h, bodies = _drive_bond([
+        {"addr": "", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right",
+         "name": "JTS3"},
+    ], monkeypatch)
+    assert h.status == 200
+    leader_body = bodies[""]
+    assert leader_body["peer_addr"] == "192.168.1.9"
+    assert leader_body["peer_name"] == "JTS3"
+    assert leader_body["roster"] == [
+        {"addr": "192.168.1.9", "name": "JTS3", "channel": "right"},
+    ]
+
+
+def test_unbond_with_full_roster_disables_self_and_all_members(monkeypatch):
+    """When the leader's grouping carries a full roster (N followers), unbond
+    disables self + EVERY roster member — even a sub — and skips the
+    discovery/peer_addr path entirely (the roster is authoritative)."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={
+            "enabled": True, "role": "leader", "bond_id": "bond-1",
+            "peer_addr": "192.168.1.9", "peer_name": "Right",
+            "roster": [
+                {"addr": "192.168.1.9", "name": "Right", "channel": "right"},
+                {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
+            ],
+        },
+        # A foreign claimer is reachable on the SAME bond — the roster path
+        # must ignore discovery entirely, so it is never disabled.
+        speakers=[{"address": "192.168.1.162", "name": "Interloper"}],
+        peer_grouping={
+            "192.168.1.162": {"enabled": True, "bond_id": "bond-1"},
+        },
+    )
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    # Self ("") + both roster members; the foreign claimer is untouched.
+    assert [a for a, _ in posts] == ["", "192.168.1.9", "192.168.1.8"]
+    assert all(b == {"enabled": False} for _a, b in posts)
+
+
 _NODE = shutil.which("node")
 _GROUPING_VIEW_TEST = _REPO / "tests" / "js" / "rooms_grouping_view_test.mjs"
 

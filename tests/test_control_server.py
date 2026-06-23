@@ -3664,6 +3664,60 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
     assert writes[-1]["JASPER_GROUPING_PEER_NAME"] == ""
 
 
+def test_grouping_set_roster_settable_preserved_and_validated(
+    monkeypatch, server_with_coordinator,
+):
+    """Bond roster (full N-member list): a `roster` list of {addr,name,channel}
+    persists the SERIALIZED JASPER_GROUPING_ROSTER; omitted → preserved (key
+    absent); a bad member (non-IPv4 addr) → 400; a non-list value → 400."""
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {"enabled": True, "role": "leader", "channel": "left",
+            "bond_id": "b", "leader_addr": ""}
+
+    # A roster list persists as the serialized env string (addr|name|channel
+    # entries joined by ",").
+    status, _ = _post(f"{base}/grouping/set", {
+        **body, "roster": [
+            {"addr": "192.168.1.7", "name": "Right", "channel": "right"},
+            {"addr": "10.0.0.8", "name": "Sub", "channel": "sub"},
+        ],
+    })
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_ROSTER"] == (
+        "192.168.1.7|Right|right,10.0.0.8|Sub|sub"
+    )
+
+    # A bad member (non-private/loopback IPv4 addr) → 400 (shared validator).
+    status, resp = _post(f"{base}/grouping/set", {
+        **body, "roster": [
+            {"addr": "8.8.8.8", "name": "x", "channel": "sub"},
+        ],
+    })
+    assert status == 400 and "private/loopback" in resp["error"]
+
+    # A non-list roster value → 400 before validate.
+    status, resp = _post(f"{base}/grouping/set", {**body, "roster": "nope"})
+    assert status == 400 and resp["error"] == "roster must be a list"
+
+    # Omitted → preserved (key absent from this write).
+    status, _ = _post(f"{base}/grouping/set", body)
+    assert status == 200
+    assert "JASPER_GROUPING_ROSTER" not in writes[-1]
+
+    # Explicit empty list clears it (serializes to "").
+    status, _ = _post(f"{base}/grouping/set", {**body, "roster": []})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_ROSTER"] == ""
+
+
 # --------------------------------------------------------------------------
 # Control-token gate (jasper/control/control_token.py).
 #

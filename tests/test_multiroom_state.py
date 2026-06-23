@@ -82,7 +82,7 @@ def _cfg(tmp_path, body):
 
 
 _EXPECTED_KEYS = {
-    "trim_db", "peer_addr", "peer_name",
+    "trim_db", "peer_addr", "peer_name", "roster",
     "enabled", "role", "channel", "bond_id",
     "leader_addr", "buffer_ms", "codec", "error",
 }
@@ -151,6 +151,30 @@ def test_sub_member_surfaces_crossover_hz(tmp_path):
     )
     assert non_sub["channel"] == "right"
     assert "crossover_hz" not in non_sub
+
+
+def test_leader_roster_surfaces_as_list(tmp_path):
+    """A leader cfg with a 2-member roster surfaces snapshot["roster"] as a
+    list of {addr,name,channel}; a solo/empty config surfaces []."""
+    leader_with_roster = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=leader\n"
+        "JASPER_GROUPING_CHANNEL=left\n"
+        "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,192.168.1.8|Sub|sub\n"
+    )
+    state = read_grouping_state(
+        _write_env(tmp_path, leader_with_roster),
+        unit_state_reader=_stub, tap_path_reader=_tap_set,
+    )
+    assert state["roster"] == [
+        {"addr": "192.168.1.7", "name": "Right", "channel": "right"},
+        {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
+    ]
+
+    # Solo / disabled config: empty roster list.
+    solo = read_grouping_state(str(tmp_path / "missing.env"))
+    assert solo["roster"] == []
 
 
 def test_valid_enabled_codec_defaults_to_flac(tmp_path):

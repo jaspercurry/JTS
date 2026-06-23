@@ -849,10 +849,12 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "leader_addr": "" if role == "leader" else leader_addr,
             # Explicit empties CLEAR any stale roster (a member that was
             # a leader in a previous bond must not keep pointing at its
-            # old sibling); the leader of a 2-member bond gets the real
-            # roster below.
+            # old sibling); the leader gets the real peer/roster below.
             "peer_addr": "",
             "peer_name": "",
+            # Likewise an explicit empty roster on every non-leader member,
+            # so a member that LED a previous bond can't keep a stale roster.
+            "roster": [],
         }
         # Subwoofer crossover: forward the corner Hz so the member's
         # /grouping/set persists it (validate_grouping clamps the range;
@@ -861,18 +863,40 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         # which the receiving validator treats as the default for a sub.
         if "crossover_hz" in m:
             body["crossover_hz"] = m.get("crossover_hz")
-        if role == "leader" and len(members) == 2:
-            # The bond roster: record WHO the pair sibling is, so swap/
-            # trim/balance/unbond resolve the household's actual choice
-            # instead of inferring membership from bond_id claims
-            # (pair vocabulary — N>2 endpoint groups need their own
-            # roster design).
-            other = next(
-                (mm for j, mm in enumerate(members)
-                 if j != i and isinstance(mm, dict)), None)
-            if other is not None:
-                body["peer_addr"] = str(other.get("addr") or "").strip()
-                body["peer_name"] = str(other.get("name") or "").strip()
+        if role == "leader":
+            # The LEADER records the full roster (any N): every OTHER member
+            # as {addr,name,channel}, so _unbond can disable ALL of them (a
+            # 2.1 system's sub is no longer orphaned). peer_addr/peer_name
+            # stay the PRIMARY L/R sibling so swap/trim/balance keep operating
+            # on the stereo pair, not the sub.
+            roster: list[dict] = []
+            for j, mm in enumerate(members):
+                if j == i or not isinstance(mm, dict):
+                    continue
+                m_addr = str(mm.get("addr") or "").strip()
+                if not m_addr:
+                    continue
+                roster.append({
+                    "addr": m_addr,
+                    "name": str(mm.get("name") or "").strip(),
+                    "channel": str(mm.get("channel") or "").strip(),
+                })
+            body["roster"] = roster
+            # Primary sibling = the first L/R follower (so swap/trim stay on
+            # the stereo pair), else just the first follower.
+            others = [
+                mm for j, mm in enumerate(members)
+                if j != i and isinstance(mm, dict)
+                and str(mm.get("addr") or "").strip()
+            ]
+            primary = next(
+                (mm for mm in others
+                 if str(mm.get("channel") or "").strip() in ("left", "right")),
+                others[0] if others else None,
+            )
+            if primary is not None:
+                body["peer_addr"] = str(primary.get("addr") or "").strip()
+                body["peer_name"] = str(primary.get("name") or "").strip()
         targets.append((addr, body))
         target_idx.append(i)
 
@@ -963,13 +987,27 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # rediscovered. A peer we can't reach (GET → None) or one in a different
     # bond is simply not added to the disable set.
     known = _self_addresses()
+    roster = grouping.get("roster")
     roster_addr = str(grouping.get("peer_addr") or "").strip()
     candidate_groupings: list = []
-    if roster_addr:
-        # Roster-first: disable exactly the recorded sibling — never a
-        # foreign device that happens to claim our bond_id (a transient
-        # claimer here would get its grouping DISABLED, which is worse
-        # than the read-path ambiguity). Best-effort: if the resolver
+    if isinstance(roster, list) and roster:
+        # Full-roster path (N-member bonds, e.g. a 2.1 system): the leader
+        # recorded EVERY follower at bond time, so disable self + exactly
+        # those — no orphaned sub, and no foreign-claimer ambiguity (the
+        # roster is authoritative, so the discovery / peer_addr block is
+        # skipped). Best-effort: aim the disable at each recorded address
+        # even if offline, so a powered-off follower isn't left stranded.
+        peer_addrs = [
+            a for a in (
+                str(m.get("addr") or "").strip()
+                for m in roster if isinstance(m, dict)
+            ) if a
+        ]
+    elif roster_addr:
+        # Legacy pair-roster (no full roster): disable exactly the recorded
+        # sibling — never a foreign device that happens to claim our bond_id
+        # (a transient claimer here would get its grouping DISABLED, which is
+        # worse than the read-path ambiguity). Best-effort: if the resolver
         # can't confirm the peer (offline), still aim the disable at its
         # last known address so a powered-off-then-on follower isn't
         # left stranded by design; the fan-out reports the failure.
@@ -1040,6 +1078,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         "rooms.unbond",
         bond=bond_id,
         roster="yes" if roster_addr else "no",
+        roster_n=len(roster or []),
         unreachable=unreachable,
         peers=len(peer_addrs),
         self_ok=self_ok,

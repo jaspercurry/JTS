@@ -283,12 +283,25 @@ def check_grouping_sub_corner() -> CheckResult:
     from ...multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
         OUTPUTD_GROUPING_ENV_FILE,
+        is_active_speaker_box,
     )
 
     label = "grouping: sub corner"
     cfg = load_config()
     if not is_active_member(cfg) or cfg.channel != "sub":
         return CheckResult(label, "ok", "not an active sub member (n/a)")
+    # An active-speaker box bonds via CamillaDSP (the active-endpoint path),
+    # which CLEARS the outputd dumb lane — JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ
+    # lives only on the dumb-follower lane, so its absence here is correct, not
+    # drift. (An active box can't actually be a sub today — program_channel_for
+    # fail-closes — so this is the contradictory-config case; either way the
+    # dumb-lane corner check does not apply.)
+    if is_active_speaker_box():
+        return CheckResult(
+            label, "ok",
+            "active-speaker box — a sub low-pass would ride CamillaDSP, not "
+            "the outputd dumb lane (n/a)",
+        )
 
     path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if not path.exists():

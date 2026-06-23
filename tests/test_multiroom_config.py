@@ -644,6 +644,132 @@ def test_peer_roster_parse_and_validation_matrix():
     assert validate_grouping(**base, peer_name="ok name") is None
 
 
+# ---------- roster: N-member bond roster (leader records all followers) ----
+
+
+def test_roster_parse_round_trips_format():
+    """_parse_roster(_format_roster(members)) round-trips a list of members."""
+    from jasper.multiroom.config import (
+        BondMember,
+        _format_roster,
+        _parse_roster,
+    )
+
+    members = (
+        BondMember(addr="192.168.1.7", name="Living Right", channel="right"),
+        BondMember(addr="192.168.1.8", name="Sub", channel="sub"),
+    )
+    assert _parse_roster(_format_roster(members)) == members
+    # Empty round-trips to empty.
+    assert _format_roster(()) == ""
+    assert _parse_roster("") == ()
+
+
+def test_format_roster_sanitizes_name_and_skips_empty_addr():
+    """_format_roster replaces "|"/","/control chars in the name with a space
+    and skips members with an empty addr (a roster slot with no address is
+    meaningless)."""
+    from jasper.multiroom.config import (
+        BondMember,
+        _format_roster,
+        _parse_roster,
+    )
+
+    dirty = (
+        BondMember(addr="10.0.0.5", name="a|b,c\nd", channel="sub"),
+    )
+    serialized = _format_roster(dirty)
+    # The "|"/","/newline in the name are gone — only the entry/field
+    # delimiters survive, so the parser round-trips to a single clean member.
+    parsed = _parse_roster(serialized)
+    assert len(parsed) == 1
+    assert "|" not in parsed[0].name and "," not in parsed[0].name
+    assert all(ord(c) >= 32 for c in parsed[0].name)
+    assert parsed[0].addr == "10.0.0.5" and parsed[0].channel == "sub"
+
+    # Empty addr is skipped entirely.
+    assert _format_roster((BondMember(addr="", name="x", channel="sub"),)) == ""
+
+
+def test_parse_roster_skips_malformed_entries():
+    """_parse_roster is total: entries without exactly addr|name|channel, or
+    with an empty addr, are silently skipped; the good ones survive."""
+    from jasper.multiroom.config import BondMember, _parse_roster
+
+    raw = (
+        "10.0.0.5|Right|right,"   # good
+        "no-pipes-here,"          # only 1 part -> skipped
+        "10.0.0.6|onlytwo,"       # only 2 parts -> skipped
+        "|EmptyAddr|sub,"         # empty addr -> skipped
+        "10.0.0.7|Sub|sub"        # good
+    )
+    assert _parse_roster(raw) == (
+        BondMember(addr="10.0.0.5", name="Right", channel="right"),
+        BondMember(addr="10.0.0.7", name="Sub", channel="sub"),
+    )
+
+
+def test_validate_grouping_roster_matrix():
+    """validate_grouping fails LOUD (naming the bad field) for a non-IPv4
+    roster addr, a bad channel, or an over-long name; accepts a valid roster
+    and an empty roster (the default)."""
+    from jasper.multiroom.config import BondMember, validate_grouping
+
+    base = dict(role="leader", channel="left", bond_id="b", leader_addr="")
+    # Valid + empty both pass.
+    assert validate_grouping(**base) is None
+    assert validate_grouping(
+        **base,
+        roster=(
+            BondMember(addr="192.168.1.7", name="Right", channel="right"),
+            BondMember(addr="10.0.0.8", name="Sub", channel="sub"),
+        ),
+    ) is None
+    # Non-private/loopback IPv4 addr — names the addr field.
+    err = validate_grouping(
+        **base, roster=(BondMember(addr="8.8.8.8", name="x", channel="sub"),))
+    assert err is not None and "addr='8.8.8.8'" in err
+    # Non-IPv4 (hostname) addr also rejected.
+    assert validate_grouping(
+        **base,
+        roster=(BondMember(addr="jts3.local", name="x", channel="sub"),),
+    ) is not None
+    # Bad channel.
+    err = validate_grouping(
+        **base,
+        roster=(BondMember(addr="10.0.0.9", name="x", channel="surround"),))
+    assert err is not None and "channel=" in err
+    # Over-long name.
+    err = validate_grouping(
+        **base,
+        roster=(BondMember(addr="10.0.0.9", name="x" * 65, channel="sub"),))
+    assert err is not None and "name=" in err
+
+
+def test_load_config_reads_roster(tmp_path):
+    """load_config parses JASPER_GROUPING_ROSTER into cfg.roster (a tuple of
+    BondMember); absent -> empty tuple (legacy bonds)."""
+    from jasper.multiroom.config import BondMember
+
+    body = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=leader\n"
+        "JASPER_GROUPING_CHANNEL=left\n"
+        "JASPER_GROUPING_BOND_ID=b\n"
+        "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,10.0.0.8|Sub|sub\n"
+    )
+    cfg = load_config(_write_env(tmp_path, body))
+    assert cfg.roster == (
+        BondMember(addr="192.168.1.7", name="Right", channel="right"),
+        BondMember(addr="10.0.0.8", name="Sub", channel="sub"),
+    )
+    assert cfg.error is None
+
+    # Absent key -> empty roster, no error.
+    cfg2 = load_config(_write_env(tmp_path, _leader_env()))
+    assert cfg2.roster == ()
+
+
 # ---------- crossover_hz: receiver-side wireless-sub low-pass corner ----
 
 

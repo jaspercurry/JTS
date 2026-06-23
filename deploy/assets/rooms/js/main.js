@@ -42,7 +42,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
-import { airplayLipSyncRow, createFaceCopy, subCornerLabel } from "./grouping-view.js";
+import { addSubPlan, airplayLipSyncRow, createFaceCopy, subCornerLabel } from "./grouping-view.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -484,6 +484,13 @@ function makeBondCard() {
   // can carry the picked peer's directory NAME (the leader records it
   // as the bond roster for DHCP re-resolution).
   let lastReachable = [];
+  // The add-sub picker's reachable peers + the existing-members plan from the
+  // last poll, so the addSub handler re-posts the SAME bond with the new sub.
+  let lastSubReachable = [];
+  let lastAddSubPlan = { show: false, members: [], reason: "init" };
+  // Current bond_id from the poll — passed back on the add-sub re-post so it
+  // ADDS to the existing bond rather than minting a fresh one.
+  let lastBondId = "";
 
   // --- Create face: pick a sibling for the right channel ------------------
   const select = h("select.bond-select", {
@@ -600,6 +607,33 @@ function makeBondCard() {
   const trimBlock = h("div.trim-block", null,
     trimIntro, trimSelf.el, trimPeer.el, balanceNote);
 
+  // --- Add-subwoofer sub-panel (dissolve face, stereo-leader only) --------
+  // Shown only when this speaker is a bonded stereo-pair LEADER with no sub
+  // yet (decided by the pure addSubPlan helper). Adds a third member to the
+  // SAME bond — it does NOT dissolve the pair.
+  const addSubSelect = h("select.bond-select", {
+    "attr:aria-label": "Speaker to add as a subwoofer",
+  });
+  const addSubCrossover = h("input.bond-crossover", {
+    type: "number", min: "40", max: "200", step: "1", value: "80",
+    "attr:aria-label": "Subwoofer low-pass corner (Hz)",
+  });
+  const addSubBtn = h("button.btn.btn--primary",
+    { type: "button" }, "Add subwoofer");
+  const addSubIntro = h("p.info-card__note", null,
+    "Add a subwoofer to this pair: the speaker you pick plays only the low " +
+    "end (low-passed locally on that box). The pair keeps playing as-is.");
+  const addSubPanel = h("div.add-sub-panel", null,
+    addSubIntro,
+    h("div.bond-row", null,
+      h("span.bond-row__label", null, "Add subwoofer"),
+      addSubSelect),
+    h("div.bond-row", null,
+      h("span.bond-row__label", null, "Low-pass (Hz)"),
+      addSubCrossover,
+      addSubBtn),
+  );
+
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
 
@@ -610,6 +644,7 @@ function makeBondCard() {
     dissolveIntro,
     currentSummary,
     trimBlock,
+    addSubPanel,
     dissolveRow,
     status,
   );
@@ -640,6 +675,10 @@ function makeBondCard() {
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
     trimBlock.style.display = bonded ? "" : "none";
+    // The add-sub panel rides the dissolve face but is further gated by
+    // addSubPlan in sync(); hide it on the create face here, let sync own it
+    // back on the dissolve face.
+    if (!bonded) addSubPanel.style.display = "none";
     // Bonded → a neutral dissolve-face title; create → the role-aware title
     // (so a 7 s poll re-asserts "Add a wireless subwoofer", not "stereo pair").
     title.textContent = bonded
@@ -696,6 +735,7 @@ function makeBondCard() {
     selfAddr = self.address || "";
     const g = (self.grouping && typeof self.grouping === "object") ? self.grouping : {};
     const bonded = !!(g.enabled && g.bond_id && !g.error);
+    const peers = Array.isArray(snap && snap.peers) ? snap.peers : [];
 
     showFace(bonded);
 
@@ -713,11 +753,49 @@ function makeBondCard() {
       swapBtn.style.display =
         (g.channel === "left" || g.channel === "right") ? "" : "none";
       swapBtn.disabled = false;
+      // Add-subwoofer affordance: only for a stereo-pair leader with no sub
+      // yet (the pure addSubPlan decides). Stash the existing-members plan so
+      // the handler re-posts the SAME bond with the new sub appended.
+      lastAddSubPlan = addSubPlan({ ...g, self_addr: selfAddr });
+      lastBondId = g.bond_id || "";
+      if (lastAddSubPlan.show) {
+        addSubPanel.style.display = "";
+        // Exclude self + every existing bond member from the sub picker.
+        const inBond = new Set(
+          lastAddSubPlan.members
+            .map((mm) => mm.addr)
+            .filter(Boolean),
+        );
+        const subReachable = peers.filter(
+          (p) => p && p.address && !inBond.has(p.address));
+        const prev = addSubSelect.value;
+        addSubSelect.textContent = "";
+        if (!subReachable.length) {
+          addSubSelect.appendChild(h("option", { value: "" },
+            "No other speakers found — add one to use as a subwoofer"));
+          addSubSelect.disabled = true;
+          addSubCrossover.disabled = true;
+          addSubBtn.disabled = true;
+        } else {
+          lastSubReachable = subReachable;
+          for (const p of subReachable) {
+            const label = (p.name || p.address) + " (" + p.address + ")";
+            addSubSelect.appendChild(h("option", { value: p.address }, label));
+          }
+          if (subReachable.some((p) => p.address === prev)) {
+            addSubSelect.value = prev;
+          }
+          addSubSelect.disabled = false;
+          addSubCrossover.disabled = false;
+          addSubBtn.disabled = false;
+        }
+      } else {
+        addSubPanel.style.display = "none";
+      }
       return;
     }
 
-    // Create face: refresh the peer options.
-    const peers = Array.isArray(snap && snap.peers) ? snap.peers : [];
+    // Create face: refresh the peer options (reusing `peers` from above).
     const reachable = peers.filter((p) => p && p.address);  // need an address to pair
     const prev = select.value;
     select.textContent = "";
@@ -833,8 +911,45 @@ function makeBondCard() {
     }
   }
 
+  async function addSub() {
+    const subAddr = addSubSelect.value;
+    if (!subAddr || !lastAddSubPlan.show) return;
+    saving = true;
+    addSubSelect.disabled = true;
+    addSubCrossover.disabled = true;
+    addSubBtn.disabled = true;
+    status.textContent = "Adding the subwoofer…";
+    try {
+      const picked = lastSubReachable.find((p) => p.address === subAddr);
+      const pickedName = (picked && picked.name) || "";
+      // Re-post the FULL desired roster to the SAME bond (bond_id reused from
+      // the current grouping): the existing members from the plan + the new
+      // sub. The sub plays only the low end, low-passed locally in outputd.
+      const members = [
+        ...lastAddSubPlan.members,
+        { addr: subAddr, role: "follower", channel: "sub",
+          crossover_hz: Number(addSubCrossover.value), name: pickedName },
+      ];
+      const body = { members };
+      if (lastBondId) body.bond_id = lastBondId;
+      const data = await postJSON("bond", body);
+      if (data && data.ok) {
+        status.textContent = "Subwoofer added — reconfiguring (~10s).";
+      }
+    } catch (e) {
+      console.error("rooms: add subwoofer failed", e);
+      status.textContent = "Couldn't add the subwoofer — " + describeBondFailure(e);
+    } finally {
+      saving = false;
+      addSubSelect.disabled = false;
+      addSubCrossover.disabled = false;
+      addSubBtn.disabled = false;
+    }
+  }
+
   createBtn.addEventListener("click", create);
   swapBtn.addEventListener("click", swap);
+  addSubBtn.addEventListener("click", addSub);
   dissolveBtn.addEventListener("click", dissolve);
   // Default to the create face until the first sync() proves we're bonded, so
   // both faces are never visible at once during the initial paint.

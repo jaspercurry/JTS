@@ -340,6 +340,13 @@ def read_grouping_state(
         "trim_db": cfg.trim_db,
         "peer_addr": cfg.peer_addr,
         "peer_name": cfg.peer_name,
+        # The bond roster (leader only): every follower the leader recorded
+        # at bond time, so the UI + _unbond can disable ALL members (not just
+        # the L/R sibling). [] on followers, solo, and legacy bonds.
+        "roster": [
+            {"addr": m.addr, "name": m.name, "channel": m.channel}
+            for m in cfg.roster
+        ],
         "error": cfg.error,
     }
     # Receiver-side wireless-sub low-pass corner — only meaningful when this

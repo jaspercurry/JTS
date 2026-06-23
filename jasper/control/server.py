@@ -62,6 +62,8 @@ from . import (
 from ..multiroom.config import (
     DEFAULT_CROSSOVER_HZ,
     GROUPING_ENV_FILE,
+    BondMember,
+    _format_roster,
     validate_grouping,
 )
 from ..multiroom.state import grouping_response, read_grouping_state
@@ -870,6 +872,7 @@ def _write_grouping(
     crossover_hz: "float | None" = None,
     peer_addr: "str | None" = None,
     peer_name: "str | None" = None,
+    roster: "str | None" = None,
 ) -> None:
     """Persist a grouping role into the wizard-owned grouping.env.
 
@@ -913,6 +916,11 @@ def _write_grouping(
         updates["JASPER_GROUPING_PEER_ADDR"] = peer_addr
     if peer_name is not None:
         updates["JASPER_GROUPING_PEER_NAME"] = peer_name
+    # The full bond roster (leader only): same preserved-when-omitted /
+    # explicit-empty-clears contract as peer_addr — `roster` is the already
+    # SERIALIZED env string (the caller builds it via config._format_roster).
+    if roster is not None:
+        updates["JASPER_GROUPING_ROSTER"] = roster
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
 
 
@@ -1798,6 +1806,30 @@ def _make_handler(
             peer_name: str | None = None
             if "peer_name" in body:
                 peer_name = str(body.get("peer_name") or "").strip()
+            # Full bond roster (leader only): a list of {addr,name,channel}.
+            # Build a BondMember tuple (for the shared validator) and the
+            # serialized env string (for the writer). Omitted -> preserve;
+            # an explicit [] serializes to "" which clears it (same contract
+            # as peer_addr/peer_name).
+            roster_members: tuple[BondMember, ...] = ()
+            roster_str: str | None = None
+            if "roster" in body:
+                raw_roster = body.get("roster")
+                if not isinstance(raw_roster, list):
+                    self._send_json(
+                        {"error": "roster must be a list"}, status=400,
+                    )
+                    return
+                roster_members = tuple(
+                    BondMember(
+                        addr=str((m or {}).get("addr") or ""),
+                        name=str((m or {}).get("name") or ""),
+                        channel=str((m or {}).get("channel") or ""),
+                    )
+                    for m in raw_roster
+                    if isinstance(m, dict)
+                )
+                roster_str = _format_roster(roster_members)
             # Validate an ENABLED request up front via the SHARED
             # validate_grouping (same rule the config loader applies on
             # read) so we never persist a fail-loud config. A disabled
@@ -1823,6 +1855,7 @@ def _make_handler(
                     ),
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
+                    roster=roster_members,
                 )
                 if err:
                     self._send_json({"error": err}, status=400)
@@ -1837,6 +1870,7 @@ def _make_handler(
                     right_delay_ms=right_delay_ms,
                     crossover_hz=crossover_hz,
                     peer_addr=peer_addr, peer_name=peer_name,
+                    roster=roster_str,
                 )
                 _kick_grouping_reconciler()
             except Exception as e:  # noqa: BLE001
