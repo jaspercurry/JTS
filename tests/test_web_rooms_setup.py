@@ -2271,8 +2271,12 @@ def test_unbond_with_full_roster_disables_self_and_all_members(monkeypatch):
     assert h.status == 200
     body = json.loads(h.wfile.getvalue())
     assert body["ok"] is True
-    # Self ("") + both roster members; the foreign claimer is untouched.
-    assert [a for a, _ in posts] == ["", "192.168.1.9", "192.168.1.8"]
+    # Self ("") + both roster members; the foreign claimer (192.168.1.162) is
+    # untouched. The peer fan-out is concurrent (a thread pool), so the two
+    # roster addrs arrive in a non-deterministic order — assert the disabled SET,
+    # not a sequence (an exact-order assert flaked py3.12-vs-py3.13).
+    assert {a for a, _ in posts} == {"", "192.168.1.9", "192.168.1.8"}
+    assert len(posts) == 3
     assert all(b == {"enabled": False} for _a, b in posts)
 
 
