@@ -594,6 +594,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function setVolumeFloorReadout(v) {
     var node = el('set-volume-floor-readout');
     if (node) node.textContent = fmtVolumeFloor(v);
+    setVolumeFloorResetButton(v);
+  }
+  function setVolumeFloorResetButton(v) {
+    var button = el('view-body').querySelector('[data-act="reset-volume-floor"]');
+    if (!button) return;
+    var value = Number(v);
+    if (!isFinite(value)) value = -50;
+    button.disabled = Math.abs(value - (-50)) < 0.05;
   }
   function renderSoundSettings() {
     var ml = soundSettings.match_loudness ? ' checked' : '';
@@ -603,11 +611,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var floorMax = Number(limits.volume_floor_max_db);
     if (!isFinite(floorMin)) floorMin = -60;
     if (!isFinite(floorMax)) floorMax = -10;
+    var defaultFloor = -50;
     var floor = Number(soundSettings.volume_floor_db);
-    if (!isFinite(floor)) floor = -50;
+    if (!isFinite(floor)) floor = defaultFloor;
     floor = clamp(floor, floorMin, floorMax);
-    var advancedOpen = trim > 0 || Math.abs(floor - (-50)) >= 0.05;
+    var advancedOpen = trim > 0 || Math.abs(floor - defaultFloor) >= 0.05;
     var toneLabel = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
+    var resetDisabled = Math.abs(floor - defaultFloor) < 0.05 ? ' disabled' : '';
     return '<section class="sound-settings">' +
       '<div class="setting-row">' +
         '<div class="setting-row__text">' +
@@ -629,6 +639,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               '" max="' + floorMax + '" step="1" value="' + floor + '" aria-label="Volume floor in dB">' +
             '<button type="button" class="btn btn--ghost btn--compact" id="volume-floor-tone-button" ' +
               'data-act="toggle-volume-floor-tone">' + toneLabel + '</button>' +
+            '<button type="button" class="btn btn--ghost btn--compact" data-act="reset-volume-floor"' +
+              resetDisabled + '>Reset floor</button>' +
             '<span class="headroom-readout" id="set-volume-floor-readout">' + fmtVolumeFloor(floor) + '</span>' +
           '</div>' +
         '</div>' +
@@ -3275,6 +3287,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     scheduleVolumeFloorToneUpdate(volumeFloorValue(), {force: true, immediate: true});
   }
 
+  async function resetVolumeFloor() {
+    var floor = -50;
+    var floorInput = el('set-volume-floor');
+    if (floorInput) floorInput.value = floor;
+    setVolumeFloorReadout(floor);
+    await saveSettings({volume_floor_db: floor});
+    if (volumeFloorTone.active) {
+      scheduleVolumeFloorToneUpdate(floor, {immediate: true});
+    }
+  }
+
   async function stopVolumeFloorTone(options) {
     options = options || {};
     volumeFloorTone.active = false;
@@ -3440,6 +3463,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (volumeFloorTone.active) stopVolumeFloorTone();
       else startVolumeFloorTone();
     }
+    else if (act === 'reset-volume-floor') { resetVolumeFloor(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {

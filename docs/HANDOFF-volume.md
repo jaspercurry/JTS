@@ -81,9 +81,13 @@ The audible curve is configured by `/sound/` advanced settings:
 `volume_floor_db` is the dB value for 1%, clamped to −60..−10 dB and
 defaulting to −50 dB. The page can start a continuous 1% calibration tone,
 update CamillaDSP `main_volume` as the floor slider moves, and stop the tone
-explicitly or on page leave; only `/sound/settings` saves the chosen floor.
+explicitly or on page leave. The Reset floor button saves the default −50 dB
+floor through the same path; only `/sound/settings` persists the chosen floor.
 JTS never maps the user slider above 0 dB; raising the floor only compresses
-the quiet end of the slider for low-sensitivity speakers.
+the quiet end of the slider for low-sensitivity speakers. The settings file is
+published `0640` with the parent `jasper` group so both `jasper-web` and
+`jasper-control` read the same floor; otherwise voice/control volume commands
+would silently fall back to the shipped default curve.
 
 ### Bonded-follower volume proxy (stereo pairs)
 
@@ -99,7 +103,7 @@ client control the PAIR volume from whichever member they talk to. A
 is one grouping.env parse per call. Solo speakers and leaders never
 enter this path. Voice volume commands on a follower route through the
 SAME forward: the audio tools (`jasper/tools/audio.py`,
-`_pair_volume_request`) drive the local control API via loopback when
+`_pair_volume`) drive the local control API via loopback when
 bonded-as-follower, so "Jarvis, louder" moves the pair from either
 speaker; a leader-unreachable failure becomes a spoken error, never a
 silently inaudible local write. Voice mute/unmute send an explicit

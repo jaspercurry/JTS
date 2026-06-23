@@ -185,7 +185,8 @@ alters the sound:
   (`volume_floor_db`, clamped to −60..−10 dB, default −50 dB). 0% remains
   a hard CamillaDSP mute. The Advanced `/sound/` control can start a
   continuous 1% calibration tone, update that tone as the slider moves, and
-  stop it explicitly or on page leave before saving.
+  stop it explicitly or on page leave. Reset floor saves the
+  default −50 dB floor through the same `/sound/settings` path.
 
 The emitter applies one `output_trim_db = headroom_trim + (loudness
 compensation when match-loudness is on)` as the `sound_preamp` gain, and
@@ -404,7 +405,9 @@ graph, and it still does not emit audio or authorize playback.
 - `jasper/sound/settings.py` — import-cheap global output settings
   (`SoundSettings`: `headroom_trim_db`, `match_loudness`,
   `volume_floor_db`) persisted to `/var/lib/jasper/sound_settings.json`,
-  fail-soft to the do-nothing defaults.
+  fail-soft to the do-nothing defaults. The file is `0640` and inherits the
+  parent `jasper` group so non-root `jasper-control` uses the same calibrated
+  floor as the `/sound/` wizard.
 - `jasper/sound/camilla_yaml.py` — CamillaDSP YAML emitter and
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
