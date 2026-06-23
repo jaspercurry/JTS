@@ -1246,6 +1246,9 @@ def _patch_active_leader(monkeypatch, order):
         reconcile_mod, "_disable_crossover_unit",
         lambda: order.append("disable_camilla2") or True,
     )
+    # Default: snapserver is up (the bake gate passes). The snapserver-down
+    # incident test overrides this.
+    monkeypatch.setattr(reconcile_mod, "_unit_is_active", lambda unit: True)
     return alc_mod
 
 
@@ -1393,3 +1396,47 @@ def test_main_solo_active_box_takes_follower_path_not_leader_teardown(
     assert "follower_restore" in order  # the untouched follower path
     assert "disable_camilla2" not in order  # camilla#2 never touched
     assert "leader_restore" not in order
+
+
+def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
+    """JTS5 incident regression (2026-06-23): if the camilla#1 bake FAILS, it
+    stays on its solo-active DAC baseline — so camilla#2 must NOT be armed. Arming
+    it would make both CamillaDSP fight for the DAC and (camilla#1 carries
+    StartLimitAction=reboot) reboot-loop the box. The arm is gated on bake success."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+
+    def _boom():
+        order.append("bake_attempt")
+        raise RuntimeError("camilla#1 unreachable")
+
+    monkeypatch.setattr(alc_mod, "apply_active_leader_bake_sync", _boom)
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "bake_attempt" in order  # the bake was attempted...
+    assert "arm_camilla2" not in order  # ...but camilla#2 was NOT armed (no DAC fight)
+
+
+def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
+    tmp_path, monkeypatch,
+):
+    """JTS5 incident regression: snapserver not active (no Snapcast installed, or
+    it failed to start) means camilla#1's File-sink bake has no FIFO reader — so
+    neither the bake NOR the camilla#2 arm runs. camilla#1 keeps the DAC on its
+    solo baseline; no two-instance conflict, no reboot."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    # snapserver never came up (the bake gate must refuse).
+    monkeypatch.setattr(reconcile_mod, "_unit_is_active", lambda unit: False)
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "bake" not in order  # never baked onto a reader-less pipe
+    assert "arm_camilla2" not in order  # never armed camilla#2 (no DAC fight)

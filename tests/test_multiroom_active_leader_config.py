@@ -11,6 +11,7 @@ re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -101,6 +102,9 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
         sound_settings_mod, "load_sound_settings", lambda *a, **k: object()
     )
     monkeypatch.setattr(sound_settings_mod, "output_trim_db", lambda *a, **k: 0.0)
+    # Snapcast precondition: pretend the binaries are installed (a dev machine has
+    # no snapserver/snapclient, which would otherwise fail-close the precheck).
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
 
 def _fake_apply_dsp_config():
@@ -245,6 +249,28 @@ def test_precheck_bad_channel_fails_closed_as_leader_error(monkeypatch, tmp_path
         with pytest.raises(alc.ActiveLeaderError) as exc:
             asyncio.run(alc.precheck_active_leader(_cfg(bad), validate=_valid_config))
         assert exc.value.reason == "channel_not_single_box_pick"
+
+
+def test_precheck_fails_closed_when_snapcast_missing(monkeypatch, tmp_path) -> None:
+    """JTS5 incident (2026-06-23): an active leader hosts the wire (snapserver) +
+    plays its own channel (snapclient). With EITHER binary absent there is no FIFO
+    reader for camilla#1's bake, so the bake can't release the DAC and arming
+    camilla#2 onto the DAC would fight camilla#1 (StartLimitAction=reboot) and
+    reboot-loop the box. Refuse the bond UP FRONT (stay solo-active)."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    # snapserver absent (snapclient present) — either-absent must fail closed.
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: None if name == "snapserver" else f"/usr/bin/{name}",
+    )
+
+    with pytest.raises(alc.ActiveLeaderError) as exc:
+        asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+    assert exc.value.reason == "snapcast_unavailable"
 
 
 # --- late applies -------------------------------------------------------------

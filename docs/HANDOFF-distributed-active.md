@@ -964,6 +964,24 @@ tweeter TTS, inv-B-through-Layer-A).
 > Layer C/preference + headroom), so confirm the followers hear the same
 > correction the leader applies solo.
 
+> **Stage B Step 0 hardened (2026-06-23) — fail-closed DAC handoff (JTS5
+> reboot-loop fix).** The first on-device exercise (JTS5, an active-speaker bench
+> box with **no Snapcast installed**) surfaced a reboot loop: the reconciler armed
+> camilla#2 onto the DAC **even though camilla#1's bake had failed** (no FIFO
+> reader without snapserver → camilla#1 stayed on its solo-active DAC baseline), so
+> both CamillaDSP fought for the DAC and camilla#1's `StartLimitAction=reboot`
+> escalated. The handoff is now fail-closed by three gates: (1) **precheck refuses
+> the bond** if `snapserver`/`snapclient` are not installed
+> (`snapcast_unavailable`); (2) the reconciler **does not bake** unless
+> `snapserver` is actually active (never bakes camilla#1 onto a reader-less pipe);
+> (3) camilla#2 is **armed only if the bake succeeded** — i.e. camilla#1 has
+> provably moved off the DAC to the wire. Any failure leaves camilla#1 on its safe
+> solo-active baseline and camilla#2 un-armed (the box stays solo-active, never a
+> two-instance DAC fight). Pinned by the snapcast-missing / bake-fails /
+> snapserver-down regression tests. The lesson generalises the task's "DAC-borrow
+> reboot hazard": a second CamillaDSP must never take the DAC until the always-on
+> camilla#1 has provably released it.
+
 **Stage C — matched pair (two identical active speakers, one as leader):
 BLOCKED.** Precondition is a **second commissioned active speaker with real
 drivers**; today only `jts3` qualifies (`jts5` is a dual-Apple-DAC bench box with
