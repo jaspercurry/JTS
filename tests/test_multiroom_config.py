@@ -642,3 +642,292 @@ def test_peer_roster_parse_and_validation_matrix():
     base = dict(role="leader", channel="left", bond_id="b", leader_addr="")
     assert validate_grouping(**base, peer_name="x" * 65) is not None
     assert validate_grouping(**base, peer_name="ok name") is None
+
+
+# ---------- roster: N-member bond roster (leader records all followers) ----
+
+
+def test_roster_parse_round_trips_format():
+    """_parse_roster(_format_roster(members)) round-trips a list of members."""
+    from jasper.multiroom.config import (
+        BondMember,
+        _format_roster,
+        _parse_roster,
+    )
+
+    members = (
+        BondMember(addr="192.168.1.7", name="Living Right", channel="right"),
+        BondMember(addr="192.168.1.8", name="Sub", channel="sub"),
+    )
+    assert _parse_roster(_format_roster(members)) == members
+    # Empty round-trips to empty.
+    assert _format_roster(()) == ""
+    assert _parse_roster("") == ()
+
+
+def test_format_roster_sanitizes_name_and_skips_empty_addr():
+    """_format_roster replaces "|"/","/control chars in the name with a space
+    and skips members with an empty addr (a roster slot with no address is
+    meaningless)."""
+    from jasper.multiroom.config import (
+        BondMember,
+        _format_roster,
+        _parse_roster,
+    )
+
+    dirty = (
+        BondMember(addr="10.0.0.5", name="a|b,c\nd", channel="sub"),
+    )
+    serialized = _format_roster(dirty)
+    # The "|"/","/newline in the name are gone — only the entry/field
+    # delimiters survive, so the parser round-trips to a single clean member.
+    parsed = _parse_roster(serialized)
+    assert len(parsed) == 1
+    assert "|" not in parsed[0].name and "," not in parsed[0].name
+    assert all(ord(c) >= 32 for c in parsed[0].name)
+    assert parsed[0].addr == "10.0.0.5" and parsed[0].channel == "sub"
+
+    # Empty addr is skipped entirely.
+    assert _format_roster((BondMember(addr="", name="x", channel="sub"),)) == ""
+
+
+def test_format_roster_sanitizes_addr_and_channel_no_inject_or_drop():
+    """The serialization invariant holds for ALL three fields, not just name: a
+    "|"/"," in addr or channel can neither INJECT an extra member (a foreign addr
+    smuggled mid-field) nor DROP one (a stray delimiter splitting the record)."""
+    from jasper.multiroom.config import (
+        BondMember,
+        _parse_roster,
+        format_roster,
+        validate_roster,
+    )
+
+    # addr injection: an unsanitized "10.0.0.5|x|sub,192.168.99.99" would parse
+    # into TWO members (the 2nd a foreign LAN IP). Sanitized -> ONE member, whose
+    # now-mangled addr validate_roster rejects (so it never becomes a target).
+    inject = _parse_roster(format_roster((
+        BondMember(addr="10.0.0.5|x|sub,192.168.99.99", name="R", channel="right"),
+    )))
+    assert len(inject) == 1
+    assert validate_roster(inject) is not None
+
+    # channel injection: same shape via the channel field -> still ONE member.
+    assert len(_parse_roster(format_roster((
+        BondMember(addr="10.0.0.5", name="R", channel="sub,1.2.3.4|y|sub"),
+    )))) == 1
+
+    # DROP: a stray "|" in one member's channel must NOT split/drop the OTHER
+    # member (the sub) on round-trip — both survive, both addrs intact.
+    drop = _parse_roster(format_roster((
+        BondMember(addr="10.0.0.7", name="Right", channel="right"),
+        BondMember(addr="10.0.0.8", name="Sub", channel="sub|oops"),
+    )))
+    assert len(drop) == 2
+    assert {m.addr for m in drop} == {"10.0.0.7", "10.0.0.8"}
+
+
+def test_validate_roster_rejects_foreign_addr_and_bad_channel():
+    """validate_roster (the standalone, not-enabled-gated validator the writer
+    runs on every roster) rejects a public/foreign addr and an unknown channel,
+    and accepts an empty / clean roster."""
+    from jasper.multiroom.config import BondMember, validate_roster
+
+    assert validate_roster(()) is None
+    assert validate_roster((
+        BondMember(addr="192.168.1.8", name="Sub", channel="sub"),
+    )) is None
+    # Public IP — the SSRF rule rejects it.
+    assert validate_roster((
+        BondMember(addr="8.8.8.8", name="x", channel="sub"),
+    )) is not None
+    # Unknown channel.
+    assert validate_roster((
+        BondMember(addr="10.0.0.5", name="x", channel="bogus"),
+    )) is not None
+
+
+def test_parse_roster_skips_malformed_entries():
+    """_parse_roster is total: entries without exactly addr|name|channel, or
+    with an empty addr, are silently skipped; the good ones survive."""
+    from jasper.multiroom.config import BondMember, _parse_roster
+
+    raw = (
+        "10.0.0.5|Right|right,"   # good
+        "no-pipes-here,"          # only 1 part -> skipped
+        "10.0.0.6|onlytwo,"       # only 2 parts -> skipped
+        "|EmptyAddr|sub,"         # empty addr -> skipped
+        "10.0.0.7|Sub|sub"        # good
+    )
+    assert _parse_roster(raw) == (
+        BondMember(addr="10.0.0.5", name="Right", channel="right"),
+        BondMember(addr="10.0.0.7", name="Sub", channel="sub"),
+    )
+
+
+def test_validate_grouping_roster_matrix():
+    """validate_grouping fails LOUD (naming the bad field) for a non-IPv4
+    roster addr, a bad channel, or an over-long name; accepts a valid roster
+    and an empty roster (the default)."""
+    from jasper.multiroom.config import BondMember, validate_grouping
+
+    base = dict(role="leader", channel="left", bond_id="b", leader_addr="")
+    # Valid + empty both pass.
+    assert validate_grouping(**base) is None
+    assert validate_grouping(
+        **base,
+        roster=(
+            BondMember(addr="192.168.1.7", name="Right", channel="right"),
+            BondMember(addr="10.0.0.8", name="Sub", channel="sub"),
+        ),
+    ) is None
+    # Non-private/loopback IPv4 addr — names the addr field.
+    err = validate_grouping(
+        **base, roster=(BondMember(addr="8.8.8.8", name="x", channel="sub"),))
+    assert err is not None and "addr='8.8.8.8'" in err
+    # Non-IPv4 (hostname) addr also rejected.
+    assert validate_grouping(
+        **base,
+        roster=(BondMember(addr="jts3.local", name="x", channel="sub"),),
+    ) is not None
+    # Bad channel.
+    err = validate_grouping(
+        **base,
+        roster=(BondMember(addr="10.0.0.9", name="x", channel="surround"),))
+    assert err is not None and "channel=" in err
+    # Over-long name.
+    err = validate_grouping(
+        **base,
+        roster=(BondMember(addr="10.0.0.9", name="x" * 65, channel="sub"),))
+    assert err is not None and "name=" in err
+
+
+def test_load_config_reads_roster(tmp_path):
+    """load_config parses JASPER_GROUPING_ROSTER into cfg.roster (a tuple of
+    BondMember); absent -> empty tuple (legacy bonds)."""
+    from jasper.multiroom.config import BondMember
+
+    body = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=leader\n"
+        "JASPER_GROUPING_CHANNEL=left\n"
+        "JASPER_GROUPING_BOND_ID=b\n"
+        "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,10.0.0.8|Sub|sub\n"
+    )
+    cfg = load_config(_write_env(tmp_path, body))
+    assert cfg.roster == (
+        BondMember(addr="192.168.1.7", name="Right", channel="right"),
+        BondMember(addr="10.0.0.8", name="Sub", channel="sub"),
+    )
+    assert cfg.error is None
+
+    # Absent key -> empty roster, no error.
+    cfg2 = load_config(_write_env(tmp_path, _leader_env()))
+    assert cfg2.roster == ()
+
+
+# ---------- crossover_hz: receiver-side wireless-sub low-pass corner ----
+
+
+def test_crossover_hz_default_when_absent_on_sub():
+    """A sub member with no JASPER_GROUPING_CROSSOVER_HZ resolves to the
+    80 Hz default (a "sub" must never play full-range) with no error."""
+    from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
+    import os
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+        f.write(
+            "JASPER_GROUPING=on\n"
+            "JASPER_GROUPING_ROLE=follower\n"
+            "JASPER_GROUPING_CHANNEL=sub\n"
+            "JASPER_GROUPING_BOND_ID=b\n"
+            "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        )
+        path = f.name
+    try:
+        cfg = load_config(path)
+    finally:
+        os.unlink(path)
+    assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg.error is None
+
+
+def test_crossover_hz_parse_and_validation_matrix():
+    """The sub low-pass corner: parsed from the env file; blank/garbage
+    falls back to the 80 Hz default (never a bypass); an out-of-range value
+    on a SUB is fail-LOUD; the SAME stray value on a non-sub channel is NOT
+    an error (the knob is only meaningful for subs)."""
+    from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
+    import os
+    import tempfile
+
+    def cfg_for(channel: str, extra: str):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".env", delete=False) as f:
+            f.write(
+                "JASPER_GROUPING=on\n"
+                "JASPER_GROUPING_ROLE=follower\n"
+                f"JASPER_GROUPING_CHANNEL={channel}\n"
+                "JASPER_GROUPING_BOND_ID=b\n"
+                "JASPER_GROUPING_LEADER_ADDR=jts.local\n" + extra
+            )
+            path = f.name
+        try:
+            return load_config(path)
+        finally:
+            os.unlink(path)
+
+    # Sub: in-range parses, blank/garbage default, out-of-range fail-LOUD.
+    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=120\n").crossover_hz == 120.0
+    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=120\n").error is None
+    assert cfg_for("sub", "").crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg_for(
+        "sub", "JASPER_GROUPING_CROSSOVER_HZ=loud\n"
+    ).crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=loud\n").error is None
+    assert "must be between" in cfg_for(
+        "sub", "JASPER_GROUPING_CROSSOVER_HZ=20\n").error
+    assert "must be between" in cfg_for(
+        "sub", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error
+    # Non-sub: an out-of-range stray value is NOT an error (knob unused).
+    assert cfg_for("right", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error is None
+
+
+def test_validate_grouping_crossover_range_only_for_sub():
+    """The shared rule ranges the corner ONLY for channel=='sub'; the same
+    out-of-range value on left/right/stereo/mono is accepted."""
+    from jasper.multiroom.config import validate_grouping
+
+    assert "CROSSOVER_HZ" in validate_grouping(
+        role="follower", channel="sub", bond_id="b", leader_addr="jts.local",
+        crossover_hz=10.0,
+    )
+    assert validate_grouping(
+        role="follower", channel="sub", bond_id="b", leader_addr="jts.local",
+        crossover_hz=80.0,
+    ) is None
+    for ch in ("left", "right", "stereo", "mono"):
+        assert validate_grouping(
+            role="follower", channel=ch, bond_id="b", leader_addr="jts.local",
+            crossover_hz=10.0,
+        ) is None
+
+
+def test_crossover_hz_default_constructor_and_disabled():
+    """crossover_hz is defaulted on the GroupingConfig constructor (wide
+    surface stays source-compatible) and on the _DISABLED solo config."""
+    from jasper.multiroom.config import (
+        DEFAULT_CROSSOVER_HZ,
+        GroupingConfig,
+        load_config,
+    )
+
+    cfg = GroupingConfig(
+        enabled=False, role="", channel="stereo", bond_id="",
+        leader_addr="", buffer_ms=400, codec="flac", error=None,
+    )
+    assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
+    # A missing file resolves to the disabled config carrying the default.
+    assert load_config("/nonexistent/grouping.env").crossover_hz == (
+        DEFAULT_CROSSOVER_HZ
+    )

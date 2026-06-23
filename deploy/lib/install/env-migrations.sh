@@ -74,6 +74,20 @@ heal_shared_state_modes() {
         chgrp jasper "${base}" 2>/dev/null || true
         chmod 0660 "${base}" 2>/dev/null || true
     done
+    # Grouping config + its write-lock. jasper-control (/grouping/set) and the
+    # install-time migrations rewrite grouping.env under .grouping.env.lock
+    # (jasper.atomic_io.locked_update_env_file). A lock created BEFORE UMask=0007
+    # (mode 0644, owned by jasper-voice/-mux) blocks a now-non-root same-group
+    # writer from opening it `a+`, so /grouping/set 502s and /rooms bonding fails
+    # on any box bonded pre-#845 (observed on jts/jts4, 2026-06-23). Same class as
+    # the SQLite/JSON heal above, extended to the grouping env + its lock.
+    for base in \
+        "${STATE_DIR}/grouping.env" \
+        "${STATE_DIR}/.grouping.env.lock"; do
+        [[ -e "${base}" ]] || continue
+        chgrp jasper "${base}" 2>/dev/null || true
+        chmod 0660 "${base}" 2>/dev/null || true
+    done
     # The wake-events DIR holds the sqlite + its WAL sidecars; a non-owner
     # same-group daemon needs dir write to create them (historically root:root
     # 0755). Owner stays whoever the StateDirectory chown last set.

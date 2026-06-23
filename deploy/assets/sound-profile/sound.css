@@ -142,6 +142,15 @@
   }
   .bands-card--simple { padding: 20px 8px; }
   .bands-card__rows > * + * { border-top: 1px solid var(--border); }
+  /* System-managed callout band — the bass-management subwoofer crossover.
+     Visually distinct + non-interactive: it is set on the Subwoofer card, not
+     edited here. A faint primary tint + accent border read it as "managed". */
+  .bands-card--system {
+    background: color-mix(in oklab, var(--primary) 8%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 30%, var(--border));
+  }
+  .band-row--system .band-row__header--system { cursor: default; }
+  .band-dot--system { fill: var(--primary); }
   .add-band {
     display: flex; align-items: center; justify-content: center; gap: 8px;
     width: 100%; padding: 14px 16px; cursor: pointer;

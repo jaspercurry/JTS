@@ -250,6 +250,37 @@ function emptyTopologyPayload() {
   };
 }
 
+// Single physical output (the Apple-dongle case) already consumed by a passive
+// mono layout: no spare DAC channel for a LOCAL subwoofer, so the subwoofer
+// add-on dead-ends and should offer the wireless-sub CTA instead.
+function dongleMonoTopologyPayload() {
+  return {
+    status: "valid",
+    hardware: {
+      physical_output_count: 1,
+      profile_id: "apple-dongle",
+      outputs: [{ index: 0, human_label: "Headphone output" }],
+    },
+    routing: { mono_group_id: "main", main_left_group_id: null, main_right_group_id: null, subwoofer_group_ids: [] },
+    evaluation: { status: "valid" },
+    speaker_groups: [{
+      id: "main",
+      label: "Main speaker",
+      kind: "mono",
+      mode: "full_range_passive",
+      position: { x: 0, y: 0, rotation_degrees: 0 },
+      channels: [{
+        role: "full_range",
+        physical_output_index: 0,
+        identity_verified: true,
+        startup_muted: true,
+        protection_required: false,
+        protection_status: "not_required",
+      }],
+    }],
+  };
+}
+
 function activeRoutePayload(overrides = {}) {
   return {
     kind: "jts_active_speaker_playback_route_capability",
@@ -2143,6 +2174,58 @@ async function testFollowerModeSafeFallbackOnMalformedIsland() {
 }
 
 const results = [];
+// Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
+// subwoofer (the single-output Apple-dongle case). The card must keep the
+// disabled "Add subwoofer" affordance AND additionally point the household at a
+// wireless sub on the Speakers page — a "sub" must never be a silent dead-end.
+async function testSubwooferDeadEndOffersWirelessCta() {
+  const fallback = baseFetch();
+  const harness = setupHarness((path, options = {}) => {
+    if (path === "./output-topology") {
+      return Promise.resolve(response(dongleMonoTopologyPayload()));
+    }
+    return fallback(path, options);
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("No unused physical output is available for a subwoofer")) {
+    fail("dongle layout should still explain why a local sub cannot be added", { html });
+  }
+  // The existing disabled add affordance stays — the CTA is additive guidance.
+  if (!html.includes('data-act="toggle-output-subwoofer"')) {
+    fail("the local-subwoofer add affordance must remain in the dead-end branch", { html });
+  }
+  if (!html.includes('href="/rooms/"')) {
+    fail("dead-end subwoofer card should link to the Speakers page", { html });
+  }
+  if (!html.includes("add a wireless subwoofer on the Speakers page")) {
+    fail("dead-end subwoofer card should offer the wireless-sub CTA copy", { html });
+  }
+  return { subwooferDeadEndOffersWirelessCta: true };
+}
+
+// Negative: when a spare output exists for a LOCAL subwoofer, the card offers the
+// normal add affordance and must NOT show the wireless-sub CTA (it would confuse
+// a household that can simply add one locally).
+async function testSubwooferWithSpareOutputHidesWirelessCta() {
+  const harness = setupHarness(baseFetch());
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Subwoofer add-on")) {
+    fail("default layout should render the subwoofer add-on card", { html });
+  }
+  if (html.includes('href="/rooms/"') || html.includes("add a wireless subwoofer on the Speakers page")) {
+    fail("a layout with a spare output must not show the wireless-sub CTA", { html });
+  }
+  return { subwooferWithSpareOutputHidesWirelessCta: true };
+}
+
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
@@ -2172,5 +2255,7 @@ results.push(await testCommissionRampLimitStopsAutoRamp());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
+results.push(await testSubwooferDeadEndOffersWirelessCta());
+results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

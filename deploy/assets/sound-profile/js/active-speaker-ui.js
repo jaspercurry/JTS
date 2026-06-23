@@ -158,6 +158,90 @@ export function activeCommissionGroup(topology) {
   return null;
 }
 
+// Bass-management crossover corner bounds. These MUST equal
+// jasper.active_speaker.profile.DEFAULT_SUB_CROSSOVER_HZ / SUB_CROSSOVER_HZ_LO /
+// _HI (and jasper.output_topology's SUB_CROSSOVER_HZ_* mirror). Duplicated here
+// only so this DOM-free module stays import-light; the equality is pinned by
+// test_sound_setup.py::test_sub_crossover_bounds_match_python.
+export var DEFAULT_SUB_CROSSOVER_HZ = 80.0;
+export var SUB_CROSSOVER_HZ_LO = 40.0;
+export var SUB_CROSSOVER_HZ_HI = 200.0;
+
+// The single local-subwoofer group, if one is routed. A local sub adds a DAC
+// output lane; the wireless sub (multiroom channel) is a separate path and never
+// appears in this topology.
+export function localSubwooferGroup(topology) {
+  var groups = topology && Array.isArray(topology.speaker_groups) ?
+    topology.speaker_groups : [];
+  for (var i = 0; i < groups.length; i += 1) {
+    var group = groups[i];
+    if (group && (group.kind === 'subwoofer' || group.mode === 'subwoofer')) {
+      return group;
+    }
+  }
+  return null;
+}
+
+// The user-settable bass-management corner for the routed local subwoofer, read
+// from the sub channel's crossover_fc_hz (falling back to the shared default when
+// unset). Returns DEFAULT when no sub is routed. Pure number — the topology
+// validator range-checks it server-side; this only normalizes for display/edit.
+export function subwooferCrossoverFcHz(topology) {
+  var group = localSubwooferGroup(topology);
+  if (!group) return DEFAULT_SUB_CROSSOVER_HZ;
+  var channels = Array.isArray(group.channels) ? group.channels : [];
+  for (var i = 0; i < channels.length; i += 1) {
+    var channel = channels[i];
+    if (channel && channel.role === 'subwoofer') {
+      var fc = Number(channel.crossover_fc_hz);
+      if (Number.isFinite(fc)) return fc;
+      break;
+    }
+  }
+  return DEFAULT_SUB_CROSSOVER_HZ;
+}
+
+// Clamp a user-entered crossover corner into the safe bass-management band. A
+// blank/non-numeric value falls back to the default; out-of-range values pin to
+// the nearest bound (defense in depth — the server also fail-loud rejects them).
+export function clampSubwooferCrossoverFcHz(value) {
+  // Number('') / Number('   ') coerce to 0 (finite), so reject a blank/whitespace
+  // entry explicitly before the finite check — a cleared field means "default",
+  // not "0 Hz" (which would otherwise pin to the low bound).
+  if (typeof value === 'string' && value.trim() === '') {
+    return DEFAULT_SUB_CROSSOVER_HZ;
+  }
+  var fc = Number(value);
+  if (!Number.isFinite(fc)) return DEFAULT_SUB_CROSSOVER_HZ;
+  if (fc < SUB_CROSSOVER_HZ_LO) return SUB_CROSSOVER_HZ_LO;
+  if (fc > SUB_CROSSOVER_HZ_HI) return SUB_CROSSOVER_HZ_HI;
+  return fc;
+}
+
+// The system-managed bass-management high-pass the routed local subwoofer
+// applies to the mains, surfaced as ONE called-out, non-editable PEQ-style band
+// so the household can SEE that a subwoofer high-pass at N Hz is shaping the
+// mains. Returns null when no local sub is routed (nothing to show). The band is
+// edited via the subwoofer card, never in the PEQ list — it carries no gain
+// (Highpass is a GAINLESS type) and reuses the same biquad curve math.
+export function subwooferCrossoverBand(topology) {
+  if (!localSubwooferGroup(topology)) return null;
+  var fc = clampSubwooferCrossoverFcHz(subwooferCrossoverFcHz(topology));
+  return {
+    type: 'Highpass',
+    // Linkwitz-Riley 24 dB/oct is the bass-management default the emitter uses;
+    // the drawn curve is illustrative (a 2nd-order RBJ biquad), matching how the
+    // PEQ preview approximates higher-order cuts.
+    freq_hz: fc,
+    gain_db: 0,
+    q: 0.707,
+    label: 'Subwoofer crossover',
+    detail: 'High-pass at ' + Math.round(fc) + ' Hz on the mains (bass goes to the sub)',
+    systemManaged: true,
+    editedVia: 'the subwoofer card'
+  };
+}
+
 // Map a commission-load/ramp POST result to ONE calm, actionable sentence when
 // the guard refused or blocked it. Returns '' on success (the card then shows the
 // new armed/stepped/confirmed state). This is what prevents the "flicker then

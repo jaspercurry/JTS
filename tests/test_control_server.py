@@ -1049,6 +1049,28 @@ def test_grouping_set_follower_requires_leader_addr(
     assert _GROUPING_KICK not in popens
 
 
+def test_grouping_set_disabled_path_validates_roster_no_persist(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """A `disabled` /grouping/set still VALIDATES a roster it carries. The
+    disabled path skips validate_grouping, but the persisted roster IS the unbond
+    disable list, so a member with a foreign/public addr must be rejected 400 and
+    nothing persisted — closing the disabled-path roster-injection hole (an
+    injected foreign addr would otherwise become an unbond disable target)."""
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": False,
+        "roster": [{"addr": "8.8.8.8", "name": "x", "channel": "sub"}],
+    })
+
+    assert status == 400
+    assert "ROSTER" in body["error"]
+    assert not env.exists()           # nothing persisted on a rejected request
+    assert _GROUPING_KICK not in popens
+
+
 # ---------- GET /grouping (the dissolve-flow read endpoint) ----------
 
 
@@ -3533,6 +3555,49 @@ def test_grouping_set_trim_settable_validated_and_preserved(
     assert "JASPER_GROUPING_TRIM_DB" not in writes[-1]
 
 
+def test_grouping_set_crossover_settable_validated_and_preserved(
+    monkeypatch, server_with_coordinator,
+):
+    """crossover_hz: settable + persisted as JASPER_GROUPING_CROSSOVER_HZ,
+    range-validated ONLY for channel=sub (the shared validate rule),
+    rejected when non-numeric, and PRESERVED (omitted key) across writes
+    like codec/trim."""
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    sub = {"enabled": True, "role": "follower", "channel": "sub",
+           "bond_id": "b", "leader_addr": "jts.local"}
+
+    status, _ = _post(f"{base}/grouping/set", {**sub, "crossover_hz": 120})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "120"
+
+    # Out-of-range on a SUB is fail-LOUD (the shared rule).
+    status, resp = _post(f"{base}/grouping/set", {**sub, "crossover_hz": 20})
+    assert status == 400 and "must be between" in resp["error"]
+
+    # Non-numeric → 400 before validate.
+    status, resp = _post(f"{base}/grouping/set", {**sub, "crossover_hz": "low"})
+    assert status == 400 and "crossover_hz must be a number" in resp["error"]
+
+    # The SAME out-of-range value on a non-sub channel is accepted + written.
+    non_sub = {**sub, "channel": "right"}
+    status, _ = _post(f"{base}/grouping/set", {**non_sub, "crossover_hz": 20})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "20"
+
+    # Omitted → preserved (key not in this write).
+    status, _ = _post(f"{base}/grouping/set", sub)
+    assert status == 200
+    assert "JASPER_GROUPING_CROSSOVER_HZ" not in writes[-1]
+
+
 def test_grouping_set_latency_and_delay_settable_validated_and_preserved(
     monkeypatch, server_with_coordinator,
 ):
@@ -3619,6 +3684,60 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_PEER_ADDR"] == ""
     assert writes[-1]["JASPER_GROUPING_PEER_NAME"] == ""
+
+
+def test_grouping_set_roster_settable_preserved_and_validated(
+    monkeypatch, server_with_coordinator,
+):
+    """Bond roster (full N-member list): a `roster` list of {addr,name,channel}
+    persists the SERIALIZED JASPER_GROUPING_ROSTER; omitted → preserved (key
+    absent); a bad member (non-IPv4 addr) → 400; a non-list value → 400."""
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {"enabled": True, "role": "leader", "channel": "left",
+            "bond_id": "b", "leader_addr": ""}
+
+    # A roster list persists as the serialized env string (addr|name|channel
+    # entries joined by ",").
+    status, _ = _post(f"{base}/grouping/set", {
+        **body, "roster": [
+            {"addr": "192.168.1.7", "name": "Right", "channel": "right"},
+            {"addr": "10.0.0.8", "name": "Sub", "channel": "sub"},
+        ],
+    })
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_ROSTER"] == (
+        "192.168.1.7|Right|right,10.0.0.8|Sub|sub"
+    )
+
+    # A bad member (non-private/loopback IPv4 addr) → 400 (shared validator).
+    status, resp = _post(f"{base}/grouping/set", {
+        **body, "roster": [
+            {"addr": "8.8.8.8", "name": "x", "channel": "sub"},
+        ],
+    })
+    assert status == 400 and "private/loopback" in resp["error"]
+
+    # A non-list roster value → 400 before validate.
+    status, resp = _post(f"{base}/grouping/set", {**body, "roster": "nope"})
+    assert status == 400 and resp["error"] == "roster must be a list"
+
+    # Omitted → preserved (key absent from this write).
+    status, _ = _post(f"{base}/grouping/set", body)
+    assert status == 200
+    assert "JASPER_GROUPING_ROSTER" not in writes[-1]
+
+    # Explicit empty list clears it (serializes to "").
+    status, _ = _post(f"{base}/grouping/set", {**body, "roster": []})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_ROSTER"] == ""
 
 
 # --------------------------------------------------------------------------

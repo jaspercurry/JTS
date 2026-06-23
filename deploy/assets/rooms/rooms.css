@@ -171,6 +171,14 @@ a.room-row:hover .room-row__go {
 .bond-select:disabled {
   opacity: 0.6;
 }
+/* Subwoofer low-pass corner input — mirrors .bond-select, narrower (a number). */
+.bond-crossover {
+  flex: 0 0 6rem;
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  font: inherit;
+}
 /* Bond save status — aria-live=polite (set in JS); hidden until it has text. */
 .bond-status:empty {
   display: none;

@@ -52,6 +52,7 @@ from __future__ import annotations
 from typing import Any
 
 from .camilla_yaml import (
+    bass_management_hp_name,
     channel_select_mixer_name,
     driver_baseline_gain_name,
     driver_baseline_limiter_name,
@@ -59,10 +60,15 @@ from .camilla_yaml import (
     driver_mute_name,
     output_commission_mute_name,
     protective_tweeter_hp_name,
+    sub_baseline_gain_name,
+    sub_baseline_limiter_name,
+    sub_lowpass_name,
+    sub_startup_limiter_name,
 )
 
 __all__ = [
     # Canonical filter names (re-exported from the emitter, the single owner).
+    "bass_management_hp_name",
     "channel_select_mixer_name",
     "driver_baseline_gain_name",
     "driver_baseline_limiter_name",
@@ -70,6 +76,10 @@ __all__ = [
     "driver_mute_name",
     "output_commission_mute_name",
     "protective_tweeter_hp_name",
+    "sub_baseline_gain_name",
+    "sub_baseline_limiter_name",
+    "sub_lowpass_name",
+    "sub_startup_limiter_name",
     # Raw-dict accessors (owned here).
     "filter_spec",
     "filter_params",

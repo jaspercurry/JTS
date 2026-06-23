@@ -11,7 +11,9 @@
 
 use anyhow::{Context, Result};
 
-use crate::dac_content::ChannelPick;
+use crate::dac_content::{
+    ChannelPick, SUB_DEFAULT_CORNER_HZ, SUB_MAX_CORNER_HZ, SUB_MIN_CORNER_HZ,
+};
 use crate::types::SAMPLE_RATE;
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
@@ -380,6 +382,28 @@ impl Config {
         let dac_content_channel =
             ChannelPick::parse(&env_str("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", "stereo"))
                 .map_err(anyhow::Error::msg)?;
+        // The receiver-side dumb-subwoofer corner. Only meaningful when the
+        // channel is "sub"; we still resolve it unconditionally (cheap) so
+        // the construction below is a simple match. A sub MUST NEVER play
+        // full-range, so a missing/blank/out-of-range value resolves to a
+        // safe low-pass (default 80 Hz, clamped to 40..200) with a warn —
+        // never a bypass. Mirrors GroupingConfig.crossover_hz's 40..200.
+        let dac_content_channel = if let ChannelPick::Sub(_) = dac_content_channel {
+            let raw = env_f64("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", SUB_DEFAULT_CORNER_HZ)?;
+            let corner = if !(SUB_MIN_CORNER_HZ..=SUB_MAX_CORNER_HZ).contains(&raw) {
+                let clamped = raw.clamp(SUB_MIN_CORNER_HZ, SUB_MAX_CORNER_HZ);
+                eprintln!(
+                    "event=outputd.dac_content.sub_corner_clamped requested={raw} \
+                     clamped={clamped} range={SUB_MIN_CORNER_HZ}..{SUB_MAX_CORNER_HZ}"
+                );
+                clamped
+            } else {
+                raw
+            };
+            ChannelPick::Sub(corner)
+        } else {
+            dac_content_channel
+        };
         if dac_content_fifo.is_some() {
             if content_bridge_mode != ContentBridgeMode::Direct {
                 anyhow::bail!(
@@ -663,6 +687,22 @@ fn env_f32(name: &str, default: f32) -> Result<f32> {
     }
 }
 
+fn env_f64(name: &str, default: f64) -> Result<f64> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => {
+            let parsed = s
+                .trim()
+                .parse::<f64>()
+                .with_context(|| format!("{} must be a number; got {:?}", name, s))?;
+            if !parsed.is_finite() {
+                anyhow::bail!("{} must be finite", name);
+            }
+            Ok(parsed)
+        }
+        _ => Ok(default),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,6 +799,86 @@ mod tests {
                     cfg.dac_content_fifo.as_deref(),
                     Some("/run/jasper-grouping/member-content.fifo")
                 );
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+            },
+        );
+    }
+
+    #[test]
+    fn sub_channel_uses_the_configured_crossover_corner() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("120")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(120.0));
+            },
+        );
+    }
+
+    #[test]
+    fn sub_channel_defaults_to_80hz_when_corner_absent() {
+        // A "sub" must NEVER play full-range, so an absent corner picks a
+        // safe default low-pass, not a bypass.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(
+                    cfg.dac_content_channel,
+                    ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ)
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn sub_corner_is_clamped_to_the_valid_range() {
+        // Below the floor clamps up; above the ceiling clamps down. The
+        // reconciler validates 40..200 too, but config defends in depth so
+        // a hand-set out-of-range value can never bypass or mis-tune.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("5")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(SUB_MIN_CORNER_HZ));
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("5000")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(SUB_MAX_CORNER_HZ));
+            },
+        );
+    }
+
+    #[test]
+    fn sub_corner_is_ignored_for_non_sub_channels() {
+        // The corner env only matters for "sub"; setting it on another
+        // channel must not change the pick.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("120")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
             },
         );

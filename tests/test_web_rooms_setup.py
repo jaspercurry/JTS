@@ -1060,6 +1060,40 @@ def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):
     assert {c[1]["bond_id"] for c in calls} == {body["bond_id"]}
 
 
+def _sub_bond_members():
+    """A leader (full-range "stereo") + a subwoofer follower with a corner."""
+    return [
+        {"addr": "192.168.1.5", "role": "leader", "channel": "stereo"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "sub",
+         "crossover_hz": 90},
+    ]
+
+
+def test_post_bond_forwards_crossover_hz_for_a_sub_member(monkeypatch):
+    """A subwoofer follower's crossover_hz rides the per-member fan-out to its
+    /grouping/set so the receiving validator persists it. The leader of the
+    sub bond plays full-range ("stereo"), not half a stereo pair."""
+    h, calls = _post_bond({"members": _sub_bond_members()}, monkeypatch=monkeypatch)
+    assert h.status == 200
+    by_role = {c[1]["role"]: c[1] for c in calls}
+    assert by_role["leader"]["channel"] == "stereo"
+    assert by_role["follower"]["channel"] == "sub"
+    # The corner is forwarded verbatim — validate_grouping (on the receiver)
+    # owns clamping; the leader just passes the browser's number through.
+    assert by_role["follower"]["crossover_hz"] == 90
+    # The full-range leader carries no crossover key (the env writer only
+    # emits JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ for channel=="sub").
+    assert "crossover_hz" not in by_role["leader"]
+
+
+def test_post_bond_omits_crossover_hz_when_absent(monkeypatch):
+    """A plain stereo pair sends no crossover_hz key — the fan-out only
+    forwards it when the browser included it, so non-sub members stay clean."""
+    h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
+    assert h.status == 200
+    assert all("crossover_hz" not in c[1] for c in calls)
+
+
 def test_post_bond_rejects_bad_csrf_without_fanning_out(monkeypatch):
     h, calls = _post_bond({"members": _stereo_pair_members()},
                           csrf_ok=False, monkeypatch=monkeypatch)
@@ -1698,7 +1732,7 @@ def test_post_unbond_logs_unreachable_candidate_count(monkeypatch, caplog):
     infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert any(
         "event=rooms.unbond " in m
-        and "roster=no" in m and "unreachable=1" in m and "peers=1" in m
+        and "path=discovery" in m and "unreachable=1" in m and "peers=1" in m
         for m in infos
     )
 
@@ -2143,6 +2177,107 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     assert leader_body["peer_name"] == "JTS3"
     assert follower_body["peer_addr"] == ""
     assert follower_body["peer_name"] == ""
+
+
+def _drive_bond(members, monkeypatch):
+    """Drive POST /bond, returning {addr: body} of the fanned-out members."""
+    posts: list[tuple[str, dict]] = []
+
+    def fake_member_post(addr, body, known=None, *, token=None, household=None):
+        posts.append((addr, body))
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
+                        fake_member_post)
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/bond")
+    payload = json.dumps({"members": members}).encode()
+    h.headers["Content-Length"] = str(len(payload))
+    h.rfile = BytesIO(payload)
+    handler_cls.do_POST(h)
+    return h, {addr: body for addr, body in posts}
+
+
+def test_bond_three_members_records_full_roster_with_lr_primary(monkeypatch):
+    """A 2.1 bond [leader/left, follower/right, follower/sub] sends the LEADER
+    a roster of BOTH followers (right + sub) and a peer_addr pointing at the
+    RIGHT follower (the L/R sibling) — NOT the sub — so swap/trim stay on the
+    stereo pair. Each follower gets an explicit empty roster."""
+    h, bodies = _drive_bond([
+        {"addr": "", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right",
+         "name": "Right"},
+        {"addr": "192.168.1.8", "role": "follower", "channel": "sub",
+         "name": "Sub", "crossover_hz": 90},
+    ], monkeypatch)
+    assert h.status == 200
+    leader_body = bodies[""]
+    assert leader_body["roster"] == [
+        {"addr": "192.168.1.9", "name": "Right", "channel": "right"},
+        {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
+    ]
+    # Primary L/R sibling = the RIGHT follower, never the sub.
+    assert leader_body["peer_addr"] == "192.168.1.9"
+    assert leader_body["peer_name"] == "Right"
+    # Both followers carry an explicit empty roster (no stale roster after a
+    # role flip).
+    assert bodies["192.168.1.9"]["roster"] == []
+    assert bodies["192.168.1.8"]["roster"] == []
+
+
+def test_bond_two_member_pair_sets_peer_and_single_roster(monkeypatch):
+    """A 2-member stereo pair still sets peer_addr=the follower AND a
+    one-entry roster naming it (so unbond's roster path disables it too)."""
+    h, bodies = _drive_bond([
+        {"addr": "", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right",
+         "name": "JTS3"},
+    ], monkeypatch)
+    assert h.status == 200
+    leader_body = bodies[""]
+    assert leader_body["peer_addr"] == "192.168.1.9"
+    assert leader_body["peer_name"] == "JTS3"
+    assert leader_body["roster"] == [
+        {"addr": "192.168.1.9", "name": "JTS3", "channel": "right"},
+    ]
+
+
+def test_unbond_with_full_roster_disables_self_and_all_members(monkeypatch):
+    """When the leader's grouping carries a full roster (N followers), unbond
+    disables self + EVERY roster member — even a sub — and skips the
+    discovery/peer_addr path entirely (the roster is authoritative)."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={
+            "enabled": True, "role": "leader", "bond_id": "bond-1",
+            "peer_addr": "192.168.1.9", "peer_name": "Right",
+            "roster": [
+                {"addr": "192.168.1.9", "name": "Right", "channel": "right"},
+                {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
+            ],
+        },
+        # A foreign claimer is reachable on the SAME bond — the roster path
+        # must ignore discovery entirely, so it is never disabled.
+        speakers=[{"address": "192.168.1.162", "name": "Interloper"}],
+        peer_grouping={
+            "192.168.1.162": {"enabled": True, "bond_id": "bond-1"},
+        },
+    )
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    # Self ("") + both roster members; the foreign claimer (192.168.1.162) is
+    # untouched. The peer fan-out is concurrent (a thread pool), so the two
+    # roster addrs arrive in a non-deterministic order — assert the disabled SET,
+    # not a sequence (an exact-order assert flaked py3.12-vs-py3.13).
+    assert {a for a, _ in posts} == {"", "192.168.1.9", "192.168.1.8"}
+    assert len(posts) == 3
+    assert all(b == {"enabled": False} for _a, b in posts)
 
 
 _NODE = shutil.which("node")

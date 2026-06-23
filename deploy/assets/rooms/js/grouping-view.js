@@ -17,6 +17,106 @@
 // {tight, tone, label, note}: a quiet "Synced" (status-ok) when the offset
 // fits, an amber "Lagging ~N ms" (status-warn) + an explanatory note when the
 // sender's budget can't absorb the bonded round-trip.
+// A subwoofer follower's low-pass corner, formatted for display. A "sub"
+// member NEVER plays full-range, so a missing/invalid/non-positive corner
+// reads as the 80 Hz default the outputd reconciler also falls back to —
+// this label can never render blank or "full-range". Mirrors the producer-
+// side default so the UI and the DAC agree on the fallback.
+export function subCornerLabel(hz) {
+  const n = Number(hz);
+  const corner = Number.isFinite(n) && n > 0 ? n : 80;
+  return `${Math.round(corner)} Hz low-pass`;
+}
+
+// Create-face copy for the role the household picked, so the card's title,
+// intro, picker label, and BUTTON all match what clicking actually does — a
+// button reading "Create stereo pair" must never be how you add a subwoofer.
+// Pure (no DOM); main.js applies these strings to its h()-built nodes in
+// syncRoleControls. Anything other than "sub" is the stereo-pair default
+// (unchanged wording), so a future/unknown role degrades to the safe pair copy.
+export function createFaceCopy(role) {
+  if (role === "sub") {
+    return {
+      title: "Add a wireless subwoofer",
+      intro:
+        "This speaker keeps playing the full range; the speaker you pick " +
+        "plays only the low end (low-passed locally on that box). Both are " +
+        "configured automatically — no settings files, no per-speaker setup.",
+      label: "This speaker is the main — add",
+      button: "Add subwoofer",
+    };
+  }
+  return {
+    title: "Create a stereo pair",
+    intro:
+      "Create a stereo pair: this speaker plays the left channel and the one " +
+      "you pick plays the right. Both are configured automatically — no " +
+      "settings files, no per-speaker setup.",
+    label: "This speaker is Left — pair with",
+    button: "Create stereo pair",
+  };
+}
+
+// Decide whether the bonded-leader DISSOLVE face should offer "add a
+// subwoofer", and (when it should) the existing-members list to re-post as
+// part of the SAME bond. PURE (no DOM) so node can unit-test the decision —
+// main.js appends only the new sub + bond_id to `members` and does the DOM.
+//
+// `g` is /state.grouping (the read_grouping_state snapshot). Show the panel
+// ONLY when: this speaker is a bonded LEADER on a stereo channel (left/right)
+// and the group has no sub yet. "No sub yet" = roster absent/empty OR no
+// roster member has channel "sub".
+//
+// `members` is the EXISTING members (without the new sub): self as leader on
+// its current channel, plus each follower. With a roster we read followers
+// from it directly; for a legacy 2-member pair (no roster, peer_addr/_name
+// only) we reconstruct the single sibling on the OPPOSITE stereo channel so
+// re-posting keeps the pair intact.
+export function addSubPlan(g) {
+  const grouping = g && typeof g === "object" ? g : {};
+  const bonded = !!(grouping.enabled && grouping.bond_id && !grouping.error);
+  const channel = grouping.channel || "";
+  const isStereoLeader =
+    grouping.role === "leader" && (channel === "left" || channel === "right");
+  const roster = Array.isArray(grouping.roster) ? grouping.roster : [];
+  const hasSub = roster.some((m) => m && m.channel === "sub");
+  if (!bonded || !isStereoLeader || hasSub) {
+    return {
+      show: false,
+      members: [],
+      reason: !bonded
+        ? "not bonded"
+        : !isStereoLeader
+          ? "not a stereo leader"
+          : "already has a sub",
+    };
+  }
+
+  const selfAddr = grouping.self_addr || "";
+  const members = [{ addr: selfAddr, role: "leader", channel }];
+  if (roster.length) {
+    for (const m of roster) {
+      if (!m || !m.addr) continue;
+      members.push({
+        addr: m.addr,
+        role: "follower",
+        channel: m.channel || "",
+        name: m.name || "",
+      });
+    }
+  } else if (grouping.peer_addr) {
+    // Legacy 2-member pair: reconstruct the sibling on the OPPOSITE channel.
+    const opposite = channel === "left" ? "right" : "left";
+    members.push({
+      addr: grouping.peer_addr,
+      role: "follower",
+      channel: opposite,
+      name: grouping.peer_name || "",
+    });
+  }
+  return { show: true, members, reason: "ok" };
+}
+
 export function airplayLipSyncRow(fit) {
   if (!fit || typeof fit !== "object" || !fit.applicable) return null;
   const tight = fit.tight === true;

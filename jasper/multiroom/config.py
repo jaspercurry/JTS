@@ -79,6 +79,16 @@ CLIENT_LATENCY_MS_HI = 1500
 CHANNEL_DELAY_MS_LO = 0.0
 CHANNEL_DELAY_MS_HI = 100.0
 
+# Receiver-side wireless-sub low-pass corner (Hz). Only meaningful when
+# channel=="sub": the follower mono-sums the full-range stereo program
+# and applies an LR4 low-pass locally in outputd so a powered sub plays
+# only the low end. A blank/non-numeric value falls back to the default
+# (a "sub" must never play full-range); an out-of-range value on a sub is
+# fail-LOUD. Bounds bracket sane home-sub corners.
+DEFAULT_CROSSOVER_HZ = 80.0
+CROSSOVER_HZ_LO = 40.0
+CROSSOVER_HZ_HI = 200.0
+
 # Snapcast stream codec. "flac" is the lossless default (good drift
 # tolerance, modest CPU); "pcm" is uncompressed (lowest CPU, highest
 # bandwidth); "opus" is lossy (lowest bandwidth). A value outside this
@@ -101,6 +111,19 @@ TRIM_DB_MAX = 0.0
 # hostname alphabet the browser local-web-host helper accepts before it
 # further rejects raw IPs for user-facing links.
 _LEADER_ADDR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
+
+
+@dataclass(frozen=True)
+class BondMember:
+    """One follower in a leader's bond roster: its LAN IPv4, directory
+    display name, and channel. Recorded on the LEADER at bond time so
+    :func:`jasper.web.rooms_setup._unbond` can disable EVERY member of an
+    N-member bond (e.g. a 2.1 system: left + right + sub) instead of only
+    the single L/R sibling — no orphaned sub."""
+
+    addr: str
+    name: str
+    channel: str
 
 
 @dataclass(frozen=True)
@@ -139,6 +162,11 @@ class GroupingConfig:
     # graph consumes them when generating the shared stereo stream.
     left_delay_ms: float = 0.0
     right_delay_ms: float = 0.0
+    # Receiver-side wireless-sub low-pass corner (Hz). Only meaningful
+    # when channel=="sub": the follower applies an LR4 low-pass locally
+    # in outputd. Defaulted so the wide existing constructor surface
+    # stays source-compatible; load_config always sets it explicitly.
+    crossover_hz: float = DEFAULT_CROSSOVER_HZ
     # The bond roster, LEADER only: who this leader's pair sibling IS,
     # recorded at bond-forming time. peer_addr is the follower's LAN
     # IPv4 (the cross-speaker control calls are IP-only by SSRF
@@ -152,6 +180,11 @@ class GroupingConfig:
     # made every pair operation fail with "found 2").
     peer_addr: str = ""
     peer_name: str = ""
+    # LEADER-only: every follower (addr/name/channel) recorded at bond
+    # time, so _unbond disables ALL members (not just the L/R sibling) —
+    # no orphaned sub. Empty on followers, solo, and legacy bonds (the
+    # discovery fallback covers those).
+    roster: tuple[BondMember, ...] = ()
 
 
 # The all-off, no-error config returned whenever the file is absent,
@@ -168,6 +201,7 @@ _DISABLED = GroupingConfig(
     client_latency_ms=DEFAULT_CLIENT_LATENCY_MS,
     left_delay_ms=0.0,
     right_delay_ms=0.0,
+    crossover_hz=DEFAULT_CROSSOVER_HZ,
     error=None,
 )
 
@@ -247,6 +281,89 @@ def _parse_channel_delay_ms(raw: str, *, key: str) -> tuple[float, str | None]:
     return val, None
 
 
+def _parse_crossover_hz(raw: str) -> float:
+    """Parse the sub low-pass corner; a blank or non-numeric value falls
+    back to DEFAULT_CROSSOVER_HZ (a "sub" must NEVER play full-range, so
+    there is no bypass sentinel). Range enforcement is the shared rule in
+    :func:`validate_grouping`, applied only when the config is enabled and
+    the channel is "sub" — so a non-sub member carrying a stray value is
+    not fail-LOUD over a knob it does not use.
+    """
+    if not raw.strip():
+        return DEFAULT_CROSSOVER_HZ
+    try:
+        return float(raw.strip())
+    except (ValueError, AttributeError):
+        logger.warning(
+            "JASPER_GROUPING_CROSSOVER_HZ=%r is not a number; "
+            "defaulting to %.1f Hz", raw, DEFAULT_CROSSOVER_HZ,
+        )
+        return DEFAULT_CROSSOVER_HZ
+
+
+def _scrub_roster_field(value: str) -> str:
+    """Replace the roster delimiters ("|" ",") and any control char (ord < 32)
+    with a space so an untrusted value can never RESHAPE the serialization — a
+    "|"/"," in the middle of a field would otherwise inject an extra member, and
+    a stray delimiter would split (drop) the record. Caller strips + length-caps.
+    A valid addr (IP/host) or channel (left/right/sub/...) never contains these,
+    so scrubbing only ever neutralises a malformed/hostile value."""
+    return "".join(" " if (c in "|," or ord(c) < 32) else c for c in value)
+
+
+def format_roster(members) -> str:
+    """Serialize an iterable of :class:`BondMember` into the env-file value
+    for JASPER_GROUPING_ROSTER: ``addr|name|channel`` entries joined by ",".
+
+    PUBLIC (mirrors :func:`validate_grouping`): the cross-package write contract
+    used by jasper.control.server to build the env string — not a private detail.
+
+    Members with an empty addr are skipped (a roster slot with no address is
+    meaningless). ALL THREE fields are sanitized via :func:`_scrub_roster_field`
+    — the "|"/"," delimiters and control chars become a space — then stripped and
+    length-capped, so NO untrusted field (addr, an mDNS directory name, or a
+    channel) can reshape the serialization (inject or drop a member). Sanitizing
+    is defence-in-depth under :func:`validate_grouping`, which the writer runs
+    whenever a roster is present. Inverse of :func:`_parse_roster`."""
+    out: list[str] = []
+    for m in members:
+        addr = _scrub_roster_field(str(m.addr)).strip()[:64]
+        if not addr:
+            continue
+        name = _scrub_roster_field(str(m.name)).strip()[:64]
+        channel = _scrub_roster_field(str(m.channel)).strip()[:32]
+        out.append(f"{addr}|{name}|{channel}")
+    return ",".join(out)
+
+
+# Back-compat alias: the serializer was introduced private; `format_roster` is
+# the public spelling now that it is a cross-package contract.
+_format_roster = format_roster
+
+
+def _parse_roster(raw: str) -> tuple[BondMember, ...]:
+    """Parse JASPER_GROUPING_ROSTER into a tuple of :class:`BondMember`.
+
+    TOTAL — never raises. Splits on "," into entries, each entry on "|"
+    into exactly ``addr|name|channel``; an entry without exactly three
+    parts, or with an empty addr, is silently skipped. Each field is
+    stripped. Inverse of :func:`_format_roster`. Range/IP/channel
+    validation is the loud job of :func:`validate_grouping`, not this
+    parser."""
+    members: list[BondMember] = []
+    for entry in (raw or "").split(","):
+        parts = entry.split("|")
+        if len(parts) != 3:
+            continue
+        addr = parts[0].strip()
+        if not addr:
+            continue
+        members.append(
+            BondMember(addr=addr, name=parts[1].strip(), channel=parts[2].strip())
+        )
+    return tuple(members)
+
+
 def validate_grouping(
     *,
     role: str,
@@ -258,8 +375,10 @@ def validate_grouping(
     client_latency_ms: int = DEFAULT_CLIENT_LATENCY_MS,
     left_delay_ms: float = 0.0,
     right_delay_ms: float = 0.0,
+    crossover_hz: float = DEFAULT_CROSSOVER_HZ,
     peer_addr: str = "",
     peer_name: str = "",
+    roster: tuple[BondMember, ...] = (),
 ) -> str | None:
     """The single grouping-validation rule for an ENABLED config.
 
@@ -325,6 +444,14 @@ def validate_grouping(
                 f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
                 f"and {CHANNEL_DELAY_MS_HI}"
             )
+    # The sub low-pass corner is only meaningful for channel=="sub"; range
+    # it ONLY there so a non-sub member with a stray value is not fail-LOUD
+    # over a knob it never uses (the reconciler emits it only for subs).
+    if channel == "sub" and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
+        return (
+            f"JASPER_GROUPING_CROSSOVER_HZ={crossover_hz} must be between "
+            f"{CROSSOVER_HZ_LO} and {CROSSOVER_HZ_HI} Hz"
+        )
     if peer_addr:
         try:
             ip = ipaddress.ip_address(peer_addr)
@@ -342,6 +469,45 @@ def validate_grouping(
             "JASPER_GROUPING_PEER_NAME must be printable and at most "
             "64 characters"
         )
+    # Roster (leader only): delegate to validate_roster — the SAME rule the writer
+    # runs whenever a roster is present (including a DISABLED request), so an
+    # unvalidated member can never be persisted.
+    return validate_roster(roster)
+
+
+def validate_roster(roster: tuple[BondMember, ...]) -> str | None:
+    """Validate a bond roster independently of the enabled-grouping fields.
+
+    Every member's addr must be a private/loopback IPv4 (the SSRF-driven rule,
+    same as peer_addr), its channel a known one, its name bounded printable text.
+    Returns an error naming the bad field on the FIRST bad member, or None. An
+    empty roster is valid.
+
+    PUBLIC and standalone (NOT gated on enabled): jasper.control.server calls this
+    whenever a roster key is present — including a `disabled` /grouping/set, whose
+    full validate_grouping is skipped — so a roster member with an injected foreign
+    addr or a malformed channel can never be persisted (it would otherwise become an
+    _unbond disable target, or — if a delimiter split it — an orphaned member)."""
+    for m in roster:
+        try:
+            ip = ipaddress.ip_address(m.addr)
+        except ValueError:
+            ip = None
+        if ip is None or ip.version != 4 or not (ip.is_private or ip.is_loopback):
+            return (
+                f"JASPER_GROUPING_ROSTER member addr={m.addr!r} is not a "
+                "private/loopback IPv4 address"
+            )
+        if m.channel not in ALLOWED_CHANNELS:
+            return (
+                f"JASPER_GROUPING_ROSTER member channel={m.channel!r} is not "
+                f"one of {', '.join(ALLOWED_CHANNELS)}"
+            )
+        if len(m.name) > 64 or any(ord(c) < 32 for c in m.name):
+            return (
+                f"JASPER_GROUPING_ROSTER member name={m.name!r} must be "
+                "printable and at most 64 characters"
+            )
     return None
 
 
@@ -378,6 +544,7 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     codec = src.get("JASPER_GROUPING_CODEC", "").strip() or DEFAULT_CODEC
     peer_addr = src.get("JASPER_GROUPING_PEER_ADDR", "").strip()
     peer_name = src.get("JASPER_GROUPING_PEER_NAME", "").strip()
+    roster = _parse_roster(src.get("JASPER_GROUPING_ROSTER", ""))
     trim_raw = src.get("JASPER_GROUPING_TRIM_DB", "").strip()
     trim_parse_error: str | None = None
     trim_db = 0.0
@@ -399,6 +566,9 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         src.get("JASPER_GROUPING_RIGHT_DELAY_MS", ""),
         key="JASPER_GROUPING_RIGHT_DELAY_MS",
     )
+    crossover_hz = _parse_crossover_hz(
+        src.get("JASPER_GROUPING_CROSSOVER_HZ", "")
+    )
 
     error = (
         trim_parse_error
@@ -415,8 +585,10 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         client_latency_ms=client_latency_ms,
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
+        crossover_hz=crossover_hz,
         peer_addr=peer_addr,
         peer_name=peer_name,
+        roster=roster,
         )
     )
 
@@ -432,8 +604,10 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         client_latency_ms=client_latency_ms,
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
+        crossover_hz=crossover_hz,
         peer_addr=peer_addr,
         peer_name=peer_name,
+        roster=roster,
         error=error,
     )
 

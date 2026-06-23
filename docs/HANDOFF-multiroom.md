@@ -164,6 +164,19 @@ Increment 6 (per-follower calibration). What exists:
   composes with `output_topology.SpeakerChannel`'s intra-speaker driver
   axis because channel-select is interface-preserving 2→2 (§4). Pure /
   hardware-free; live weaving into the active config is P1.3.
+  **Two distinct sub low-pass mechanisms now exist — don't conflate them.**
+  This CamillaDSP `BiquadCombo` fragment is *not* on the live dumb-follower
+  round-trip path (members drop their channel in `jasper-outputd`'s
+  `ChannelPick`, not a local CamillaDSP weave). The **shipped** dumb wireless
+  sub (2026-06-23) low-passes **receiver-side in `jasper-outputd`** —
+  `ChannelPick::Sub(corner)` runs its own Rust LR4 (mono-sum → 4th-order
+  Linkwitz-Riley at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`, default 80 Hz) before
+  the DAC, fail-closed (never full-range on FIFO / inv-B fallback / missing
+  filter). This `channel_split.py` LR4 fragment stays the recipe for the
+  *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives). Both
+  reuse the same `emit_linkwitz_riley` corner math. See
+  [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) "Subwoofer —
+  two different subs" for the full gap-5 picture.
 - **`jasper-outputd` snapfifo producer — REMOVED (2026-06-11 cleanup).**
   History: `SnapfifoSink` (`snapfifo.rs`) shipped as the outputd-as-producer
   tap, commit 9102e13 unwired it when TTS ingress moved into `jasper-fanin`
@@ -275,9 +288,12 @@ Increment 6 (per-follower calibration). What exists:
   fallback for older peering env files. See §8 "Friendly names + identity".
 
 Not yet built (P1+, post-spike): the `BondedSet` entity, satellite
-calibration, **2.1 / sub / >2-member bond setup on `/rooms/`** (the
-stereo-pair one-flow landed — `/bond` fans config out to both members;
-the multi-member channel/leader picker is the remaining UI), the
+calibration, **arbitrary >2-member multi-room bonds on `/rooms/`** (the
+stereo-pair one-flow landed — `/bond` fans config out to all members —
+and 2026-06-23 added an "add a subwoofer to a pair" flow [a 2.1 system:
+left + right + sub] backed by the N-member `JASPER_GROUPING_ROSTER`; what
+remains is a general multi-member channel/leader picker for groups beyond
+pair-plus-sub), the
 **leader's own snapclient → outputd content lane** (§2 inv. 2 — so the
 leader plays the *buffered* stream in sync with followers, not its direct
 unsynced output), and the on-device end-to-end + acoustic sync validation.
@@ -840,6 +856,19 @@ channel count," and outputd's stereo AEC-reference contract must handle 3-ch. A
 independently (hundreds of ms under WiFi jitter), and "sub sync is loose" covers
 ~10 ms phase, not inter-stream drift. So the **stereo pair (2-ch) is the first
 deliverable; 2.1 is the 3-ch generalisation**, not a parallel stream.
+
+> **Superseded for the SHIPPED dumb sub (2026-06-23).** The 3-ch L/R/LFE plan
+> above assumed the sub needs a *dedicated* LFE channel on the wire. The shipped
+> wireless sub doesn't: it rides the **existing 2-ch stereo stream**, picks a
+> clip-safe **mono sum** of L+R, and low-passes it **receiver-side** in
+> `jasper-outputd` (`ChannelPick::Sub`, LR4 at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`).
+> Because the sub derives its lows from the full-range L+R already on the wire,
+> no LFE channel — and so no stream-format change, no second stream — is needed,
+> and `outputd`'s stereo AEC-reference contract is untouched. The 3-ch stream
+> stays the (still-unbuilt) answer **only** if a household ever needs a
+> *sender-side pre-baked* sub (a cheap endpoint that can't run a local low-pass).
+> Canonical: [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)
+> "Subwoofer — two different subs" (gap 5, receiver-side default).
 
 **Sources:** snapcast#747 (channel-drop is the way; separate streams don't sync) ·
 Music Assistant Snapcast provider (Left/Right/Mono toggle) · CamillaDSP docs
@@ -1864,7 +1893,20 @@ never a fall-back to inference a foreign claimer could satisfy.
 Roster-less (pre-roster) bonds keep the legacy inference, whose
 ambiguity error now suggests re-pairing to record the roster. Unbond
 with a roster disables self + the recorded sibling only (best-effort
-at its last known address when offline). Regression tests:
+at its last known address when offline).
+**Extended 2026-06-23 (N-member roster — "add a sub to a pair"):** the
+leader now also records EVERY follower (not just the L/R sibling) in a
+new leader-only key `JASPER_GROUPING_ROSTER` (`addr|name|channel`
+entries, comma-joined; serialized name sanitized; each addr SSRF-checked
+as private/loopback IPv4 in `validate_grouping`; same preserve/clear
+contract). `_save_bond` records it for any N while keeping
+`PEER_ADDR/_NAME` = the primary L/R sibling (so swap/trim stay on the
+stereo pair). `_unbond` takes a full-roster path — disable self + EVERY
+recorded member — so a 2.1's sub is never orphaned (the legacy single-
+sibling/discovery path remains for pre-roster bonds). `/rooms/` gains an
+"Add a subwoofer" affordance on a bonded stereo-pair leader (pure
+`addSubPlan` in grouping-view.js) that re-posts the SAME bond_id with the
+existing members + the new `channel=sub` follower. Regression tests:
 tests/test_web_rooms_setup.py (foreign-claimer matrix, DHCP
 rediscovery, named unreachable error, unbond containment, bond-body
 roster), test_web_balance_flow.py (start survives a foreign claimer),

@@ -59,7 +59,14 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
+from ..multiroom.config import (
+    DEFAULT_CROSSOVER_HZ,
+    GROUPING_ENV_FILE,
+    BondMember,
+    format_roster,
+    validate_grouping,
+    validate_roster,
+)
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..transit.state import read_state as read_transit_state
@@ -863,8 +870,10 @@ def _write_grouping(
     client_latency_ms: "int | None" = None,
     left_delay_ms: "float | None" = None,
     right_delay_ms: "float | None" = None,
+    crossover_hz: "float | None" = None,
     peer_addr: "str | None" = None,
     peer_name: "str | None" = None,
+    roster: "str | None" = None,
 ) -> None:
     """Persist a grouping role into the wizard-owned grouping.env.
 
@@ -894,6 +903,12 @@ def _write_grouping(
         updates["JASPER_GROUPING_LEFT_DELAY_MS"] = f"{left_delay_ms:.3f}"
     if right_delay_ms is not None:
         updates["JASPER_GROUPING_RIGHT_DELAY_MS"] = f"{right_delay_ms:.3f}"
+    if crossover_hz is not None:
+        # Receiver-side wireless-sub corner. Settable like the role fields,
+        # preserved like codec when the caller omits it (only meaningful for
+        # channel="sub", but persisted regardless so a sub<->non-sub flip
+        # keeps the operator's chosen corner).
+        updates["JASPER_GROUPING_CROSSOVER_HZ"] = f"{crossover_hz:g}"
     # Bond roster (leader only): same preserved-when-omitted contract as
     # trim; an EXPLICIT empty string clears it (the bond flow clears the
     # roster on non-leader members so a role flip can't leave a stale
@@ -902,6 +917,11 @@ def _write_grouping(
         updates["JASPER_GROUPING_PEER_ADDR"] = peer_addr
     if peer_name is not None:
         updates["JASPER_GROUPING_PEER_NAME"] = peer_name
+    # The full bond roster (leader only): same preserved-when-omitted /
+    # explicit-empty-clears contract as peer_addr — `roster` is the already
+    # SERIALIZED env string (the caller builds it via config.format_roster).
+    if roster is not None:
+        updates["JASPER_GROUPING_ROSTER"] = roster
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
 
 
@@ -1771,12 +1791,56 @@ def _make_handler(
                         status=400,
                     )
                     return
+            crossover_hz: float | None = None
+            if "crossover_hz" in body:
+                try:
+                    crossover_hz = float(body["crossover_hz"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "crossover_hz must be a number"},
+                        status=400,
+                    )
+                    return
             peer_addr: str | None = None
             if "peer_addr" in body:
                 peer_addr = str(body.get("peer_addr") or "").strip()
             peer_name: str | None = None
             if "peer_name" in body:
                 peer_name = str(body.get("peer_name") or "").strip()
+            # Full bond roster (leader only): a list of {addr,name,channel}.
+            # Build a BondMember tuple (for the shared validator) and the
+            # serialized env string (for the writer). Omitted -> preserve;
+            # an explicit [] serializes to "" which clears it (same contract
+            # as peer_addr/peer_name).
+            roster_members: tuple[BondMember, ...] = ()
+            roster_str: str | None = None
+            if "roster" in body:
+                raw_roster = body.get("roster")
+                if not isinstance(raw_roster, list):
+                    self._send_json(
+                        {"error": "roster must be a list"}, status=400,
+                    )
+                    return
+                roster_members = tuple(
+                    BondMember(
+                        addr=str((m or {}).get("addr") or ""),
+                        name=str((m or {}).get("name") or ""),
+                        channel=str((m or {}).get("channel") or ""),
+                    )
+                    for m in raw_roster
+                    if isinstance(m, dict)
+                )
+                roster_str = format_roster(roster_members)
+                # Validate the roster whenever it is present — INCLUDING a
+                # disabled request, which skips validate_grouping below. The
+                # persisted roster is the _unbond disable list, so a member with
+                # an injected foreign addr or a malformed channel must never land
+                # on disk (it would become an unbond disable target / orphan).
+                # The enabled path re-checks via validate_grouping (idempotent).
+                roster_err = validate_roster(roster_members)
+                if roster_err:
+                    self._send_json({"error": roster_err}, status=400)
+                    return
             # Validate an ENABLED request up front via the SHARED
             # validate_grouping (same rule the config loader applies on
             # read) so we never persist a fail-loud config. A disabled
@@ -1795,8 +1859,14 @@ def _make_handler(
                     right_delay_ms=(
                         right_delay_ms if right_delay_ms is not None else 0.0
                     ),
+                    crossover_hz=(
+                        crossover_hz
+                        if crossover_hz is not None
+                        else DEFAULT_CROSSOVER_HZ
+                    ),
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
+                    roster=roster_members,
                 )
                 if err:
                     self._send_json({"error": err}, status=400)
@@ -1809,7 +1879,9 @@ def _make_handler(
                     client_latency_ms=client_latency_ms,
                     left_delay_ms=left_delay_ms,
                     right_delay_ms=right_delay_ms,
+                    crossover_hz=crossover_hz,
                     peer_addr=peer_addr, peer_name=peer_name,
+                    roster=roster_str,
                 )
                 _kick_grouping_reconciler()
             except Exception as e:  # noqa: BLE001

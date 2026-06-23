@@ -45,9 +45,11 @@ from jasper.sound.profile import SoundProfile
 
 from .profile import (
     ADJACENT_PAIRS_BY_WAY,
+    SUB_CROSSOVER_ORDER,
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     CrossoverRegion,
+    lowest_driver_role,
     required_driver_roles,
 )
 from .test_signal_plan import (
@@ -217,11 +219,11 @@ def _mixer_sources(
 def _emit_split_mixer(preset: ActiveSpeakerPreset) -> str:
     polarity = _role_polarity(preset)
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
-    output_count = len(outputs)
+    output_count = _output_count(preset)
     # Active-speaker policy: build the (dest -> L/R-sum sources) map from
     # the preset's driver layout + per-driver polarity. The YAML spelling
     # is the shared emit_mixer; this routing is the assembly concern.
-    mapping = [
+    mapping: list[tuple[int, list[tuple[int, float, bool]]]] = [
         (
             output.index,
             _mixer_sources(
@@ -232,6 +234,15 @@ def _emit_split_mixer(preset: ActiveSpeakerPreset) -> str:
         )
         for output in outputs
     ]
+    labels = [output.label for output in outputs]
+    sub = preset.local_subwoofer
+    if sub is not None:
+        # The local subwoofer taps the SAME full-range program as the mains: it
+        # mono-sums L+R with the clip-safe -6.02 dB recipe. Its band-limiting
+        # low-pass and excursion limiter live in the per-output pipeline chain,
+        # NOT here — the mixer is pure routing.
+        mapping.append((sub.physical_output_index, mono_sum_sources(inverted=False)))
+        labels.append(sub.label)
     return emit_mixer(
         f"split_active_{preset.way_count}way",
         channels_in=2,
@@ -241,7 +252,7 @@ def _emit_split_mixer(preset: ActiveSpeakerPreset) -> str:
             f"{preset.channel_map.layout} source -> "
             f"{output_count} protected active outputs"
         ),
-        labels=[output.label for output in outputs],
+        labels=labels,
     )
 
 
@@ -279,6 +290,39 @@ def _protective_tweeter_hp_name(role: str) -> str:
     return f"as_{_name_token(role)}_protective_hp"
 
 
+# --- local-subwoofer + bass-management filter names ---------------------------
+# The single home for the local-sub lane spellings. The sub output carries an LR4
+# low-pass (band-limit) + non-positive baseline gain + soft-clip limiter
+# (excursion); the mains' lowest driver carries the complementary LR4 high-pass
+# (bass management). Mirrors the per-driver name helpers above so the verifier
+# imports one alias per filter rather than re-deriving the format.
+
+
+def _sub_lowpass_name() -> str:
+    return "as_sub_lowpass"
+
+
+def _sub_baseline_gain_name() -> str:
+    return "as_sub_baseline_gain"
+
+
+def _sub_baseline_limiter_name() -> str:
+    return "as_sub_baseline_limiter"
+
+
+def _sub_startup_mute_name() -> str:
+    return "as_sub_startup_mute"
+
+
+def _sub_startup_limiter_name() -> str:
+    return "as_sub_startup_limiter"
+
+
+def _bass_management_hp_name(role: str) -> str:
+    """The complementary mains bass-management high-pass on the lowest driver."""
+    return f"as_{_name_token(role)}_bass_mgmt_hp"
+
+
 # --- public filter-name vocabulary -------------------------------------------
 # The emitter owns the spelling of every filter name it writes. The
 # verification side (runtime_contract / staging / commission_ramp, via
@@ -293,6 +337,13 @@ driver_limiter_name = _driver_limiter_name
 driver_baseline_gain_name = _driver_baseline_gain_name
 driver_baseline_limiter_name = _driver_baseline_limiter_name
 protective_tweeter_hp_name = _protective_tweeter_hp_name
+# Local-sub + bass-management aliases (same emitter-owned-spelling contract).
+sub_lowpass_name = _sub_lowpass_name
+sub_baseline_gain_name = _sub_baseline_gain_name
+sub_baseline_limiter_name = _sub_baseline_limiter_name
+sub_startup_mute_name = _sub_startup_mute_name
+sub_startup_limiter_name = _sub_startup_limiter_name
+bass_management_hp_name = _bass_management_hp_name
 
 # The inter-speaker channel-select mixer name — emitter-owned graph vocabulary
 # the verification side re-imports (via graph_evidence) rather than hardcoding,
@@ -312,6 +363,8 @@ def _protective_tweeter_hp_frequency(
 
 def _driver_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
     names: list[str] = []
+    if _bass_management_active(preset, role):
+        names.append(_bass_management_hp_name(role))
     protective_freq = _protective_tweeter_hp_frequency(preset, role)
     if protective_freq is not None:
         names.append(_protective_tweeter_hp_name(role))
@@ -326,8 +379,23 @@ def _driver_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
     return names
 
 
+def _bass_management_active(preset: ActiveSpeakerPreset, role: str) -> bool:
+    """True iff ``role`` is the lowest driver AND a local sub is present — the
+    side whose lowest driver carries the complementary bass-management high-pass."""
+    return (
+        preset.local_subwoofer is not None
+        and role == lowest_driver_role(preset.way_count)
+    )
+
+
 def _driver_baseline_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
     names: list[str] = []
+    # Bass-management high-pass FIRST: the lowest driver's program is high-passed
+    # at the sub crossover corner before its own crossover/delay/gain/limiter. The
+    # sub low-pass at the same corner is the complementary lower half (see the sub
+    # lane below) — together they are one crossover.
+    if _bass_management_active(preset, role):
+        names.append(_bass_management_hp_name(role))
     for region in _ordered_regions(preset):
         if region.lower_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=False))
@@ -337,6 +405,16 @@ def _driver_baseline_filter_chain(preset: ActiveSpeakerPreset, role: str) -> lis
     names.append(_driver_baseline_gain_name(role))
     names.append(_driver_baseline_limiter_name(role))
     return names
+
+
+def _sub_baseline_filter_chain() -> list[str]:
+    """The local-sub baseline lane: band-limit (LR4 low-pass), then the same
+    per-driver protection a main gets (non-positive gain + soft-clip limiter)."""
+    return [
+        _sub_lowpass_name(),
+        _sub_baseline_gain_name(),
+        _sub_baseline_limiter_name(),
+    ]
 
 
 def _emit_filter_definitions(
@@ -360,6 +438,7 @@ def _emit_filter_definitions(
             freq_hz=region.fc_hz,
             order=region.order,
         ))
+    lines.extend(_emit_bass_management_hp_definition(preset))
     for role in required_driver_roles(preset.way_count):
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
         if protective_freq is not None:
@@ -379,6 +458,11 @@ def _emit_filter_definitions(
             _driver_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
+        ))
+    if preset.local_subwoofer is not None:
+        lines.extend(_emit_sub_startup_definitions(
+            preset.local_subwoofer.crossover_fc_hz,
+            limiter_clip_limit_db=limiter_clip_limit_db,
         ))
     return "\n".join(lines)
 
@@ -437,6 +521,10 @@ def _emit_baseline_driver_definitions(
             freq_hz=region.fc_hz,
             order=region.order,
         ))
+    # Bass-management high-pass on the lowest driver (the complementary upper half
+    # of the single sub crossover). Emitted only when a local sub is present.
+    sub = preset.local_subwoofer
+    lines.extend(_emit_bass_management_hp_definition(preset))
     for role in required_driver_roles(preset.way_count):
         delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
         gain_db = _correction_value(corrections, role, "gain_db", 0.0)
@@ -452,7 +540,137 @@ def _emit_baseline_driver_definitions(
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ))
+    # The local-sub lane definitions: LR4 low-pass (band-limit) + non-positive
+    # baseline gain + soft-clip limiter (excursion), same protection a main gets.
+    if sub is not None:
+        lines.extend(_emit_sub_baseline_definitions(
+            sub.crossover_fc_hz,
+            limiter_clip_limit_db=limiter_clip_limit_db,
+        ))
     return lines
+
+
+def _emit_bass_management_hp_definition(preset: ActiveSpeakerPreset) -> list[str]:
+    """The LR4 bass-management high-pass filter def on the lowest driver, or [].
+
+    The complementary upper half of the single sub crossover at the sub corner.
+    Shared by every emitter (startup/commissioning/baseline) so the HP corner +
+    order have ONE definition that cannot drift between them."""
+    sub = preset.local_subwoofer
+    if sub is None:
+        return []
+    return emit_linkwitz_riley(
+        _bass_management_hp_name(lowest_driver_role(preset.way_count)),
+        highpass=True,
+        freq_hz=sub.crossover_fc_hz,
+        order=SUB_CROSSOVER_ORDER,
+    )
+
+
+def _emit_sub_startup_definitions(
+    crossover_fc_hz: float,
+    *,
+    limiter_clip_limit_db: float,
+) -> list[str]:
+    """The local-sub startup/commissioning lane definitions: LR4 low-pass +
+    soft-clip limiter + hard mute.
+
+    The sub starts muted for commissioning safety (mirrors a driver's startup
+    mute). The band-limit (low-pass) and excursion limiter are still present so an
+    un-muting Phase-B path arms an already-protected sub output."""
+    return [
+        *emit_linkwitz_riley(
+            _sub_lowpass_name(),
+            highpass=False,
+            freq_hz=crossover_fc_hz,
+            order=SUB_CROSSOVER_ORDER,
+        ),
+        *_emit_limiter_filter(
+            _sub_startup_limiter_name(),
+            clip_limit_db=limiter_clip_limit_db,
+            soft_clip=True,
+        ),
+        *emit_gain_filter(_sub_startup_mute_name(), STARTUP_MUTE_GAIN_DB, mute=True),
+    ]
+
+
+def _sub_startup_filter_chain() -> list[str]:
+    """The local-sub startup lane: band-limit, limiter, then the hard mute."""
+    return [
+        _sub_lowpass_name(),
+        _sub_startup_limiter_name(),
+        _sub_startup_mute_name(),
+    ]
+
+
+def _emit_sub_commissioning_definitions(
+    crossover_fc_hz: float,
+    *,
+    limiter_clip_limit_db: float,
+) -> list[str]:
+    """The local-sub commissioning lane definitions: LR4 low-pass + soft-clip
+    limiter only.
+
+    Mirrors a driver's commissioning definitions — the lane's own startup mute is
+    dropped (the per-output commission mute does the muting), so no orphan mute
+    filter is emitted. The band-limit + excursion limiter are still present so the
+    sub output stays protected even when its per-output mute is later lifted."""
+    return [
+        *emit_linkwitz_riley(
+            _sub_lowpass_name(),
+            highpass=False,
+            freq_hz=crossover_fc_hz,
+            order=SUB_CROSSOVER_ORDER,
+        ),
+        *_emit_limiter_filter(
+            _sub_startup_limiter_name(),
+            clip_limit_db=limiter_clip_limit_db,
+            soft_clip=True,
+        ),
+    ]
+
+
+def _sub_commissioning_filter_chain() -> list[str]:
+    """The local-sub commissioning lane: band-limit + excursion limiter only.
+
+    Mirrors a driver's commissioning chain — the per-output commission mute
+    (appended in the pipeline) replaces the lane's own startup mute, so exactly
+    one physical output is excited through the real graph. The LR4 low-pass and
+    soft-clip limiter are preserved so the sub output stays band-limited AND
+    excursion-limited even when its per-output mute is later lifted to ramp it."""
+    return [
+        _sub_lowpass_name(),
+        _sub_startup_limiter_name(),
+    ]
+
+
+def _emit_sub_baseline_definitions(
+    crossover_fc_hz: float,
+    *,
+    limiter_clip_limit_db: float,
+) -> list[str]:
+    """The local-sub baseline filter definitions: LR4 low-pass + gain + limiter.
+
+    The sub protection mirrors the mains' per-driver chain (non-positive gain +
+    soft-clip limiter); the band-limit is the LR4 low-pass at the bass-management
+    corner. The subwoofer commissioning-tone bounds (50 Hz floor / 300 ms) live in
+    ``driver_protection.driver_protection_profile('subwoofer')`` and gate the
+    later audible ramp; the durable graph's protection is this gain<=0 + limiter.
+    """
+    return [
+        *emit_linkwitz_riley(
+            _sub_lowpass_name(),
+            highpass=False,
+            freq_hz=crossover_fc_hz,
+            order=SUB_CROSSOVER_ORDER,
+        ),
+        *emit_gain_filter(_sub_baseline_gain_name(), 0.0),
+        *_emit_limiter_filter(
+            _sub_baseline_limiter_name(),
+            clip_limit_db=limiter_clip_limit_db,
+            soft_clip=True,
+        ),
+    ]
 
 
 def _emit_baseline_filter_definitions(
@@ -511,6 +729,14 @@ def _emit_pipeline(preset: ActiveSpeakerPreset) -> str:
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
+    sub = preset.local_subwoofer
+    if sub is not None:
+        chain = ", ".join(_sub_startup_filter_chain())
+        lines.extend([
+            "  - type: Filter",
+            f"    channels: [{sub.physical_output_index}]",
+            f"    names: [{chain}]",
+        ])
     return "\n".join(lines)
 
 
@@ -549,7 +775,21 @@ def _emit_baseline_pipeline(
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
+    lines.extend(_sub_baseline_pipeline_lines(preset))
     return "\n".join(lines)
+
+
+def _sub_baseline_pipeline_lines(preset: ActiveSpeakerPreset) -> list[str]:
+    """The sub's baseline pipeline Filter step (its own output channel), or []."""
+    sub = preset.local_subwoofer
+    if sub is None:
+        return []
+    chain = ", ".join(_sub_baseline_filter_chain())
+    return [
+        "  - type: Filter",
+        f"    channels: [{sub.physical_output_index}]",
+        f"    names: [{chain}]",
+    ]
 
 
 def _emit_driver_domain_pipeline(preset: ActiveSpeakerPreset) -> str:
@@ -576,11 +816,15 @@ def _emit_driver_domain_pipeline(preset: ActiveSpeakerPreset) -> str:
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
+    lines.extend(_sub_baseline_pipeline_lines(preset))
     return "\n".join(lines)
 
 
 def _output_count(preset: ActiveSpeakerPreset) -> int:
-    return max(output.index for output in preset.channel_map.outputs) + 1
+    indexes = [output.index for output in preset.channel_map.outputs]
+    if preset.local_subwoofer is not None:
+        indexes.append(preset.local_subwoofer.physical_output_index)
+    return max(indexes) + 1
 
 
 def emit_active_speaker_startup_config(
@@ -768,6 +1012,10 @@ def _emit_commissioning_filter_definitions(
             freq_hz=region.fc_hz,
             order=region.order,
         ))
+    # The bass-management HP is referenced by the lowest driver's commissioning
+    # chain (it preserves the running graph's protection), so its definition must
+    # be present here too.
+    lines.extend(_emit_bass_management_hp_definition(preset))
     for role in required_driver_roles(preset.way_count):
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
         if protective_freq is not None:
@@ -782,6 +1030,15 @@ def _emit_commissioning_filter_definitions(
             _driver_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
+        ))
+    # The local-sub lane definitions (LR4 low-pass + soft-clip limiter): the sub
+    # output is band-limited AND excursion-limited even in the commissioning graph,
+    # exactly like the mains. Its muting is the per-output commission mask below
+    # (the sub's own startup mute is not wired into the commissioning chain).
+    if preset.local_subwoofer is not None:
+        lines.extend(_emit_sub_commissioning_definitions(
+            preset.local_subwoofer.crossover_fc_hz,
+            limiter_clip_limit_db=limiter_clip_limit_db,
         ))
     # Per-output commissioning mute: only audible outputs pass; the rest are
     # hard-muted so exactly one physical driver is excited through the real
@@ -816,6 +1073,17 @@ def _emit_commissioning_pipeline(preset: ActiveSpeakerPreset) -> str:
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
+            f"    names: [{chain}]",
+        ])
+    # The local sub's protective lane (band-limit + excursion limiter) on its own
+    # output channel, BEFORE the per-output commission mute below — so the sub is
+    # protected exactly like a driver when its mute is later lifted to ramp it.
+    sub = preset.local_subwoofer
+    if sub is not None:
+        chain = ", ".join(_sub_commissioning_filter_chain())
+        lines.extend([
+            "  - type: Filter",
+            f"    channels: [{sub.physical_output_index}]",
             f"    names: [{chain}]",
         ])
     for index in range(_output_count(preset)):

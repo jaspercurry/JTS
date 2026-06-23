@@ -10,13 +10,20 @@ import assert from "node:assert/strict";
 
 import {
   CALIBRATED_ALIGNMENT_GUIDANCE,
+  DEFAULT_SUB_CROSSOVER_HZ,
   NEARFIELD_LEVEL_MATCH_GUIDANCE,
+  SUB_CROSSOVER_HZ_HI,
+  SUB_CROSSOVER_HZ_LO,
   activeSpeakerStepState,
+  clampSubwooferCrossoverFcHz,
   commissionPayloadFailure,
   crossoverAlignmentSummary,
   defaultActiveSpeakerStep,
   levelMatchSummary,
+  localSubwooferGroup,
   nearfieldCaptureHint,
+  subwooferCrossoverBand,
+  subwooferCrossoverFcHz,
 } from "../../deploy/assets/sound-profile/js/active-speaker-ui.js";
 
 // A saved topology whose current observed hardware no longer matches must stay
@@ -170,5 +177,75 @@ assert.ok(/skip/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 }
 assert.equal(crossoverAlignmentSummary(null).available, false);
 assert.ok(/calibrated measurement mic/i.test(CALIBRATED_ALIGNMENT_GUIDANCE));
+
+// --- Local-subwoofer crossover helpers --------------------------------------
+const STEREO_NO_SUB = {
+  speaker_groups: [
+    { id: "left", kind: "left", mode: "full_range_passive",
+      channels: [{ role: "full_range", physical_output_index: 0 }] },
+    { id: "right", kind: "right", mode: "full_range_passive",
+      channels: [{ role: "full_range", physical_output_index: 1 }] },
+  ],
+};
+const STEREO_WITH_SUB = {
+  speaker_groups: STEREO_NO_SUB.speaker_groups.concat([
+    { id: "sub", kind: "subwoofer", mode: "subwoofer",
+      channels: [{ role: "subwoofer", physical_output_index: 2, crossover_fc_hz: 110 }] },
+  ]),
+};
+const STEREO_WITH_SUB_UNSET_FC = {
+  speaker_groups: STEREO_NO_SUB.speaker_groups.concat([
+    { id: "sub", kind: "subwoofer", mode: "subwoofer",
+      channels: [{ role: "subwoofer", physical_output_index: 2 }] },
+  ]),
+};
+
+// No sub routed → no group, no called-out band, default Fc.
+{
+  assert.equal(localSubwooferGroup(STEREO_NO_SUB), null);
+  assert.equal(subwooferCrossoverBand(STEREO_NO_SUB), null);
+  assert.equal(subwooferCrossoverFcHz(STEREO_NO_SUB), DEFAULT_SUB_CROSSOVER_HZ);
+  assert.equal(localSubwooferGroup(null), null);
+  assert.equal(subwooferCrossoverBand(null), null);
+  assert.equal(subwooferCrossoverBand(undefined), null);
+}
+
+// Sub present with an explicit Fc → a locked GAINLESS high-pass band at that Fc.
+{
+  assert.ok(localSubwooferGroup(STEREO_WITH_SUB));
+  assert.equal(subwooferCrossoverFcHz(STEREO_WITH_SUB), 110);
+  const band = subwooferCrossoverBand(STEREO_WITH_SUB);
+  assert.ok(band);
+  assert.equal(band.type, "Highpass"); // a GAINLESS_TYPES entry — no user gain term
+  assert.equal(band.freq_hz, 110);
+  assert.equal(band.gain_db, 0);
+  assert.equal(band.systemManaged, true);
+  assert.ok(/110\s*Hz/.test(band.detail));
+  assert.ok(/subwoofer card/i.test(band.editedVia));
+}
+
+// Sub present but Fc unset → falls back to the shared default corner.
+{
+  assert.equal(subwooferCrossoverFcHz(STEREO_WITH_SUB_UNSET_FC), DEFAULT_SUB_CROSSOVER_HZ);
+  const band = subwooferCrossoverBand(STEREO_WITH_SUB_UNSET_FC);
+  assert.equal(band.freq_hz, DEFAULT_SUB_CROSSOVER_HZ);
+}
+
+// Clamp keeps the corner inside the safe bass-management band; blank → default.
+{
+  assert.equal(clampSubwooferCrossoverFcHz(""), DEFAULT_SUB_CROSSOVER_HZ);
+  assert.equal(clampSubwooferCrossoverFcHz("not-a-number"), DEFAULT_SUB_CROSSOVER_HZ);
+  assert.equal(clampSubwooferCrossoverFcHz(10), SUB_CROSSOVER_HZ_LO);
+  assert.equal(clampSubwooferCrossoverFcHz(500), SUB_CROSSOVER_HZ_HI);
+  assert.equal(clampSubwooferCrossoverFcHz(120), 120);
+  // An out-of-range stored value is normalized when surfaced as the band.
+  const hot = subwooferCrossoverBand({
+    speaker_groups: [
+      { id: "sub", kind: "subwoofer", mode: "subwoofer",
+        channels: [{ role: "subwoofer", physical_output_index: 2, crossover_fc_hz: 999 }] },
+    ],
+  });
+  assert.equal(hot.freq_hz, SUB_CROSSOVER_HZ_HI);
+}
 
 console.log(JSON.stringify({ ok: true }));

@@ -149,3 +149,41 @@ def test_every_static_camilladsp_config_caps_volume_at_zero_db() -> None:
                 f"{rel}: volume_limit {value} is positive — the project "
                 "safety ceiling caps the main fader at full scale (0 dB)."
             )
+
+
+# Wireless-sub low-pass corner: the bond-config range/default lives in Python
+# (jasper.multiroom.config), but the corner is RE-CLAMPED in the Rust outputd
+# `sub` pick (rust/jasper-outputd/src/dac_content.rs SUB_*). If the two drift —
+# e.g. Python widens the range but Rust does not — the UI/validator would accept
+# a corner the DAC silently clamps to a different value (the displayed 60 Hz
+# becomes a 40 Hz low-pass). Grep-pin the Rust literals to the Python SSOT, same
+# technique as the TTS-gain pins above.
+_RUST_SUB_CORNER = "rust/jasper-outputd/src/dac_content.rs"
+
+_SUB_CONST_PAT = lambda name: re.compile(  # noqa: E731
+    rf"pub const {name}:\s*f64\s*=\s*(-?\d+(?:_\d+)*(?:\.\d+)?)\s*;"
+)
+
+
+def test_sub_crossover_corner_constants_match_python_and_rust() -> None:
+    from jasper.multiroom import config as grouping_config
+
+    text = (REPO / _RUST_SUB_CORNER).read_text()
+
+    def rust_value(name: str) -> float:
+        m = _SUB_CONST_PAT(name).search(text)
+        assert m, f"{_RUST_SUB_CORNER}: const {name} not found (renamed?)"
+        return float(m.group(1).replace("_", ""))
+
+    pairs = (
+        ("SUB_DEFAULT_CORNER_HZ", grouping_config.DEFAULT_CROSSOVER_HZ),
+        ("SUB_MIN_CORNER_HZ", grouping_config.CROSSOVER_HZ_LO),
+        ("SUB_MAX_CORNER_HZ", grouping_config.CROSSOVER_HZ_HI),
+    )
+    for rust_name, py_value in pairs:
+        assert rust_value(rust_name) == py_value, (
+            f"sub-corner drift: Rust {rust_name}={rust_value(rust_name)} != "
+            f"Python {py_value} — keep dac_content.rs SUB_* and "
+            "jasper.multiroom.config crossover constants in lockstep so the "
+            "validated corner and the DAC's clamp agree."
+        )

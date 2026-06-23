@@ -22,13 +22,40 @@ ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
 ACTIVE_BASELINE_KIND = "jts_speaker_baseline_profile"
 
 DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {
+    # 1-way is the DEGENERATE passive main: a single full-range driver per side.
+    # It only ever rides the multi-output emitter when a local subwoofer is
+    # present (bass management splits the full-range program into a sub low-pass
+    # and a complementary mains high-pass). A subless passive speaker takes the
+    # flat program lane, NOT this path.
+    1: ("full_range",),
     2: ("woofer", "tweeter"),
     3: ("woofer", "mid", "tweeter"),
 }
 ADJACENT_PAIRS_BY_WAY: dict[int, tuple[tuple[str, str], ...]] = {
+    # A 1-way main has no inter-driver crossover region; its only crossover is the
+    # bass-management split shared with the local subwoofer (see LocalSubwoofer).
+    1: (),
     2: (("woofer", "tweeter"),),
     3: (("woofer", "mid"), ("mid", "tweeter")),
 }
+# The lowest (woofer / full-range) driver of each side. When a local subwoofer is
+# present this driver carries the complementary bass-management high-pass — the
+# upper half of the single crossover whose lower half is the sub low-pass. It is
+# the role with no LOWER crossover edge (no region names it as the upper driver).
+LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
+    1: "full_range",
+    2: "woofer",
+    3: "woofer",
+}
+
+# Local-subwoofer bass-management crossover corner. Mirrors the wireless sub
+# (jasper.multiroom.config DEFAULT_CROSSOVER_HZ / CROSSOVER_HZ_LO / _HI) so the
+# two sub features share one corner vocabulary.
+DEFAULT_SUB_CROSSOVER_HZ = 80.0
+SUB_CROSSOVER_HZ_LO = 40.0
+SUB_CROSSOVER_HZ_HI = 200.0
+# LR4 is the standard sub/main bass-management slope (both halves at order 4).
+SUB_CROSSOVER_ORDER = 4
 SUPPORTED_LAYOUTS = {"mono", "stereo"}
 SIDES_BY_LAYOUT: dict[str, tuple[str, ...]] = {
     "mono": ("mono",),
@@ -55,7 +82,18 @@ def required_driver_roles(way_count: int) -> tuple[str, ...]:
     try:
         return DRIVER_ROLES_BY_WAY[int(way_count)]
     except (KeyError, TypeError, ValueError) as e:
-        raise ActiveSpeakerConfigError("way_count must be 2 or 3") from e
+        raise ActiveSpeakerConfigError("way_count must be 1, 2, or 3") from e
+
+
+def lowest_driver_role(way_count: int) -> str:
+    """The role of the lowest (woofer / full-range) driver for ``way_count``.
+
+    This is the driver that carries the bass-management high-pass when a local
+    subwoofer is present — the only role with no lower crossover edge."""
+    try:
+        return LOWEST_DRIVER_ROLE_BY_WAY[int(way_count)]
+    except (KeyError, TypeError, ValueError) as e:
+        raise ActiveSpeakerConfigError("way_count must be 1, 2, or 3") from e
 
 
 def _required_sides(layout: str) -> tuple[str, ...]:
@@ -392,6 +430,68 @@ class CrossoverRegion:
 
 
 @dataclass(frozen=True)
+class LocalSubwoofer:
+    """A subwoofer on the speaker's OWN spare DAC output channel.
+
+    The local sub taps the same full-range program as the mains. It is the lower
+    half of one bass-management crossover at ``crossover_fc_hz``: the sub gets an
+    LR4 LOW-pass at that corner; each main's lowest driver gets a complementary
+    LR4 HIGH-pass at the SAME corner (the emitter folds the high-pass in). The sub
+    output is pinned to ``physical_output_index`` — the next contiguous CamillaDSP
+    channel after the main driver outputs.
+    """
+
+    physical_output_index: int
+    label: str
+    crossover_fc_hz: float = DEFAULT_SUB_CROSSOVER_HZ
+    startup_muted: bool = True
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "LocalSubwoofer":
+        if not isinstance(raw, dict):
+            raise ActiveSpeakerConfigError("local_subwoofer must be an object")
+        index = _integer(raw.get("physical_output_index"), "local_subwoofer.physical_output_index")
+        if index < 0:
+            raise ActiveSpeakerConfigError(
+                "local_subwoofer.physical_output_index must be >= 0"
+            )
+        return cls(
+            physical_output_index=index,
+            label=_require_text(
+                raw.get("label", "subwoofer"),
+                "local_subwoofer.label",
+                max_chars=80,
+            ),
+            crossover_fc_hz=_finite_float(
+                raw.get("crossover_fc_hz", DEFAULT_SUB_CROSSOVER_HZ),
+                "local_subwoofer.crossover_fc_hz",
+            ),
+            startup_muted=_bool(
+                raw.get("startup_muted", True), "local_subwoofer.startup_muted"
+            ),
+        )
+
+    def validate(self) -> None:
+        if not SUB_CROSSOVER_HZ_LO <= self.crossover_fc_hz <= SUB_CROSSOVER_HZ_HI:
+            raise ActiveSpeakerConfigError(
+                "local_subwoofer.crossover_fc_hz must be between "
+                f"{SUB_CROSSOVER_HZ_LO} and {SUB_CROSSOVER_HZ_HI} Hz"
+            )
+        if not self.startup_muted:
+            raise ActiveSpeakerConfigError(
+                "local subwoofer output must start muted for commissioning safety"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "physical_output_index": self.physical_output_index,
+            "label": self.label,
+            "crossover_fc_hz": self.crossover_fc_hz,
+            "startup_muted": self.startup_muted,
+        }
+
+
+@dataclass(frozen=True)
 class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""
 
@@ -483,6 +583,11 @@ class ActiveSpeakerPreset:
     crossover_regions: tuple[CrossoverRegion, ...]
     safety: SafetyEnvelope = field(default_factory=SafetyEnvelope)
     notes: str | None = None
+    local_subwoofer: LocalSubwoofer | None = None
+
+    @property
+    def has_local_subwoofer(self) -> bool:
+        return self.local_subwoofer is not None
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "ActiveSpeakerPreset":
@@ -510,11 +615,18 @@ class ActiveSpeakerPreset:
             crossover_regions=tuple(
                 CrossoverRegion.from_mapping(item)
                 for item in _sequence(
-                    raw.get("crossover_regions"), "crossover_regions"
+                    # A 1-way (degenerate passive) main has no inter-driver
+                    # crossover region; absent defaults to an empty list.
+                    raw.get("crossover_regions", []), "crossover_regions"
                 )
             ),
             safety=SafetyEnvelope.from_mapping(raw.get("safety")),
             notes=_optional_text(raw.get("notes"), max_chars=800),
+            local_subwoofer=(
+                LocalSubwoofer.from_mapping(raw.get("local_subwoofer"))
+                if raw.get("local_subwoofer")
+                else None
+            ),
         )
         preset.validate()
         return preset
@@ -544,6 +656,25 @@ class ActiveSpeakerPreset:
                     raise ActiveSpeakerConfigError(
                         f"driver {role} has inconsistent polarity across crossover regions"
                     )
+        # A 1-way (degenerate passive full-range) main only rides this multi-output
+        # emitter when a local subwoofer is present — that is the ONLY reason to
+        # split a passive speaker's program. A subless 1-way takes the flat program
+        # lane, never this path.
+        if self.way_count == 1 and self.local_subwoofer is None:
+            raise ActiveSpeakerConfigError(
+                "a 1-way (passive full-range) preset is only valid with a local "
+                "subwoofer; a subless passive speaker uses the flat program lane"
+            )
+        if self.local_subwoofer is not None:
+            self.local_subwoofer.validate()
+            # The sub output is the next contiguous CamillaDSP channel after the
+            # main driver outputs — the channel map is 0..N-1, the sub is N.
+            main_output_count = len(self.channel_map.outputs)
+            if self.local_subwoofer.physical_output_index != main_output_count:
+                raise ActiveSpeakerConfigError(
+                    "local_subwoofer.physical_output_index must be the next "
+                    f"contiguous output channel ({main_output_count})"
+                )
         self.safety.validate()
 
     def to_dict(self) -> dict[str, Any]:
@@ -565,6 +696,8 @@ class ActiveSpeakerPreset:
         }
         if self.notes:
             out["notes"] = self.notes
+        if self.local_subwoofer is not None:
+            out["local_subwoofer"] = self.local_subwoofer.to_dict()
         return out
 
 

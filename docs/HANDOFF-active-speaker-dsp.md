@@ -263,10 +263,15 @@
 > or topology-mismatched previews block staging. Preview-derived staging can
 > compile mono or stereo active 2-way and 3-way main speaker groups from the
 > saved topology, including saved role/output mapping, while still requiring the
-> active outputs to occupy a contiguous block starting at DAC output 1. Optional
-> subwoofer groups remain outside this main-speaker startup graph; if present,
-> staging fails closed with `subwoofer_staging_not_supported` until a later
-> slice can include sub outputs in the protected startup graph. The packaged
+> active outputs to occupy a contiguous block starting at DAC output 1. A routed
+> local subwoofer is now armed into the protected startup graph alongside the
+> mains: its output is band-limited (LR4 low-pass at the bass-management corner),
+> excursion-limited, and starts MUTED via the per-output commission mask — exactly
+> like a driver — while each main's lowest driver carries the complementary LR4
+> high-pass. A sub that cannot be pinned to the next contiguous output after the
+> mains fails closed (`active_subwoofer_output_not_contiguous` /
+> `subwoofer_staging_unresolved`); staging never silently drops the sub and stages
+> a mains-only graph. The packaged
 > Epique/F110M preset remains the no-audio fallback substrate for lower-level
 > tests/CLI/default-preset work, not the product route's implicit answer once a
 > design draft exists. `/sound/active-speaker/channel-protection`
