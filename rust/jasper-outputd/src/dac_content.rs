@@ -65,7 +65,8 @@ use std::os::fd::RawFd;
 
 /// Sample rate of the round-trip lane. Pinned to the SNAPFIFO stream
 /// format (48000:16:2) — the FIFO never carries any other rate, so the
-/// sub low-pass coefficients can be precomputed against this constant.
+/// sub low-pass / mains high-pass coefficients can be precomputed
+/// against this constant.
 pub const SUB_SAMPLE_RATE_HZ: f64 = 48_000.0;
 
 /// Default sub crossover corner when the env var is absent or blank. A
@@ -131,6 +132,35 @@ impl Biquad {
         }
     }
 
+    /// High-pass section via the RBJ audio-EQ cookbook. An LR4 high-pass
+    /// is two of these cascaded at the same Butterworth Q as the sub
+    /// low-pass, giving the complementary half of the bass-management
+    /// crossover.
+    fn high_pass(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Self {
+        let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
+        let (sin_w0, cos_w0) = w0.sin_cos();
+        let alpha = sin_w0 / (2.0 * q);
+
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = b0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+
     /// Process one sample, advancing the Direct Form I state.
     #[inline]
     fn process(&mut self, x0: f64) -> f64 {
@@ -168,6 +198,38 @@ impl Lr4LowPass {
         Self {
             s1: Biquad::low_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
             s2: Biquad::low_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
+            corner_hz,
+        }
+    }
+
+    /// Process one mono sample through both cascaded sections.
+    #[inline]
+    fn process(&mut self, x: f64) -> f64 {
+        self.s2.process(self.s1.process(x))
+    }
+
+    /// The corner this filter was built at (for logs / STATUS).
+    pub fn corner_hz(self) -> f64 {
+        self.corner_hz
+    }
+}
+
+/// 4th-order Linkwitz-Riley high-pass: the complementary mains half of
+/// the wireless-sub crossover. Same sample-rate pin and state
+/// continuity contract as `Lr4LowPass`; unity passband, no added gain.
+#[derive(Debug, Clone, Copy)]
+pub struct Lr4HighPass {
+    s1: Biquad,
+    s2: Biquad,
+    corner_hz: f64,
+}
+
+impl Lr4HighPass {
+    /// Build a fresh LR4 high-pass at `corner_hz`.
+    pub fn new(corner_hz: f64) -> Self {
+        Self {
+            s1: Biquad::high_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
+            s2: Biquad::high_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
             corner_hz,
         }
     }
@@ -269,10 +331,24 @@ impl ChannelPick {
 
     /// Apply the pick in place to one interleaved-stereo period.
     ///
-    /// `sub_filter` carries the stateful LR4 low-pass and MUST be `Some`
-    /// when `self` is `Sub` (the caller — `DacContentSource` — owns it so
-    /// it persists across periods). It is unused for every other pick.
+    /// Test-only wrapper for cases that exercise channel picking without
+    /// the optional mains high-pass.
+    #[cfg(test)]
     fn apply(self, period: &mut [i16], sub_filter: Option<&mut Lr4LowPass>) {
+        self.apply_with_main_highpass(period, sub_filter, None);
+    }
+
+    /// Apply the pick plus an optional stateful stereo mains high-pass.
+    ///
+    /// `main_highpass` is used only for main-channel picks
+    /// (`Stereo|Left|Right|Mono`). A `Sub` member's safety contract is
+    /// mono+LP-or-silence; the HP env is ignored there by construction.
+    fn apply_with_main_highpass(
+        self,
+        period: &mut [i16],
+        sub_filter: Option<&mut Lr4LowPass>,
+        main_highpass: Option<&mut [Lr4HighPass; 2]>,
+    ) {
         match self {
             Self::Stereo => {}
             Self::Left => {
@@ -317,6 +393,15 @@ impl ChannelPick {
                     frame[0] = s;
                     frame[1] = s;
                 }
+                return;
+            }
+        }
+        if let Some(filters) = main_highpass {
+            for frame in period.chunks_exact_mut(2) {
+                let left = filters[0].process(frame[0] as f64);
+                let right = filters[1].process(frame[1] as f64);
+                frame[0] = left.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+                frame[1] = right.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
             }
         }
     }
@@ -489,6 +574,10 @@ pub struct DacContentSource {
     /// `ChannelPick`) so its biquad memory persists across periods;
     /// (re)construct in `new` resets it.
     sub_filter: Option<Lr4LowPass>,
+    /// Optional stateful stereo LR4 high-pass for MAIN channels when a
+    /// wireless sub is present and bass management is enabled. Two filter
+    /// instances keep L/R state independent. `None` means full-range mains.
+    main_highpass: Option<[Lr4HighPass; 2]>,
     fd: Option<RawFd>,
     assembler: PeriodAssembler,
     policy: FallbackPolicy,
@@ -503,7 +592,12 @@ pub struct DacContentSource {
 impl DacContentSource {
     /// No I/O here — the FIFO is opened lazily on the first period so a
     /// not-yet-created path is a normal startup ordering, not an error.
-    pub fn new(path: &str, channel: ChannelPick, period_frames: u32) -> Self {
+    pub fn new(
+        path: &str,
+        channel: ChannelPick,
+        period_frames: u32,
+        main_highpass_hz: Option<f64>,
+    ) -> Self {
         let period_bytes = (period_frames as usize) * 2 /* channels */ * 2 /* bytes */;
         // A Sub channel owns a fresh (state-cleared) low-pass at its
         // carried corner; every other pick has no filter.
@@ -511,10 +605,17 @@ impl DacContentSource {
             ChannelPick::Sub(corner_hz) => Some(Lr4LowPass::new(corner_hz)),
             _ => None,
         };
+        let main_highpass = match (channel, main_highpass_hz) {
+            (ChannelPick::Sub(_), _) | (_, None) => None,
+            (_, Some(corner_hz)) => {
+                Some([Lr4HighPass::new(corner_hz), Lr4HighPass::new(corner_hz)])
+            }
+        };
         Self {
             path: path.to_string(),
             channel,
             sub_filter,
+            main_highpass,
             fd: None,
             assembler: PeriodAssembler::new(period_bytes),
             policy: FallbackPolicy::new(),
@@ -563,7 +664,11 @@ impl DacContentSource {
                     self.assembler.staged_periods(),
                 );
             }
-            self.channel.apply(out, self.sub_filter.as_mut());
+            self.channel.apply_with_main_highpass(
+                out,
+                self.sub_filter.as_mut(),
+                self.main_highpass.as_mut(),
+            );
             self.fifo_periods += 1;
             true
         } else {
@@ -602,9 +707,17 @@ impl DacContentSource {
     /// The DAC loop calls this on every fallback period; only `Sub`
     /// changes the buffer.
     pub fn apply_pick_to_fallback_period(&mut self, period: &mut [i16]) {
-        if let ChannelPick::Sub(_) = self.channel {
-            self.channel.apply(period, self.sub_filter.as_mut());
+        if matches!(self.channel, ChannelPick::Sub(_)) || self.main_highpass.is_some() {
+            self.channel.apply_with_main_highpass(
+                period,
+                self.sub_filter.as_mut(),
+                self.main_highpass.as_mut(),
+            );
         }
+    }
+
+    pub fn main_highpass_corner_hz(&self) -> Option<f64> {
+        self.main_highpass.map(|filters| filters[0].corner_hz())
     }
 
     pub fn metrics(&self) -> DacContentMetrics {
@@ -868,6 +981,24 @@ mod tests {
         peak / amp
     }
 
+    /// Same measurement harness for the complementary LR4 HP.
+    fn lr4_hp_gain_at(corner_hz: f64, freq: f64) -> f64 {
+        let mut hp = Lr4HighPass::new(corner_hz);
+        let n = 48_000usize;
+        let settle = 4_800usize;
+        let amp = 10_000.0;
+        let mut peak = 0.0f64;
+        for i in 0..n {
+            let t = i as f64 / SUB_SAMPLE_RATE_HZ;
+            let x = amp * (2.0 * std::f64::consts::PI * freq * t).sin();
+            let y = hp.process(x);
+            if i >= settle {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak / amp
+    }
+
     fn lin_to_db(g: f64) -> f64 {
         20.0 * g.log10()
     }
@@ -919,6 +1050,39 @@ mod tests {
             (y - 10_000.0).abs() < 1.0,
             "DC settled to {y}, expected 10000"
         );
+    }
+
+    // ---------- pure: LR4 high-pass (wireless-sub bass management) ----------
+
+    #[test]
+    fn lr4_highpass_is_minus_6db_at_the_corner() {
+        let g = lin_to_db(lr4_hp_gain_at(80.0, 80.0));
+        assert!(
+            (g - (-6.0)).abs() <= 1.0,
+            "LR4 HP corner gain {g:.2} dB not within 1 dB of -6 dB"
+        );
+    }
+
+    #[test]
+    fn lr4_highpass_attenuates_below_corner_and_passes_above() {
+        let low = lin_to_db(lr4_hp_gain_at(80.0, 8.0));
+        let high = lin_to_db(lr4_hp_gain_at(80.0, 800.0));
+        assert!(low < -35.0, "8 Hz leaked through HP: {low:.2} dB");
+        assert!(high <= 0.05, "HP passband gain {high:.3} dB shows a boost");
+        assert!(
+            high >= -1.0,
+            "HP passband gain {high:.3} dB unexpectedly low"
+        );
+    }
+
+    #[test]
+    fn lr4_highpass_rejects_dc() {
+        let mut hp = Lr4HighPass::new(80.0);
+        let mut y = 0.0;
+        for _ in 0..48_000 {
+            y = hp.process(10_000.0);
+        }
+        assert!(y.abs() < 1.0, "DC settled to {y}, expected near silence");
     }
 
     // ---------- pure: ChannelPick::Sub apply ----------
@@ -1081,6 +1245,7 @@ mod tests {
             fifo.path_str(),
             ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ),
             TEST_PERIOD_FRAMES,
+            None,
         );
         assert!(
             src.sub_filter.is_some(),
@@ -1095,8 +1260,12 @@ mod tests {
         // to mono + low-passed — the dumb-sub lane carries full-range
         // stereo on the direct path too, and a sub must NEVER play it.
         let fifo = TempFifo::create("sub-fallback");
-        let mut src =
-            DacContentSource::new(fifo.path_str(), ChannelPick::Sub(80.0), TEST_PERIOD_FRAMES);
+        let mut src = DacContentSource::new(
+            fifo.path_str(),
+            ChannelPick::Sub(80.0),
+            TEST_PERIOD_FRAMES,
+            None,
+        );
         // A burst of high-frequency-ish full-scale content on the direct
         // (fallback) lane: alternating +/- full scale ≈ Nyquist content,
         // which the sub LP must crush.
@@ -1133,11 +1302,61 @@ mod tests {
         // local format, so the fallback helper is a no-op (the module's
         // "pick applies to FIFO periods ONLY" decision).
         let fifo = TempFifo::create("left-fallback");
-        let mut src = DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES);
+        let mut src =
+            DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
         let original = vec![10i16, 20, 30, 40, 50, 60, 70, 80];
         let mut period = original.clone();
         src.apply_pick_to_fallback_period(&mut period);
         assert_eq!(period, original, "non-Sub fallback must be untouched");
+    }
+
+    #[test]
+    fn source_main_highpass_is_built_for_mains_and_ignored_for_sub() {
+        let fifo = TempFifo::create("main-hp-build");
+        let src = DacContentSource::new(
+            fifo.path_str(),
+            ChannelPick::Left,
+            TEST_PERIOD_FRAMES,
+            Some(80.0),
+        );
+        assert_eq!(src.main_highpass_corner_hz(), Some(80.0));
+
+        let sub = DacContentSource::new(
+            fifo.path_str(),
+            ChannelPick::Sub(80.0),
+            TEST_PERIOD_FRAMES,
+            Some(80.0),
+        );
+        assert_eq!(sub.main_highpass_corner_hz(), None);
+        assert!(sub.sub_filter.is_some());
+    }
+
+    #[test]
+    fn source_main_highpass_applies_to_fallback_periods() {
+        // Bass management is local speaker shaping, so the inv-B direct
+        // fallback path must be high-passed too while a sub is present.
+        let fifo = TempFifo::create("main-hp-fallback");
+        let mut src = DacContentSource::new(
+            fifo.path_str(),
+            ChannelPick::Stereo,
+            TEST_PERIOD_FRAMES,
+            Some(80.0),
+        );
+        let settle_blocks = (SUB_SAMPLE_RATE_HZ as usize / TEST_PERIOD_FRAMES as usize).max(1);
+        let mut settled_peak = 0i32;
+        for blk in 0..(settle_blocks + 200) {
+            let mut period = vec![10_000i16; (TEST_PERIOD_FRAMES as usize) * 2];
+            src.apply_pick_to_fallback_period(&mut period);
+            if blk >= settle_blocks {
+                for &s in &period {
+                    settled_peak = settled_peak.max((s as i32).abs());
+                }
+            }
+        }
+        assert!(
+            settled_peak < 100,
+            "main HP fallback leaked DC bass: peak {settled_peak}"
+        );
     }
 
     // ---------- end-to-end with a real FIFO ----------
@@ -1205,8 +1424,12 @@ mod tests {
     #[test]
     fn source_serves_direct_until_producer_demonstrates_health() {
         let fifo = TempFifo::create("damped");
-        let mut src =
-            DacContentSource::new(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
+        let mut src = DacContentSource::new(
+            fifo.path_str(),
+            ChannelPick::Stereo,
+            TEST_PERIOD_FRAMES,
+            None,
+        );
         let mut out = vec![0i16; 8];
 
         // No writer: every period is served direct (inv-B), no panic,
@@ -1258,6 +1481,7 @@ mod tests {
             path.to_str().unwrap(),
             ChannelPick::Stereo,
             TEST_PERIOD_FRAMES,
+            None,
         );
         let mut out = vec![0i16; 8];
         for _ in 0..3 {
@@ -1271,7 +1495,8 @@ mod tests {
     #[test]
     fn source_falls_back_immediately_when_writer_stops_then_recovers() {
         let fifo = TempFifo::create("outage");
-        let mut src = DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES);
+        let mut src =
+            DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
         let mut out = vec![0i16; 8];
         let one_period = le_bytes(&[3i16, -3, 3, -3, 3, -3, 3, -3]);
 
@@ -1341,8 +1566,12 @@ mod tests {
     #[test]
     fn source_never_blocks_with_a_writer_that_sends_nothing() {
         let fifo = TempFifo::create("idle-writer");
-        let mut src =
-            DacContentSource::new(fifo.path_str(), ChannelPick::Stereo, TEST_PERIOD_FRAMES);
+        let mut src = DacContentSource::new(
+            fifo.path_str(),
+            ChannelPick::Stereo,
+            TEST_PERIOD_FRAMES,
+            None,
+        );
         // Writer connected but silent: reads must be EAGAIN, not a hang.
         let _writer = connect_producer(&mut src, &fifo);
         let mut out = vec![0i16; 8];

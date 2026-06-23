@@ -61,6 +61,7 @@ from . import (
 )
 from ..multiroom.config import (
     DEFAULT_CROSSOVER_HZ,
+    DEFAULT_MAINS_HIGHPASS_ENABLED,
     GROUPING_ENV_FILE,
     BondMember,
     format_roster,
@@ -871,6 +872,8 @@ def _write_grouping(
     left_delay_ms: "float | None" = None,
     right_delay_ms: "float | None" = None,
     crossover_hz: "float | None" = None,
+    mains_highpass_enabled: "bool | None" = None,
+    subwoofer_present: "bool | None" = None,
     peer_addr: "str | None" = None,
     peer_name: "str | None" = None,
     roster: "str | None" = None,
@@ -909,6 +912,14 @@ def _write_grouping(
         # channel="sub", but persisted regardless so a sub<->non-sub flip
         # keeps the operator's chosen corner).
         updates["JASPER_GROUPING_CROSSOVER_HZ"] = f"{crossover_hz:g}"
+    if mains_highpass_enabled is not None:
+        updates["JASPER_GROUPING_MAINS_HIGHPASS"] = (
+            "on" if mains_highpass_enabled else "off"
+        )
+    if subwoofer_present is not None:
+        updates["JASPER_GROUPING_SUBWOOFER_PRESENT"] = (
+            "on" if subwoofer_present else "off"
+        )
     # Bond roster (leader only): same preserved-when-omitted contract as
     # trim; an EXPLICIT empty string clears it (the bond flow clears the
     # roster on non-leader members so a role flip can't leave a stale
@@ -1801,6 +1812,24 @@ def _make_handler(
                         status=400,
                     )
                     return
+            mains_highpass_enabled: bool | None = None
+            if "mains_highpass_enabled" in body:
+                if not isinstance(body["mains_highpass_enabled"], bool):
+                    self._send_json(
+                        {"error": "mains_highpass_enabled must be boolean"},
+                        status=400,
+                    )
+                    return
+                mains_highpass_enabled = body["mains_highpass_enabled"]
+            subwoofer_present: bool | None = None
+            if "subwoofer_present" in body:
+                if not isinstance(body["subwoofer_present"], bool):
+                    self._send_json(
+                        {"error": "subwoofer_present must be boolean"},
+                        status=400,
+                    )
+                    return
+                subwoofer_present = body["subwoofer_present"]
             peer_addr: str | None = None
             if "peer_addr" in body:
                 peer_addr = str(body.get("peer_addr") or "").strip()
@@ -1864,6 +1893,16 @@ def _make_handler(
                         if crossover_hz is not None
                         else DEFAULT_CROSSOVER_HZ
                     ),
+                    mains_highpass_enabled=(
+                        mains_highpass_enabled
+                        if mains_highpass_enabled is not None
+                        else DEFAULT_MAINS_HIGHPASS_ENABLED
+                    ),
+                    subwoofer_present=(
+                        subwoofer_present
+                        if subwoofer_present is not None
+                        else False
+                    ),
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
                     roster=roster_members,
@@ -1880,6 +1919,8 @@ def _make_handler(
                     left_delay_ms=left_delay_ms,
                     right_delay_ms=right_delay_ms,
                     crossover_hz=crossover_hz,
+                    mains_highpass_enabled=mains_highpass_enabled,
+                    subwoofer_present=subwoofer_present,
                     peer_addr=peer_addr, peer_name=peer_name,
                     roster=roster_str,
                 )

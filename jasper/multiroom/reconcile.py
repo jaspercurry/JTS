@@ -202,6 +202,11 @@ OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 # never carry it), so outputd defaults to its safe 80 Hz only if a sub
 # somehow lacks it. The single writer is outputd_grouping_env.
 OUTPUTD_DAC_CONTENT_SUB_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ"
+# Receiver-side wireless-sub bass-management high-pass corner (Hz). Emitted
+# for non-sub MAIN members only when this bond is known to contain a sub and
+# the per-bond toggle is on. Empty everywhere else so stale env can never leave
+# a main bass-light without a sub.
+OUTPUTD_DAC_CONTENT_HP_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"
 # Bonded-member TTS (Increment 5 PR-2): while bonded, outputd listens
 # on its TTS socket and mixes voice at the final output stage (post-
 # round-trip, pre-reference — inv-A), and jasper-voice's playout is
@@ -555,11 +560,26 @@ def outputd_grouping_env(
     crash outputd.
     """
     if cfg.enabled and cfg.error is None and not active_endpoint:
+        sub_present = (
+            cfg.subwoofer_present
+            or cfg.channel == "sub"
+            or any(m.channel == "sub" for m in cfg.roster)
+        )
+        main_highpass_hz = (
+            str(cfg.crossover_hz)
+            if (
+                cfg.mains_highpass_enabled
+                and sub_present
+                and cfg.channel != "sub"
+            )
+            else ""
+        )
         env = {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
             OUTPUTD_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+            OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
             # Pair-balance trim (validated <= 0 by load_config; outputd
             # re-validates fail-closed). Always written while bonded so
             # a cleared trim converges back to 0.0.
@@ -583,6 +603,7 @@ def outputd_grouping_env(
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
         OUTPUTD_TTS_SOCKET_ENV: "",
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
         # Empty = unset to outputd's env_f32 (default 0.0) — the same
         # disable-clears-stale idiom as the lane keys above.
         OUTPUTD_DAC_CONTENT_TRIM_ENV: "",

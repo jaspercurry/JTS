@@ -329,6 +329,11 @@ def read_grouping_state(
     :func:`active_leader_pipe_path`.
     """
     cfg = load_config(path)
+    subwoofer_present = (
+        cfg.subwoofer_present
+        or cfg.channel == "sub"
+        or any(m.channel == "sub" for m in cfg.roster)
+    )
     snapshot: dict[str, Any] = {
         "enabled": cfg.enabled,
         "role": cfg.role,
@@ -338,6 +343,8 @@ def read_grouping_state(
         "buffer_ms": cfg.buffer_ms,
         "codec": cfg.codec,
         "trim_db": cfg.trim_db,
+        "mains_highpass_enabled": cfg.mains_highpass_enabled,
+        "subwoofer_present": subwoofer_present,
         "peer_addr": cfg.peer_addr,
         "peer_name": cfg.peer_name,
         # The bond roster (leader only): every follower the leader recorded
@@ -349,12 +356,11 @@ def read_grouping_state(
         ],
         "error": cfg.error,
     }
-    # Receiver-side wireless-sub low-pass corner — only meaningful when this
-    # member plays the "sub" channel (it is the corner outputd applies as an
-    # LR4 low-pass). Surfaced only for subs so a non-sub member's snapshot
-    # does not imply a knob it never uses. Read fresh from the SSOT above,
-    # never os.environ.
-    if cfg.channel == "sub":
+    # Receiver-side wireless-sub crossover corner. Surfaced for the sub (its
+    # outputd LR4 low-pass) and for mains in a bond that has a sub (their
+    # outputd LR4 high-pass + /rooms toggle fan-out need the same SSOT).
+    # Read fresh from grouping.env, never os.environ.
+    if subwoofer_present:
         snapshot["crossover_hz"] = cfg.crossover_hz
     if cfg.enabled:
         states: dict[str, str] = {}

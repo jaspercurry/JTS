@@ -83,6 +83,7 @@ pub struct OutputdState {
     content_bridge_unlock_count: AtomicU64,
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
+    dac_content_highpass_hz: Option<f64>,
     dac_content_trim_db: f32,
     dac_content_serving_fifo: AtomicBool,
     dac_content_fifo_periods: AtomicU64,
@@ -197,6 +198,7 @@ impl OutputdState {
             content_bridge_unlock_count: AtomicU64::new(0),
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
+            dac_content_highpass_hz: config.dac_content_highpass_hz,
             dac_content_trim_db: config.dac_content_trim_db,
             dac_content_serving_fifo: AtomicBool::new(false),
             dac_content_fifo_periods: AtomicU64::new(0),
@@ -717,6 +719,11 @@ impl OutputdState {
                 push_kv_str(&mut buf, "fifo", fifo);
                 buf.push(',');
                 push_kv_str(&mut buf, "channel", &self.dac_content_channel);
+                buf.push(',');
+                match self.dac_content_highpass_hz {
+                    Some(hz) => buf.push_str(&format!("\"main_highpass_hz\":{hz:.1}")),
+                    None => buf.push_str("\"main_highpass_hz\":null"),
+                }
                 buf.push(',');
                 buf.push_str(&format!("\"trim_db\":{:.1}", self.dac_content_trim_db));
                 buf.push(',');
@@ -1488,6 +1495,7 @@ mod tests {
             control_socket_path: None,
             dac_content_fifo: None,
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,
+            dac_content_highpass_hz: None,
             dac_content_trim_db: 0.0,
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
@@ -1622,6 +1630,7 @@ mod tests {
         let cfg = Config {
             dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Left,
+            dac_content_highpass_hz: Some(80.0),
             dac_content_trim_db: -3.5,
             ..test_config()
         };
@@ -1641,6 +1650,7 @@ mod tests {
         for needle in [
             r#""dac_content":{"enabled":true"#,
             r#""trim_db":-3.5"#,
+            r#""main_highpass_hz":80.0"#,
             r#""fifo":"/run/jasper-grouping/member-content.fifo""#,
             r#""channel":"left""#,
             r#""serving_fifo":true"#,

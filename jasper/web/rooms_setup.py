@@ -66,6 +66,9 @@ URL surface (after nginx strips the /rooms/ prefix):
   POST /trim        nudge one member's pair-balance trim by ±delta_db
                     (target self|peer; attenuate-only, clamped; applied
                     via the member's /grouping/set) (CSRF-verified)
+  POST /mains-highpass
+                    toggle wireless-sub bass management for every reachable
+                    member in this bond via /grouping/set (CSRF-verified)
 """
 from __future__ import annotations
 
@@ -91,6 +94,7 @@ from .. import identity
 from ..control import household_credential
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
+from ..multiroom.config import DEFAULT_CROSSOVER_HZ
 from ..multiroom.state import parse_grouping_response, read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
@@ -827,6 +831,31 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
 
     bond_id = str(parsed.get("bond_id") or "").strip() or _generate_bond_id()
     leader_addr = _leader_handle()  # stable mDNS handle of the leader (this speaker)
+    if "mains_highpass_enabled" in parsed:
+        mains_highpass_enabled = parsed.get("mains_highpass_enabled")
+        if not isinstance(mains_highpass_enabled, bool):
+            _send_json(
+                handler,
+                {"ok": False, "error": "mains_highpass_enabled must be boolean"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+    else:
+        mains_highpass_enabled = True
+    subwoofer_present = any(
+        isinstance(m, dict)
+        and str(m.get("channel") or "").strip() == "sub"
+        for m in members
+    )
+    sub_crossover_hz = DEFAULT_CROSSOVER_HZ
+    for m in members:
+        if (
+            isinstance(m, dict)
+            and str(m.get("channel") or "").strip() == "sub"
+            and "crossover_hz" in m
+        ):
+            sub_crossover_hz = m.get("crossover_hz")
+            break
 
     # Build a target per member, recording each one's directory slot so the
     # positional results from _fan_out_grouping pair back to the right member.
@@ -855,12 +884,14 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             # Likewise an explicit empty roster on every non-leader member,
             # so a member that LED a previous bond can't keep a stale roster.
             "roster": [],
+            "mains_highpass_enabled": mains_highpass_enabled,
+            "subwoofer_present": subwoofer_present,
         }
-        # Subwoofer crossover: forward the corner Hz so the member's
-        # /grouping/set persists it (validate_grouping clamps the range;
-        # the env writer only emits it for channel=="sub"). Pass it through
-        # only when the browser sent one — absent means "no crossover key",
-        # which the receiving validator treats as the default for a sub.
+        if subwoofer_present:
+            body["crossover_hz"] = sub_crossover_hz
+        # Wireless-sub crossover: every member stores the same corner so the
+        # sub's outputd low-pass and the mains' outputd high-pass are matched
+        # by construction. Without a sub, preserve any existing value.
         if "crossover_hz" in m:
             body["crossover_hz"] = m.get("crossover_hz")
         if role == "leader":
@@ -1417,6 +1448,165 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
+def _grouping_set_body(
+    grouping: dict,
+    *,
+    mains_highpass_enabled: bool,
+    subwoofer_present: bool,
+    crossover_hz: float,
+) -> dict:
+    """Build the enabled /grouping/set body for a member snapshot.
+
+    Omitted optional fields (trim/peer/roster) are preserved by
+    jasper-control's read-modify-write. The bass-management fields are
+    explicit because this endpoint is their bond-wide writer.
+    """
+    body = {
+        "enabled": True,
+        "role": str(grouping.get("role") or ""),
+        "channel": str(grouping.get("channel") or ""),
+        "bond_id": str(grouping.get("bond_id") or ""),
+        "leader_addr": str(grouping.get("leader_addr") or ""),
+        "mains_highpass_enabled": mains_highpass_enabled,
+        "subwoofer_present": subwoofer_present,
+        "crossover_hz": crossover_hz,
+    }
+    return body
+
+
+def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
+    """Handle POST /mains-highpass: toggle wireless-sub bass management.
+
+    This is a bond-wide preference, so the page fans it to every reachable
+    member through the normal /grouping/set surface. The reconciler remains
+    the single writer of outputd env; this endpoint only updates grouping.env.
+    """
+    parsed, err = _read_json_body(handler)
+    if err is not None:
+        _send_json(handler, {"ok": False, "error": err},
+                   status=HTTPStatus.BAD_REQUEST)
+        return
+    if not isinstance(parsed.get("enabled"), bool):
+        _send_json(
+            handler,
+            {"ok": False, "error": "enabled must be boolean"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+    enabled = bool(parsed["enabled"])
+    own = read_grouping_state()
+    bond_id = str(own.get("bond_id") or "").strip()
+    if not own.get("enabled") or not bond_id or own.get("error"):
+        _send_json(handler, {"ok": False, "error": "not in an active bond"},
+                   status=HTTPStatus.BAD_REQUEST)
+        return
+
+    roster = own.get("roster")
+    roster_has_sub = (
+        isinstance(roster, list)
+        and any(
+            isinstance(m, dict)
+            and str(m.get("channel") or "").strip() == "sub"
+            for m in roster
+        )
+    )
+    subwoofer_present = bool(
+        own.get("subwoofer_present")
+        or own.get("channel") == "sub"
+        or roster_has_sub
+    )
+    if not subwoofer_present:
+        _send_json(
+            handler,
+            {"ok": False, "error": "this bond has no subwoofer"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+    crossover_hz = float(own.get("crossover_hz") or DEFAULT_CROSSOVER_HZ)
+    known = _self_addresses()
+    targets: list[tuple[str, dict]] = [
+        ("", _grouping_set_body(
+            own,
+            mains_highpass_enabled=enabled,
+            subwoofer_present=True,
+            crossover_hz=crossover_hz,
+        ))
+    ]
+
+    if isinstance(roster, list) and roster:
+        for m in roster:
+            if not isinstance(m, dict):
+                continue
+            addr = str(m.get("addr") or "").strip()
+            if not addr:
+                continue
+            current = _get_member_grouping(addr, known)
+            if current is None:
+                current = {
+                    "enabled": True,
+                    "role": "follower",
+                    "channel": str(m.get("channel") or ""),
+                    "bond_id": bond_id,
+                    "leader_addr": _leader_handle(),
+                }
+            targets.append((
+                addr,
+                _grouping_set_body(
+                    current,
+                    mains_highpass_enabled=enabled,
+                    subwoofer_present=True,
+                    crossover_hz=crossover_hz,
+                ),
+            ))
+    else:
+        candidate_addrs = [
+            a for a in (
+                str(s.get("address") or "").strip()
+                for s in _discover_speakers_cached()
+            ) if a and a not in known
+        ]
+        candidate_groupings = _map_peers(
+            lambda a: _get_member_grouping(a, known), candidate_addrs,
+        )
+        for addr, current in zip(candidate_addrs, candidate_groupings):
+            if (
+                current is None
+                or str(current.get("bond_id") or "").strip() != bond_id
+            ):
+                continue
+            targets.append((
+                addr,
+                _grouping_set_body(
+                    current,
+                    mains_highpass_enabled=enabled,
+                    subwoofer_present=True,
+                    crossover_hz=crossover_hz,
+                ),
+            ))
+
+    fan_results = _fan_out_grouping(
+        targets, known=known, token=_request_control_token(handler),
+    )
+    results = [
+        {"addr": addr, "ok": ok, "detail": detail}
+        for (addr, _body), (ok, detail) in zip(targets, fan_results)
+    ]
+    all_ok = all(r["ok"] for r in results)
+    log_event(
+        logger,
+        "rooms.mains_highpass",
+        bond=bond_id,
+        enabled=int(enabled),
+        members=len(targets),
+        ok=all_ok,
+    )
+    _send_json(
+        handler,
+        {"ok": all_ok, "enabled": enabled, "results": results},
+        status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
+    )
+
+
 def _make_handler():
     """Build the request handler class. No state-path binding — the
     directory pulls everything live (mDNS browse + grouping + peering SSOT),
@@ -1444,7 +1634,14 @@ def _make_handler():
         def do_POST(self):  # noqa: N802
             # Route-check BEFORE the CSRF guard (project convention): a bogus
             # path 404s without revealing CSRF state.
-            if self.path not in ("/peering", "/bond", "/unbond", "/swap", "/trim"):
+            if self.path not in (
+                "/peering",
+                "/bond",
+                "/unbond",
+                "/swap",
+                "/trim",
+                "/mains-highpass",
+            ):
                 self.send_response(HTTPStatus.NOT_FOUND)
                 self.end_headers()
                 return
@@ -1461,6 +1658,8 @@ def _make_handler():
                 _swap_channels(self)
             elif self.path == "/trim":
                 _set_member_trim(self)
+            elif self.path == "/mains-highpass":
+                _set_mains_highpass(self)
             else:
                 _save_peering(self)
 

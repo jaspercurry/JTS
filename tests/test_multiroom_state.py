@@ -83,6 +83,7 @@ def _cfg(tmp_path, body):
 
 _EXPECTED_KEYS = {
     "trim_db", "peer_addr", "peer_name", "roster",
+    "mains_highpass_enabled", "subwoofer_present",
     "enabled", "role", "channel", "bond_id",
     "leader_addr", "buffer_ms", "codec", "error",
 }
@@ -129,9 +130,9 @@ def test_valid_enabled_full_dict_includes_codec(tmp_path):
     assert state["error"] is None
 
 
-def test_sub_member_surfaces_crossover_hz(tmp_path):
-    """A "sub" member's snapshot carries crossover_hz (fresh-read from the
-    SSOT); a non-sub member's snapshot omits it (knob not meaningful)."""
+def test_sub_bond_surfaces_crossover_hz(tmp_path):
+    """A sub bond's snapshot carries crossover_hz (fresh-read from the SSOT);
+    a plain non-sub bond omits it."""
     sub_env = (
         "JASPER_GROUPING=on\n"
         "JASPER_GROUPING_ROLE=follower\n"
@@ -145,6 +146,19 @@ def test_sub_member_surfaces_crossover_hz(tmp_path):
     )
     assert state["channel"] == "sub"
     assert state["crossover_hz"] == 110.0
+
+    main_with_sub = read_grouping_state(
+        _write_env(
+            tmp_path,
+            _follower_env()
+            + "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
+            + "JASPER_GROUPING_CROSSOVER_HZ=95\n",
+        ),
+        unit_state_reader=_stub,
+    )
+    assert main_with_sub["channel"] == "right"
+    assert main_with_sub["subwoofer_present"] is True
+    assert main_with_sub["crossover_hz"] == 95.0
 
     non_sub = read_grouping_state(
         _write_env(tmp_path, _follower_env()), unit_state_reader=_stub
@@ -161,6 +175,7 @@ def test_leader_roster_surfaces_as_list(tmp_path):
         "JASPER_GROUPING_ROLE=leader\n"
         "JASPER_GROUPING_CHANNEL=left\n"
         "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=90\n"
         "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,192.168.1.8|Sub|sub\n"
     )
     state = read_grouping_state(
@@ -171,10 +186,14 @@ def test_leader_roster_surfaces_as_list(tmp_path):
         {"addr": "192.168.1.7", "name": "Right", "channel": "right"},
         {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
     ]
+    assert state["subwoofer_present"] is True
+    assert state["mains_highpass_enabled"] is True
+    assert state["crossover_hz"] == 90.0
 
     # Solo / disabled config: empty roster list.
     solo = read_grouping_state(str(tmp_path / "missing.env"))
     assert solo["roster"] == []
+    assert solo["subwoofer_present"] is False
 
 
 def test_valid_enabled_codec_defaults_to_flac(tmp_path):

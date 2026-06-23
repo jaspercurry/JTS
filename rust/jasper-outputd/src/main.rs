@@ -275,11 +275,20 @@ fn run_alsa(
     // blocking; None (solo) leaves this loop byte-identical to before.
     let mut dac_content = config.dac_content_fifo.as_deref().map(|path| {
         eprintln!(
-            "event=outputd.dac_content.enabled fifo={} channel={}",
+            "event=outputd.dac_content.enabled fifo={} channel={} main_highpass_hz={}",
             path,
             config.dac_content_channel.as_str(),
+            config
+                .dac_content_highpass_hz
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "none".to_string()),
         );
-        DacContentSource::new(path, config.dac_content_channel, config.period_frames)
+        DacContentSource::new(
+            path,
+            config.dac_content_channel,
+            config.period_frames,
+            config.dac_content_highpass_hz,
+        )
     });
     // Bonded-member TTS (Increment 5 PR-2): constructed ONLY when the
     // reconciler set the socket env — solo keeps fanin-owned TTS and

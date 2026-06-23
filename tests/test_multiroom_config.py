@@ -106,6 +106,8 @@ def test_absent_file_is_disabled_with_defaults(tmp_path):
     assert cfg.client_latency_ms == DEFAULT_CLIENT_LATENCY_MS
     assert cfg.left_delay_ms == 0.0
     assert cfg.right_delay_ms == 0.0
+    assert cfg.mains_highpass_enabled is True
+    assert cfg.subwoofer_present is False
     assert cfg.error is None
 
 
@@ -853,10 +855,10 @@ def test_crossover_hz_default_when_absent_on_sub():
 
 
 def test_crossover_hz_parse_and_validation_matrix():
-    """The sub low-pass corner: parsed from the env file; blank/garbage
-    falls back to the 80 Hz default (never a bypass); an out-of-range value
-    on a SUB is fail-LOUD; the SAME stray value on a non-sub channel is NOT
-    an error (the knob is only meaningful for subs)."""
+    """The wireless-sub crossover corner: parsed from the env file;
+    blank/garbage falls back to the 80 Hz default (never a bypass); an
+    out-of-range value is fail-LOUD on a sub, and on a main only when a
+    sub is present and mains high-pass is enabled."""
     from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
     import os
     import tempfile
@@ -891,11 +893,25 @@ def test_crossover_hz_parse_and_validation_matrix():
         "sub", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error
     # Non-sub: an out-of-range stray value is NOT an error (knob unused).
     assert cfg_for("right", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error is None
+    # Non-sub + sub-present + HP enabled: the main will use the corner, so
+    # range it there too. Toggle-off reverts to augmentation mode and the
+    # stray corner becomes unused again.
+    assert "must be between" in cfg_for(
+        "right",
+        "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=500\n",
+    ).error
+    assert cfg_for(
+        "right",
+        "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
+        "JASPER_GROUPING_MAINS_HIGHPASS=off\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=500\n",
+    ).error is None
 
 
-def test_validate_grouping_crossover_range_only_for_sub():
-    """The shared rule ranges the corner ONLY for channel=='sub'; the same
-    out-of-range value on left/right/stereo/mono is accepted."""
+def test_validate_grouping_crossover_range_for_sub_or_armed_main():
+    """The shared rule ranges the corner for sub channels and for mains
+    that will use the complementary high-pass."""
     from jasper.multiroom.config import validate_grouping
 
     assert "CROSSOVER_HZ" in validate_grouping(
@@ -911,6 +927,44 @@ def test_validate_grouping_crossover_range_only_for_sub():
             role="follower", channel=ch, bond_id="b", leader_addr="jts.local",
             crossover_hz=10.0,
         ) is None
+        assert "CROSSOVER_HZ" in validate_grouping(
+            role="follower",
+            channel=ch,
+            bond_id="b",
+            leader_addr="jts.local",
+            crossover_hz=10.0,
+            subwoofer_present=True,
+            mains_highpass_enabled=True,
+        )
+        assert validate_grouping(
+            role="follower",
+            channel=ch,
+            bond_id="b",
+            leader_addr="jts.local",
+            crossover_hz=10.0,
+            subwoofer_present=True,
+            mains_highpass_enabled=False,
+        ) is None
+
+
+def test_mains_highpass_toggle_parse_and_validation(tmp_path):
+    path = _write_env(
+        tmp_path,
+        _leader_env()
+        + "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
+        + "JASPER_GROUPING_MAINS_HIGHPASS=off\n",
+    )
+    cfg = load_config(path)
+    assert cfg.subwoofer_present is True
+    assert cfg.mains_highpass_enabled is False
+    assert cfg.error is None
+
+    bad = _write_env(
+        tmp_path,
+        _leader_env()
+        + "JASPER_GROUPING_MAINS_HIGHPASS=sometimes\n",
+    )
+    assert "MAINS_HIGHPASS" in load_config(bad).error
 
 
 def test_crossover_hz_default_constructor_and_disabled():
@@ -927,6 +981,8 @@ def test_crossover_hz_default_constructor_and_disabled():
         leader_addr="", buffer_ms=400, codec="flac", error=None,
     )
     assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg.mains_highpass_enabled is True
+    assert cfg.subwoofer_present is False
     # A missing file resolves to the disabled config carrying the default.
     assert load_config("/nonexistent/grouping.env").crossover_hz == (
         DEFAULT_CROSSOVER_HZ

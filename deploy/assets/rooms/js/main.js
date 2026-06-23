@@ -171,6 +171,13 @@ function defRow(label, value) {
   return [h("dt", null, label), h("dd", null, value)];
 }
 
+function groupingHasSubwoofer(g) {
+  if (!g || typeof g !== "object") return false;
+  if (g.subwoofer_present || g.channel === "sub") return true;
+  const roster = Array.isArray(g.roster) ? g.roster : [];
+  return roster.some((m) => m && m.channel === "sub");
+}
+
 // ---------------------------------------------------------------------------
 // Grouping status → a key/value list (or a single "off (solo)" line).
 // Shape from jasper.multiroom.state.read_grouping_state() + the airplay-fit
@@ -620,6 +627,19 @@ function makeBondCard() {
   const trimBlock = h("div.trim-block", null,
     trimIntro, trimSelf.el, trimPeer.el, balanceNote);
 
+  const mainsHpCb = h("input", {
+    type: "checkbox",
+    "attr:aria-label": "High-pass main speakers when a subwoofer is active",
+  });
+  const mainsHpToggle = h("label.toggle", null, mainsHpCb, h("span.track"));
+  const mainsHpRow = h("label.wake-row", null,
+    mainsHpToggle,
+    h("span.wake-row__text", null,
+      h("span.wake-row__label", null, "High-pass main speakers"),
+      h("span.wake-row__hint", null,
+        "Match the mains to the subwoofer crossover.")),
+  );
+
   // --- Add-subwoofer sub-panel (dissolve face, stereo-leader only) --------
   // Shown only when this speaker is a bonded stereo-pair LEADER with no sub
   // yet (decided by the pure addSubPlan helper). Adds a third member to the
@@ -657,6 +677,7 @@ function makeBondCard() {
     dissolveIntro,
     currentSummary,
     trimBlock,
+    mainsHpRow,
     addSubPanel,
     dissolveRow,
     status,
@@ -688,6 +709,7 @@ function makeBondCard() {
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
     trimBlock.style.display = bonded ? "" : "none";
+    mainsHpRow.style.display = "none";
     // The add-sub panel rides the dissolve face but is further gated by
     // addSubPlan in sync(); hide it on the create face here, let sync own it
     // back on the dissolve face.
@@ -759,6 +781,10 @@ function makeBondCard() {
       if (typeof g.trim_db === "number") {
         trimSelf.value.textContent = g.trim_db.toFixed(1) + " dB";
       }
+      const hasSub = groupingHasSubwoofer(g);
+      mainsHpRow.style.display = hasSub ? "" : "none";
+      mainsHpCb.checked = g.mains_highpass_enabled !== false;
+      mainsHpCb.disabled = !hasSub;
       dissolveBtn.disabled = false;
       // Swap is only well-defined for a left/right pair; the backend
       // re-validates (exactly one same-bond peer) — this just avoids
@@ -840,12 +866,11 @@ function makeBondCard() {
       const picked = lastReachable.find((p) => p.address === rightAddr);
       const pickedName = (picked && picked.name) || "";
       // Subwoofer bond: the picked speaker plays only the low end (a clip-safe
-      // mono sum, low-passed locally in jasper-outputd). The leader then plays
-      // the WHOLE program full-range as channel "stereo" — not "left" — because
-      // a single main box + sub is one full-range speaker plus lows, not half a
-      // stereo pair. (Bass-management high-pass of the main is out of scope; it
-      // needs an active leader.) crossover_hz is range-validated server-side — an
-      // out-of-range sub corner is rejected 400 (validate_grouping), not clamped.
+      // mono sum, low-passed locally in jasper-outputd). The shared stream stays
+      // full-range; each main's own outputd path high-passes at the same corner
+      // by default, with the toggle below available for augmentation mode.
+      // crossover_hz is range-validated server-side — an out-of-range corner is
+      // rejected 400 (validate_grouping), not clamped.
       const members = sub
         ? [
             { addr: selfAddr, role: "leader", channel: "stereo" },
@@ -961,9 +986,33 @@ function makeBondCard() {
     }
   }
 
+  async function setMainsHighpass() {
+    const enabled = mainsHpCb.checked;
+    saving = true;
+    mainsHpCb.disabled = true;
+    status.textContent = "Saving bass management…";
+    try {
+      const data = await postJSON("mains-highpass", { enabled });
+      if (data && data.ok) {
+        status.textContent = enabled
+          ? "Bass management on — mains are reconfiguring (~10s)."
+          : "Bass management off — mains are reconfiguring (~10s).";
+      }
+    } catch (e) {
+      console.error("rooms: mains high-pass toggle failed", e);
+      mainsHpCb.checked = !enabled;
+      status.textContent = "Couldn't save bass management — " +
+        describeBondFailure(e);
+    } finally {
+      saving = false;
+      mainsHpCb.disabled = false;
+    }
+  }
+
   createBtn.addEventListener("click", create);
   swapBtn.addEventListener("click", swap);
   addSubBtn.addEventListener("click", addSub);
+  mainsHpCb.addEventListener("change", setMainsHighpass);
   dissolveBtn.addEventListener("click", dissolve);
   // Default to the create face until the first sync() proves we're bonded, so
   // both faces are never visible at once during the initial paint.
