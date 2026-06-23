@@ -84,6 +84,15 @@ MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS = 900.0
 MAX_DUAL_APPLE_CLOCK_DRIFT_PPM = 1.0
 MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES = 1.0
 
+# Bass-management corner bounds for a user-settable subwoofer crossover. These
+# MUST equal jasper.active_speaker.profile.SUB_CROSSOVER_HZ_LO / _HI — they are
+# duplicated here only to keep this widely-imported, import-cheap module free of
+# an active_speaker package import (which would be circular: active_speaker
+# imports output_topology). The equality is pinned by
+# test_output_topology.py::test_sub_crossover_bounds_mirror_profile.
+SUB_CROSSOVER_HZ_LO = 40.0
+SUB_CROSSOVER_HZ_HI = 200.0
+
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
 SUPPORTED_GROUP_MODES = {
     "full_range_passive",
@@ -664,6 +673,12 @@ class SpeakerChannel:
     startup_muted: bool = True
     protection_required: bool = False
     protection_status: str = "not_required"
+    # The user-settable bass-management corner for a ``subwoofer`` channel: the
+    # LR4 low-pass on the sub (and the complementary high-pass on the mains) are
+    # emitted at this Hz. ``None`` means "use the default corner" — the active
+    # builder falls back to ``DEFAULT_SUB_CROSSOVER_HZ``. Only meaningful on a
+    # subwoofer channel; ``evaluate_output_topology`` range-checks it when set.
+    crossover_fc_hz: float | None = None
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SpeakerChannel":
@@ -700,6 +715,10 @@ class SpeakerChannel:
             startup_muted=_bool(raw.get("startup_muted"), True),
             protection_required=protection_required,
             protection_status=protection_status,
+            crossover_fc_hz=_optional_float(
+                raw.get("crossover_fc_hz"),
+                "speaker_groups[].channels[].crossover_fc_hz",
+            ),
         )
 
     def with_output_label(self, label: str | None) -> "SpeakerChannel":
@@ -720,6 +739,8 @@ class SpeakerChannel:
             out["driver_style"] = self.driver_style
         if self.human_output_label:
             out["human_output_label"] = self.human_output_label
+        if self.crossover_fc_hz is not None:
+            out["crossover_fc_hz"] = self.crossover_fc_hz
         return out
 
 
@@ -1024,6 +1045,25 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                     f"{group.label} uses subwoofer mode but is not a subwoofer group",
                 )
             )
+        for channel in group.channels:
+            fc = channel.crossover_fc_hz
+            if fc is not None and not (
+                SUB_CROSSOVER_HZ_LO <= fc <= SUB_CROSSOVER_HZ_HI
+            ):
+                # Fail LOUD: an out-of-range bass-management corner would emit an
+                # unsafe (or non-band-limiting) crossover. Mirrors the rest of the
+                # topology validation — a blocker, never a silent clamp.
+                blockers.append(
+                    _issue(
+                        "blocker",
+                        "subwoofer_crossover_out_of_range",
+                        (
+                            f"{group.label} {channel.role} crossover {fc:g} Hz "
+                            f"must be between {SUB_CROSSOVER_HZ_LO:g} and "
+                            f"{SUB_CROSSOVER_HZ_HI:g} Hz"
+                        ),
+                    )
+                )
         for channel in group.channels:
             output_index = channel.physical_output_index
             if output_index is None:

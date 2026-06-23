@@ -242,6 +242,14 @@ _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness
 _ACTIVE_SPEAKER_UI_TEST = (
     Path(__file__).resolve().parent / "js" / "active_speaker_ui_test.mjs"
 )
+_ACTIVE_SPEAKER_UI_JS = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "assets"
+    / "sound-profile"
+    / "js"
+    / "active-speaker-ui.js"
+)
 _NODE = shutil.which("node")
 
 
@@ -944,6 +952,158 @@ def _active_speaker_mono_topology_payload(
         ],
         "routing": {"mono_group_id": "mono"},
     }
+
+
+def _passive_stereo_with_sub_topology_payload(
+    *,
+    crossover_fc_hz: float | None = None,
+) -> dict:
+    """Passive stereo mains + one local subwoofer on the next contiguous output.
+
+    The subwoofer card writes ``crossover_fc_hz`` onto the sub channel; pass it
+    through here to exercise the topology save round-trip.
+    """
+
+    sub_channel: dict = {
+        "role": "subwoofer",
+        "physical_output_index": 2,
+        "identity_verified": True,
+    }
+    if crossover_fc_hz is not None:
+        sub_channel["crossover_fc_hz"] = crossover_fc_hz
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_stereo_sub",
+        "name": "Bench stereo + sub",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [sub_channel],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+            "subwoofer_group_ids": ["sub"],
+        },
+    }
+
+
+def _sub_channel_from_saved(saved: dict) -> dict:
+    for group in saved["output_topology"]["speaker_groups"]:
+        if group.get("kind") == "subwoofer" or group.get("mode") == "subwoofer":
+            return group["channels"][0]
+    raise AssertionError("no subwoofer group in saved topology")
+
+
+def test_subwoofer_crossover_fc_round_trips_through_topology_save(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """A user-set bass-management corner posted on the sub channel persists and
+    echoes back through ``_save_output_topology_payload`` — the contract the
+    ``/sound/`` subwoofer-card Fc control relies on (it mutates the draft sub
+    channel's ``crossover_fc_hz`` and saves via the same topology POST)."""
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    saved = sound_setup._save_output_topology_payload(
+        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=110)
+    )
+    assert _sub_channel_from_saved(saved)["crossover_fc_hz"] == 110
+
+    # Re-load from disk to prove the value survives serialization, not just the
+    # in-memory echo.
+    from jasper.output_topology import load_output_topology
+
+    topology = load_output_topology()
+    sub_group = next(
+        group for group in topology.speaker_groups if group.mode == "subwoofer"
+    )
+    assert sub_group.channels[0].crossover_fc_hz == 110
+
+
+def test_subwoofer_crossover_fc_unset_omits_field(monkeypatch, tmp_path: Path):
+    """When the card leaves the corner at the default, no ``crossover_fc_hz`` is
+    written — the active builder then falls back to ``DEFAULT_SUB_CROSSOVER_HZ``."""
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    saved = sound_setup._save_output_topology_payload(
+        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=None)
+    )
+    assert "crossover_fc_hz" not in _sub_channel_from_saved(saved)
+
+
+def test_subwoofer_crossover_out_of_range_is_a_blocker(monkeypatch, tmp_path: Path):
+    """An out-of-range corner is a fail-loud topology blocker (never a silent
+    clamp) so the saved topology surfaces the issue rather than emitting an
+    unsafe / non-band-limiting crossover."""
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    saved = sound_setup._save_output_topology_payload(
+        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=999)
+    )
+    evaluation = saved["output_topology"]["evaluation"]
+    codes = {issue["code"] for issue in evaluation["blockers"]}
+    assert "subwoofer_crossover_out_of_range" in codes
+
+
+def test_sub_crossover_bounds_match_python():
+    """The JS active-speaker-ui bass-management bounds MUST equal the Python
+    profile + output_topology constants — drift would let the UI offer a corner
+    the server fail-loud rejects (or clamp where the server blocks)."""
+    from jasper.active_speaker.profile import (
+        DEFAULT_SUB_CROSSOVER_HZ,
+        SUB_CROSSOVER_HZ_HI,
+        SUB_CROSSOVER_HZ_LO,
+    )
+
+    js = _ACTIVE_SPEAKER_UI_JS.read_text()
+    assert f"DEFAULT_SUB_CROSSOVER_HZ = {DEFAULT_SUB_CROSSOVER_HZ}" in js
+    assert f"SUB_CROSSOVER_HZ_LO = {SUB_CROSSOVER_HZ_LO}" in js
+    assert f"SUB_CROSSOVER_HZ_HI = {SUB_CROSSOVER_HZ_HI}" in js
 
 
 def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> dict:

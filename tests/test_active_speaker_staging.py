@@ -195,6 +195,7 @@ def _driver_research(
     *,
     frequency_hz: float = 2500,
     way_count: int = 2,
+    with_subwoofer: bool = False,
 ) -> dict:
     drivers = [
         {
@@ -249,6 +250,15 @@ def _driver_research(
                 "confidence": "medium",
             },
         ]
+    if with_subwoofer:
+        drivers.append({
+            "role": "subwoofer",
+            "manufacturer": "Example",
+            "model": "Sub driver",
+            "usable_frequency_range_hz": [20, 200],
+            "recommended_lowpass_hz": 80,
+            "sources": ["https://example.test/sub"],
+        })
     return {
         "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
@@ -262,6 +272,7 @@ def _crossover_preview(
     *,
     frequency_hz: float = 2500,
     way_count: int = 2,
+    with_subwoofer: bool = False,
 ) -> dict:
     return build_crossover_preview(
         build_design_draft(
@@ -269,6 +280,7 @@ def _crossover_preview(
             driver_research=_driver_research(
                 frequency_hz=frequency_hz,
                 way_count=way_count,
+                with_subwoofer=with_subwoofer,
             ),
             created_at="2026-06-10T12:00:00Z",
         ),
@@ -376,11 +388,83 @@ def test_stage_protected_startup_config_blocks_unready_crossover_preview(
     }
 
 
-def test_stage_protected_startup_config_blocks_subwoofer_topology_until_supported(
+def test_stage_protected_startup_config_arms_subwoofer_muted(
     tmp_path: Path,
 ) -> None:
+    # B2: a routed local subwoofer now STAGES — the sub output is wired into the
+    # protected startup graph MUTED, exactly like the woofer/tweeter, rather than
+    # blocking. The mains pick up the complementary bass-management high-pass.
     topology = _topology_with_subwoofer()
-    preview = _crossover_preview(topology)
+    preview = _crossover_preview(topology, with_subwoofer=True)
+    out = tmp_path / "active_staged.yml"
+
+    payload = stage_protected_startup_config(
+        topology,
+        crossover_preview=preview,
+        config_path=out,
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    subwoofer_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "subwoofer_startup_staging_scope"
+    )
+
+    assert payload["status"] == "staged"
+    assert out.exists() is True
+    assert subwoofer_gate["passed"] is True
+    assert payload["issues"] == []
+
+    text = out.read_text(encoding="utf-8")
+    parsed = yaml_lib.safe_load(text)
+    # output_count grows by the sub output: 2 mains + 1 sub = 3.
+    assert parsed["devices"]["playback"]["channels"] == 3
+    sub_steps = [
+        step for step in parsed["pipeline"]
+        if step.get("type") == "Filter" and step.get("channels") == [2]
+    ]
+    # The sub output (channel 2): its protective lane (band-limit LP + excursion
+    # limiter) runs FIRST, then the per-output commission mute. So the sub is
+    # band-limited + excursion-limited even when the mute is later lifted to ramp.
+    assert sub_steps[0]["names"] == ["as_sub_lowpass", "as_sub_startup_limiter"]
+    assert sub_steps[-1]["names"] == ["as_out2_commission_mute"]
+    assert parsed["filters"]["as_sub_lowpass"]["parameters"]["type"] == (
+        "LinkwitzRileyLowpass"
+    )
+    assert parsed["filters"]["as_sub_startup_limiter"]["type"] == "Limiter"
+    # The sub starts MUTED at boot: its per-output commission mute is a hard mute
+    # (all_commission_mutes_engaged is asserted by the fully-muted gate too).
+    assert parsed["filters"]["as_out2_commission_mute"]["parameters"]["mute"] is True
+    # The mains' lowest driver (woofer, output 0) carries the bass-management HP.
+    woofer_step = next(
+        step for step in parsed["pipeline"]
+        if step.get("type") == "Filter" and step.get("channels") == [0]
+    )
+    assert "as_woofer_bass_mgmt_hp" in woofer_step["names"]
+
+
+def test_stage_protected_startup_config_blocks_misrouted_subwoofer(
+    tmp_path: Path,
+) -> None:
+    # Fail-closed: a sub pinned to a NON-contiguous output (not the next channel
+    # after the mains) can never be armed safely — staging must block, never stage a
+    # mains-only graph that silently drops the sub.
+    raw = _topology().to_dict()
+    raw["topology_id"] = "bench_mono_bad_sub"
+    raw["speaker_groups"].append({
+        "id": "sub",
+        "label": "Bench subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        # Mains occupy 0+1; a safe sub is on output 2. Output 5 is misrouted.
+        "channels": [
+            {"role": "subwoofer", "physical_output_index": 5, "identity_verified": True}
+        ],
+    })
+    raw["routing"]["subwoofer_group_ids"] = ["sub"]
+    topology = OutputTopology.from_mapping(raw)
+    preview = _crossover_preview(topology, with_subwoofer=True)
     out = tmp_path / "active_staged.yml"
 
     payload = stage_protected_startup_config(
@@ -399,7 +483,7 @@ def test_stage_protected_startup_config_blocks_subwoofer_topology_until_supporte
     assert payload["status"] == "blocked"
     assert out.exists() is False
     assert subwoofer_gate["passed"] is False
-    assert "subwoofer_staging_not_supported" in {
+    assert "active_subwoofer_output_not_contiguous" in {
         issue["code"] for issue in payload["issues"]
     }
 

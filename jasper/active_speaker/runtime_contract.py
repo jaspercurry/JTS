@@ -34,8 +34,13 @@ from jasper.output_topology import (
 )
 
 from ._common import issue as _issue
-from .camilla_yaml import STARTUP_LIMITER_CLIP_LIMIT_DB, STARTUP_MUTE_GAIN_DB
+from .camilla_yaml import (
+    BASELINE_LIMITER_CLIP_LIMIT_DB,
+    STARTUP_LIMITER_CLIP_LIMIT_DB,
+    STARTUP_MUTE_GAIN_DB,
+)
 from .graph_evidence import (
+    bass_management_hp_name as _bass_management_hp_name,
     channel_select_mixer_name as _channel_select_mixer_name,
     driver_baseline_gain_name as _baseline_gain_name,
     driver_baseline_limiter_name as _baseline_limiter_name,
@@ -44,12 +49,17 @@ from .graph_evidence import (
     filter_type as _filter_type,
     output_commission_mute_name as _commission_mute_name,
     protective_tweeter_hp_name,
+    sub_baseline_gain_name as _sub_baseline_gain_name,
+    sub_baseline_limiter_name as _sub_baseline_limiter_name,
+    sub_lowpass_name as _sub_lowpass_name,
 )
 from .graph_safety import (
     GraphView,
     filter_param_matches,
     float_value as _float_value,
+    mains_highpass_present,
     pipeline_contains_chain,
+    sub_guard_present,
     truthy_bool as _truthy_bool,
     tweeter_guard_present,
     view_from_yaml_dict,
@@ -651,6 +661,44 @@ def _required_roleful_indexes(contract: OutputContract) -> set[int]:
     }
 
 
+# The lowest (woofer / full-range) driver role per main mode — the driver that
+# carries the bass-management high-pass. Mirrors profile.LOWEST_DRIVER_ROLE_BY_WAY
+# but keyed by the topology's speaker_mode (the verifier re-derives independently
+# of the emitter's preset, so it does not import that table).
+_LOWEST_MAIN_ROLE_BY_MODE = {
+    "full_range_passive": "full_range",
+    "active_2_way": "woofer",
+    "active_3_way": "woofer",
+}
+
+
+def _subwoofer_output_indexes(contract: OutputContract) -> set[int]:
+    """Physical output indices the saved topology assigns to a subwoofer role."""
+    return {
+        int(item.physical_output_index)
+        for item in contract.assignments
+        if item.role == "subwoofer" and item.physical_output_index is not None
+    }
+
+
+def _mains_lowest_driver_indexes(contract: OutputContract) -> set[int]:
+    """Physical output indices of each main side's LOWEST driver — the woofer for
+    an active main, the single full-range driver for a passive main.
+
+    These are the outputs that MUST carry the complementary bass-management
+    high-pass when a local subwoofer is present. Derived from the saved topology's
+    speaker mode + role, independently of the emitter's preset."""
+    out: set[int] = set()
+    for item in contract.assignments:
+        if item.physical_output_index is None:
+            continue
+        if item.speaker_kind == "subwoofer" or item.speaker_mode == "subwoofer":
+            continue
+        if _LOWEST_MAIN_ROLE_BY_MODE.get(item.speaker_mode) == item.role:
+            out.add(int(item.physical_output_index))
+    return out
+
+
 def _active_graph_evidence(
     text: str,
     contract: OutputContract,
@@ -800,12 +848,23 @@ def _active_graph_evidence(
                 ),
             ))
 
+    # All physical outputs the saved topology assigns (roleful drivers + sub +
+    # full-range passive mains). A bass-managed passive main is a full_range
+    # output — legitimately unmuted/routed but NOT roleful — so the unknown-output
+    # guards below must treat it as known, not as an unexpected leak.
+    known_indexes = {
+        int(item.physical_output_index)
+        for item in contract.assignments
+        if item.physical_output_index is not None
+    }
+    sub_outputs = _subwoofer_output_indexes(contract)
+    mains_low_outputs = _mains_lowest_driver_indexes(contract)
     unmuted_roles = {
         by_output[index].role
         for index in unmuted_outputs
         if index in by_output
     }
-    unknown_unmuted = sorted(index for index in unmuted_outputs if index not in by_output)
+    unknown_unmuted = sorted(index for index in unmuted_outputs if index not in known_indexes)
     if unknown_unmuted:
         issues.append(_issue(
             "blocker",
@@ -881,7 +940,7 @@ def _active_graph_evidence(
                         "filter (the leader owns Layer B/C, not the follower)"
                     ),
                 ))
-        unknown_baseline_outputs = sorted(graph_indexes - required_indexes)
+        unknown_baseline_outputs = sorted(graph_indexes - known_indexes)
         if unknown_baseline_outputs:
             issues.append(_issue(
                 "blocker",
@@ -889,11 +948,83 @@ def _active_graph_evidence(
                 "active baseline routes outputs not assigned by the saved topology: "
                 + ", ".join(str(index + 1) for index in unknown_baseline_outputs),
             ))
+        # Local-subwoofer bass-management re-proof. A sub topology DEMANDS the sub
+        # guard (the sub output is band-limited + excursion-limited + gain<=0) AND
+        # the complementary mains high-pass on every main's lowest driver — the two
+        # halves of one crossover. A half-present crossover (sub LP without the
+        # mains HP, or a sub output missing its low-pass) is fail-closed UNSAFE.
+        if contract.subwoofer_present:
+            for index in sorted(sub_outputs):
+                if not sub_guard_present(
+                    view,
+                    channels={index},
+                    lowpass_name=_sub_lowpass_name(),
+                    gain_name=_sub_baseline_gain_name(),
+                    limiter_name=_sub_baseline_limiter_name(),
+                    limiter_clip_ceiling_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
+                ):
+                    issues.append(_issue(
+                        "blocker",
+                        "active_baseline_sub_guard_missing",
+                        (
+                            "active baseline subwoofer output is not band-limited, "
+                            "excursion-limited, and non-positive-gain on DAC output "
+                            f"{index + 1}"
+                        ),
+                    ))
+            if not mains_low_outputs:
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_bass_mgmt_mains_missing",
+                    (
+                        "saved topology has a subwoofer but no main lowest-driver "
+                        "output to carry the complementary bass-management high-pass"
+                    ),
+                ))
+            else:
+                # The emitter folds the bass-management HP into the lowest driver's
+                # role-grouped Filter step (one step targets all of that role's
+                # outputs — both stereo sides), so the HP is proven once against
+                # the whole lowest-driver output set. Active mains: woofer
+                # (roleful). Passive mains: full_range (not roleful, keyed by the
+                # full_range role). A mixed-mode set would split, but main mode is
+                # uniform in the supported topologies.
+                low_role = next(
+                    (
+                        by_output[index].role
+                        for index in sorted(mains_low_outputs)
+                        if index in by_output
+                    ),
+                    "full_range",
+                )
+                if not mains_highpass_present(
+                    view,
+                    channels=mains_low_outputs,
+                    highpass_name=_bass_management_hp_name(low_role),
+                ):
+                    issues.append(_issue(
+                        "blocker",
+                        "active_baseline_bass_mgmt_highpass_missing",
+                        (
+                            "active baseline main lowest-driver outputs are missing "
+                            "the complementary bass-management high-pass on DAC "
+                            "outputs "
+                            + ", ".join(
+                                str(index + 1) for index in sorted(mains_low_outputs)
+                            )
+                            + f" ({low_role})"
+                        ),
+                    ))
         for index in sorted(required_indexes):
             assignment = by_output.get(index)
             if assignment is None:
                 continue
             role = assignment.role
+            # The sub output's protection is proven by sub_guard_present above
+            # (its gain/limiter names are sub-specific, not role-derived), so skip
+            # the role-derived per-driver chain check here.
+            if role == "subwoofer":
+                continue
             limiter_name = _baseline_limiter_name(role)
             gain_name = _baseline_gain_name(role)
             names = _pipeline_names_for_channels(payload, channels={index})
@@ -962,6 +1093,9 @@ def _active_graph_evidence(
         "driver_domain_candidate": is_driver_domain,
         "unmuted_roles": sorted(unmuted_roles),
         "tweeter_outputs": sorted(tweeter_outputs),
+        "subwoofer_present": contract.subwoofer_present,
+        "subwoofer_outputs": sorted(sub_outputs),
+        "mains_bass_mgmt_outputs": sorted(mains_low_outputs),
         "split_channels": split_channels,
     }
 

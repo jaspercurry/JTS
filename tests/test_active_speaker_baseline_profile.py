@@ -161,27 +161,36 @@ def _safe_session(
     }
 
 
-def _research(*, tweeter_gain_db: float = -18.5) -> dict:
+def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -> dict:
+    drivers = [
+        {
+            "role": "woofer",
+            "model": "Epique E150HE-44",
+            "recommended_lowpass_hz": 2500,
+            "usable_frequency_range_hz": [45, 5000],
+            "sources": ["https://example.test/woofer"],
+        },
+        {
+            "role": "tweeter",
+            "model": "F110M-8",
+            "recommended_highpass_hz": 2500,
+            "do_not_test_below_hz": 1200,
+            "gain_offset_db": tweeter_gain_db,
+            "sources": ["https://example.test/tweeter"],
+        },
+    ]
+    if with_subwoofer:
+        drivers.append({
+            "role": "subwoofer",
+            "model": "Sub driver",
+            "recommended_lowpass_hz": 80,
+            "usable_frequency_range_hz": [20, 200],
+            "sources": ["https://example.test/sub"],
+        })
     return {
         "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
-        "drivers": [
-            {
-                "role": "woofer",
-                "model": "Epique E150HE-44",
-                "recommended_lowpass_hz": 2500,
-                "usable_frequency_range_hz": [45, 5000],
-                "sources": ["https://example.test/woofer"],
-            },
-            {
-                "role": "tweeter",
-                "model": "F110M-8",
-                "recommended_highpass_hz": 2500,
-                "do_not_test_below_hz": 1200,
-                "gain_offset_db": tweeter_gain_db,
-                "sources": ["https://example.test/tweeter"],
-            },
-        ],
+        "drivers": drivers,
         "crossover_candidates": [
             {
                 "between_roles": ["woofer", "tweeter"],
@@ -194,12 +203,42 @@ def _research(*, tweeter_gain_db: float = -18.5) -> dict:
     }
 
 
-def _draft(topology: OutputTopology, *, tweeter_gain_db: float = -18.5) -> dict:
+def _draft(
+    topology: OutputTopology,
+    *,
+    tweeter_gain_db: float = -18.5,
+    with_subwoofer: bool = False,
+) -> dict:
     return build_design_draft(
         topology,
-        driver_research=_research(tweeter_gain_db=tweeter_gain_db),
+        driver_research=_research(
+            tweeter_gain_db=tweeter_gain_db, with_subwoofer=with_subwoofer
+        ),
         created_at="2026-06-14T12:00:00Z",
     )
+
+
+def _dual_apple_sub_topology(*, sub_output: int = 2) -> OutputTopology:
+    """Dual-Apple mono 2-way (woofer@0, tweeter@1) PLUS a local sub on its own
+    output. ``sub_output`` defaults to the next contiguous channel (2); pass a
+    non-contiguous index to exercise the fail-closed path."""
+    raw = _dual_apple_topology().to_dict()
+    raw["topology_id"] = "bench_mono_sub"
+    raw["speaker_groups"].append({
+        "id": "sub",
+        "label": "Bench subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        "channels": [
+            {
+                "role": "subwoofer",
+                "physical_output_index": sub_output,
+                "identity_verified": True,
+            }
+        ],
+    })
+    raw["routing"]["subwoofer_group_ids"] = ["sub"]
+    return OutputTopology.from_mapping(raw)
 
 
 def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
@@ -313,6 +352,84 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
         "    parameters: { gain: 0.0000, inverted: false, mute: false }"
     ) in yaml
     assert "as_tweeter_baseline_limiter" in yaml
+
+
+def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
+    # B2: a topology with a routed local subwoofer now COMPILES through the SAME
+    # multi-output emitter — may_apply true — and the emitted graph re-proves as
+    # an approved active runtime (the emit<->re-proof keystone).
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        classify_camilla_graph,
+    )
+
+    topology = _dual_apple_sub_topology()
+    draft = _draft(topology, with_subwoofer=True)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    config_path = tmp_path / "active_speaker_baseline_sub.yml"
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile_sub.json",
+        config_path=config_path,
+        validate=_valid_config,
+        created_at="2026-06-14T12:20:00Z",
+    )
+    yaml = config_path.read_text(encoding="utf-8")
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["permissions"]["may_apply"] is True
+    assert "baseline_subwoofer_not_supported" not in {
+        issue["code"] for issue in payload["issues"]
+    }
+    # The sub lane: band-limit (LP) + non-positive gain + soft-clip limiter, and
+    # the mains' woofer carries the complementary bass-management high-pass.
+    assert "as_sub_lowpass" in yaml
+    assert "as_sub_baseline_limiter" in yaml
+    assert "as_woofer_bass_mgmt_hp" in yaml
+    assert payload["safety"]["positive_gain_allowed"] is False
+    assert "volume_limit: 0.0" in yaml
+
+    # Keystone: the emitted sub-bearing graph re-proves as approved.
+    graph = classify_camilla_graph(topology=topology, text=yaml)
+    assert graph.allowed is True, [i["code"] for i in graph.issues]
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert graph.details["subwoofer_present"] is True
+
+
+def test_baseline_profile_blocks_misrouted_subwoofer(tmp_path: Path) -> None:
+    # Fail-closed: a sub pinned to a NON-contiguous output (3, leaving a gap at the
+    # next channel after the 2 mains) cannot be made safe — the candidate must BLOCK
+    # rather than emit a sub on the wrong / un-band-limited output.
+    topology = _dual_apple_sub_topology(sub_output=3)
+    draft = _draft(topology, with_subwoofer=True)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    config_path = tmp_path / "active_speaker_baseline_bad_sub.yml"
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile_bad_sub.json",
+        config_path=config_path,
+        validate=_valid_config,
+        created_at="2026-06-14T12:20:00Z",
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_apply"] is False
+    assert "active_subwoofer_output_not_contiguous" in {
+        issue["code"] for issue in payload["issues"]
+    }
+    assert config_path.exists() is False
 
 
 def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> None:

@@ -327,6 +327,59 @@ def check_grouping_sub_corner() -> CheckResult:
     return CheckResult(label, "ok", f"sub low-pass corner wired, {corner} Hz")
 
 
+@doctor_check(order=75.36, group="grouping")
+def check_grouping_local_vs_wireless_sub() -> CheckResult:
+    """A speaker must NOT carry BOTH a LOCAL sub (an output_topology
+    ``subwoofer`` group on its own spare DAC channel) AND a WIRELESS sub
+    (it is the leader of a bond whose roster has a ``channel="sub"`` member,
+    OR it is itself a ``channel="sub"`` follower). Two bass producers at
+    one speaker is a contradictory, confusing config — bass is doubled or
+    fights, and the operator has no single place to reason about the
+    crossover. The two subsystems are independent writers (the active-
+    speaker topology vs. the grouping bond), so the compiler can't and
+    shouldn't hard-block it; this is the one place the contradiction is
+    visible. n/a (ok) when at most one sub source is configured.
+
+    Local-sub detection reads the persisted output topology
+    (``routing.subwoofer_group_ids`` — the same field the active emitter
+    pins to a spare physical output). Wireless-sub detection reuses the
+    bond predicates so it can never disagree with the rest of the grouping
+    doctor about what the bond is doing."""
+    from ...multiroom.config import is_active_leader, is_active_member, load_config
+    from ...output_topology import load_output_topology
+
+    label = "grouping: local vs wireless sub"
+
+    has_local_sub = bool(load_output_topology().routing.subwoofer_group_ids)
+
+    cfg = load_config()
+    is_wireless_sub_follower = is_active_member(cfg) and cfg.channel == "sub"
+    leads_wireless_sub = is_active_leader(cfg) and any(
+        m.channel == "sub" for m in cfg.roster
+    )
+    has_wireless_sub = is_wireless_sub_follower or leads_wireless_sub
+
+    if has_local_sub and has_wireless_sub:
+        which = (
+            "is itself a wireless sub follower (channel=sub)"
+            if is_wireless_sub_follower
+            else "leads a bond with a wireless sub member"
+        )
+        return CheckResult(
+            label, "warn",
+            "this speaker has a LOCAL sub (an output-topology subwoofer group "
+            f"on its own DAC) AND {which} — two bass producers at one speaker "
+            "is a contradictory config (doubled / fighting low end). Remove one: "
+            "drop the subwoofer group from the active-speaker topology, or "
+            "un-pair the wireless sub from http://jts.local/rooms",
+        )
+    if has_local_sub:
+        return CheckResult(label, "ok", "local sub only (no wireless sub)")
+    if has_wireless_sub:
+        return CheckResult(label, "ok", "wireless sub only (no local sub)")
+    return CheckResult(label, "ok", "no local or wireless sub (n/a)")
+
+
 @doctor_check(order=75.6, group="grouping")
 def check_grouping_tts_lane() -> CheckResult:
     """A bonded member's assistant TTS must route to its OWN outputd

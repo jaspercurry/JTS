@@ -27,9 +27,13 @@ import {
   float32ToWavBlob
 } from "/assets/shared/js/measurement-audio.js";
 import {
+  DEFAULT_SUB_CROSSOVER_HZ,
   NEARFIELD_LEVEL_MATCH_GUIDANCE,
+  SUB_CROSSOVER_HZ_HI,
+  SUB_CROSSOVER_HZ_LO,
   activeCommissionGroup,
   activeSpeakerStepState,
+  clampSubwooferCrossoverFcHz,
   commissionCardState,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
@@ -39,7 +43,9 @@ import {
   nearfieldCaptureHint,
   outputStatusClass,
   outputStepTitle,
-  playbackResultMessage
+  playbackResultMessage,
+  subwooferCrossoverBand,
+  subwooferCrossoverFcHz
 } from "/assets/sound-profile/js/active-speaker-ui.js";
 import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
 (function() {
@@ -1959,6 +1965,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">Optional. This composes with any mono or stereo layout instead of duplicating templates.</p></div>' +
         '<span class="status-pill' + (hasSub ? ' status-pill--ready' : '') + '">' + escapeHtml(hasSub ? 'added' : 'optional') + '</span></div>' +
       '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>' +
+      (hasSub ? renderSubwooferCrossoverControl(topology) : '') +
       '<div class="output-setup__actions">' +
         '<button type="button" class="btn btn--ghost" data-act="toggle-output-subwoofer" data-mode="' +
           escapeHtml(hasSub ? 'remove' : 'add') + '"' + (disabled ? ' disabled' : '') + '>' +
@@ -1968,6 +1975,40 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             escapeHtml('No spare output for a local sub — add a wireless subwoofer on the Speakers page') + '</a>'
           : '') +
       '</div>' +
+    '</div>';
+  }
+  // Crossover (bass-management corner) control for the routed local subwoofer.
+  // Fc persists onto the sub channel's crossover_fc_hz via the same topology save
+  // POST the add/remove button uses (the household saves the draft to apply it).
+  // Slope/filter mirror the emitter's fixed Linkwitz-Riley 24 dB/oct and are shown
+  // read-only so the vocabulary matches the active-crossover card without exposing
+  // a knob the backend ignores.
+  function renderSubwooferCrossoverControl(topology) {
+    var fc = subwooferCrossoverFcHz(topology);
+    return '<div class="driver-settings driver-settings--crossovers">' +
+      '<div class="driver-settings__row driver-settings__row--crossover">' +
+        '<div class="driver-settings__pair">' +
+          '<strong>' + escapeHtml('Subwoofer / mains') + '</strong>' +
+          '<span>Bass-management crossover</span>' +
+        '</div>' +
+        '<label class="driver-research__field">' +
+          '<span>Crossover point</span>' +
+          '<input type="number" inputmode="numeric" min="' + escapeHtml(String(SUB_CROSSOVER_HZ_LO)) +
+            '" max="' + escapeHtml(String(SUB_CROSSOVER_HZ_HI)) + '" step="1" ' +
+            'data-sub-crossover-fc value="' +
+            escapeHtml(fc == null ? '' : String(Math.round(Number(fc)))) +
+            '" placeholder="' + escapeHtml(String(Math.round(DEFAULT_SUB_CROSSOVER_HZ))) + '"></label>' +
+        '<label class="driver-research__field">' +
+          '<span>Slope</span>' +
+          '<input type="text" value="24 dB/oct" readonly aria-readonly="true"></label>' +
+        '<label class="driver-research__field">' +
+          '<span>Filter</span>' +
+          '<input type="text" value="Linkwitz-Riley" readonly aria-readonly="true"></label>' +
+      '</div>' +
+      '<p class="setting-row__hint">' + escapeHtml(
+        'Bass below ' + Math.round(Number(fc)) + ' Hz goes to the subwoofer; the mains get a ' +
+        'matching high-pass at the same point. Save the draft to apply.'
+      ) + '</p>' +
     '</div>';
   }
   function renderDriverResearchSummary(options) {
@@ -3056,10 +3097,37 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="bands-meta"><span id="active-count">' + activeCount + ' active</span>' +
       (mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
         (allCollapsed ? 'Expand all' : 'Collapse all') + '</button>' : '') +
-      '</div></div>' + bandsContent + '</section>';
+      '</div></div>' + renderSubwooferCrossoverCallout() + bandsContent + '</section>';
 
     el('view-body').innerHTML = '<div>' + modeSection + bandsSection +
       '<section class="draft-footer">' + footerHtml() + '</section></div>';
+  }
+  // Called-out, NON-editable band showing the system-managed bass-management
+  // high-pass a routed local subwoofer applies to the mains. The household must
+  // SEE that a subwoofer high-pass at N Hz shapes the mains; it is edited via the
+  // subwoofer card (output setup), never in this PEQ list — so it has no Type or
+  // Delete controls. Returns '' when no local sub is routed. Pure-helper decision
+  // (does a sub exist? what Fc? the synthetic band) lives in active-speaker-ui.js.
+  function renderSubwooferCrossoverCallout() {
+    var band = subwooferCrossoverBand(currentOutputTopology());
+    if (!band) return '';
+    return '<div class="bands-card bands-card--system">' +
+      '<div class="band-row band-row--system" data-open="false">' +
+        '<div class="band-row__header band-row__header--system">' +
+          '<span class="band-row__title">' +
+            '<span class="band-dot band-dot--system">' + ico('wave') + '</span>' +
+            '<span><p class="band-row__name">' + escapeHtml(String(band.label)) + '</p>' +
+              '<p class="band-row__meta">' + escapeHtml(
+                String(band.type) + ' · ' + Math.round(Number(band.freq_hz)) + ' Hz · system-managed'
+              ) + '</p></span>' +
+          '</span>' +
+          '<span class="status-pill">' + escapeHtml('locked') + '</span>' +
+        '</div>' +
+        '<p class="setting-row__hint">' + escapeHtml(
+          String(band.detail) + '. Change it on the subwoofer card under speaker setup.'
+        ) + '</p>' +
+      '</div>' +
+    '</div>';
   }
   function footerHtml() {
     if (naming) {
@@ -3612,6 +3680,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       );
       return;
     }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-sub-crossover-fc')) {
+      // Commit on change (not every keystroke) — setOutputDraft re-renders.
+      setSubwooferCrossoverFc(ev.target.value);
+      return;
+    }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
     else if (ev.target.id === 'set-volume-floor') {
@@ -4033,6 +4106,29 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     crossoverPreview.error = '';
     patchActiveSpeaker({stagedConfig: null});
     render();
+  }
+  // Persist the user-entered bass-management corner onto the draft local-sub
+  // channel's crossover_fc_hz, clamped to the safe band. Mutating the draft marks
+  // it dirty; the existing topology save button POSTs it (round-trips through
+  // SpeakerChannel.from_mapping/to_dict). No-op when no local sub is in the draft.
+  function setSubwooferCrossoverFc(value) {
+    var topology = currentOutputTopology();
+    if (!topology) return;
+    var next = baseOutputDraft(topology);
+    if (!next) return;
+    var fc = clampSubwooferCrossoverFcHz(value);
+    var changed = false;
+    (next.speaker_groups || []).forEach(function(group) {
+      if (!group || (group.kind !== 'subwoofer' && group.mode !== 'subwoofer')) return;
+      (group.channels || []).forEach(function(channel) {
+        if (channel && channel.role === 'subwoofer') {
+          channel.crossover_fc_hz = fc;
+          changed = true;
+        }
+      });
+    });
+    if (!changed) return;
+    setOutputDraft(next);
   }
   function outputChannel(role, index) {
     var tweeter = role === 'tweeter';

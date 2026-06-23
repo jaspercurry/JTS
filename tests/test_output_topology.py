@@ -976,3 +976,102 @@ def test_load_output_topology_strict_allows_missing_as_unconfigured(
 
     assert loaded.status == "draft"
     assert loaded.speaker_groups == ()
+
+
+# --------------------------------------------------------------------------- #
+# User-settable subwoofer crossover corner (crossover_fc_hz).
+# --------------------------------------------------------------------------- #
+
+
+def _passive_sub_topology_raw(fc: object) -> dict:
+    sub_channel: dict = {"role": "subwoofer", "physical_output_index": 2}
+    if fc is not None:
+        sub_channel["crossover_fc_hz"] = fc
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench",
+        "name": "Bench",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "L",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right",
+                "label": "R",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 1}],
+            },
+            {
+                "id": "sub",
+                "label": "Sub",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [sub_channel],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+            "subwoofer_group_ids": ["sub"],
+        },
+    }
+
+
+def test_sub_crossover_fc_round_trips() -> None:
+    topology = OutputTopology.from_mapping(_passive_sub_topology_raw(120.0))
+    sub_channel = topology.speaker_groups[2].channels[0]
+    assert sub_channel.crossover_fc_hz == 120.0
+
+    again = OutputTopology.from_mapping(topology.to_dict())
+    assert again.speaker_groups[2].channels[0].crossover_fc_hz == 120.0
+
+
+def test_sub_crossover_fc_absent_is_none_and_omitted() -> None:
+    # An unset corner stays None and is omitted from to_dict (a subless topology
+    # and a sub-with-default corner serialize byte-identically to before).
+    topology = OutputTopology.from_mapping(_passive_sub_topology_raw(None))
+    sub_channel = topology.speaker_groups[2].channels[0]
+    assert sub_channel.crossover_fc_hz is None
+    assert "crossover_fc_hz" not in topology.to_dict()["speaker_groups"][2]["channels"][0]
+
+
+def test_sub_crossover_fc_in_range_is_not_a_blocker() -> None:
+    topology = OutputTopology.from_mapping(_passive_sub_topology_raw(120.0))
+    codes = {b["code"] for b in topology.evaluation()["blockers"]}
+    assert "subwoofer_crossover_out_of_range" not in codes
+
+
+@pytest.mark.parametrize("fc", [39.0, 201.0, 0.0, -5.0])
+def test_sub_crossover_fc_out_of_range_is_loud_blocker(fc: float) -> None:
+    topology = OutputTopology.from_mapping(_passive_sub_topology_raw(fc))
+    codes = {b["code"] for b in topology.evaluation()["blockers"]}
+    assert "subwoofer_crossover_out_of_range" in codes
+
+
+def test_sub_crossover_bounds_mirror_profile() -> None:
+    # The bounds duplicated in output_topology (to keep it free of an
+    # active_speaker import) MUST equal the profile's canonical numbers.
+    from jasper.active_speaker.profile import (
+        SUB_CROSSOVER_HZ_HI as PROFILE_HI,
+        SUB_CROSSOVER_HZ_LO as PROFILE_LO,
+    )
+    from jasper.output_topology import (
+        SUB_CROSSOVER_HZ_HI,
+        SUB_CROSSOVER_HZ_LO,
+    )
+
+    assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == 40.0
+    assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == 200.0

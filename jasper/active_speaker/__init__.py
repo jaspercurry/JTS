@@ -20,9 +20,11 @@ from .profile import (
     BaselineVerification,
     CrossoverRegion,
     DriverSpec,
+    LocalSubwoofer,
     OutputChannel,
     SafetyEnvelope,
     SpeakerBaselineProfile,
+    lowest_driver_role,
     required_driver_roles,
 )
 from .camilla_yaml import (
@@ -329,6 +331,7 @@ __all__ = [
     "DRIVER_DOMAIN_PROGRAM_CHANNELS",
     "CrossoverRegion",
     "DriverSpec",
+    "LocalSubwoofer",
     "OutputChannel",
     "OutputContract",
     "PathSafetyRequirement",
@@ -413,6 +416,7 @@ __all__ = [
     "normalise_driver_research",
     "normalise_manual_settings",
     "normalise_operator_inputs",
+    "lowest_driver_role",
     "required_driver_roles",
     "requirements_payload",
     "arm_safe_playback_session",

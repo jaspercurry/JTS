@@ -515,3 +515,95 @@ def tweeter_guard_present(
         view, channels=channels, required_names=(hp_name, limiter_name)
     )
     return hp_ok and limiter_ok and wired
+
+
+def sub_guard_present(
+    view: GraphView,
+    *,
+    channels: set[int] | frozenset[int],
+    lowpass_name: str,
+    gain_name: str,
+    limiter_name: str,
+    limiter_clip_ceiling_db: float,
+) -> bool:
+    """True iff the local-subwoofer output is band-limited AND excursion-limited
+    AND non-positive gain — all wired to ``channels`` (LOOSE, fail-closed).
+
+    Mirrors :func:`tweeter_guard_present` for the sub lane. A sub output must
+    NEVER carry a full-range / low-pass-absent feed, so all three are required:
+
+    - low-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyLowpass`` with **any
+      positive** ``freq`` and ``order`` absent or ``>= 2`` (the band-limit);
+    - gain: a ``Gain`` whose ``gain`` is present and ``<= 0`` (never a boost);
+    - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
+      *ceiling*, not equality) and a truthy ``soft_clip`` (excursion);
+    - all three wired to exactly ``channels`` in one pipeline step.
+
+    The loose tolerances match ``tweeter_guard_present`` — ``runtime_contract``
+    only needs to prove the sub is protected enough, not bit-identical to the
+    emitter. Fails closed (missing filter / wrong type / unwired -> ``False``)."""
+    lowpass = view.filters.get(lowpass_name)
+    gain = view.filters.get(gain_name)
+    limiter = view.filters.get(limiter_name)
+    lp_params = lowpass.params if lowpass else {}
+    gain_params = gain.params if gain else {}
+    limiter_params = limiter.params if limiter else {}
+    lp_freq = float_value(lp_params.get("freq"))
+    lp_order = float_value(lp_params.get("order"))
+    gain_db = float_value(gain_params.get("gain"))
+    limiter_clip = float_value(limiter_params.get("clip_limit"))
+    lp_ok = (
+        (lowpass.type if lowpass else None) == "BiquadCombo"
+        and str(lp_params.get("type") or "") == "LinkwitzRileyLowpass"
+        and lp_freq is not None
+        and lp_freq > 0.0
+        and (lp_order is None or lp_order >= 2.0)
+    )
+    gain_ok = (
+        (gain.type if gain else None) == "Gain"
+        and gain_db is not None
+        and gain_db <= 0.0
+    )
+    limiter_ok = (
+        (limiter.type if limiter else None) == "Limiter"
+        and limiter_clip is not None
+        and limiter_clip <= limiter_clip_ceiling_db
+        and truthy_bool(limiter_params.get("soft_clip"))
+    )
+    wired = pipeline_contains_chain(
+        view,
+        channels=channels,
+        required_names=(lowpass_name, gain_name, limiter_name),
+    )
+    return lp_ok and gain_ok and limiter_ok and wired
+
+
+def mains_highpass_present(
+    view: GraphView,
+    *,
+    channels: set[int] | frozenset[int],
+    highpass_name: str,
+) -> bool:
+    """True iff the bass-management high-pass is the complementary upper half of
+    the sub crossover — an LR4 high-pass with any positive ``freq`` wired to the
+    mains' lowest-driver ``channels`` (fail-closed).
+
+    The sub low-pass without the mains high-pass is half a crossover: the mains
+    would still carry full bass, defeating bass management and over-driving a
+    woofer below the sub corner. This predicate is what makes the sub low-pass and
+    the mains high-pass provably two halves of ONE crossover."""
+    hp = view.filters.get(highpass_name)
+    hp_params = hp.params if hp else {}
+    hp_freq = float_value(hp_params.get("freq"))
+    hp_order = float_value(hp_params.get("order"))
+    hp_ok = (
+        (hp.type if hp else None) == "BiquadCombo"
+        and str(hp_params.get("type") or "") == "LinkwitzRileyHighpass"
+        and hp_freq is not None
+        and hp_freq > 0.0
+        and (hp_order is None or hp_order >= 2.0)
+    )
+    wired = pipeline_contains_chain(
+        view, channels=channels, required_names=(highpass_name,)
+    )
+    return hp_ok and wired

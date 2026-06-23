@@ -59,7 +59,9 @@ _STATEFILE_CONFIG_RE = re.compile(
     r"^\s*config_path:\s*(?P<path>.+?)\s*$",
     re.MULTILINE,
 )
-_ACTIVE_SPLIT_RE = re.compile(r"\bsplit_active_(?P<way_count>[23])way\b")
+# 1-way is the DEGENERATE passive main (a single full-range driver per side),
+# only ever emitted alongside a local subwoofer for bass management.
+_ACTIVE_SPLIT_RE = re.compile(r"\bsplit_active_(?P<way_count>[123])way\b")
 _ACTIVE_OUT_RE = re.compile(
     r"channels:\s*\{\s*in:\s*2\s*,\s*out:\s*(?P<out>\d+)\s*\}"
 )

@@ -46,7 +46,11 @@ from .playback_route import (
     resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerPreset, required_driver_roles
-from .staging import compile_preset_from_crossover_preview
+from .staging import (
+    _passive_mains_with_sub_preset,
+    compile_preset_from_crossover_preview,
+    topology_is_passive_mains_with_sub,
+)
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
@@ -607,54 +611,73 @@ def build_baseline_profile_candidate(
         return out
 
     issues: list[dict[str, str]] = []
-    preview_ready = _crossover_preview_ready(crossover_preview)
-    if not preview_ready:
-        issues.append(_issue(
-            "blocker",
-            "baseline_crossover_preview_not_ready",
-            "save a fresh crossover preview before compiling an active profile",
-        ))
     summary = measurements.get("summary") if isinstance(measurements.get("summary"), Mapping) else {}
-    if not summary.get("driver_measurements_complete"):
-        issues.append(_issue(
-            "blocker",
-            "baseline_driver_measurements_missing",
-            "confirm each driver with a quiet test before saving the active profile",
-        ))
-    if not summary.get("summed_validation_complete"):
-        issues.append(_issue(
-            "blocker",
-            "baseline_summed_validation_missing",
-            "validate the combined crossover before saving the active profile",
-        ))
-    if not resolved_playback_device:
-        issues.append(_issue(
-            "blocker",
-            "baseline_playback_device_missing",
-            "active profile compiler needs an explicit active playback device",
-        ))
-    for issue in route_capability.issues:
-        if issue.get("code") == "active_playback_route_too_narrow":
-            issues.append(issue)
-    subwoofer_groups = [
-        group.label for group in topology.speaker_groups
-        if group.kind == "subwoofer" or group.mode == "subwoofer"
-    ]
-    if subwoofer_groups:
-        issues.append(_issue(
-            "blocker",
-            "baseline_subwoofer_not_supported",
-            "active profile compiler does not yet include subwoofer groups",
-        ))
+    # A passive-mains + local-subwoofer topology has NO inter-driver crossover, so
+    # it never produces an active crossover preview and has no per-driver / summed
+    # active-crossover measurements to complete. It is still roleful (bass
+    # management splits the program), so it rides the SAME multi-output emitter as
+    # the active path — but via a degenerate 1-way preset built directly from the
+    # topology, skipping the preview-readiness and active-measurement gates that
+    # only apply to a real active crossover. A SUBLESS passive speaker never
+    # reaches here (it takes the flat emit_sound_config lane).
+    passive_sub = topology_is_passive_mains_with_sub(topology)
 
     preset: ActiveSpeakerPreset | None = None
     preset_gates: list[dict[str, Any]] = []
-    if preview_ready:
-        preset, preset_issues, preset_gates = compile_preset_from_crossover_preview(
-            topology,
-            dict(crossover_preview),
-        )
+    if passive_sub:
+        if not resolved_playback_device:
+            issues.append(_issue(
+                "blocker",
+                "baseline_playback_device_missing",
+                "active profile compiler needs an explicit active playback device",
+            ))
+        for issue in route_capability.issues:
+            if issue.get("code") == "active_playback_route_too_narrow":
+                issues.append(issue)
+        preset, preset_issues, preset_gates = _passive_mains_with_sub_preset(topology)
         issues.extend(preset_issues)
+    else:
+        preview_ready = _crossover_preview_ready(crossover_preview)
+        if not preview_ready:
+            issues.append(_issue(
+                "blocker",
+                "baseline_crossover_preview_not_ready",
+                "save a fresh crossover preview before compiling an active profile",
+            ))
+        if not summary.get("driver_measurements_complete"):
+            issues.append(_issue(
+                "blocker",
+                "baseline_driver_measurements_missing",
+                "confirm each driver with a quiet test before saving the active profile",
+            ))
+        if not summary.get("summed_validation_complete"):
+            issues.append(_issue(
+                "blocker",
+                "baseline_summed_validation_missing",
+                "validate the combined crossover before saving the active profile",
+            ))
+        if not resolved_playback_device:
+            issues.append(_issue(
+                "blocker",
+                "baseline_playback_device_missing",
+                "active profile compiler needs an explicit active playback device",
+            ))
+        for issue in route_capability.issues:
+            if issue.get("code") == "active_playback_route_too_narrow":
+                issues.append(issue)
+        # A routed local subwoofer compiles through the SAME multi-output emitter as
+        # the mains: the preset builder (compile_preset_from_crossover_preview below)
+        # resolves the sub lane onto the preset fail-closed — when it cannot pin the
+        # sub to a safe contiguous output it returns a blocker instead of emitting a
+        # full-range sub feed. The emitted graph is then re-proven structurally by
+        # classify_camilla_graph + CamillaDSP --check, so there is no separate
+        # subwoofer-not-supported gate here.
+        if preview_ready:
+            preset, preset_issues, preset_gates = compile_preset_from_crossover_preview(
+                topology,
+                dict(crossover_preview),
+            )
+            issues.extend(preset_issues)
     if issues:
         return _blocked_payload(
             topology=topology,

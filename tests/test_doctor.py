@@ -408,6 +408,90 @@ def test_crossover_unit_active_leader_ok_without_systemd_analyze(monkeypatch, tm
     assert "parse unchecked" in r.detail
 
 
+# --- local-vs-wireless sub coexistence (B3) -------------------------------
+
+def _set_local_sub_topology(monkeypatch, tmp_path, *, with_sub: bool):
+    """Persist a topology to a tmp path and point the loader at it. A
+    subwoofer topology carries routing.subwoofer_group_ids; the no-sub case
+    points at a missing file (loads as an empty draft → no subwoofer groups)."""
+    topology_path = tmp_path / "output_topology.json"
+    if with_sub:
+        from jasper.output_topology import save_output_topology
+        from tests.test_active_speaker_runtime_contract import _subwoofer_topology
+
+        save_output_topology(_subwoofer_topology(), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+
+def test_check_local_vs_wireless_sub_registered():
+    assert "check_grouping_local_vs_wireless_sub" in _registered_check_names()
+
+
+def test_local_vs_wireless_sub_neither_is_ok(monkeypatch, tmp_path):
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=False)
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_grouping_local_vs_wireless_sub()
+    assert r.status == "ok"
+    assert "no local or wireless sub" in r.detail
+
+
+def test_local_vs_wireless_sub_local_only_is_ok(monkeypatch, tmp_path):
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=True)
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_grouping_local_vs_wireless_sub()
+    assert r.status == "ok"
+    assert "local sub only" in r.detail
+
+
+def test_local_vs_wireless_sub_wireless_follower_only_is_ok(monkeypatch, tmp_path):
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=False)
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="follower", channel="sub",
+        bond_id="lr", leader_addr="192.168.1.50"), "")
+    r = doctor.check_grouping_local_vs_wireless_sub()
+    assert r.status == "ok"
+    assert "wireless sub only" in r.detail
+
+
+def test_local_vs_wireless_sub_wireless_leader_only_is_ok(monkeypatch, tmp_path):
+    from jasper.multiroom.config import BondMember
+
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=False)
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="lr",
+        roster=(BondMember(addr="192.168.1.60", name="Sub", channel="sub"),)), "")
+    r = doctor.check_grouping_local_vs_wireless_sub()
+    assert r.status == "ok"
+    assert "wireless sub only" in r.detail
+
+
+def test_local_vs_wireless_sub_both_follower_warns(monkeypatch, tmp_path):
+    # LOCAL sub topology AND this speaker is itself a wireless sub follower:
+    # two bass producers at one speaker — fail LOUD.
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=True)
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="follower", channel="sub",
+        bond_id="lr", leader_addr="192.168.1.50"), "")
+    r = doctor.check_grouping_local_vs_wireless_sub()
+    assert r.status == "warn"
+    assert "LOCAL sub" in r.detail
+    assert "wireless sub follower" in r.detail
+
+
+def test_local_vs_wireless_sub_both_leader_warns(monkeypatch, tmp_path):
+    # LOCAL sub topology AND this leader's bond roster has a sub member.
+    from jasper.multiroom.config import BondMember
+
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=True)
+    _patch_grouping(monkeypatch, _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="lr",
+        roster=(BondMember(addr="192.168.1.60", name="Sub", channel="sub"),)), "")
+    r = doctor.check_grouping_local_vs_wireless_sub()
+    assert r.status == "warn"
+    assert "LOCAL sub" in r.detail
+    assert "leads a bond with a wireless sub member" in r.detail
+
+
 def test_check_grouping_invalid_config_warns(monkeypatch):
     cfg = _grouping_cfg(
         enabled=True, role="leader", channel="left",
