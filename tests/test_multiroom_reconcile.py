@@ -21,7 +21,12 @@ from __future__ import annotations
 
 import os
 
-from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
+from jasper.multiroom.config import (
+    DEFAULT_BUFFER_MS,
+    DEFAULT_CODEC,
+    BondMember,
+    GroupingConfig,
+)
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
@@ -533,6 +538,58 @@ def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
     for ch in ("left", "right", "stereo", "mono"):
         env = outputd_grouping_env(_follower(channel=ch))
         assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in env
+
+
+def test_outputd_grouping_env_highpasses_mains_when_bond_has_sub():
+    import dataclasses
+
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
+        outputd_grouping_env,
+    )
+
+    leader = dataclasses.replace(
+        _leader(channel="left"),
+        crossover_hz=100.0,
+        roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
+    )
+    assert outputd_grouping_env(leader)[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
+
+    follower = dataclasses.replace(
+        _follower(channel="right"),
+        crossover_hz=100.0,
+        subwoofer_present=True,
+    )
+    assert outputd_grouping_env(follower)[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
+
+
+def test_outputd_grouping_env_clears_main_highpass_when_not_applicable():
+    import dataclasses
+
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
+        outputd_grouping_env,
+    )
+
+    rostered = dataclasses.replace(
+        _leader(channel="left"),
+        crossover_hz=90.0,
+        roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
+    )
+    assert outputd_grouping_env(
+        dataclasses.replace(rostered, mains_highpass_enabled=False)
+    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert outputd_grouping_env(_leader(channel="left"))[
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV
+    ] == ""
+    assert outputd_grouping_env(
+        dataclasses.replace(_follower(channel="sub"), subwoofer_present=True)
+    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert outputd_grouping_env(
+        dataclasses.replace(_follower(channel="right"), subwoofer_present=True),
+        active_endpoint=True,
+    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert outputd_grouping_env(_disabled())[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
 
 
 def test_outputd_grouping_env_clears_tts_socket_for_a_sub():

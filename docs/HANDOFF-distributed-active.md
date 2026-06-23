@@ -526,24 +526,23 @@ These are conflated in shorthand but are distinct designs:
   `main.rs` before trim/duck/publish, active from the first period since the
   policy starts in fallback), and a missing filter (→ silence) all enforce
   mono+LP-or-silence. The earlier `'sub'` → `ChannelPick::Mono` (full-range)
-  behavior is retired. **This path does NOT high-pass the mains** — they stay
-  full-range and the sub *adds* lows (the interim model); the complementary
-  mains-HP below still needs an **active** leader (a passive leader has no
-  local DSP to high-pass).
+  behavior is retired.
 
-  **Bass management is the intended model** (superseding the interim "mains
-  full-range, sub *adds* lows" `channel_split.py` ships today): with a sub
-  present, the channels that previously carried the bass get a complementary
-  **high-pass** at the same corner. The sub low-pass and the mains' high-pass
-  are **two halves of one crossover** (shared Fc, complementary LR slopes sum
-  flat), so they are **configured as one unit on the leader's pair page** and
-  the system derives + distributes both: the sub LP executes on the sub, each
-  main's HP folds into **that main's own active crossover** (the bottom of its
-  woofer band) — both receiver-side. The shared stream stays full-range so the
-  sub still gets its bass. **Clean when the mains are active** (the HP is just
-  a parameter on their existing graph); a **passive** main has no local DSP to
-  high-pass, so a sub with passive mains needs a brainy main or separate
-  streams — resolve at 6b.
+  **Bass management is now the shipped model for passive/dumb mains too**
+  (2026-06-23): with a sub present, the mains get the complementary LR4
+  **high-pass** at the same `crossover_hz` as the sub's LR4 low-pass. The shared
+  Snapcast stream stays full-range so the sub can still derive lows from L+R;
+  the filters execute **receiver-side** on each member. The sub LP runs on the
+  sub's local `jasper-outputd` `ChannelPick::Sub` path. The mains HP runs on
+  each non-sub, non-`active_endpoint` member's local outputd `dac_content`
+  `ChannelPick` path (including the inv-B fallback period) from
+  `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ`. `/rooms/` stores one bond-level corner and
+  `mains_highpass_enabled` toggle (default on), and the reconciler fans out the
+  same corner as sub LP + mains HP while clearing the HP env whenever there is
+  no sub, the toggle is off, the member is the sub, or the member is an active
+  endpoint. Active endpoints remain separate: outputd `dac_content` is disabled
+  there, so their bass-management/protection high-pass must live in the
+  CamillaDSP Layer-A graph and pass that graph's no-full-range re-proof.
 
 Both paths reuse the LR4 primitive (`emit_linkwitz_riley`); they differ in
 *which box runs it* and whether the sub needs its own stream.
@@ -624,7 +623,7 @@ slices land safest-first; each is independently mergeable.
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
 | **5** | ✅ | Active **leader** (2nd CamillaDSP; realization ratified 2026-06-21 — single rate loop = `outputd-summer`, camilla#2 `rate_adjust` **OFF**, the two `jasper-outputd` instances kept **separate** for inv-A, Option-3 TTS as a soft input, inv-B-through-Layer-A). Sequence: validated-seam music → swap-in-summer (soak gate) → arm TTS. **The v1 gate**; **CPU/thermal + summer-build pick** measured on `jts3` (active cooling). Details: "Stage B — the ratified active-leader realization" | yes |
 | **6a** | — | Local sub driver — **LANDED 2026-06-23**: sub lane (LR4 LP) + bass-management mains-HP in the active multi-output emitter (active + degenerate-1-way passive), matched re-proof, both guards lifted behind the safe path, `/sound/` Fc control + called-out PEQ band. On-device acoustic check owed (≥3-output DAC) | mixed |
-| **6b** | — | Wireless sub member + bass management. **Dumb receiver-side sub LANDED (2026-06-23)** — outputd `ChannelPick::Sub` LR4 low-pass + `crossover_hz` SSOT + `/rooms/` sub role + `/sound/` CTA (HW-free green; `jts`→`jts4` on-device validation in progress). The N-member `JASPER_GROUPING_ROSTER` + an "add a subwoofer to a stereo pair" (2.1) `/rooms/` flow landed 2026-06-23 (unbond disables every member — no orphaned sub). Remaining: bass-management mains-HP (needs an active leader) and the brainy/active-endpoint sub | mixed |
+| **6b** | — | Wireless sub member + bass management. **Dumb receiver-side sub LANDED (2026-06-23)** — outputd `ChannelPick::Sub` LR4 low-pass + passive-main outputd LR4 high-pass at the same `crossover_hz` (default-on toggle), `crossover_hz` SSOT + `/rooms/` sub role + `/sound/` CTA (HW-free green; `jts`→`jts4` on-device validation in progress). The N-member `JASPER_GROUPING_ROSTER` + an "add a subwoofer to a stereo pair" (2.1) `/rooms/` flow landed 2026-06-23 (unbond disables every member — no orphaned sub). Remaining: the brainy/active-endpoint sub path, where Layer-A CamillaDSP owns the HP/LP rather than outputd `dac_content` | mixed |
 
 Slices 1–2 are hardware-free and independently shippable; 3 is where
 on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
@@ -1227,20 +1226,22 @@ mix.
 3. **Mixed-bond latency** — an active follower (camilla latency) + a dumb
    follower (bare ChannelPick) in one bond: confirm `--latency` nulls the
    delta to within the sync target.
-4. **Wireless sub host** — receiver-side low-pass (brainy sub: reuses the
-   follower path, one shared stream, no extra leader work) vs sender-side
-   leader-pre-bake (dumb cheap sub: a second leader bake + a separate
-   loosely-synced sub stream, but no CamillaDSP on the sub). Driven by the
-   target sub hardware; both reuse `channel_split.py`'s sub fragment.
-   Decide in 6b — no need to lock it before the follower core ships.
+4. **Wireless sub host** — ✅ **RESOLVED for the dumb/passive path
+   (2026-06-23).** The shipped default is receiver-side on one shared
+   full-range stereo stream: the sub low-passes locally in outputd, and
+   passive mains high-pass locally in outputd. Sender-side leader-pre-bake
+   remains an exceptional future path for a sub endpoint that cannot run the
+   local filter. The brainy/active-endpoint sub path remains separate because
+   CamillaDSP Layer A, not outputd `dac_content`, owns driver protection there.
 
 Last verified: 2026-06-23 (dumb receiver-side wireless sub [gap 5] landed
-HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + `crossover_hz`
-SSOT [config/validate/`/grouping/set`/reconcile/state/doctor] + `/rooms/` sub
-role + `/sound/` CTA, all behind tests [869 Python + Rust scratch-crate + JS
-harnesses]; adversarially reviewed ship/no-must-fix; on-device `jts`→`jts4`
-validation in progress. Bass-management mains-HP and the brainy/active sub
-remain. Prior 2026-06-21: Stage-B active-leader realization ratified — one rate
+HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + passive-main
+outputd LR4 high-pass at the same bond `crossover_hz`
+[config/validate/`/grouping/set`/reconcile/state/`/rooms/`] + `/rooms/` sub
+role + `/sound/` CTA, all behind Python + Rust scratch-crate + JS syntax
+checks; on-device `jts`→`jts4` validation still owed. The brainy/active sub
+path remains because CamillaDSP Layer A owns HP/LP there. Prior 2026-06-21:
+Stage-B active-leader realization ratified — one rate
 loop = `outputd-summer`, camilla#2 `rate_adjust` OFF, the **two `jasper-outputd`
 instances kept separate for inv-A** [summer upstream / reference publisher
 downstream — never merge], TTS as a soft input, File-capture frees pair 6,

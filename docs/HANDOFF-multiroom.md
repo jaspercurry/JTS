@@ -172,9 +172,15 @@ Increment 6 (per-follower calibration). What exists:
   `ChannelPick::Sub(corner)` runs its own Rust LR4 (mono-sum → 4th-order
   Linkwitz-Riley at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`, default 80 Hz) before
   the DAC, fail-closed (never full-range on FIFO / inv-B fallback / missing
-  filter). This `channel_split.py` LR4 fragment stays the recipe for the
-  *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives). Both
-  reuse the same `emit_linkwitz_riley` corner math. See
+  filter). Passive/dumb mains in the same bond now also high-pass
+  receiver-side in `jasper-outputd`: the reconciler writes
+  `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ` at the same bond `crossover_hz` when a sub
+  is present and the default-on mains-HP toggle is enabled; the shared
+  Snapcast stream stays full-range. Active endpoints are different: their
+  outputd `dac_content` lane is disabled, so Layer-A CamillaDSP owns the HP/LP
+  protection path. This `channel_split.py` LR4 fragment stays the recipe for
+  the *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives).
+  Both reuse the same `emit_linkwitz_riley` corner math. See
   [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) "Subwoofer —
   two different subs" for the full gap-5 picture.
 - **`jasper-outputd` snapfifo producer — REMOVED (2026-06-11 cleanup).**
@@ -863,8 +869,11 @@ deliverable; 2.1 is the 3-ch generalisation**, not a parallel stream.
 > clip-safe **mono sum** of L+R, and low-passes it **receiver-side** in
 > `jasper-outputd` (`ChannelPick::Sub`, LR4 at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`).
 > Because the sub derives its lows from the full-range L+R already on the wire,
-> no LFE channel — and so no stream-format change, no second stream — is needed,
-> and `outputd`'s stereo AEC-reference contract is untouched. The 3-ch stream
+> no LFE channel — and so no stream-format change, no second stream — is needed.
+> Bass management stays symmetric: each passive main high-passes locally in
+> outputd at the same bond `crossover_hz` (`JASPER_OUTPUTD_DAC_CONTENT_HP_HZ`,
+> default-on `/rooms/` toggle), while the shared stream remains full-range for
+> the sub. `outputd`'s stereo AEC-reference contract is untouched. The 3-ch stream
 > stays the (still-unbuilt) answer **only** if a household ever needs a
 > *sender-side pre-baked* sub (a cheap endpoint that can't run a local low-pass).
 > Canonical: [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)
@@ -1911,7 +1920,12 @@ tests/test_web_rooms_setup.py (foreign-claimer matrix, DHCP
 rediscovery, named unreachable error, unbond containment, bond-body
 roster), test_web_balance_flow.py (start survives a foreign claimer),
 test_multiroom_config.py + test_control_server.py (parse/validate/
-preserve/clear). Earlier same day: PAIR BALANCE P2, equal-loudness
+preserve/clear). The same 2026-06-23 pass made the wireless-sub crossover
+symmetric for passive/dumb endpoints: `jasper-outputd` low-passes the sub
+locally, high-passes each passive main locally at the same `crossover_hz`
+when the default-on `/rooms/` toggle is enabled, and the reconciler clears the
+HP env on no-sub/toggle-off/sub/active-endpoint paths. Earlier same day: PAIR
+BALANCE P2, equal-loudness
 walkthrough
 — the v1 fixed-level A/B/A burst design was REPLACED the same day
 after first live use: a badly mismatched pair (the exact case the tool
@@ -2568,4 +2582,7 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-14
+Last verified: 2026-06-23 (wireless-sub 2.1 path rechecked against current code:
+receiver-side outputd sub LR4 LP + passive-main outputd LR4 HP at the same bond
+`crossover_hz`, full-range shared stream, default-on `/rooms/` mains-HP toggle,
+and active-endpoint HP/LP left to CamillaDSP Layer A)

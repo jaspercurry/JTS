@@ -139,6 +139,11 @@ pub struct Config {
     /// from the round-trip lane (channel-split vocabulary; default
     /// stereo = passthrough). Only meaningful with `dac_content_fifo`.
     pub dac_content_channel: ChannelPick,
+    /// Optional LR4 high-pass corner for MAIN channels in a wireless-sub
+    /// bond. `None` means full-range mains. Invalid env values resolve to
+    /// `None` (fail-closed to full-range, never startup crash / stuck
+    /// bass-light). Ignored for `ChannelPick::Sub`.
+    pub dac_content_highpass_hz: Option<f64>,
     /// Per-member level trim on the round-trip lane (dB, ALWAYS <= 0 —
     /// pair balancing attenuates the LOUDER speaker, never boosts;
     /// positive values fail closed like the duck knob). Applied to the
@@ -404,6 +409,24 @@ impl Config {
         } else {
             dac_content_channel
         };
+        let dac_content_highpass_hz = match (
+            dac_content_channel,
+            env_optional("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"),
+        ) {
+            (ChannelPick::Sub(_), _) | (_, None) => None,
+            (_, Some(raw)) => match raw.trim().parse::<f64>() {
+                Ok(v) if v.is_finite() && (SUB_MIN_CORNER_HZ..=SUB_MAX_CORNER_HZ).contains(&v) => {
+                    Some(v)
+                }
+                _ => {
+                    eprintln!(
+                        "event=outputd.dac_content.main_highpass_invalid \
+                         requested={raw:?} action=play_full_range"
+                    );
+                    None
+                }
+            },
+        };
         if dac_content_fifo.is_some() {
             if content_bridge_mode != ContentBridgeMode::Direct {
                 anyhow::bail!(
@@ -519,6 +542,7 @@ impl Config {
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
             dac_content_fifo,
             dac_content_channel,
+            dac_content_highpass_hz,
             dac_content_trim_db,
             tts_socket_path,
             tts_max_pending_frames,
@@ -778,6 +802,7 @@ mod tests {
             // Multi-room round-trip lane is OFF by default (solo contract).
             assert!(cfg.dac_content_fifo.is_none());
             assert_eq!(cfg.dac_content_channel, ChannelPick::Stereo);
+            assert_eq!(cfg.dac_content_highpass_hz, None);
             // Active-crossover lane marker is off by default (solo/passive).
             assert!(!cfg.active_lane);
         });
@@ -800,8 +825,43 @@ mod tests {
                     Some("/run/jasper-grouping/member-content.fifo")
                 );
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
+    }
+
+    #[test]
+    fn main_highpass_uses_valid_corner_for_non_sub_channels() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some("120")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+                assert_eq!(cfg.dac_content_highpass_hz, Some(120.0));
+            },
+        );
+    }
+
+    #[test]
+    fn main_highpass_invalid_or_zero_fails_closed_to_full_range() {
+        for raw in ["", "0", "-5", "nope", "5000"] {
+            with_env(
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                    ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+                    ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some(raw)),
+                ],
+                || {
+                    let cfg = Config::from_env().unwrap();
+                    assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+                    assert_eq!(cfg.dac_content_highpass_hz, None);
+                },
+            );
+        }
     }
 
     #[test]
@@ -815,6 +875,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(120.0));
+                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
     }
@@ -834,6 +895,7 @@ mod tests {
                     cfg.dac_content_channel,
                     ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ)
                 );
+                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
     }
@@ -852,6 +914,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(SUB_MIN_CORNER_HZ));
+                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
         with_env(
@@ -863,6 +926,24 @@ mod tests {
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(SUB_MAX_CORNER_HZ));
+                assert_eq!(cfg.dac_content_highpass_hz, None);
+            },
+        );
+    }
+
+    #[test]
+    fn main_highpass_is_ignored_for_sub_channels() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("90")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some("90")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Sub(90.0));
+                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
     }
@@ -880,6 +961,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+                assert_eq!(cfg.dac_content_highpass_hz, None);
             },
         );
     }

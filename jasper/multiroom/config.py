@@ -82,12 +82,19 @@ CHANNEL_DELAY_MS_HI = 100.0
 # Receiver-side wireless-sub low-pass corner (Hz). Only meaningful when
 # channel=="sub": the follower mono-sums the full-range stereo program
 # and applies an LR4 low-pass locally in outputd so a powered sub plays
-# only the low end. A blank/non-numeric value falls back to the default
-# (a "sub" must never play full-range); an out-of-range value on a sub is
-# fail-LOUD. Bounds bracket sane home-sub corners.
+# only the low end. When bass management is enabled, every non-sub main
+# member applies the complementary LR4 high-pass at this same corner in
+# its own local output path. A blank/non-numeric value falls back to the
+# default (a "sub" must never play full-range); an out-of-range value on
+# a sub is fail-LOUD. Bounds bracket sane home-sub corners.
 DEFAULT_CROSSOVER_HZ = 80.0
 CROSSOVER_HZ_LO = 40.0
 CROSSOVER_HZ_HI = 200.0
+
+# Wireless-sub bass management. Default ON: when a bond contains a sub, mains
+# high-pass at the same crossover corner the sub low-passes. The toggle exists
+# for people who deliberately want full-range mains + sub augmentation.
+DEFAULT_MAINS_HIGHPASS_ENABLED = True
 
 # Snapcast stream codec. "flac" is the lossless default (good drift
 # tolerance, modest CPU); "pcm" is uncompressed (lowest CPU, highest
@@ -163,10 +170,19 @@ class GroupingConfig:
     left_delay_ms: float = 0.0
     right_delay_ms: float = 0.0
     # Receiver-side wireless-sub low-pass corner (Hz). Only meaningful
-    # when channel=="sub": the follower applies an LR4 low-pass locally
-    # in outputd. Defaulted so the wide existing constructor surface
-    # stays source-compatible; load_config always sets it explicitly.
+    # when channel=="sub"; also used as the matched mains high-pass corner
+    # when this bond has a sub and mains_highpass_enabled is true.
+    # Defaulted so the wide existing constructor surface stays
+    # source-compatible; load_config always sets it explicitly.
     crossover_hz: float = DEFAULT_CROSSOVER_HZ
+    # Per-bond wireless-sub bass-management preference. Default ON; only
+    # takes effect when a sub is actually present in the bond.
+    mains_highpass_enabled: bool = DEFAULT_MAINS_HIGHPASS_ENABLED
+    # Fan-out-derived bond-composition fact, persisted on every member so
+    # a non-leader main can self-heal its local outputd env without needing
+    # the leader-only roster. The leader also derives this from roster as
+    # defence in depth.
+    subwoofer_present: bool = False
     # The bond roster, LEADER only: who this leader's pair sibling IS,
     # recorded at bond-forming time. peer_addr is the follower's LAN
     # IPv4 (the cross-speaker control calls are IP-only by SSRF
@@ -202,6 +218,8 @@ _DISABLED = GroupingConfig(
     left_delay_ms=0.0,
     right_delay_ms=0.0,
     crossover_hz=DEFAULT_CROSSOVER_HZ,
+    mains_highpass_enabled=DEFAULT_MAINS_HIGHPASS_ENABLED,
+    subwoofer_present=False,
     error=None,
 )
 
@@ -236,6 +254,30 @@ def _parse_enabled(raw: str) -> bool:
     A broken value must never silently leave grouping ON.
     """
     return raw.strip().lower() == "on"
+
+
+def _parse_bool_env_default_true(raw: str, *, key: str) -> tuple[bool, str | None]:
+    text = (raw or "").strip().lower()
+    if not text:
+        return DEFAULT_MAINS_HIGHPASS_ENABLED, None
+    if text in {"1", "true", "yes", "on"}:
+        return True, None
+    if text in {"0", "false", "no", "off"}:
+        return False, None
+    return DEFAULT_MAINS_HIGHPASS_ENABLED, (
+        f"{key}={raw!r} must be one of on/off/true/false/1/0"
+    )
+
+
+def _parse_bool_env_default_false(raw: str, *, key: str) -> tuple[bool, str | None]:
+    text = (raw or "").strip().lower()
+    if not text:
+        return False, None
+    if text in {"1", "true", "yes", "on"}:
+        return True, None
+    if text in {"0", "false", "no", "off"}:
+        return False, None
+    return False, f"{key}={raw!r} must be one of on/off/true/false/1/0"
 
 
 def _parse_buffer_ms(raw: str) -> int:
@@ -376,6 +418,8 @@ def validate_grouping(
     left_delay_ms: float = 0.0,
     right_delay_ms: float = 0.0,
     crossover_hz: float = DEFAULT_CROSSOVER_HZ,
+    mains_highpass_enabled: bool = DEFAULT_MAINS_HIGHPASS_ENABLED,
+    subwoofer_present: bool = False,
     peer_addr: str = "",
     peer_name: str = "",
     roster: tuple[BondMember, ...] = (),
@@ -435,6 +479,10 @@ def validate_grouping(
             f"JASPER_GROUPING_CLIENT_LATENCY_MS={client_latency_ms} must be "
             f"between {CLIENT_LATENCY_MS_LO} and {CLIENT_LATENCY_MS_HI}"
         )
+    if not isinstance(mains_highpass_enabled, bool):
+        return "JASPER_GROUPING_MAINS_HIGHPASS must be boolean"
+    if not isinstance(subwoofer_present, bool):
+        return "JASPER_GROUPING_SUBWOOFER_PRESENT must be boolean"
     for key, value in (
         ("JASPER_GROUPING_LEFT_DELAY_MS", left_delay_ms),
         ("JASPER_GROUPING_RIGHT_DELAY_MS", right_delay_ms),
@@ -444,10 +492,16 @@ def validate_grouping(
                 f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
                 f"and {CHANNEL_DELAY_MS_HI}"
             )
-    # The sub low-pass corner is only meaningful for channel=="sub"; range
-    # it ONLY there so a non-sub member with a stray value is not fail-LOUD
-    # over a knob it never uses (the reconciler emits it only for subs).
-    if channel == "sub" and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
+    # The crossover corner is mandatory for a sub, and for a main when
+    # bass management is armed for a bond that contains a sub. A non-sub
+    # member in a plain stereo pair can still carry a stale corner without
+    # failing loud because the reconciler clears the HP env unless a sub is
+    # present.
+    uses_crossover = (
+        channel == "sub"
+        or (subwoofer_present and mains_highpass_enabled and channel != "sub")
+    )
+    if uses_crossover and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
         return (
             f"JASPER_GROUPING_CROSSOVER_HZ={crossover_hz} must be between "
             f"{CROSSOVER_HZ_LO} and {CROSSOVER_HZ_HI} Hz"
@@ -569,12 +623,26 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     crossover_hz = _parse_crossover_hz(
         src.get("JASPER_GROUPING_CROSSOVER_HZ", "")
     )
+    mains_highpass_enabled, mains_highpass_parse_error = (
+        _parse_bool_env_default_true(
+            src.get("JASPER_GROUPING_MAINS_HIGHPASS", ""),
+            key="JASPER_GROUPING_MAINS_HIGHPASS",
+        )
+    )
+    subwoofer_present, subwoofer_present_parse_error = (
+        _parse_bool_env_default_false(
+            src.get("JASPER_GROUPING_SUBWOOFER_PRESENT", ""),
+            key="JASPER_GROUPING_SUBWOOFER_PRESENT",
+        )
+    )
 
     error = (
         trim_parse_error
         or client_latency_parse_error
         or left_delay_parse_error
         or right_delay_parse_error
+        or mains_highpass_parse_error
+        or subwoofer_present_parse_error
         or validate_grouping(
         role=role,
         channel=channel,
@@ -586,6 +654,8 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
         crossover_hz=crossover_hz,
+        mains_highpass_enabled=mains_highpass_enabled,
+        subwoofer_present=subwoofer_present,
         peer_addr=peer_addr,
         peer_name=peer_name,
         roster=roster,
@@ -605,6 +675,8 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
         crossover_hz=crossover_hz,
+        mains_highpass_enabled=mains_highpass_enabled,
+        subwoofer_present=subwoofer_present,
         peer_addr=peer_addr,
         peer_name=peer_name,
         roster=roster,

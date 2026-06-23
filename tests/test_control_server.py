@@ -3592,10 +3592,76 @@ def test_grouping_set_crossover_settable_validated_and_preserved(
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "20"
 
+    # But a non-sub MAIN in a subwoofer bond uses the corner for the matched
+    # high-pass, so the same bad value is rejected when bass management is on.
+    status, resp = _post(
+        f"{base}/grouping/set",
+        {**non_sub, "crossover_hz": 20, "subwoofer_present": True},
+    )
+    assert status == 400 and "must be between" in resp["error"]
+
     # Omitted → preserved (key not in this write).
     status, _ = _post(f"{base}/grouping/set", sub)
     assert status == 200
     assert "JASPER_GROUPING_CROSSOVER_HZ" not in writes[-1]
+
+
+def test_grouping_set_mains_highpass_toggle_round_trips(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "b",
+        "leader_addr": "",
+        "subwoofer_present": True,
+        "mains_highpass_enabled": False,
+        "crossover_hz": 90,
+    }
+
+    status, _ = _post(f"{base}/grouping/set", body)
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_SUBWOOFER_PRESENT"] == "on"
+    assert writes[-1]["JASPER_GROUPING_MAINS_HIGHPASS"] == "off"
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "90"
+
+    status, resp = _post(
+        f"{base}/grouping/set",
+        {**body, "mains_highpass_enabled": "off"},
+    )
+    assert status == 400
+    assert resp["error"] == "mains_highpass_enabled must be boolean"
+
+    status, resp = _post(
+        f"{base}/grouping/set",
+        {**body, "subwoofer_present": "yes"},
+    )
+    assert status == 400
+    assert resp["error"] == "subwoofer_present must be boolean"
+
+    status, _ = _post(
+        f"{base}/grouping/set",
+        {
+            "enabled": True,
+            "role": "leader",
+            "channel": "left",
+            "bond_id": "b",
+            "leader_addr": "",
+        },
+    )
+    assert status == 200
+    assert "JASPER_GROUPING_SUBWOOFER_PRESENT" not in writes[-1]
+    assert "JASPER_GROUPING_MAINS_HIGHPASS" not in writes[-1]
 
 
 def test_grouping_set_latency_and_delay_settable_validated_and_preserved(
