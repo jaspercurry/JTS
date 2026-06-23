@@ -704,6 +704,21 @@ def _unit_is_enabled(unit: str) -> bool:
         return False
 
 
+def _unit_is_active(unit: str) -> bool:
+    """`systemctl is-active --quiet` truth. Anything other than rc=0 (inactive,
+    failed, NOT-FOUND, systemctl missing) reads as not-active — the safe
+    direction for the active-leader bake gate: a bake against a reader-less /
+    missing snapserver pipe must NOT proceed (it cannot release the DAC, so
+    arming camilla#2 would fight camilla#1 for it — the 2026-06-23 reboot loop)."""
+    try:
+        return subprocess.run(
+            ["systemctl", "is-active", "--quiet", unit],
+            capture_output=True,
+        ).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def _unit_absent_stderr(stderr: str) -> bool:
     """True when a systemctl failure means THE UNIT DOES NOT EXIST.
 
@@ -1396,31 +1411,70 @@ def main(argv: list[str] | None = None) -> int:
         # guard repairs a dead pipe, NOT a flat statefile). camilla#2 keeps
         # enable_rate_adjust ON: the music-only validated active-follower seam, no
         # outputd-summer yet (HANDOFF-distributed-active.md "Sequencing" step 1).
-        try:
-            from .active_leader_config import (
-                apply_active_leader_bake_sync,
-                seed_crossover_statefile,
-            )
-
-            applied = apply_active_leader_bake_sync()
-            log_event(
-                logger,
-                "multiroom.reconcile.camilla",
-                result="active_leader_bake",
-                path=applied,
-            )
-            seed_crossover_statefile()
-        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+        # SAFETY — the camilla#1/#2 DAC handoff (2026-06-23 JTS5 incident). The
+        # bake moves camilla#1 from its solo-active DAC baseline to a File/FIFO
+        # sink (RELEASING the DAC); camilla#2 then TAKES the DAC. Arming camilla#2
+        # while camilla#1 still holds the DAC is a device conflict, and camilla#1
+        # carries StartLimitAction=reboot, so that conflict REBOOT-LOOPS the box.
+        # Two gates make this fail-closed: (1) do NOT bake onto a reader-less pipe
+        # — verify snapserver actually started (its File sink writes the snapfifo,
+        # which has no reader if snapserver is missing/failed, as on a box with no
+        # Snapcast installed); (2) arm camilla#2 ONLY if the bake succeeded
+        # (camilla#1 has provably moved off the DAC). Any failure leaves camilla#1
+        # on its safe solo-active baseline and camilla#2 un-armed — the box stays
+        # solo-active, never a two-instance DAC fight.
+        bake_ok = False
+        if not _unit_is_active(SNAPSERVER_UNIT):
             log_event(
                 logger,
                 "multiroom.reconcile.camilla_failed",
                 action="active_leader_bake_apply",
-                error=e,
+                error=(
+                    "snapserver is not active — refusing to bake camilla#1 onto a "
+                    "reader-less pipe or arm camilla#2 (would fight camilla#1 for "
+                    "the DAC and reboot-loop the box)"
+                ),
                 level=logging.ERROR,
             )
             rc = 1
-        # Arm camilla#2 (systemctl enable --now) AFTER the statefile re-seed.
-        if not _arm_crossover_unit():
+        else:
+            try:
+                from .active_leader_config import (
+                    apply_active_leader_bake_sync,
+                    seed_crossover_statefile,
+                )
+
+                applied = apply_active_leader_bake_sync()
+                log_event(
+                    logger,
+                    "multiroom.reconcile.camilla",
+                    result="active_leader_bake",
+                    path=applied,
+                )
+                seed_crossover_statefile()
+                bake_ok = True
+            except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+                log_event(
+                    logger,
+                    "multiroom.reconcile.camilla_failed",
+                    action="active_leader_bake_apply",
+                    error=e,
+                    level=logging.ERROR,
+                )
+                rc = 1
+        # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably moved
+        # camilla#1 off the DAC. Otherwise leave camilla#2 un-armed (camilla#1
+        # keeps the DAC on its solo-active baseline) — no two-instance DAC fight.
+        if bake_ok:
+            if not _arm_crossover_unit():
+                rc = 1
+        else:
+            log_event(
+                logger,
+                "multiroom.reconcile.camilla",
+                result="active_leader_crossover_arm_skipped",
+                reason="bake_not_applied",
+            )
             rc = 1
 
     if active_leader:

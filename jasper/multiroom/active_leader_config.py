@@ -64,6 +64,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 
 from .. import atomic_io
 from ..log_event import log_event
@@ -180,6 +181,24 @@ async def precheck_active_leader(
         program_channel = program_channel_for(cfg.channel)
     except follower_config.ActiveFollowerError as exc:
         raise ActiveLeaderError(exc.reason, str(exc)) from exc
+
+    # Snapcast precondition (fail-closed). An active leader HOSTS the wire
+    # (snapserver) AND plays its own channel through the round-trip (snapclient);
+    # without those binaries there is no FIFO reader for camilla#1's bake, so the
+    # bake cannot release the DAC — and arming camilla#2 onto the DAC would then
+    # fight camilla#1 (which carries StartLimitAction=reboot) and reboot-loop the
+    # box (the 2026-06-23 JTS5 incident, on a box with no Snapcast installed).
+    # Refuse the bond UP FRONT (the box stays solo-active) rather than commit to a
+    # two-instance setup the hardware cannot support. The reconciler's step-5
+    # gates (snapserver-actually-active + arm-only-if-bake-succeeded) are the
+    # belt-and-suspenders runtime backstop.
+    for binary in ("snapserver", "snapclient"):
+        if shutil.which(binary) is None:
+            raise ActiveLeaderError(
+                "snapcast_unavailable",
+                f"{binary} is not installed — an active leader cannot host the "
+                "wireless pair; refusing to bond (no camilla#1/#2 DAC conflict)",
+            )
 
     # STRICT topology load (fail-closed). Both re-proofs below pass this topology
     # explicitly to classify_camilla_graph, so a fail-SOFT loader would hand them
