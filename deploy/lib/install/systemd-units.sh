@@ -683,9 +683,15 @@ install_systemd_units() {
     # JASPER_BUILD_OPTIONAL_FIRMWARE=1). The units reference
     # /usr/bin/snapserver and /usr/bin/snapclient (Trixie's `snapserver`
     # / `snapclient` apt packages); installing those is the grouping
-    # opt-in's job, not every solo install's. The reconciler's plan is
-    # fail-safe — if the binaries are absent the unit simply fails to
-    # start and grouping stays off, never wedging a solo speaker.
+    # OPT-IN's job — now IMPLEMENTED (it used to be a comment with no code):
+    # the grouping reconciler apt-installs them the first time grouping is
+    # enabled (jasper.multiroom.provision.ensure_snapcast_installed), surfacing
+    # "Installing Snapcast…" in /rooms via /state.grouping.provision. So a solo
+    # install stays binary-free, a grouping box self-heals if the binaries are
+    # missing, and jasper-doctor's check_grouping_snapcast_installed surfaces the
+    # gap regardless. The reconciler's plan is also fail-safe — if the binaries
+    # are absent the unit simply fails to start and grouping stays off, never
+    # wedging a solo speaker.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
         "${SYSTEMD_DIR}/jasper-snapserver.service"
