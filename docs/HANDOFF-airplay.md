@@ -219,6 +219,74 @@ shows `watch` or `issue`, use the fast scan above or the full polling
 diagnostic below to prove the mechanism before changing shairport,
 CamillaDSP, WiFi, or buffer settings.
 
+### Rate-adjust short-read storms — what `watch` from "Camilla short read" means
+
+When the dashboard reads `watch` with "recent non-fatal audio-path
+warning" and the only signal is material Camilla short reads (no
+playback underruns, no shairport/fan-in events), it is almost always
+the **rate-adjust short-read storm**, not an audio defect.
+
+What it is: CamillaDSP's `enable_rate_adjust` PI controller tunes the
+snd-aloop capture clock (the `jasper_capture` slave's "PCM Rate Shift"
+control) to hold its playback buffer at `target_level` against the
+final DAC's drift. On a box with a **drifting DAC** (the Apple USB-C
+dongle drifts ~±100s of ppm, temperature-dependent), the loop can walk
+into a metastable operating point where ~25 % of capture reads land a
+hair before snd-aloop has transferred a full period → a *mild* short
+read (typically 12–64 frames / 0.25–1.3 ms short). CamillaDSP loops to
+fill the chunk before emitting it, so it is **inaudible**: across
+137,046 short reads over 72 h of real use, **zero** playback underruns.
+
+Properties confirmed on hardware (2026-06-22):
+- **Inaudible** — short reads never produce a playback underrun on this
+  config (`target_level` 2048 ≈ 43 ms ≫ the worst single deficit).
+- **Slow + metastable** — develops over ~30–60 min of *continuous
+  streaming*, sustains ~700/min, and only clears on a controller reset
+  (a config reload that changes `devices:`, or a process restart). A
+  same-path `set_file_path()+reload()` is a no-op (`ConfigChange::None`).
+- **Not load-driven** — synthetic CPU/DVFS jitter (even 4-core) does not
+  reproduce it; the audio chain is shielded (`Nice=-10`, realtime-IO,
+  `mlockall`, `MemorySwapMax=0`). Deploys/restarts *clear* storms (they
+  reset the controller); they do not cause them.
+- **DAC-specific** — a crystal-locked DAC (DAC8x) does not storm even
+  under real AirPlay; the dongle does.
+
+Because it is intermittent and can't be reproduced on demand, the
+`AirPlayHealthSampler` ([`jasper/control/airplay_health.py`](../jasper/control/airplay_health.py))
+auto-captures the rate-controller state **when a storm actually
+happens** (Tier 1 + Tier 2):
+
+- **Tier 1 — onset/offset events.** When the material short-read rate
+  crosses `STORM_ENTER_PER_MIN` (over a `STORM_MIN_SCAN_WINDOW_SEC`
+  guard) it emits one `event=camilla_rate.storm_onset` snapshot
+  (`rate_adjust`, `capture_rate`, `buffer_level`, `active_source`,
+  `soc_temp_c`, `cpu_governor`, `cpu_freq_khz`,
+  `sec_since_camilla_restart`, `sec_since_deploy`), and on a debounced
+  drop below `STORM_EXIT_PER_MIN` emits `event=camilla_rate.storm_offset`
+  (duration, peak rate, `rate_adjust`/`buffer` extent, temp delta,
+  artifact path). The `sec_since_*` fields are what settle "did a
+  restart/deploy seed this?" The events are `WARNING`-level so they ride
+  the flight recorder.
+
+  ```sh
+  sudo journalctl -u jasper-control | grep -E 'event=camilla_rate\.storm_(onset|offset)'
+  curl -s http://jts.local:8780/state | jq .airplay_health.storm
+  ```
+
+- **Tier 2 — in-storm trajectory.** While storming, Camilla is sampled
+  at `STORM_SAMPLE_INTERVAL_SEC` (vs the 30 s steady-state cadence) and a
+  bounded CSV is written per storm to `/var/lib/jasper/rate-storms/`
+  (`STORM_TRAJECTORY_KEEP_FILES` retained, `STORM_TRAJECTORY_MAX_ROWS`
+  capped). Columns: `t_sec,rate_adjust,capture_rate,buffer_level,soc_temp_c,cpu_freq_khz,material_per_min`.
+  Pull with `scp pi@jts.local:/var/lib/jasper/rate-storms/storm-*.csv .`.
+
+Both tiers are **fail-soft** and **additive** — they do not touch the
+`watch`/`issue` classification and cost nothing in steady state (the
+faster cadence and the artifact only run while a storm is active). This
+capture exists to evaluate the mechanism and any future at-source loop
+tuning (e.g. `adjust_period`) from real data; the storm itself needs no
+intervention because it is inaudible.
+
 ### Full polling diagnostic (5-min run, ~5 min wall time)
 
 Use this when log signatures are inconclusive or you want to characterize
@@ -1663,4 +1731,4 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-06-01
+Last verified: 2026-06-22
