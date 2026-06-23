@@ -470,10 +470,12 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Reset speaker setup" in js
     assert "Test each driver" in js
     assert "Validate and apply" in js
-    assert "Save active profile" in js
+    assert "Save and apply" in js
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
     assert "Start tone" in js
     assert "Stop tone" in js
+    assert "Back to configuration" in js
+    assert "Back to adjust crossover" in js
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
     assert "function setVolumeFloorResetButton" in js
@@ -598,12 +600,16 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "No sound played. ' + e.message" not in js
     assert "active-speaker-actions--driver-test" not in js
     assert "data-act=\"record-summed-validation\"" in js
-    assert "data-act=\"compile-baseline-profile\"" in js
-    assert "data-act=\"apply-baseline-profile\"" in js
-    assert "I hear the tone" in js
+    assert "data-act=\"compile-baseline-profile\"" not in js
+    assert "data-act=\"apply-baseline-profile\"" not in js
+    assert "data-act=\"save-apply-baseline-profile\"" in js
+    assert "I hear the " in js
     assert "I did not hear anything" not in js
-    assert "Wrong driver" in js
+    assert "Wrong driver" not in js
     assert "Too loud / stop" not in js
+    assert "Measure with mic" not in js
+    assert "record-summed-capture" not in js
+    assert "record-driver-capture" not in js
     assert "driver-test result" not in js
     assert "Did this driver make the sound?" not in js
     assert "If you hear nothing, wait" not in js
@@ -625,6 +631,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function renderOutputTopologySetup()" in js
     assert "function refreshOutputTopology(options)" in js
     assert "function saveOutputTopology(options)" in js
+    assert "function setOutputChannelAssignment(groupId, role, rawValue)" in js
     assert "function updateOutputChannelIdentity(button)" in js
     assert "function saveOutputChannelProtectionState(groupId, role, nextStatus)" not in js
     assert "function outputReadinessFromPreparedDriver(payload, button)" not in js
@@ -640,6 +647,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-protection-status="' not in js
     assert "headers: jsonHeaders()" in js
     assert "Saved speaker layout. No sound was played." in js
+    assert "Save channel assignments" in js
+    assert "data-output-channel" in js
+    assert "Assign each driver to one unique DAC channel" in js
     assert "Confirm each DAC output after you check the wiring." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
@@ -758,10 +768,13 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
 
     # The new consumer copy is present and stable.
     assert "Updates the working setup, then builds a no-audio crossover preview." in js
-    assert "Save the measured crossover as your active speaker profile. No sound plays." in js
-    assert "Your active speaker profile, built from the measured crossover and driver checks." in js
+    assert "Save the checked crossover as your active speaker profile. No sound plays." in js
+    assert "Your active speaker profile, built from the checked crossover and driver checks." in js
     assert "Your active speaker profile is saved. Apply it to start using it." in js
-    assert "Sounds hollow or thin" in js
+    assert "Sounds right" in js
+    assert "Sounds hollow or thin" not in js
+    assert "Needs adjustment" not in js
+    assert "Too loud" not in js
     for confusing_copy in (
         "saved drivers",
         "saved crossover settings",

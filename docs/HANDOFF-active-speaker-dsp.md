@@ -39,7 +39,7 @@
 > stereo active 3-way and active subwoofer add-ons remain modeled but are
 > disabled/blocked until outputd, staging, baseline compilation, and tests are
 > widened together. The UI organizes this work as collapsible task
-> cards — choose layout, add driver info, confirm outputs, measure drivers,
+> cards — choose layout, add driver info, confirm outputs, test drivers,
 > validate the summed crossover, then save/apply the active profile. It
 > defaults to the first unfinished task card,
 > keeps one task card open at a time, prevents opening future prerequisite-gated
@@ -154,12 +154,14 @@
 > summed capture analyzed through
 > `commissioning_capture.record_summed_acoustic_capture` records richer acoustic
 > evidence when available, but the household flow can also accept
-> `operator_listening_check` for **Blend sounds right** after an audible combined
+> `operator_listening_check` for **Sounds right** after an audible combined
 > test. Artifact-only tests, stale test ids, or free-floating "sounds good"
-> clicks still cannot unlock the active profile. The UI presents this as the next
-> human task after confirming outputs: capture each driver, run the combined
-> test at a bounded selectable level, record what the operator heard, then
-> save/apply the active profile when backend permissions allow it.
+> clicks still cannot unlock the active profile. As of 2026-06-23, `/sound/`
+> does not expose the browser mic-capture buttons; mic-backed crossover leveling
+> should live in the HTTPS measurement/correction experience. The UI presents
+> this as the next human task after confirming outputs: test each driver by ear,
+> run the combined test at a bounded selectable level, record what the operator
+> heard, then save/apply the active profile when backend permissions allow it.
 > `/sound/` also includes manual crossover settings for active-crossover
 > planning. The visible fields are the product source of truth: driver
 > names, sensitivity, safe low test limits, per-driver level trim, and active
@@ -438,12 +440,13 @@
 > Stage-5 driver ramp: `/driver-capture` and `/summed-capture` accept bounded
 > WAV evidence with bounded raw-file retention, call the
 > `commissioning_capture` bridge, and record real acoustic verdicts into
-> measurement state; the `/sound/` UI uses the shared
-> `measurement-audio.js` recorder for those submissions and keeps the bounded
-> combined-test level control. (**Superseded 2026-06-20** — see the phone-optional
+> measurement state; the then-current `/sound/` UI used the shared
+> `measurement-audio.js` recorder for those submissions and kept the bounded
+> combined-test level control. (**Superseded 2026-06-20 and narrowed 2026-06-23** — see the phone-optional
 > update below: the combined check originally removed the by-ear "manual success"
-> button to force mic evidence; it now re-offers a by-ear "Blend sounds right"
-> gated on an audible combined test, so the whole flow is phone-optional.) This
+> button to force mic evidence; it now re-offers a by-ear "Sounds right"
+> gated on an audible combined test, and `/sound/` no longer exposes mic capture
+> in the core setup flow.) This
 > is still not a JTS3 acoustic validation: the real sweep playback/capture timing,
 > live phone mic behavior, room noise, and driver response must be verified on
 > hardware.
@@ -476,12 +479,12 @@
 > commission and apply an active baseline with zero phone use: each driver is
 > confirmed by ear (the per-driver level-match mic capture is optional → datasheet
 > trim, marked provisional), and the combined crossover check now offers a by-ear
-> "Blend sounds right" alongside the mic capture. The by-ear positive is still
-> gated on an AUDIBLE combined test (you can't certify a blend you didn't hear),
-> and the mic capture stays offered as the more reliable check for a
-> polarity/delay null. This REVERSES the 2026-06-18 "force summed mic evidence"
-> decision; the guard test (`testSummedOffersByEarAndMicValidation`) now asserts
-> both paths exist + the by-ear gate. Safety is unaffected — a bad blend verdict
+> "Sounds right" path in `/sound/`. The by-ear positive is still gated on an
+> AUDIBLE combined test (you can't certify a blend you didn't hear). Mic-backed
+> level/delay verification remains the more reliable follow-up, but it belongs in
+> the HTTPS measurement/correction experience rather than the core `/sound/`
+> flow. This REVERSES the 2026-06-18 "force summed mic evidence" decision and
+> narrows the 2026-06-20 "offer both paths in `/sound/`" decision. Safety is unaffected — a bad blend verdict
 > is a quality issue (a suckout at the crossover), not a hazard: the crossover,
 > tweeter high-pass, limiters, and 0 dB ceiling are in the graph regardless.
 
@@ -631,7 +634,7 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    `emit_active_speaker_startup_config` is kept for the `startup-template` CLI),
    load it muted through the guarded
    path, open the protected playback window, play an ESS sweep through the
-   production fan-in lane, capture the phone mic in the browser with
+   production fan-in lane, capture the phone mic in the HTTPS browser flow with
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js),
    submit the bounded WAV to `/driver-capture`, analyze with
    `active_speaker.driver_acoustics.analyze_driver_capture`, and record via
@@ -640,7 +643,7 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    combined-driver test, submit `/summed-capture`
    (`analyze_summed_crossover`), and freeze the commissioned config as the
    durable profile (`baseline_profile.*`) when the measurement gates are
-   complete. The server/UI path above is covered with synthetic capture fixtures;
+   complete. The server/core path above is covered with synthetic capture fixtures;
    the implemented hardware-free slice is the bounded WAV submit/analyze/record
    and gate progression, not proof that JTS3 has emitted and captured the sweep.
    The live playback window, browser mic timing, and actual speaker acoustics
@@ -1399,7 +1402,7 @@ small safe envelope, and the default is the quietest setting (`-80 dBFS`). As of
 that state through `/sound/active-speaker/calibration-level`; upward movement
 is limited to one 1 dB manual `set` transition. Product-facing
 `raise_toward_audible` / `ramp` transitions may move by the larger bounded
-audible-step constant (`AUDIBLE_RAMP_STEP_DB`, currently 6 dB) so the operator
+audible-step constant (`AUDIBLE_RAMP_STEP_DB`, currently 10 dB) so the operator
 is not forced through dozens of clicks, while lowering, reset, Stop, and
 mic-clipping resets can return directly to the floor. The same route also
 accepts `action=observe` with an operator-observed capture dBFS reading; that
@@ -1652,7 +1655,12 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-22 (topology reset recovery and stale
-`/sound/output-topology` POST guard checked against
-`jasper.web.sound_setup`; active-speaker commissioning state checked
-against the focused `/sound/` tests)
+Last verified: 2026-06-23 (active-speaker `/sound/` commissioning UX checked
+against `deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`,
+`jasper.active_speaker.calibration_level`, and the focused `/sound/` tests for
+channel selectors, cancellable combined-test Stop, phone-mic removal from the
+core flow, one-intent save/apply, and the 10 dB audible ramp step. Prior
+2026-06-22 recheck covered topology
+reset recovery and stale `/sound/output-topology` POST guard against
+`jasper.web.sound_setup`; active-speaker commissioning state against the focused
+`/sound/` tests.)

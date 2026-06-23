@@ -227,14 +227,17 @@ The **Test each driver** card owns the guarded driver-check controls.
 The primary UI no longer refreshes the old backend checklist/grid or asks the
 user to understand environment, path-safety, staging, startup-load, or
 safe-session probes as separate steps. Active 2/3-way groups present one
-commission action at a time: start a continuous quiet tone, keep **Stop tone**
-visible, and ask whether the named driver was heard. Internally,
+commission action at a time: **Play** prepares a continuous quiet tone, moves
+through a disabled preparing state while the backend opens the protected path,
+then becomes a red **Stop** button once JTS believes audio is active. The only
+positive result is driver-specific (**I hear the woofer/tweeter/midrange**);
+**Back to configuration** reopens the DAC-channel assignment card if the wrong
+driver or output mapping is suspected. Internally,
 `/sound/active-speaker/commission-load` repairs missing software guards and
 loads the protected active graph, then
 `/sound/active-speaker/commission-ramp-step` raises only the selected driver in
-bounded guarded steps over about 30 seconds while the same cancellable tone keeps
-playing. **I hear the tone** and **Wrong driver** remain visible beside Stop;
-transient "raising" progress copy is not shown, so the card does not flap while
+larger bounded guarded steps while the same cancellable tone keeps playing.
+Transient "raising" progress copy is not shown, so the card does not flap while
 audio is playing. Passive/full-range layouts render **No active driver test** and
 use the normal listening path; there is no separate direct-DAC driver test in
 the product UI. The tone frequency is role-native where that improves operator
@@ -291,12 +294,15 @@ the live DSP graph. The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
 is explicitly not enabled for product active-crossover playback yet. The
 confirm-outputs card shows a top-down speaker sketch plus flat **DAC output
-assignments**: each assigned physical output names the speaker/driver role it
-feeds and whether the operator has confirmed the wire. Users can mark or clear
-an assigned output as physically verified only after external wiring
-inspection, dummy-load/DMM checks, or a future low-level channel test confirms
-the driver. Identity evidence is stored in the topology contract, but it is
-not playback permission and it does not satisfy tweeter protection or
+assignments**. Each driver row has a channel selector; if there are exactly two
+physical outputs and two drivers in the group, choosing one output auto-fills
+the peer driver with the remaining output. Larger output sets require explicit
+unique choices. Saving the draft reruns backend validation, and the backend
+still rejects duplicate or missing physical-channel assignments. Users can then
+mark or clear an assigned output as physically verified only after external
+wiring inspection, dummy-load/DMM checks, or a future low-level channel test
+confirms the driver. Identity evidence is stored in the topology contract, but
+it is not playback permission and it does not satisfy tweeter protection or
 path-safety blockers by itself.
 The bottom **Reset speaker setup** action is a recovery control. It stops any
 active-speaker tone/session, resets `/var/lib/jasper/output_topology.json` to a
@@ -338,29 +344,35 @@ the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
 the protected graph. The normal product UI does not require a user to understand
 or click those controls.
 The same walkthrough then opens **Validate and apply**. That card first runs a
-short combined-speaker test through `/sound/active-speaker/summed-test`; the
+short combined-speaker test through `/sound/active-speaker/summed-test`; while
+that request is preparing/playing, the same CTA moves through **Preparing** into
+a red **Stop** state backed by `/sound/active-speaker/summed-test/stop`. The
 summed crossover validation POST at
 `/sound/active-speaker/summed-validation` must reference the latest audible
 combined-test record for that group. The combined-test card has its own bounded
 test-level slider so low-sensitivity drivers can be raised from the safe floor
-without changing normal listening volume; each play request still goes through
-the backend audible-ramp guard. For the current product flow, an explicit
-operator listening result (`operator_listening_check`) can validate **Blend
-sounds right** when no browser microphone reading is captured; mic-backed
-summed captures remain richer acoustic evidence, not the only way to unlock the
-first active profile. Artifact-only or stale summed-test records cannot unlock
-the active profile. After summed validation,
+without changing normal listening volume; the operator controls the requested
+combined-test level across the commissioning envelope, while the backend still
+clamps absolute min/max bounds and logs the emitted level. For the current
+product flow, an explicit operator listening result
+(`operator_listening_check`) can validate **Sounds right** when no browser
+microphone reading is captured. The `/sound/` core flow no longer offers a
+phone-mic capture button; microphone-based level and delay work belongs in the
+HTTPS measurement/correction experience. Artifact-only or stale summed-test
+records cannot unlock the active profile. After summed validation,
 `/sound/active-speaker/baseline-profile` compiles the saved topology, visible
 crossover settings, fresh crossover preview, driver-check evidence, and summed
 validation into
 `/var/lib/camilladsp/configs/active_speaker_baseline.yml` plus
 `/var/lib/jasper/active_speaker_baseline_profile.json`. Compile is still
-no-audio and does not load CamillaDSP. Applying the profile is a separate,
-explicit `/sound/active-speaker/baseline-profile/apply` action that uses the
-shared DSP apply transaction. It is currently enabled only for the outputd-owned
-active output lane; other hardware paths can save the profile for review, but
-the UI keeps Apply disabled until that handoff is supported. After apply
-succeeds the UI can truthfully say this is now the active speaker profile.
+no-audio and does not load CamillaDSP. The UI exposes one final intent,
+**Save and apply**; the frontend saves the profile, then applies it through the
+separate `/sound/active-speaker/baseline-profile/apply` endpoint when the
+backend reports that this hardware path supports the shared DSP handoff. It is
+currently enabled only for the outputd-owned active output lane; other hardware
+paths can save the profile for review and get clear copy that JTS cannot switch
+normal playback from this page yet. After apply succeeds the UI can truthfully
+say this is now the active speaker profile.
 The guarded startup substrate still persists readable evidence at
 `/var/lib/jasper/active_speaker_staged_config.json` and
 `active_speaker_path_safety.json`. The loader treats saved path-safety evidence
@@ -740,11 +752,16 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-22 (volume-floor global setting and continuous
-calibration-tone endpoints checked against `jasper.sound.settings`,
+Last verified: 2026-06-23 (active-crossover `/sound/` flow checked against
+`deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`, and the
+focused sound setup tests for channel selectors, simplified driver/combined
+CTAs, cancellable combined-test Stop, bounded combined-level control, and the
+one-intent save/apply UI. Prior
+2026-06-22 recheck covered volume-floor global setting and continuous
+calibration-tone endpoints against `jasper.sound.settings`,
 `jasper.web.sound_setup`, and the `/sound/` static module; active-crossover
-driver-research note bounds checked against `jasper.active_speaker.design_draft`,
-and reset cleanup checked against `jasper.active_speaker.reset` plus the
+driver-research note bounds against `jasper.active_speaker.design_draft`,
+and reset cleanup against `jasper.active_speaker.reset` plus the
 `/sound/` reset route. Prior 2026-06-19 recheck covered
 config-preservation/refusal updates for graph-carrier dispatch; see
 HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the

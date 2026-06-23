@@ -797,8 +797,9 @@ async function testMeasuredDriversOpenProfileStep() {
     "Validate and apply",
     "Combined crossover check",
     "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
-    "Record mic capture",
-    "Save active profile",
+    "Sounds right",
+    "Back to adjust crossover",
+    "Save and apply",
   ]) {
     if (!html.includes(expected)) {
       fail("Completed driver checks should advance to the profile card", { expected, html });
@@ -915,10 +916,10 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
   await loadAndSetActiveState(harness);
 
   let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Combined test level") || !html.includes('max="-66"')) {
-    fail("Combined card should expose a bounded next-play level control", { html });
+  if (!html.includes("Combined test level") || !html.includes('min="-80"') || !html.includes('max="-30"')) {
+    fail("Combined card should expose the full commissioning level envelope", { html });
   }
-  harness.dispatchInput({ "data-summed-test-level": "main" }, "-66");
+  harness.dispatchInput({ "data-summed-test-level": "main" }, "-40");
   harness.dispatchClick({
     "data-act": "prepare-summed-test",
     "data-group-id": "main",
@@ -929,10 +930,201 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
   if (posts.length !== 1) {
     fail("Playing the combined test should POST once", { posts });
   }
-  if (posts[0].level_dbfs !== -66) {
-    fail("Combined test should POST the selected bounded level", { posts });
+  if (posts[0].level_dbfs !== -40) {
+    fail("Combined test should POST the selected level inside the envelope", { posts });
   }
   return { combinedTestLevelPostsSelectedBoundedLevel: true };
+}
+
+async function testCombinedTestButtonStopsActiveRequest() {
+  const start = deferred();
+  const stopPosts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "needs_summed_validation",
+      summary: {
+        driver_measurements_complete: true,
+        validated_summed_group_count: 0,
+        summed_validation_complete: false,
+        latest_driver_measurements: {
+          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+        },
+        latest_summed_tests: {},
+        latest_summed_validations: {},
+      },
+      permissions: {},
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "needs_combined_check",
+      test_level: {
+        requested_level_dbfs: -72,
+        min_level_dbfs: -80,
+        max_level_dbfs: -30,
+        step_db: 1,
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_test",
+        status_label: "next",
+        message: "Run the combined speaker test.",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, duration_ms: 500 },
+          },
+        },
+      }],
+    })),
+    "./active-speaker/summed-test": () => start.promise,
+    "./active-speaker/summed-test/stop": (_path, options = {}) => {
+      stopPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({ status: "stopped", reason: "operator_stop" }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const originalSetTimeout = globalThis.window.setTimeout;
+  globalThis.window.setTimeout = (fn, ms) => {
+    if (ms === 250) {
+      queueMicrotask(fn);
+      return 1;
+    }
+    return originalSetTimeout(fn, ms);
+  };
+  try {
+    harness.dispatchClick({
+      "data-act": "prepare-summed-test",
+      "data-group-id": "main",
+      "data-label": "Main speaker",
+    });
+    await harness.flush(); await harness.flush(); await harness.flush();
+    let html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
+      fail("combined test should turn into a fixed red Stop action while active", { html });
+    }
+    harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
+    await harness.flush(); await harness.flush(); await harness.flush();
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+  }
+  if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_stop") {
+    fail("Stop should post to the combined-test stop endpoint once", { stopPosts });
+  }
+  start.resolve(response({
+    playback: { status: "stopped", audio_emitted: false, confirmable: false },
+    calibration_level: levelPayload(-40),
+    measurements: { status: "needs_summed_validation", summary: {} },
+  }));
+  await harness.flush(); await harness.flush();
+  return { combinedTestButtonStopsActiveRequest: true };
+}
+
+async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels[0].human_output_label = "Old woofer label";
+  topology.speaker_groups[0].channels[1].human_output_label = "Old tweeter label";
+  const saves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        saves.push(body.output_topology);
+        return Promise.resolve(response({
+          output_topology: body.output_topology,
+          topology_revision: "saved-1",
+        }));
+      }
+      return Promise.resolve(response(topology));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes("swaps with Main speaker · Tweeter")) {
+    fail("two-output selector should allow swapping with the peer channel", { initialHtml });
+  }
+
+  harness.dispatchChange({
+    value: "1",
+    getAttribute(name) {
+      return { "data-group-id": "main", "data-role": "woofer" }[name] || "";
+    },
+    hasAttribute(name) { return name === "data-output-channel"; },
+  });
+  await harness.flush();
+  harness.dispatchClick({ "data-act": "save-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (saves.length !== 1) fail("selector save should POST one topology", { saves });
+  const channels = saves[0].speaker_groups[0].channels;
+  const byRole = Object.fromEntries(channels.map((channel) => [channel.role, channel]));
+  if (byRole.woofer.physical_output_index !== 1 ||
+      byRole.tweeter.physical_output_index !== 0) {
+    fail("two-output selector should auto-assign the peer to the remaining channel", { channels });
+  }
+  if (byRole.woofer.identity_verified !== false ||
+      byRole.tweeter.identity_verified !== false) {
+    fail("changing channel assignment should clear identity verification", { channels });
+  }
+  if ("human_output_label" in byRole.woofer || "human_output_label" in byRole.tweeter) {
+    fail("changing channel assignment should clear stale human labels", { channels });
+  }
+  return { twoOutputChannelSelectorAutoAssignsPeerOnSave: true };
+}
+
+async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
+  const topology = activeThreeWayTopologyPayload();
+  topology.speaker_groups[0].channels[0].physical_output_index = null;
+  const saves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        saves.push(body.output_topology);
+        return Promise.resolve(response({
+          output_topology: body.output_topology,
+          topology_revision: "saved-1",
+        }));
+      }
+      return Promise.resolve(response(topology));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchChange({
+    value: "0",
+    getAttribute(name) {
+      return { "data-group-id": "main", "data-role": "woofer" }[name] || "";
+    },
+    hasAttribute(name) { return name === "data-output-channel"; },
+  });
+  await harness.flush();
+  harness.dispatchClick({ "data-act": "save-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (saves.length !== 1) fail("three-output selector save should POST one topology", { saves });
+  const channels = saves[0].speaker_groups[0].channels;
+  const byRole = Object.fromEntries(channels.map((channel) => [channel.role, channel]));
+  if (byRole.woofer.physical_output_index !== 0 ||
+      byRole.mid.physical_output_index !== 1 ||
+      byRole.tweeter.physical_output_index !== 2) {
+    fail("three-output selector should only update the selected driver", { channels });
+  }
+  if (byRole.woofer.identity_verified !== false ||
+      byRole.mid.identity_verified !== true ||
+      byRole.tweeter.identity_verified !== true) {
+    fail("three-output selector should not clear peer identity verification", { channels });
+  }
+  return { threeOutputChannelSelectorDoesNotAutoAssignPeers: true };
 }
 
 async function testCompiledProfileApplyBlockStaysUnderstandable() {
@@ -1007,8 +1199,7 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
   for (const expected of [
     "saved for review",
     "cannot switch normal playback to it from here yet",
-    "Rebuild profile",
-    "Apply active profile",
+    "Save profile",
   ]) {
     if (!html.includes(expected)) {
       fail("Apply-blocked profiles should explain the limitation in user terms", { expected, html });
@@ -1439,9 +1630,9 @@ async function testCommissionCardArmsAndSteps() {
   if (!html.includes('class="commission-card"')) fail("commission card not rendered", { html });
   if (html.includes('data-act="commission-arm"')) fail("arm button should not be visible", { html });
   if (!html.includes('data-act="commission-step"')) fail("start button missing before arm", { html });
-  if (!html.includes(">Start tone</button>")) fail("idle card should expose Start tone", { html });
+  if (!html.includes(">Play Woofer</button>")) fail("idle card should expose Play Woofer", { html });
 
-  // Start tone silently opens the quiet driver setup, then begins the
+  // Play silently opens the quiet driver setup, then begins the
   // automatic ramp. The card treats the whole ramp as one playing state; "too
   // quiet" is internal, not a visible operator button.
   harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
@@ -1458,7 +1649,7 @@ async function testCommissionCardArmsAndSteps() {
   }
   html = harness.elements.get("view-body").innerHTML;
   let cardHtml = commissionCardHtml(html);
-  for (const expected of ["Stop tone", "I hear the tone", "Wrong driver"]) {
+  for (const expected of ["Stop", "I hear the woofer", "Back to configuration"]) {
     if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
   }
   for (const expected of ["Status", "Tone playing", "250 Hz"]) {
@@ -1471,7 +1662,7 @@ async function testCommissionCardArmsAndSteps() {
     fail("automatic ramp should not render a changing progress line", { cardHtml });
   }
   if (cardHtml.includes('data-act="commission-abort" disabled')) {
-    fail("Stop tone must stay enabled while the automatic ramp is active", { cardHtml });
+    fail("Stop must stay enabled while the automatic ramp is active", { cardHtml });
   }
   for (const flappy of ["Raising", "Starting Woofer tone", "Recording…"]) {
     if (cardHtml.includes(flappy)) fail("automatic ramp should not surface transient busy copy", { flappy, cardHtml });
@@ -1581,9 +1772,9 @@ async function testStaleRampConfirmationsDoNotCompleteDriverChecks() {
   return { staleRampConfirmationsDoNotCompleteDriverChecks: true };
 }
 
-async function testDriverCaptureAfterRampConfirmationPostsMicPayload() {
+async function testDriverMicCaptureIsRemovedFromSoundFlow() {
   const confirmedTopology = activeTwoWayTopologyPayload();
-  let measurements = {
+  const measurements = {
     status: "needs_driver_measurements",
     summary: {
       required_driver_count: 2,
@@ -1598,7 +1789,6 @@ async function testDriverCaptureAfterRampConfirmationPostsMicPayload() {
     permissions: { may_compile_baseline: false },
     issues: [],
   };
-  const capturePosts = [];
   const commissionState = {
     commission_load: { status: "rolled_back", target: {}, rollback_available: false },
     ramp: { confirmed_roles: ["woofer"], pending: null },
@@ -1616,60 +1806,17 @@ async function testDriverCaptureAfterRampConfirmationPostsMicPayload() {
     "./output-topology": () => Promise.resolve(response(confirmedTopology)),
     "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
     "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/driver-capture": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      capturePosts.push(body);
-      measurements = {
-        ...measurements,
-        summary: {
-          ...measurements.summary,
-          captured_driver_count: 1,
-          latest_driver_measurements: {
-            "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          },
-        },
-      };
-      return Promise.resolve(response({
-        recorded: true,
-        verdict: "present",
-        outcome: "heard_correct_driver",
-        measurement: measurements,
-      }));
-    },
   });
   const harness = setupHarness(fetchHandler);
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-  const originalSetTimeout = globalThis.window.setTimeout;
-  globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
-  try {
-    let html = harness.elements.get("view-body").innerHTML;
-    if (!html.includes('data-act="record-driver-capture"')) {
-      fail("confirmed ramp should expose driver mic capture", { html });
-    }
-    if (html.includes("not yet wired")) {
-      fail("driver capture follow-up should not claim measurement is unwired", { html });
-    }
-
-    harness.dispatchClick({
-      "data-act": "record-driver-capture",
-      "data-group-id": "main",
-      "data-role": "woofer",
-      "data-playback-id": "pb-woofer",
-    });
-    await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-    if (capturePosts.length !== 1) fail("driver capture should POST once", { capturePosts });
-    const body = capturePosts[0];
-    if (body.speaker_group_id !== "main" || body.role !== "woofer" || body.playback_id !== "pb-woofer") {
-      fail("driver capture should bind to the accepted floor result", { body });
-    }
-    if (!body.capture || !body.capture.wav_base64) {
-      fail("driver capture should upload a WAV payload", { body });
-    }
-  } finally {
-    globalThis.window.setTimeout = originalSetTimeout;
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes('data-act="record-driver-capture"')) {
+    fail("driver mic capture should not be part of the /sound flow", { html });
   }
-  return { driverCaptureAfterRampConfirmationPostsMicPayload: true };
+  if (!html.includes("Mic-based level matching is a separate HTTPS measurement step")) {
+    fail("driver follow-up should point mic work to the separate HTTPS flow", { html });
+  }
+  return { driverMicCaptureIsRemovedFromSoundFlow: true };
 }
 
 function summedSummary(latestSummedTests) {
@@ -1689,12 +1836,11 @@ function summedSummary(latestSummedTests) {
   };
 }
 
-async function testSummedOffersByEarAndMicValidation() {
-  // The combined crossover check is phone-OPTIONAL: a by-ear "Blend sounds right"
-  // (operator_listening_check) and a mic capture are BOTH offered. The by-ear
-  // positive is still gated on an audible combined test (you can't certify a
-  // blend you didn't hear), and the mic stays available as the more reliable
-  // check for a polarity/delay null.
+async function testSummedByEarValidationExcludesMicCapture() {
+  // The combined crossover check is phone-optional in the product sense: the
+  // core /sound flow offers a by-ear "Sounds right" path and keeps microphone
+  // capture out of this HTTP page. The by-ear positive is still gated on an
+  // audible combined test (you can't certify a blend you didn't hear).
   const confirmedTopology = activeTwoWayTopologyPayload();
 
   // (1) No audible combined test yet -> the by-ear positive must be DISABLED
@@ -1717,8 +1863,9 @@ async function testSummedOffersByEarAndMicValidation() {
     }
   }
 
-  // (2) An audible combined test exists -> by-ear AND mic paths both offered, and
-  //     the by-ear positive POSTs an operator listening check (no WAV).
+  // (2) An audible combined test exists -> the by-ear path is offered, the mic
+  //     path is absent from /sound, and the positive POSTs an operator listening
+  //     check (no WAV).
   {
     const measurements = {
       status: "needs_summed_validation",
@@ -1742,8 +1889,8 @@ async function testSummedOffersByEarAndMicValidation() {
     globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
     try {
       const html = harness.elements.get("view-body").innerHTML;
-      if (!html.includes('data-act="record-summed-capture"')) {
-        fail("summed validation should still offer the mic capture", { html });
+      if (html.includes('data-act="record-summed-capture"')) {
+        fail("summed validation should keep mic capture out of the /sound flow", { html });
       }
       if (!/data-outcome="blend_ok"(?![^>]*\sdisabled)/.test(html)) {
         fail("by-ear blend confirmation should be enabled after an audible test", { html });
@@ -1767,7 +1914,7 @@ async function testSummedOffersByEarAndMicValidation() {
       globalThis.window.setTimeout = originalSetTimeout;
     }
   }
-  return { summedOffersByEarAndMicValidation: true };
+  return { summedByEarValidationExcludesMicCapture: true };
 }
 
 async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
@@ -1795,7 +1942,7 @@ async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   if (!html.includes('data-act="commission-ack"')) {
     fail("pending ramp step must expose acknowledgement buttons even with a stale floor flag", { html });
   }
-  for (const expected of ["Stop tone", "I hear the tone", "Wrong driver"]) {
+  for (const expected of ["Stop", "I hear the woofer", "Back to configuration"]) {
     if (!cardHtml.includes(expected)) fail("pending ramp step should reuse the stable playing row", { expected, cardHtml });
   }
   for (const hidden of ["Too quiet", "Too loud"]) {
@@ -2234,6 +2381,9 @@ results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
+results.push(await testCombinedTestButtonStopsActiveRequest());
+results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
+results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());
@@ -2244,8 +2394,8 @@ results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testCommissionCardArmsAndSteps());
 results.push(await testCommissionCompleteDoesNotWrapToWoofer());
 results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
-results.push(await testDriverCaptureAfterRampConfirmationPostsMicPayload());
-results.push(await testSummedOffersByEarAndMicValidation());
+results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());
+results.push(await testSummedByEarValidationExcludesMicCapture());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());

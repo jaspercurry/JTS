@@ -20,7 +20,7 @@ The page should help them answer six questions, in order:
 1. What am I building?
 2. What drivers am I using?
 3. What DAC output goes to each driver?
-4. Can I measure each driver safely?
+4. Can I hear each driver on the intended channel?
 5. Does the crossover blend when drivers are summed?
 6. Is this ready to become my active speaker profile?
 
@@ -135,6 +135,7 @@ Good language:
 
 - "Confirm outputs"
 - "Confirm output"
+- "DAC channel"
 - "Choose woofer · Output 1"
 - "JTS will start this driver at the quietest level"
 
@@ -148,9 +149,15 @@ Avoid:
   JTS checks readiness internally
 - forcing the user to raise a level one decibel at a time just to discover
   audibility; the UI should raise toward audible in meaningful bounded steps
-  while Stop and "I hear the tone" remain live for the continuous tone session
+  while one stable Play/Stop control and "I hear the woofer/tweeter" remain
+  visible for the continuous tone session
 
-### 4. Measure Drivers
+Channel assignment belongs in this card. The user must be able to choose the
+physical DAC output for each driver. If there are exactly two outputs and two
+drivers, choosing one may auto-fill the other; with three or more outputs the
+flow should require explicit unique assignments before save.
+
+### 4. Test Drivers
 
 This card should not read like a safety audit. It is where the backend enforces
 the real gates, but the visible interface should explain the next action
@@ -174,8 +181,9 @@ the safe audio path ready behind the scenes, start at the quietest level, then
 record what happened.
 Detailed gate evidence belongs in diagnostics or error details, not the primary
 setup walkthrough. The UI should name the exact driver being tested before any
-sound can play, and should tell the user to press Stop if the wrong driver,
-silence, or too much level appears.
+sound can play, hold the primary control in a disabled "getting ready" state
+while the backend prepares the path, then turn it into Stop only once the tone
+session is actually active.
 
 The user does not need to understand "quiet test mode" as a separate setup
 task. Once outputs are confirmed, driver choices should be visible. Clicking
@@ -190,10 +198,11 @@ evidence labels before choosing the driver they want to hear.
 Good language:
 
 - "Test each driver"
-- "Start quiet woofer test"
+- "Play woofer"
 - "Tone playing at 250 Hz"
-- "What did you hear?"
-- "Too loud" as an always-available operator answer
+- "I hear the woofer"
+- "Back to configuration"
+- "Stop"
 
 Avoid:
 
@@ -201,59 +210,47 @@ Avoid:
 - exposing machine status names without translating them
 - presenting "playback allowed: no" before explaining what unlocks it
 - showing backend checklists or grids in the primary flow
+- extra outcome buttons such as "wrong driver" or "too loud"; Stop and Back to
+  configuration are the recovery actions
 
 ### 5. Validate Crossover Blend
 
 After each driver has been confirmed on its own, the user needs one summed check
 per active speaker group. This is still a guided setup action, not a lab report:
 the UI should say which drivers will be heard together, play the combined test,
-then have the user confirm the blend. Polarity and delay are technical
-implementation details, but they can be captured as simple problem outcomes when
-the user hears something wrong. The combined test also needs a bounded level
-control for low-sensitivity drivers: the user can raise the next play from the
-quiet floor, while the backend still limits upward motion and logs the emitted
-level.
+then have the user confirm the blend. The core `/sound/` flow should not try to
+troubleshoot every bad blend outcome. If the user is unsure, they go back to
+the crossover configuration; deeper microphone-based level/delay work belongs
+in the HTTPS measurement flow.
 
-The phone is OPTIONAL throughout — a household can finish entirely by ear. After
-an audible combined test, the user confirms the blend either by ear ("Blend
-sounds right") or, more reliably, by recording a phone-mic capture. Both paths
-are gated on having actually played the combined test — you can't certify a
-blend you didn't hear — and the mic capture stays the recommended check because
-a polarity/delay null can be hard to judge by ear. (Earlier drafts required the
-mic capture for the positive verdict; that was relaxed in 2026-06 so the whole
-commissioning flow can be completed without a phone — see
-[HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) "the whole phone
-flow is OPTIONAL".)
+The combined test needs a clear bounded level control for low-sensitivity
+drivers. The user controls the next play across the full commissioning envelope
+and starts low; the backend still enforces absolute min/max safety bounds and
+logs the emitted level.
 
 Good language:
 
 - "Check the crossover blend"
-- "Blend sounds right"
-- "Measure with mic (optional)"
-- "Sounds hollow or weak"
-- "Needs level or delay adjustment"
+- "Play combined test"
+- "Sounds right"
+- "Back to adjust crossover"
 
 Avoid:
 
 - "in-phase sum" as the primary button label
 - asking the user to choose a delay before they know what problem they heard
-- treating this as a replacement for future acoustic measurement automation
+- in-flow phone-mic capture; link to the HTTPS measurement experience after the
+  basics are complete
+- negative troubleshooting CTAs such as "sounds hollow" or "needs adjustment"
 
 ### 6. Validate And Apply
 
-The final card should make the handoff explicit: JTS has a measured setup,
+The final card should make the handoff explicit: JTS has a checked setup,
 checked the combined speaker, compiled the baseline speaker profile, and the
-user is choosing whether to make it active. The card owns three separate user
-actions:
-
-- **Play combined test** runs a short, quiet combined-driver test from the
-  prepared crossover setup at the selected bounded test level.
-- **Record mic capture** records the combined crossover validation; it must be
-  tied to the latest audible combined test and produce usable mic evidence.
-- **Save active profile** writes the candidate CamillaDSP YAML and durable
-  profile state, but does not load it.
-- **Apply active profile** loads that profile through the normal DSP apply
-  transaction when this hardware path supports it.
+user is choosing whether to make it active. It should have one primary action:
+**Save and apply**. The frontend sends that intent; the backend writes the
+candidate profile and applies it through the normal DSP transaction when this
+hardware path supports it.
 
 If apply is not supported for the current hardware path, the card should say
 that plainly: the profile can be saved for review, but JTS cannot switch normal
@@ -262,9 +259,7 @@ playback to it from this page yet.
 Good language:
 
 - "Validate and apply"
-- "Play combined test"
-- "Save active profile"
-- "Apply active profile"
+- "Save and apply"
 - "This is now your active speaker profile"
 
 Avoid:
@@ -293,21 +288,20 @@ Avoid:
   cards, translate it to the relevant human task ("test this driver",
   "save crossover settings", "choose one driver"). Reserve stronger
   failure language for an explicit unsafe action attempt or a failed probe.
-- Driver measurement should stay explicit: recording a correct-driver result
-  with mic/calibration evidence is what lets the flow move from individual
-  driver setup to summed crossover validation. That evidence must be tied to
-  the exact saved output target that was tested; if the user changes the speaker
-  layout or DAC assignment, the old measurement can remain visible as history
-  but should no longer satisfy the current step.
-- Phone-mic capture is now the product success path for driver measurements and
-  summed validation. The hardware-free implementation can submit bounded WAV
-  evidence and record acoustic verdicts, but JTS3 still needs live validation of
-  real playback timing, browser mic capture quality, room noise, and driver
-  response before the copy should imply the speaker has been acoustically proven.
-- "Raise toward audible" should be product language for one backend-bounded
-  step. A true 5-15 second rising tone needs a playback backend that owns the
-  running process and can stop immediately; do not fake that interaction with
-  the current synchronous one-shot tone backend.
+- Driver checks in the core `/sound/` flow are now explicit by-ear confirmations:
+  "I hear the woofer/tweeter" advances the walkthrough, while output-channel
+  changes clear the stale identity evidence. Mic/calibration evidence should
+  remain tied to the exact saved output target when it is exposed in the separate
+  HTTPS measurement experience.
+- Phone-mic capture exists in backend endpoints and the shared measurement core,
+  but it is no longer part of the core `/sound/` active-crossover path. The next
+  product step is to mount that experience under the HTTPS measurement/correction
+  framework so browser mic permissions, calibrated-mic guidance, and acoustic
+  proof live together.
+- "Raise toward audible" should be product language for a user-controlled level
+  slider and a backend-bounded test. Running tones need a playback backend that
+  owns the process and can stop immediately; do not fake that interaction with a
+  synchronous one-shot tone.
 - The profile compiler should surface the user-owned values it consumed:
   crossover settings, trims/attenuation, measured driver evidence, and summed
   validation. Hidden JSON import or backend safety evidence must not be the only

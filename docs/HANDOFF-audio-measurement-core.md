@@ -88,7 +88,12 @@ The product is three tiers:
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
   deltas into a per-driver attenuation that **overrides** the datasheet
   sensitivity trim (fail-closed to the datasheet, marked *provisional*, when a
-  capture is silent/clipped/low-SNR/missing). See "L1 measured level match" below.
+  capture is silent/clipped/low-SNR/missing). **Product routing changed
+  2026-06-23:** the capture endpoints/core remain available, but the core
+  `/sound/` active-crossover walkthrough no longer exposes browser mic capture;
+  it uses by-ear driver and combined confirmations, then should hand users to a
+  separate HTTPS measurement/correction experience for acoustic proof. See
+  "L1 measured level match" below.
 - ~~**`DriverSpec.sensitivity_db` is stored but never read to set gain.**~~
   **CLOSED.** `baseline_profile._derive_corrections` derives an interim per-driver
   trim from the declared sensitivities (the ~25 dB woofer/horn gap is
@@ -384,7 +389,7 @@ gate**; no big-bang. "Extract/move" ≠ "net-new".
 | **0. Spike** | ~150-line CLI: route a band-limited sweep to one driver through the production graph → capture via existing pipeline → print proposed trim | ~1 day | net-new (throwaway) | a real "tweeter +25 dB" number from JTS3 hardware |
 | **1. GraphValidator** | Extract one `graph_safety.GraphValidator`; call it at the `camilla_yaml` emit gate; replace the ≈4 parsers; add `test_graph_validator_rejects_flat_with_tweeter_role` | M | extract + 1 net-new gate | parsers deduped, all old safety tests pass, flat-with-tweeter is rejected (fixes JTS3 L0) |
 | **2. Kernel extraction** | Move pure `sweep/deconv/analysis/quality` into `jasper/audio_measurement/`; wrap with characterization tests (pass unchanged); add parameterized `QualityModel` | M | extract | correction + active-speaker import the kernel; behavior identical |
-| **3. Close Stage 6** | Wire `commissioning_capture` into a production caller + `/sound/` UI card; read `DriverSpec.sensitivity_db` → propose per-driver trim; register commissioning into `measurement_window`; `measurement_mode` enum | L | net-new wiring | L0+L1 ship: a user level-matches a 2-way and hears it; trim persists + re-freezes — **mostly landed (2026-06-20), see "L1 measured level match"; on-Pi (jts3) audible pass owed** |
+| **3. Close Stage 6** | Keep `commissioning_capture` as the production measurement core; move the browser-mic active-crossover experience out of the HTTP `/sound/` walkthrough and into the HTTPS measurement/correction framework; read `DriverSpec.sensitivity_db` → propose per-driver trim; register commissioning into `measurement_window`; `measurement_mode` enum | L | net-new UI/routing | L0+L1 core ship: a user can level-match a 2-way and hear it; trim persists + re-freezes — **mostly landed (2026-06-20), see "L1 measured level match"; HTTPS UI integration and on-Pi (jts3) audible pass owed** |
 | **4. Balance/sync as 3rd consumer** | Reuse the kernel + bundles for pair level-match (and Delay/Snapcast for sync); persist durable bundles | M | net-new adapter | leader-measured pair balance rides the core with no forked DSP |
 
 **Progress (2026-06-19):** Phase 1 slice 1 landed (additive, no caller
@@ -557,4 +562,4 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-06-21
+Last verified: 2026-06-23
