@@ -570,6 +570,14 @@ def outputd_grouping_env(
         # every other channel — a non-sub member must never carry it.
         if cfg.channel == "sub":
             env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] = str(cfg.crossover_hz)
+            # A sub plays only low-passed bass and NEVER voice. outputd mixes
+            # TTS/cues AFTER the ChannelPick low-pass, so an armed TTS lane on a
+            # sub would emit FULL-RANGE speech to the subwoofer. A sub is always
+            # a follower, whose voice is parked today (nothing feeds the socket),
+            # but clear it so that hazard cannot exist by construction — same
+            # disable-clears-stale idiom as the off path below (empty = unset to
+            # outputd, so no TTS server is constructed on a sub).
+            env[OUTPUTD_TTS_SOCKET_ENV] = ""
         return env
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",

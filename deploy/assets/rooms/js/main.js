@@ -42,7 +42,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
-import { airplayLipSyncRow, subCornerLabel } from "./grouping-view.js";
+import { airplayLipSyncRow, createFaceCopy, subCornerLabel } from "./grouping-view.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -514,29 +514,43 @@ function makeBondCard() {
     "Create a stereo pair: this speaker plays the left channel and the one " +
     "you pick plays the right. Both are configured automatically — no " +
     "settings files, no per-speaker setup.");
+  const pickerLabel = h("span.bond-row__label", null,
+    "This speaker is Left — pair with");
   const picker = h("div.bond-row", null,
-    h("span.bond-row__label", null, "This speaker is Left — pair with"),
+    pickerLabel,
     select,
     roleSelect,
     createBtn,
   );
 
-  // Show the corner input only for the subwoofer role; the picker stays the
-  // same shape for a stereo pair (no surprise field).
+  // Retitle the create face to match the picked role: a button reading "Create
+  // stereo pair" must never be how you add a subwoofer. The corner input is
+  // shown only for the sub role; the picker keeps its shape otherwise (no
+  // surprise field). title is owned by showFace (bonded vs create) and re-read
+  // there from the same helper, so a poll can't revert the create-face title.
+  // NB: the initial call is deferred until after `title` is defined (below) to
+  // stay out of its const temporal-dead-zone.
   function syncRoleControls() {
+    const copy = createFaceCopy(roleSelect.value);
     crossoverRow.style.display = roleSelect.value === "sub" ? "" : "none";
+    title.textContent = copy.title;
+    createIntro.textContent = copy.intro;
+    pickerLabel.textContent = copy.label;
+    createBtn.textContent = copy.button;
   }
   roleSelect.addEventListener("change", syncRoleControls);
-  syncRoleControls();
 
   // --- Dissolve face: a legible summary + the danger button ---------------
   // The summary line is filled per-sync (it depends on role/channel); kept as
   // a single element so sync() can rewrite its text children safely.
   const currentSummary = h("p.bond-current");
   const dissolveBtn = h("button.btn.btn--danger",
-    { type: "button" }, "Dissolve pair");
+    { type: "button" }, "Dissolve group");
+  // Neutral "group" wording: this face also shows a main+subwoofer bond, not
+  // only a stereo pair (the leader can't tell the peer's role from its own
+  // grouping state, so the copy must read true for both).
   const dissolveIntro = h("p.info-card__note", null,
-    "This speaker is part of a stereo pair. Dissolving sends both speakers " +
+    "This speaker is grouped with another. Dissolving sends both speakers " +
     "back to playing on their own.");
   const swapBtn = h("button.btn",
     { type: "button" }, "Swap left \u2194 right");
@@ -604,6 +618,8 @@ function makeBondCard() {
     h("div.section__head", null, title),
     body,
   );
+  // Initial create-face copy (deferred to here — out of `title`'s TDZ above).
+  syncRoleControls();
 
   function setEnabled(on) {
     select.disabled = !on;
@@ -624,7 +640,11 @@ function makeBondCard() {
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
     trimBlock.style.display = bonded ? "" : "none";
-    title.textContent = bonded ? "Stereo pair" : "Create a stereo pair";
+    // Bonded → a neutral dissolve-face title; create → the role-aware title
+    // (so a 7 s poll re-asserts "Add a wireless subwoofer", not "stereo pair").
+    title.textContent = bonded
+      ? "Speaker grouping"
+      : createFaceCopy(roleSelect.value).title;
   }
 
   // One-line legible summary of the current bond. Untrusted channel/leader_addr
@@ -765,7 +785,7 @@ function makeBondCard() {
 
   async function dissolve() {
     const ok = await jtsConfirm(
-      "Dissolve this stereo pair? Both speakers go back to playing on their own.",
+      "Dissolve this speaker group? Both speakers go back to playing on their own.",
       { danger: true },
     );
     if (!ok) return;

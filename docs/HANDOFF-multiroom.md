@@ -854,6 +854,19 @@ independently (hundreds of ms under WiFi jitter), and "sub sync is loose" covers
 ~10 ms phase, not inter-stream drift. So the **stereo pair (2-ch) is the first
 deliverable; 2.1 is the 3-ch generalisation**, not a parallel stream.
 
+> **Superseded for the SHIPPED dumb sub (2026-06-23).** The 3-ch L/R/LFE plan
+> above assumed the sub needs a *dedicated* LFE channel on the wire. The shipped
+> wireless sub doesn't: it rides the **existing 2-ch stereo stream**, picks a
+> clip-safe **mono sum** of L+R, and low-passes it **receiver-side** in
+> `jasper-outputd` (`ChannelPick::Sub`, LR4 at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`).
+> Because the sub derives its lows from the full-range L+R already on the wire,
+> no LFE channel — and so no stream-format change, no second stream — is needed,
+> and `outputd`'s stereo AEC-reference contract is untouched. The 3-ch stream
+> stays the (still-unbuilt) answer **only** if a household ever needs a
+> *sender-side pre-baked* sub (a cheap endpoint that can't run a local low-pass).
+> Canonical: [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)
+> "Subwoofer — two different subs" (gap 5, receiver-side default).
+
 **Sources:** snapcast#747 (channel-drop is the way; separate streams don't sync) ·
 Music Assistant Snapcast provider (Left/Right/Mono toggle) · CamillaDSP docs
 (per-channel `Filter`; `File`/pipe has no rate-adjust; capture-loopback clock

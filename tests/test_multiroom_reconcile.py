@@ -535,6 +535,24 @@ def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
         assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in env
 
 
+def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
+    """A sub plays only low-passed bass and NEVER voice; outputd mixes TTS AFTER
+    the low-pass, so a sub must NOT arm the outputd TTS lane (else full-range
+    speech would reach the subwoofer). Every non-sub member keeps it armed."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_TTS_SOCKET,
+        OUTPUTD_TTS_SOCKET_ENV,
+        outputd_grouping_env,
+    )
+
+    sub = outputd_grouping_env(_follower(channel="sub"))
+    assert sub[OUTPUTD_TTS_SOCKET_ENV] == ""  # cleared = unset to outputd
+
+    for ch in ("left", "right", "stereo", "mono"):
+        env = outputd_grouping_env(_follower(channel=ch))
+        assert env[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
+
+
 def test_outputd_grouping_env_no_sub_corner_when_not_active_member():
     """An active-endpoint sub (camilla owns the pick) and a disabled config
     both clear the lane — the corner key is never emitted there."""

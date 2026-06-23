@@ -268,7 +268,17 @@ What exists:
   DAC from that raw-PCM FIFO (the member round-trip written by a
   localhost snapclient) instead of `outputd_content_capture`, picking
   one channel of the shared stereo program via
-  `JASPER_OUTPUTD_DAC_CONTENT_CHANNEL` (`stereo`/`left`/`right`/`mono`).
+  `JASPER_OUTPUTD_DAC_CONTENT_CHANNEL` (`stereo`/`left`/`right`/`mono`/`sub`).
+  `sub` is the wireless-subwoofer pick: outputd mono-sums the program
+  (clip-safe) then applies a 4th-order Linkwitz-Riley **low-pass** at
+  `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ` (default 80 Hz, the reconciler emits it
+  only for a `sub` member) before the DAC — the one place outputd does spectral
+  DSP, deliberately, because the dumb-follower lane bypasses CamillaDSP (the
+  brainy-sub-via-CamillaDSP home awaits the sub lane in the active compiler,
+  gap 6a). It is fail-closed: a `sub` never plays full-range on the FIFO path,
+  the inv-B fallback (`apply_pick_to_fallback_period`), or a missing filter
+  (→ silence). See [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)
+  "Subwoofer — two different subs".
   It falls back to the direct `outputd_content_capture` read whenever
   the FIFO starves, so the leader is never silenced (inv-B). Unset =
   byte-identical to the direct path above. The reference still equals

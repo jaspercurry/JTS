@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import {
   airplayLipSyncRow,
+  createFaceCopy,
   subCornerLabel,
 } from "../../deploy/assets/rooms/js/grouping-view.js";
 
@@ -68,5 +69,27 @@ assert.equal(subCornerLabel(null), "80 Hz low-pass");
 assert.equal(subCornerLabel("x"), "80 Hz low-pass"); // non-numeric
 assert.equal(subCornerLabel(0), "80 Hz low-pass"); // non-positive
 assert.equal(subCornerLabel(-50), "80 Hz low-pass");
+
+// createFaceCopy: the title/intro/label/BUTTON must match the picked role, so a
+// button reading "Create stereo pair" is never how you add a sub. Sub-specific
+// for "sub"; everything else degrades to the unchanged stereo-pair copy.
+{
+  const sub = createFaceCopy("sub");
+  assert.equal(sub.title, "Add a wireless subwoofer");
+  assert.equal(sub.button, "Add subwoofer");
+  assert.ok(/main/.test(sub.label), sub.label); // not "Left"
+  assert.ok(/low end/.test(sub.intro), sub.intro);
+  assert.ok(!/stereo pair/i.test(sub.button), sub.button);
+
+  const pair = createFaceCopy("right");
+  assert.equal(pair.title, "Create a stereo pair");
+  assert.equal(pair.button, "Create stereo pair");
+  assert.ok(/Left/.test(pair.label), pair.label);
+
+  // Unknown / future role → safe stereo-pair default (never the sub copy).
+  const unknown = createFaceCopy("zzz");
+  assert.equal(unknown.button, "Create stereo pair");
+  assert.deepEqual(unknown, pair);
+}
 
 console.log(JSON.stringify({ ok: true }));

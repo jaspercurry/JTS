@@ -278,10 +278,15 @@ root; the install↔unit user contract).
 
 **Shared files must be group-WRITABLE, not just group-readable (2026-06-19 fix).**
 The paragraph above is about cross-daemon *reads*; the multi-*writer* files are
-the trap. `usage.db`, `wake-events.sqlite3`, `timers.db`, and
-`speaker_volume.json` are written by more than one same-`jasper`-group daemon,
+the trap. `usage.db`, `wake-events.sqlite3`, `timers.db`,
+`speaker_volume.json`, and `grouping.env` (+ its `.grouping.env.lock`) are
+written by more than one same-`jasper`-group daemon,
 and — before S2 (below) — the StateDirectory chown flipped their *owner* between
-jasper-voice and jasper-mux on each restart. A file created at the umask-default
+jasper-voice and jasper-mux on each restart. (The grouping pair joined the
+allowlist on 2026-06-23: a pre-`UMask=0007` `.grouping.env.lock` owned by
+jasper-voice/-mux made jasper-control's `/grouping/set` write fail with
+`EACCES` opening the lock `a+`, so the device 502'd and `/rooms` bonding broke
+on any box bonded before the heal landed.) A file created at the umask-default
 `0644` is group-read-**only**, so once the owner flipped, the non-owner daemon got
 `sqlite3.OperationalError: attempt to write a readonly database` — and the
 speaker then played the (false) `cant_connect` cue instead of answering.

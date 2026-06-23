@@ -667,7 +667,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       outputTopology.dirty || outputTopology.touched;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced" data-active-speaker-setup' + (open ? ' open' : '') + '>' +
-        '<summary>Advanced speaker setup</summary>' +
+        '<summary>Advanced speaker setup — drivers, crossover, subwoofer</summary>' +
         renderOutputTopologySetup() +
       '</details>' +
     '</section>';
