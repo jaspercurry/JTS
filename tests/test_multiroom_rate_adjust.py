@@ -341,6 +341,79 @@ def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
     assert "channel=left" in r.detail
 
 
+def _sub_corner_check(monkeypatch, *, cfg, env_text=None, env_path=None):
+    import jasper.cli.doctor.grouping as groupmod
+    import jasper.multiroom.config as cfgmod
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
+    if env_text is not None:
+        env_path.write_text(env_text)
+    import jasper.multiroom.reconcile as recmod
+    monkeypatch.setattr(
+        recmod, "OUTPUTD_GROUPING_ENV_FILE",
+        str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
+    )
+    return groupmod.check_grouping_sub_corner()
+
+
+def test_sub_corner_check_na_for_non_sub(monkeypatch):
+    r = _sub_corner_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+    )
+    assert r.status == "ok"
+    assert "not an active sub member" in r.detail
+
+
+def test_sub_corner_check_warns_when_env_missing(monkeypatch):
+    r = _sub_corner_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="sub",
+                 bond_id="b", leader_addr="jts.local"),
+    )
+    assert r.status == "warn"
+    assert "not wired with the low-pass corner" in r.detail
+
+
+def test_sub_corner_check_warns_when_corner_absent(monkeypatch, tmp_path):
+    from jasper.multiroom.reconcile import (
+        MEMBER_CONTENT_FIFO,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+    )
+    env = tmp_path / "grouping-outputd.env"
+    r = _sub_corner_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="sub",
+                 bond_id="b", leader_addr="jts.local", crossover_hz=120.0),
+        # FIFO present but the SUB_HZ key absent (a stale pre-feature file).
+        env_text=f"{OUTPUTD_DAC_CONTENT_FIFO_ENV}={MEMBER_CONTENT_FIFO}\n",
+        env_path=env,
+    )
+    assert r.status == "warn"
+    assert "missing while channel=sub" in r.detail
+
+
+def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
+    """The reconciler's own pure derive writes the file → the check passes:
+    the two ends of the contract are the same function."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
+        outputd_grouping_env,
+    )
+    cfg = _cfg(enabled=True, role="follower", channel="sub", bond_id="b",
+               leader_addr="jts.local", crossover_hz=120.0)
+    derived = outputd_grouping_env(cfg)
+    assert derived[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
+    env = tmp_path / "grouping-outputd.env"
+    r = _sub_corner_check(
+        monkeypatch, cfg=cfg,
+        env_text="".join(f"{k}={v}\n" for k, v in derived.items()),
+        env_path=env,
+    )
+    assert r.status == "ok"
+    assert "120.0 Hz" in r.detail
+
+
 def test_outputd_grouping_env_clears_when_not_active():
     """Disable-clears-stale: solo / invalid → the lane keys present as
     empty strings (outputd reads empty as unset → byte-identical solo

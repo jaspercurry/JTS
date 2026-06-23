@@ -382,6 +382,19 @@ fn run_alsa(
             } else {
                 let _frames_read = sink.read_content_period(&mut content_buf)?;
             }
+            // inv-B fallback for a bonded member: the direct read above is
+            // the full-range stereo program, but a member must still play
+            // ITS channel on a fallback period too. Critically a `sub`
+            // member must NEVER emit full-range to a powered subwoofer — and
+            // the policy STARTS in fallback before the FIFO primes — so apply
+            // the same channel pick (and, for a sub, the LR4 low-pass with
+            // its carried-over filter state) the FIFO path applies. No-op for
+            // solo (dac_content is None); a no-op for non-channel-dropping
+            // picks. Runs before trim/duck/publish so the AEC reference
+            // carries the picked content too (inv-A).
+            if let Some(src) = dac_content.as_mut() {
+                src.apply_pick_to_fallback_period(&mut content_buf);
+            }
         }
         if let Some(trim) = dac_content_trim {
             // Before duck/mix/publish so the AEC reference carries the

@@ -42,7 +42,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
-import { airplayLipSyncRow } from "./grouping-view.js";
+import { airplayLipSyncRow, subCornerLabel } from "./grouping-view.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -200,10 +200,15 @@ function groupingBody(g) {
       h("div.badge-row", null, badge, "Not part of a bond"),
     );
   }
-  // Enabled + valid: role / channel / bond / buffer / codec.
+  // Enabled + valid: role / channel / bond / buffer / codec. A subwoofer
+  // channel names its low-pass corner inline (e.g. "Subwoofer | 80 Hz
+  // low-pass") so the row says what the box actually plays, not just "sub".
+  const channelLabel = g.channel === "sub"
+    ? "Subwoofer | " + subCornerLabel(g.crossover_hz)
+    : (g.channel || "—");
   const rows = [
     defRow("Role", g.role || "—"),
-    defRow("Channel", g.channel || "—"),
+    defRow("Channel", channelLabel),
     defRow("Bond", g.bond_id || "—"),
   ];
   if (g.role === "follower" && g.leader_addr) {
@@ -487,6 +492,24 @@ function makeBondCard() {
   const createBtn = h("button.btn.btn--primary",
     { type: "button" }, "Create stereo pair");
 
+  // Role of the picked follower: a stereo-pair right channel (default,
+  // unchanged behaviour) or a subwoofer that low-passes a mono sum locally.
+  const roleSelect = h("select.bond-select", {
+    "attr:aria-label": "Role for the picked speaker",
+  },
+    h("option", { value: "right" }, "Right channel (stereo pair)"),
+    h("option", { value: "sub" }, "Subwoofer"));
+
+  // Corner for the subwoofer's local low-pass. 40..200 Hz, default 80; only
+  // sent (and only shown) when the picked speaker is a subwoofer.
+  const crossoverInput = h("input.bond-crossover", {
+    type: "number", min: "40", max: "200", step: "1", value: "80",
+    "attr:aria-label": "Subwoofer low-pass corner (Hz)",
+  });
+  const crossoverRow = h("div.bond-row", null,
+    h("span.bond-row__label", null, "Low-pass (Hz)"),
+    crossoverInput);
+
   const createIntro = h("p.info-card__note", null,
     "Create a stereo pair: this speaker plays the left channel and the one " +
     "you pick plays the right. Both are configured automatically — no " +
@@ -494,8 +517,17 @@ function makeBondCard() {
   const picker = h("div.bond-row", null,
     h("span.bond-row__label", null, "This speaker is Left — pair with"),
     select,
+    roleSelect,
     createBtn,
   );
+
+  // Show the corner input only for the subwoofer role; the picker stays the
+  // same shape for a stereo pair (no surprise field).
+  function syncRoleControls() {
+    crossoverRow.style.display = roleSelect.value === "sub" ? "" : "none";
+  }
+  roleSelect.addEventListener("change", syncRoleControls);
+  syncRoleControls();
 
   // --- Dissolve face: a legible summary + the danger button ---------------
   // The summary line is filled per-sync (it depends on role/channel); kept as
@@ -560,6 +592,7 @@ function makeBondCard() {
   const body = h("div.info-card", null,
     createIntro,
     picker,
+    crossoverRow,
     dissolveIntro,
     currentSummary,
     trimBlock,
@@ -574,6 +607,8 @@ function makeBondCard() {
 
   function setEnabled(on) {
     select.disabled = !on;
+    roleSelect.disabled = !on;
+    crossoverInput.disabled = !on;
     createBtn.disabled = !on;
   }
 
@@ -581,6 +616,10 @@ function makeBondCard() {
   function showFace(bonded) {
     createIntro.style.display = bonded ? "none" : "";
     picker.style.display = bonded ? "none" : "";
+    // The corner input rides the create face AND the subwoofer role; hide it
+    // on the dissolve face regardless, then let syncRoleControls own it back.
+    crossoverRow.style.display =
+      bonded ? "none" : (roleSelect.value === "sub" ? "" : "none");
     dissolveIntro.style.display = bonded ? "" : "none";
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
@@ -595,11 +634,19 @@ function makeBondCard() {
     const channel = g.channel || "";
     if (g.role === "follower") {
       const leaderHost = localWebHost(g.leader_addr);
-      const parts = [
-        "Paired — this speaker plays the ",
-        h("strong", null, channel || "second"),
-        " channel.",
-      ];
+      // A subwoofer follower reads differently from a left/right channel: it
+      // plays only the low end, low-passed locally at the saved corner.
+      const parts = channel === "sub"
+        ? [
+            "Subwoofer — this speaker plays the low end below ",
+            h("strong", null, subCornerLabel(g.crossover_hz)),
+            ".",
+          ]
+        : [
+            "Paired — this speaker plays the ",
+            h("strong", null, channel || "second"),
+            " channel.",
+          ];
       if (leaderHost) {
         parts.push(" Following ", h("code.bond-current__addr", null, leaderHost), ".");
       } else if (g.leader_addr) {
@@ -674,25 +721,42 @@ function makeBondCard() {
   async function create() {
     const rightAddr = select.value;
     if (!selfAddr || !rightAddr) return;
+    const sub = roleSelect.value === "sub";
     saving = true;
     setEnabled(false);
-    status.textContent = "Creating the pair…";
+    status.textContent = sub ? "Adding the subwoofer…" : "Creating the pair…";
     try {
       const picked = lastReachable.find((p) => p.address === rightAddr);
-      const data = await postJSON("bond", {
-        members: [
-          { addr: selfAddr, role: "leader", channel: "left" },
-          { addr: rightAddr, role: "follower", channel: "right",
-            name: (picked && picked.name) || "" },
-        ],
-      });
+      const pickedName = (picked && picked.name) || "";
+      // Subwoofer bond: the picked speaker plays only the low end (a clip-safe
+      // mono sum, low-passed locally in jasper-outputd). The leader then plays
+      // the WHOLE program full-range as channel "stereo" — not "left" — because
+      // a single main box + sub is one full-range speaker plus lows, not half a
+      // stereo pair. (Bass-management high-pass of the main is out of scope; it
+      // needs an active leader.) crossover_hz is clamped server-side.
+      const members = sub
+        ? [
+            { addr: selfAddr, role: "leader", channel: "stereo" },
+            { addr: rightAddr, role: "follower", channel: "sub",
+              crossover_hz: Number(crossoverInput.value),
+              name: pickedName },
+          ]
+        : [
+            { addr: selfAddr, role: "leader", channel: "left" },
+            { addr: rightAddr, role: "follower", channel: "right",
+              name: pickedName },
+          ];
+      const data = await postJSON("bond", { members });
       if (data && data.ok) {
-        status.textContent =
-          "Stereo pair created — both speakers are configuring (~10s).";
+        status.textContent = sub
+          ? "Subwoofer added — both speakers are configuring (~10s)."
+          : "Stereo pair created — both speakers are configuring (~10s).";
       }
     } catch (e) {
       console.error("rooms: bond create failed", e);
-      status.textContent = "Couldn't pair — " + describeBondFailure(e);
+      status.textContent =
+        (sub ? "Couldn't add the subwoofer — " : "Couldn't pair — ") +
+        describeBondFailure(e);
     } finally {
       saving = false;
       setEnabled(true);

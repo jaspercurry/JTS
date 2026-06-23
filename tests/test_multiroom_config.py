@@ -642,3 +642,111 @@ def test_peer_roster_parse_and_validation_matrix():
     base = dict(role="leader", channel="left", bond_id="b", leader_addr="")
     assert validate_grouping(**base, peer_name="x" * 65) is not None
     assert validate_grouping(**base, peer_name="ok name") is None
+
+
+# ---------- crossover_hz: receiver-side wireless-sub low-pass corner ----
+
+
+def test_crossover_hz_default_when_absent_on_sub():
+    """A sub member with no JASPER_GROUPING_CROSSOVER_HZ resolves to the
+    80 Hz default (a "sub" must never play full-range) with no error."""
+    from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
+    import os
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+        f.write(
+            "JASPER_GROUPING=on\n"
+            "JASPER_GROUPING_ROLE=follower\n"
+            "JASPER_GROUPING_CHANNEL=sub\n"
+            "JASPER_GROUPING_BOND_ID=b\n"
+            "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        )
+        path = f.name
+    try:
+        cfg = load_config(path)
+    finally:
+        os.unlink(path)
+    assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg.error is None
+
+
+def test_crossover_hz_parse_and_validation_matrix():
+    """The sub low-pass corner: parsed from the env file; blank/garbage
+    falls back to the 80 Hz default (never a bypass); an out-of-range value
+    on a SUB is fail-LOUD; the SAME stray value on a non-sub channel is NOT
+    an error (the knob is only meaningful for subs)."""
+    from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
+    import os
+    import tempfile
+
+    def cfg_for(channel: str, extra: str):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".env", delete=False) as f:
+            f.write(
+                "JASPER_GROUPING=on\n"
+                "JASPER_GROUPING_ROLE=follower\n"
+                f"JASPER_GROUPING_CHANNEL={channel}\n"
+                "JASPER_GROUPING_BOND_ID=b\n"
+                "JASPER_GROUPING_LEADER_ADDR=jts.local\n" + extra
+            )
+            path = f.name
+        try:
+            return load_config(path)
+        finally:
+            os.unlink(path)
+
+    # Sub: in-range parses, blank/garbage default, out-of-range fail-LOUD.
+    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=120\n").crossover_hz == 120.0
+    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=120\n").error is None
+    assert cfg_for("sub", "").crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg_for(
+        "sub", "JASPER_GROUPING_CROSSOVER_HZ=loud\n"
+    ).crossover_hz == DEFAULT_CROSSOVER_HZ
+    assert cfg_for("sub", "JASPER_GROUPING_CROSSOVER_HZ=loud\n").error is None
+    assert "must be between" in cfg_for(
+        "sub", "JASPER_GROUPING_CROSSOVER_HZ=20\n").error
+    assert "must be between" in cfg_for(
+        "sub", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error
+    # Non-sub: an out-of-range stray value is NOT an error (knob unused).
+    assert cfg_for("right", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error is None
+
+
+def test_validate_grouping_crossover_range_only_for_sub():
+    """The shared rule ranges the corner ONLY for channel=='sub'; the same
+    out-of-range value on left/right/stereo/mono is accepted."""
+    from jasper.multiroom.config import validate_grouping
+
+    assert "CROSSOVER_HZ" in validate_grouping(
+        role="follower", channel="sub", bond_id="b", leader_addr="jts.local",
+        crossover_hz=10.0,
+    )
+    assert validate_grouping(
+        role="follower", channel="sub", bond_id="b", leader_addr="jts.local",
+        crossover_hz=80.0,
+    ) is None
+    for ch in ("left", "right", "stereo", "mono"):
+        assert validate_grouping(
+            role="follower", channel=ch, bond_id="b", leader_addr="jts.local",
+            crossover_hz=10.0,
+        ) is None
+
+
+def test_crossover_hz_default_constructor_and_disabled():
+    """crossover_hz is defaulted on the GroupingConfig constructor (wide
+    surface stays source-compatible) and on the _DISABLED solo config."""
+    from jasper.multiroom.config import (
+        DEFAULT_CROSSOVER_HZ,
+        GroupingConfig,
+        load_config,
+    )
+
+    cfg = GroupingConfig(
+        enabled=False, role="", channel="stereo", bond_id="",
+        leader_addr="", buffer_ms=400, codec="flac", error=None,
+    )
+    assert cfg.crossover_hz == DEFAULT_CROSSOVER_HZ
+    # A missing file resolves to the disabled config carrying the default.
+    assert load_config("/nonexistent/grouping.env").crossover_hz == (
+        DEFAULT_CROSSOVER_HZ
+    )

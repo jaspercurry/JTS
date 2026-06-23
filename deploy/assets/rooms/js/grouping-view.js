@@ -17,6 +17,17 @@
 // {tight, tone, label, note}: a quiet "Synced" (status-ok) when the offset
 // fits, an amber "Lagging ~N ms" (status-warn) + an explanatory note when the
 // sender's budget can't absorb the bonded round-trip.
+// A subwoofer follower's low-pass corner, formatted for display. A "sub"
+// member NEVER plays full-range, so a missing/invalid/non-positive corner
+// reads as the 80 Hz default the outputd reconciler also falls back to —
+// this label can never render blank or "full-range". Mirrors the producer-
+// side default so the UI and the DAC agree on the fallback.
+export function subCornerLabel(hz) {
+  const n = Number(hz);
+  const corner = Number.isFinite(n) && n > 0 ? n : 80;
+  return `${Math.round(corner)} Hz low-pass`;
+}
+
 export function airplayLipSyncRow(fit) {
   if (!fit || typeof fit !== "object" || !fit.applicable) return null;
   const tight = fit.tight === true;

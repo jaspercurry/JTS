@@ -502,8 +502,24 @@ These are conflated in shorthand but are distinct designs:
   maximally-cheap dumb sub. **Setting vs execution are independent:** the
   crossover corner is *set* on the leader's pair page (cohesive — the leader
   orchestrates the pair) even though the low-pass *executes* on the sub.
-  Today `'sub'` → `ChannelPick::Mono` (full-range, no LF crossover) — the
-  fence either path lifts.
+  **Shipped (2026-06-23) — the dumb receiver-side path.** `'sub'` is now its
+  own `ChannelPick::Sub(corner)` in `jasper-outputd` (`dac_content.rs`): it
+  mono-sums (clip-safe, the existing `Mono` average) then applies a 4th-order
+  Linkwitz-Riley low-pass (LR4 — two cascaded Butterworth biquads, Q=1/√2,
+  stateful, 48 kHz) before the DAC. Receiver-side, on the **same** dumb
+  full-range round-trip lane (no CamillaDSP on the sub, no second stream). The
+  corner is `GroupingConfig.crossover_hz` (`/rooms/`-set,
+  `JASPER_GROUPING_CROSSOVER_HZ`, default 80 Hz, range 40–200); the reconciler
+  forwards it to outputd as `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ` **only** for a
+  `sub` member. Fail-closed everywhere: a sub never plays full-range — the FIFO
+  path, the inv-B fallback period (`apply_pick_to_fallback_period`, wired in
+  `main.rs` before trim/duck/publish, active from the first period since the
+  policy starts in fallback), and a missing filter (→ silence) all enforce
+  mono+LP-or-silence. The earlier `'sub'` → `ChannelPick::Mono` (full-range)
+  behavior is retired. **This path does NOT high-pass the mains** — they stay
+  full-range and the sub *adds* lows (the interim model); the complementary
+  mains-HP below still needs an **active** leader (a passive leader has no
+  local DSP to high-pass).
 
   **Bass management is the intended model** (superseding the interim "mains
   full-range, sub *adds* lows" `channel_split.py` ships today): with a sub
@@ -598,7 +614,7 @@ slices land safest-first; each is independently mergeable.
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
 | **5** | ✅ | Active **leader** (2nd CamillaDSP; realization ratified 2026-06-21 — single rate loop = `outputd-summer`, camilla#2 `rate_adjust` **OFF**, the two `jasper-outputd` instances kept **separate** for inv-A, Option-3 TTS as a soft input, inv-B-through-Layer-A). Sequence: validated-seam music → swap-in-summer (soak gate) → arm TTS. **The v1 gate**; **CPU/thermal + summer-build pick** measured on `jts3` (active cooling). Details: "Stage B — the ratified active-leader realization" | yes |
 | **6a** | — | Local sub driver — unblock `baseline_subwoofer_not_supported` (solo-active) | mixed |
-| **6b** | — | Wireless sub member + bass management (receiver-side LP/HP, unified leader config) | yes |
+| **6b** | — | Wireless sub member + bass management. **Dumb receiver-side sub LANDED (2026-06-23)** — outputd `ChannelPick::Sub` LR4 low-pass + `crossover_hz` SSOT + `/rooms/` sub role + `/sound/` CTA (HW-free green; `jts`→`jts4` on-device validation in progress). Remaining: bass-management mains-HP (needs an active leader), the brainy/active-endpoint sub, the N>2 `/rooms/` roster | mixed |
 
 Slices 1–2 are hardware-free and independently shippable; 3 is where
 on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
@@ -1190,7 +1206,13 @@ mix.
    target sub hardware; both reuse `channel_split.py`'s sub fragment.
    Decide in 6b — no need to lock it before the follower core ships.
 
-Last verified: 2026-06-21 (Stage-B active-leader realization ratified — one rate
+Last verified: 2026-06-23 (dumb receiver-side wireless sub [gap 5] landed
+HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + `crossover_hz`
+SSOT [config/validate/`/grouping/set`/reconcile/state/doctor] + `/rooms/` sub
+role + `/sound/` CTA, all behind tests [869 Python + Rust scratch-crate + JS
+harnesses]; adversarially reviewed ship/no-must-fix; on-device `jts`→`jts4`
+validation in progress. Bass-management mains-HP and the brainy/active sub
+remain. Prior 2026-06-21: Stage-B active-leader realization ratified — one rate
 loop = `outputd-summer`, camilla#2 `rate_adjust` OFF, the **two `jasper-outputd`
 instances kept separate for inv-A** [summer upstream / reference publisher
 downstream — never merge], TTS as a soft input, File-capture frees pair 6,

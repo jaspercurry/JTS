@@ -854,6 +854,13 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "peer_addr": "",
             "peer_name": "",
         }
+        # Subwoofer crossover: forward the corner Hz so the member's
+        # /grouping/set persists it (validate_grouping clamps the range;
+        # the env writer only emits it for channel=="sub"). Pass it through
+        # only when the browser sent one — absent means "no crossover key",
+        # which the receiving validator treats as the default for a sub.
+        if "crossover_hz" in m:
+            body["crossover_hz"] = m.get("crossover_hz")
         if role == "leader" and len(members) == 2:
             # The bond roster: record WHO the pair sibling is, so swap/
             # trim/balance/unbond resolve the household's actual choice

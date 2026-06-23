@@ -1060,6 +1060,40 @@ def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):
     assert {c[1]["bond_id"] for c in calls} == {body["bond_id"]}
 
 
+def _sub_bond_members():
+    """A leader (full-range "stereo") + a subwoofer follower with a corner."""
+    return [
+        {"addr": "192.168.1.5", "role": "leader", "channel": "stereo"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "sub",
+         "crossover_hz": 90},
+    ]
+
+
+def test_post_bond_forwards_crossover_hz_for_a_sub_member(monkeypatch):
+    """A subwoofer follower's crossover_hz rides the per-member fan-out to its
+    /grouping/set so the receiving validator persists it. The leader of the
+    sub bond plays full-range ("stereo"), not half a stereo pair."""
+    h, calls = _post_bond({"members": _sub_bond_members()}, monkeypatch=monkeypatch)
+    assert h.status == 200
+    by_role = {c[1]["role"]: c[1] for c in calls}
+    assert by_role["leader"]["channel"] == "stereo"
+    assert by_role["follower"]["channel"] == "sub"
+    # The corner is forwarded verbatim — validate_grouping (on the receiver)
+    # owns clamping; the leader just passes the browser's number through.
+    assert by_role["follower"]["crossover_hz"] == 90
+    # The full-range leader carries no crossover key (the env writer only
+    # emits JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ for channel=="sub").
+    assert "crossover_hz" not in by_role["leader"]
+
+
+def test_post_bond_omits_crossover_hz_when_absent(monkeypatch):
+    """A plain stereo pair sends no crossover_hz key — the fan-out only
+    forwards it when the browser included it, so non-sub members stay clean."""
+    h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
+    assert h.status == 200
+    assert all("crossover_hz" not in c[1] for c in calls)
+
+
 def test_post_bond_rejects_bad_csrf_without_fanning_out(monkeypatch):
     h, calls = _post_bond({"members": _stereo_pair_members()},
                           csrf_ok=False, monkeypatch=monkeypatch)

@@ -129,6 +129,30 @@ def test_valid_enabled_full_dict_includes_codec(tmp_path):
     assert state["error"] is None
 
 
+def test_sub_member_surfaces_crossover_hz(tmp_path):
+    """A "sub" member's snapshot carries crossover_hz (fresh-read from the
+    SSOT); a non-sub member's snapshot omits it (knob not meaningful)."""
+    sub_env = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=sub\n"
+        "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_LEADER_ADDR=192.168.1.50\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=110\n"
+    )
+    state = read_grouping_state(
+        _write_env(tmp_path, sub_env), unit_state_reader=_stub
+    )
+    assert state["channel"] == "sub"
+    assert state["crossover_hz"] == 110.0
+
+    non_sub = read_grouping_state(
+        _write_env(tmp_path, _follower_env()), unit_state_reader=_stub
+    )
+    assert non_sub["channel"] == "right"
+    assert "crossover_hz" not in non_sub
+
+
 def test_valid_enabled_codec_defaults_to_flac(tmp_path):
     """An enabled config with no codec key surfaces the default codec."""
     body = (

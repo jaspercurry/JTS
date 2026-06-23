@@ -59,7 +59,11 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
+from ..multiroom.config import (
+    DEFAULT_CROSSOVER_HZ,
+    GROUPING_ENV_FILE,
+    validate_grouping,
+)
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..transit.state import read_state as read_transit_state
@@ -863,6 +867,7 @@ def _write_grouping(
     client_latency_ms: "int | None" = None,
     left_delay_ms: "float | None" = None,
     right_delay_ms: "float | None" = None,
+    crossover_hz: "float | None" = None,
     peer_addr: "str | None" = None,
     peer_name: "str | None" = None,
 ) -> None:
@@ -894,6 +899,12 @@ def _write_grouping(
         updates["JASPER_GROUPING_LEFT_DELAY_MS"] = f"{left_delay_ms:.3f}"
     if right_delay_ms is not None:
         updates["JASPER_GROUPING_RIGHT_DELAY_MS"] = f"{right_delay_ms:.3f}"
+    if crossover_hz is not None:
+        # Receiver-side wireless-sub corner. Settable like the role fields,
+        # preserved like codec when the caller omits it (only meaningful for
+        # channel="sub", but persisted regardless so a sub<->non-sub flip
+        # keeps the operator's chosen corner).
+        updates["JASPER_GROUPING_CROSSOVER_HZ"] = f"{crossover_hz:g}"
     # Bond roster (leader only): same preserved-when-omitted contract as
     # trim; an EXPLICIT empty string clears it (the bond flow clears the
     # roster on non-leader members so a role flip can't leave a stale
@@ -1771,6 +1782,16 @@ def _make_handler(
                         status=400,
                     )
                     return
+            crossover_hz: float | None = None
+            if "crossover_hz" in body:
+                try:
+                    crossover_hz = float(body["crossover_hz"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "crossover_hz must be a number"},
+                        status=400,
+                    )
+                    return
             peer_addr: str | None = None
             if "peer_addr" in body:
                 peer_addr = str(body.get("peer_addr") or "").strip()
@@ -1795,6 +1816,11 @@ def _make_handler(
                     right_delay_ms=(
                         right_delay_ms if right_delay_ms is not None else 0.0
                     ),
+                    crossover_hz=(
+                        crossover_hz
+                        if crossover_hz is not None
+                        else DEFAULT_CROSSOVER_HZ
+                    ),
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
                 )
@@ -1809,6 +1835,7 @@ def _make_handler(
                     client_latency_ms=client_latency_ms,
                     left_delay_ms=left_delay_ms,
                     right_delay_ms=right_delay_ms,
+                    crossover_hz=crossover_hz,
                     peer_addr=peer_addr, peer_name=peer_name,
                 )
                 _kick_grouping_reconciler()

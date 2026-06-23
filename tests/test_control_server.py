@@ -3533,6 +3533,49 @@ def test_grouping_set_trim_settable_validated_and_preserved(
     assert "JASPER_GROUPING_TRIM_DB" not in writes[-1]
 
 
+def test_grouping_set_crossover_settable_validated_and_preserved(
+    monkeypatch, server_with_coordinator,
+):
+    """crossover_hz: settable + persisted as JASPER_GROUPING_CROSSOVER_HZ,
+    range-validated ONLY for channel=sub (the shared validate rule),
+    rejected when non-numeric, and PRESERVED (omitted key) across writes
+    like codec/trim."""
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    sub = {"enabled": True, "role": "follower", "channel": "sub",
+           "bond_id": "b", "leader_addr": "jts.local"}
+
+    status, _ = _post(f"{base}/grouping/set", {**sub, "crossover_hz": 120})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "120"
+
+    # Out-of-range on a SUB is fail-LOUD (the shared rule).
+    status, resp = _post(f"{base}/grouping/set", {**sub, "crossover_hz": 20})
+    assert status == 400 and "must be between" in resp["error"]
+
+    # Non-numeric → 400 before validate.
+    status, resp = _post(f"{base}/grouping/set", {**sub, "crossover_hz": "low"})
+    assert status == 400 and "crossover_hz must be a number" in resp["error"]
+
+    # The SAME out-of-range value on a non-sub channel is accepted + written.
+    non_sub = {**sub, "channel": "right"}
+    status, _ = _post(f"{base}/grouping/set", {**non_sub, "crossover_hz": 20})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "20"
+
+    # Omitted → preserved (key not in this write).
+    status, _ = _post(f"{base}/grouping/set", sub)
+    assert status == 200
+    assert "JASPER_GROUPING_CROSSOVER_HZ" not in writes[-1]
+
+
 def test_grouping_set_latency_and_delay_settable_validated_and_preserved(
     monkeypatch, server_with_coordinator,
 ):

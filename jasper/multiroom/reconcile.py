@@ -196,6 +196,12 @@ OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 # and this file is the last env layer, so the pin wins over lab retunes.
 OUTPUTD_CONTENT_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
+# Receiver-side wireless-sub low-pass corner (Hz). Emitted ONLY when this
+# member's channel is "sub" — outputd's "sub" ChannelPick reads it to build
+# its LR4 low-pass. ABSENT for every other channel (a non-sub member must
+# never carry it), so outputd defaults to its safe 80 Hz only if a sub
+# somehow lacks it. The single writer is outputd_grouping_env.
+OUTPUTD_DAC_CONTENT_SUB_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ"
 # Bonded-member TTS (Increment 5 PR-2): while bonded, outputd listens
 # on its TTS socket and mixes voice at the final output stage (post-
 # round-trip, pre-reference — inv-A), and jasper-voice's playout is
@@ -549,7 +555,7 @@ def outputd_grouping_env(
     crash outputd.
     """
     if cfg.enabled and cfg.error is None and not active_endpoint:
-        return {
+        env = {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
@@ -559,6 +565,12 @@ def outputd_grouping_env(
             # a cleared trim converges back to 0.0.
             OUTPUTD_DAC_CONTENT_TRIM_ENV: f"{cfg.trim_db:.1f}",
         }
+        # Receiver-side wireless-sub corner: emitted ONLY for channel="sub"
+        # (the LR4 low-pass corner outputd's "sub" pick applies). Absent for
+        # every other channel — a non-sub member must never carry it.
+        if cfg.channel == "sub":
+            env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] = str(cfg.crossover_hz)
+        return env
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",

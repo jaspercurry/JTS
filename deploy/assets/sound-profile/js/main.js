@@ -1950,14 +1950,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         : (nextOutput == null
         ? 'No unused physical output is available for a subwoofer in this layout.'
         : (addIssue || 'Adds one subwoofer group on ' + (nextOutputLabel || ('DAC output ' + (Number(nextOutput) + 1))))));
+    // Dead-end: a layout is drafted but a LOCAL subwoofer can't be added here —
+    // no spare physical output (the Apple-dongle case) or the active route is
+    // not subwoofer-capable. Point the household at a wireless sub instead.
+    var wirelessSubCta = hasLayout && !hasSub && (nextOutput == null || addIssue);
     return '<div class="output-card output-card--subwoofer">' +
       '<div class="output-card__head"><div><p class="output-card__title">Subwoofer add-on</p>' +
         '<p class="setting-row__hint">Optional. This composes with any mono or stereo layout instead of duplicating templates.</p></div>' +
         '<span class="status-pill' + (hasSub ? ' status-pill--ready' : '') + '">' + escapeHtml(hasSub ? 'added' : 'optional') + '</span></div>' +
       '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>' +
-      '<button type="button" class="btn btn--ghost" data-act="toggle-output-subwoofer" data-mode="' +
-        escapeHtml(hasSub ? 'remove' : 'add') + '"' + (disabled ? ' disabled' : '') + '>' +
-        escapeHtml(hasSub ? 'Remove subwoofer' : 'Add subwoofer') + '</button>' +
+      '<div class="output-setup__actions">' +
+        '<button type="button" class="btn btn--ghost" data-act="toggle-output-subwoofer" data-mode="' +
+          escapeHtml(hasSub ? 'remove' : 'add') + '"' + (disabled ? ' disabled' : '') + '>' +
+          escapeHtml(hasSub ? 'Remove subwoofer' : 'Add subwoofer') + '</button>' +
+        (wirelessSubCta
+          ? '<a class="btn btn--primary" href="/rooms/">' +
+            escapeHtml('No spare output for a local sub — add a wireless subwoofer on the Speakers page') + '</a>'
+          : '') +
+      '</div>' +
     '</div>';
   }
   function renderDriverResearchSummary(options) {

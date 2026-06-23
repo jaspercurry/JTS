@@ -515,6 +515,39 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
 
 
+def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
+    """The wireless-sub low-pass corner rides the outputd lane ONLY when the
+    member's channel is "sub"; it is ABSENT for every other channel (a non-sub
+    member must never carry it)."""
+    import dataclasses
+
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
+        outputd_grouping_env,
+    )
+
+    sub = dataclasses.replace(_follower(channel="sub"), crossover_hz=120.0)
+    env = outputd_grouping_env(sub)
+    assert env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
+
+    for ch in ("left", "right", "stereo", "mono"):
+        env = outputd_grouping_env(_follower(channel=ch))
+        assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in env
+
+
+def test_outputd_grouping_env_no_sub_corner_when_not_active_member():
+    """An active-endpoint sub (camilla owns the pick) and a disabled config
+    both clear the lane — the corner key is never emitted there."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
+        outputd_grouping_env,
+    )
+
+    active = outputd_grouping_env(_follower(channel="sub"), active_endpoint=True)
+    assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in active
+    assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in outputd_grouping_env(_disabled())
+
+
 def test_assemble_args_disabled_clears_both():
     d = _assemble_args(_disabled())
     assert d[SERVER_KEY] == ""

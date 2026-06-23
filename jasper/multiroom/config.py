@@ -79,6 +79,16 @@ CLIENT_LATENCY_MS_HI = 1500
 CHANNEL_DELAY_MS_LO = 0.0
 CHANNEL_DELAY_MS_HI = 100.0
 
+# Receiver-side wireless-sub low-pass corner (Hz). Only meaningful when
+# channel=="sub": the follower mono-sums the full-range stereo program
+# and applies an LR4 low-pass locally in outputd so a powered sub plays
+# only the low end. A blank/non-numeric value falls back to the default
+# (a "sub" must never play full-range); an out-of-range value on a sub is
+# fail-LOUD. Bounds bracket sane home-sub corners.
+DEFAULT_CROSSOVER_HZ = 80.0
+CROSSOVER_HZ_LO = 40.0
+CROSSOVER_HZ_HI = 200.0
+
 # Snapcast stream codec. "flac" is the lossless default (good drift
 # tolerance, modest CPU); "pcm" is uncompressed (lowest CPU, highest
 # bandwidth); "opus" is lossy (lowest bandwidth). A value outside this
@@ -139,6 +149,11 @@ class GroupingConfig:
     # graph consumes them when generating the shared stereo stream.
     left_delay_ms: float = 0.0
     right_delay_ms: float = 0.0
+    # Receiver-side wireless-sub low-pass corner (Hz). Only meaningful
+    # when channel=="sub": the follower applies an LR4 low-pass locally
+    # in outputd. Defaulted so the wide existing constructor surface
+    # stays source-compatible; load_config always sets it explicitly.
+    crossover_hz: float = DEFAULT_CROSSOVER_HZ
     # The bond roster, LEADER only: who this leader's pair sibling IS,
     # recorded at bond-forming time. peer_addr is the follower's LAN
     # IPv4 (the cross-speaker control calls are IP-only by SSRF
@@ -168,6 +183,7 @@ _DISABLED = GroupingConfig(
     client_latency_ms=DEFAULT_CLIENT_LATENCY_MS,
     left_delay_ms=0.0,
     right_delay_ms=0.0,
+    crossover_hz=DEFAULT_CROSSOVER_HZ,
     error=None,
 )
 
@@ -247,6 +263,26 @@ def _parse_channel_delay_ms(raw: str, *, key: str) -> tuple[float, str | None]:
     return val, None
 
 
+def _parse_crossover_hz(raw: str) -> float:
+    """Parse the sub low-pass corner; a blank or non-numeric value falls
+    back to DEFAULT_CROSSOVER_HZ (a "sub" must NEVER play full-range, so
+    there is no bypass sentinel). Range enforcement is the shared rule in
+    :func:`validate_grouping`, applied only when the config is enabled and
+    the channel is "sub" — so a non-sub member carrying a stray value is
+    not fail-LOUD over a knob it does not use.
+    """
+    if not raw.strip():
+        return DEFAULT_CROSSOVER_HZ
+    try:
+        return float(raw.strip())
+    except (ValueError, AttributeError):
+        logger.warning(
+            "JASPER_GROUPING_CROSSOVER_HZ=%r is not a number; "
+            "defaulting to %.1f Hz", raw, DEFAULT_CROSSOVER_HZ,
+        )
+        return DEFAULT_CROSSOVER_HZ
+
+
 def validate_grouping(
     *,
     role: str,
@@ -258,6 +294,7 @@ def validate_grouping(
     client_latency_ms: int = DEFAULT_CLIENT_LATENCY_MS,
     left_delay_ms: float = 0.0,
     right_delay_ms: float = 0.0,
+    crossover_hz: float = DEFAULT_CROSSOVER_HZ,
     peer_addr: str = "",
     peer_name: str = "",
 ) -> str | None:
@@ -325,6 +362,14 @@ def validate_grouping(
                 f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
                 f"and {CHANNEL_DELAY_MS_HI}"
             )
+    # The sub low-pass corner is only meaningful for channel=="sub"; range
+    # it ONLY there so a non-sub member with a stray value is not fail-LOUD
+    # over a knob it never uses (the reconciler emits it only for subs).
+    if channel == "sub" and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
+        return (
+            f"JASPER_GROUPING_CROSSOVER_HZ={crossover_hz} must be between "
+            f"{CROSSOVER_HZ_LO} and {CROSSOVER_HZ_HI} Hz"
+        )
     if peer_addr:
         try:
             ip = ipaddress.ip_address(peer_addr)
@@ -399,6 +444,9 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         src.get("JASPER_GROUPING_RIGHT_DELAY_MS", ""),
         key="JASPER_GROUPING_RIGHT_DELAY_MS",
     )
+    crossover_hz = _parse_crossover_hz(
+        src.get("JASPER_GROUPING_CROSSOVER_HZ", "")
+    )
 
     error = (
         trim_parse_error
@@ -415,6 +463,7 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         client_latency_ms=client_latency_ms,
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
+        crossover_hz=crossover_hz,
         peer_addr=peer_addr,
         peer_name=peer_name,
         )
@@ -432,6 +481,7 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         client_latency_ms=client_latency_ms,
         left_delay_ms=left_delay_ms,
         right_delay_ms=right_delay_ms,
+        crossover_hz=crossover_hz,
         peer_addr=peer_addr,
         peer_name=peer_name,
         error=error,

@@ -271,6 +271,49 @@ def check_grouping_channel_pick() -> CheckResult:
     return CheckResult(label, "ok", f"outputd lane wired, channel={want_channel}")
 
 
+@doctor_check(order=75.35, group="grouping")
+def check_grouping_sub_corner() -> CheckResult:
+    """A "sub" member's outputd lane must carry the low-pass corner so it
+    plays only the low end. The reconciler emits
+    ``JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`` ONLY for channel="sub"; a missing
+    key on a sub member means outputd would fall back to its safe default
+    rather than the configured corner — drift worth surfacing. n/a for any
+    non-sub member (the key is intentionally absent there)."""
+    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
+        OUTPUTD_GROUPING_ENV_FILE,
+    )
+
+    label = "grouping: sub corner"
+    cfg = load_config()
+    if not is_active_member(cfg) or cfg.channel != "sub":
+        return CheckResult(label, "ok", "not an active sub member (n/a)")
+
+    path = Path(OUTPUTD_GROUPING_ENV_FILE)
+    if not path.exists():
+        return CheckResult(
+            label, "warn",
+            f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active sub "
+            "member — outputd is not wired with the low-pass corner (run "
+            "jasper-grouping-reconcile)",
+        )
+    try:
+        env = _parse_env_file(path.read_text())
+    except OSError as e:
+        return CheckResult(label, "warn", f"could not read {path}: {e}")
+
+    corner = env.get(OUTPUTD_DAC_CONTENT_SUB_HZ_ENV, "")
+    if not corner:
+        return CheckResult(
+            label, "warn",
+            f"{OUTPUTD_DAC_CONTENT_SUB_HZ_ENV} missing while channel=sub — "
+            f"outputd would fall back to its safe default instead of the "
+            f"configured {cfg.crossover_hz} Hz; run jasper-grouping-reconcile",
+        )
+    return CheckResult(label, "ok", f"sub low-pass corner wired, {corner} Hz")
+
+
 @doctor_check(order=75.6, group="grouping")
 def check_grouping_tts_lane() -> CheckResult:
     """A bonded member's assistant TTS must route to its OWN outputd

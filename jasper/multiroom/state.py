@@ -342,6 +342,13 @@ def read_grouping_state(
         "peer_name": cfg.peer_name,
         "error": cfg.error,
     }
+    # Receiver-side wireless-sub low-pass corner — only meaningful when this
+    # member plays the "sub" channel (it is the corner outputd applies as an
+    # LR4 low-pass). Surfaced only for subs so a non-sub member's snapshot
+    # does not imply a knob it never uses. Read fresh from the SSOT above,
+    # never os.environ.
+    if cfg.channel == "sub":
+        snapshot["crossover_hz"] = cfg.crossover_hz
     if cfg.enabled:
         states: dict[str, str] = {}
         tap = ""

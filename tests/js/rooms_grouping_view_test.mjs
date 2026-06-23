@@ -9,7 +9,10 @@
 // active_speaker_ui_test.mjs). Run via tests/test_web_rooms_setup.py.
 import assert from "node:assert/strict";
 
-import { airplayLipSyncRow } from "../../deploy/assets/rooms/js/grouping-view.js";
+import {
+  airplayLipSyncRow,
+  subCornerLabel,
+} from "../../deploy/assets/rooms/js/grouping-view.js";
 
 // No row unless this speaker is an active bonded leader: read error (null),
 // solo/follower ({applicable:false}), or a malformed payload.
@@ -53,5 +56,17 @@ assert.equal(
 assert.equal(
   airplayLipSyncRow({ applicable: true, tight: true, residual_lag_sec: 0.5500003 }).label,
   "Lagging ~550 ms");
+
+// subCornerLabel: a "sub" NEVER plays full-range, so a missing / invalid /
+// non-positive corner falls back to 80 Hz — never blank, never "full-range".
+assert.equal(subCornerLabel(80), "80 Hz low-pass");
+assert.equal(subCornerLabel(120), "120 Hz low-pass");
+assert.equal(subCornerLabel(40), "40 Hz low-pass");
+assert.equal(subCornerLabel(99.6), "100 Hz low-pass"); // rounds for display
+assert.equal(subCornerLabel(undefined), "80 Hz low-pass"); // fail-safe default
+assert.equal(subCornerLabel(null), "80 Hz low-pass");
+assert.equal(subCornerLabel("x"), "80 Hz low-pass"); // non-numeric
+assert.equal(subCornerLabel(0), "80 Hz low-pass"); // non-positive
+assert.equal(subCornerLabel(-50), "80 Hz low-pass");
 
 console.log(JSON.stringify({ ok: true }));

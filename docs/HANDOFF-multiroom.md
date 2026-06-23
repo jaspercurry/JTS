@@ -164,6 +164,19 @@ Increment 6 (per-follower calibration). What exists:
   composes with `output_topology.SpeakerChannel`'s intra-speaker driver
   axis because channel-select is interface-preserving 2→2 (§4). Pure /
   hardware-free; live weaving into the active config is P1.3.
+  **Two distinct sub low-pass mechanisms now exist — don't conflate them.**
+  This CamillaDSP `BiquadCombo` fragment is *not* on the live dumb-follower
+  round-trip path (members drop their channel in `jasper-outputd`'s
+  `ChannelPick`, not a local CamillaDSP weave). The **shipped** dumb wireless
+  sub (2026-06-23) low-passes **receiver-side in `jasper-outputd`** —
+  `ChannelPick::Sub(corner)` runs its own Rust LR4 (mono-sum → 4th-order
+  Linkwitz-Riley at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`, default 80 Hz) before
+  the DAC, fail-closed (never full-range on FIFO / inv-B fallback / missing
+  filter). This `channel_split.py` LR4 fragment stays the recipe for the
+  *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives). Both
+  reuse the same `emit_linkwitz_riley` corner math. See
+  [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) "Subwoofer —
+  two different subs" for the full gap-5 picture.
 - **`jasper-outputd` snapfifo producer — REMOVED (2026-06-11 cleanup).**
   History: `SnapfifoSink` (`snapfifo.rs`) shipped as the outputd-as-producer
   tap, commit 9102e13 unwired it when TTS ingress moved into `jasper-fanin`
