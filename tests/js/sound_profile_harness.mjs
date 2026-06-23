@@ -2023,6 +2023,51 @@ async function testCommissionRampLimitStopsAutoRamp() {
   return { commissionRampLimitStopsAutoRamp: true };
 }
 
+async function testResetPartialCleanupSurfacesWarning() {
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology/reset": (path, options = {}) => {
+      posts.push({ path, body: JSON.parse(options.body || "{}") });
+      return Promise.resolve(response({
+        output_topology: topologyPayload(),
+        active_speaker_reset: {
+          status: "partial",
+          errors: [{
+            id: "staged_config",
+            path: "/var/lib/jasper/active-speaker-staged.json",
+            error: "PermissionError: no access",
+          }],
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchClick({ "data-act": "reset-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (posts.length !== 1 || posts[0].path !== "./output-topology/reset") {
+    fail("reset button should post to the topology reset endpoint", { posts });
+  }
+  const status = harness.elements.get("status").textContent;
+  if (!status.includes("could not clear 1 active-speaker setup artifact")) {
+    fail("partial active-speaker cleanup should be visible to the operator", { status });
+  }
+  if (!status.includes("staged_config")) {
+    fail("partial cleanup warning should name the failed artifact id", { status });
+  }
+  for (const leak of ["/var/lib", "PermissionError"]) {
+    if (status.includes(leak)) {
+      fail("partial cleanup warning should not leak backend path/error details", {
+        leak,
+        status,
+      });
+    }
+  }
+  return { resetPartialCleanupSurfacesWarning: true };
+}
+
 // Distributed-active Slice 4: a bonded active follower's /sound/ renders the
 // LOCAL driver/crossover/commissioning surface (the leader owns content EQ), and
 // the module must boot cleanly even though the Off/Saved/Draft tabs + plot are
@@ -2124,6 +2169,7 @@ results.push(await testCommissionActiveGraphBlockSurfacesReason());
 results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
 results.push(await testCommissionRampLimitStopsAutoRamp());
+results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 

@@ -4540,13 +4540,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) throw new Error(payload.error || 'speaker setup reset failed');
       ingestOutputTopology(payload);
       outputStepOverride = 'layout';
-      status('Reset speaker setup to the detected passive layout. No sound was played.');
+      var cleanupWarning = resetCleanupWarning(payload);
+      if (cleanupWarning) {
+        outputTopology.error = cleanupWarning;
+        status(cleanupWarning, true);
+      } else {
+        status('Reset speaker setup to the detected passive layout. No sound was played.');
+      }
     } catch (e) {
       outputTopology.resetting = false;
       outputTopology.error = e.message;
       status('Could not reset speaker setup: ' + e.message, true);
     }
     render();
+  }
+  function resetCleanupWarning(payload) {
+    var reset = payload && payload.active_speaker_reset || {};
+    if (reset.status !== 'partial') return '';
+    var errors = Array.isArray(reset.errors) ? reset.errors : [];
+    var ids = [];
+    errors.forEach(function(error) {
+      if (error && error.id) ids.push(String(error.id));
+    });
+    var count = errors.length || ids.length || 1;
+    var msg = 'Reset speaker setup, but JTS could not clear ' + count +
+      ' active-speaker setup artifact' + (count === 1 ? '' : 's');
+    if (ids.length) msg += ': ' + ids.join(', ');
+    msg += '. Reset again or check logs before continuing.';
+    return msg;
   }
   async function updateOutputChannelIdentity(button) {
     if (outputTopology.dirty) {
