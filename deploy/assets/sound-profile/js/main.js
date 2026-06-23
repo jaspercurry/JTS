@@ -3214,10 +3214,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ingestState(payload);
       if (payload.warning) status(payload.warning, true);
       else if (payload.volume_warning) status(payload.volume_warning, true);
+      return true;
     } catch (e) {
       soundSettings = prev;
       status('Could not save sound settings: ' + e.message, true);
       render();
+      return false;
     }
   }
 
@@ -3292,8 +3294,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var floorInput = el('set-volume-floor');
     if (floorInput) floorInput.value = floor;
     setVolumeFloorReadout(floor);
-    await saveSettings({volume_floor_db: floor});
-    if (volumeFloorTone.active) {
+    var saved = await saveSettings({volume_floor_db: floor});
+    if (saved && volumeFloorTone.active) {
       scheduleVolumeFloorToneUpdate(floor, {immediate: true});
     }
   }
@@ -3606,8 +3608,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var floor = Number(ev.target.value);
       setVolumeFloorReadout(floor);
       (async function() {
-        await saveSettings({volume_floor_db: floor});
-        scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
+        var saved = await saveSettings({volume_floor_db: floor});
+        if (saved) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
       })();
     }
   });
