@@ -440,7 +440,18 @@ def test_room_correction_preflight_switches_to_https() -> None:
     assert "Your connection is not private" in html
     assert "Show Details" in html
     assert "Other JTS pages remain" not in html
-    assert "https://' + window.location.hostname + '/correction/'" in html
+    assert "new URLSearchParams(window.location.search" in html
+    assert "new URL(requested, window.location.origin)" in html
+    assert "'/correction/crossover/': true" in html
+    assert "https://' + window.location.hostname + next" in html
+
+
+def test_room_correction_preflight_rejects_normalized_path_escape() -> None:
+    html = _preflight_html()
+
+    assert "parsed.pathname" in html
+    assert "allowed[path]" in html
+    assert "/correction/../sound/" not in html
 
 
 def test_room_correction_preflight_uses_canonical_design() -> None:
@@ -466,6 +477,7 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "return 308 /correction/;" in nginx
     assert "location = /correction/" in nginx
     assert "try_files /correction-preflight.html =404;" in nginx
+    assert "safe ?next=/correction/..." in nginx
     assert "location /correction/" in nginx
     assert "proxy_pass http://127.0.0.1:8770/;" in nginx
     assert "return 308 http://$host$request_uri;" in nginx

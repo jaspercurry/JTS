@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room correction wizard at /correction/.
+"""HTTPS correction measurement hub at /correction/.
 
-The user opens the page on a phone, selects a calibrated input,
-captures pre-sweep room noise plus one or more measurement positions,
-reviews confidence/visualization evidence, and optionally applies a
-bounded room-correction profile through the shared CamillaDSP apply
-path.
+The user opens the hub on a phone and chooses the measurement job:
+room correction, active-crossover acoustic checks, or bass tuning. Room
+correction captures pre-sweep room noise plus one or more measurement
+positions, reviews confidence/visualization evidence, and optionally
+applies a bounded room-correction profile through the shared CamillaDSP
+apply path.
 
 Architecture (per docs/HANDOFF-correction.md):
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
@@ -20,7 +21,11 @@ Architecture (per docs/HANDOFF-correction.md):
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
   - HTTP routes (after nginx strips the /correction/ prefix):
-      GET  /                page render
+      GET  /                room correction page render
+      GET  /room            room correction page render
+      GET  /crossover       active-crossover measurement page render
+      GET  /crossover/status
+      GET  /bass            bass measurement placeholder page render
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
       GET  /sessions        recent measurement bundle summaries
@@ -32,6 +37,14 @@ Architecture (per docs/HANDOFF-correction.md):
       POST /apply           write YAML, reload CamillaDSP
       POST /reset           roll back to the topology-safe reset graph
       POST /session/delete  delete one historical measurement bundle
+      POST /crossover/driver-test safe per-driver audible test
+      POST /crossover/driver-confirm operator ACK for the active driver test
+      POST /crossover/driver-abort stop/re-mute the active driver test
+      POST /crossover/summed-test safe combined-driver audible test
+      POST /crossover/driver-capture-sweep play the driver mic-capture sweep
+      POST /crossover/summed-capture-sweep play the summed mic-capture sweep
+      POST /crossover/driver-capture analyze + record one active-driver WAV
+      POST /crossover/summed-capture analyze + record one summed-crossover WAV
 
 Why a separate service from jasper-web (Spotify + voice settings):
 the correction flow eventually imports numpy/scipy through
@@ -88,8 +101,9 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # setup latency while still avoiding unbounded reads in the Pi web
 # process.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
+MAX_CROSSOVER_WAV_BODY_BYTES = 3 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
-_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/balance", "/sync"})
+_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 
 
 class BadRequest(ValueError):
@@ -140,6 +154,14 @@ def active_correction_phase() -> str | None:
     effect of ``_reserve_start_slot`` (which reserves /start)."""
     with _session_lock:
         return _active_state_for_session(_session)
+
+
+def _crossover_blocking_phase() -> str | None:
+    """Return another active measurement phase that should block crossover."""
+
+    from .active_speaker_flow import blocking_measurement_phase
+
+    return blocking_measurement_phase()
 
 
 def _reserve_start_slot() -> str | None:
@@ -276,6 +298,7 @@ def _replace_session(
 _PAGE_BODY = """
 __HEADER__
 <main class="page correction-stack" data-required-sr="__REQUIRED_SR__">
+__TABS__
 <p class="page-sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker.</p>
 
 <div id="current-correction" class="flat" aria-live="polite">
@@ -569,12 +592,15 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
     # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
     # is plain HTTP, so a relative "/" would try HTTPS on the root and fail.
     header = canonical_header(
-        "Room correction",
+        "Correction",
         back_href="http://{host}/".format(host=hostname),
     )
+    from .correction_hub import section_tabs
+
     body = (
         _PAGE_BODY
         .replace("__HEADER__", header)
+        .replace("__TABS__", section_tabs("room"))
         .replace("__HOSTNAME__", html.escape(hostname, quote=True))
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
@@ -1745,17 +1771,109 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 logger.exception("%s failed", path)
                 self._send_json({"ok": False, "error": str(e)}, status=500)
 
+        def _dispatch_crossover(self, path: str) -> None:
+            """POST /crossover/* — secure active-crossover measurement."""
+            from . import correction_crossover_flow
+
+            try:
+                if path in {
+                    "/crossover/driver-capture",
+                    "/crossover/summed-capture",
+                }:
+                    try:
+                        body = _read_wav_body(
+                            self,
+                            max_bytes=MAX_CROSSOVER_WAV_BODY_BYTES,
+                        )
+                    except BadRequest as e:
+                        self._send_json(
+                            {"ok": False, "error": str(e)},
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if path == "/crossover/driver-capture":
+                        payload, status = correction_crossover_flow.handle_driver_capture(
+                            self,
+                            body,
+                        )
+                    else:
+                        payload, status = correction_crossover_flow.handle_summed_capture(
+                            self,
+                            body,
+                        )
+                    self._send_json(payload, status=int(status))
+                    return
+
+                raw = _read_json_body(self)
+                if path == "/crossover/driver-test":
+                    payload, status = correction_crossover_flow.handle_driver_test(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                elif path == "/crossover/driver-confirm":
+                    payload, status = correction_crossover_flow.handle_driver_confirm(
+                        raw,
+                        _run_async,
+                        _camilla,
+                    )
+                elif path == "/crossover/driver-abort":
+                    payload, status = correction_crossover_flow.handle_driver_abort(
+                        _run_async,
+                        _camilla,
+                    )
+                elif path == "/crossover/summed-test":
+                    payload, status = correction_crossover_flow.handle_summed_test(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                elif path == "/crossover/driver-capture-sweep":
+                    payload, status = correction_crossover_flow.handle_driver_capture_sweep(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                else:
+                    payload, status = correction_crossover_flow.handle_summed_capture_sweep(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                self._send_json(payload, status=int(status))
+            except BadRequest as e:
+                self._send_json(
+                    {"ok": False, "error": str(e)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except ValueError as e:
+                self._send_json(
+                    {"ok": False, "error": str(e)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except (OSError, RuntimeError, TypeError) as e:
+                logger.exception("%s failed", path)
+                self._send_json({"ok": False, "error": str(e)}, status=500)
+
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path not in {
                 "/",
+                "/room",
                 "/healthz",
                 "/status",
                 "/sessions",
                 "/session-report",
                 "/calibration/models",
+                "/crossover",
+                "/crossover/status",
+                "/bass",
                 "/balance",
                 "/balance/status",
                 "/sync",
@@ -1771,11 +1889,38 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     cfg["hostname"], ctx["csrf_token"],
                 ))
                 return
-            if path == "/":
+            if path in {"/", "/room"}:
                 ctx = begin_request(self)
                 self._send_html(_render_page(
                     cfg["hostname"], ctx["csrf_token"], ctx["flash"],
                 ))
+                return
+            if path == "/crossover":
+                from . import correction_crossover_flow
+                ctx = begin_request(self)
+                self._send_html(
+                    correction_crossover_flow.render_page(
+                        cfg["hostname"], ctx["csrf_token"],
+                    )
+                )
+                return
+            if path == "/crossover/status":
+                from . import correction_crossover_flow
+                try:
+                    payload, status = correction_crossover_flow.handle_status()
+                    self._send_json(payload, status=int(status))
+                except (OSError, RuntimeError, TypeError, ValueError) as e:
+                    logger.exception("/crossover/status failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/bass":
+                from . import correction_bass_flow
+                ctx = begin_request(self)
+                self._send_html(
+                    correction_bass_flow.render_page(
+                        cfg["hostname"], ctx["csrf_token"],
+                    )
+                )
                 return
             if path == "/balance":
                 from . import balance_flow
@@ -1868,6 +2013,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/apply",
                 "/reset",
                 "/session/delete",
+                "/crossover/driver-test",
+                "/crossover/driver-confirm",
+                "/crossover/driver-abort",
+                "/crossover/summed-test",
+                "/crossover/driver-capture-sweep",
+                "/crossover/summed-capture-sweep",
+                "/crossover/driver-capture",
+                "/crossover/summed-capture",
                 "/balance/start",
                 "/balance/ramp",
                 "/balance/lock",
@@ -1886,7 +2039,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            if bonded_follower_active():
+            if bonded_follower_active() and not path.startswith("/crossover/"):
                 log_event(
                     logger,
                     "correction.follower_content_dsp_blocked",
@@ -1907,6 +2060,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path.startswith("/sync/"):
                 self._dispatch_sync(path)
+                return
+            if path.startswith("/crossover/"):
+                self._dispatch_crossover(path)
                 return
             try:
                 if path == "/start":
@@ -2055,7 +2211,7 @@ def make_server(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-correction-web",
-        description="Room correction wizard at /correction/ for the JTS speaker",
+        description="HTTPS correction measurement hub at /correction/ for the JTS speaker",
     )
     parser.add_argument(
         "--host",

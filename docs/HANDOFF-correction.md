@@ -1,7 +1,7 @@
-# HANDOFF — room correction at `/correction/`
+# HANDOFF — correction measurement hub at `/correction/`
 
 > If you are picking this up across sessions: this is the canonical
-> planning + design document for the v2 room-correction feature. Read
+> planning + design document for the HTTPS correction measurement surface. Read
 > the **Status** and **Architecture decisions** sections first. The
 > phased plan is the work tracker — when a phase ships, mark it ✅ and
 > update the Status. The "Things to ignore" sections are deliberate
@@ -9,6 +9,20 @@
 
 ## Status
 
+- ✅ **HTTPS measurement hub shell.** As of 2026-06-23,
+  `/correction/` is the secure measurement hub for `room`, `crossover`,
+  and `bass`. `/correction/` and `/correction/room/` render the existing
+  room-correction workflow and keep
+  `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
+  is a correction-native active-crossover microphone surface: correction
+  web modules own HTTPS/browser routing, while
+  `jasper.active_speaker.web_commissioning` owns safe driver/summed
+  playback orchestration and `jasper.active_speaker.web_measurement`
+  owns bounded browser WAV evidence plus acoustic-analysis recording.
+  `/correction/bass/` is a placeholder tab for subwoofer /
+  low-frequency tuning. The plain-HTTP preflight accepts
+  `?next=/correction/...` so HTTP-only setup flows can link directly to a
+  secure subflow after showing the certificate warning.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /correction/`, `/correction/balance`, and
@@ -709,10 +723,15 @@ coordinator code; we do the same here for the
 HTTP port 80:
 GET  /correction/            static preflight explaining the HTTPS warning;
                              OK button links to https://<host>/correction/
+                             or a safe ?next=/correction/... target
 GET  /jts-root-ca.crt        download private root CA for iOS trust
 
 HTTPS port 443 after nginx strips /correction/:
-GET  /                       page render (stdlib HTML + inline AudioWorklet, no SPA)
+GET  /                       room page render (stdlib HTML + room JS module)
+GET  /room                   same room-correction page as /
+GET  /crossover              active-crossover mic measurement page
+GET  /crossover/status       active-speaker targets + measurement evidence
+GET  /bass                   bass/subwoofer tuning placeholder page
 GET  /healthz                liveness — "ok"
 GET  /status                 session + currently-loaded correction snapshot
                              ({state, peqs, autolevel, input_device,
@@ -744,6 +763,10 @@ POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
 POST /autolevel/lock         freeze main_volume at current ramp value
 POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
+POST /crossover/driver-capture body = WAV (audio/wav); analyze + record
+                             active-speaker per-driver acoustic evidence
+POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
+                             active-speaker summed-crossover evidence
 HTTPS fallback              non-/correction/ paths 308 back to HTTP
 ```
 
@@ -949,6 +972,12 @@ mid-sweep would attenuate the sweep itself.
 
 ```
 jasper/
+├── active_speaker/
+│   ├── web_commissioning.py             secure crossover playback orchestration
+│   │                                    through active-speaker safety state
+│   └── web_measurement.py               browser WAV storage + acoustic evidence
+│                                        bridge into measurement state
+│
 ├── correction/
 │   ├── __init__.py
 │   ├── coordinator.py                   measurement_window() async CM
@@ -980,9 +1009,14 @@ jasper/
 │
 ├── web/
 │   ├── correction_report.py             read-only report payload helpers
+│   ├── correction_hub.py                room/crossover/bass tab chrome
+│   ├── correction_crossover_backend.py  active-speaker acoustic evidence bridge
+│   ├── correction_crossover_flow.py     /correction/crossover/ page + routes
+│   ├── correction_bass_flow.py          /correction/bass/ placeholder
 │   └── correction_setup.py              mirrors voice_setup.py shape
 │                                        ThreadingHTTPServer on 127.0.0.1:8770
-│                                        polling status, POST for upload+apply
+│                                        polling status, POST for upload+apply,
+│                                        and correction subflow dispatch
 │
 ├── voice_daemon.py                      MEASURE_PAUSE / MEASURE_RESUME
 │                                        UDS commands; gate WakeLoop +
@@ -993,6 +1027,7 @@ jasper/
 
 deploy/
 ├── nginx-jasper.conf                    443 server block for /correction/
+├── assets/correction/                   room + crossover static CSS/ES modules
 ├── jasper-correction-web.service        socket-activated worker, private umask
 ├── jasper-correction-web.socket         systemd socket on 127.0.0.1:8770
 └── install.sh                           private CA, state dirs, unit install
@@ -1797,33 +1832,19 @@ Internal:
 
 ---
 
-Last verified: 2026-06-15 (bonded-follower delegation rechecked against
-`jasper/web/correction_setup.py`: follower pages point to the leader and
-mutating correction/balance/sync routes fail with HTTP 409. Earlier
-2026-06-13: pair time-of-arrival calibration now lives
-under the correction umbrella: sync_measure marker/correlation core,
-gainless CamillaDSP Delay emitter, and /sync route sharing the
-measurement_window with /correction and /balance. Earlier 2026-06-12:
-the pair-balance wizard /balance/* now rides this service's process and TLS origin —
-jasper/web/balance_flow.py, dispatched from correction_setup's
-Handler. It opens the same measurement_window, so _reserve_start_slot
-consults balance_flow.active_phase() and /balance/play is gated behind
-the correction session being idle; design + flow live in
-HANDOFF-multiroom.md, not here. Earlier 2026-06-01: MEASURE_PAUSE now
-pauses outputd content loudness metering instead of the retired TTS
-RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
-still apply.)
-
-Last verified: 2026-06-18 (topology-safe correction reset/start behavior
-rechecked against `jasper/correction/runtime_safety.py`,
-`jasper/web/correction_setup.py`, and
-`jasper.active_speaker.runtime_contract`; prior 2026-06-17 pass covered
-auto-level controller ownership rechecked against
-`jasper/correction/autolevel.py` and `jasper/correction/session.py`; stranded
-capture watchdog / reset-busy guard ownership rechecked against
-`jasper/correction/state_guard.py` and `jasper/correction/session.py`;
-status/current-config and bundle-payload ownership rechecked against
-`jasper/correction/status.py`, `jasper/correction/artifacts.py`, and
-`jasper/correction/session.py`. Task C decomposition status and pickup
-prompt refreshed after the status serializer extraction. Behavior, routes,
-and safety invariants remain unchanged.)
+Last verified: 2026-06-23 (`/correction/` hub routing, HTTP preflight
+`?next=/correction/...`, HTTPS asset serving, and correction-native
+active-crossover playback/capture routing rechecked against
+`jasper/web/correction_setup.py`,
+`jasper/web/correction_crossover_flow.py`,
+`jasper/web/correction_crossover_backend.py`,
+`jasper/active_speaker/web_commissioning.py`,
+`jasper/active_speaker/web_measurement.py`,
+`deploy/correction-preflight.html`, `deploy/nginx-jasper.conf`, and
+`deploy/lib/install/web-assets.sh`; previous 2026-06-18 pass covered
+topology-safe correction reset/start behavior against
+`jasper/correction/runtime_safety.py`, `jasper/web/correction_setup.py`,
+and `jasper.active_speaker.runtime_contract`; previous 2026-06-15 pass
+covered bonded-follower delegation; previous 2026-06-17 pass covered
+auto-level controller ownership, state guards, and status/bundle payload
+ownership.)
