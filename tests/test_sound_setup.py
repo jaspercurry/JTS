@@ -466,6 +466,9 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
     assert "Start tone" in js
     assert "Stop tone" in js
+    assert "Reset floor" in js
+    assert "reset-volume-floor" in js
+    assert "function setVolumeFloorResetButton" in js
     assert "pagehide" in js
     assert "scheduleVolumeFloorToneUpdate(floor);" in js
     assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
