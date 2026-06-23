@@ -26,6 +26,7 @@ from typing import Any, Iterable
 import yaml
 
 from jasper.output_topology import (
+    SUB_CROSSOVER_HZ_HI,
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
@@ -907,6 +908,11 @@ def _active_graph_evidence(
                 view,
                 channels={index},
                 lowpass_name=_sub_lowpass_name(),
+                # The corner ceiling is load-bearing: a sub LOW-pass at a high
+                # corner (e.g. 20 kHz) is full-range to a bass driver, so cap it
+                # at the legal sub-crossover ceiling. The baseline class bounds
+                # the corner via bass_management_corner_matched instead.
+                lowpass_freq_ceiling_hz=SUB_CROSSOVER_HZ_HI,
                 limiter_name=_sub_startup_limiter_name(),
                 limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
             ):

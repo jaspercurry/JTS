@@ -583,6 +583,7 @@ def sub_audible_guard_present(
     *,
     channels: set[int] | frozenset[int],
     lowpass_name: str,
+    lowpass_freq_ceiling_hz: float,
     limiter_name: str,
     limiter_clip_ceiling_db: float,
 ) -> bool:
@@ -593,17 +594,27 @@ def sub_audible_guard_present(
     The durable-baseline sub lane carries a non-positive ``Gain`` filter, so
     :func:`sub_guard_present` also proves ``gain <= 0``. The commissioning/startup
     sub lane has NO gain filter (the hard mute / startup limiter own the level),
-    so this predicate proves only the two that MUST hold for an *unmuted* sub —
-    mirroring :func:`tweeter_guard_present` (high-pass -> low-pass):
+    so this predicate proves only the two that MUST hold for an *unmuted* sub:
 
-    - low-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyLowpass`` with **any
-      positive** ``freq`` and ``order`` absent or ``>= 2`` (the band-limit);
+    - low-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyLowpass`` with a
+      positive ``freq`` **at or below** ``lowpass_freq_ceiling_hz`` and ``order``
+      absent or ``>= 2`` (the band-limit);
     - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
       *ceiling*, not equality) and a truthy ``soft_clip`` (excursion);
     - both wired to exactly ``channels`` in one pipeline step.
 
-    A sub output must NEVER carry a full-range / low-pass-absent feed while
-    audible; fails closed (missing filter / wrong type / unwired -> ``False``)."""
+    NOTE — the low-pass corner ceiling is load-bearing, NOT cosmetic, and is why
+    this is **not** a verbatim mirror of :func:`tweeter_guard_present`. For a
+    tweeter HIGH-pass, a looser (higher) corner is MORE protective; for a sub
+    LOW-pass it is LESS protective — a 20 kHz "low-pass" passes full-range energy
+    to a bass driver. So an *upper* bound on the corner (the legal sub-crossover
+    ceiling, e.g. 200 Hz) is required; without it a degenerate high-corner LP
+    would slip past while the baseline class catches the same shape via
+    :func:`bass_management_corner_matched`.
+
+    A sub output must NEVER carry a full-range / low-pass-absent / corner-too-high
+    feed while audible; fails closed (missing filter / wrong type / over-ceiling /
+    unwired -> ``False``)."""
     lowpass = view.filters.get(lowpass_name)
     limiter = view.filters.get(limiter_name)
     lp_params = lowpass.params if lowpass else {}
@@ -616,6 +627,7 @@ def sub_audible_guard_present(
         and str(lp_params.get("type") or "") == "LinkwitzRileyLowpass"
         and lp_freq is not None
         and lp_freq > 0.0
+        and lp_freq <= lowpass_freq_ceiling_hz
         and (lp_order is None or lp_order >= 2.0)
     )
     limiter_ok = (

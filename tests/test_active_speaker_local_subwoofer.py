@@ -563,6 +563,39 @@ def test_commissioning_reproof_blocks_audible_sub_without_band_limit() -> None:
     assert "active_graph_unprotected_sub_audible" in {i["code"] for i in no_lim.issues}
 
 
+def test_commissioning_reproof_blocks_audible_sub_with_high_corner() -> None:
+    """An audible sub's low-pass CORNER is bounded, not just its presence. A
+    degenerate high corner (a 20 kHz "low-pass" = effectively full-range to a bass
+    driver) must be rejected: for a sub LOW-pass a higher corner is LESS protective
+    (the opposite direction from a tweeter high-pass), so the commissioning guard
+    caps the corner at the legal sub-crossover ceiling. (The baseline class bounds
+    the corner via bass_management_corner_matched; this is its commissioning-path
+    counterpart.) Anchored single-filter tamper so ONLY the sub LP moves — a plain
+    "freq: 80" replace would also move the mains HP."""
+    from jasper.active_speaker.camilla_yaml import (
+        emit_active_speaker_commissioning_config,
+    )
+
+    preset = _active_2way_sub_preset()
+    topology = _active_2way_sub_topology()
+    sub_idx = preset.local_subwoofer.physical_output_index
+    honest = emit_active_speaker_commissioning_config(
+        preset, playback_device="hw:TEST,0", audible_outputs={sub_idx}
+    )
+    assert classify_camilla_graph(topology=topology, text=honest).allowed is True
+    # Push ONLY the sub LP corner far above the legal sub ceiling (200 Hz).
+    tampered, n = re.subn(
+        r"(as_sub_lowpass:\n    type: BiquadCombo\n    parameters:\n"
+        r"      type: LinkwitzRileyLowpass\n      freq: )[0-9.]+",
+        r"\g<1>20000.0000",
+        honest,
+    )
+    assert n == 1  # the as_sub_lowpass anchor matched exactly once
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+    assert "active_graph_unprotected_sub_audible" in {i["code"] for i in graph.issues}
+
+
 # --------------------------------------------------------------------------- #
 # User-settable crossover Fc threading + passive-mains+sub build path.
 # --------------------------------------------------------------------------- #
