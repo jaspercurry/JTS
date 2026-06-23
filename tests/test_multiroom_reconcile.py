@@ -705,6 +705,15 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     # this. is_active_speaker_box reads the topology, so stub it for hermeticity.
     monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: False)
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
+    # Snapcast provisioning (main() calls it for any enabled bond): default to a
+    # present no-op so these tests never shell out to apt. The provisioning tests
+    # override it. main() from-imports it, so patch the provision module attr.
+    import jasper.multiroom.provision as provision_mod
+
+    monkeypatch.setattr(
+        provision_mod, "ensure_snapcast_installed",
+        lambda **kw: {"state": "present", "detail": ""},
+    )
 
     order: list[str] = []
     real_write = reconcile_mod._write_args_file
@@ -1440,3 +1449,57 @@ def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
     assert rc == 1
     assert "bake" not in order  # never baked onto a reader-less pipe
     assert "arm_camilla2" not in order  # never armed camilla#2 (no DAC fight)
+
+
+# ---------- main(): snapcast provisioning (the grouping opt-in install) ----------
+
+
+def test_main_provisions_snapcast_when_active_before_units(tmp_path, monkeypatch):
+    """A valid enabled bond runs the snapcast opt-in install — BEFORE the units
+    come up, so the binaries exist before the snap units start."""
+    import jasper.multiroom.provision as provision_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
+    monkeypatch.setattr(
+        provision_mod, "ensure_snapcast_installed",
+        lambda **kw: order.append("provision") or {"state": "installed", "detail": ""},
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert order.index("provision") < order.index("apply")
+
+
+def test_main_provision_failure_flips_rc_without_crashing(tmp_path, monkeypatch):
+    """A failed snapcast install is surfaced (rc=1) but never crashes the
+    reconcile — the unit plan still runs (fail-soft; the snap units just fail to
+    start and the box stays solo-safe)."""
+    import jasper.multiroom.provision as provision_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
+    monkeypatch.setattr(
+        provision_mod, "ensure_snapcast_installed",
+        lambda **kw: {"state": "failed", "detail": "no network"},
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "apply" in order  # the unit plan still ran
+
+
+def test_main_solo_does_not_provision(tmp_path, monkeypatch):
+    """A solo (disabled) box never touches apt — provisioning is gated on a valid
+    enabled bond, so a solo speaker carries zero snapcast footprint."""
+    import jasper.multiroom.provision as provision_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(
+        provision_mod, "ensure_snapcast_installed",
+        lambda **kw: order.append("provision") or {"state": "present", "detail": ""},
+    )
+
+    main(["--reason", "test"])
+
+    assert "provision" not in order

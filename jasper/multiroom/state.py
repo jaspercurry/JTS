@@ -423,6 +423,18 @@ def read_grouping_state(
                 ),
                 "blocked_reason": endpoint.get("blocked_reason", ""),
             }
+
+        # Snapcast provisioning progress (the grouping opt-in install): surfaced
+        # so the /rooms wizard can show "Installing Snapcast…" while the
+        # reconciler apt-installs the binaries on first enable. Read fresh from
+        # the reconciler-written status file (never os.environ). Gated on
+        # cfg.enabled so a solo snapshot stays byte-identical, and only present
+        # once the reconciler has written a status (installing/installed/failed).
+        from .provision import read_provision_status
+
+        provision = read_provision_status()
+        if provision.get("state"):
+            snapshot["provision"] = provision
     return snapshot
 
 

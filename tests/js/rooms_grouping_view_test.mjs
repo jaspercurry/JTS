@@ -13,6 +13,7 @@ import {
   addSubPlan,
   airplayLipSyncRow,
   createFaceCopy,
+  snapcastProvisionRow,
   subCornerLabel,
 } from "../../deploy/assets/rooms/js/grouping-view.js";
 
@@ -161,6 +162,33 @@ assert.equal(subCornerLabel(-50), "80 Hz low-pass");
     peer_addr: "192.168.1.9", peer_name: "JTS3",
   });
   assert.equal(legacyRight.members[1].channel, "left");
+}
+
+// snapcastProvisionRow: the grouping opt-in install notice. No row when there's
+// no provision status, or it is already present/installed (or a malformed
+// payload — never crashes).
+assert.equal(snapcastProvisionRow(null), null);
+assert.equal(snapcastProvisionRow(undefined), null);
+assert.equal(snapcastProvisionRow({}), null);
+assert.equal(snapcastProvisionRow({ provision: null }), null);
+assert.equal(snapcastProvisionRow({ provision: "nope" }), null); // non-object
+assert.equal(snapcastProvisionRow({ provision: { state: "present" } }), null);
+assert.equal(snapcastProvisionRow({ provision: { state: "installed" } }), null);
+
+// installing → warn "Installing Snapcast…" + a reassuring "~minute or two" note.
+{
+  const r = snapcastProvisionRow({ provision: { state: "installing" } });
+  assert.equal(r.label, "Installing Snapcast…");
+  assert.equal(r.tone, "var(--status-warn)");
+  assert.ok(/minute or two/.test(r.note), r.note);
+}
+
+// failed → danger + the apt remediation in the note.
+{
+  const r = snapcastProvisionRow({ provision: { state: "failed", detail: "x" } });
+  assert.equal(r.label, "Snapcast install failed");
+  assert.equal(r.tone, "var(--status-danger)");
+  assert.ok(/apt install snapserver snapclient/.test(r.note), r.note);
 }
 
 console.log(JSON.stringify({ ok: true }));

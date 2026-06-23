@@ -135,3 +135,39 @@ export function airplayLipSyncRow(fit) {
       : null,
   };
 }
+
+// Snapcast provisioning notice. `g` is /state.grouping. While the reconciler
+// installs the snapcast binaries on the grouping opt-in (the household's
+// "set up multi-room" click — provision.state === "installing"), show a quiet
+// "Installing Snapcast…" progress notice; on a failed install, show the error
+// + the apt remediation. Returns {tone, label, note} or null when there is
+// nothing to show (already present / installed / no status). PURE (no DOM);
+// main.js renders it. Mirrors airplayLipSyncRow's shape.
+export function snapcastProvisionRow(g) {
+  const grouping = g && typeof g === "object" ? g : {};
+  const prov =
+    grouping.provision && typeof grouping.provision === "object"
+      ? grouping.provision
+      : null;
+  if (!prov) return null;
+  if (prov.state === "installing") {
+    return {
+      tone: "var(--status-warn)",
+      label: "Installing Snapcast…",
+      note:
+        "Multi-room needs Snapcast. Installing it now — this takes about a "
+        + "minute or two, then the group finishes setting up automatically.",
+    };
+  }
+  if (prov.state === "failed") {
+    return {
+      tone: "var(--status-danger)",
+      label: "Snapcast install failed",
+      note:
+        "Couldn't install Snapcast — check this speaker's internet connection. "
+        + "It retries on the next change; or install it from a terminal with: "
+        + "sudo apt install snapserver snapclient.",
+    };
+  }
+  return null; // present / installed / unknown → nothing to show
+}

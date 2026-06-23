@@ -1127,6 +1127,33 @@ def main(argv: list[str] | None = None) -> int:
     rc = 0
     endpoint_block_reason = ""
 
+    # Grouping prerequisite: ensure the snapcast binaries are installed — the
+    # "grouping opt-in's job" install.sh ships the units for but never installs
+    # (jasper.multiroom.provision). Runs BEFORE the active-endpoint gate so the
+    # active-leader precheck's snapcast check sees a fresh install. Gated on
+    # `active` (a valid enabled bond); a present install is a fast no-op. TOTAL +
+    # fail-soft: a failed install is logged + surfaced via
+    # /state.grouping.provision (the /rooms wizard shows "Installing Snapcast…")
+    # + the doctor, and flips rc so the oneshot shows failed — but never raises,
+    # and the snap units simply fail to start (the box stays solo-safe, never
+    # wedged; the next reconcile retries).
+    if active:
+        from .provision import ensure_snapcast_installed
+
+        prov = ensure_snapcast_installed()
+        if prov["state"] == "failed":
+            log_event(
+                logger,
+                "multiroom.reconcile.snapcast_provision_failed",
+                detail=prov["detail"] or "(none)",
+                level=logging.ERROR,
+            )
+            rc = 1
+        elif prov["state"] == "installed":
+            log_event(
+                logger, "multiroom.reconcile.snapcast_provisioned", result="installed",
+            )
+
     # Active-ENDPOINT readiness GATE (fail-safe to SOLO). Build + re-prove the
     # driver-domain graph BEFORE tearing down the solo path — for a follower its
     # one CamillaDSP, for an active leader BOTH camilla#2's driver-domain graph

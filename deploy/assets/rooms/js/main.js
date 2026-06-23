@@ -42,7 +42,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
-import { addSubPlan, airplayLipSyncRow, createFaceCopy, subCornerLabel } from "./grouping-view.js";
+import { addSubPlan, airplayLipSyncRow, createFaceCopy, snapcastProvisionRow, subCornerLabel } from "./grouping-view.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -229,6 +229,16 @@ function groupingBody(g) {
     fitBadge.style.setProperty("--tone", fitRow.tone);
     rows.push([h("dt", null, "AirPlay lip-sync"), h("dd", null, fitBadge)]);
   }
+  // Snapcast provisioning (the grouping opt-in install): a row only while the
+  // reconciler installs the binaries on first enable, or on a failed install.
+  // The DECISION is the pure snapcastProvisionRow (unit-tested); the note is
+  // pushed below.
+  const provRow = snapcastProvisionRow(g);
+  if (provRow) {
+    const provBadge = h("span.badge", null, provRow.label);
+    provBadge.style.setProperty("--tone", provRow.tone);
+    rows.push([h("dt", null, "Snapcast"), h("dd", null, provBadge)]);
+  }
   // Runtime health (jasper.multiroom.state.derive_grouping_runtime):
   //   {health: "ok"|"degraded"|…, detail}. Present when grouping is on.
   // A degraded bond — a follower that can't reach its leader, or (until the
@@ -250,6 +260,9 @@ function groupingBody(g) {
   }
   if (fitRow && fitRow.note) {
     out.push(h("p.info-card__note", null, fitRow.note));
+  }
+  if (provRow && provRow.note) {
+    out.push(h("p.info-card__note", null, provRow.note));
   }
   return h("div", null, ...out);
 }

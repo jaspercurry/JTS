@@ -733,6 +733,36 @@ def test_endpoint_block_present_for_active_crossover_follower(tmp_path):
     }
 
 
+def test_provision_block_surfaced_when_installing(tmp_path, monkeypatch):
+    """While the reconciler installs snapcast (the grouping opt-in), /state.grouping
+    carries a `provision` block so the /rooms wizard can show 'Installing Snapcast…'."""
+    import jasper.multiroom.provision as prov
+
+    monkeypatch.setattr(
+        prov, "read_provision_status",
+        lambda *a, **k: {"state": "installing", "detail": "~1-2 min"},
+    )
+    state = read_grouping_state(
+        _write_env(tmp_path, _leader_env()), unit_state_reader=_stub,
+    )
+    assert state["provision"] == {"state": "installing", "detail": "~1-2 min"}
+
+
+def test_no_provision_block_for_solo(tmp_path, monkeypatch):
+    """Gated on cfg.enabled — a solo speaker carries no provision key even if a
+    stale status file exists (solo snapshot stays byte-identical)."""
+    import jasper.multiroom.provision as prov
+
+    monkeypatch.setattr(
+        prov, "read_provision_status",
+        lambda *a, **k: {"state": "installing", "detail": "x"},
+    )
+    state = read_grouping_state(
+        _write_env(tmp_path, "JASPER_GROUPING=off\n"), unit_state_reader=_stub,
+    )
+    assert "provision" not in state
+
+
 def test_endpoint_block_present_for_active_crossover_leader(tmp_path):
     """An active LEADER running camilla#2 (its local Layer-A crossover, while
     camilla#1 bakes the wire) surfaces an ``endpoint`` block tagged role=leader
