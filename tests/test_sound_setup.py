@@ -2968,6 +2968,7 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     # Distributed-active Slice 4: the module boots in follower mode (tabs + plot
     # absent) and renders the local driver/crossover UI without fetching /state.
     assert {"followerModeRendersLocalDriverUi": True} in out["results"]
+    assert {"resetPartialCleanupSurfacesWarning": True} in out["results"]
 
 
 def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
