@@ -1077,7 +1077,15 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         logger,
         "rooms.unbond",
         bond=bond_id,
-        roster="yes" if roster_addr else "no",
+        # Which containment path disabled the members (full N-member roster vs
+        # the legacy single-sibling vs bond_id discovery) — keyed on the branch
+        # taken, not on the legacy peer_addr which a full-roster bond also sets
+        # to its primary L/R sibling.
+        path=(
+            "full" if (isinstance(roster, list) and roster)
+            else "legacy" if roster_addr
+            else "discovery"
+        ),
         roster_n=len(roster or []),
         unreachable=unreachable,
         peers=len(peer_addrs),

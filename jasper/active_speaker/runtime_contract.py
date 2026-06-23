@@ -55,6 +55,7 @@ from .graph_evidence import (
 )
 from .graph_safety import (
     GraphView,
+    bass_management_corner_matched,
     filter_param_matches,
     float_value as _float_value,
     mains_highpass_present,
@@ -1013,6 +1014,25 @@ def _active_graph_evidence(
                                 str(index + 1) for index in sorted(mains_low_outputs)
                             )
                             + f" ({low_role})"
+                        ),
+                    ))
+                elif not bass_management_corner_matched(
+                    view,
+                    lowpass_name=_sub_lowpass_name(),
+                    highpass_name=_bass_management_hp_name(low_role),
+                ):
+                    # Both halves exist, but at DIFFERENT corners — not two halves
+                    # of one crossover. A split crossover (e.g. an 80 Hz mains HP
+                    # under a 1000 Hz sub LP) leaves the sub reproducing midrange or
+                    # a mid-band hole. The emitter drives both from one Fc, so this
+                    # only fires on a corrupted/tampered statefile — fail closed.
+                    issues.append(_issue(
+                        "blocker",
+                        "active_baseline_bass_mgmt_corner_split",
+                        (
+                            "active baseline sub low-pass and mains bass-management "
+                            "high-pass are at different corners — not two halves of "
+                            "one crossover (the crossover Fc has been split)"
                         ),
                     ))
         for index in sorted(required_indexes):

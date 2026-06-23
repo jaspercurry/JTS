@@ -16,6 +16,8 @@ round-trips ARE the safety net (a wrong crossover blows a driver).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -489,6 +491,37 @@ def test_sub_baseline_reproof_blocks_positive_volume_limit(topology_fn, preset_f
     graph = classify_camilla_graph(topology=topology_fn(), text=tampered)
     assert graph.allowed is False
     assert "volume_limit_positive" in {i["code"] for i in graph.issues}
+
+
+@pytest.mark.parametrize(
+    "topology_fn,preset_fn",
+    [
+        (_active_2way_sub_topology, _active_2way_sub_preset),
+        (_passive_1way_sub_topology, _passive_1way_sub_preset),
+    ],
+)
+def test_sub_baseline_reproof_blocks_split_crossover_corner(topology_fn, preset_fn) -> None:
+    # Both halves PRESENT but at DIFFERENT corners (the sub LP moved off the mains
+    # HP corner) — NOT two halves of one crossover; the sub would reproduce
+    # midrange / leave a mid-band hole. The emitter never writes this (one Fc
+    # drives both halves), but the re-proof must still reject a corrupted/tampered
+    # statefile that splits the crossover. Precise single-filter string mutation
+    # anchored on the unique as_sub_lowpass block (a plain "freq: 80" replace would
+    # also move the mains HP and keep them matched; a yaml round-trip reformats the
+    # graph enough that classify mis-parses it).
+    yaml_text = _baseline(preset_fn())
+    # Move ONLY the sub LP's freq (anchored on the unique as_sub_lowpass block;
+    # freq-agnostic since the two presets use different corners) off the mains HP.
+    tampered, n = re.subn(
+        r"(as_sub_lowpass:\n    type: BiquadCombo\n    parameters:\n"
+        r"      type: LinkwitzRileyLowpass\n      freq: )[0-9.]+",
+        r"\g<1>1234.0000",
+        yaml_text,
+    )
+    assert n == 1  # the anchor must have matched exactly once
+    graph = classify_camilla_graph(topology=topology_fn(), text=tampered)
+    assert graph.allowed is False
+    assert "active_baseline_bass_mgmt_corner_split" in {i["code"] for i in graph.issues}
 
 
 # --------------------------------------------------------------------------- #

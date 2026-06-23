@@ -831,7 +831,8 @@ function makeBondCard() {
       // the WHOLE program full-range as channel "stereo" — not "left" — because
       // a single main box + sub is one full-range speaker plus lows, not half a
       // stereo pair. (Bass-management high-pass of the main is out of scope; it
-      // needs an active leader.) crossover_hz is clamped server-side.
+      // needs an active leader.) crossover_hz is range-validated server-side — an
+      // out-of-range sub corner is rejected 400 (validate_grouping), not clamped.
       const members = sub
         ? [
             { addr: selfAddr, role: "leader", channel: "stereo" },

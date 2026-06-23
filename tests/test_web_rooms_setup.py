@@ -1732,7 +1732,7 @@ def test_post_unbond_logs_unreachable_candidate_count(monkeypatch, caplog):
     infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert any(
         "event=rooms.unbond " in m
-        and "roster=no" in m and "unreachable=1" in m and "peers=1" in m
+        and "path=discovery" in m and "unreachable=1" in m and "peers=1" in m
         for m in infos
     )
 

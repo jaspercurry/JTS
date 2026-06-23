@@ -590,8 +590,9 @@ def mains_highpass_present(
 
     The sub low-pass without the mains high-pass is half a crossover: the mains
     would still carry full bass, defeating bass management and over-driving a
-    woofer below the sub corner. This predicate is what makes the sub low-pass and
-    the mains high-pass provably two halves of ONE crossover."""
+    woofer below the sub corner. This predicate proves the upper half EXISTS and
+    is wired to the mains; that the two halves share ONE corner Fc is the separate
+    :func:`bass_management_corner_matched` proof."""
     hp = view.filters.get(highpass_name)
     hp_params = hp.params if hp else {}
     hp_freq = float_value(hp_params.get("freq"))
@@ -607,3 +608,29 @@ def mains_highpass_present(
         view, channels=channels, required_names=(highpass_name,)
     )
     return hp_ok and wired
+
+
+def bass_management_corner_matched(
+    view: GraphView,
+    *,
+    lowpass_name: str,
+    highpass_name: str,
+) -> bool:
+    """True iff the sub low-pass and the mains high-pass share ONE corner Fc —
+    the "two halves of one crossover" invariant (fail-closed).
+
+    :func:`sub_guard_present` and :func:`mains_highpass_present` prove each half
+    EXISTS and is wired; this proves they are complementary at the SAME corner.
+    The emitter drives both halves from one ``sub.crossover_fc_hz`` so a freshly
+    emitted graph always matches — but the re-proof exists to catch a graph the
+    emitter did NOT write (a corrupted/tampered statefile that splits the
+    crossover into, e.g., an 80 Hz HP under a 1000 Hz LP, leaving the sub
+    reproducing midrange or a mid-band hole). Both freqs must be present, positive,
+    and equal within the shared float tolerance; anything else fails closed."""
+    lp = view.filters.get(lowpass_name)
+    hp = view.filters.get(highpass_name)
+    lp_freq = float_value(lp.params.get("freq")) if lp else None
+    hp_freq = float_value(hp.params.get("freq")) if hp else None
+    if lp_freq is None or hp_freq is None or lp_freq <= 0.0 or hp_freq <= 0.0:
+        return False
+    return float_matches(lp_freq, hp_freq)

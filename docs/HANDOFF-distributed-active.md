@@ -468,16 +468,26 @@ that measurement.
 
 These are conflated in shorthand but are distinct designs:
 
-- **Local sub driver (gap 4):** a sub that is one of a *single* box's N
-  drivers. The active compiler hard-blocks it
-  (`baseline_subwoofer_not_supported`,
-  [baseline_profile.py](../jasper/active_speaker/baseline_profile.py);
-  `subwoofer_staging_not_supported`,
-  [staging.py](../jasper/active_speaker/staging.py)) even though the data
-  model and protection bounds exist
-  ([driver_protection.py](../jasper/active_speaker/driver_protection.py),
-  50 Hz / 300 ms). Fix = add the sub lane (LR4 low-pass) to the compiler.
-  **Orthogonal to wireless — a solo-active win.** Its own slice.
+- **Local sub driver (gap 4 / slice 6a — LANDED 2026-06-23):** a sub on a
+  *single* box's spare DAC output. The two old hard-blocks
+  (`baseline_subwoofer_not_supported`, `subwoofer_staging_not_supported`) are
+  **lifted behind a sub-aware safe path**: the active multi-output emitter
+  ([camilla_yaml.py](../jasper/active_speaker/camilla_yaml.py)) now emits a sub
+  lane (clip-safe L+R mono-sum → LR4 low-pass → gain ≤0 → soft-clip limiter,
+  `driver_protection` 50 Hz/300 ms) plus the complementary mains high-pass at the
+  same Fc (bass management), for active mains AND a degenerate 1-way passive main
+  (`profile.py` `LocalSubwoofer` + 1-way support; `output_topology` carries the
+  per-sub `crossover_fc_hz`). The graph re-proof
+  ([graph_safety.py](../jasper/active_speaker/graph_safety.py)
+  `sub_guard_present` + `mains_highpass_present` + `bass_management_corner_matched`,
+  demanded by [runtime_contract.py](../jasper/active_speaker/runtime_contract.py))
+  is the matched safety net (no hardware loop); the sub starts muted in staging
+  and is structurally excluded from the audible-target resolver. A subless passive
+  speaker is byte-identical (unchanged flat `emit_sound_config`). UI: a crossover
+  Fc control on the `/sound/` subwoofer card + a called-out "subwoofer filter"
+  band in the PEQ view. **On-device acoustic validation owed** (needs a
+  commissioned ≥3-output DAC — DAC8x/jts3). **Orthogonal to wireless — a
+  solo-active win.**
 - **Wireless sub member (gap 5):** a *separate* bonded sub box. **Where its
   filtering runs is a hardware-target tradeoff, not a fixed rule** —
   `channel_split.py` already emits the sub fragment for *either* host:
@@ -613,7 +623,7 @@ slices land safest-first; each is independently mergeable.
 | **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed silence + **cue injected into camilla's input, pre-Layer-A, follower-local** — Q2 step 5); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / chunksize≥1024 / no-SIGHUP-during-playback | **yes** (2 Pis) |
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
 | **5** | ✅ | Active **leader** (2nd CamillaDSP; realization ratified 2026-06-21 — single rate loop = `outputd-summer`, camilla#2 `rate_adjust` **OFF**, the two `jasper-outputd` instances kept **separate** for inv-A, Option-3 TTS as a soft input, inv-B-through-Layer-A). Sequence: validated-seam music → swap-in-summer (soak gate) → arm TTS. **The v1 gate**; **CPU/thermal + summer-build pick** measured on `jts3` (active cooling). Details: "Stage B — the ratified active-leader realization" | yes |
-| **6a** | — | Local sub driver — unblock `baseline_subwoofer_not_supported` (solo-active) | mixed |
+| **6a** | — | Local sub driver — **LANDED 2026-06-23**: sub lane (LR4 LP) + bass-management mains-HP in the active multi-output emitter (active + degenerate-1-way passive), matched re-proof, both guards lifted behind the safe path, `/sound/` Fc control + called-out PEQ band. On-device acoustic check owed (≥3-output DAC) | mixed |
 | **6b** | — | Wireless sub member + bass management. **Dumb receiver-side sub LANDED (2026-06-23)** — outputd `ChannelPick::Sub` LR4 low-pass + `crossover_hz` SSOT + `/rooms/` sub role + `/sound/` CTA (HW-free green; `jts`→`jts4` on-device validation in progress). The N-member `JASPER_GROUPING_ROSTER` + an "add a subwoofer to a stereo pair" (2.1) `/rooms/` flow landed 2026-06-23 (unbond disables every member — no orphaned sub). Remaining: bass-management mains-HP (needs an active leader) and the brainy/active-endpoint sub | mixed |
 
 Slices 1–2 are hardware-free and independently shippable; 3 is where

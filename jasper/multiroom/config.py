@@ -301,9 +301,12 @@ def _parse_crossover_hz(raw: str) -> float:
         return DEFAULT_CROSSOVER_HZ
 
 
-def _format_roster(members) -> str:
+def format_roster(members) -> str:
     """Serialize an iterable of :class:`BondMember` into the env-file value
     for JASPER_GROUPING_ROSTER: ``addr|name|channel`` entries joined by ",".
+
+    PUBLIC (mirrors :func:`validate_grouping`): the cross-package write contract
+    used by jasper.control.server to build the env string — not a private detail.
 
     Members with an empty addr are skipped (a roster slot with no address
     is meaningless). The NAME is sanitized — the "|" / "," delimiters and
@@ -322,6 +325,11 @@ def _format_roster(members) -> str:
         ).strip()[:64]
         out.append(f"{addr}|{name}|{str(m.channel).strip()}")
     return ",".join(out)
+
+
+# Back-compat alias: the serializer was introduced private; `format_roster` is
+# the public spelling now that it is a cross-package contract.
+_format_roster = format_roster
 
 
 def _parse_roster(raw: str) -> tuple[BondMember, ...]:

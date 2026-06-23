@@ -63,7 +63,7 @@ from ..multiroom.config import (
     DEFAULT_CROSSOVER_HZ,
     GROUPING_ENV_FILE,
     BondMember,
-    _format_roster,
+    format_roster,
     validate_grouping,
 )
 from ..multiroom.state import grouping_response, read_grouping_state
@@ -918,7 +918,7 @@ def _write_grouping(
         updates["JASPER_GROUPING_PEER_NAME"] = peer_name
     # The full bond roster (leader only): same preserved-when-omitted /
     # explicit-empty-clears contract as peer_addr — `roster` is the already
-    # SERIALIZED env string (the caller builds it via config._format_roster).
+    # SERIALIZED env string (the caller builds it via config.format_roster).
     if roster is not None:
         updates["JASPER_GROUPING_ROSTER"] = roster
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
@@ -1829,7 +1829,7 @@ def _make_handler(
                     for m in raw_roster
                     if isinstance(m, dict)
                 )
-                roster_str = _format_roster(roster_members)
+                roster_str = format_roster(roster_members)
             # Validate an ENABLED request up front via the SHARED
             # validate_grouping (same rule the config loader applies on
             # read) so we never persist a fail-loud config. A disabled
