@@ -108,6 +108,37 @@ def check_grouping() -> CheckResult:
     return CheckResult(label, status, f"{base} — {runtime['detail']}")
 
 
+@doctor_check(order=71.5, group="grouping")
+def check_grouping_snapcast_installed() -> CheckResult:
+    """Grouping needs the snapcast binaries — snapserver hosts the stream,
+    snapclient plays it. install.sh ships the JTS snap units but deliberately
+    does NOT apt-install the binaries (off-by-default, like the usbsink overlay),
+    on the theory that installing them is "the grouping opt-in's job". There is
+    no automated opt-in step today, so a box where grouping was enabled but
+    snapcast was never installed has the units present yet failing on every
+    start — invisible until you bond, and on an ACTIVE leader it was the
+    2026-06-23 reboot-loop trigger (now fail-closed in the reconciler). Surface
+    it: OFF skips (snapcast deliberately absent); ON fails if either binary is
+    missing, with the one-line remediation."""
+    from ...multiroom.config import load_config as _load_grouping_config
+
+    label = "grouping: snapcast installed"
+    cfg = _load_grouping_config()
+    if not cfg.enabled:
+        return CheckResult(label, "ok", "grouping off (snapcast not required)")
+    missing = [b for b in ("snapserver", "snapclient") if shutil.which(b) is None]
+    if missing:
+        return CheckResult(
+            label,
+            "fail",
+            f"grouping is configured but {', '.join(missing)} not installed — the "
+            "snap units fail on every start (grouping silently does nothing; on an "
+            "active leader the reconciler fails closed to solo). Install with: "
+            "sudo apt install snapserver snapclient",
+        )
+    return CheckResult(label, "ok", "snapserver + snapclient present")
+
+
 @doctor_check(order=74, group="grouping")
 def check_grouping_rate_adjust() -> CheckResult:
     """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond LEADER's local
