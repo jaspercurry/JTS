@@ -469,6 +469,10 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
     assert "function setVolumeFloorResetButton" in js
+    assert "return true;" in js
+    assert "return false;" in js
+    assert "if (saved && volumeFloorTone.active)" in js
+    assert "if (saved) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});" in js
     assert "pagehide" in js
     assert "scheduleVolumeFloorToneUpdate(floor);" in js
     assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
