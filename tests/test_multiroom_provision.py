@@ -23,18 +23,24 @@ def _which(present):
 
 
 class _Runner:
-    """A subprocess.run stub recording argv. ``apt`` returns ``apt_rc`` (or
-    raises ``apt_raise``); when it succeeds it flips ``installed`` so a
-    post-install which() sees the binaries. systemctl calls return 0."""
+    """A subprocess.run stub recording argv. ``apt-get install`` returns
+    ``apt_rc`` (or raises ``apt_raise``); when it succeeds it flips ``installed``
+    so a post-install which() sees the binaries. ``apt-get update`` returns 0 (or
+    raises ``update_raise``). systemctl calls return 0."""
 
-    def __init__(self, *, installed, apt_rc=0, apt_raise=None):
+    def __init__(self, *, installed, apt_rc=0, apt_raise=None, update_raise=None):
         self.calls: list[list[str]] = []
         self._installed = installed
         self._apt_rc = apt_rc
         self._apt_raise = apt_raise
+        self._update_raise = update_raise
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
+        if list(argv[:2]) == ["apt-get", "update"]:
+            if self._update_raise is not None:
+                raise self._update_raise
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if list(argv[:2]) == ["apt-get", "install"]:
             if self._apt_raise is not None:
                 raise self._apt_raise
@@ -80,6 +86,47 @@ def test_install_success_neutralises_distro_units(tmp_path) -> None:
         c[:3] == ["systemctl", "disable", "--now"] for c in runner.calls
     )
     assert json.loads(Path(status).read_text())["state"] == "installed"
+
+
+def test_apt_update_precedes_install(tmp_path) -> None:
+    """A stale package index is the #1 spurious-failure cause, so a best-effort
+    `apt-get update` runs BEFORE the install."""
+    present: set[str] = set()
+    runner = _Runner(installed=present)
+    provision.ensure_snapcast_installed(
+        runner=runner, which=_which(present), status_path=str(tmp_path / "s.json"),
+    )
+    updates = [i for i, c in enumerate(runner.calls) if c[:2] == ["apt-get", "update"]]
+    installs = [i for i, c in enumerate(runner.calls) if c[:2] == ["apt-get", "install"]]
+    assert updates and installs
+    assert updates[0] < installs[0]  # update first
+
+
+def test_install_waits_out_the_dpkg_lock(tmp_path) -> None:
+    """unattended-upgrades holds the dpkg lock daily, so the install passes
+    DPkg::Lock::Timeout to wait it out rather than failing instantly."""
+    present: set[str] = set()
+    runner = _Runner(installed=present)
+    provision.ensure_snapcast_installed(
+        runner=runner, which=_which(present), status_path=str(tmp_path / "s.json"),
+        apt_lock_timeout=90,
+    )
+    install = next(c for c in runner.calls if c[:2] == ["apt-get", "install"])
+    assert "DPkg::Lock::Timeout=90" in install
+
+
+def test_apt_update_failure_is_nonfatal(tmp_path) -> None:
+    """A failed/offline `apt-get update` must NOT block the install — the index
+    may already be fresh, so its result is ignored."""
+    present: set[str] = set()
+    runner = _Runner(
+        installed=present,
+        update_raise=subprocess.TimeoutExpired(cmd="apt-get", timeout=120),
+    )
+    r = provision.ensure_snapcast_installed(
+        runner=runner, which=_which(present), status_path=str(tmp_path / "s.json"),
+    )
+    assert r["state"] == "installed"  # update failed, install still proceeded + succeeded
 
 
 def test_apt_nonzero_fails_soft(tmp_path) -> None:
