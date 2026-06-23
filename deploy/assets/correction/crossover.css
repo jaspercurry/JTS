@@ -1,0 +1,90 @@
+/* Correction measurement hub: crossover + bass pages. */
+
+.correction-measurement {
+  display: grid;
+  gap: 1rem;
+}
+
+.correction-measurement .segmented {
+  margin-bottom: 0.25rem;
+}
+
+.section-head {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.measurement-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.8rem;
+}
+
+.measurement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.measurement-row__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.measurement-row__meta,
+.capture-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.measurement-row__meta {
+  margin: 0.25rem 0 0;
+}
+
+.measurement-row__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.capture-status {
+  min-height: 1.25rem;
+  margin: 0;
+}
+
+.capture-status[data-tone="bad"],
+#mic-support[data-tone="bad"] .form-hint {
+  color: var(--status-danger);
+  font-weight: 600;
+}
+
+.capture-status[data-tone="ok"],
+#mic-support[data-tone="ok"] .form-hint {
+  color: var(--status-ok);
+  font-weight: 600;
+}
+
+@media (max-width: 620px) {
+  .measurement-row {
+    grid-template-columns: 1fr;
+  }
+
+  .measurement-row .btn {
+    width: 100%;
+  }
+
+  .measurement-row__actions {
+    justify-content: stretch;
+  }
+}

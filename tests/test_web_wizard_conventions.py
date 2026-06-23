@@ -453,9 +453,9 @@ def test_static_modules_do_not_interpolate_into_inline_handler_js():
     )
 
 
-# Redesigned pages (/system/, /sound/) deliver their behaviour as static ES
-# modules under deploy/assets/<page>/js/ — outside the *_setup.py scan above.
-WEB_MODULE_FILES = tuple(Path("deploy/assets").glob("*/js/*.js"))
+# Redesigned pages deliver their behaviour as static ES modules under
+# deploy/assets/<page>/js/** — outside the *_setup.py scan above.
+WEB_MODULE_FILES = tuple(Path("deploy/assets").glob("*/js/**/*.js"))
 
 
 def test_static_modules_do_not_reintroduce_json_posts_without_csrf_helper():
@@ -510,6 +510,8 @@ def test_shared_measurement_audio_module_owns_capture_primitives():
     for name in (
         "monoMicConstraints",
         "openMonoMic",
+        "micCaptureSupport",
+        "assertMicCaptureSupported",
         "createBandpassRmsMeter",
         "createMonoRecorder",
         "float32ToWavBlob",
@@ -517,6 +519,9 @@ def test_shared_measurement_audio_module_owns_capture_primitives():
     ):
         assert re.search(r"export\s+(?:async\s+)?function\s+" + name + r"\b", src)
     assert "navigator.mediaDevices.getUserMedia" in src
+    assert "non_secure_context" in src
+    assert "media_devices_unavailable" in src
+    assert "Microphone capture needs HTTPS" in src
     assert "AudioWorkletProcessor" in src
     assert "createMediaStreamSource" in src
     assert "sourceNode.connect(workletNode)" in src

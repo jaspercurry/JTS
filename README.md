@@ -393,8 +393,8 @@ deploy/
   shairport-sync.conf           AirPlay 2 receiver config
   index.html                    Static landing page
   assets/fonts/                 Local web fonts for static management UI
-  correction-preflight.html     HTTP warning before HTTPS room correction
-  nginx-jasper.conf             Main nginx site: HTTP wizards + HTTPS correction UI
+  correction-preflight.html     HTTP warning before HTTPS correction measurements
+  nginx-jasper.conf             Main nginx site: HTTP wizards + HTTPS correction hub
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
@@ -856,8 +856,9 @@ reference. Currently:
   L2 calibrated-mic FR-phase), the multi-volume verdict, and a strangler-fig
   refactor roadmap (kernel extraction + single GraphValidator). The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
-- [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
-  correction v2 at `/correction/`: iPhone-mic measurement flow,
+- [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — HTTPS
+  correction measurement hub at `/correction/`: room correction,
+  active-crossover mic measurement, and bass/subwoofer tuning surfaces;
   calibrated mic ingest, configurable correction strategies,
   design-audit bundles, replay-grade analysis artifacts,
   `jasper-correction-bundle` inspect/export/FIR-inspect tooling, PEQ
@@ -1070,7 +1071,7 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms / Tools wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
-| `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
+| `jasper-correction-web` (HTTPS correction measurement hub) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
 | `jasper-system-web` (system dashboard at `/system/`) | **Socket-activated** | ~0 idle, ~12 MB when open | n/a idle |
 | Single-card snd-aloop (Loopback) | Loaded at boot | ~0 | ~0 |

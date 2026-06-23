@@ -66,6 +66,8 @@ def _fake_repo(tmp_path: Path) -> Path:
     (assets / "alpha" / "alpha.css").write_text("/* css */")
     (assets / "alpha" / "js" / "main.js").write_text("// module")
     (assets / "alpha" / "js" / "extra.js").write_text("// secondary module")
+    (assets / "alpha" / "js" / "nested").mkdir()
+    (assets / "alpha" / "js" / "nested" / "panel.js").write_text("// nested")
     (assets / "beta").mkdir(parents=True)
     (assets / "beta" / "beta.css").write_text("/* css only */")
     (assets / "shared" / "js").mkdir(parents=True)
@@ -86,6 +88,7 @@ def test_copies_assets_and_writes_exact_sorted_manifest(tmp_path: Path):
         "alpha/alpha.css",
         "alpha/js/extra.js",
         "alpha/js/main.js",
+        "alpha/js/nested/panel.js",
         "app.css",
         "beta/beta.css",
         "fonts/OFL.txt",
@@ -149,7 +152,7 @@ def test_every_repo_asset_matches_the_copy_shape():
     """Every file under deploy/assets/ must be copyable by the function.
 
     The contract is root app.css, fonts/*, and per-page root *.css +
-    js/*.js. A file outside that shape (a nested module, a stray .svg)
+    js/**/*.js. A file outside that shape (a stray .svg)
     would be silently skipped — never installed, never manifested —
     which is exactly the silent-404 class the manifest exists to kill,
     so fail in CI instead.
@@ -166,12 +169,12 @@ def test_every_repo_asset_matches_the_copy_shape():
             continue
         if len(parts) == 2 and parts[1].endswith(".css"):
             continue
-        if len(parts) == 3 and parts[1] == "js" and parts[2].endswith(".js"):
+        if len(parts) >= 3 and parts[1] == "js" and parts[-1].endswith(".js"):
             continue
         offenders.append(str(rel))
     assert not offenders, (
         "asset(s) outside the installer's copy shape (root app.css, "
-        f"fonts/*, per-page *.css or js/*.js) would never reach the Pi: "
+        f"fonts/*, per-page *.css or js/**/*.js) would never reach the Pi: "
         f"{offenders}; extend deploy/lib/install/web-assets.sh if the "
         "shape must grow"
     )

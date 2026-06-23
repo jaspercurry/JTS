@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Room correction setup — JTS speaker</title>
+  <title>Correction setup — JTS speaker</title>
   <link rel="stylesheet" href="/assets/app.css?v=__APP_CSS_VERSION__">
   <style>
     /* Page-specific spacing only; shared tokens, fonts, and components
@@ -31,13 +31,13 @@
     <a class="icon-button" href="/" aria-label="Home">
       <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
     </a>
-    <h1 class="app-header__title">Room correction</h1>
+    <h1 class="app-header__title">Correction</h1>
     <span></span>
   </div></header>
 
   <main class="page">
     <p>
-      The next page measures your room using this device's microphone.
+      The next page measures with this device's microphone.
       Browsers only allow that on HTTPS, so this one JTS screen has to
       switch from normal HTTP to HTTPS.
     </p>
@@ -59,7 +59,7 @@
 
     <p class="form-hint">
       To silence the warning permanently on this device, install and trust
-      the JTS root certificate from the room-correction page.
+      the JTS root certificate from the correction page.
     </p>
 
     <div class="form-actions">
@@ -72,7 +72,26 @@
     (function () {
       'use strict';
       var proceed = document.getElementById('proceed');
-      proceed.href = 'https://' + window.location.hostname + '/correction/';
+      var params = new URLSearchParams(window.location.search || '');
+      var requested = params.get('next') || '/correction/';
+      var allowed = {
+        '/correction/': true,
+        '/correction/room/': true,
+        '/correction/crossover/': true,
+        '/correction/bass/': true
+      };
+      var next = '/correction/';
+      try {
+        var parsed = new URL(requested, window.location.origin);
+        if (parsed.origin === window.location.origin) {
+          var path = parsed.pathname;
+          if (path.slice(-1) !== '/') path += '/';
+          if (allowed[path]) next = path;
+        }
+      } catch (_) {
+        next = '/correction/';
+      }
+      proceed.href = 'https://' + window.location.hostname + next;
     }());
   </script>
 </body>

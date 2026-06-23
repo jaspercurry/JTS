@@ -26,7 +26,7 @@
 # - Per-page static assets for the redesigned wizards (/system/,
 #   /sound/, /wifi/, ...): the page stylesheet (<page>.css — served
 #   immutable + cache-busted like app.css) and the ES module graph
-#   (js/*.js — served by the `location ~ \.js$` block with ETag
+#   (js/**/*.js — served by the `location ~ \.js$` block with ETag
 #   revalidation, since relative imports can't be URL-busted).
 #   compgen -G guards each glob (files-exist, not just the dir), so
 #   an empty dir can't leave a literal *.css/*.js to fail `install`
@@ -40,7 +40,7 @@
 #
 # Page dirs are discovered dynamically: every directory under
 # deploy/assets/ (each canonical page's slug, plus `shared`) is
-# copied with the same per-dir shape — root *.css, then js/*.js if
+# copied with the same per-dir shape — root *.css, then js/**/*.js if
 # present. Migrating a new wizard therefore needs NO edit here —
 # adding deploy/assets/<page>/ is enough, which closes the
 # silent-404 failure mode where a new page's CSS/JS never reached
@@ -89,14 +89,15 @@ install_web_assets() {
                 echo "${page}/$(basename "${f}")" >> "${manifest_tmp}"
             done
         fi
-        if compgen -G "${asset_dir}js/"*.js > /dev/null; then
-            install -d -m 0755 "${assets_root}/${page}/js"
-            install -m 0644 \
-                "${asset_dir}js/"*.js \
-                "${assets_root}/${page}/js/"
-            for f in "${asset_dir}js/"*.js; do
-                echo "${page}/js/$(basename "${f}")" >> "${manifest_tmp}"
-            done
+        if [[ -d "${asset_dir}js" ]]; then
+            while IFS= read -r -d '' f; do
+                local rel dest_dir
+                rel="${f#"${asset_dir}"}"
+                dest_dir="${assets_root}/${page}/$(dirname "${rel}")"
+                install -d -m 0755 "${dest_dir}"
+                install -m 0644 "${f}" "${dest_dir}/"
+                echo "${page}/${rel}" >> "${manifest_tmp}"
+            done < <(find "${asset_dir}js" -type f -name '*.js' -print0)
         fi
     done
     LC_ALL=C sort "${manifest_tmp}" -o "${manifest_tmp}"
