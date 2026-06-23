@@ -22,13 +22,7 @@
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import {
-  DEFAULT_SAMPLE_RATE,
-  createMonoRecorder,
-  float32ToWavBlob
-} from "/assets/shared/js/measurement-audio.js";
-import {
   DEFAULT_SUB_CROSSOVER_HZ,
-  NEARFIELD_LEVEL_MATCH_GUIDANCE,
   SUB_CROSSOVER_HZ_HI,
   SUB_CROSSOVER_HZ_LO,
   activeCommissionGroup,
@@ -40,7 +34,6 @@ import {
   humanMode,
   humanRole,
   levelMatchSummary,
-  nearfieldCaptureHint,
   outputStatusClass,
   outputStepTitle,
   playbackResultMessage,
@@ -99,9 +92,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     baselineProfile: null, error: '', levelDbfs: null,
     combinedTestLevelDbfs: null,
     commission: null, commissioningView: null,
-    commissionBusy: '', commissionError: '',
-    captureBusy: '', captureError: ''
+    commissionBusy: '', commissionError: ''
   };
+  var summedTestRequest = {token: 0, armTimer: null};
   var commissionAutoRamp = {
     running: false,
     token: 0,
@@ -110,8 +103,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     levelDbfs: null,
     message: ''
   };
-  var COMMISSION_RAMP_LISTEN_MS = 2300;
-  var COMMISSION_RAMP_NEXT_PULSE_MS = 120;
+  var COMMISSION_RAMP_LISTEN_MS = 900;
+  var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
+  var SUMMED_TEST_STOP_ARM_MS = 250;
   var outputTopology = {
     loading: false, saving: false, resetting: false, payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
@@ -691,12 +685,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!c.available) return '';
     var busy = activeSpeaker.commissionBusy;
     var roleLabel = function(r) { return escapeHtml(humanRole(r)); };
+    var buttonRoleLabel = function(r) {
+      return escapeHtml(String(humanRole(r)).toLowerCase());
+    };
     var toneRole = c.pendingRole || c.armedRole || c.startRole || '';
     var toneActive = !!c.canAck;
-    var dis = busy && !toneActive ? ' disabled' : '';
+    var rampPreparing = commissionAutoRamp.running && !toneActive;
+    var controlRole = toneRole || c.startRole || c.armedRole || '';
     var statusLabel = c.complete ? 'Complete' :
       (toneActive ? 'Tone playing' :
-        (c.stale ? 'Stopped' : (c.armed ? 'Ready' : 'Ready to start')));
+        (rampPreparing ? 'Preparing' :
+          (c.stale ? 'Stopped' : (c.armed ? 'Ready' : 'Ready to start'))));
     var toneFrequency = Number(c.toneFrequencyHz);
     var toneFrequencyLabel = isFinite(toneFrequency) && toneFrequency > 0 ?
       ' at ' + fmtFreq(toneFrequency) : '';
@@ -720,22 +719,28 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
 
     var buttons = [];
-    if (c.armed && toneActive) {
-      buttons.push('<button type="button" class="btn btn--danger" ' +
-        'data-act="commission-abort">Stop tone</button>');
-      buttons.push('<button type="button" class="btn btn--primary" ' +
-        'data-act="commission-ack" data-outcome="heard_correct_driver"' +
-        '>I hear the tone</button>');
-      buttons.push('<button type="button" class="btn btn--ghost" ' +
-        'data-act="commission-ack" data-outcome="heard_wrong_driver"' +
-        '>Wrong driver</button>');
-    } else if (c.complete) {
+    if (c.complete) {
       buttons.push('<button type="button" class="btn btn--primary" ' +
         'data-act="output-step-next" data-step="safety">Continue to validate</button>');
+    } else if (toneActive) {
+      buttons.push('<button type="button" class="btn btn--danger" ' +
+        'data-act="commission-abort">Stop</button>');
+      buttons.push('<button type="button" class="btn btn--primary" ' +
+        'data-act="commission-ack" data-outcome="heard_correct_driver"' +
+        '>I hear the ' + buttonRoleLabel(toneRole || 'driver') + '</button>');
+      buttons.push('<button type="button" class="btn btn--ghost" ' +
+        'data-act="back-to-output-map">Back to configuration</button>');
+    } else if (rampPreparing || busy) {
+      buttons.push('<button type="button" class="btn btn--primary" disabled>' +
+        escapeHtml(rampPreparing && controlRole ?
+          'Preparing ' + humanRole(controlRole) : (busy || 'Preparing')) +
+        '</button>');
     } else if (c.canStep) {
       buttons.push('<button type="button" class="btn btn--primary" ' +
         'data-act="commission-step" data-role="' + escapeHtml(c.startRole || c.armedRole || '') + '"' +
-        dis + '>Start tone</button>');
+        '>Play ' + roleLabel(c.startRole || c.armedRole || 'driver') + '</button>');
+      buttons.push('<button type="button" class="btn btn--ghost" ' +
+        'data-act="back-to-output-map">Back to configuration</button>');
     }
 
     var note = activeSpeaker.commissionError ?
@@ -743,62 +748,38 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (toneActive ?
         '<p class="setting-row__hint">Tone is playing for ' + roleLabel(toneRole) +
           escapeHtml(toneFrequencyLabel) + '. Press Stop if anything sounds wrong.</p>' :
+      (rampPreparing ?
+        '<p class="setting-row__hint">JTS is preparing the protected ' +
+          roleLabel(controlRole || 'driver') + ' path. No tone has started yet.</p>' :
         (c.complete ?
         '<p class="setting-row__hint">All drivers are confirmed. Continue to validate the active speaker profile.</p>' :
         (c.stale ?
-        '<p class="setting-row__hint">The previous tone session expired safely. Start tone will reopen it quietly.</p>' :
+        '<p class="setting-row__hint">The previous tone session expired safely. Play will reopen it quietly.</p>' :
         (c.armed ?
         '<p class="setting-row__hint">Ready to play a quiet tone for ' +
           roleLabel(c.armedRole) + '.</p>' :
-        '<p class="setting-row__hint">Start a quiet tone for ' +
+        '<p class="setting-row__hint">Play a quiet tone for ' +
           roleLabel(c.startRole || 'driver') +
-          '. It will stay continuous and get louder gradually.</p>'))));
+          '. It will stay continuous and get louder gradually.</p>')))));
     var busyNote = busy && !toneActive ?
       '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '';
     var roles = activeCommissionRoles(group);
-    var captureRows = roles.map(function(role) {
-      var measured = driverMeasurementCaptured(group.id, role);
-      var floorResult = floorResultForRole(group.id, role);
+    var driverRows = roles.map(function(role) {
       var confirmed = c.confirmedRoles.indexOf(role) >= 0;
-      var playbackId = floorResult && floorResult.playback_id || '';
-      var canCapture = confirmed && playbackId && !measured && !activeSpeaker.captureBusy;
-      var hint = measured ? 'Measured level match saved for this driver.' :
-        (canCapture ? nearfieldCaptureHint(humanRole(role)) :
-          (confirmed ? 'Confirmed by ear — that’s enough. To measure it instead, replay this driver, then capture.' :
-            'Start the tone and confirm this driver by ear first.'));
-      return '<div class="driver-capture-row">' +
-        '<div><p class="setting-row__title">' + roleLabel(role) + '</p>' +
-          '<p class="setting-row__hint">' + escapeHtml(hint) + '</p></div>' +
-        '<div class="active-speaker-actions">' +
-          '<span class="status-pill' + (measured || confirmed ? ' status-pill--ready' : '') + '">' +
-            escapeHtml(measured ? 'measured' : (confirmed ? 'confirmed' : 'not tested')) +
-          '</span>' +
-          '<button type="button" class="btn btn--ghost" data-act="record-driver-capture" ' +
-            'data-group-id="' + escapeHtml(group.id || '') + '" ' +
-            'data-role="' + escapeHtml(role) + '" ' +
-            'data-playback-id="' + escapeHtml(playbackId) + '"' +
-            (canCapture ? '' : ' disabled') + '>Record mic capture</button>' +
-        '</div>' +
-      '</div>';
+      return '<li class="output-identity-row">' +
+        '<span>' + roleLabel(role) + '</span>' +
+        '<strong>' + escapeHtml(confirmed ? 'Heard' : 'Not heard yet') + '</strong>' +
+      '</li>';
     }).join('');
-    var capturePanel = captureRows ?
-      '<p class="setting-row__hint">' +
-        escapeHtml(NEARFIELD_LEVEL_MATCH_GUIDANCE) + '</p>' +
-      '<div class="driver-capture-list">' + captureRows + '</div>' : '';
-    var captureError = activeSpeaker.captureError ?
-      '<p class="commission-card__error">' + escapeHtml(activeSpeaker.captureError) + '</p>' : '';
-    var captureBusy = activeSpeaker.captureBusy ?
-      '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.captureBusy) + '…</p>' : '';
 
     return '<div class="commission-card">' +
       statusRows + note + busyNote +
       '<div class="active-speaker-actions commission-card__actions">' +
         buttons.join('') + '</div>' +
-      capturePanel + captureError + captureBusy +
+      (driverRows ? '<ul class="output-identity-list">' + driverRows + '</ul>' : '') +
       '<p class="setting-row__hint commission-card__followup">Confirming each driver ' +
-        'by ear proves it is wired and audible through the crossover and limiter — ' +
-        'that’s all you need to continue. The phone mic capture is optional: it ' +
-        'measures the per-driver levels instead of using the datasheet estimates.</p>' +
+        'by ear proves it is wired and audible through the crossover and limiter. ' +
+        'Mic-based level matching is a separate HTTPS measurement step after this basic setup.</p>' +
     '</div>';
   }
   function renderActiveCommissionOnlyCard() {
@@ -825,6 +806,35 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function outputHardware(topology) {
     return topology && topology.hardware ? topology.hardware : null;
+  }
+  function physicalOutputOptions(topology) {
+    var hardware = outputHardware(topology) || {};
+    var outputs = Array.isArray(hardware.outputs) ? hardware.outputs : [];
+    if (outputs.length) {
+      return outputs.map(function(output) {
+        var index = Number(output.index);
+        return {
+          index: index,
+          label: output.human_label || ('Output ' + (index + 1))
+        };
+      }).filter(function(output) {
+        return isFinite(output.index);
+      });
+    }
+    var count = Number(hardware.physical_output_count) || 0;
+    var fallback = [];
+    for (var i = 0; i < count; i += 1) {
+      fallback.push({index: i, label: 'Output ' + (i + 1)});
+    }
+    return fallback;
+  }
+  function physicalOutputLabel(topology, index) {
+    var wanted = Number(index);
+    var options = physicalOutputOptions(topology);
+    for (var i = 0; i < options.length; i += 1) {
+      if (Number(options[i].index) === wanted) return options[i].label;
+    }
+    return isFinite(wanted) ? 'Output ' + (wanted + 1) : 'No output assigned';
   }
   function observedOutputHardware() {
     return outputTopology.observedHardware || null;
@@ -927,6 +937,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           group: group.label || group.id,
           role: channel.role || 'channel'
         };
+      });
+    });
+    return out;
+  }
+  function outputAssignedToOtherMap(topology, groupId, role) {
+    var out = {};
+    outputGroups(topology).forEach(function(group) {
+      (group.channels || []).forEach(function(channel) {
+        if (channel.physical_output_index == null) return;
+        if ((group.id || '') === groupId && (channel.role || '') === role) return;
+        out[String(channel.physical_output_index)] =
+          (group.label || group.id) + ' · ' + humanRole(channel.role);
       });
     });
     return out;
@@ -2364,7 +2386,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         renderOutputStageCard(topology) +
           renderOutputGroupsCard(topology) +
           renderOutputIdentityCard(),
-          renderOutputStepButton('map', 'Next: test each driver', true)
+          outputTopology.dirty ?
+            '<button type="button" class="btn btn--primary" data-act="save-output-topology">Save channel assignments</button>' :
+            renderOutputStepButton('map', 'Next: test each driver', true)
       ) +
       renderOutputStepCard(
         'safety',
@@ -2511,14 +2535,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderOutputGroupsCard(topology) {
     var assignments = [];
+    var roleOrder = {woofer: 0, mid: 1, tweeter: 2, full_range: 3, subwoofer: 4};
     outputGroups(topology).forEach(function(group) {
       (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
-        if (channel.physical_output_index == null) return;
         assignments.push({group: group, channel: channel});
       });
     });
     assignments.sort(function(a, b) {
-      return Number(a.channel.physical_output_index) - Number(b.channel.physical_output_index);
+      return String(a.group.label || a.group.id || '').localeCompare(String(b.group.label || b.group.id || '')) ||
+        (roleOrder[a.channel.role] == null ? 99 : roleOrder[a.channel.role]) -
+          (roleOrder[b.channel.role] == null ? 99 : roleOrder[b.channel.role]) ||
+        String(a.channel.role || '').localeCompare(String(b.channel.role || ''));
     });
     if (!assignments.length) {
       return '<div class="output-card output-card--groups">' +
@@ -2526,19 +2553,48 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">Choose a speaker layout first. JTS keeps it as a draft until you confirm the wires.</p>' +
       '</div>';
     }
+    var outputs = physicalOutputOptions(topology);
     return '<div class="output-card output-card--groups">' +
       '<div class="output-card__head"><div><p class="output-card__title">DAC output assignments</p>' +
-        '<p class="setting-row__hint">Confirm which physical driver is connected to each DAC output. No sound plays here.</p></div></div>' +
+        '<p class="setting-row__hint">Assign each driver to one unique DAC channel, then save before confirming the wiring. No sound plays here.</p></div>' +
+        '<span class="status-pill' + (outputTopology.dirty ? '' : ' status-pill--ready') + '">' +
+          escapeHtml(outputTopology.dirty ? 'draft' : 'saved') + '</span></div>' +
       '<div class="output-roles output-roles--flat">' + assignments.map(function(item) {
         var group = item.group;
         var channel = item.channel;
+        var selected = channel.physical_output_index == null ? '' : String(channel.physical_output_index);
         var label = channel.human_output_label ||
-          (channel.physical_output_index == null ? 'No output assigned' : 'Output ' + (Number(channel.physical_output_index) + 1));
+          (channel.physical_output_index == null ? 'No output assigned' :
+            physicalOutputLabel(topology, channel.physical_output_index));
         var target = identityTargetFor(group.id, channel.role) || {};
         var targetId = target.id || (group.id + ':' + channel.role);
         var busy = outputTopology.identitySaving === targetId;
         var disabled = outputTopology.dirty || busy ||
           channel.physical_output_index == null;
+        var otherAssigned = outputAssignedToOtherMap(topology, group.id || '', channel.role || '');
+        var allowPeerSwap = outputs.length === 2 &&
+          Array.isArray(group.channels) && group.channels.length === 2;
+        var peerOutputIndexes = {};
+        if (allowPeerSwap) {
+          group.channels.forEach(function(peer) {
+            if (peer === channel || peer.physical_output_index == null) return;
+            peerOutputIndexes[String(peer.physical_output_index)] = true;
+          });
+        }
+        var selectOptions = ['<option value="">Choose output</option>'].concat(
+          outputs.map(function(output) {
+            var value = String(output.index);
+            var usedByOther = otherAssigned[value];
+            var usedByPeerSwap = allowPeerSwap && peerOutputIndexes[value];
+            var disableUsed = usedByOther && value !== selected && !usedByPeerSwap;
+            return '<option value="' + escapeHtml(value) + '"' +
+              (value === selected ? ' selected' : '') +
+              (disableUsed ? ' disabled' : '') + '>' +
+              escapeHtml(output.label + (usedByOther && value !== selected ?
+                (usedByPeerSwap ? ' — swaps with ' : ' — used by ') + usedByOther : '')) +
+              '</option>';
+          })
+        ).join('');
         var model = (driverResearch.inputs && driverResearch.inputs[channel.role]) || '';
         var hardwareLabel = (group.label || group.id) + ' · ' + humanRole(channel.role) +
           (model ? ' · ' + model : '');
@@ -2548,6 +2604,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             '<strong>' + escapeHtml(hardwareLabel) + '</strong>' +
             '<small>' + escapeHtml(outputRoleStatusText(channel)) + '</small>' +
           '</div>' +
+          '<label class="output-role__select">' +
+            '<span>DAC channel</span>' +
+            '<select data-output-channel data-group-id="' + escapeHtml(group.id || '') +
+              '" data-role="' + escapeHtml(channel.role || '') + '">' +
+              selectOptions +
+            '</select>' +
+          '</label>' +
           '<div class="output-role__actions">' +
             '<button type="button" class="btn btn--ghost output-role__action" ' +
               'data-act="mark-output-identity" ' +
@@ -2667,17 +2730,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return role && driverMeasurementCaptured(group.id, role);
     });
   }
-  function floorResultForRole(groupId, role) {
-    var commission = activeSpeaker.commission || {};
-    var floor = commission.floor || {};
-    var result = floor.last_operator_result || {};
-    var target = result.target || {};
-    var targetRole = target.role || target.driver_role || '';
-    if (result.accepted !== true) return null;
-    if ((target.speaker_group_id || groupId || '') !== (groupId || '')) return null;
-    if (String(targetRole || '').toLowerCase() !== String(role || '').toLowerCase()) return null;
-    return result;
-  }
   function driverMeasurementCounts() {
     var summary = measurementSummary();
     return {
@@ -2712,8 +2764,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       activeSpeaker.commissioningView.test_level || {};
     var signal = activeSpeaker.calibrationLevel &&
       activeSpeaker.calibrationLevel.test_signal || {};
-    var guard = activeSpeaker.calibrationLevel &&
-      activeSpeaker.calibrationLevel.software_gain_guard || {};
     var localValue = activeSpeaker.combinedTestLevelDbfs == null ?
       NaN : Number(activeSpeaker.combinedTestLevelDbfs);
     var requested = isFinite(localValue) ? localValue : Number(
@@ -2729,33 +2779,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var step = Number(
       viewLevel.step_db != null ? viewLevel.step_db : signal.step_db
     );
-    var upward = Number(
-      viewLevel.upward_step_limit_db != null ?
-        viewLevel.upward_step_limit_db : guard.upward_step_limit_db
-    );
     if (!isFinite(min)) min = -80;
     if (!isFinite(max)) max = -30;
     if (!isFinite(step) || step <= 0) step = 1;
-    if (!isFinite(upward) || upward <= 0) upward = 6;
     if (!isFinite(requested)) requested = min;
     requested = clamp(requested, min, max);
     return {
       min: min,
       max: max,
       step: step,
-      value: requested,
-      nextMax: clamp(requested + upward, min, max)
+      value: requested
     };
   }
   function combinedTestLevelDbfs() {
     var cfg = combinedTestLevelConfig();
     var value = activeSpeaker.combinedTestLevelDbfs == null ?
       NaN : Number(activeSpeaker.combinedTestLevelDbfs);
-    return clamp(isFinite(value) ? value : cfg.value, cfg.min, cfg.nextMax);
+    return clamp(isFinite(value) ? value : cfg.value, cfg.min, cfg.max);
   }
   function combinedTestLevelDbfsFrom(value) {
     var cfg = combinedTestLevelConfig();
-    return clamp(value, cfg.min, cfg.nextMax);
+    return clamp(value, cfg.min, cfg.max);
   }
   function renderSummedLevelControl(groupId) {
     var cfg = combinedTestLevelConfig();
@@ -2769,43 +2813,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</span>' +
       '<input type="range" data-summed-test-level="' + escapeHtml(groupId) + '"' +
         ' min="' + escapeHtml(String(cfg.min)) + '"' +
-        ' max="' + escapeHtml(String(cfg.nextMax)) + '"' +
+        ' max="' + escapeHtml(String(cfg.max)) + '"' +
         ' step="' + escapeHtml(String(cfg.step)) + '"' +
         ' value="' + escapeHtml(String(value)) + '"' +
         ' aria-label="Combined test level">' +
-      '<span class="setting-row__hint">Start low; raise until the combined test is audible.</span>' +
+      '<span class="setting-row__hint">Start low. Raise slowly, and stop immediately if anything sounds wrong.</span>' +
     '</label>';
-  }
-  function acousticCaptureDurationMs() {
-    return 6900;
-  }
-  function arrayBufferToBase64(buffer) {
-    var bytes = new Uint8Array(buffer || new ArrayBuffer(0));
-    var chunkSize = 0x8000;
-    var binary = '';
-    for (var i = 0; i < bytes.length; i += chunkSize) {
-      var chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, chunk);
-    }
-    return btoa(binary);
-  }
-  async function captureMicWavBase64() {
-    var recorder = await createMonoRecorder({sampleRate: DEFAULT_SAMPLE_RATE});
-    try {
-      recorder.start();
-      await sleepMs(acousticCaptureDurationMs());
-      var samples = await recorder.stop({timeoutMs: 1800});
-      var sampleRate = recorder.context && recorder.context.sampleRate || DEFAULT_SAMPLE_RATE;
-      var blob = float32ToWavBlob(samples, sampleRate);
-      var buffer = await blob.arrayBuffer();
-      return {
-        wav_base64: arrayBufferToBase64(buffer),
-        sample_rate: sampleRate,
-        duration_ms: Math.round(samples.length / sampleRate * 1000)
-      };
-    } finally {
-      await recorder.close();
-    }
   }
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
@@ -2823,49 +2836,48 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (groupView && groupView.has_audible_test === true) hasAudibleTest = true;
       if (groupView && groupView.validated === true) ok = true;
       var statusText = groupView && groupView.status_label ? groupView.status_label :
-        (ok ? 'validated' : (hasAudibleTest ? 'ready to record' : 'not tested'));
-      var testButton = '<button type="button" class="btn btn--primary" ' +
-        'data-act="prepare-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
-        ' data-label="' + escapeHtml(group.label || group.id || 'speaker') + '"' +
-        ((startAction ? startAction.enabled === true : canRecord) ? '' : ' disabled') +
-        '>' + escapeHtml(startAction && startAction.label || 'Play combined test') +
-        '</button>';
-      var recordEnabled = recordAction ? recordAction.enabled === true : hasAudibleTest;
+        (ok ? 'validated' : (hasAudibleTest ? 'ready' : 'not tested'));
+      var combinedStarting = activeSpeaker.action === 'Starting combined test';
+      var combinedPlaying = activeSpeaker.action === 'Playing combined test';
+      var combinedStopping = activeSpeaker.action === 'Stopping combined test';
+      var combinedBusy = combinedStarting || combinedPlaying || combinedStopping;
+      var testButton;
+      if (combinedPlaying) {
+        testButton = '<button type="button" class="btn btn--danger" ' +
+          'data-act="stop-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
+          '>Stop</button>';
+      } else if (combinedStarting || combinedStopping) {
+        testButton = '<button type="button" class="btn ' +
+          (combinedStopping ? 'btn--danger' : 'btn--primary') + '" disabled>' +
+          escapeHtml(combinedStopping ? 'Stopping' : 'Preparing combined test') +
+          '</button>';
+      } else {
+        testButton = '<button type="button" class="btn btn--primary" ' +
+          'data-act="prepare-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
+          ' data-label="' + escapeHtml(group.label || group.id || 'speaker') + '"' +
+          ((startAction ? startAction.enabled !== true : !canRecord) ? ' disabled' : '') +
+          '>' + escapeHtml(startAction && startAction.label || 'Play combined test') +
+          '</button>';
+      }
+      var recordEnabled = !combinedBusy &&
+        (recordAction ? recordAction.enabled === true : hasAudibleTest);
       var summedTestId =
         recordAction && recordAction.body && recordAction.body.summed_test_id ||
         latestTest && (latestTest.summed_test_id || latestTest.playback_id) || '';
-      // Positive by-ear path so the whole flow is phone-optional: confirm the
-      // blend by ear (no mic). Still gated on an AUDIBLE combined test
-      // (recordEnabled) — you can't certify a blend you didn't hear — and the
-      // mic capture stays offered as the more reliable check for a polarity/delay
-      // null that is hard to judge by ear.
+      // Positive by-ear path for the core /sound flow. Mic-backed level/delay
+      // work belongs in the separate HTTPS measurement experience.
       var blendOkButton = '<button type="button" class="btn btn--primary" ' +
         'data-act="record-summed-validation" data-group-id="' + escapeHtml(group.id) +
         '" data-summed-test-id="' + escapeHtml(summedTestId) +
         '" data-outcome="blend_ok"' + (recordEnabled ? '' : ' disabled') +
-        '>Blend sounds right</button>';
-      var captureButton = '<button type="button" class="btn btn--ghost" ' +
-        'data-act="record-summed-capture" data-group-id="' + escapeHtml(group.id) +
-        '" data-summed-test-id="' + escapeHtml(
-          latestTest && (latestTest.summed_test_id || latestTest.playback_id) || ''
-        ) + '"' +
-        (hasAudibleTest ? '' : ' disabled') + '>Measure with mic (optional)</button>';
-      var buttons = [
-        ['needs_adjustment', 'Needs adjustment', 'btn--ghost'],
-        ['polarity_or_delay_problem', 'Sounds hollow or thin', 'btn--ghost'],
-        ['too_loud', 'Too loud', 'btn--danger']
-      ].map(function(item) {
-        return '<button type="button" class="btn ' + escapeHtml(item[2]) +
-          '" data-act="record-summed-validation" data-group-id="' + escapeHtml(group.id) +
-          '" data-summed-test-id="' + escapeHtml(summedTestId) +
-          '" data-outcome="' + escapeHtml(item[0]) + '"' +
-          (recordEnabled ? '' : ' disabled') +
-          '>' + escapeHtml(item[1]) + '</button>';
-      }).join('');
+        '>Sounds right</button>';
+      var backButton = '<button type="button" class="btn btn--ghost" ' +
+        'data-act="back-to-crossover-config"' +
+        (combinedBusy ? ' disabled' : '') + '>Back to adjust crossover</button>';
       var hint = groupView && groupView.message ? groupView.message : (hasAudibleTest ?
-        'After the combined test, say whether the blend sounds right by ear — or optionally measure it with the phone mic (more reliable for a hollow/thin crossover).' :
+        'After the combined test, save the result if the speaker sounds coherent.' :
         (canRecord ?
-          'Run the combined speaker test first. It uses the prepared crossover setup and starts at the quiet test level.' :
+          'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
           'Test each driver first, then test the combined speaker.'));
       var latestTestIssues = latestTest && Array.isArray(latestTest.issues)
         ? latestTest.issues : [];
@@ -2884,13 +2896,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>' +
         renderSummedLevelControl(group.id) +
         '<div class="active-speaker-actions">' + testButton + blendOkButton +
-          captureButton + buttons + '</div>' +
+          backButton + '</div>' +
       '</div>';
     }).join('');
     return '<div class="output-card output-card--summed-validation">' +
       '<div class="output-card__head"><div><p class="output-card__title">Combined crossover check</p>' +
         '<p class="setting-row__hint">' + escapeHtml(canRecord ?
-          'Use the same quiet-start pattern and your listening check for the combined speaker.' :
+          'Choose a careful level, play the combined speaker, then save the check if it sounds right.' :
           'Test each driver first, then validate the combined crossover.') + '</p></div>' +
         '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
           escapeHtml(summedValidationComplete() ? 'ready' : (canRecord ? 'next' : 'after driver checks')) + '</span></div>' +
@@ -2944,6 +2956,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var readyToApply = permissions.may_apply === true;
     var mayCompile = summedValidationComplete();
     var applyBlocked = baselineProfileApplyBlocked(profile);
+    var busy = activeSpeaker.action === 'Saving active profile' ||
+      activeSpeaker.action === 'Applying active profile';
     var issues = Array.isArray(profile.issues) ? profile.issues : [];
     var issueRows = issues.filter(function(issue) {
       return issue && issue.severity === 'blocker';
@@ -2958,20 +2972,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (readyToApply ?
         '<p class="setting-row__hint">Your active speaker profile is saved. Apply it to start using it.</p>' :
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
-          'Save the measured crossover as your active speaker profile. No sound plays.' :
+          'Save the checked crossover as your active speaker profile. No sound plays.' :
           'Finish the combined crossover check before saving the active profile.') + '</p>'));
+    var actionLabel = busy ?
+      (activeSpeaker.action === 'Applying active profile' ? 'Applying profile' : 'Saving profile') :
+      (readyToApply ? 'Apply profile' : (applyBlocked ? 'Save profile' : 'Save and apply'));
     var actions = applied ? '' :
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="compile-baseline-profile"' +
-          (mayCompile ? '' : ' disabled') + '>' + escapeHtml(
-            readyToApply || applyBlocked ? 'Rebuild profile' : 'Save active profile'
-          ) + '</button>' +
-        '<button type="button" class="btn btn--danger" data-act="apply-baseline-profile"' +
-          (readyToApply ? '' : ' disabled') + '>Apply active profile</button>' +
+        '<button type="button" class="btn ' + (readyToApply ? 'btn--danger' : 'btn--primary') +
+          '" data-act="save-apply-baseline-profile"' +
+          ((busy || (!mayCompile && !readyToApply)) ? ' disabled' : '') + '>' +
+          escapeHtml(actionLabel) + '</button>' +
       '</div>';
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
-        '<p class="setting-row__hint">Your active speaker profile, built from the measured crossover and driver checks.</p></div>' +
+        '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and driver checks.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
       body +
@@ -3528,12 +3543,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
-    else if (act === 'record-driver-capture') { recordDriverCapture(t); }
+    else if (act === 'back-to-output-map') { backToOutputConfiguration(); }
+    else if (act === 'back-to-crossover-config') { backToCrossoverConfiguration(); }
     else if (act === 'prepare-summed-test') { prepareSummedTest(t); }
-    else if (act === 'record-summed-capture') { recordSummedCapture(t); }
+    else if (act === 'stop-summed-test') { stopSummedTest(); }
     else if (act === 'record-summed-validation') { recordSummedValidation(t); }
-    else if (act === 'compile-baseline-profile') { compileBaselineProfile(); }
-    else if (act === 'apply-baseline-profile') { applyBaselineProfile(); }
+    else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
     else if (act === 'commission-step') {
       startCommissionAutoRamp(t.getAttribute('data-role') || '', {confirm: false});
     }
@@ -3676,6 +3691,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       setManualCrossoverField(
         ev.target.getAttribute('data-manual-crossover') || '',
         ev.target.getAttribute('data-manual-field') || '',
+        ev.target.value
+      );
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-output-channel')) {
+      setOutputChannelAssignment(
+        ev.target.getAttribute('data-group-id') || '',
+        ev.target.getAttribute('data-role') || '',
         ev.target.value
       );
       return;
@@ -4015,6 +4038,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     stopCommissionAutoRamp('Stopped. No test tone is playing.');
     await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
   }
+  async function backToOutputConfiguration() {
+    var pending = commissionPendingStep();
+    if (commissionAutoRamp.running || pending) {
+      stopCommissionAutoRamp('Stopped. Check the channel assignments before testing again.');
+      await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
+    }
+    outputStepOverride = 'map';
+    status('Check the DAC channel assignments, save, then confirm the wiring again.');
+    render();
+  }
+  function backToCrossoverConfiguration() {
+    outputStepOverride = 'research';
+    status('Review the crossover settings, then return to validation.');
+    render();
+  }
   async function stopAndAbortCommissionAutoRamp(message) {
     stopCommissionAutoRamp(message);
     await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
@@ -4129,6 +4167,57 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     if (!changed) return;
     setOutputDraft(next);
+  }
+  function setOutputChannelAssignment(groupId, role, rawValue) {
+    var topology = currentOutputTopology();
+    if (!topology) return;
+    var next = baseOutputDraft(topology);
+    if (!next) return;
+    var selected = rawValue === '' ? null : Number(rawValue);
+    if (selected !== null && !isFinite(selected)) {
+      status('Choose a valid DAC channel.', true);
+      return;
+    }
+    var outputs = physicalOutputOptions(next);
+    var outputIndexes = outputs.map(function(output) { return Number(output.index); });
+    if (selected !== null && outputIndexes.indexOf(selected) < 0) {
+      status('Choose one of the available DAC channels.', true);
+      return;
+    }
+    var targetGroup = null;
+    var targetChannel = null;
+    outputGroups(next).forEach(function(group) {
+      if ((group.id || '') !== groupId) return;
+      (group.channels || []).forEach(function(channel) {
+        if ((channel.role || '') === role) {
+          targetGroup = group;
+          targetChannel = channel;
+        }
+      });
+    });
+    if (!targetGroup || !targetChannel) {
+      status('Could not find that driver in the speaker layout.', true);
+      return;
+    }
+    function applyChannel(channel, index) {
+      channel.physical_output_index = index;
+      channel.identity_verified = false;
+      delete channel.human_output_label;
+    }
+    applyChannel(targetChannel, selected);
+    if (selected !== null && outputs.length === 2 &&
+        Array.isArray(targetGroup.channels) && targetGroup.channels.length === 2) {
+      var otherIndex = outputIndexes.filter(function(index) {
+        return index !== selected;
+      })[0];
+      targetGroup.channels.forEach(function(channel) {
+        if (channel !== targetChannel && otherIndex !== undefined) {
+          applyChannel(channel, otherIndex);
+        }
+      });
+    }
+    setOutputDraft(next);
+    status('Channel assignment updated. Save before confirming the wiring.');
   }
   function outputChannel(role, index) {
     var tweeter = role === 'tweeter';
@@ -4657,9 +4746,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       baselineProfile: null,
       error: '',
       commissionBusy: '',
-      commissionError: '',
-      captureBusy: '',
-      captureError: ''
+      commissionError: ''
     });
     render();
     try {
@@ -4746,66 +4833,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
     });
   }
-  function currentMicObservationPayload() {
-    return {};
-  }
-  async function recordDriverCapture(button) {
-    var groupId = button.getAttribute('data-group-id') || '';
-    var role = button.getAttribute('data-role') || '';
-    var playbackId = button.getAttribute('data-playback-id') || '';
-    if (!groupId || !role || !playbackId) {
-      status('Replay this driver before capturing so the measurement matches the accepted tone.', true);
-      return;
+  function clearSummedTestArmTimer() {
+    if (summedTestRequest.armTimer) {
+      window.clearTimeout(summedTestRequest.armTimer);
+      summedTestRequest.armTimer = null;
     }
-    if (!await jtsConfirm(
-      'Record a phone-mic capture for the ' + humanRole(role) +
-        '? Hold the phone near the listening position and keep the room quiet.',
-      {danger: false}
-    )) {
-      return;
-    }
-    patchActiveSpeaker({
-      captureBusy: 'Recording ' + humanRole(role) + ' capture',
-      captureError: '',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var capture = await captureMicWavBase64();
-      var resp = await fetch('./active-speaker/driver-capture', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          speaker_group_id: groupId,
-          role: role,
-          playback_id: playbackId,
-          capture: capture
-        })
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'driver capture failed');
-      patchActiveSpeaker({
-        captureBusy: '',
-        captureError: '',
-        measurements: payload.measurement || activeSpeaker.measurements,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      if (driverMeasurementsComplete()) outputStepOverride = 'profile';
-      var latest = latestDriverMeasurement(groupId, role);
-      status(latest && latest.captured === true ?
-        humanRole(role) + ' measurement saved.' :
-        'Capture saved but did not pass yet. Replay this driver and record again.',
-        !(latest && latest.captured === true));
-    } catch (e) {
-      patchActiveSpeaker({
-        captureBusy: '',
-        captureError: String(e.message || e),
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not record driver capture: ' + String(e.message || e), true);
-    }
-    render();
   }
   async function prepareSummedTest(button) {
     var groupId = button.getAttribute('data-group-id') || '';
@@ -4823,6 +4855,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     var requestedLevel = combinedTestLevelDbfs();
+    var requestToken = summedTestRequest.token + 1;
+    summedTestRequest.token = requestToken;
+    clearSummedTestArmTimer();
     patchActiveSpeaker({
       loading: false, action: 'Starting combined test',
       error: '',
@@ -4830,6 +4865,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       combinedTestLevelDbfs: requestedLevel
     });
     render();
+    summedTestRequest.armTimer = window.setTimeout(function() {
+      if (summedTestRequest.token !== requestToken ||
+          activeSpeaker.action !== 'Starting combined test') {
+        return;
+      }
+      patchActiveSpeaker({
+        loading: false,
+        action: 'Playing combined test',
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs,
+        combinedTestLevelDbfs: requestedLevel
+      });
+      render();
+    }, SUMMED_TEST_STOP_ARM_MS);
     try {
       var groupView = commissioningGroupView(groupId);
       var action = commissioningGroupAction(groupView, 'start_combined_test');
@@ -4846,6 +4895,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'combined speaker test failed');
+      if (summedTestRequest.token !== requestToken) return;
+      clearSummedTestArmTimer();
       var appliedLevel = NaN;
       if (payload.calibration_level && payload.calibration_level.test_signal) {
         appliedLevel = Number(payload.calibration_level.test_signal.requested_level_dbfs);
@@ -4863,17 +4914,61 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       await refreshCommissioningView();
       var playback = payload.playback || {};
       var emitted = playbackConfirmable(playback);
-      status(emitted ?
+      status(playback.status === 'stopped' ?
+        'Combined speaker test stopped.' : (emitted ?
         'Combined speaker test played. Record what you heard.' :
-        'Combined speaker test did not play. Review the message in this card.',
-        !emitted);
+        'Combined speaker test did not play. Review the message in this card.'),
+        playback.status !== 'stopped' && !emitted);
     } catch (e) {
+      if (summedTestRequest.token !== requestToken) return;
+      clearSummedTestArmTimer();
       patchActiveSpeaker({
         loading: false, action: '',
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
       status('Could not start the combined speaker test: ' + e.message, true);
+    }
+    render();
+  }
+  async function stopSummedTest() {
+    var requestToken = summedTestRequest.token + 1;
+    summedTestRequest.token = requestToken;
+    clearSummedTestArmTimer();
+    patchActiveSpeaker({
+      loading: false, action: 'Stopping combined test',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+    try {
+      var resp = await fetch('./active-speaker/summed-test/stop', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({reason: 'operator_stop'})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'combined speaker stop failed');
+      if (summedTestRequest.token !== requestToken) return;
+      patchActiveSpeaker({
+        loading: false,
+        action: '',
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      await refreshCommissioningView();
+      status(payload.status === 'idle' ?
+        'No combined speaker test is playing.' :
+        'Combined speaker test stopped.');
+    } catch (e) {
+      if (summedTestRequest.token !== requestToken) return;
+      patchActiveSpeaker({
+        loading: false,
+        action: '',
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Could not stop the combined speaker test: ' + e.message, true);
     }
     render();
   }
@@ -4903,8 +4998,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         outcome: outcome,
         summed_test_id: action && action.body && action.body.summed_test_id || summedTestId,
         operator_listening_check: true,
-        polarity: outcome === 'polarity_or_delay_problem' ? 'needs_review' : 'normal'
-      }, currentMicObservationPayload());
+        polarity: 'normal'
+      });
       var resp = await fetch(
         action && action.endpoint || './active-speaker/summed-validation',
         {
@@ -4925,9 +5020,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       await refreshCommissioningView();
       if (summedValidationComplete()) outputStepOverride = 'profile';
-      status(outcome === 'blend_ok' ?
-        'Combined crossover check saved.' :
-        'Combined crossover result saved; adjust the crossover before applying a profile.');
+      status('Combined crossover check saved. Save and apply the active profile when ready.');
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
@@ -4938,120 +5031,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  async function recordSummedCapture(button) {
-    var groupId = button.getAttribute('data-group-id') || '';
-    var summedTestId = button.getAttribute('data-summed-test-id') || '';
-    if (!groupId || !summedTestId) {
-      status('Run the combined speaker test first, then record the mic capture.', true);
-      return;
-    }
-    if (!await jtsConfirm(
-      'Record the combined crossover with the phone mic? Keep the phone still until the capture finishes.',
-      {danger: false}
-    )) {
-      return;
-    }
-    patchActiveSpeaker({
-      captureBusy: 'Recording combined crossover capture',
-      captureError: '',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var capture = await captureMicWavBase64();
-      var resp = await fetch('./active-speaker/summed-capture', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          speaker_group_id: groupId,
-          summed_test_id: summedTestId,
-          playback_id: summedTestId,
-          capture: capture
-        })
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'combined capture failed');
-      patchActiveSpeaker({
-        captureBusy: '',
-        captureError: '',
-        measurements: payload.measurement || activeSpeaker.measurements,
-        baselineProfile: activeSpeaker.baselineProfile,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      if (summedValidationComplete()) outputStepOverride = 'profile';
-      var latest = latestSummedValidation(groupId);
-      status(latest && latest.validated === true ?
-        'Combined crossover capture saved.' :
-        'Capture saved, but the crossover is not ready yet. Review the result and retry after adjustments.',
-        !(latest && latest.validated === true));
-    } catch (e) {
-      patchActiveSpeaker({
-        captureBusy: '',
-        captureError: String(e.message || e),
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not record combined capture: ' + String(e.message || e), true);
-    }
-    render();
-  }
-  async function compileBaselineProfile() {
-    if (!summedValidationComplete()) {
-      status('Test each driver and save the combined crossover check before saving the active profile.', true);
-      return;
-    }
-    patchActiveSpeaker({
-      loading: false, action: 'Saving active profile',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var resp = await fetch('./active-speaker/baseline-profile', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'active profile save failed');
-      patchActiveSpeaker({
-        loading: false, action: '',
-        baselineProfile: payload,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      await refreshCommissioningView();
-      status(payload.permissions && payload.permissions.may_apply ?
-        'Active profile saved. Apply it when you are ready.' :
-        (baselineProfileApplyBlocked(payload) ?
-          'Active profile saved for review. This hardware path cannot be applied from here yet.' :
-          'Active profile could not be saved yet; review the message in this card.'),
-        !(payload.permissions && payload.permissions.may_apply) &&
-          !baselineProfileApplyBlocked(payload));
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not save active profile: ' + e.message, true);
-    }
-    render();
-  }
-  async function applyBaselineProfile() {
-    var profile = activeSpeaker.baselineProfile || {};
-    var config = profile.config || {};
-    if (!(profile.permissions || {}).may_apply) {
-      status('Save a ready active profile before applying it.', true);
-      return;
-    }
-    if (!await jtsConfirm(
-      'Apply the active speaker profile "' + (config.basename || 'active speaker baseline') +
-        '"? This makes it your normal speaker profile.',
-      {danger: true}
-    )) {
-      return;
-    }
+  async function applyBaselineProfilePayload(configName) {
     patchActiveSpeaker({
       loading: false, action: 'Applying active profile',
       error: '',
@@ -5083,7 +5063,75 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not apply active profile: ' + e.message, true);
+      status('Could not apply active profile' +
+        (configName ? ' "' + configName + '"' : '') + ': ' + e.message, true);
+    }
+    render();
+  }
+  async function saveAndApplyBaselineProfile() {
+    var profile = activeSpeaker.baselineProfile || {};
+    var config = profile.config || {};
+    var readyToApply = (profile.permissions || {}).may_apply === true;
+    var mayCompile = summedValidationComplete();
+    var configName = config.basename || 'active speaker baseline';
+    if (!readyToApply && !mayCompile) {
+      status('Test each driver and save the combined crossover check before saving the active profile.', true);
+      return;
+    }
+    if (!await jtsConfirm(
+      (readyToApply ? 'Apply the active speaker profile "' + configName + '"?' :
+        'Save and apply this active speaker profile?') +
+        ' This makes it your normal speaker profile.',
+      {danger: true}
+    )) {
+      return;
+    }
+    if (readyToApply) {
+      await applyBaselineProfilePayload(configName);
+      return;
+    }
+    if (!summedValidationComplete()) {
+      status('Test each driver and save the combined crossover check before saving the active profile.', true);
+      return;
+    }
+    patchActiveSpeaker({
+      loading: false, action: 'Saving active profile',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+    try {
+      var resp = await fetch('./active-speaker/baseline-profile', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'active profile save failed');
+      patchActiveSpeaker({
+        loading: false, action: '',
+        baselineProfile: payload,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      await refreshCommissioningView();
+      if (payload.permissions && payload.permissions.may_apply) {
+        await applyBaselineProfilePayload(
+          (payload.config && payload.config.basename) || 'active speaker baseline'
+        );
+        return;
+      }
+      status(baselineProfileApplyBlocked(payload) ?
+        'Active profile saved for review. This hardware path cannot be applied from here yet.' :
+        'Active profile could not be applied yet; review the message in this card.',
+        !baselineProfileApplyBlocked(payload));
+    } catch (e) {
+      patchActiveSpeaker({
+        loading: false, action: '',
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Could not save active profile: ' + e.message, true);
     }
     render();
   }
