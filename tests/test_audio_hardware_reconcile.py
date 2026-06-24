@@ -269,6 +269,69 @@ def _active_graph_env(
     return out
 
 
+def _active_leader_graph_env(
+    tmp_path: Path,
+    *,
+    channels: int = 2,
+    write_crossover_statefile: bool = True,
+) -> dict[str, str]:
+    """Stage camilla#1 program bake + camilla#2 endpoint graph for the gate."""
+    from jasper.active_speaker import (
+        ActiveSpeakerPreset,
+        emit_active_speaker_driver_domain_config,
+        emit_active_speaker_program_bake_config,
+    )
+    from jasper.output_topology import save_output_topology
+    from jasper.sound.profile import SimpleEq, SoundProfile
+    from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    if channels == 2:
+        topology = _active_topology("mono", "active_2_way")
+        preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+    elif channels == 4:
+        topology = _active_topology("stereo", "active_2_way")
+        preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo"))
+    elif channels == 6:
+        topology = _active_topology("stereo", "active_3_way")
+        preset = ActiveSpeakerPreset.from_mapping(_three_way_preset("stereo"))
+    else:
+        raise AssertionError(f"unsupported test channel count: {channels}")
+
+    bake_config = tmp_path / "grouping_active_leader_bake.yml"
+    bake_config.write_text(
+        emit_active_speaker_program_bake_config(
+            SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=3.0)),
+        ),
+        encoding="utf-8",
+    )
+    crossover_config = tmp_path / "grouping_active_leader_crossover.yml"
+    crossover_config.write_text(
+        emit_active_speaker_driver_domain_config(
+            preset,
+            playback_device="outputd_active_content_playback",
+            program_channel="mono",
+        ),
+        encoding="utf-8",
+    )
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    outputd_statefile = tmp_path / "outputd-statefile.yml"
+    outputd_statefile.write_text(f"config_path: {bake_config}\n", encoding="utf-8")
+    crossover_statefile = tmp_path / "crossover-statefile.yml"
+    if write_crossover_statefile:
+        crossover_statefile.write_text(
+            f"config_path: {crossover_config}\n",
+            encoding="utf-8",
+        )
+    return {
+        "JASPER_CAMILLA_STATEFILE": str(outputd_statefile),
+        "JASPER_CAMILLA2_STATEFILE": str(crossover_statefile),
+        "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+    }
+
+
 def _apple_active_graph_env(tmp_path: Path) -> dict[str, str]:
     env = _active_graph_env(tmp_path, channels=2)
     from jasper.output_topology import OutputTopology, save_output_topology
@@ -829,6 +892,86 @@ def test_reconcile_single_apple_active_graph_drives_width_two(tmp_path: Path):
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     assert "mode=single_alsa_active active_channels=2 active_lane_cap=2" in result.stderr
+
+
+def test_reconcile_active_leader_program_bake_uses_crossover_endpoint(
+    tmp_path: Path,
+):
+    # Grouped active-leader mode splits CamillaDSP: camilla#1's statefile points
+    # at the File/SNAPFIFO program bake, while camilla#2 owns the driver-domain
+    # endpoint graph that feeds outputd_active_content_playback. Reconcile must
+    # prove the pair and keep outputd on the active lane during failure recovery.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "outputd-failure",
+        "--no-restart",
+        extra_env=_active_leader_graph_env(tmp_path, channels=2),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
+    assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
+
+
+def test_reconcile_program_bake_without_crossover_endpoint_stays_stereo(
+    tmp_path: Path,
+):
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "outputd-failure",
+        "--no-restart",
+        extra_env=_active_leader_graph_env(
+            tmp_path,
+            channels=2,
+            write_crossover_statefile=False,
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    assert "single_alsa_active" not in result.stderr
+    assert (
+        "active_graph=program_bake_pipe_without_active_crossover:"
+        "camilla2_statefile_missing"
+    ) in result.stderr
+
+
+def test_reconcile_active_leader_crossover_over_cap_stays_stereo(
+    tmp_path: Path,
+):
+    # The active-leader exception still obeys the final-output DAC cap. A graph
+    # that is safe in isolation but wider than the currently detected coherent
+    # sink must fail closed instead of emitting stale active-lane env.
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "outputd-failure",
+        "--no-restart",
+        extra_env=_active_leader_graph_env(tmp_path, channels=6),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    assert "single_alsa_active" not in result.stderr
+    assert (
+        "active_graph=program_bake_pipe_without_active_crossover:"
+        "active_graph_width_out_of_range got=6 cap=2"
+    ) in result.stderr
 
 
 def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
