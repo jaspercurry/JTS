@@ -136,6 +136,9 @@ def test_read_journal_lines_uses_journal_timestamp(monkeypatch):
     ]
     assert "-o" in calls[0]
     assert "json" in calls[0]
+    # Belt-and-suspenders RAM cap on the 1 GB Pi: the scan must bound the read.
+    assert "-n" in calls[0]
+    assert str(ct.JOURNAL_SCAN_LINE_CAP) in calls[0]
 
 
 def test_state_aggregate_cascade_snapshot_fails_soft(monkeypatch):
