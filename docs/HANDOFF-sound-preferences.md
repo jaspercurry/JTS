@@ -427,8 +427,16 @@ graph, and it still does not emit audio or authorize playback.
   typed CamillaDSP validation, config reload, rollback, file locking,
   compact last-result persistence, and the durable DSP write epoch used
   to fence stale live updates.
+- `jasper/sound/runtime.py` — shared durable sound-profile runtime:
+  render/load/confirm/persist for `/sound/apply` + `/sound/audition`,
+  plus deploy/startup reconciliation of the generated current DSP cache
+  from saved sound intent.
+- `jasper/cli/sound.py` — operator/deploy CLI (`jasper-sound
+  reconcile-current-dsp`) for bounded, fail-open refresh of the currently
+  loaded JTS-owned sound graph after render semantics change.
 - `jasper/web/sound_setup.py` — `/sound/` page, `/state`, `/preview`,
-  `/live-draft`, `/audition`, `/apply`, and `/settings`.
+  `/live-draft`, `/audition`, `/apply`, and `/settings`; durable apply
+  routes delegate to `jasper.sound.runtime`.
 - `jasper/camilla.py` — lazy pyCamillaDSP wrapper. Besides the durable
   config-file loader, it owns the active-config upload/patch escape
   hatches used by live audition surfaces so raw Camilla command names do
@@ -464,6 +472,17 @@ The generated unsaved audition filename is stable:
 ```text
 /var/lib/camilladsp/configs/sound_audition.yml
 ```
+
+The generated YAML is a cache, not the source of truth. Saved intent lives in
+`/var/lib/jasper/sound_profile.json` plus
+`/var/lib/jasper/sound_settings.json`. Deploy/startup may run
+`jasper-sound reconcile-current-dsp` after outputd/Camilla are ready to
+re-render a currently-loaded `sound_current.yml` from that saved intent, so
+fixes to the emitter take effect deliberately instead of waiting for a user to
+visit `/sound/`. The command is fail-open and bounded by install.sh; it skips
+unknown/custom graphs, non-hostable protected graphs, flat no-op profiles, and
+`sound_audition.yml` (an unsaved preview must not be promoted or rewritten by
+deploy).
 
 `/sound/apply`, `/sound/audition`, and `/sound/live-draft` route the loaded
 config through the **graph carrier**
@@ -607,7 +626,8 @@ convention other wizards follow.
 
 1. Reads the active CamillaDSP config path with `best_effort=False`.
 2. Rejects unknown/custom active configs.
-3. Enters the shared DSP apply path in `jasper/dsp_apply.py`.
+3. Enters the shared sound runtime (`jasper.sound.runtime.load_profile_config`)
+   and DSP apply path (`jasper/dsp_apply.py`).
 4. Emits `sound_current.yml` atomically inside the DSP apply lock.
 5. Runs `camilladsp --check <config>` when the binary is available.
    The config file is positional; `--check` is the validation flag.
@@ -616,6 +636,20 @@ convention other wizards follow.
 8. Rolls back to the prior config path if reload/confirm/persist fails.
 9. Persists `/var/lib/jasper/sound_profile.json` only after a successful
    reload and confirmation.
+
+`jasper-sound reconcile-current-dsp` (deploy/startup repair path):
+
+1. Loads the saved `SoundProfile` and `SoundSettings`.
+2. Enters the same DSP writer lock used by `/sound/` and `/correction/`.
+3. Reads the active CamillaDSP config path with `best_effort=False`.
+4. Skips `sound_audition.yml` so an unsaved preview stays reversible.
+5. Skips unknown/custom/non-hostable graphs with a structured reason instead
+   of overwriting them.
+6. Skips unchanged or flat no-op current graphs.
+7. Re-emits `sound_current.yml` through the same validation/reload/rollback
+   transaction as `/sound/apply`, but does not persist profile JSON.
+8. install.sh runs the CLI fail-open under an outer process timeout; a failed
+   reconcile leaves the current legal graph in place and does not gate install.
 
 `/correction/apply`:
 
@@ -647,6 +681,13 @@ status line rather than doctor. Durable Save to Speaker remains the
 stateful operation doctor audits. Repeated live-unavailable warnings are
 rate-limited so a broken live-upload environment does not spam the
 journal while the user drags a slider.
+
+Deploy/startup reconciliation emits `event=sound.reconcile_current_dsp` for
+every outcome: `result=reconciled`, `result=unchanged`, or
+`result=skipped reason=<code>`. CLI fail-open failures emit the same event with
+`result=failed`, and install.sh prints the command output into the deploy
+transcript. This is the first place to look when a deploy did or did not refresh
+the audible sound profile.
 
 `/state` and `/sound/state` expose the saved sound profile plus the
 profile-library picker payload and latest DSP apply record. `/sound/state`
@@ -728,7 +769,8 @@ can be diagnosed without scraping journal logs.
 - Unsaved auditions must never persist profile state. They may leave
   `sound_audition.yml` active until the user switches Bypass / Applied /
   Draft or applies; that is expected and observable via the DSP apply
-  record.
+  record. Deploy/startup reconcile must skip this path rather than
+  promoting it to `sound_current.yml`.
 - Live Draft must only touch the preference EQ layer of a known JTS
   config. It must never change room PEQs, source routing, limiter,
   crossover, or the `devices.volume_limit: 0.0` safety ceiling.
@@ -752,11 +794,13 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-23 (active-crossover `/sound/` flow checked against
-`deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`, and the
-focused sound setup tests for channel selectors, simplified driver/combined
-CTAs, cancellable combined-test Stop, bounded combined-level control, and the
-one-intent save/apply UI. Prior
+Last verified: 2026-06-24 (deploy/startup sound-DSP reconciliation checked
+against `jasper.sound.runtime`, `jasper.cli.sound`, `deploy/install.sh`, and
+the focused reconcile/CLI/install tests; active-crossover `/sound/` flow
+checked against `deploy/assets/sound-profile/js/main.js`,
+`jasper.web.sound_setup`, and the focused sound setup tests for channel
+selectors, simplified driver/combined CTAs, cancellable combined-test Stop,
+bounded combined-level control, and the one-intent save/apply UI. Prior
 2026-06-22 recheck covered volume-floor global setting and continuous
 calibration-tone endpoints against `jasper.sound.settings`,
 `jasper.web.sound_setup`, and the `/sound/` static module; active-crossover

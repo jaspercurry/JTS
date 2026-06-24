@@ -17,6 +17,7 @@ small and explicit:
 
 It intentionally has no heavy audio/science dependencies.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -161,8 +162,7 @@ def _volume_limit_safety_error(cfg_path: Path) -> str | None:
         )
     if limit > 0:
         return (
-            f"devices.volume_limit={limit:.1f} dB exceeds the 0 dB "
-            "JTS safety ceiling"
+            f"devices.volume_limit={limit:.1f} dB exceeds the 0 dB JTS safety ceiling"
         )
     return None
 
@@ -381,6 +381,15 @@ async def _dsp_apply_lock(path: Path):
         await asyncio.to_thread(lock.release)
 
 
+@contextlib.asynccontextmanager
+async def _maybe_dsp_apply_lock(path: Path, *, acquire: bool = True):
+    if not acquire:
+        yield
+        return
+    async with _dsp_apply_lock(path):
+        yield
+
+
 def dsp_apply_lock_path(config_dir: str | Path) -> Path:
     """Return the shared local lock path for generated CamillaDSP configs."""
 
@@ -448,6 +457,7 @@ async def apply_dsp_config(
     sound_filter_count: int | None = None,
     state_path: str | Path | None = None,
     lock_path: str | Path | None = None,
+    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -457,6 +467,11 @@ async def apply_dsp_config(
     The lock is local-process/file-system coordination for JTS writers
     (`/sound/`, `/correction/`, and future DSP surfaces). CamillaDSP is
     still the authority for whether the candidate can actually run.
+
+    ``acquire_lock=False`` is only for a caller already inside
+    :func:`dsp_writer_lock`, so it can make a lock-protected decision and then
+    use the same validation/reload/rollback lifecycle without re-entering the
+    file lock.
     """
 
     candidate = Path(candidate_path)
@@ -475,14 +490,17 @@ async def apply_dsp_config(
         sound_filter_count=sound_filter_count,
     )
 
-    async with _dsp_apply_lock(lock):
+    async with _maybe_dsp_apply_lock(lock, acquire=acquire_lock):
         if prepare is not None:
             state.phase = "prepare"
             record_dsp_apply_state(state, state_path=state_path)
             try:
                 metadata = await _maybe_call(prepare)
                 if isinstance(metadata, dict):
-                    if metadata.get("prior_config_path") and not state.prior_config_path:
+                    if (
+                        metadata.get("prior_config_path")
+                        and not state.prior_config_path
+                    ):
                         state.prior_config_path = str(metadata["prior_config_path"])
                     if "room_peq_count" in metadata:
                         state.room_peq_count = metadata["room_peq_count"]
@@ -563,7 +581,9 @@ async def apply_dsp_config(
                 state.result = _rollback_result("confirm_failed", state)
                 state.finished_at = _utc_now()
                 record_dsp_apply_state(state, state_path=state_path)
-                raise DspApplyError(f"CamillaDSP reload confirmation failed: {e}", state) from e
+                raise DspApplyError(
+                    f"CamillaDSP reload confirmation failed: {e}", state
+                ) from e
 
         state.phase = "persist"
         try:
@@ -578,7 +598,9 @@ async def apply_dsp_config(
             state.result = _rollback_result("persist_failed", state)
             state.finished_at = _utc_now()
             record_dsp_apply_state(state, state_path=state_path)
-            raise DspApplyError(f"DSP config applied but state persistence failed: {e}", state) from e
+            raise DspApplyError(
+                f"DSP config applied but state persistence failed: {e}", state
+            ) from e
 
         if state.active_config_path is None:
             state.active_config_path = str(candidate)

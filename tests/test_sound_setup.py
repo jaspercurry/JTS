@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -39,6 +40,7 @@ from jasper.sound.profile import (
     load_profile_library,
     save_profile,
 )
+from jasper.sound.runtime import reconcile_current_dsp
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.volume_curve import percent_to_db
 from jasper.web import sound_setup
@@ -3353,6 +3355,120 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
     assert payload["dsp_write_epoch"] == payload["last_dsp_apply"]["op_id"]
     assert load_profile(profile_path).curve_id == "bk"
 
+
+async def test_reconcile_current_dsp_reemits_saved_profile_without_restamping(
+    tmp_path: Path, monkeypatch,
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "sound_current.yml"
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
+    fake = FakeCamilla(str(current))
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(
+        SoundProfile(
+            simple_eq=SimpleEq(bass_db=6.0),
+            updated_at="2020-01-01T00:00:00+00:00",
+        ),
+        profile_path,
+    )
+
+    payload = await reconcile_current_dsp(
+        profile_path=profile_path,
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert payload["status"] == "reconciled"
+    assert Path(fake.loaded_path).name == "sound_current.yml"
+    generated = Path(fake.loaded_path).read_text()
+    assert "room_peq_1:" in generated
+    assert "sound_simple_bass:" in generated
+    assert "id=reconcile-current-dsp" in generated
+    assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
+
+
+async def test_reconcile_current_dsp_skips_unknown_config(
+    tmp_path: Path, monkeypatch, caplog,
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = tmp_path / "custom.yml"
+    current.write_text("# handmade\n")
+    fake = FakeCamilla(str(current))
+    caplog.set_level(logging.INFO, logger="jasper.sound.runtime")
+
+    payload = await reconcile_current_dsp(
+        profile_path=tmp_path / "sound_profile.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "unknown_config"
+    assert fake.loaded_path is None
+    assert not (tmp_path / "dsp.json").exists()
+    assert "event=sound.reconcile_current_dsp" in caplog.text
+    assert "result=skipped" in caplog.text
+    assert "reason=unknown_config" in caplog.text
+
+
+async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
+    tmp_path: Path, monkeypatch,
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    audition = config_dir / "sound_audition.yml"
+    audition.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
+    fake = FakeCamilla(str(audition))
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=6.0)), profile_path)
+
+    payload = await reconcile_current_dsp(
+        profile_path=profile_path,
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "active_audition"
+    assert fake.loaded_path is None
+    assert "sound_simple_bass:" not in audition.read_text()
+    assert not (config_dir / "sound_current.yml").exists()
+    assert not (tmp_path / "dsp.json").exists()
+
+
+async def test_reconcile_current_dsp_logs_unchanged_config(
+    tmp_path: Path, monkeypatch, caplog,
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    profile = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
+    current = config_dir / "sound_current.yml"
+    current.write_text(emit_sound_config(profile, profile_id="reconcile-current-dsp"))
+    fake = FakeCamilla(str(current))
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(profile, profile_path)
+    caplog.set_level(logging.INFO, logger="jasper.sound.runtime")
+
+    payload = await reconcile_current_dsp(
+        profile_path=profile_path,
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert payload["status"] == "unchanged"
+    assert fake.loaded_path is None
+    assert "event=sound.reconcile_current_dsp" in caplog.text
+    assert "result=unchanged" in caplog.text
 
 async def test_apply_profile_no_trim_by_default_so_boosts_boost(
     tmp_path: Path, monkeypatch

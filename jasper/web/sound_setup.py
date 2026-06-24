@@ -128,7 +128,6 @@ from jasper.sound.profile import (
     rename_named_profile,
     response_preview,
     save_named_profile,
-    save_profile,
     simple_bands_payload,
 )
 from jasper.sound.settings import (
@@ -1388,87 +1387,18 @@ async def _load_profile_config(
     audition: bool = False,
     output_trim_db: float = 0.0,
 ) -> tuple[Any, Path, SoundProfile]:
-    from jasper.sound.camilla_yaml import (
-        sound_audition_config_path,
-        sound_config_path,
-    )
-    from jasper.sound.graph_carrier import carrier_for_loaded_config
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.sound.runtime import load_profile_config
 
-    config_path = Path(config_dir)
-    config_path.mkdir(parents=True, exist_ok=True)
-    profile_id = str(time.time_ns())
-    out_path = (
-        sound_audition_config_path(config_path)
-        if audition
-        else sound_config_path(config_path)
-    )
-    cam = camilla_factory()
-
-    # Fast pre-check: refuse a non-hostable graph BEFORE the apply transaction
-    # so a STEADY-STATE active speaker's EQ apply records no prepare_failed
-    # state (a refusal is a handled "blocked" outcome, not a DSP failure, and
-    # we don't want a persistent jasper-doctor / /state WARN). This is an
-    # optimization only — the AUTHORITATIVE hostability gate runs under the
-    # dsp-apply lock in _prepare_config, because the loaded config can change
-    # between this read and lock acquisition.
-    pre_path = await cam.get_config_file_path(best_effort=False)
-    if not pre_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
-    # Dry-run (out_path=None -> writes nothing) any carrier that could refuse, so
-    # a blocked EQ apply records NO prepare_failed state (SF-2). Structurally
-    # unhostable carriers (startup/commissioning/bonded/unknown) refuse cheaply;
-    # the SOLO active baseline can host EQ but still refuses if its saved
-    # crossover/measurement evidence has gone missing — both must surface BEFORE
-    # the apply transaction. A stereo host always succeeds, so it is skipped (no
-    # double emit). The authoritative re-emit to out_path runs under the
-    # dsp-apply lock in _prepare_config.
-    if not pre_carrier.can_host_eq or pre_carrier.kind == "active":
-        pre_carrier.reemit(profile)  # raises CarrierCannotHostEq, writes nothing
-
-    async def _prepare_config() -> dict[str, Any]:
-        # Re-resolve the carrier UNDER the dsp-apply lock against the config
-        # that is actually loaded now. An active-startup load shares this lock
-        # and could have swapped a roleful graph in after the pre-check;
-        # re-asserting here is what guarantees we never re-emit a stereo config
-        # over an active crossover (a TOCTOU crossover-drop). In the rare
-        # genuine race this raises through apply_dsp_config, which records a
-        # real prepare failure and the route still maps it to the typed
-        # "blocked" 200 via the refusal's __cause__.
-        current_path = await cam.get_config_file_path(best_effort=False)
-        if not current_path:
-            raise RuntimeError("CamillaDSP did not report a loaded config path")
-        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
-        result = carrier.reemit(
-            profile,
-            out_path=out_path,
-            profile_id=profile_id,
-            output_trim_db=output_trim_db,
-        )
-        return {
-            "prior_config_path": current_path,
-            "room_peq_count": result.room_peq_count,
-            "sound_filter_count": len(build_sound_filters(profile)),
-        }
-
-    apply_state = await apply_dsp_config(
+    return await load_profile_config(
+        profile,
+        profile_path=profile_path,
+        config_dir=config_dir,
+        camilla_factory=camilla_factory,
         source=source,
-        candidate_path=out_path,
-        prepare=_prepare_config,
-        load_config=lambda path: cam.set_config_file_path(
-            path,
-            best_effort=False,
-        ),
-        get_current_config_path=lambda: cam.get_config_file_path(
-            best_effort=True,
-        ),
-        persist=(lambda: save_profile(profile, profile_path))
-        if persist_profile
-        else None,
-        sound_filter_count=len(build_sound_filters(profile)),
+        persist_profile=persist_profile,
+        audition=audition,
+        output_trim_db=output_trim_db,
     )
-    return apply_state, out_path, profile
 
 
 def _follower_sound_html(csrf_token: str = "") -> bytes:
