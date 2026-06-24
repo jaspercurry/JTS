@@ -27,6 +27,7 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     load_commission_load_state,
     load_ramp_state,
+    reset_ramp_state,
 )
 from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
 from jasper.active_speaker.measurement import record_driver_measurement
@@ -687,6 +688,99 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     assert tone_stops == ["ack_heard_correct_driver"]
     assert load_ramp_state()["confirmed_roles"] == ["woofer"]
     assert load_commission_load_state()["status"] == "rolled_back"
+
+
+def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
+    monkeypatch,
+    tmp_path,
+):
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )["status"] == "stepped"
+    ack = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_ack_payload(
+            {"outcome": "heard_correct_driver"}, camilla_factory=lambda: controller
+        )
+    )
+    assert ack["status"] == "confirmed"
+    assert ack["measurements"]["summary"]["captured_driver_count"] == 1
+
+    reset_ramp_state()
+    assert load_ramp_state()["confirmed_roles"] == []
+    state = asyncio.run(
+        sound_setup._active_speaker_commission_state_payload(
+            camilla_factory=lambda: controller
+        )
+    )
+    assert state["ramp"]["confirmed_roles"] == ["woofer"]
+
+    load_tweeter = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "tweeter"}, camilla_factory=lambda: controller
+        )
+    )
+    assert load_tweeter["load"]["status"] == "loaded"
+    assert load_tweeter["ramp"]["confirmed_roles"] == ["woofer"]
+
+    step_tweeter = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "tweeter"}, camilla_factory=lambda: controller
+        )
+    )
+    assert step_tweeter["status"] == "stepped"
+    assert step_tweeter["gate"]["checks"]["role_order_woofer_first"] is True
+    assert step_tweeter["ramp"]["confirmed_roles"] == ["woofer"]
+
+
+def test_commission_wrong_driver_ack_records_negative_driver_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+    assert asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )["status"] == "stepped"
+
+    ack = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_ack_payload(
+            {"outcome": "heard_wrong_driver"}, camilla_factory=lambda: controller
+        )
+    )
+
+    assert ack["status"] == "aborted"
+    latest = ack["measurements"]["summary"]["latest_driver_measurements"][
+        "mono:woofer"
+    ]
+    assert latest["outcome"] == "heard_wrong_driver"
+    assert latest["captured"] is False
+    assert load_ramp_state()["confirmed_roles"] == []
 
 
 def test_commission_ramp_abort_payload_remutes(monkeypatch, tmp_path):

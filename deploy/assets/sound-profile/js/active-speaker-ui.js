@@ -301,8 +301,11 @@ function commissionIssueReason(codes) {
   if (codes.indexOf('commission_live_state_stale') >= 0) {
     return 'The previous tone session expired safely. Start the tone again so JTS can reopen it quietly.';
   }
+  if (codes.indexOf('stage5_ramp_role_order_woofer_first') >= 0) {
+    return 'Confirm the woofer first, then start the tweeter tone.';
+  }
   if (codes.indexOf('stage5_ramp_gate_blocked') >= 0) {
-    return 'JTS did not start the tone because the speaker test was no longer open for that driver. Start the tone again to reopen it quietly.';
+    return 'JTS did not start the tone because a driver-test safety check is not satisfied yet. Finish the earlier driver step, then try again.';
   }
   if (codes.indexOf('commission_not_loaded') >= 0) {
     return 'Start the tone again so JTS can open the quiet driver test first.';

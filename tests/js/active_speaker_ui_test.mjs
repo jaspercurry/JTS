@@ -97,6 +97,17 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(/another driver/i.test(driverRefusal));
 }
 
+// Stage-5 ordering has its own copy: it should not be described as an expired
+// tone session, because the action is to confirm the lower-frequency driver.
+{
+  const roleOrder = commissionPayloadFailure({
+    status: "gate_blocked",
+    issues: [{ code: "stage5_ramp_role_order_woofer_first" }],
+  });
+  assert.ok(/woofer first/i.test(roleOrder));
+  assert.ok(!/no longer open|expired/i.test(roleOrder));
+}
+
 // Near-field copy — the level match is OPTIONAL and the copy must say so.
 assert.ok(nearfieldCaptureHint("Tweeter").includes("Tweeter"));
 assert.ok(nearfieldCaptureHint("Tweeter").includes("2–5 cm"));

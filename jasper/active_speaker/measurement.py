@@ -609,6 +609,38 @@ def load_measurement_state(
     return _with_summary(topology, _normalise_state(raw, path))
 
 
+def confirmed_driver_roles(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    state_path: str | Path | None = None,
+) -> list[str]:
+    """Return roles with current, captured driver-check evidence for a group."""
+
+    group_id = str(speaker_group_id or "").strip()
+    if not group_id:
+        return []
+    state = load_measurement_state(topology, state_path=state_path)
+    summary = state.get("summary") if isinstance(state.get("summary"), Mapping) else {}
+    latest = summary.get("latest_driver_measurements")
+    if not isinstance(latest, Mapping):
+        return []
+
+    roles: list[str] = []
+    seen: set[str] = set()
+    for target in active_driver_targets(topology):
+        if target.get("speaker_group_id") != group_id:
+            continue
+        record = latest.get(target.get("target_id"))
+        if not isinstance(record, Mapping) or record.get("captured") is not True:
+            continue
+        role = str(target.get("role") or "").strip().lower()
+        if role and role not in seen:
+            roles.append(role)
+            seen.add(role)
+    return roles
+
+
 def _write_state(path: Path, state: dict[str, Any]) -> None:
     atomic_write_text(
         path,
