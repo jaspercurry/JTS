@@ -10,11 +10,48 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import json
+import shlex
 import shutil
+import socket
+import subprocess
 from pathlib import Path
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _camilla_block_field, _run
+
+_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+
+
+def _read_outputd_status(
+    socket_path: str = _OUTPUTD_STATUS_SOCKET,
+) -> dict | None:
+    """Best-effort local outputd STATUS read for grouping verdicts."""
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(socket_path)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError:
+        return None
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    try:
+        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
@@ -43,10 +80,8 @@ def check_grouping() -> CheckResult:
       - **runtime degraded** — configured-valid but a snap unit the
         reconciler's plan wants running is not `active` (e.g. a follower
         whose snapclient can't reach its leader, a leader whose snapserver
-        is down), OR a bonded LEADER, always, today: no music producer
-        feeds the snapfifo yet (HANDOFF-multiroom.md §2, Increments 3–5),
-        so snapserver reads green `active` while the FIFO is empty and
-        followers get silence. This is §7's "make it visible, not
+        is down), OR a bonded leader whose active CamillaDSP config does not
+        write the snapserver pipe. This is §7's "make it visible, not
         invisible": a green config with silent breakage underneath is
         exactly what we refuse to show. Runtime health is derived by the
         same pure `derive_grouping_runtime` the /state surface uses."""
@@ -106,6 +141,62 @@ def check_grouping() -> CheckResult:
 
     status = "warn" if runtime["health"] == "degraded" else "ok"
     return CheckResult(label, status, f"{base} — {runtime['detail']}")
+
+
+@doctor_check(order=71.2, group="grouping")
+def check_grouping_pair_lock() -> CheckResult:
+    """Surface the composite pair-lock truth used by ``/state.grouping``.
+
+    This deliberately reuses ``derive_grouping_runtime`` rather than
+    re-scoring the bond in the doctor. The verdict includes the honest
+    Snapcast limitation: local FIFO bytes and client connection/volume are
+    observable today, but follower buffer-fill/drift/time-lock are not
+    exposed by Snapcast's documented JSON-RPC surface.
+    """
+    from ...multiroom.config import load_config as _load_grouping_config
+    from ...multiroom.leader_config import active_leader_pipe_path
+    from ...multiroom.reconcile import SNAP_STREAM_ID, plan
+    from ...multiroom.snapcast_rpc import read_stream_clients
+    from ...multiroom.state import derive_grouping_runtime, _self_client_name
+
+    label = "grouping: pair lock"
+    cfg = _load_grouping_config()
+    if not cfg.enabled:
+        return CheckResult(label, "ok", "single-speaker (grouping off)")
+    if cfg.error is not None:
+        return CheckResult(label, "warn", cfg.error)
+
+    units = [it.unit for it in plan(cfg).intents]
+    out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
+    states = (
+        {u: (out[i].strip() or "unknown") for i, u in enumerate(units)}
+        if len(out) == len(units)
+        else {u: "unknown" for u in units}
+    )
+
+    stream_clients = None
+    if cfg.role == "leader":
+        stream_clients = read_stream_clients()
+        if stream_clients is None:
+            stream_clients = "unreachable"
+
+    runtime = derive_grouping_runtime(
+        cfg,
+        states,
+        leader_tap_path=active_leader_pipe_path() if cfg.role == "leader" else "",
+        stream_clients=stream_clients,
+        self_name=_self_client_name(),
+        want_stream=SNAP_STREAM_ID,
+        local_outputd_status=_read_outputd_status(),
+    )
+    pair_lock = runtime.get("pair_lock") or {}
+    status = str(pair_lock.get("status") or "unknown")
+    detail = str(pair_lock.get("detail") or "pair-lock verdict unavailable")
+    if status == "degraded":
+        return CheckResult(label, "warn", detail)
+    if status == "unknown":
+        return CheckResult(label, "warn", detail)
+    return CheckResult(label, "ok", detail)
 
 
 @doctor_check(order=71.5, group="grouping")
@@ -239,6 +330,42 @@ def _parse_env_file(text: str) -> dict[str, str]:
     return out
 
 
+def _parse_systemd_environment(text: str) -> dict[str, str]:
+    """Parse ``systemctl show -p Environment`` output into a key/value map."""
+    text = text.strip()
+    if text.startswith("Environment="):
+        text = text[len("Environment="):]
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    env: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        env[key] = value.strip().strip('"').strip("'")
+    return env
+
+
+def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
+    """Return jasper-voice's systemd-resolved environment, if available."""
+    try:
+        proc = _run(
+            [
+                "systemctl", "show", "-p", "Environment", "--value",
+                "jasper-voice.service",
+            ],
+            timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        return None, str(e)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        return None, detail or f"systemctl exited {proc.returncode}"
+    return _parse_systemd_environment(proc.stdout), ""
+
+
 @doctor_check(order=75.3, group="grouping")
 def check_grouping_channel_pick() -> CheckResult:
     """An ACTIVE member's outputd round-trip lane must be wired with THIS
@@ -254,6 +381,7 @@ def check_grouping_channel_pick() -> CheckResult:
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
         OUTPUTD_GROUPING_ENV_FILE,
+        is_active_speaker_box,
     )
 
     label = "grouping: channel pick"
@@ -261,8 +389,15 @@ def check_grouping_channel_pick() -> CheckResult:
     if not is_active_member(cfg):
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
 
+    active_endpoint = is_active_speaker_box()
     path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if not path.exists():
+        if active_endpoint:
+            return CheckResult(
+                label, "ok",
+                "active endpoint uses the snapclient/CamillaDSP loopback path "
+                "(no outputd channel-pick lane)",
+            )
         return CheckResult(
             label, "warn",
             f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active bond "
@@ -277,6 +412,19 @@ def check_grouping_channel_pick() -> CheckResult:
     want_channel = cfg.channel or "stereo"
     fifo = env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV, "")
     channel = env.get(OUTPUTD_DAC_CONTENT_CHANNEL_ENV, "")
+    if active_endpoint:
+        if fifo or channel:
+            return CheckResult(
+                label, "warn",
+                f"active endpoint should have outputd channel-pick lane cleared "
+                f"(fifo={fifo or '(unset)'} channel={channel or '(unset)'}) — "
+                "active speakers receive the round-trip through the "
+                "snapclient/CamillaDSP loopback path; run jasper-grouping-reconcile",
+            )
+        return CheckResult(
+            label, "ok",
+            "active endpoint uses snapclient/CamillaDSP loopback channel pick",
+        )
     if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
         return CheckResult(
             label, "warn",
@@ -419,9 +567,9 @@ def check_grouping_tts_lane() -> CheckResult:
     Increment 5 PR-1 interim behavior). The reconciler wires this with
     TWO env files that must agree: grouping-voice.env points jasper-voice
     at outputd's TTS socket, and grouping-outputd.env arms outputd's TTS
-    server on that socket. Drift between them is the worst shape — voice
-    writing to a socket nobody serves makes the assistant SILENT, which
-    the no-silent-failure rule says must be visible here.
+    server on that socket. Active endpoints are the safety exception: their
+    assistant audio rides fan-in upstream of the crossover because outputd's
+    post-crossover TTS mixer is forbidden on active lanes.
 
     (Replaces ``check_grouping_tts_interim``, the standing bonded warn
     that existed while TTS still mixed in fanin pre-stream — Increment 5
@@ -433,33 +581,46 @@ def check_grouping_tts_lane() -> CheckResult:
         OUTPUTD_TTS_SOCKET_ENV,
         VOICE_GROUPING_ENV_FILE,
         VOICE_TTS_SOCKET_ENV,
+        is_active_speaker_box,
     )
 
     label = "grouping: TTS lane"
     cfg = load_config()
 
-    voice_path = Path(VOICE_GROUPING_ENV_FILE)
-    voice_env: dict[str, str] = {}
-    if voice_path.exists():
-        try:
-            voice_env = _parse_env_file(voice_path.read_text())
-        except OSError as e:
-            return CheckResult(label, "warn", f"could not read {voice_path}: {e}")
-    voice_socket = voice_env.get(VOICE_TTS_SOCKET_ENV, "")
+    voice_runtime_env, voice_runtime_error = _resolved_jasper_voice_env()
+    voice_socket = (
+        voice_runtime_env.get(VOICE_TTS_SOCKET_ENV, "")
+        if voice_runtime_env is not None
+        else ""
+    )
 
     if not is_active_member(cfg):
-        # Solo must NOT carry a stale outputd override: outputd's TTS
-        # server is only armed while bonded, so a leftover pointer would
-        # have voice writing to a socket nobody serves — silent assistant.
-        if voice_socket:
+        # Solo must resolve to fanin. With grouping-voice.env layered last,
+        # a stale bonded override would make runtime voice target outputd's
+        # un-armed TTS server — silent assistant.
+        if (
+            voice_runtime_env is not None
+            and voice_socket
+            and voice_socket != "/run/jasper-fanin/tts.sock"
+        ):
             return CheckResult(
                 label, "warn",
-                f"solo but {VOICE_GROUPING_ENV_FILE} still points "
-                f"{VOICE_TTS_SOCKET_ENV} at {voice_socket} — assistant "
-                "voice targets an un-armed socket; run "
+                f"solo but jasper-voice runtime env resolves "
+                f"{VOICE_TTS_SOCKET_ENV} to {voice_socket} instead of "
+                "/run/jasper-fanin/tts.sock — assistant voice targets an "
+                "un-armed socket; run "
                 "jasper-grouping-reconcile",
             )
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+
+    if voice_runtime_env is None:
+        return CheckResult(
+            label, "warn",
+            "bonded but could not read jasper-voice resolved env via "
+            f"`systemctl show -p Environment`: {voice_runtime_error}",
+        )
+
+    active_endpoint = is_active_speaker_box()
 
     outputd_env: dict[str, str] = {}
     outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
@@ -470,10 +631,23 @@ def check_grouping_tts_lane() -> CheckResult:
             return CheckResult(label, "warn", f"could not read {outputd_path}: {e}")
     lane_armed = bool(outputd_env.get(OUTPUTD_TTS_SOCKET_ENV))
 
+    if active_endpoint:
+        if voice_socket or lane_armed:
+            return CheckResult(
+                label, "warn",
+                "active bonded endpoint must keep assistant TTS on fan-in "
+                "upstream of the crossover; outputd's post-crossover TTS "
+                "socket is unsafe on active lanes. Run jasper-grouping-reconcile",
+            )
+        return CheckResult(
+            label, "ok",
+            "active endpoint TTS uses fan-in upstream of crossover",
+        )
+
     if voice_socket == OUTPUTD_TTS_SOCKET and not lane_armed:
         return CheckResult(
             label, "warn",
-            f"bonded: voice targets {OUTPUTD_TTS_SOCKET} but "
+            f"bonded: jasper-voice runtime env targets {OUTPUTD_TTS_SOCKET} but "
             f"{OUTPUTD_GROUPING_ENV_FILE} does not arm "
             f"{OUTPUTD_TTS_SOCKET_ENV} — assistant voice is BROKEN "
             "(writing to a socket nobody serves); run "
@@ -482,10 +656,12 @@ def check_grouping_tts_lane() -> CheckResult:
     if voice_socket != OUTPUTD_TTS_SOCKET:
         return CheckResult(
             label, "warn",
-            f"bonded but {VOICE_GROUPING_ENV_FILE} does not point "
-            f"{VOICE_TTS_SOCKET_ENV} at {OUTPUTD_TTS_SOCKET} — assistant "
+            f"bonded but jasper-voice runtime env resolves "
+            f"{VOICE_TTS_SOCKET_ENV} to {voice_socket or '(unset)'} instead of "
+            f"{OUTPUTD_TTS_SOCKET} — assistant "
             f"voice rides the synced stream (delayed ~{cfg.buffer_ms} ms, "
-            "plays on all bonded speakers); run jasper-grouping-reconcile",
+            "plays on all bonded speakers); check "
+            f"{VOICE_GROUPING_ENV_FILE} precedence and run jasper-grouping-reconcile",
         )
     return CheckResult(
         label, "ok", f"member-local TTS wired ({OUTPUTD_TTS_SOCKET})",

@@ -360,7 +360,10 @@ coupled artifacts make the drop work:
   `subject.active == false`, so the desktop `subject.active` idiom would never
   fire. The allowlists are pinned set-equal to the matching `restart_broker`
   constants by `tests/test_polkit_jasper_control.py` so the broker authz and the
-  polkit grant can't drift.
+  polkit grant can't drift. Grouping burst coalescing adds one fixed companion
+  unit, `jasper-grouping-reconcile-trailing.service`, to that allowlist; this is
+  a named on-demand service that starts the existing grouping reconciler, not a
+  broad `systemd-run`/transient-unit grant.
 
   **`manage-unit-files` is deliberately NOT granted — this corrects the
   original design above.** Hardware testing (Pi 5, systemd 257, polkit 126)
@@ -851,7 +854,7 @@ Rules for all Tier-B slices:
 | `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
 | `jasper-audio-hardware-reconcile.service` + [`deploy/bin/jasper-audio-hardware-reconcile`](../deploy/bin/jasper-audio-hardware-reconcile) | install, boot, udev sound add/remove | Detect output hardware, write `/var/lib/jasper/outputd.env` and `/run/jasper-output-hardware/output_hardware.json`, render `/etc/jasper/asoundrc.jasper.template`, toggle `jasper-dac-init`/monitor, and kick outputd/AEC reconcile. | Split policy from root apply. Rendering `/etc/jasper/*` and unit orchestration should stay behind a fixed root helper; state observation can move to `jasper-recon`. |
 | `jasper-dongle-recover.service` | Apple dongle sound-card udev add | Fixed `systemctl reset-failed` and `start` sequence for Camilla/outputd/audio-hardware/AEC after Card A reappears. | Keep as a root-owned fixed-argv recovery helper unless a later reconciler broker explicitly absorbs it. It is already tiny and exists to preserve hotplug self-healing. |
-| `jasper-grouping-reconcile.service` + `jasper.multiroom.reconcile` | `/rooms/`, install, grouping state changes | Apply snapserver/snapclient role changes via `systemctl`, write grouping env/FIFO runtime state, and kick `jasper-aec-reconcile` rather than restarting voice directly. | Candidate for `jasper-recon` policy with a root apply helper for systemctl. It is already broker-routed from Tier-A clients; do not broaden that surface while changing other Tier-B units. |
+| `jasper-grouping-reconcile.service` + `jasper-grouping-reconcile-trailing.service` + `jasper.multiroom.reconcile` | `/rooms/`, install, grouping state changes; `/grouping/set` burst coalescing arms the trailing service | Apply snapserver/snapclient role changes via `systemctl`, write grouping env/FIFO runtime state, and kick `jasper-aec-reconcile` rather than restarting voice directly. The trailing service sleeps for the remaining cooldown, then starts the same reconciler so the last grouping env write applies after a calibration burst. | Candidate for `jasper-recon` policy with a root apply helper for systemctl. It is already broker-routed from Tier-A clients; the trailing service is intentionally a named fixed unit instead of a transient-unit grant. |
 | `jasper-identity-reconcile.service` + timer + [`deploy/bin/jasper-identity-reconcile`](../deploy/bin/jasper-identity-reconcile) | boot and 5-minute timer | Read hostname/Avahi over subprocess/DBus and write non-secret `/var/lib/jasper/identity.env`. | Probably safe to move to `jasper-recon` or another non-root writer after verifying `/var/lib/jasper` write ownership. Low security value compared with hardware recovery paths, so do not use it to claim Tier-B done. |
 | `jasper-usbsink-init.service` + `deploy/usbsink/jasper-usbsink-*` | `/sources/` USB audio input enable/disable | Load/unload kernel modules, patch `usb_f_uac2`, create/remove ConfigFS gadget descriptors under `/sys/kernel/config`. | Root helper by design. Treat separately from the reconciler drop; the privileged operation is kernel/configfs setup. |
 | `jasper-bootloop-guard.service` + [`deploy/bin/jasper-bootloop-guard`](../deploy/bin/jasper-bootloop-guard) | early boot | Write runtime systemd drop-ins under `/run/systemd/system` to disarm reboot loops after repeated bad boots. | Keep root. This is part of the T5.1 safety ladder and should not depend on the restart broker or a non-root user. |
@@ -984,8 +987,10 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-06-22 (Spotify token cache write contract re-checked
-against `jasper.accounts.build_cache_handler` and live `jts3.local`
+Last verified: 2026-06-24 (`jasper-control` polkit allowlist rechecked for the
+fixed grouping trailing service: named unit only, no broad transient-unit grant;
+Spotify token cache write contract last rechecked 2026-06-22 against
+`jasper.accounts.build_cache_handler` and live `jts3.local`
 `/var/lib/jasper-intsecrets/spotify/caches` permissions; Wi-Fi scan-suppression
 helper privilege boundary verified on `jts3.local`; the secret-compartment
 on-disk posture doctor check + `voice_keys.env` re-tighten added 2026-06-21,

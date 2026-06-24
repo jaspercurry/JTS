@@ -204,7 +204,10 @@ run_contained_build() {
     fi
 
     local -a props=()
-    mapfile -t props < <(build_sandbox_props "${label}")
+    local prop
+    while IFS= read -r prop; do
+        props+=("${prop}")
+    done < <(build_sandbox_props "${label}")
     local sanitized unit
     sanitized="$(printf '%s' "${label}" | tr -c 'a-zA-Z0-9_-' '_')"
     unit="jts-build-${sanitized}-$$.scope"
@@ -217,7 +220,10 @@ run_contained_build() {
     # for the OOMScoreAdjust property a --scope unit rejects). Empty when
     # choom is unavailable; guarded so an empty array is safe under set -u.
     local -a oom_prefix=()
-    mapfile -t oom_prefix < <(build_sandbox_oom_prefix)
+    local oom_arg
+    while IFS= read -r oom_arg; do
+        oom_prefix+=("${oom_arg}")
+    done < <(build_sandbox_oom_prefix)
     [[ ${#oom_prefix[@]} -gt 0 ]] && run+=("${oom_prefix[@]}")
     run+=("$@")
     "${run[@]}"

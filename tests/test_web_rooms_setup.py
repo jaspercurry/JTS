@@ -70,6 +70,8 @@ _OFF_GROUPING = {
     "leader_addr": "",
     "buffer_ms": 400,
     "codec": "flac",
+    "mains_highpass_enabled": True,
+    "subwoofer_present": False,
     "error": None,
 }
 
@@ -1070,9 +1072,8 @@ def _sub_bond_members():
 
 
 def test_post_bond_forwards_crossover_hz_for_a_sub_member(monkeypatch):
-    """A subwoofer follower's crossover_hz rides the per-member fan-out to its
-    /grouping/set so the receiving validator persists it. The leader of the
-    sub bond plays full-range ("stereo"), not half a stereo pair."""
+    """A subwoofer bond forwards the same crossover to every member: the sub
+    low-passes there, and mains high-pass at the matched corner by default."""
     h, calls = _post_bond({"members": _sub_bond_members()}, monkeypatch=monkeypatch)
     assert h.status == 200
     by_role = {c[1]["role"]: c[1] for c in calls}
@@ -1081,17 +1082,19 @@ def test_post_bond_forwards_crossover_hz_for_a_sub_member(monkeypatch):
     # The corner is forwarded verbatim — validate_grouping (on the receiver)
     # owns clamping; the leader just passes the browser's number through.
     assert by_role["follower"]["crossover_hz"] == 90
-    # The full-range leader carries no crossover key (the env writer only
-    # emits JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ for channel=="sub").
-    assert "crossover_hz" not in by_role["leader"]
+    assert by_role["leader"]["crossover_hz"] == 90
+    assert all(c[1]["subwoofer_present"] is True for c in calls)
+    assert all(c[1]["mains_highpass_enabled"] is True for c in calls)
 
 
 def test_post_bond_omits_crossover_hz_when_absent(monkeypatch):
     """A plain stereo pair sends no crossover_hz key — the fan-out only
-    forwards it when the browser included it, so non-sub members stay clean."""
+    forwards it when the bond contains a sub, so non-sub members stay clean."""
     h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
     assert h.status == 200
     assert all("crossover_hz" not in c[1] for c in calls)
+    assert all(c[1]["subwoofer_present"] is False for c in calls)
+    assert all(c[1]["mains_highpass_enabled"] is True for c in calls)
 
 
 def test_post_bond_rejects_bad_csrf_without_fanning_out(monkeypatch):
@@ -2177,6 +2180,8 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
     assert leader_body["peer_name"] == "JTS3"
     assert follower_body["peer_addr"] == ""
     assert follower_body["peer_name"] == ""
+    assert leader_body["subwoofer_present"] is False
+    assert follower_body["subwoofer_present"] is False
 
 
 def _drive_bond(members, monkeypatch):
@@ -2228,6 +2233,9 @@ def test_bond_three_members_records_full_roster_with_lr_primary(monkeypatch):
     # role flip).
     assert bodies["192.168.1.9"]["roster"] == []
     assert bodies["192.168.1.8"]["roster"] == []
+    assert all(body["subwoofer_present"] is True for body in bodies.values())
+    assert all(body["mains_highpass_enabled"] is True for body in bodies.values())
+    assert all(body["crossover_hz"] == 90 for body in bodies.values())
 
 
 def test_bond_two_member_pair_sets_peer_and_single_roster(monkeypatch):
@@ -2278,6 +2286,70 @@ def test_unbond_with_full_roster_disables_self_and_all_members(monkeypatch):
     assert {a for a, _ in posts} == {"", "192.168.1.9", "192.168.1.8"}
     assert len(posts) == 3
     assert all(b == {"enabled": False} for _a, b in posts)
+
+
+def test_mains_highpass_toggle_fans_out_to_full_roster(monkeypatch):
+    posts: list[tuple[str, dict]] = []
+
+    self_grouping = {
+        **_OFF_GROUPING,
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "bond-1",
+        "leader_addr": "",
+        "crossover_hz": 90.0,
+        "subwoofer_present": True,
+        "mains_highpass_enabled": True,
+        "roster": [
+            {"addr": "192.168.1.9", "name": "Right", "channel": "right"},
+            {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
+        ],
+    }
+    peer_groupings = {
+        "192.168.1.9": {
+            **self_grouping,
+            "role": "follower",
+            "channel": "right",
+            "leader_addr": "jts.local",
+            "roster": [],
+        },
+        "192.168.1.8": {
+            **self_grouping,
+            "role": "follower",
+            "channel": "sub",
+            "leader_addr": "jts.local",
+            "roster": [],
+        },
+    }
+
+    def fake_post(addr, body, known=None, *, token=None, household=None):
+        posts.append((addr, body))
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "read_grouping_state",
+                        lambda *a, **k: self_grouping)
+    monkeypatch.setattr(rooms_setup, "_get_member_grouping",
+                        lambda addr, known=None: peer_groupings[addr])
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", fake_post)
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/mains-highpass")
+    payload = json.dumps({"enabled": False}).encode()
+    h.headers["Content-Length"] = str(len(payload))
+    h.rfile = BytesIO(payload)
+    handler_cls.do_POST(h)
+
+    assert h.status == 200
+    assert {addr for addr, _body in posts} == {"", "192.168.1.9", "192.168.1.8"}
+    assert all(body["mains_highpass_enabled"] is False for _a, body in posts)
+    assert all(body["subwoofer_present"] is True for _a, body in posts)
+    assert all(body["crossover_hz"] == 90.0 for _a, body in posts)
+    assert {body["channel"] for _a, body in posts} == {"left", "right", "sub"}
 
 
 _NODE = shutil.which("node")

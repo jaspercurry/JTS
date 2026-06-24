@@ -275,7 +275,9 @@ def test_leader_pipe_check_skips_non_leaders(monkeypatch):
     assert check_grouping_leader_pipe().status == "ok"
 
 
-def _channel_pick_check(monkeypatch, *, cfg, env_text=None, env_path=None):
+def _channel_pick_check(
+    monkeypatch, *, cfg, env_text=None, env_path=None, active_box=False,
+):
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
@@ -286,6 +288,7 @@ def _channel_pick_check(monkeypatch, *, cfg, env_text=None, env_path=None):
         recmod, "OUTPUTD_GROUPING_ENV_FILE",
         str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
     )
+    monkeypatch.setattr(recmod, "is_active_speaker_box", lambda: active_box)
     return groupmod.check_grouping_channel_pick()
 
 
@@ -339,6 +342,50 @@ def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
     )
     assert r.status == "ok"
     assert "channel=left" in r.detail
+
+
+def test_channel_pick_check_active_endpoint_uses_loopback(monkeypatch, tmp_path):
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        outputd_grouping_env,
+    )
+    cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
+    derived = outputd_grouping_env(cfg, active_endpoint=True)
+    assert derived[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
+    assert derived[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] == ""
+    env = tmp_path / "grouping-outputd.env"
+    r = _channel_pick_check(
+        monkeypatch, cfg=cfg,
+        env_text="".join(f"{k}={v}\n" for k, v in derived.items()),
+        env_path=env,
+        active_box=True,
+    )
+    assert r.status == "ok"
+    assert "loopback" in r.detail
+
+
+def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(
+    monkeypatch, tmp_path,
+):
+    from jasper.multiroom.reconcile import (
+        MEMBER_CONTENT_FIFO,
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+    )
+    cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
+    env = tmp_path / "grouping-outputd.env"
+    r = _channel_pick_check(
+        monkeypatch, cfg=cfg,
+        env_text=(
+            f"{OUTPUTD_DAC_CONTENT_FIFO_ENV}={MEMBER_CONTENT_FIFO}\n"
+            f"{OUTPUTD_DAC_CONTENT_CHANNEL_ENV}=right\n"
+        ),
+        env_path=env,
+        active_box=True,
+    )
+    assert r.status == "warn"
+    assert "active endpoint" in r.detail
 
 
 def _sub_corner_check(monkeypatch, *, cfg, env_text=None, env_path=None):
@@ -498,7 +545,8 @@ def test_outputd_config_exit_code_contract():
 
 
 def _tts_lane_check(
-    monkeypatch, *, cfg, voice_text=None, outputd_text=None, tmp_path=None,
+    monkeypatch, *, cfg, voice_text=None, outputd_text=None,
+    resolved_voice_text=None, tmp_path=None, active_box=False,
 ):
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
@@ -516,6 +564,18 @@ def _tts_lane_check(
         outputd_path = str(f)
     monkeypatch.setattr(recmod, "VOICE_GROUPING_ENV_FILE", voice_path)
     monkeypatch.setattr(recmod, "OUTPUTD_GROUPING_ENV_FILE", outputd_path)
+    if resolved_voice_text is None:
+        resolved_voice_text = (
+            voice_text
+            if voice_text is not None
+            else "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock\n"
+        )
+    monkeypatch.setattr(
+        groupmod,
+        "_resolved_jasper_voice_env",
+        lambda: (groupmod._parse_systemd_environment(resolved_voice_text), ""),
+    )
+    monkeypatch.setattr(recmod, "is_active_speaker_box", lambda: active_box)
     return groupmod.check_grouping_tts_lane()
 
 
@@ -547,6 +607,29 @@ def test_tts_lane_check_bonded_without_voice_override_warns(monkeypatch):
     assert "rides the synced stream" in r.detail
 
 
+def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
+    """Active endpoints must use fan-in upstream of the crossover; outputd's
+    post-crossover TTS socket is intentionally unarmed."""
+    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+    cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=cfg,
+        voice_text="".join(
+            f"{k}={v}\n"
+            for k, v in voice_grouping_env(cfg, active_endpoint=True).items()
+        ),
+        outputd_text="".join(
+            f"{k}={v}\n"
+            for k, v in outputd_grouping_env(cfg, active_endpoint=True).items()
+        ),
+        tmp_path=tmp_path,
+        active_box=True,
+    )
+    assert r.status == "ok"
+    assert "upstream of crossover" in r.detail
+
+
 def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
     """The worst drift: voice targets outputd's socket but the lane was
     never armed — assistant voice writes into the void."""
@@ -560,6 +643,34 @@ def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
     )
     assert r.status == "warn"
     assert "BROKEN" in r.detail
+
+
+def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path):
+    """The voice file can look correct while a later unit directive wins.
+
+    The doctor must judge the same resolved env jasper-voice actually
+    starts with, not the reconciler-written file in isolation.
+    """
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_TTS_SOCKET,
+        VOICE_TTS_SOCKET_ENV,
+        outputd_grouping_env,
+    )
+    cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=cfg,
+        voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
+        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}=/run/jasper-fanin/tts.sock\n",
+        outputd_text="".join(
+            f"{k}={v}\n"
+            for k, v in outputd_grouping_env(cfg).items()
+        ),
+        tmp_path=tmp_path,
+    )
+    assert r.status == "warn"
+    assert "runtime env resolves" in r.detail
+    assert "rides the synced stream" in r.detail
 
 
 def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path):
@@ -611,12 +722,9 @@ def test_camilla_block_field_shared_scanner():
 
 
 def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
-    """PR-2: a bonded member's voice plays TTS via outputd (post-round-trip
-    — solo latency); solo OMITS the key entirely — never present-but-empty
-    (a set-empty value reads as a real, invalid socket path; omission
-    falls back to the fanin default). Both roles flip: each member's OWN
-    replies mix at its OWN final output (inv-3 keeps the leader's TTS out
-    of the SHARED stream)."""
+    """PR-2: a passive bonded member's voice plays TTS via outputd
+    (post-round-trip); solo and active endpoints OMIT the key entirely so voice
+    falls back to fan-in upstream of the crossover."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_TTS_SOCKET,
         VOICE_PARK_ENV,
@@ -637,6 +745,17 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
         VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
         VOICE_PARK_ENV: "1",
     }
+    active_leader = voice_grouping_env(
+        _cfg(enabled=True, role="leader", channel="right", bond_id="b"),
+        active_endpoint=True,
+    )
+    assert active_leader == {}
+    active_follower = voice_grouping_env(
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local"),
+        active_endpoint=True,
+    )
+    assert active_follower == {VOICE_PARK_ENV: "1"}
     for cfg in (
         _cfg(),  # off
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),

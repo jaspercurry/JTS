@@ -53,16 +53,22 @@ DAC8x-family profiles can run up to width 8, and the dual Apple composite
 emits a four-channel active lane that `jasper-outputd` splits to two
 Apple DACs.
 
-**Bonded multiroom member (Increment 5 PR-2):** the assistant path above
-is the SOLO topology. While a speaker is an active bond member, the
-grouping reconciler points voice's `JASPER_TTS_OUTPUTD_SOCKET` at
-`/run/jasper-outputd/tts.sock` instead — outputd serves fanin's exact TTS
-wire protocol (`rust/jasper-outputd/src/tts.rs`) and mixes the member's
-own TTS/cues into the post-round-trip `dac_content` lane, pre-reference
-(inv-A holds; `PROGRAM_DUCK` ducks the content lane member-locally).
-Music keeps the synced snapcast path; only assistant audio goes local.
+**Passive/dumb bonded multiroom member (Increment 5 PR-2):** the
+assistant path above is the solo/active-output topology. While a
+passive speaker is a bond member, the grouping reconciler points
+voice's `JASPER_TTS_OUTPUTD_SOCKET` at `/run/jasper-outputd/tts.sock`
+instead — outputd serves fanin's exact TTS wire protocol
+(`rust/jasper-outputd/src/tts.rs`) and mixes the member's own TTS/cues
+into the post-round-trip `dac_content` lane, pre-reference (inv-A
+holds; `PROGRAM_DUCK` ducks the content lane member-locally). Music
+keeps the synced snapcast path; only assistant audio goes local. Active
+endpoints deliberately do **not** arm this outputd TTS socket: voice
+stays on fan-in upstream of CamillaDSP so assistant audio is crossed
+over/protected at the endpoint's active width.
 Canonical home: [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §0 /
-Increment 5 PR-2. The legacy `pcm.jasper_out`
+Increment 5 PR-2, plus
+[HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
+active-endpoint safety exception. The legacy `pcm.jasper_out`
 dmix remains defined in `/etc/asound.conf` for
 emergency rollback and older checkouts, but current production audio
 does not use it as the convergence point.
@@ -1398,13 +1404,16 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-22 (fan-in solo `FLUSH_SYNC` playout-ledger ack
+Last verified: 2026-06-24 (active-endpoint TTS fan-in path rechecked against
+`jasper.multiroom.reconcile.outputd_grouping_env`,
+`jasper.multiroom.reconcile.voice_grouping_env`, and
+`jasper.cli.doctor.grouping`; fan-in solo `FLUSH_SYNC` playout-ledger ack
 previously verified against rust/jasper-fanin/src/{playout,tts}.rs;
 active-speaker runtime graph boundary rechecked against
 `jasper.active_speaker.runtime_contract`, install outputd-statefile selection,
 doctor runtime graph check, `resolve_output_layout`, and the active-lane
 `DacProfile` declarations; Stage-7 outputd loop unification previously
 rechecked against rust/jasper-outputd; solo fan-in TTS ownership and
-bonded-member outputd TTS ownership previously rechecked against
-rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path rechecked
-after `jasper/voice/turn_playback.py` extraction).
+passive bonded-member outputd TTS ownership previously rechecked against
+rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path
+rechecked after `jasper/voice/turn_playback.py` extraction).

@@ -13,8 +13,9 @@ from pathlib import Path
 import pytest
 
 from jasper.usage import (
+    BillableActivityMeter,
+    _SESSIONS_TABLE_DDL,
     _UNRECORDED_SESSION,
-    ConnectionUptimeMeter,
     Pricing,
     SpendCap,
     UsageStore,
@@ -590,7 +591,7 @@ def test_pricing_override_ignores_unknown_and_nonnumeric(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Connection-uptime metering (time-billed providers, e.g. Grok)
+# Billable realtime-activity metering (time-billed providers, e.g. Grok)
 # ---------------------------------------------------------------------------
 def _insert_interval(db_path, provider, opened, closed, rate):
     with sqlite3.connect(str(db_path)) as conn:
@@ -604,7 +605,7 @@ def _insert_interval(db_path, provider, opened, closed, rate):
 
 
 def test_connection_interval_cost_in_24h_spend(tmp_path: Path):
-    """A 30-minute Grok connection at $3/hour contributes $1.50 to the
+    """A 30-minute Grok activity interval at $3/hour contributes $1.50 to the
     rolling spend even though its token rows price to $0."""
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))
@@ -618,7 +619,7 @@ def test_connection_interval_cost_in_24h_spend(tmp_path: Path):
 
 def test_open_interval_billed_up_to_now(tmp_path: Path):
     """An interval still open (closed_at NULL) bills up to the present —
-    the live connection's ongoing cost shows immediately."""
+    an active turn's ongoing cost shows immediately."""
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))
     now = datetime.now(timezone.utc)
@@ -628,19 +629,19 @@ def test_open_interval_billed_up_to_now(tmp_path: Path):
     assert abs(store.spend_last_24h_usd() - 3.0) < 0.05
 
 
-def test_uptime_meter_records_open_then_close(tmp_path: Path):
+def test_billable_activity_meter_records_start_then_end(tmp_path: Path):
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))
-    meter = ConnectionUptimeMeter(store, "grok", 3.0)
-    meter.mark_connected()
+    meter = BillableActivityMeter(store, "grok", 3.0)
+    meter.mark_started()
     with sqlite3.connect(str(db)) as conn:
         rows = conn.execute(
-            "SELECT provider, closed_at, rate_per_hour_usd "
+            "SELECT provider, closed_at, rate_per_hour_usd, kind "
             "FROM connection_intervals"
         ).fetchall()
     assert len(rows) == 1
-    assert rows[0][0] == "grok" and rows[0][1] is None and rows[0][2] == 3.0
-    meter.mark_disconnected()
+    assert rows[0] == ("grok", None, 3.0, "billable_activity")
+    meter.mark_ended()
     with sqlite3.connect(str(db)) as conn:
         closed = conn.execute(
             "SELECT closed_at FROM connection_intervals"
@@ -651,20 +652,105 @@ def test_uptime_meter_records_open_then_close(tmp_path: Path):
 def test_dangling_interval_closed_at_meter_start(tmp_path: Path):
     """A crash leaves an interval open. The next meter construction
     closes it conservatively (zero duration) so a stale open row can't
-    bill phantom uptime up to 'now'."""
+    bill phantom activity up to 'now'."""
     db = tmp_path / "usage.db"
     store = UsageStore(str(db))
     opened = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     _insert_interval(db, "grok", opened, None, 3.0)
     # Before cleanup the open interval would bill ~2h = ~$6.
     assert store.spend_last_24h_usd() > 5.0
-    ConnectionUptimeMeter(store, "grok", 3.0)  # runs dangling cleanup
+    BillableActivityMeter(store, "grok", 3.0)  # runs dangling cleanup
     assert store.spend_last_24h_usd() < 1e-6
 
 
-def test_aggregate_by_provider_folds_in_connection_cost(tmp_path: Path):
+def test_legacy_connection_uptime_rows_are_tagged_and_ignored(tmp_path: Path):
+    """Rows written by the old idle-WebSocket meter must not keep the cap
+    tripped after upgrade. The migration preserves them for forensics but
+    tags them out of spend queries."""
+    db = tmp_path / "usage.db"
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(_SESSIONS_TABLE_DDL)
+        conn.execute(
+            """
+            CREATE TABLE connection_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                opened_at TEXT NOT NULL,
+                closed_at TEXT,
+                rate_per_hour_usd REAL NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO connection_intervals "
+            "(provider, opened_at, closed_at, rate_per_hour_usd) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "grok",
+                (now - timedelta(hours=8)).isoformat(),
+                now.isoformat(),
+                3.0,
+            ),
+        )
+
+    store = UsageStore(str(db))
+    assert store.spend_last_24h_usd() == 0.0
+    with sqlite3.connect(str(db)) as conn:
+        rows = conn.execute(
+            "SELECT kind FROM connection_intervals"
+        ).fetchall()
+    assert rows == [("legacy_connection_uptime",)]
+    meter = BillableActivityMeter(store, "grok", 3.0)
+    meter.mark_started()
+    meter.mark_ended()
+    with sqlite3.connect(str(db)) as conn:
+        kinds = conn.execute(
+            "SELECT kind FROM connection_intervals ORDER BY id"
+        ).fetchall()
+    assert kinds == [
+        ("legacy_connection_uptime",),
+        ("billable_activity",),
+    ]
+
+
+def test_read_only_old_interval_schema_ignores_legacy_rows(tmp_path: Path):
+    """The /voice status card may read an old DB before the daemon writer
+    migrates it; that read-only path must fail open to $0, not crash."""
+    db = tmp_path / "usage.db"
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(_SESSIONS_TABLE_DDL)
+        conn.execute(
+            """
+            CREATE TABLE connection_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                opened_at TEXT NOT NULL,
+                closed_at TEXT,
+                rate_per_hour_usd REAL NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO connection_intervals "
+            "(provider, opened_at, closed_at, rate_per_hour_usd) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "grok",
+                (now - timedelta(hours=8)).isoformat(),
+                now.isoformat(),
+                3.0,
+            ),
+        )
+
+    store = UsageStore(str(db), read_only=True)
+    assert store.spend_last_24h_usd() == 0.0
+
+
+def test_aggregate_by_provider_folds_in_activity_cost(tmp_path: Path):
     """Grok's per-turn token rows cost $0; the per-provider rollup folds
-    the connection-uptime cost into its cost_usd so the dashboard shows
+    the billable activity cost into its cost_usd so the dashboard shows
     a real number."""
     db = tmp_path / "usage.db"
     store = UsageStore(str(db), pricing=pricing_for_model("grok-voice-think-fast-1.0"))
@@ -678,7 +764,7 @@ def test_aggregate_by_provider_folds_in_connection_cost(tmp_path: Path):
     grok = next(r for r in rows if r["provider"] == "grok")
     assert grok["sessions"] == 1
     assert grok["input_tokens"] == 1000  # tokens still tracked
-    assert abs(grok["cost_usd"] - 3.0) < 1e-3  # connection cost folded in
+    assert abs(grok["cost_usd"] - 3.0) < 1e-3  # activity cost folded in
 
 
 def test_token_billed_provider_has_no_intervals(tmp_path: Path):

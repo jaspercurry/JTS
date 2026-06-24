@@ -1,7 +1,7 @@
-# HANDOFF — room correction at `/correction/`
+# HANDOFF — correction measurement hub at `/correction/`
 
 > If you are picking this up across sessions: this is the canonical
-> planning + design document for the v2 room-correction feature. Read
+> planning + design document for the HTTPS correction measurement surface. Read
 > the **Status** and **Architecture decisions** sections first. The
 > phased plan is the work tracker — when a phase ships, mark it ✅ and
 > update the Status. The "Things to ignore" sections are deliberate
@@ -9,6 +9,22 @@
 
 ## Status
 
+- ✅ **HTTPS measurement hub shell.** As of 2026-06-23,
+  `/correction/` is the secure measurement hub for `room`, `crossover`,
+  and `bass`. `/correction/` and `/correction/room/` render the existing
+  room-correction workflow and keep
+  `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
+  is a correction-native active-crossover microphone surface: correction
+  web modules own HTTPS/browser routing, while
+  `jasper.active_speaker.web_commissioning` owns safe driver/summed
+  playback orchestration and `jasper.active_speaker.web_measurement`
+  owns bounded browser WAV evidence plus acoustic-analysis recording.
+  `/correction/bass/` is a placeholder tab for subwoofer /
+  low-frequency tuning. The plain-HTTP preflight accepts
+  `?next=/correction/...` so HTTP-only setup flows can link directly to a
+  secure subflow after showing the certificate warning; its Proceed
+  button uses `/correction/proceed[/subflow]`, and nginx redirects to
+  `https://$host/...` so non-default hostnames survive the scheme switch.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /correction/`, `/correction/balance`, and
@@ -23,11 +39,16 @@
   page with `getSettings()` constraint verify lands at
   `https://jts.local/correction/`.
 - ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial.**
-  Implemented 2026-05-28. `http://jts.local/correction/` now serves a
-  static preflight page that explains the browser's self-signed-cert
-  warning and links to `https://jts.local/correction/` for the actual
-  measurement UI. The landing page links to the HTTP preflight, and
-  the HTTPS correction page's Home link points back to
+  Implemented 2026-05-28; hostname-safe proceed redirect added
+  2026-06-24. `http://jts.local/correction/` now serves a static
+  preflight page that explains the browser's self-signed-cert warning.
+  Its default OK button targets `/correction/proceed`, with optional
+  `/room`, `/crossover`, or `/bass` proceed suffixes when a safe
+  `?next=/correction/...` target is present. Nginx owns the final
+  `https://$host/...` redirect, so `jts3.local` and other configured
+  hostnames do not depend on client-side hostname rewriting. The landing
+  page links to the HTTP preflight, and the HTTPS correction page's Home
+  link points back to
   `http://jts.local/` so relative navigation does not inherit the
   HTTPS origin and hit the 443 catch-all. The 443 catch-all now
   redirects non-correction paths back to HTTP instead of returning 404,
@@ -68,16 +89,17 @@
     `CamillaController.get_config_file_path()`. The page banner at
     the top of `/correction/` reads this on load so the user knows
     what's loaded before measuring.
-  - `POST /start` auto-resets CamillaDSP to
-    `/etc/camilladsp/outputd-cutover.yml` BEFORE the first sweep only when
-    `jasper.active_speaker.runtime_contract` says that flat graph is legal
-    for the saved output topology. Ordinary full-range stereo still measures
-    the raw room (not the corrected pipeline). Saved active/protected
-    topology, or explicit mono topology that would be driven by a wider flat
-    graph, fails before sweep playback instead of loading flat stereo into an
-    unsafe physical output map.
-    The prior correction descriptor is preserved in the session's
-    `current_correction_at_start` for the bundle.
+  - `POST /start` now loads a generated measurement baseline BEFORE the
+    first sweep. The baseline is derived from the currently loaded graph via
+    `jasper.sound.graph_carrier`: room correction (Layer B) is cleared,
+    preference EQ (Layer C) is bypassed, and topology-owned speaker DSP
+    (crossovers, driver EQ, delay, gain, limiters, and protected outputs) is
+    preserved. Ordinary full-range stereo still measures the raw room; saved
+    active/protected topology measures through its protected speaker baseline
+    instead of swapping to flat stereo. The generated graph is checked by
+    `jasper.correction.runtime_safety.assert_correction_graph_safe()` before
+    sweep playback. The prior correction descriptor is preserved in the
+    session's `current_correction_at_start` for the bundle.
   - Each session writes a self-contained debug bundle at
     `/var/lib/jasper/correction/sessions/<session_id>/` —
     `info.json` (params + state), `result.json` (chart curves +
@@ -464,12 +486,14 @@ Do not disturb these guardrails while decomposing:
   phase correction.
 - **CamillaDSP output safety.** Preserve `devices.volume_limit=0.0`
   and the outputd-safe baseline assumptions in generated configs.
-- **Flat-before-measure invariant.** For ordinary full-range stereo,
-  `/start` must reset CamillaDSP to `/etc/camilladsp/outputd-cutover.yml`
-  before the first sweep so every measurement captures the raw room through
-  the protected baseline. For saved active/protected topology, `/start`
-  refuses flat sweeps; correction does not own roleful active-speaker
-  measurement.
+- **Raw-room-before-measure invariant.** `/start` must clear the current room
+  correction and bypass preference EQ before the first sweep so every
+  measurement captures the raw room, not correction-on-correction. The
+  measurement graph is generated by the graph carrier from the live topology:
+  passive/full-range speakers become the ordinary uncorrected stereo graph;
+  active/protected speakers keep Layer A speaker DSP and only zero Layer B/C.
+  Every generated measurement graph is checked against the saved topology
+  before playback.
 - **Task B surfaces are live.** Confidence reports, evidence packets,
   replay artifacts, FIR-runtime inspection/staging, and calibration-agent
   advisor surfaces are not dead code. Do not delete or bypass them
@@ -536,8 +560,8 @@ Mission:
   - stranded-capture watchdog
   - cuts-only correction
   - CamillaDSP `devices.volume_limit=0.0`
-  - `/start` resets to the flat outputd-safe baseline before measuring only
-    when the saved topology contract permits that flat graph
+  - `/start` loads a topology-preserving measurement baseline before
+    measuring: room/preference layers bypassed, speaker DSP preserved
   - failed/verify measurement restores `main_volume` to listening level
 
 Working rules:
@@ -575,9 +599,13 @@ The rationale and source links live in
 **Correction / preference composition note:** `/correction/` owns room
 measurement and room PEQ design; `/sound/` owns stock sound curves,
 user preference EQ, Bypass / Applied / Draft auditioning, and the
-combined CamillaDSP config ordering when both layers are present. Current
-operational truth for that composition lives in
-[docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md).
+combined CamillaDSP config ordering when both layers are present. Both
+surfaces re-emit through `jasper.sound.graph_carrier` so full-range,
+passive-crossover, and solo active-speaker topologies preserve their loaded
+speaker structure while changing only program-domain room/preference layers.
+Current operational truth for that composition lives in
+[docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md) and
+[docs/HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md).
 
 **Outstanding Phases 0-2.12 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
@@ -588,9 +616,11 @@ declaring v2 shippable.
 ## Goal
 
 A measurement-and-correction loop that runs from a phone at the
-listening position. Start at `http://jts.local/correction/`, read the
-plain-HTTP warning preflight, then tap through to
-`https://jts.local/correction/` for the secure browser-mic page.
+listening position. Start at `http://jts.local/correction/` (or the
+speaker's actual hostname, such as `http://jts3.local/correction/`),
+read the plain-HTTP warning preflight, then tap through the
+hostname-safe `/correction/proceed` redirect to the secure browser-mic
+page.
 Optionally pick a calibrated USB measurement mic, the speaker plays a
 sweep, the phone records it, the Pi designs a PEQ filter set,
 hot-reloads CamillaDSP, and the next song plays through the corrected
@@ -660,8 +690,11 @@ loses the YouTube hook.
   that CA for the configured `JASPER_HOSTNAME`, its wildcard, the
   historical `jts.local`, and `127.0.0.1`.
 - Port 80 serves `http://jts.local/correction/` as a static preflight
-  page and `http://jts.local/jts-root-ca.crt` with
-  `application/x-x509-ca-cert`.
+  page, `/correction/proceed[/room|/crossover|/bass]` as no-JS
+  `https://$host/...` redirects, and `http://jts.local/jts-root-ca.crt`
+  with `application/x-x509-ca-cert`. The preflight HTML is served
+  `Cache-Control: no-store` so a phone cannot keep an old hard-coded
+  proceed target after deploy.
 - Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
   `/assets/` statically. The measurement UI's canonical look links
   `/assets/app.css` + its ES module by absolute path; without an `/assets/`
@@ -708,11 +741,20 @@ coordinator code; we do the same here for the
 ```
 HTTP port 80:
 GET  /correction/            static preflight explaining the HTTPS warning;
-                             OK button links to https://<host>/correction/
+                             OK button links to /correction/proceed, or
+                             /correction/proceed/<subflow> for safe
+                             ?next=/correction/... targets
+GET  /correction/proceed     redirect to https://$host/correction/
+GET  /correction/proceed/room|crossover|bass
+                             redirect to the matching https://$host/correction/ subflow
 GET  /jts-root-ca.crt        download private root CA for iOS trust
 
 HTTPS port 443 after nginx strips /correction/:
-GET  /                       page render (stdlib HTML + inline AudioWorklet, no SPA)
+GET  /                       room page render (stdlib HTML + room JS module)
+GET  /room                   same room-correction page as /
+GET  /crossover              active-crossover mic measurement page
+GET  /crossover/status       active-speaker targets + measurement evidence
+GET  /bass                   bass/subwoofer tuning placeholder page
 GET  /healthz                liveness — "ok"
 GET  /status                 session + currently-loaded correction snapshot
                              ({state, peqs, autolevel, input_device,
@@ -744,6 +786,10 @@ POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
 POST /autolevel/lock         freeze main_volume at current ramp value
 POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
+POST /crossover/driver-capture body = WAV (audio/wav); analyze + record
+                             active-speaker per-driver acoustic evidence
+POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
+                             active-speaker summed-crossover evidence
 HTTPS fallback              non-/correction/ paths 308 back to HTTP
 ```
 
@@ -755,12 +801,15 @@ allows it.
 
 **Decision:** `http://jts.local/correction/` is the user-facing entry
 route. It serves a static preflight page on port 80, then the
-measurement flow switches to `https://jts.local/correction/` because
-browser microphone capture requires a secure context. The nginx
-port-80 landing page at `/usr/share/jasper-web/index.html` links to
-the preflight instead of directly to HTTPS. The 443 catch-all redirects
-non-correction paths back to HTTP — the one exception is `/assets/`, served
-statically so the measurement UI's CSS/JS aren't mixed-content-blocked; it
+measurement flow switches through `/correction/proceed` to
+`https://$host/correction/` because browser microphone capture requires
+a secure context. `$host` is important for non-default speakers such as
+`jts3.local`; the preflight must not hard-code `jts.local` or depend on
+client-side JavaScript for the hostname. The nginx port-80 landing page
+at `/usr/share/jasper-web/index.html` links to the preflight instead of
+directly to HTTPS. The 443 catch-all redirects non-correction paths back
+to HTTP — the one exception is `/assets/`, served statically so the
+measurement UI's CSS/JS aren't mixed-content-blocked; it
 does not proxy any extra wizard upstreams over HTTPS.
 
 **Why not `/room/` or `/measure/`?** User specified `/correction/`
@@ -949,6 +998,12 @@ mid-sweep would attenuate the sweep itself.
 
 ```
 jasper/
+├── active_speaker/
+│   ├── web_commissioning.py             secure crossover playback orchestration
+│   │                                    through active-speaker safety state
+│   └── web_measurement.py               browser WAV storage + acoustic evidence
+│                                        bridge into measurement state
+│
 ├── correction/
 │   ├── __init__.py
 │   ├── coordinator.py                   measurement_window() async CM
@@ -980,9 +1035,14 @@ jasper/
 │
 ├── web/
 │   ├── correction_report.py             read-only report payload helpers
+│   ├── correction_hub.py                room/crossover/bass tab chrome
+│   ├── correction_crossover_backend.py  active-speaker acoustic evidence bridge
+│   ├── correction_crossover_flow.py     /correction/crossover/ page + routes
+│   ├── correction_bass_flow.py          /correction/bass/ placeholder
 │   └── correction_setup.py              mirrors voice_setup.py shape
 │                                        ThreadingHTTPServer on 127.0.0.1:8770
-│                                        polling status, POST for upload+apply
+│                                        polling status, POST for upload+apply,
+│                                        and correction subflow dispatch
 │
 ├── voice_daemon.py                      MEASURE_PAUSE / MEASURE_RESUME
 │                                        UDS commands; gate WakeLoop +
@@ -993,6 +1053,7 @@ jasper/
 
 deploy/
 ├── nginx-jasper.conf                    443 server block for /correction/
+├── assets/correction/                   room + crossover static CSS/ES modules
 ├── jasper-correction-web.service        socket-activated worker, private umask
 ├── jasper-correction-web.socket         systemd socket on 127.0.0.1:8770
 └── install.sh                           private CA, state dirs, unit install
@@ -1089,12 +1150,13 @@ Concrete changes:
   → JSON-serializable curve (frequency, dB).
 - `jasper/correction/peq.py`: greedy peak-fit on 20-350 Hz residual
   vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB.
-- YAML emit (live apply path): `jasper/correction/session.py` calls
-  `jasper.sound.camilla_yaml.emit_sound_config(profile, room_peqs=...,
-  out_path=..., profile_id=...)`, which preserves the existing
-  `master_gain` mixer and places room PEQs before sound-curve /
-  preference-EQ filters in the per-channel filter chain. Writes to
-  `/var/lib/camilladsp/configs/correction_<ts>.yml`.
+- YAML emit (live apply path): `jasper/correction/session.py` asks
+  `jasper.sound.graph_carrier` to re-emit the currently loaded topology with
+  fresh room PEQs and the saved sound profile. For ordinary stereo this still
+  lands in `jasper.sound.camilla_yaml.emit_sound_config(...)`; for solo active
+  baselines it recomposes the active speaker graph pre-split so crossovers and
+  driver protection stay in place. Writes to
+  `/var/lib/camilladsp/configs/correction_<session_id>_<ts>.yml`.
 - Extend `jasper/camilla.py` `CamillaController` with:
   - `set_config_path(path: str) -> bool` — calls
     `c.config.set_file_path(path)` then `c.general.reload()`.
@@ -1327,16 +1389,16 @@ not before this doc lands.
    directory. The currently-loaded path is read via `CamillaController.
    get_config_file_path()` and surfaced to the UI banner via
    `parse_current_correction()`.
-7. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1; active
-   speaker safety tightened 2026-06-18):**
-   ordinary full-range stereo uses
-   `set_config_file_path('/etc/camilladsp/outputd-cutover.yml')` +
-   `reload()` on current main. At the start of measurement this keeps
-   sweeps on the raw room, not the corrected pipeline. The reset button
-   now asks `jasper.correction.runtime_safety` for a topology-safe target:
-   flat for legal full-range layouts, all-muted active startup when a saved
-   roleful/protected topology has one, or a clear failure when no safe graph
-   exists.
+7. **What does "Reset correction" do?** **Resolved (Phase 1+2.1; active
+   speaker safety tightened 2026-06-18; topology-preserving reset/apply
+   shipped 2026-06-24):**
+   if a measurement is in progress, reset restores the graph that was active
+   before `/start`. After a correction has been applied, reset means "remove
+   Layer B": re-emit the current graph through `jasper.sound.graph_carrier`
+   with `room_peqs=[]` while preserving topology-owned speaker DSP and the
+   current preference profile. If graph-carrier re-emit is unavailable, the
+   fallback target still comes from `jasper.correction.runtime_safety` and
+   must be legal for the saved topology.
 
 ## Risk register
 
@@ -1411,10 +1473,10 @@ These items can only be verified on real hardware. Deploy with
       in another shell).
 - [ ] **Audibility check**: play a familiar bass-heavy track
       before/after Apply — modal peak should audibly tighten.
-- [ ] Tap **Reset to flat** on a normal full-range stereo topology →
-      CamillaDSP rolls back to outputd-cutover.yml cleanly. On saved
-      active/protected topology, verify the server refuses flat reset or
-      selects the staged all-muted active startup graph.
+- [ ] Tap **Reset correction** on a normal full-range stereo topology →
+      CamillaDSP removes room PEQs cleanly while preserving the current sound
+      profile. On saved active/protected topology, verify reset keeps the
+      active speaker baseline and only clears room PEQs.
 - [ ] AEC bridge interaction (if enabled): no permanent drift after
       a measurement; bridge re-converges in ~200 ms.
 
@@ -1797,33 +1859,20 @@ Internal:
 
 ---
 
-Last verified: 2026-06-15 (bonded-follower delegation rechecked against
-`jasper/web/correction_setup.py`: follower pages point to the leader and
-mutating correction/balance/sync routes fail with HTTP 409. Earlier
-2026-06-13: pair time-of-arrival calibration now lives
-under the correction umbrella: sync_measure marker/correlation core,
-gainless CamillaDSP Delay emitter, and /sync route sharing the
-measurement_window with /correction and /balance. Earlier 2026-06-12:
-the pair-balance wizard /balance/* now rides this service's process and TLS origin —
-jasper/web/balance_flow.py, dispatched from correction_setup's
-Handler. It opens the same measurement_window, so _reserve_start_slot
-consults balance_flow.active_phase() and /balance/play is gated behind
-the correction session being idle; design + flow live in
-HANDOFF-multiroom.md, not here. Earlier 2026-06-01: MEASURE_PAUSE now
-pauses outputd content loudness metering instead of the retired TTS
-RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
-still apply.)
-
-Last verified: 2026-06-18 (topology-safe correction reset/start behavior
-rechecked against `jasper/correction/runtime_safety.py`,
-`jasper/web/correction_setup.py`, and
-`jasper.active_speaker.runtime_contract`; prior 2026-06-17 pass covered
-auto-level controller ownership rechecked against
-`jasper/correction/autolevel.py` and `jasper/correction/session.py`; stranded
-capture watchdog / reset-busy guard ownership rechecked against
-`jasper/correction/state_guard.py` and `jasper/correction/session.py`;
-status/current-config and bundle-payload ownership rechecked against
-`jasper/correction/status.py`, `jasper/correction/artifacts.py`, and
-`jasper/correction/session.py`. Task C decomposition status and pickup
-prompt refreshed after the status serializer extraction. Behavior, routes,
-and safety invariants remain unchanged.)
+Last verified: 2026-06-24 (topology-preserving correction start/apply/reset
+behavior rechecked against `jasper/web/correction_setup.py`,
+`jasper/correction/session.py`, `jasper/correction/runtime_safety.py`,
+`jasper.sound.graph_carrier`, and `jasper.active_speaker.runtime_contract`;
+`/correction/` hub routing, HTTP preflight `?next=/correction/...` +
+`/correction/proceed`, HTTPS asset serving, and correction-native
+active-crossover playback/capture routing rechecked against
+`jasper/web/correction_setup.py`,
+`jasper/web/correction_crossover_flow.py`,
+`jasper/web/correction_crossover_backend.py`,
+`jasper/active_speaker/web_commissioning.py`,
+`jasper/active_speaker/web_measurement.py`,
+`deploy/correction-preflight.html`, `deploy/nginx-jasper.conf`, and
+`deploy/lib/install/web-assets.sh`; prior 2026-06-18 pass covered
+topology-safe correction reset/start behavior; prior 2026-06-17 pass covered
+auto-level controller ownership, state guards, and status/bundle payload
+ownership; prior 2026-06-15 pass covered bonded-follower delegation.)

@@ -29,6 +29,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     FilterSpec,
     PeqFilter,
+    total_positive_boost_db,
 )
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
@@ -36,6 +37,7 @@ from jasper.camilla_emit import (
     emit_gain_filter,
     emit_linkwitz_riley,
     emit_mixer,
+    emit_peaking_biquad,
     fmt,
     mono_sum_sources,
 )
@@ -284,6 +286,10 @@ def _driver_baseline_gain_name(role: str) -> str:
 
 def _driver_baseline_limiter_name(role: str) -> str:
     return f"as_{_name_token(role)}_baseline_limiter"
+
+
+def _room_peq_name(index: int) -> str:
+    return f"room_peq_{index}"
 
 
 def _protective_tweeter_hp_name(role: str) -> str:
@@ -679,19 +685,36 @@ def _emit_baseline_filter_definitions(
     baseline_headroom_db: float,
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
+    room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
 ) -> str:
     lines: list[str] = []
-    # Program-domain headroom for the pre-split preference EQ (Layer C). This
-    # gain is the active graph's single place for explicit common attenuation:
-    # baseline headroom, plus the household's manual headroom / loudness-match
+    room_peqs = tuple(room_peqs)
+    for i, peq in enumerate(room_peqs, start=1):
+        lines.extend(
+            emit_peaking_biquad(
+                _room_peq_name(i),
+                freq=peq.freq,
+                q=peq.q,
+                gain=peq.gain,
+            )
+        )
+    # Program-domain headroom for the pre-split room PEQ (Layer B) and
+    # preference EQ (Layer C). This gain is the active graph's single place for
+    # explicit common attenuation: baseline headroom, room-correction boost
+    # headroom, plus the household's manual headroom / loudness-match
     # output_trim_db when a profile has EQ. Preference boosts themselves ride at
-    # unity, matching the stereo /sound policy: boosts boost. Driver safety comes
-    # from placement (pre-split, upstream of crossover/limiters/tweeter HP) and
-    # the 0 dB volume ceiling, not from an automatic boost-derived preamp.
+    # unity, matching the stereo /sound policy: boosts boost. Room-correction
+    # boosts are different: correction can raise a known room band above unity,
+    # so its worst-case positive boost is folded into this headroom gain rather
+    # than emitted as a separate room_headroom filter.
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
-    total_headroom_db = baseline_headroom_db + trim_db
+    total_headroom_db = (
+        baseline_headroom_db
+        + total_positive_boost_db(room_peqs)
+        + trim_db
+    )
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(
@@ -743,13 +766,25 @@ def _emit_pipeline(preset: ActiveSpeakerPreset) -> str:
 def _emit_baseline_pipeline(
     preset: ActiveSpeakerPreset,
     *,
+    room_peq_names: Sequence[str] = (),
     preference_filter_names: Sequence[str] = (),
 ) -> str:
-    lines = [
+    lines: list[str] = []
+    # Room PEQs (Layer B) run on the stereo program bus before the common
+    # active_baseline_headroom gain. The gain absorbs their positive-boost
+    # headroom so the active path stays one-preamp-shaped.
+    if room_peq_names:
+        names = ", ".join(room_peq_names)
+        lines.extend([
+            "  - type: Filter",
+            "    channels: [0, 1]",
+            f"    names: [{names}]",
+        ])
+    lines.extend([
         "  - type: Filter",
         "    channels: [0, 1]",
         "    names: [active_baseline_headroom]",
-    ]
+    ])
     # Preference EQ (Layer C) is a PROGRAM-domain transform: it rides the
     # stereo bus on channels [0, 1] strictly BEFORE the split mixer, so it is
     # upstream of every per-driver crossover, limiter, and tweeter high-pass.
@@ -1263,6 +1298,7 @@ def emit_active_speaker_baseline_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
+    room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
@@ -1274,6 +1310,12 @@ def emit_active_speaker_baseline_config(
     the JTS 0 dB volume ceiling, keeps per-driver limiters, and refuses
     positive per-driver correction gain.
     Callers own the acceptance evidence and explicit CamillaDSP apply step.
+
+    ``room_peqs`` (Layer B) is the preserved room-correction PEQ set. Each
+    filter is emitted on program channels [0, 1] before the split mixer, and any
+    positive room-correction boost is folded into ``active_baseline_headroom``.
+    That keeps the active path one-headroom-shaped while preserving the stereo
+    correction safety policy.
 
     ``preference_filters`` (Layer C) is the program-domain preference EQ band
     list — the same ``FilterSpec`` objects ``build_sound_filters`` produces for
@@ -1350,6 +1392,7 @@ def emit_active_speaker_baseline_config(
     active_preference_filters = tuple(
         spec for spec in preference_filters if spec.active()
     )
+    room_peqs = tuple(room_peqs)
 
     output_count = _output_count(preset)
     filter_yaml = _emit_baseline_filter_definitions(
@@ -1357,12 +1400,14 @@ def emit_active_speaker_baseline_config(
         baseline_headroom_db=baseline_headroom_db,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
+        room_peqs=room_peqs,
         preference_filters=active_preference_filters,
         output_trim_db=output_trim_db,
     )
     mixer_yaml = _emit_split_mixer(preset)
     pipeline_yaml = _emit_baseline_pipeline(
         preset,
+        room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
         preference_filter_names=[spec.name for spec in active_preference_filters],
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]

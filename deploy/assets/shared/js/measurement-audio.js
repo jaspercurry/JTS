@@ -9,6 +9,57 @@
 
 export const DEFAULT_SAMPLE_RATE = 48000;
 
+export class MicCaptureUnsupportedError extends Error {
+  constructor(support) {
+    super(support && support.message ? support.message : 'Microphone capture is unavailable.');
+    this.name = 'MicCaptureUnsupportedError';
+    this.reason = support && support.reason || 'unsupported';
+    this.support = support || micCaptureSupport();
+  }
+}
+
+export function micCaptureSupport(env = globalThis) {
+  const win = env && env.window ? env.window : env;
+  const nav = env && env.navigator ? env.navigator :
+    (typeof navigator === 'undefined' ? null : navigator);
+  if (win && win.isSecureContext === false) {
+    return {
+      ok: false,
+      reason: 'non_secure_context',
+      message: 'Microphone capture needs HTTPS. Open this measurement page through the secure correction link, then try again.',
+    };
+  }
+  if (!nav || !nav.mediaDevices || typeof nav.mediaDevices.getUserMedia !== 'function') {
+    return {
+      ok: false,
+      reason: 'media_devices_unavailable',
+      message: 'This browser does not expose microphone capture here. Use Safari or Chrome on the secure correction page.',
+    };
+  }
+  const AudioContextCtor = win && (win.AudioContext || win.webkitAudioContext);
+  if (typeof AudioContextCtor !== 'function') {
+    return {
+      ok: false,
+      reason: 'audio_context_unavailable',
+      message: 'This browser cannot open the audio engine needed for measurement.',
+    };
+  }
+  if (win && typeof win.AudioWorkletNode !== 'function') {
+    return {
+      ok: false,
+      reason: 'audio_worklet_unavailable',
+      message: 'This browser does not support the low-latency audio capture path JTS uses for measurements.',
+    };
+  }
+  return {ok: true, reason: 'supported', message: 'Microphone capture is available.'};
+}
+
+export function assertMicCaptureSupported(env = globalThis) {
+  const support = micCaptureSupport(env);
+  if (!support.ok) throw new MicCaptureUnsupportedError(support);
+  return support;
+}
+
 export function monoMicConstraints(options = {}) {
   const sampleRate = options.sampleRate || DEFAULT_SAMPLE_RATE;
   const deviceId = options.deviceId || '';
@@ -24,6 +75,7 @@ export function monoMicConstraints(options = {}) {
 }
 
 export async function openMonoMic(options = {}) {
+  assertMicCaptureSupported();
   const sampleRate = options.sampleRate || DEFAULT_SAMPLE_RATE;
   const stream = await navigator.mediaDevices.getUserMedia(
     monoMicConstraints({

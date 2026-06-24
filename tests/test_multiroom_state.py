@@ -83,6 +83,7 @@ def _cfg(tmp_path, body):
 
 _EXPECTED_KEYS = {
     "trim_db", "peer_addr", "peer_name", "roster",
+    "mains_highpass_enabled", "subwoofer_present",
     "enabled", "role", "channel", "bond_id",
     "leader_addr", "buffer_ms", "codec", "error",
 }
@@ -129,9 +130,9 @@ def test_valid_enabled_full_dict_includes_codec(tmp_path):
     assert state["error"] is None
 
 
-def test_sub_member_surfaces_crossover_hz(tmp_path):
-    """A "sub" member's snapshot carries crossover_hz (fresh-read from the
-    SSOT); a non-sub member's snapshot omits it (knob not meaningful)."""
+def test_sub_bond_surfaces_crossover_hz(tmp_path):
+    """A sub bond's snapshot carries crossover_hz (fresh-read from the SSOT);
+    a plain non-sub bond omits it."""
     sub_env = (
         "JASPER_GROUPING=on\n"
         "JASPER_GROUPING_ROLE=follower\n"
@@ -145,6 +146,19 @@ def test_sub_member_surfaces_crossover_hz(tmp_path):
     )
     assert state["channel"] == "sub"
     assert state["crossover_hz"] == 110.0
+
+    main_with_sub = read_grouping_state(
+        _write_env(
+            tmp_path,
+            _follower_env()
+            + "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
+            + "JASPER_GROUPING_CROSSOVER_HZ=95\n",
+        ),
+        unit_state_reader=_stub,
+    )
+    assert main_with_sub["channel"] == "right"
+    assert main_with_sub["subwoofer_present"] is True
+    assert main_with_sub["crossover_hz"] == 95.0
 
     non_sub = read_grouping_state(
         _write_env(tmp_path, _follower_env()), unit_state_reader=_stub
@@ -161,6 +175,7 @@ def test_leader_roster_surfaces_as_list(tmp_path):
         "JASPER_GROUPING_ROLE=leader\n"
         "JASPER_GROUPING_CHANNEL=left\n"
         "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=90\n"
         "JASPER_GROUPING_ROSTER=192.168.1.7|Right|right,192.168.1.8|Sub|sub\n"
     )
     state = read_grouping_state(
@@ -171,10 +186,14 @@ def test_leader_roster_surfaces_as_list(tmp_path):
         {"addr": "192.168.1.7", "name": "Right", "channel": "right"},
         {"addr": "192.168.1.8", "name": "Sub", "channel": "sub"},
     ]
+    assert state["subwoofer_present"] is True
+    assert state["mains_highpass_enabled"] is True
+    assert state["crossover_hz"] == 90.0
 
     # Solo / disabled config: empty roster list.
     solo = read_grouping_state(str(tmp_path / "missing.env"))
     assert solo["roster"] == []
+    assert solo["subwoofer_present"] is False
 
 
 def test_valid_enabled_codec_defaults_to_flac(tmp_path):
@@ -304,6 +323,59 @@ def test_runtime_leader_ok_when_both_active_and_tapping(tmp_path):
     assert rt["health"] == "ok"
     assert rt["units"][SNAPSERVER] == {"expected": "start", "actual": "active"}
     assert rt["units"][SNAPCLIENT] == {"expected": "start", "actual": "active"}
+
+
+def test_runtime_pair_lock_is_unknown_when_clock_lock_unobservable(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+        leader_tap_path="/run/jasper-snapserver/snapfifo",
+        stream_clients=[{
+            "name": "jts", "connected": True, "stream_id": "jts",
+            "muted": False, "group_muted": False, "volume_percent": 100,
+            "latency_ms": 0,
+        }],
+        self_name="jts",
+        want_stream="jts",
+        local_outputd_status={"dac_content": {"enabled": True, "serving_fifo": True}},
+    )
+    assert rt["health"] == "ok"
+    assert rt["pair_lock"]["status"] == "unknown"
+    assert rt["pair_lock"]["locked_and_healthy"] is False
+    assert rt["pair_lock"]["signals"]["local_fifo"]["bytes_flowing"] is True
+    clock = rt["pair_lock"]["signals"]["follower_clock_lock"]
+    assert clock["locked"] is None
+    assert "does not expose" in clock["detail"]
+
+
+def test_runtime_pair_lock_degrades_when_fifo_not_serving(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _follower_env()),
+        {SNAPSERVER: "inactive", SNAPCLIENT: "active"},
+        local_outputd_status={"dac_content": {"enabled": True, "serving_fifo": False}},
+    )
+    assert rt["health"] == "ok"
+    assert rt["pair_lock"]["status"] == "degraded"
+    assert "not serving FIFO bytes" in rt["pair_lock"]["detail"]
+
+
+def test_runtime_pair_lock_distinguishes_group_mute_from_clock_lock(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+        leader_tap_path="/run/jasper-snapserver/snapfifo",
+        stream_clients=[{
+            "name": "jts", "connected": True, "stream_id": "jts",
+            "muted": False, "group_muted": True, "volume_percent": 100,
+            "latency_ms": 0,
+        }],
+        self_name="jts",
+        want_stream="jts",
+        local_outputd_status={"dac_content": {"enabled": True, "serving_fifo": True}},
+    )
+    assert rt["health"] == "degraded"
+    assert rt["pair_lock"]["status"] == "degraded"
+    assert rt["pair_lock"]["signals"]["snapcast_clients"]["muted_or_zero"] == 1
 
 
 def test_runtime_leader_degraded_when_units_up_but_no_producer(tmp_path):
@@ -462,6 +534,34 @@ def test_leader_tap_set_is_ok(tmp_path):
     assert state["runtime"]["health"] == "ok"
     assert "leader streaming" in state["runtime"]["detail"]
     assert tapped == [True]  # leader DOES consult the injected feed reader
+
+
+def test_read_grouping_state_threads_local_outputd_status_to_pair_lock(tmp_path):
+    state = read_grouping_state(
+        _write_env(tmp_path, _follower_env()),
+        unit_state_reader=_stub,
+        local_outputd_reader=lambda: {
+            "dac_content": {"enabled": True, "serving_fifo": True},
+        },
+    )
+    fifo = state["runtime"]["pair_lock"]["signals"]["local_fifo"]
+    assert fifo["available"] is True
+    assert fifo["bytes_flowing"] is True
+    assert "not a clock-lock" in fifo["meaning"]
+
+
+def test_read_grouping_state_outputd_status_reader_is_failsoft(tmp_path):
+    def boom():
+        raise RuntimeError("outputd socket exploded")
+
+    state = read_grouping_state(
+        _write_env(tmp_path, _follower_env()),
+        unit_state_reader=_stub,
+        local_outputd_reader=boom,
+    )
+    fifo = state["runtime"]["pair_lock"]["signals"]["local_fifo"]
+    assert fifo["available"] is False
+    assert state["runtime"]["health"] == "ok"
 
 
 def test_leader_tap_empty_is_degraded(tmp_path):

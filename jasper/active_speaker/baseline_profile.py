@@ -25,6 +25,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     FilterSpec,
+    PeqFilter,
 )
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
@@ -843,13 +844,15 @@ def recompose_baseline_yaml(
     *,
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
+    room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     playback_device: str | None = None,
     out_path: str | Path | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the active-speaker baseline YAML for the current accepted
-    evidence, with optional program-domain preference EQ inserted pre-split.
+    evidence, with optional program-domain room PEQ / preference EQ inserted
+    pre-split.
 
     This is the composition seam the graph carrier
     (:mod:`jasper.sound.graph_carrier`) uses to apply preference EQ on top of an
@@ -859,10 +862,15 @@ def recompose_baseline_yaml(
     (``resolve_active_playback_device`` → ``compile_preset_from_crossover_preview``
     → ``_derive_corrections`` → ``emit_active_speaker_baseline_config``) — rather
     than parsing the running config (the explicit anti-pattern). Only the
-    ``preference_filters`` (and the explicit ``output_trim_db`` attenuation)
-    differ from the durable baseline; the crossover, per-driver limiters,
-    tweeter high-pass, and 0 dB ceiling are identical, so the emitted YAML
-    re-proves as ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
+    ``room_peqs``, ``preference_filters`` (and the explicit ``output_trim_db``
+    attenuation) differ from the durable baseline; the crossover, per-driver
+    limiters, tweeter high-pass, and 0 dB ceiling are identical, so the emitted
+    YAML re-proves as ``GRAPH_APPROVED_ACTIVE_RUNTIME``.
+
+    ``room_peqs`` are preserved room-correction filters. They run pre-split on
+    channels [0, 1], and their positive-boost headroom is folded into
+    ``active_baseline_headroom`` rather than emitted as a second program-domain
+    gain.
 
     ``output_trim_db`` is the household's manual headroom + loudness-match
     attenuation; the emitter folds it into ``active_baseline_headroom`` so the
@@ -934,6 +942,7 @@ def recompose_baseline_yaml(
         preset,
         playback_device=resolved_device,
         corrections=corrections,
+        room_peqs=room_peqs,
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         out_path=out_path,

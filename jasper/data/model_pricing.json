@@ -1,7 +1,7 @@
 {
   "as_of": "2026-06-20",
   "source": "provider public pricing pages (OpenAI, Google AI Studio, xAI)",
-  "_comment": "Bundled DEFAULT voice and research model rates, USD per 1M tokens (flat_per_hour_usd is USD/hour for time-billed providers). Keyed by exact model ID. Edit + bump as_of when rates change, or refresh via the /voice pricing prompt flow. Omitted buckets default to 0 (Gemini Live can't split text/cached; Grok is flat-rate only). User overrides live in /var/lib/jasper/pricing.json and overlay these per model.",
+  "_comment": "Bundled DEFAULT voice and research model rates, USD per 1M tokens (flat_per_hour_usd is USD/hour for billable realtime activity, not idle socket uptime). Keyed by exact model ID. Edit + bump as_of when rates change, or refresh via the /voice pricing prompt flow. Omitted buckets default to 0 (Gemini Live can't split text/cached; Grok is flat-rate only). User overrides live in /var/lib/jasper/pricing.json and overlay these per model.",
   "models": {
     "gpt-realtime-2": {
       "audio_input_per_million_usd": 32.0,

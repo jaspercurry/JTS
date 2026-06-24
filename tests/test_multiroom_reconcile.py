@@ -21,7 +21,12 @@ from __future__ import annotations
 
 import os
 
-from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
+from jasper.multiroom.config import (
+    DEFAULT_BUFFER_MS,
+    DEFAULT_CODEC,
+    BondMember,
+    GroupingConfig,
+)
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
@@ -503,14 +508,18 @@ def test_assemble_args_active_endpoint_writes_loopback_not_fifo():
 def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     """An ACTIVE follower disables outputd's dac_content ChannelPick — camilla
     owns the channel-pick + split, so outputd runs its normal active sink. The
-    lane env is cleared exactly like solo; a DUMB member still arms it."""
+    round-trip lane env is cleared; TTS also stays off outputd because active
+    voice rides fan-in upstream of the crossover. A DUMB member still arms the
+    FIFO lane."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        OUTPUTD_TTS_SOCKET_ENV,
         outputd_grouping_env,
     )
 
     active = outputd_grouping_env(_follower(), active_endpoint=True)
     assert active[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""  # cleared (no dac_content)
+    assert active[OUTPUTD_TTS_SOCKET_ENV] == ""
     dumb = outputd_grouping_env(_follower(), active_endpoint=False)
     assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
 
@@ -535,10 +544,64 @@ def test_outputd_grouping_env_emits_sub_corner_only_for_sub():
         assert OUTPUTD_DAC_CONTENT_SUB_HZ_ENV not in env
 
 
+def test_outputd_grouping_env_highpasses_mains_when_bond_has_sub():
+    import dataclasses
+
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
+        outputd_grouping_env,
+    )
+
+    leader = dataclasses.replace(
+        _leader(channel="left"),
+        crossover_hz=100.0,
+        roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
+    )
+    assert outputd_grouping_env(leader)[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
+
+    follower = dataclasses.replace(
+        _follower(channel="right"),
+        crossover_hz=100.0,
+        subwoofer_present=True,
+    )
+    assert outputd_grouping_env(follower)[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == "100.0"
+
+
+def test_outputd_grouping_env_clears_main_highpass_when_not_applicable():
+    import dataclasses
+
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV,
+        outputd_grouping_env,
+    )
+
+    rostered = dataclasses.replace(
+        _leader(channel="left"),
+        crossover_hz=90.0,
+        roster=(BondMember(addr="192.168.1.8", name="Sub", channel="sub"),),
+    )
+    assert outputd_grouping_env(
+        dataclasses.replace(rostered, mains_highpass_enabled=False)
+    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert outputd_grouping_env(_leader(channel="left"))[
+        OUTPUTD_DAC_CONTENT_HP_HZ_ENV
+    ] == ""
+    assert outputd_grouping_env(
+        dataclasses.replace(_follower(channel="sub"), subwoofer_present=True)
+    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert outputd_grouping_env(
+        dataclasses.replace(_follower(channel="right"), subwoofer_present=True),
+        active_endpoint=True,
+    )[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+    assert outputd_grouping_env(_disabled())[OUTPUTD_DAC_CONTENT_HP_HZ_ENV] == ""
+
+
 def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
     """A sub plays only low-passed bass and NEVER voice; outputd mixes TTS AFTER
     the low-pass, so a sub must NOT arm the outputd TTS lane (else full-range
-    speech would reach the subwoofer). Every non-sub member keeps it armed."""
+    speech would reach the subwoofer). Every non-sub PASSIVE member keeps it
+    armed; active endpoints keep it cleared regardless of channel because active
+    voice rides fan-in upstream of the crossover."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET_ENV,
@@ -547,10 +610,18 @@ def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
 
     sub = outputd_grouping_env(_follower(channel="sub"))
     assert sub[OUTPUTD_TTS_SOCKET_ENV] == ""  # cleared = unset to outputd
+    active_sub = outputd_grouping_env(
+        _follower(channel="sub"), active_endpoint=True,
+    )
+    assert active_sub[OUTPUTD_TTS_SOCKET_ENV] == ""
 
     for ch in ("left", "right", "stereo", "mono"):
         env = outputd_grouping_env(_follower(channel=ch))
         assert env[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
+        active_env = outputd_grouping_env(
+            _follower(channel=ch), active_endpoint=True,
+        )
+        assert active_env[OUTPUTD_TTS_SOCKET_ENV] == ""
 
 
 def test_outputd_grouping_env_no_sub_corner_when_not_active_member():
@@ -1255,10 +1326,99 @@ def _patch_active_leader(monkeypatch, order):
         reconcile_mod, "_disable_crossover_unit",
         lambda: order.append("disable_camilla2") or True,
     )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_run_audio_hardware_reconcile",
+        lambda *, reason: order.append(f"audio_hardware:{reason}") or True,
+    )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_ensure_unit_active",
+        lambda unit, *, reason: order.append(f"ensure:{unit}:{reason}") or True,
+    )
     # Default: snapserver is up (the bake gate passes). The snapserver-down
-    # incident test overrides this.
-    monkeypatch.setattr(reconcile_mod, "_unit_is_active", lambda unit: True)
+    # incident test overrides this. camilla#2 defaults to inactive so the arm
+    # path exercises the new positive handle-release barrier.
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_unit_is_active",
+        lambda unit: unit == reconcile_mod.SNAPSERVER_UNIT,
+    )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        lambda: order.append("probe") or reconcile_mod._PcmHandleProbeResult(
+            "released",
+            "status_closed",
+            detail="closed",
+            attempts=1,
+            timeout_sec=0.8,
+        ),
+    )
     return alc_mod
+
+
+def test_active_content_pcm_probe_reports_released_on_closed_status():
+    """The release barrier keys on the per-substream procfs status: exact
+    `closed` means hw:Loopback,0,5 has no opener and camilla#2 may arm."""
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = "closed\n"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Proc()
+
+    result = reconcile_mod._wait_for_active_content_pcm_release(
+        status_path="/tmp/status",
+        run=fake_run,
+        timeout_sec=0,
+    )
+
+    assert result.released
+    assert result.reason == "status_closed"
+    assert result.attempts == 1
+    assert calls[0][0] == ["cat", "/tmp/status"]
+
+
+def test_active_content_pcm_probe_times_out_when_status_stays_open():
+    """Any non-closed ALSA substream status is treated as an open handle.
+    Timeout returns busy so the active-leader arm can fail closed."""
+
+    class Proc:
+        returncode = 0
+        stdout = "state: RUNNING\nowner_pid: 1234\n"
+        stderr = ""
+
+    result = reconcile_mod._wait_for_active_content_pcm_release(
+        status_path="/tmp/status",
+        run=lambda *a, **k: Proc(),
+        timeout_sec=0,
+    )
+
+    assert result.busy
+    assert result.reason == "timeout"
+    assert result.detail == "state: RUNNING"
+
+
+def test_active_content_pcm_probe_fail_soft_when_probe_tool_missing():
+    """If the probe tool is absent, the barrier reports unknown instead of
+    crashing the reconciler; main() logs a warning and preserves compatibility."""
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("cat")
+
+    result = reconcile_mod._wait_for_active_content_pcm_release(
+        status_path="/tmp/status",
+        run=fake_run,
+        timeout_sec=0,
+    )
+
+    assert result.unknown
+    assert result.reason == "probe_tool_missing"
 
 
 def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatch):
@@ -1274,11 +1434,24 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     rc = main(["--reason", "test"])
 
     assert rc == 0
-    # Gate before units; bake + re-seed + arm AFTER the unit plan; seed precedes
-    # the arm (never-flat: a cold camilla#2 start must load the re-proven graph).
+    # Gate before units; bake + output-hardware reconverge + re-seed + arm AFTER
+    # the unit plan; seed precedes the arm (never-flat: a cold camilla#2 start
+    # must load the re-proven graph).
     assert order.index("precheck") < order.index("apply")
-    assert order.index("apply") < order.index("bake") < order.index("seed")
-    assert order.index("seed") < order.index("arm_camilla2")
+    assert order.index("apply") < order.index("disable_camilla2")
+    assert order.index("disable_camilla2") < order.index(
+        "ensure:jasper-camilla.service:active-leader-bake"
+    )
+    assert order.index(
+        "ensure:jasper-camilla.service:active-leader-bake"
+    ) < order.index("bake")
+    assert order.index("bake") < order.index("audio_hardware:grouping-active-leader-bake")
+    assert order.index("audio_hardware:grouping-active-leader-bake") < order.index("seed")
+    assert order.index("seed") < order.index("probe") < order.index("arm_camilla2")
+    # The active leader defers outputd restart to the audio-hardware reconciler,
+    # because it must inspect the freshly loaded roleful graph before choosing
+    # the active-content lane.
+    assert "outputd_restart" not in order
     assert "stream_binding" in order  # the leader hosts the stream
     # snapclient targets the round-trip loopback (the leader is its own receiver),
     # not the dumb FIFO; the leader still runs snapserver.
@@ -1289,6 +1462,33 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     # endpoint status persisted as an active LEADER.
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"active_leader": true' in status
+
+
+def test_main_active_leader_already_armed_skips_release_probe(
+    tmp_path, monkeypatch,
+):
+    """Idempotency: once camilla#2 is active, it legitimately owns substream 5.
+    A steady-state reconcile must not probe that handle as if it were camilla#1
+    still lagging closed."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_unit_is_active",
+        lambda unit: unit in {
+            reconcile_mod.SNAPSERVER_UNIT,
+            reconcile_mod.CROSSOVER_UNIT,
+        },
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert "probe" not in order
+    assert "arm_camilla2" not in order
+    assert "stream_binding" in order
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
 
 
 def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkeypatch):
@@ -1431,6 +1631,147 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
     assert "arm_camilla2" not in order  # ...but camilla#2 was NOT armed (no DAC fight)
 
 
+def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
+    tmp_path, monkeypatch,
+):
+    """After the bake, outputd must re-converge to the active-content lane before
+    camilla#2 can safely own the round-trip loopback. If that handoff fails,
+    leave camilla#2 unarmed."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_run_audio_hardware_reconcile",
+        lambda *, reason: order.append("audio_hardware_failed") or False,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "bake" in order
+    assert "audio_hardware_failed" in order
+    assert "seed" not in order
+    assert "probe" not in order
+    assert "arm_camilla2" not in order
+
+
+def test_main_active_leader_skips_bake_when_camilla1_cannot_restart(
+    tmp_path, monkeypatch,
+):
+    """If a prior failed active-leader attempt left camilla#2 holding the active
+    lane, reconcile first releases camilla#2 and reset-starts camilla#1. If
+    camilla#1 still cannot come back, do not bake or re-arm camilla#2."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_ensure_unit_active",
+        lambda unit, *, reason: order.append("camilla1_start_failed") or False,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "disable_camilla2" in order
+    assert "camilla1_start_failed" in order
+    assert "bake" not in order
+    assert "arm_camilla2" not in order
+
+
+def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
+    tmp_path, monkeypatch,
+):
+    """jts3 EBUSY regression (2026-06-24): a successful camilla#1 bake is not
+    proof that snd-aloop substream 5 is closed. If the positive handle probe
+    times out busy, camilla#2 is NOT armed; camilla#1 is restored to solo-active
+    so the box keeps playing locally and a later reconcile can retry."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        lambda: order.append("probe_busy")
+        or reconcile_mod._PcmHandleProbeResult(
+            "busy",
+            "timeout",
+            detail="state: RUNNING",
+            attempts=17,
+            timeout_sec=0.8,
+        ),
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert order.index("seed") < order.index("probe_busy")
+    assert "arm_camilla2" not in order
+    assert "leader_restore" in order
+    assert "stream_binding" not in order
+    # The first part of reconcile still writes the active endpoint snapclient
+    # args; fail-closed here is the late camilla handoff, not a permanent unbond.
+    body = target.read_text()
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "active_content_pcm_busy"' in status
+    assert '"active_leader": false' in status
+
+
+def test_main_active_leader_fails_closed_when_probe_tool_missing(
+    tmp_path, monkeypatch,
+):
+    """Hardening (P1 review #3): `unknown` (probe tool missing) is NOT positive
+    proof of release, so the reconciler fails CLOSED — restores solo-active and
+    leaves camilla#2 un-armed, exactly like the busy path — rather than arming
+    into a possible DAC fight. `cat` is universal on a real Pi, so this branch
+    is theoretical-only; the point is that 'can't prove it' never arms."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        lambda: order.append("probe_missing")
+        or reconcile_mod._PcmHandleProbeResult(
+            "unknown",
+            "probe_tool_missing",
+            detail="cat",
+            attempts=1,
+            timeout_sec=0.8,
+        ),
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert order.index("seed") < order.index("probe_missing")
+    assert "arm_camilla2" not in order
+    assert "leader_restore" in order
+    assert "stream_binding" not in order
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "active_content_pcm_unverified"' in status
+    assert '"active_leader": false' in status
+    # Still wrote the active endpoint snapclient args — fail-closed here is the
+    # late camilla handoff, not a permanent unbond.
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
+
+
 def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
     tmp_path, monkeypatch,
 ):
@@ -1447,6 +1788,7 @@ def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
     rc = main(["--reason", "test"])
 
     assert rc == 1
+    assert "disable_camilla2" in order
     assert "bake" not in order  # never baked onto a reader-less pipe
     assert "arm_camilla2" not in order  # never armed camilla#2 (no DAC fight)
 
@@ -1503,3 +1845,62 @@ def test_main_solo_does_not_provision(tmp_path, monkeypatch):
     main(["--reason", "test"])
 
     assert "provision" not in order
+
+
+# ---------- _restart_unit: reset-failed before a deliberate restart ----------
+# Regression for the 2026-06-24 jts.local follower reboot: six /grouping/set
+# POSTs from the leader in 44 s each restarted jasper-outputd; with no
+# reset-failed the 6th tripped outputd's StartLimitBurst and systemd escalated
+# to StartLimitAction=reboot, rebooting the Pi from deliberate config churn.
+
+
+def test_restart_unit_resets_failed_before_restart(monkeypatch):
+    """A reconciler restart is a DELIBERATE config-apply: it MUST run
+    `systemctl reset-failed <unit>` FIRST so a rapid grouping-config burst
+    cannot spend the target's StartLimitBurst and escalate to a Pi reboot."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-outputd.service") is True
+    # reset-failed strictly precedes restart, both targeting the same unit.
+    assert calls[0] == ["systemctl", "reset-failed", "jasper-outputd.service"]
+    assert calls[1][:2] == ["systemctl", "restart"]
+    assert calls[1][-1] == "jasper-outputd.service"
+
+
+def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):
+    """reset-failed is best-effort: a reset-failed failure must NOT block the
+    restart it precedes — the restart is the load-bearing action."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1] == "reset-failed":
+            raise FileNotFoundError("systemctl")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-camilla.service") is True
+    assert ["systemctl", "restart", "jasper-camilla.service"] in calls
+
+
+def test_restart_unit_reports_real_restart_failure(monkeypatch):
+    """reset-failed succeeding must not mask a real restart failure — the
+    caller still sees False (and flips the reconcile exit code)."""
+    import subprocess as sp
+
+    def fake_run(argv, **kw):
+        if argv[1] == "reset-failed":
+            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+        raise sp.CalledProcessError(1, argv, stderr="Job for unit failed.")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-outputd.service") is False

@@ -47,6 +47,15 @@ def test_render_links_page_css_and_module():
     assert 'type="module"' in html
 
 
+def test_render_has_correction_measurement_tabs():
+    html = _render()
+    assert 'aria-label="Correction measurement type"' in html
+    assert 'href="/correction/room/"' in html
+    assert 'href="/correction/crossover/"' in html
+    assert 'href="/correction/bass/"' in html
+    assert 'aria-pressed="true" href="/correction/room/"' in html
+
+
 def test_render_has_no_inline_script_iife():
     """The page behaviour was relocated into the ES module; the legacy
     inline <script> IIFE must be gone (gating: no inline JS on a migrated
@@ -157,6 +166,30 @@ def test_get_root_renders_html():
     assert b"/assets/correction/js/main.js" in resp
 
 
+def test_get_room_subpath_renders_room_html():
+    resp = _drive("/room/")
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert b"/assets/correction/js/main.js" in resp
+    assert b"/correction/crossover/" in resp
+
+
+def test_get_crossover_subpath_renders_secure_capture_ui():
+    resp = _drive("/crossover/")
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert b"/assets/correction/js/crossover/main.js" in resp
+    assert b'id="mic-support"' in resp
+    assert b'id="driver-targets"' in resp
+    assert b'id="summed-targets"' in resp
+    assert b"Play each driver, confirm the right driver sounded" in resp
+
+
+def test_get_bass_subpath_renders_placeholder():
+    resp = _drive("/bass/")
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert b"Bass correction" in resp
+    assert b"/correction/crossover/" in resp
+
+
 def test_get_healthz_ok():
     resp = _drive("/healthz")
     assert b"200" in resp.split(b"\r\n", 1)[0]
@@ -191,7 +224,11 @@ def test_known_post_routes_reach_csrf_guard():
         "/test-tone", "/autolevel/start", "/autolevel/lock",
         "/autolevel/cancel", "/upload-noise", "/upload-capture",
         "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
-        "/session/delete",
+        "/session/delete", "/crossover/driver-test",
+        "/crossover/driver-confirm", "/crossover/driver-abort",
+        "/crossover/summed-test", "/crossover/driver-capture-sweep",
+        "/crossover/summed-capture-sweep", "/crossover/driver-capture",
+        "/crossover/summed-capture",
     }
     for route in known:
         resp = _drive(route, method="POST", body=b"{}")

@@ -112,20 +112,30 @@ Increment 6 (per-follower calibration). What exists:
 - **`jasper/multiroom/state.py`** — `read_grouping_state()`, fresh-read
   (never `os.environ`); wired into `jasper-control` `/state.grouping`
   (fail-soft). Now also carries a **`runtime` health block** when grouping
-  is enabled: the pure `derive_grouping_runtime(cfg, unit_states)` compares
-  the reconciler plan's expected units against their live `systemctl
-  is-active` state and reports `off` / `invalid` / `ok` / `degraded` — a
-  follower whose snapclient can't reach its leader shows `degraded` with
-  the leader addr, not a green-looking config. The `systemctl` probe is
-  the thin injectable I/O edge; on a solo speaker there is NO probe and NO
-  `runtime` key (zero added cost). The same pure derive feeds
-  `jasper-doctor`'s `check_grouping` (warn on degraded). §7 "make it
-  visible, not invisible". **A leader that is configured but whose outputd
-  is not actually tapping the snapfifo (env unset / writer down → snapserver
-  reads a dry FIFO → followers get silence) now reads `degraded` too** — the
-  pure derive takes the leader's current tap path as an injected arg
-  (`leader_tap_path`); `read_grouping_state` / `check_grouping` read it via
-  `reconcile._read_outputd_snapfifo_path` only for a valid leader.
+  is enabled: the pure `derive_grouping_runtime(...)` compares the
+  reconciler plan's expected units against their live `systemctl is-active`
+  state and reports `off` / `invalid` / `ok` / `degraded` — a follower whose
+  snapclient can't reach its leader shows `degraded` with the leader addr,
+  not a green-looking config. The `systemctl` probe is the thin injectable
+  I/O edge; on a solo speaker there is NO probe and NO `runtime` key (zero
+  added cost). The same pure derive feeds `jasper-doctor`'s `check_grouping`
+  (warn on degraded). §7 "make it visible, not invisible". **A leader that is
+  configured but whose active CamillaDSP config does not write the snapserver
+  pipe reads `degraded` too** — the pure derive takes the leader's current
+  tap path as an injected arg (`leader_tap_path`); `read_grouping_state` /
+  `check_grouping` read it via `leader_config.active_leader_pipe_path()` only
+  for a valid leader. The runtime block also carries `pair_lock`, the
+  composite "pair locked + healthy" verdict shared with `jasper-doctor`'s
+  `grouping: pair lock` check. Today it distinguishes three truths:
+  unit/binding health, local FIFO byte flow (`outputd.dac_content.serving_fifo`
+  means bytes flow, not clock lock), and follower clock-lock. Snapcast's
+  documented JSON-RPC (`Server.GetStatus`) exposes connection, binding,
+  latency, stream status, and volume, but **not** follower buffer fill, drift,
+  or time-lock, so `pair_lock.signals.follower_clock_lock.status` honestly
+  reads `unobservable` and the overall verdict is `unknown` rather than
+  pretending bytes flow proves lock. This is intentional: P2's rejoin gate can
+  consume the shape now and tighten the one signal when a real lock source
+  exists.
 - **`jasper/atomic_io.py`** — the single home for atomic text-file writes
   (`atomic_write_text(path, text, *, mode=0o644)`: same-dir tempfile →
   `chmod`-before-`os.replace`, parent created, RAISES on failure + cleans up
@@ -172,9 +182,15 @@ Increment 6 (per-follower calibration). What exists:
   `ChannelPick::Sub(corner)` runs its own Rust LR4 (mono-sum → 4th-order
   Linkwitz-Riley at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`, default 80 Hz) before
   the DAC, fail-closed (never full-range on FIFO / inv-B fallback / missing
-  filter). This `channel_split.py` LR4 fragment stays the recipe for the
-  *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives). Both
-  reuse the same `emit_linkwitz_riley` corner math. See
+  filter). Passive/dumb mains in the same bond now also high-pass
+  receiver-side in `jasper-outputd`: the reconciler writes
+  `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ` at the same bond `crossover_hz` when a sub
+  is present and the default-on mains-HP toggle is enabled; the shared
+  Snapcast stream stays full-range. Active endpoints are different: their
+  outputd `dac_content` lane is disabled, so Layer-A CamillaDSP owns the HP/LP
+  protection path. This `channel_split.py` LR4 fragment stays the recipe for
+  the *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives).
+  Both reuse the same `emit_linkwitz_riley` corner math. See
   [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) "Subwoofer —
   two different subs" for the full gap-5 picture.
 - **`jasper-outputd` snapfifo producer — REMOVED (2026-06-11 cleanup).**
@@ -214,6 +230,32 @@ Increment 6 (per-follower calibration). What exists:
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
   anti-storm `Restart`/`StartLimit`.
+- **Reconciler `reset-failed`s before every deliberate restart
+  (config-apply ≠ crash).** `_restart_unit` runs `systemctl reset-failed
+  <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`→voice
+  / shairport / snap units), so a rapid burst of `/grouping/set` applies — e.g.
+  an active-crossover calibration/trim/delay sweep on the leader re-fanned to a
+  follower — can never spend a reboot-budget unit's `StartLimitBurst` and
+  escalate to `StartLimitAction=reboot`. Genuine crash loops still escalate (the
+  daemon's own `Restart=` path does not `reset-failed`, so only deliberate
+  reconciler restarts are exempted). Generalizes the outputd-only guard and
+  mirrors `grouping_supervisor.kick_reconciler` +
+  `shairport_supervisor.restart_shairport`. **Root incident:** 2026-06-24
+  jts.local (bonded follower) took six `/grouping/set` POSTs from the leader in
+  44 s — each restarting `jasper-outputd` — and rebooted on outputd
+  start-limit-hit. Pinned by `test_restart_unit_resets_failed_before_restart`
+  (+ fail-soft siblings) in `tests/test_multiroom_reconcile.py`. The matching
+  audio-thrash fix now lives at the `/grouping/set` kick site in
+  `jasper.control.server`: the first write still kicks promptly, later writes
+  inside the 60 s window write the remaining delay to `/run/jasper-control/`
+  and start one on-demand `jasper-grouping-reconcile-trailing.service`, which
+  sleeps for that delay and then starts the existing oneshot reconciler. Because
+  the reconciler re-reads `grouping.env`, a trim/delay/crossover sweep applies
+  the final value exactly once after the burst even if `jasper-control` exits
+  before the trailing kick.
+  Hardware-free coverage:
+  `test_grouping_set_burst_coalesces_kicks_and_applies_last_env`
+  (+ trailing-service scheduler tests) in `tests/test_control_server.py`.
 - **`deploy/install.sh`** — `migrate_grouping` (seed/strip env) + unit
   install (not enabled) + `--dry-run` line.
 - **`jasper-doctor`** — `check_grouping` (ok off / ok on-valid / warn
@@ -257,7 +299,7 @@ Increment 6 (per-follower calibration). What exists:
   bond/unbond fan-out runs **concurrently** across members (one slow/absent
   peer doesn't serialize the rest). An SSRF guard limits cross-speaker
   POST/GET targets to private/loopback IPv4 and rejects bare hostnames (see
-  §7 "Grouping control plane — threat model"); audio flows end-to-end since Increment 5 PR-1 (leader CamillaDSP → snapserver pipe → member snapclients → outputd dac_content), and member-local TTS since PR-2; runtime health reads the live truth (active camilla config + snapcast client bindings). Untrusted mDNS
+  §7 "Grouping control plane — threat model"); audio flows end-to-end since Increment 5 PR-1 (leader CamillaDSP → snapserver pipe → member snapclients → outputd dac_content), passive-member local TTS works since PR-2, and active endpoints keep TTS on fan-in upstream of their crossover/protection graph (see HANDOFF-distributed-active); runtime health reads the live truth (active camilla config + snapcast client bindings). Untrusted mDNS
   fields never enter the server HTML (the shell is data-free; data ships as
   `application/json` and the module renders it via DOM/text APIs).
   On `jasper-control` itself the grouping HTTP surface is `POST
@@ -471,11 +513,13 @@ leader with headroom — no second content-DSP CamillaDSP.**
 **The shape, in one breath:** the leader's *one* CamillaDSP bakes a stereo program
 where the **left channel is corrected for the leader's seat and the right for the
 follower's seat**, writes it to a **pipe**, and `snapserver` streams that *single*
-stereo stream to everyone. Each speaker — including the leader's own localhost
-snapclient — **drops the channel it doesn't play** with a 3-line ALSA `route`
-(`ttable`) plug. The leader's **voice/TTS never enters that stream**; it is mixed
-back in **low-latency at the final output stage** (`jasper-outputd`), after the
-synced round-trip.
+stereo stream to everyone. Each passive speaker — including the leader's own
+localhost snapclient in the dumb stereo-pair shape — **drops the channel it
+doesn't play** with a 3-line ALSA `route` (`ttable`) plug. Passive members mix
+their own **voice/TTS** back in **low-latency at the final output stage**
+(`jasper-outputd`), after the synced round-trip. Active endpoints are the safety
+exception: their TTS stays upstream of the local crossover/protection graph; the
+ratified active-speaker shape lives in HANDOFF-distributed-active.
 
 ```
 SOLO (today, unchanged):
@@ -487,7 +531,7 @@ LEADER (stereo pair):
                             volume_limit:0.0 clamp; ONE instance)
             → pipe (FIFO)  → snapserver  (ONE stereo stream; Snapcast owns rate)
                 ├─ leader localhost snapclient (-h 127.0.0.1) → ALSA ttable drop→L
-                │     → outputd  (mix leader TTS HERE, low-latency) → DAC
+                │     → outputd  (passive pair: mix leader TTS here) → DAC
                 └─ follower snapclient → ALSA ttable drop→R → DAC   (no TTS)
 
 FOLLOWER (transport): snapclient → ttable drop→its channel → DAC.
@@ -526,14 +570,19 @@ FOLLOWER (driver-DSP, planned): snapclient → local driver crossover/protection
    oscillate" trap cannot occur here.
 
 **Voice stays local (inv-3; confirmed by Music Assistant).** Conversational TTS is
-low-latency and must not ride the ~buffer-delayed synced stream. So for a LEADER,
-TTS routes to **`jasper-outputd`** (post-round-trip) rather than into fanin's
-pre-stream music. This intentionally re-introduces an outputd TTS mix **for the
-leader role only** — 9102e13 retired it for the *solo* case (fanin-mix is simplest
-there); a *sample-locked* leader needs a post-buffer mix point, and outputd is the
-final output owner. Group-wide *announcements* (a timer ringing everywhere at once)
-MAY later ride the buffered stream ducked (MA's model) — a separate feature, not
-conversational TTS. Followers never receive TTS.
+low-latency and must not ride the ~buffer-delayed synced stream. For a passive
+leader/member, TTS routes to **`jasper-outputd`** (post-round-trip) rather than
+into fanin's pre-stream music. This intentionally re-introduces an outputd TTS
+mix for passive bonded roles — 9102e13 retired it for the *solo* case
+(fanin-mix is simplest there); a sample-locked passive member needs a
+post-buffer mix point, and outputd is the final output owner. For an active
+endpoint, outputd's 2-channel post-crossover TTS mixer is unsafe, so TTS stays
+on fan-in upstream of the local crossover/protection graph
+(HANDOFF-distributed-active "active-leader TTS band-limiting"). Group-wide
+*announcements* (a timer ringing everywhere at once) MAY later ride the
+buffered stream ducked (MA's model) — a separate feature, not conversational
+TTS. Followers never receive TTS unless they are local voice-capable passive
+members responding for themselves.
 
 **Two invariants the build MUST hold (added 2026-06-10 after adversarial design
 review — these are the design, not details):**
@@ -758,24 +807,33 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   `commit_prepared_period_with_dac_delay`. fanin's solo ack now carries its
   own per-segment playout ledger too (`rust/jasper-fanin/src/playout.rs`),
   but a mix-commit estimate that over-reads by the downstream pipeline
-  depth; outputd's port is the DAC-true one. EVERY bonded member's voice flips its TTS
-  socket to its own outputd (inv-3: the leader's TTS never enters the
+  depth; outputd's port is the DAC-true one. PASSIVE bonded members flip voice's
+  TTS socket to their own outputd (inv-3: the leader's TTS never enters the
   shared stream — each speaker's OWN replies mix locally, post-round-trip,
   pre-reference, which is exactly inv-A's tap requirement; `PROGRAM_DUCK`
-  rides the same socket, so ducking is member-local too). The reconciler
-  arms both ends — `JASPER_OUTPUTD_TTS_SOCKET` in grouping-outputd.env and
-  `JASPER_TTS_OUTPUTD_SOCKET` in grouping-voice.env (solo OMITS the key —
-  present-but-empty would break voice's fanin default; a fresh solo
-  reconcile skips creating the empty file so first boot doesn't restart
-  voice) — and `grouping: TTS lane` (doctor) catches drift between them,
+  rides the same socket, so ducking is member-local too). Active endpoints
+  deliberately do not arm that socket; they keep TTS on fan-in upstream of
+  CamillaDSP, where it is split/protected by the active graph. The reconciler
+  arms both ends for passive members — `JASPER_OUTPUTD_TTS_SOCKET` in
+  grouping-outputd.env and `JASPER_TTS_OUTPUTD_SOCKET` in grouping-voice.env
+  (solo/active endpoint OMITS the key — present-but-empty would break voice's
+  fanin default; a fresh solo reconcile skips creating the empty file so first
+  boot doesn't restart voice) — and `grouping: TTS lane` (doctor) catches drift
+  between them,
   including the worst shape: voice targeting a socket outputd never armed
   (silent assistant). Solo speakers are byte-identical to pre-PR-2 (no
   socket env → outputd runs the exact prior period loop).
   **The supervisor (jasper.control.grouping_supervisor, built with PR-2):**
-  every bonded member polls outputd's `dac_content.serving_fifo` every 30 s
-  (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
-  `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min);
-  the leader additionally re-runs the `ensure_groups_on_stream` ownership
+  every bonded **dumb** member polls outputd's `dac_content.serving_fifo`
+  every 30 s (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
+  `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min). An
+  ACTIVE endpoint (active follower or active-speaker leader) feeds the DAC via
+  the camilla#2 active-content lane, not the `dac_content` round-trip, so the
+  reconciler disables `dac_content` there and the supervisor **skips** the
+  starvation watch for it (keyed on `is_active_speaker_box()` — the same
+  predicate the reconciler uses; its absence is correct, not starvation —
+  otherwise it self-kicked the reconciler every window).
+  The leader additionally re-runs the `ensure_groups_on_stream` ownership
   pin every poll, making binding read-repair continuous (a runtime rebind
   from any snapcast app self-heals in ≤30 s). Phase D of the control-plane
   auth work adds the matching grouping-plane self-heal: a rostered leader
@@ -863,8 +921,11 @@ deliverable; 2.1 is the 3-ch generalisation**, not a parallel stream.
 > clip-safe **mono sum** of L+R, and low-passes it **receiver-side** in
 > `jasper-outputd` (`ChannelPick::Sub`, LR4 at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`).
 > Because the sub derives its lows from the full-range L+R already on the wire,
-> no LFE channel — and so no stream-format change, no second stream — is needed,
-> and `outputd`'s stereo AEC-reference contract is untouched. The 3-ch stream
+> no LFE channel — and so no stream-format change, no second stream — is needed.
+> Bass management stays symmetric: each passive main high-passes locally in
+> outputd at the same bond `crossover_hz` (`JASPER_OUTPUTD_DAC_CONTENT_HP_HZ`,
+> default-on `/rooms/` toggle), while the shared stream remains full-range for
+> the sub. `outputd`'s stereo AEC-reference contract is untouched. The 3-ch stream
 > stays the (still-unbuilt) answer **only** if a household ever needs a
 > *sender-side pre-baked* sub (a cheap endpoint that can't run a local low-pass).
 > Canonical: [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)
@@ -1911,7 +1972,12 @@ tests/test_web_rooms_setup.py (foreign-claimer matrix, DHCP
 rediscovery, named unreachable error, unbond containment, bond-body
 roster), test_web_balance_flow.py (start survives a foreign claimer),
 test_multiroom_config.py + test_control_server.py (parse/validate/
-preserve/clear). Earlier same day: PAIR BALANCE P2, equal-loudness
+preserve/clear). The same 2026-06-23 pass made the wireless-sub crossover
+symmetric for passive/dumb endpoints: `jasper-outputd` low-passes the sub
+locally, high-passes each passive main locally at the same `crossover_hz`
+when the default-on `/rooms/` toggle is enabled, and the reconciler clears the
+HP env on no-sub/toggle-off/sub/active-endpoint paths. Earlier same day: PAIR
+BALANCE P2, equal-loudness
 walkthrough
 — the v1 fixed-level A/B/A burst design was REPLACED the same day
 after first live use: a badly mismatched pair (the exact case the tool
@@ -2568,4 +2634,11 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-14
+Last verified: 2026-06-24 (pair-lock runtime surface rechecked against
+`state.py`, `snapcast_rpc.py`, and doctor wiring; control-side grouping kick
+coalescing and the durable trailing service rechecked against
+`jasper.control.server`,
+`deploy/systemd/jasper-grouping-reconcile-trailing.service`, and the grouped
+outputd env/reconcile path; active-endpoint TTS fan-in exception rechecked
+against `jasper.multiroom.reconcile` and `jasper.cli.doctor.grouping`;
+wireless-sub 2.1 path from 2026-06-23 unchanged)

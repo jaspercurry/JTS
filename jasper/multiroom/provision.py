@@ -22,13 +22,17 @@ separate process; never bundled into a JTS artifact, never linked, so no
 copyleft reaches JTS and no redistribution obligation attaches), with a status
 the ``/rooms`` wizard surfaces ("Installing Snapcast…").
 
-**Total + fail-soft.** A present install is a no-op. A failed install (no
-network, an apt lock, a stale index) is logged + recorded as a ``failed``
-status (which ``/state.grouping.provision`` and the doctor's
-``check_grouping_snapcast_installed`` surface) and NEVER raises — the reconcile
-continues, the snap units simply fail to start, and the box stays solo-safe
-(the same fail-closed posture the #965 active-leader gate guarantees). The next
-reconcile / boot retries.
+**Total + fail-soft + bounded.** A present install is a fast no-op, so the
+reconciler's gating (it calls this only when grouping is enabled AND snapcast is
+missing) makes this a ONE-TIME op per box, not a recurring network cost. The
+install refreshes a stale index + waits out the dpkg lock first (the two most
+common Pi apt failures); if it still fails — genuinely offline, a broken mirror
+— it is logged + recorded as a ``failed`` status (which
+``/state.grouping.provision`` and the doctor's
+``check_grouping_snapcast_installed`` surface) and NEVER raises. The reconcile
+continues, the snap units simply fail to start, and the box stays solo-safe (the
+same fail-closed posture the #965 active-leader gate guarantees). Offline, apt
+fails fast (no multi-minute boot hang); the next reconcile / boot retries.
 """
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ import logging
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from .. import atomic_io
 from ..log_event import log_event
@@ -60,10 +65,18 @@ PROVISION_STATUS_FILE = "/run/jasper-grouping/provision-status.json"
 # we must neutralise again here (mirror systemd-units.sh).
 _DISTRO_UNITS = ("snapserver.service", "snapclient.service")
 
-# apt can be slow on a household network; bound it so a stuck apt never wedges
-# the reconcile. A timeout is a soft failure (status=failed) — the next reconcile
-# retries.
-_APT_TIMEOUT_SEC = 300
+# apt is bounded so a stuck apt never wedges the reconcile (a timeout is a soft
+# failure → status=failed → the next reconcile retries). Two robustness knobs
+# address the two most common Pi apt failures: a best-effort `apt-get update`
+# first refreshes a stale package index (the #1 cause of a spurious "Unable to
+# locate package"), and the install waits out the dpkg lock
+# (`DPkg::Lock::Timeout` — unattended-upgrades holds it daily) instead of
+# instantly failing. Offline, BOTH fail fast (the update can't reach the mirrors,
+# the install finds no index), so a misprovisioned + offline boot never sits in
+# a multi-minute hang — the install error is the actionable one.
+_APT_UPDATE_TIMEOUT_SEC = 120  # best-effort index refresh; result IGNORED
+_APT_LOCK_TIMEOUT_SEC = 120    # apt waits this long for the dpkg lock
+_APT_TIMEOUT_SEC = 300         # install subprocess ceiling (covers the lock wait)
 
 
 def snapcast_present(*, which=shutil.which) -> bool:
@@ -77,7 +90,7 @@ def read_provision_status(path: str = PROVISION_STATUS_FILE) -> dict[str, str]:
     """Fresh-read the provision progress for ``/state`` / the wizard, or ``{}``
     when absent/unreadable. Total + fail-soft; never raises."""
     try:
-        raw = json.loads(open(path, encoding="utf-8").read())
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
@@ -125,12 +138,34 @@ def _neutralise_distro_units(runner) -> None:
         )
 
 
+def _apt_update(runner, *, timeout) -> None:
+    """Best-effort ``apt-get update`` — refresh a stale package index (the #1
+    cause of a spurious "Unable to locate package"). Bounded + fail-soft: its
+    result is IGNORED (the index may already be fresh; offline it fails fast and
+    the install's own error is the actionable one)."""
+    try:
+        runner(
+            ["apt-get", "update"],
+            capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log_event(
+            logger,
+            "multiroom.provision.apt_update_failed",
+            error=str(e),
+            level=logging.WARNING,
+        )
+
+
 def ensure_snapcast_installed(
     *,
     runner=subprocess.run,
     which=shutil.which,
     status_path: str = PROVISION_STATUS_FILE,
     apt_timeout: int = _APT_TIMEOUT_SEC,
+    apt_update_timeout: int = _APT_UPDATE_TIMEOUT_SEC,
+    apt_lock_timeout: int = _APT_LOCK_TIMEOUT_SEC,
 ) -> dict[str, str]:
     """Install the snapcast binaries if missing — the grouping opt-in.
 
@@ -150,9 +185,16 @@ def ensure_snapcast_installed(
 
     _write_status(status_path, "installing", "installing snapserver + snapclient (~1-2 min)")
     log_event(logger, "multiroom.provision.snapcast_install_start")
+    # Refresh a stale index first (best-effort), then install — waiting out the
+    # dpkg lock rather than failing instantly if unattended-upgrades holds it.
+    _apt_update(runner, timeout=apt_update_timeout)
     try:
         result = runner(
-            ["apt-get", "install", "-y", "snapserver", "snapclient"],
+            [
+                "apt-get", "install", "-y",
+                "-o", f"DPkg::Lock::Timeout={apt_lock_timeout}",
+                "snapserver", "snapclient",
+            ],
             capture_output=True,
             text=True,
             timeout=apt_timeout,

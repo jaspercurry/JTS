@@ -16,6 +16,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import threading
 import time
 import urllib.request
@@ -973,6 +974,7 @@ def _grouping_test_setup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
     monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    srv_mod._reset_grouping_reconciler_kick_coalescer_for_tests()
     return env, popens
 
 
@@ -1015,6 +1017,244 @@ def test_grouping_set_disabled_writes_off_and_kicks(
     assert body["enabled"] is False
     assert "JASPER_GROUPING=off" in env.read_text()
     assert _GROUPING_KICK in popens
+
+
+def test_grouping_set_burst_coalesces_kicks_and_applies_last_env(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """A trim/delay/crossover sweep can POST /grouping/set every few seconds.
+
+    The first write still kicks promptly, but the rest of the cooldown window
+    collapses to one trailing reconciler run. That trailing run re-reads the
+    current grouping.env, so the final swept value is never lost.
+    """
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    env = tmp_path / "grouping.env"
+    now = [1000.0]
+    timers = []
+    applied: list[tuple[str, str]] = []
+
+    class FakeHandle:
+        daemon = False
+
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            assert not self.cancelled
+            self.callback()
+
+    def launch(reason: str) -> None:
+        applied.append((reason, env.read_text()))
+
+    def schedule_trailing(delay, run_trailing, _mark_applied):
+        handle = FakeHandle(delay, run_trailing)
+        timers.append(handle)
+        return handle
+
+    monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
+    monkeypatch.setattr(
+        srv_mod,
+        "_grouping_reconciler_kick_coalescer",
+        srv_mod._GroupingReconcilerKickCoalescer(
+            cooldown_s=60.0,
+            launch=launch,
+            clock=lambda: now[0],
+            trailing_scheduler=schedule_trailing,
+            cancel_external_trailing=lambda: None,
+        ),
+    )
+
+    body = {
+        "enabled": True,
+        "role": "follower",
+        "channel": "right",
+        "bond_id": "living-room",
+        "leader_addr": "jts.local",
+    }
+    offsets_and_trims = [
+        (0.0, -0.5),
+        (7.0, -1.0),
+        (16.0, -1.5),
+        (27.0, -2.0),
+        (35.0, -2.5),
+        (44.0, -3.0),
+    ]
+
+    for offset, trim_db in offsets_and_trims:
+        now[0] = 1000.0 + offset
+        status, body_resp = _post(
+            f"{base}/grouping/set",
+            {**body, "trim_db": trim_db},
+        )
+        assert status == 200, body_resp
+
+    assert [reason for reason, _text in applied] == ["leading"]
+    assert "JASPER_GROUPING_TRIM_DB=-0.5" in applied[0][1]
+    assert len(timers) == 1
+    assert timers[0].delay == pytest.approx(53.0)
+    assert "JASPER_GROUPING_TRIM_DB=-3.0" in env.read_text()
+
+    now[0] = 1060.0
+    timers[0].fire()
+
+    assert [reason for reason, _text in applied] == ["leading", "trailing"]
+    assert "JASPER_GROUPING_TRIM_DB=-3.0" in applied[-1][1]
+
+
+def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path):
+    import jasper.control.server as srv_mod
+
+    run_calls = []
+    timers = []
+    marks = []
+    launches = []
+    delay_file = tmp_path / "grouping-reconcile-trailing-delay"
+
+    class FakeTimer:
+        daemon = False
+
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.started = False
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            assert self.started
+            assert not self.cancelled
+            self.callback()
+
+    def fake_run(cmd, **kwargs):
+        run_calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        srv_mod,
+        "_GROUPING_RECONCILE_TRAILING_DELAY_FILE",
+        str(delay_file),
+    )
+
+    srv_mod._schedule_grouping_reconciler_trailing_kick(
+        53.0,
+        lambda: launches.append("trailing"),
+        lambda: marks.append("applied"),
+        timer_factory=FakeTimer,
+    )
+
+    assert run_calls == [(
+        [
+            "systemctl",
+            "restart",
+            "--no-block",
+            "jasper-grouping-reconcile-trailing.service",
+        ],
+        {
+            "check": True,
+            "stdout": srv_mod.subprocess.DEVNULL,
+            "stderr": srv_mod.subprocess.DEVNULL,
+        },
+    )]
+    assert len(timers) == 1
+    assert timers[0].delay == pytest.approx(53.0)
+    assert delay_file.read_text() == "53\n"
+
+    timers[0].fire()
+
+    assert marks == ["applied"]
+    assert launches == []
+
+
+def test_grouping_trailing_scheduler_falls_back_to_process_timer(
+    monkeypatch, tmp_path,
+):
+    import jasper.control.server as srv_mod
+
+    timers = []
+    marks = []
+    launches = []
+    delay_file = tmp_path / "grouping-reconcile-trailing-delay"
+
+    class FakeTimer:
+        daemon = False
+
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.started = False
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            assert self.started
+            assert not self.cancelled
+            self.callback()
+
+    def fake_run(cmd, **_kwargs):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        srv_mod,
+        "_GROUPING_RECONCILE_TRAILING_DELAY_FILE",
+        str(delay_file),
+    )
+
+    srv_mod._schedule_grouping_reconciler_trailing_kick(
+        12.0,
+        lambda: launches.append("trailing"),
+        lambda: marks.append("applied"),
+        timer_factory=FakeTimer,
+    )
+
+    assert len(timers) == 1
+    assert timers[0].delay == pytest.approx(12.0)
+    assert delay_file.read_text() == "12\n"
+
+    timers[0].fire()
+
+    assert launches == ["trailing"]
+    assert marks == []
+
+
+def test_grouping_trailing_delay_file_is_clamped_and_rounded(
+    monkeypatch, tmp_path,
+):
+    import jasper.control.server as srv_mod
+
+    delay_file = tmp_path / "grouping-reconcile-trailing-delay"
+    monkeypatch.setattr(
+        srv_mod,
+        "_GROUPING_RECONCILE_TRAILING_DELAY_FILE",
+        str(delay_file),
+    )
+
+    srv_mod._write_grouping_reconciler_trailing_delay(12.2)
+    assert delay_file.read_text() == "13\n"
+
+    srv_mod._write_grouping_reconciler_trailing_delay(999.0)
+    assert delay_file.read_text() == "60\n"
 
 
 def test_grouping_set_rejects_invalid_role_without_writing(
@@ -3592,10 +3832,76 @@ def test_grouping_set_crossover_settable_validated_and_preserved(
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "20"
 
+    # But a non-sub MAIN in a subwoofer bond uses the corner for the matched
+    # high-pass, so the same bad value is rejected when bass management is on.
+    status, resp = _post(
+        f"{base}/grouping/set",
+        {**non_sub, "crossover_hz": 20, "subwoofer_present": True},
+    )
+    assert status == 400 and "must be between" in resp["error"]
+
     # Omitted → preserved (key not in this write).
     status, _ = _post(f"{base}/grouping/set", sub)
     assert status == 200
     assert "JASPER_GROUPING_CROSSOVER_HZ" not in writes[-1]
+
+
+def test_grouping_set_mains_highpass_toggle_round_trips(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "b",
+        "leader_addr": "",
+        "subwoofer_present": True,
+        "mains_highpass_enabled": False,
+        "crossover_hz": 90,
+    }
+
+    status, _ = _post(f"{base}/grouping/set", body)
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_SUBWOOFER_PRESENT"] == "on"
+    assert writes[-1]["JASPER_GROUPING_MAINS_HIGHPASS"] == "off"
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "90"
+
+    status, resp = _post(
+        f"{base}/grouping/set",
+        {**body, "mains_highpass_enabled": "off"},
+    )
+    assert status == 400
+    assert resp["error"] == "mains_highpass_enabled must be boolean"
+
+    status, resp = _post(
+        f"{base}/grouping/set",
+        {**body, "subwoofer_present": "yes"},
+    )
+    assert status == 400
+    assert resp["error"] == "subwoofer_present must be boolean"
+
+    status, _ = _post(
+        f"{base}/grouping/set",
+        {
+            "enabled": True,
+            "role": "leader",
+            "channel": "left",
+            "bond_id": "b",
+            "leader_addr": "",
+        },
+    )
+    assert status == 200
+    assert "JASPER_GROUPING_SUBWOOFER_PRESENT" not in writes[-1]
+    assert "JASPER_GROUPING_MAINS_HIGHPASS" not in writes[-1]
 
 
 def test_grouping_set_latency_and_delay_settable_validated_and_preserved(

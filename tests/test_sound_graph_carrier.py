@@ -306,6 +306,32 @@ def test_sound_carrier_extracts_and_forwards_room_peqs(tmp_path):
     assert result.room_peq_count == 2
 
 
+def test_sound_carrier_replaces_room_peqs_when_explicit(tmp_path):
+    # Room correction apply/start must be able to say "use this exact room
+    # layer" instead of preserving whatever was already loaded.
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "correction_abc_123.yml"
+    path.write_text("# jts sound/correction config\n")
+    replacement = [object()]
+
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml-text"
+    ) as emit, mock.patch(
+        "jasper.sound.graph_carrier.extract_room_peqs_from_config"
+    ) as extract:
+        carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+        result = carrier.reemit(
+            mock.sentinel.profile,
+            profile_id="id",
+            room_peqs=replacement,
+        )
+
+    extract.assert_not_called()
+    assert emit.call_args.kwargs["room_peqs"] == replacement
+    assert result.room_peq_count == 1
+
+
 # --- PR-3: the SOLO active baseline hosts preference EQ -----------------
 
 def test_solo_active_baseline_can_host_eq(tmp_path):
@@ -343,9 +369,36 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
     assert result.yaml == "eqd-active-yaml"
     assert result.room_peq_count == 0
     assert recompose.call_args.kwargs["out_path"] == out
+    assert recompose.call_args.kwargs["room_peqs"] == []
     # The household's manual headroom / loudness-match trim is forwarded to the
     # active emitter, not silently dropped.
     assert recompose.call_args.kwargs["output_trim_db"] == 3.0
+
+
+def test_solo_active_baseline_replaces_room_peqs_explicitly(tmp_path):
+    out = tmp_path / "sound_current.yml"
+    path = tmp_path / "active_speaker_baseline.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    replacement = [object(), object()]
+    with mock.patch(
+        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
+    ), mock.patch(
+        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
+        return_value="eqd-active-yaml",
+    ) as recompose, mock.patch(
+        "jasper.sound.graph_carrier.extract_room_peqs_from_config"
+    ) as extract:
+        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
+        result = carrier.reemit(
+            mock.sentinel.profile,
+            out_path=out,
+            profile_id="id",
+            room_peqs=replacement,
+        )
+
+    extract.assert_not_called()
+    assert result.room_peq_count == 2
+    assert recompose.call_args.kwargs["room_peqs"] == replacement
 
 
 def test_bonded_active_baseline_refuses_with_stable_reason(tmp_path):

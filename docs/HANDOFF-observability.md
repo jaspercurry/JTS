@@ -145,11 +145,23 @@ steady-state journal spam. The low-level `tts gain set` echo in
 
 **Resilience state is observable without logs:**
 `curl -s http://jts.local:8780/state | jq .resilience` (`shairport`,
-`system_supervisor`, `wifi_guardian`), the `jasper-doctor`
-checks, and the `event=*` journal lines. Note: the `/system/`
-dashboard does **not** render a resilience card today (the docs
-correctly never claim it does) — adding one is a natural
-extension of the debug card below.
+`grouping_supervisor`, `system_supervisor`, `wifi_guardian`), the
+`jasper-doctor` checks, and the `event=*` journal lines. The doctor now
+includes a `supervisor runtime snapshots` line that reads the same
+`/state.resilience` snapshots and warns when a supervisor is kicking,
+rate-limited, or failing to converge. `/state.resilience.multiroom_cascade`
+is a bounded in-memory event ring sourced from persistent journald:
+`multiroom.reconcile.*`, `restart_broker.*`, and
+`grouping_supervisor.*` lines are classified into recent
+restart-cascade events so an operator can reconstruct "what restarted
+what, when" from `/state` without first digging through the journal. It
+is production truth, not a log bundle: small deque, fixed shape, a bounded
+startup lookback (15 minutes) into persistent journald, journal
+`occurred_at` timestamps preserved separately from sampler `observed_at`,
+and fail-soft to an empty/disabled/null snapshot. Note: the `/system/`
+dashboard does **not**
+render a resilience card today (the docs correctly never claim it does) —
+adding one is a natural extension of the debug card below.
 
 **Output hardware state is observable without probing audio streams:**
 `jasper-audio-hardware-reconcile` writes
@@ -414,4 +426,5 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-09
+Last verified: 2026-06-24 (resilience `/state`, supervisor doctor surface,
+and multiroom cascade timeline rechecked against current code)

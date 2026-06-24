@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room correction wizard at /correction/.
+"""HTTPS correction measurement hub at /correction/.
 
-The user opens the page on a phone, selects a calibrated input,
-captures pre-sweep room noise plus one or more measurement positions,
-reviews confidence/visualization evidence, and optionally applies a
-bounded room-correction profile through the shared CamillaDSP apply
-path.
+The user opens the hub on a phone and chooses the measurement job:
+room correction, active-crossover acoustic checks, or bass tuning. Room
+correction captures pre-sweep room noise plus one or more measurement
+positions, reviews confidence/visualization evidence, and optionally
+applies a bounded room-correction profile through the shared CamillaDSP
+apply path.
 
 Architecture (per docs/HANDOFF-correction.md):
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
@@ -20,7 +21,11 @@ Architecture (per docs/HANDOFF-correction.md):
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
   - HTTP routes (after nginx strips the /correction/ prefix):
-      GET  /                page render
+      GET  /                room correction page render
+      GET  /room            room correction page render
+      GET  /crossover       active-crossover measurement page render
+      GET  /crossover/status
+      GET  /bass            bass measurement placeholder page render
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
       GET  /sessions        recent measurement bundle summaries
@@ -32,6 +37,14 @@ Architecture (per docs/HANDOFF-correction.md):
       POST /apply           write YAML, reload CamillaDSP
       POST /reset           roll back to the topology-safe reset graph
       POST /session/delete  delete one historical measurement bundle
+      POST /crossover/driver-test safe per-driver audible test
+      POST /crossover/driver-confirm operator ACK for the active driver test
+      POST /crossover/driver-abort stop/re-mute the active driver test
+      POST /crossover/summed-test safe combined-driver audible test
+      POST /crossover/driver-capture-sweep play the driver mic-capture sweep
+      POST /crossover/summed-capture-sweep play the summed mic-capture sweep
+      POST /crossover/driver-capture analyze + record one active-driver WAV
+      POST /crossover/summed-capture analyze + record one summed-crossover WAV
 
 Why a separate service from jasper-web (Spotify + voice settings):
 the correction flow eventually imports numpy/scipy through
@@ -88,8 +101,9 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # setup latency while still avoiding unbounded reads in the Pi web
 # process.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
+MAX_CROSSOVER_WAV_BODY_BYTES = 3 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
-_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/balance", "/sync"})
+_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 
 
 class BadRequest(ValueError):
@@ -140,6 +154,14 @@ def active_correction_phase() -> str | None:
     effect of ``_reserve_start_slot`` (which reserves /start)."""
     with _session_lock:
         return _active_state_for_session(_session)
+
+
+def _crossover_blocking_phase() -> str | None:
+    """Return another active measurement phase that should block crossover."""
+
+    from .active_speaker_flow import blocking_measurement_phase
+
+    return blocking_measurement_phase()
 
 
 def _reserve_start_slot() -> str | None:
@@ -276,11 +298,12 @@ def _replace_session(
 _PAGE_BODY = """
 __HEADER__
 <main class="page correction-stack" data-required-sr="__REQUIRED_SR__">
+__TABS__
 <p class="page-sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker.</p>
 
 <div id="current-correction" class="flat" aria-live="polite">
   <span class="label" id="current-correction-label">Checking current correction…</span>
-  <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset to flat</button>
+  <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
 </div>
 
 <details class="advice" open>
@@ -415,11 +438,11 @@ __HEADER__
     <button id="continue-position" type="button" class="btn btn--primary hidden">Continue to next position</button>
     <button id="apply-correction" type="button" class="btn btn--primary hidden">Apply correction</button>
     <button id="verify-correction" type="button" class="btn btn--primary hidden">Verify with re-measurement</button>
-    <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset to flat</button>
+    <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
     <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
   </p>
   <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the iPhone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
-  <p class="hint" style="margin-top:0.4em">Each measurement starts from flat — your current correction (if any) is reset first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
+  <p class="hint" style="margin-top:0.4em">Each measurement bypasses your current correction and preference EQ first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
   <div id="autolevel-status" class="note-box hidden">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
@@ -569,12 +592,15 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
     # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
     # is plain HTTP, so a relative "/" would try HTTPS on the root and fail.
     header = canonical_header(
-        "Room correction",
+        "Correction",
         back_href="http://{host}/".format(host=hostname),
     )
+    from .correction_hub import section_tabs
+
     body = (
         _PAGE_BODY
         .replace("__HEADER__", header)
+        .replace("__TABS__", section_tabs("room"))
         .replace("__HOSTNAME__", html.escape(hostname, quote=True))
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
@@ -789,9 +815,9 @@ def _calibration_device_mismatch(
 
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /start: snapshot any current correction, hard-reset
-    CamillaDSP to the base config, replace the session, and ask the
-    browser for pre-sweep room-noise capture. The sweep starts only
+    """POST /start: snapshot the current DSP graph, load a measurement
+    baseline with room/preference layers stripped, replace the session, and
+    ask the browser for pre-sweep room-noise capture. The sweep starts only
     after `POST /upload-noise` lands.
 
     Body fields:
@@ -803,15 +829,13 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
       - repeat_main_position: bool = true — optional same-seat repeat
         for repeatability evidence.
 
-    Why reset before sweeping: if a correction is already loaded, the
-    sweep traverses the corrected pipeline and the resulting curve
-    reflects the corrected room, not the raw room — designing new
-    filters from that would compound the corrections. Resetting first
-    guarantees every measurement starts from the same flat baseline.
+    Why strip layers before sweeping: if a correction or preference EQ is
+    loaded, the sweep traverses that layer and the resulting curve reflects
+    the user's taste or the old correction, not the raw room. The carrier
+    keeps the topology-owned speaker graph (crossovers, driver EQ, delays,
+    gains, limiters) and strips only Layer B/C.
     """
     from jasper.correction.session import SessionState
-    from jasper.correction.status import describe_current_config
-
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
     if blocking_state is not None:
@@ -894,49 +918,27 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         cam = _camilla()
 
-        # Snapshot what was loaded BEFORE we reset, so the bundle records
-        # the prior state. Best-effort: a snapshot failure should not stop
-        # measurement, but the reset below is load-bearing and must succeed.
-        async def _snapshot() -> dict[str, Any] | None:
-            path = await cam.get_config_file_path(best_effort=True)
-            return describe_current_config(
-                path,
-                config_dir=sess.cfg.config_dir,
-                base_config_path=sess.cfg.base_config_path,
-            )
+        from jasper.sound.graph_carrier import CarrierCannotHostEq
 
         try:
-            sess.current_correction_at_start = _run_async(_snapshot(), timeout=3.0)
-        except Exception:  # noqa: BLE001
-            logger.exception("/start: snapshot current_correction failed")
-            sess.current_correction_at_start = None
-
-        from jasper.correction.runtime_safety import (
-            CorrectionRuntimeSafetyError,
-            flat_measurement_config_path,
-        )
-
-        async def _reset_to_base() -> bool:
-            target = flat_measurement_config_path(sess.cfg.base_config_path)
-            return await cam.set_config_file_path(
-                str(target), best_effort=False,
+            baseline_payload = _run_async(
+                _load_measurement_baseline(sess, cam),
+                timeout=10.0,
             )
-
-        try:
-            reset_ok = _run_async(_reset_to_base(), timeout=5.0)
-        except CorrectionRuntimeSafetyError:
-            logger.warning("/start: reset to base config rejected by safety contract")
+        except CarrierCannotHostEq:
+            logger.warning("/start: measurement baseline rejected by graph carrier")
             raise
         except RuntimeError as exc:
-            logger.exception("/start: reset to base config rejected")
+            logger.exception("/start: measurement baseline load rejected")
             raise RuntimeError(str(exc)) from None
         except Exception:  # noqa: BLE001
-            logger.exception("/start: reset to base config failed")
+            logger.exception("/start: measurement baseline load failed")
             raise RuntimeError(
-                "could not reset speaker to flat before measuring"
+                "could not load speaker measurement baseline before measuring"
             ) from None
-        if not reset_ok:
-            raise RuntimeError("could not reset speaker to flat before measuring")
+        sess.current_correction_at_start = baseline_payload.get(
+            "current_correction_at_start"
+        )
 
         reservation_transferred = False
         try:
@@ -973,11 +975,109 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 else None
             ),
             "current_correction_at_start": sess.current_correction_at_start,
+            "measurement_config_path": baseline_payload.get(
+                "measurement_config_path"
+            ),
         }
     except Exception:  # noqa: BLE001
         if not locals().get("reservation_transferred", False):
             _clear_start_slot()
         raise
+
+
+async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
+    """Load a topology-preserving measurement graph for this correction run.
+
+    The graph carrier is the single bridge between "whatever CamillaDSP is
+    running" and "emit the same speaker topology with different program-domain
+    layers." Passing ``room_peqs=[]`` and ``SoundProfile(enabled=False)`` strips
+    old room correction and preference EQ while keeping crossovers/protection.
+    """
+
+    from jasper.correction.runtime_safety import (
+        CorrectionRuntimeSafetyError,
+        assert_correction_graph_safe,
+    )
+    from jasper.dsp_apply import DspApplyError, apply_dsp_config
+    from jasper.correction.status import describe_current_config
+    from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
+        carrier_for_loaded_config,
+    )
+    from jasper.sound.profile import SoundProfile
+
+    current_path = await cam.get_config_file_path(best_effort=False)
+    if not current_path:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    sess.pre_measurement_config_path = Path(current_path)
+    sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
+    out_path = sess.cfg.config_dir / (
+        f"correction_measurement_{sess.session_id}_{int(sess.started_at)}.yml"
+    )
+
+    async def _prepare_config() -> dict[str, Any]:
+        anchor = await cam.get_config_file_path(best_effort=False)
+        if not anchor:
+            raise RuntimeError("CamillaDSP did not report a loaded config path")
+        carrier = carrier_for_loaded_config(anchor, config_dir=sess.cfg.config_dir)
+        result = carrier.reemit(
+            SoundProfile(enabled=False),
+            room_peqs=[],
+            out_path=out_path,
+            profile_id=f"measurement-{sess.session_id}",
+        )
+        assert_correction_graph_safe(result.yaml)
+        sess.pre_measurement_config_path = Path(anchor)
+        return {
+            "prior_config_path": anchor,
+            "room_peq_count": result.room_peq_count,
+            "sound_filter_count": 0,
+        }
+
+    try:
+        state = await apply_dsp_config(
+            source="correction_measurement",
+            candidate_path=out_path,
+            load_config=lambda path: cam.set_config_file_path(
+                path,
+                best_effort=False,
+            ),
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=True,
+            ),
+            prepare=_prepare_config,
+            room_peq_count=0,
+            sound_filter_count=0,
+        )
+    except DspApplyError as exc:
+        if isinstance(
+            exc.__cause__,
+            (CarrierCannotHostEq, CorrectionRuntimeSafetyError),
+        ):
+            raise exc.__cause__ from exc
+        raise
+    sess.measurement_config_path = out_path
+    if state.prior_config_path:
+        sess.pre_measurement_config_path = Path(state.prior_config_path)
+    descriptor = describe_current_config(
+        sess.pre_measurement_config_path,
+        config_dir=sess.cfg.config_dir,
+        base_config_path=sess.cfg.base_config_path,
+    )
+    log_event(
+        logger,
+        "correction.measurement_baseline_loaded",
+        session=sess.session_id,
+        prior=str(sess.pre_measurement_config_path),
+        candidate=str(out_path),
+        op_id=state.op_id,
+    )
+    return {
+        "current_correction_at_start": descriptor,
+        "measurement_config_path": str(out_path),
+        "prior_config_path": str(sess.pre_measurement_config_path),
+        "last_dsp_apply": state.to_dict(),
+    }
 
 
 def _handle_next_position(
@@ -1587,8 +1687,13 @@ def _reset_accepts_target_config_path(reset_fn: Any) -> bool:
 
 
 def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /reset: roll back to the topology-safe reset graph. Restores
-    pre-autolevel main_volume if autolevel was used."""
+    """POST /reset: cancel a measurement or strip active room correction.
+
+    If a measurement is in progress (or failed before apply), restore the graph
+    that was active before `/start`. Once a correction is applied, reset means
+    "remove Layer B" — re-emit the current graph with room PEQs cleared while
+    preserving topology-owned speaker DSP and current preference EQ.
+    """
     from jasper.correction.runtime_safety import reset_config_path
 
     sess = _get_or_create_session()
@@ -1604,7 +1709,18 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "base_config_path",
             Path("/etc/camilladsp/outputd-cutover.yml"),
         )
-        target = reset_config_path(base_config_path)
+        target = _pre_measurement_restore_target(sess)
+        if target is None:
+            try:
+                target = _run_async(
+                    _write_no_room_correction_config(sess, cam),
+                    timeout=5.0,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "/reset: no-room re-emit failed; falling back to safe graph",
+                )
+                target = reset_config_path(base_config_path)
         reset_kwargs = (
             {"target_config_path": target}
             if _reset_accepts_target_config_path(sess.reset)
@@ -1616,6 +1732,56 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # reset() raised (see _handle_apply).
         _maybe_restore_main_volume(sess, cam)
     return {"session_id": sess.session_id, "state": sess.state.value}
+
+
+def _pre_measurement_restore_target(sess: Any) -> Path | None:
+    """Prior graph to restore when reset is cancelling this measurement."""
+    state_value = getattr(getattr(sess, "state", None), "value", None)
+    if state_value in {"idle", "applied", "verified"}:
+        return None
+    prior = getattr(sess, "pre_measurement_config_path", None)
+    return Path(prior) if prior else None
+
+
+async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
+    """Emit the current graph with room correction cleared.
+
+    For passive/full-range graphs this is the ordinary sound config. For active
+    baselines it is still an active graph; content-based status/carrier checks
+    keep that safe even though the durable filename is `sound_current.yml`.
+    """
+
+    from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.sound.camilla_yaml import sound_config_path
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.profile import load_profile
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = Path(
+        getattr(cfg, "config_dir", Path("/var/lib/camilladsp/configs"))
+    )
+    config_dir.mkdir(parents=True, exist_ok=True)
+    current_path = await cam.get_config_file_path(best_effort=False)
+    if not current_path:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    out_path = sound_config_path(config_dir)
+    carrier = carrier_for_loaded_config(current_path, config_dir=config_dir)
+    profile = load_profile()
+    result = carrier.reemit(
+        profile,
+        room_peqs=[],
+        out_path=out_path,
+        profile_id=f"correction-reset-{time.time_ns()}",
+    )
+    assert_correction_graph_safe(result.yaml)
+    log_event(
+        logger,
+        "correction.reset_no_room_config",
+        current=str(current_path),
+        candidate=str(out_path),
+        room_peqs=result.room_peq_count,
+    )
+    return out_path
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
@@ -1745,17 +1911,109 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 logger.exception("%s failed", path)
                 self._send_json({"ok": False, "error": str(e)}, status=500)
 
+        def _dispatch_crossover(self, path: str) -> None:
+            """POST /crossover/* — secure active-crossover measurement."""
+            from . import correction_crossover_flow
+
+            try:
+                if path in {
+                    "/crossover/driver-capture",
+                    "/crossover/summed-capture",
+                }:
+                    try:
+                        body = _read_wav_body(
+                            self,
+                            max_bytes=MAX_CROSSOVER_WAV_BODY_BYTES,
+                        )
+                    except BadRequest as e:
+                        self._send_json(
+                            {"ok": False, "error": str(e)},
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if path == "/crossover/driver-capture":
+                        payload, status = correction_crossover_flow.handle_driver_capture(
+                            self,
+                            body,
+                        )
+                    else:
+                        payload, status = correction_crossover_flow.handle_summed_capture(
+                            self,
+                            body,
+                        )
+                    self._send_json(payload, status=int(status))
+                    return
+
+                raw = _read_json_body(self)
+                if path == "/crossover/driver-test":
+                    payload, status = correction_crossover_flow.handle_driver_test(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                elif path == "/crossover/driver-confirm":
+                    payload, status = correction_crossover_flow.handle_driver_confirm(
+                        raw,
+                        _run_async,
+                        _camilla,
+                    )
+                elif path == "/crossover/driver-abort":
+                    payload, status = correction_crossover_flow.handle_driver_abort(
+                        _run_async,
+                        _camilla,
+                    )
+                elif path == "/crossover/summed-test":
+                    payload, status = correction_crossover_flow.handle_summed_test(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                elif path == "/crossover/driver-capture-sweep":
+                    payload, status = correction_crossover_flow.handle_driver_capture_sweep(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                else:
+                    payload, status = correction_crossover_flow.handle_summed_capture_sweep(
+                        raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_crossover_blocking_phase(),
+                    )
+                self._send_json(payload, status=int(status))
+            except BadRequest as e:
+                self._send_json(
+                    {"ok": False, "error": str(e)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except ValueError as e:
+                self._send_json(
+                    {"ok": False, "error": str(e)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except (OSError, RuntimeError, TypeError) as e:
+                logger.exception("%s failed", path)
+                self._send_json({"ok": False, "error": str(e)}, status=500)
+
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path not in {
                 "/",
+                "/room",
                 "/healthz",
                 "/status",
                 "/sessions",
                 "/session-report",
                 "/calibration/models",
+                "/crossover",
+                "/crossover/status",
+                "/bass",
                 "/balance",
                 "/balance/status",
                 "/sync",
@@ -1771,11 +2029,38 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     cfg["hostname"], ctx["csrf_token"],
                 ))
                 return
-            if path == "/":
+            if path in {"/", "/room"}:
                 ctx = begin_request(self)
                 self._send_html(_render_page(
                     cfg["hostname"], ctx["csrf_token"], ctx["flash"],
                 ))
+                return
+            if path == "/crossover":
+                from . import correction_crossover_flow
+                ctx = begin_request(self)
+                self._send_html(
+                    correction_crossover_flow.render_page(
+                        cfg["hostname"], ctx["csrf_token"],
+                    )
+                )
+                return
+            if path == "/crossover/status":
+                from . import correction_crossover_flow
+                try:
+                    payload, status = correction_crossover_flow.handle_status()
+                    self._send_json(payload, status=int(status))
+                except (OSError, RuntimeError, TypeError, ValueError) as e:
+                    logger.exception("/crossover/status failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/bass":
+                from . import correction_bass_flow
+                ctx = begin_request(self)
+                self._send_html(
+                    correction_bass_flow.render_page(
+                        cfg["hostname"], ctx["csrf_token"],
+                    )
+                )
                 return
             if path == "/balance":
                 from . import balance_flow
@@ -1868,6 +2153,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/apply",
                 "/reset",
                 "/session/delete",
+                "/crossover/driver-test",
+                "/crossover/driver-confirm",
+                "/crossover/driver-abort",
+                "/crossover/summed-test",
+                "/crossover/driver-capture-sweep",
+                "/crossover/summed-capture-sweep",
+                "/crossover/driver-capture",
+                "/crossover/summed-capture",
                 "/balance/start",
                 "/balance/ramp",
                 "/balance/lock",
@@ -1886,7 +2179,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            if bonded_follower_active():
+            if bonded_follower_active() and not path.startswith("/crossover/"):
                 log_event(
                     logger,
                     "correction.follower_content_dsp_blocked",
@@ -1908,14 +2201,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path.startswith("/sync/"):
                 self._dispatch_sync(path)
                 return
+            if path.startswith("/crossover/"):
+                self._dispatch_crossover(path)
+                return
             try:
                 if path == "/start":
                     from jasper.correction.runtime_safety import (
                         CorrectionRuntimeSafetyError,
                     )
+                    from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_start(self))
-                    except CorrectionRuntimeSafetyError as e:
+                    except (CorrectionRuntimeSafetyError, CarrierCannotHostEq) as e:
                         self._send_client_error(
                             str(e),
                             status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -1999,7 +2296,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_client_error(str(e))
                     return
                 if path == "/apply":
-                    self._send_json(_handle_apply(self))
+                    from jasper.correction.runtime_safety import (
+                        CorrectionRuntimeSafetyError,
+                    )
+                    from jasper.sound.graph_carrier import CarrierCannotHostEq
+                    try:
+                        self._send_json(_handle_apply(self))
+                    except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
+                        self._send_client_error(
+                            str(e),
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
                     return
                 if path == "/reset":
                     # Local import keeps session/numpy off the socket-activated
@@ -2055,7 +2362,7 @@ def make_server(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-correction-web",
-        description="Room correction wizard at /correction/ for the JTS speaker",
+        description="HTTPS correction measurement hub at /correction/ for the JTS speaker",
     )
     parser.add_argument(
         "--host",

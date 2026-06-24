@@ -4,18 +4,18 @@
 
 """Contract tests for the xAI Grok Voice adapter.
 
-Grok bills a flat ~$3/hour by connection uptime, but JTS's daily spend
-cap is token-based — so the cap only constrains Grok if a
-``ConnectionUptimeMeter`` records uptime intervals that the spend
-queries fold in. ``GrokRealtimeConnection`` subclasses
+Grok Voice publishes a flat realtime rate, but the xAI dashboard shows
+idle warm WebSocket time is not billed like active conversation time.
+JTS therefore estimates Grok spend from billable turn intervals, not
+socket-open wall clock. ``GrokRealtimeConnection`` subclasses
 ``OpenAIRealtimeConnection`` and inherits the meter plumbing; these
 tests pin that down on the Grok class specifically (rather than relying
 on the base-class test) plus the two facts that make the daemon wire a
 meter for Grok at all:
 
-  1. ``GrokRealtimeConnection`` exposes ``set_uptime_meter`` and fires
-     the meter's ``mark_connected`` / ``mark_disconnected`` hooks on
-     open / teardown.
+  1. ``GrokRealtimeConnection`` exposes ``set_billable_activity_meter`` and fires
+     the meter's ``mark_started`` / ``mark_ended`` hooks on
+     turn acquire / release.
   2. The bundled rate card for Grok's default model carries
      ``flat_per_hour_usd > 0`` — the gate the daemon checks before
      wiring a meter (``_make_connection`` grok branch + the
@@ -27,9 +27,15 @@ no real xAI WebSocket is opened.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from jasper.tools import ToolRegistry
-from jasper.usage import load_pricing_overrides, pricing_for_model
+from jasper.usage import (
+    BillableActivityMeter,
+    UsageStore,
+    load_pricing_overrides,
+    pricing_for_model,
+)
 from jasper.voice.grok_session import (
     GROK_WEBSOCKET_BASE_URL,
     GrokRealtimeConnection,
@@ -97,40 +103,44 @@ def test_grok_routes_to_xai_endpoint() -> None:
     assert conn._base_url == GROK_WEBSOCKET_BASE_URL
 
 
-async def test_grok_uptime_meter_hooks_fire_on_open_and_teardown() -> None:
-    """The Grok connection must call the wired uptime meter on a
-    successful open and on teardown — the bridge that makes time-billed
-    (Grok) cost non-zero against the daily spend cap. Regression guard:
-    if Grok ever stops inheriting the meter hooks, its cost silently
-    reverts to $0 while token-billed tests stay green."""
+async def test_grok_activity_meter_hooks_fire_on_turn_acquire_and_release() -> None:
+    """The Grok connection must meter active turns, not idle socket time.
+
+    Regression guard: if Grok ever starts marking the meter on WebSocket
+    open, the local spend estimate can run far ahead of xAI's dashboard
+    and false-trip the daily cap.
+    """
     conn, _factory = _make_grok_conn()
     events: list[str] = []
 
     class _StubMeter:
-        def mark_connected(self) -> None:
-            events.append("connected")
+        def mark_started(self) -> None:
+            events.append("started")
 
-        def mark_disconnected(self) -> None:
-            events.append("disconnected")
+        def mark_ended(self) -> None:
+            events.append("ended")
 
     # The connection must expose the wiring point the daemon calls.
-    assert callable(getattr(conn, "set_uptime_meter", None))
-    conn.set_uptime_meter(_StubMeter())
+    assert callable(getattr(conn, "set_billable_activity_meter", None))
+    conn.set_billable_activity_meter(_StubMeter())
 
     registry = ToolRegistry()
     await conn.start(registry, "")
-    # _open_session is awaited inside start(); the open is recorded
-    # deterministically by the time start() returns.
-    assert events == ["connected"]
+    # Warm idle connection time is not billed by the local estimate.
+    assert events == []
+    turn = await conn.acquire_turn()
+    assert events == ["started"]
+    await turn.release()
+    assert events == ["started", "ended"]
     await conn.stop()
-    assert events == ["connected", "disconnected"]
+    assert events == ["started", "ended"]
 
 
 async def test_grok_no_meter_by_default_is_safe() -> None:
     """No meter wired (e.g. a misconfigured deploy) must be a no-op on
     open/teardown, not a crash — fail-safe on the wake-blocking path."""
     conn, _factory = _make_grok_conn()
-    assert conn._uptime_meter is None
+    assert conn._billable_activity_meter is None
     registry = ToolRegistry()
     await conn.start(registry, "")
     await conn.stop()  # must not raise with no meter set
@@ -138,12 +148,54 @@ async def test_grok_no_meter_by_default_is_safe() -> None:
 
 def test_grok_default_model_is_time_billed() -> None:
     """The daemon only wires a meter when ``pricing.flat_per_hour_usd >
-    0``. Grok's default model must carry a positive hourly rate in the
-    bundled card, or the cap stays inoperative for Grok regardless of
-    the connection-side plumbing."""
+    0``. Grok's default model must carry a positive realtime hourly rate
+    in the bundled card, or the cap stays inoperative for Grok regardless
+    of the connection-side plumbing."""
     default_model = GrokRealtimeConnection.__init__.__defaults__[0]
     assert default_model == "grok-voice-think-fast-1.0"
     pricing = pricing_for_model(
         default_model, overrides=load_pricing_overrides(),
     )
     assert pricing.flat_per_hour_usd > 0
+
+
+def test_flat_rate_meter_wiring_uses_generic_activity_hook(tmp_path) -> None:
+    from jasper.voice.daemon_main import _wire_billable_activity_meter
+
+    class _FlatRateConnection:
+        meter = None
+
+        def set_billable_activity_meter(self, meter) -> None:
+            self.meter = meter
+
+    conn = _FlatRateConnection()
+    store = UsageStore(str(tmp_path / "usage.db"))
+    wired = _wire_billable_activity_meter(
+        connection=conn,  # type: ignore[arg-type]
+        usage_store=store,
+        provider="future-flat",
+        flat_per_hour_usd=2.5,
+    )
+
+    assert wired is True
+    assert isinstance(conn.meter, BillableActivityMeter)
+
+
+def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
+    from jasper.voice.daemon_main import _wire_billable_activity_meter
+
+    store = UsageStore(str(tmp_path / "usage.db"))
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        wired = _wire_billable_activity_meter(
+            connection=object(),  # type: ignore[arg-type]
+            usage_store=store,
+            provider="future-flat",
+            flat_per_hour_usd=2.5,
+        )
+
+    assert wired is False
+    assert any(
+        "event=pricing.flat_rate_meter_unavailable" in r.getMessage()
+        and "provider=future-flat" in r.getMessage()
+        for r in caplog.records
+    )

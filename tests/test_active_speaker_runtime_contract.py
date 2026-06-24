@@ -37,7 +37,7 @@ from jasper.active_speaker.runtime_contract import (
     flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
 )
-from jasper.camilla_config_contract import FilterSpec
+from jasper.camilla_config_contract import FilterSpec, PeqFilter
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.profile import SimpleEq, SoundProfile
 
@@ -184,6 +184,7 @@ def _active_baseline_yaml(
     layout: str,
     way: int,
     *,
+    room_peqs: tuple[PeqFilter, ...] = (),
     preference_filters: tuple[FilterSpec, ...] = (),
     output_trim_db: float = 0.0,
 ) -> str:
@@ -191,6 +192,7 @@ def _active_baseline_yaml(
     return emit_active_speaker_baseline_config(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
+        room_peqs=room_peqs,
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         baseline_id=f"baseline-{layout}-{way}way",
@@ -375,6 +377,39 @@ def test_baseline_preference_boost_rides_at_unity() -> None:
     assert _headroom_db(flat) == 0.0
     assert _headroom_db(boosted) == 0.0
     assert "volume_limit: 0.0" in boosted
+
+
+def test_baseline_room_peqs_pre_split_and_boost_headroom_folds() -> None:
+    import re
+
+    room_peqs = (
+        PeqFilter(freq=45.0, q=5.0, gain=2.0),
+        PeqFilter(freq=80.0, q=6.0, gain=-4.0),
+        PeqFilter(freq=120.0, q=4.0, gain=1.0),
+    )
+    text = _active_baseline_yaml("mono", 2, room_peqs=room_peqs)
+
+    assert "room_peq_1:" in text and "room_peq_2:" in text
+    assert "room_peq_3:" in text
+    assert "room_headroom" not in text
+    match = re.search(
+        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
+        text,
+    )
+    assert match is not None
+    assert float(match.group(1)) == -3.0
+
+    pipeline = text[text.index("\npipeline:"):]
+    room_idx = pipeline.index("names: [room_peq_1, room_peq_2, room_peq_3]")
+    headroom_idx = pipeline.index("names: [active_baseline_headroom]")
+    mixer_idx = pipeline.index("type: Mixer")
+    assert room_idx < headroom_idx < mixer_idx
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=text
+    )
+    assert graph.allowed is True, graph.issues
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
 def test_baseline_output_trim_folds_into_headroom_with_eq() -> None:
@@ -826,6 +861,53 @@ def test_driver_domain_rejects_injected_program_prefix() -> None:
     graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=bad)
     assert not graph.allowed
     assert "active_driver_domain_program_prefix_present" in {i["code"] for i in graph.issues}
+
+
+def test_driver_domain_rejects_injected_room_peq_prefix() -> None:
+    text = _driver_domain_yaml("mono", 2)
+    bad = text.replace(
+        "filters:\n",
+        "filters:\n"
+        "  room_peq_1:\n"
+        "    type: Biquad\n"
+        "    parameters:\n"
+        "      type: Peaking\n"
+        "      freq: 80.0000\n"
+        "      q: 4.0000\n"
+        "      gain: 2.0000\n",
+    ).replace(
+        "pipeline:\n",
+        "pipeline:\n"
+        "  - type: Filter\n    channels: [0, 1]\n    names: [room_peq_1]\n",
+    )
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=bad)
+    codes = {i["code"] for i in graph.issues}
+    assert not graph.allowed
+    assert "active_driver_domain_room_peq_present" in codes
+    assert "active_driver_domain_program_filter_step_present" in codes
+
+
+def test_driver_domain_rejects_arbitrary_program_domain_filter_step() -> None:
+    text = _driver_domain_yaml("mono", 2)
+    bad = text.replace(
+        "filters:\n",
+        "filters:\n"
+        "  pref_pk:\n"
+        "    type: Biquad\n"
+        "    parameters:\n"
+        "      type: Peaking\n"
+        "      freq: 1200.0000\n"
+        "      q: 1.0000\n"
+        "      gain: 3.0000\n",
+    ).replace(
+        "pipeline:\n",
+        "pipeline:\n"
+        "  - type: Filter\n    channels: [0, 1]\n    names: [pref_pk]\n",
+    )
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=bad)
+    codes = {i["code"] for i in graph.issues}
+    assert not graph.allowed
+    assert "active_driver_domain_program_filter_step_present" in codes
 
 
 def test_driver_domain_rejects_channel_select_after_split() -> None:

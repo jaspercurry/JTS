@@ -110,6 +110,263 @@ def read_unit_active_states(units: list[str]) -> dict[str, str]:
     return {u: "unknown" for u in units}
 
 
+def _dac_content_signal(local_outputd_status: Any) -> dict[str, Any]:
+    """Local outputd dac_content signal for the pair-lock verdict. PURE.
+
+    ``serving_fifo=true`` is useful: it says snapclient is feeding bytes
+    into outputd's bonded-member lane. It is deliberately NOT a clock-lock
+    signal; Snapcast's rate loop may still be unproven from JTS's point of
+    view. Keep that distinction explicit in the JSON so dashboards and
+    doctor never collapse "bytes flow" into "sample lock proven."
+    """
+    signal: dict[str, Any] = {
+        "source": "outputd.dac_content",
+        "available": False,
+        "enabled": None,
+        "serving_fifo": None,
+        "bytes_flowing": None,
+        "meaning": "serving_fifo means bytes are flowing; it is not a clock-lock signal",
+    }
+    if not isinstance(local_outputd_status, dict):
+        signal["detail"] = "outputd STATUS unavailable"
+        return signal
+    dac = local_outputd_status.get("dac_content")
+    if not isinstance(dac, dict):
+        signal["detail"] = "outputd STATUS has no dac_content block"
+        return signal
+    enabled = dac.get("enabled") is True
+    serving = dac.get("serving_fifo") is True
+    signal.update({
+        "available": True,
+        "enabled": enabled,
+        "serving_fifo": serving,
+        "bytes_flowing": enabled and serving,
+        "detail": (
+            "snapclient is feeding the local outputd FIFO"
+            if enabled and serving
+            else "local outputd FIFO is not serving bonded content"
+        ),
+    })
+    return signal
+
+
+def _stream_client_signal(
+    stream_clients: Any,
+    *,
+    self_name: str = "",
+    want_stream: str = "",
+) -> dict[str, Any]:
+    """Snapcast RPC signal used by the pair-lock verdict. PURE."""
+    signal: dict[str, Any] = {
+        "source": "snapcast.Server.GetStatus",
+        "available": False,
+        "reachable": None,
+        "connected": 0,
+        "audible": 0,
+        "wrong_stream": 0,
+        "muted_or_zero": 0,
+        "own_client_connected": None,
+        "clients": [],
+        "meaning": (
+            "Snapcast RPC exposes connection, stream binding, configured "
+            "latency, stream status, and software volume; it does not "
+            "expose buffer fill, drift, or clock lock"
+        ),
+    }
+    if stream_clients is None:
+        signal["detail"] = "snapcast registry not probed on this role"
+        return signal
+    if stream_clients == "unreachable":
+        signal.update({
+            "available": True,
+            "reachable": False,
+            "detail": "snapserver RPC unreachable",
+        })
+        return signal
+    if not isinstance(stream_clients, list):
+        signal["detail"] = "snapcast registry probe returned an unexpected shape"
+        return signal
+
+    clients: list[dict[str, Any]] = []
+    connected = audible = wrong_stream = muted_or_zero = 0
+    own_client_connected: bool | None = False if self_name else None
+    for row in stream_clients:
+        if not isinstance(row, dict):
+            continue
+        is_connected = row.get("connected") is True
+        on_stream = not want_stream or row.get("stream_id") == want_stream
+        is_muted = (
+            row.get("muted") is True
+            or row.get("group_muted") is True
+            or row.get("volume_percent", 100) == 0
+        )
+        if is_connected:
+            connected += 1
+        if is_connected and not on_stream:
+            wrong_stream += 1
+        if is_connected and is_muted:
+            muted_or_zero += 1
+        if is_connected and on_stream and not is_muted:
+            audible += 1
+        if self_name and row.get("name") == self_name:
+            own_client_connected = is_connected
+        clients.append({
+            "name": row.get("name") or "",
+            "connected": is_connected,
+            "stream_id": row.get("stream_id") or "",
+            "stream_status": row.get("stream_status") or "",
+            "muted": row.get("muted") is True,
+            "group_muted": row.get("group_muted") is True,
+            "volume_percent": row.get("volume_percent"),
+            "latency_ms": row.get("latency_ms"),
+        })
+
+    signal.update({
+        "available": True,
+        "reachable": True,
+        "connected": connected,
+        "audible": audible,
+        "wrong_stream": wrong_stream,
+        "muted_or_zero": muted_or_zero,
+        "own_client_connected": own_client_connected,
+        "clients": clients,
+        "detail": f"{audible}/{connected} connected snapclient(s) audible on {want_stream or 'the selected stream'}",
+    })
+    return signal
+
+
+def _follower_clock_lock_signal() -> dict[str, Any]:
+    """Follower clock-lock truth as exposed today. PURE.
+
+    We intentionally return ``locked=None`` instead of guessing. Snapcast
+    owns the sync engine, but its documented JSON-RPC control API does not
+    publish the follower's buffer fill, drift, or time-lock state. A future
+    snapclient-facing probe can replace this one signal without changing
+    the surrounding verdict shape.
+    """
+    return {
+        "source": "snapcast.Server.GetStatus",
+        "status": "unobservable",
+        "locked": None,
+        "detail": (
+            "Snapcast RPC does not expose follower buffer fill, drift, "
+            "or time-lock; connected/latency/volume are not clock lock"
+        ),
+    }
+
+
+def _derive_pair_lock(
+    cfg: GroupingConfig,
+    *,
+    runtime_health: str,
+    runtime_detail: str,
+    stream_clients: Any = None,
+    self_name: str = "",
+    want_stream: str = "",
+    local_outputd_status: Any = None,
+) -> dict[str, Any]:
+    """Composite "pair locked + healthy" verdict. PURE and total."""
+    if not cfg.enabled:
+        return {
+            "applicable": False,
+            "status": "off",
+            "locked_and_healthy": False,
+            "detail": "grouping off (solo)",
+            "signals": {},
+        }
+    if cfg.error is not None:
+        return {
+            "applicable": False,
+            "status": "invalid",
+            "locked_and_healthy": False,
+            "detail": cfg.error,
+            "signals": {},
+        }
+
+    fifo = _dac_content_signal(local_outputd_status)
+    stream = _stream_client_signal(
+        stream_clients, self_name=self_name, want_stream=want_stream,
+    )
+    clock = _follower_clock_lock_signal()
+    signals = {
+        "snapcast_clients": stream,
+        "local_fifo": fifo,
+        "follower_clock_lock": clock,
+    }
+
+    if runtime_health != "ok":
+        return {
+            "applicable": True,
+            "status": "degraded",
+            "locked_and_healthy": False,
+            "detail": runtime_detail,
+            "signals": signals,
+        }
+    if fifo.get("available") and fifo.get("bytes_flowing") is False:
+        return {
+            "applicable": True,
+            "status": "degraded",
+            "locked_and_healthy": False,
+            "detail": "local bonded output lane is not serving FIFO bytes",
+            "signals": signals,
+        }
+    if stream.get("reachable") is False:
+        return {
+            "applicable": True,
+            "status": "degraded",
+            "locked_and_healthy": False,
+            "detail": "snapserver RPC unreachable; pair health cannot be verified",
+            "signals": signals,
+        }
+    if (
+        stream.get("reachable") is True
+        and (
+            stream.get("wrong_stream", 0) > 0
+            or stream.get("muted_or_zero", 0) > 0
+            or stream.get("own_client_connected") is False
+        )
+    ):
+        return {
+            "applicable": True,
+            "status": "degraded",
+            "locked_and_healthy": False,
+            "detail": "snapcast clients are connected but not all audible on the JTS stream",
+            "signals": signals,
+        }
+    return {
+        "applicable": True,
+        "status": "unknown",
+        "locked_and_healthy": False,
+        "detail": (
+            "unit/binding/byte-flow health is clear enough, but follower "
+            "clock lock is unobservable from Snapcast RPC"
+        ),
+        "signals": signals,
+    }
+
+
+def _runtime_with_pair_lock(
+    runtime: dict[str, Any],
+    cfg: GroupingConfig,
+    *,
+    stream_clients: Any = None,
+    self_name: str = "",
+    want_stream: str = "",
+    local_outputd_status: Any = None,
+) -> dict[str, Any]:
+    runtime = dict(runtime)
+    runtime["pair_lock"] = _derive_pair_lock(
+        cfg,
+        runtime_health=str(runtime.get("health") or ""),
+        runtime_detail=str(runtime.get("detail") or ""),
+        stream_clients=stream_clients,
+        self_name=self_name,
+        want_stream=want_stream,
+        local_outputd_status=local_outputd_status,
+    )
+    return runtime
+
+
 def derive_grouping_runtime(
     cfg: GroupingConfig,
     unit_states: dict[str, str],
@@ -118,6 +375,7 @@ def derive_grouping_runtime(
     stream_clients: Any = None,
     self_name: str = "",
     want_stream: str = "",
+    local_outputd_status: Any = None,
 ) -> dict[str, Any]:
     """Combine the declared config with actual unit states into a runtime
     health verdict. PURE and total — no I/O, no clock.
@@ -158,23 +416,29 @@ def derive_grouping_runtime(
                        misconfigured and the reconciler refuses to start
                        it). ``detail`` is the error.
       - ``degraded`` — a unit that SHOULD be running is not ``active``,
-                       OR (leader only) the snap units are up but outputd
-                       is not tapping the stream — snapserver reads a green
+                       OR (leader only) the snap units are up but the active
+                       CamillaDSP config is not writing the pipe — snapserver reads a green
                        ``active`` while the FIFO is empty and followers get
                        silence. Both are §7 visible-failure cases: a
                        follower whose snapclient is ``failed``/``inactive``
                        (leader unreachable), a leader whose snapserver is
                        down, or a leader whose stream source is dry.
       - ``ok``       — every unit the plan wants up is ``active`` (and, for
-                       a leader, outputd is tapping the stream).
+                       a leader, active CamillaDSP writes the pipe).
 
     Always reports per-unit ``{expected, actual}`` so a dashboard can
     show exactly which leg is down.
     """
     if not cfg.enabled:
-        return {"health": "off", "detail": "grouping off (solo)", "units": {}}
+        return _runtime_with_pair_lock(
+            {"health": "off", "detail": "grouping off (solo)", "units": {}},
+            cfg,
+        )
     if cfg.error is not None:
-        return {"health": "invalid", "detail": cfg.error, "units": {}}
+        return _runtime_with_pair_lock(
+            {"health": "invalid", "detail": cfg.error, "units": {}},
+            cfg,
+        )
 
     expected = {it.unit: it.desired for it in plan(cfg).intents}
     units: dict[str, dict[str, str]] = {}
@@ -196,7 +460,14 @@ def derive_grouping_runtime(
             detail = "leader degraded — " + ", ".join(
                 f"{u}={unit_states.get(u, 'unknown')}" for u in down
             )
-        return {"health": "degraded", "detail": detail, "units": units}
+        return _runtime_with_pair_lock(
+            {"health": "degraded", "detail": detail, "units": units},
+            cfg,
+            stream_clients=stream_clients,
+            self_name=self_name,
+            want_stream=want_stream,
+            local_outputd_status=local_outputd_status,
+        )
 
     # Snap units are up. For a leader, the stream source must ALSO be live:
     # if the role needs a producer (``desired_snapfifo_path``) but nothing
@@ -204,73 +475,117 @@ def derive_grouping_runtime(
     # empty FIFO and followers get silence while every unit reads "active".
     # Surface that as degraded rather than a green-looking-but-dry bond.
     if cfg.role == "leader" and desired_snapfifo_path(cfg) and not leader_tap_path:
-        return {
-            "health": "degraded",
-            "detail": (
-                "leader's active CamillaDSP config does not write the "
-                "snapserver pipe — the stream is silent; the reconciler's "
-                "bond apply did not land (check "
-                "jasper-grouping-reconcile's journal)"
-            ),
-            "units": units,
-        }
+        return _runtime_with_pair_lock(
+            {
+                "health": "degraded",
+                "detail": (
+                    "leader's active CamillaDSP config does not write the "
+                    "snapserver pipe — the stream is silent; the reconciler's "
+                    "bond apply did not land (check "
+                    "jasper-grouping-reconcile's journal)"
+                ),
+                "units": units,
+            },
+            cfg,
+            stream_clients=stream_clients,
+            self_name=self_name,
+            want_stream=want_stream,
+            local_outputd_status=local_outputd_status,
+        )
 
     # Stream-binding + client-audibility truth (leader only; see the
     # stream_clients docstring). Unit states + the pipe config cannot
     # see these — the 2026-06-11 silent-bond class.
     if cfg.role == "leader" and stream_clients is not None:
         if stream_clients == "unreachable":
-            return {
-                "health": "degraded",
-                "detail": (
-                    "snapserver RPC unreachable — client stream bindings "
-                    "cannot be verified (run jasper-grouping-reconcile, "
-                    "check jasper-snapserver)"
-                ),
-                "units": units,
-            }
+            return _runtime_with_pair_lock(
+                {
+                    "health": "degraded",
+                    "detail": (
+                        "snapserver RPC unreachable — client stream bindings "
+                        "cannot be verified (run jasper-grouping-reconcile, "
+                        "check jasper-snapserver)"
+                    ),
+                    "units": units,
+                },
+                cfg,
+                stream_clients=stream_clients,
+                self_name=self_name,
+                want_stream=want_stream,
+                local_outputd_status=local_outputd_status,
+            )
         for row in stream_clients:
             if row.get("connected") and want_stream and row.get("stream_id") != want_stream:
-                return {
-                    "health": "degraded",
-                    "detail": (
-                        f"client {row.get('name') or '?'} is bound to stream "
-                        f"{row.get('stream_id') or '(none)'} (want {want_stream}) "
-                        "— it hears silence; run jasper-grouping-reconcile"
-                    ),
-                    "units": units,
-                }
+                return _runtime_with_pair_lock(
+                    {
+                        "health": "degraded",
+                        "detail": (
+                            f"client {row.get('name') or '?'} is bound to stream "
+                            f"{row.get('stream_id') or '(none)'} (want {want_stream}) "
+                            "— it hears silence; run jasper-grouping-reconcile"
+                        ),
+                        "units": units,
+                    },
+                    cfg,
+                    stream_clients=stream_clients,
+                    self_name=self_name,
+                    want_stream=want_stream,
+                    local_outputd_status=local_outputd_status,
+                )
             if row.get("connected") and (
-                row.get("muted") or row.get("volume_percent", 100) == 0
+                row.get("muted")
+                or row.get("group_muted")
+                or row.get("volume_percent", 100) == 0
             ):
-                return {
-                    "health": "degraded",
-                    "detail": (
-                        f"client {row.get('name') or '?'} is muted or at "
-                        "volume 0 in snapcast — its software mixer plays "
-                        "zeros; unmute via the snapcast registry"
-                    ),
-                    "units": units,
-                }
+                return _runtime_with_pair_lock(
+                    {
+                        "health": "degraded",
+                        "detail": (
+                            f"client {row.get('name') or '?'} is muted or at "
+                            "volume 0 in snapcast — its software mixer plays "
+                            "zeros; unmute via the snapcast registry"
+                        ),
+                        "units": units,
+                    },
+                    cfg,
+                    stream_clients=stream_clients,
+                    self_name=self_name,
+                    want_stream=want_stream,
+                    local_outputd_status=local_outputd_status,
+                )
         if self_name and not any(
             row.get("name") == self_name and row.get("connected")
             for row in stream_clients
         ):
-            return {
-                "health": "degraded",
-                "detail": (
-                    f"leader's own snapclient ({self_name}) is not connected "
-                    "to snapserver — the leader cannot hear its own bond"
-                ),
-                "units": units,
-            }
+            return _runtime_with_pair_lock(
+                {
+                    "health": "degraded",
+                    "detail": (
+                        f"leader's own snapclient ({self_name}) is not connected "
+                        "to snapserver — the leader cannot hear its own bond"
+                    ),
+                    "units": units,
+                },
+                cfg,
+                stream_clients=stream_clients,
+                self_name=self_name,
+                want_stream=want_stream,
+                local_outputd_status=local_outputd_status,
+            )
 
     detail = (
         f"leader streaming (bond {cfg.bond_id})"
         if cfg.role == "leader"
         else f"follower connected to {cfg.leader_addr} (bond {cfg.bond_id})"
     )
-    return {"health": "ok", "detail": detail, "units": units}
+    return _runtime_with_pair_lock(
+        {"health": "ok", "detail": detail, "units": units},
+        cfg,
+        stream_clients=stream_clients,
+        self_name=self_name,
+        want_stream=want_stream,
+        local_outputd_status=local_outputd_status,
+    )
 
 
 def _self_client_name() -> str:
@@ -281,7 +596,7 @@ def _self_client_name() -> str:
         import socket
 
         return socket.gethostname().strip()
-    except Exception:  # noqa: BLE001
+    except OSError:
         return ""
 
 
@@ -291,6 +606,7 @@ def read_grouping_state(
     unit_state_reader: Callable[[list[str]], dict[str, str]] | None = None,
     tap_path_reader: Callable[[], str] | None = None,
     stream_clients_reader: Callable[[], Any] | None = None,
+    local_outputd_reader: Callable[[], Any] | None = None,
     endpoint_status_reader: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Read the grouping config fresh from the SSOT file and return a
@@ -329,6 +645,11 @@ def read_grouping_state(
     :func:`active_leader_pipe_path`.
     """
     cfg = load_config(path)
+    subwoofer_present = (
+        cfg.subwoofer_present
+        or cfg.channel == "sub"
+        or any(m.channel == "sub" for m in cfg.roster)
+    )
     snapshot: dict[str, Any] = {
         "enabled": cfg.enabled,
         "role": cfg.role,
@@ -338,6 +659,8 @@ def read_grouping_state(
         "buffer_ms": cfg.buffer_ms,
         "codec": cfg.codec,
         "trim_db": cfg.trim_db,
+        "mains_highpass_enabled": cfg.mains_highpass_enabled,
+        "subwoofer_present": subwoofer_present,
         "peer_addr": cfg.peer_addr,
         "peer_name": cfg.peer_name,
         # The bond roster (leader only): every follower the leader recorded
@@ -349,20 +672,25 @@ def read_grouping_state(
         ],
         "error": cfg.error,
     }
-    # Receiver-side wireless-sub low-pass corner — only meaningful when this
-    # member plays the "sub" channel (it is the corner outputd applies as an
-    # LR4 low-pass). Surfaced only for subs so a non-sub member's snapshot
-    # does not imply a knob it never uses. Read fresh from the SSOT above,
-    # never os.environ.
-    if cfg.channel == "sub":
+    # Receiver-side wireless-sub crossover corner. Surfaced for the sub (its
+    # outputd LR4 low-pass) and for mains in a bond that has a sub (their
+    # outputd LR4 high-pass + /rooms toggle fan-out need the same SSOT).
+    # Read fresh from grouping.env, never os.environ.
+    if subwoofer_present:
         snapshot["crossover_hz"] = cfg.crossover_hz
     if cfg.enabled:
         states: dict[str, str] = {}
         tap = ""
         stream_clients: Any = None
+        local_outputd_status: Any = None
         if cfg.error is None:
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
+            if local_outputd_reader is not None:
+                try:
+                    local_outputd_status = local_outputd_reader()
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    local_outputd_status = None
             # Leader producer feed (Increment 5): the ACTIVE CamillaDSP
             # config scanned for the pipe sink — daemon-adjacent truth,
             # never an env-intent mirror. Only consulted for a leader.
@@ -392,6 +720,7 @@ def read_grouping_state(
             stream_clients=stream_clients,
             self_name=_self_client_name(),
             want_stream=SNAP_STREAM_ID,
+            local_outputd_status=local_outputd_status,
         )
 
         # Active-endpoint surface (distributed-active Slice 3 follower / Slice 5

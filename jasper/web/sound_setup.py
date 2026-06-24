@@ -2407,7 +2407,7 @@ def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
             try:
                 proc.kill()
                 proc.wait(timeout=0.75)
-            except Exception:  # noqa: BLE001 - best-effort cleanup only.
+            except (OSError, subprocess.TimeoutExpired):
                 pass
         except ProcessLookupError:
             pass
@@ -3000,7 +3000,7 @@ async def _active_speaker_play_summed_commission_tone(
                 try:
                     started_proc.kill()
                     started_proc.wait(timeout=0.75)
-                except Exception:  # noqa: BLE001 - best-effort cleanup only.
+                except (OSError, subprocess.TimeoutExpired):
                     pass
             except ProcessLookupError:
                 pass

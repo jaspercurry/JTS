@@ -129,6 +129,7 @@ def test_managed_units_cover_every_routed_client_unit():
         "bt-agent.service",
         "jasper-aec-bridge.service", "jasper-aec-init.service",
         "jasper-aec-reconcile.service", "jasper-grouping-reconcile.service",
+        "jasper-grouping-reconcile-trailing.service",
         "jasper-camilla.service", "jasper-outputd.service",
     }
     assert must_contain <= restart_broker.MANAGED_UNITS

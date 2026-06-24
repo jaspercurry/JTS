@@ -88,19 +88,35 @@ def summarize_groups(status: dict) -> list[dict[str, Any]]:
     """Flatten Server.GetStatus into per-client binding rows. PURE.
 
     Row: ``{group_id, stream_id, client_id, name, connected, muted,
-    volume_percent, latency_ms}`` — one per client, carrying its group's
-    stream binding. Tolerates missing keys (snapcast minor-version drift)
-    by defaulting safe."""
+    volume_percent, latency_ms, group_muted, stream_status}`` — one per
+    client, carrying its group's stream binding. Tolerates missing keys
+    (snapcast minor-version drift) by defaulting safe.
+
+    Snapcast's documented control API exposes connection, binding,
+    configured latency, stream status, and software volume. It does NOT
+    expose follower buffer fill, drift, or a clock-lock bit; keep those
+    out of this summary rather than implying stronger sync truth than the
+    RPC can provide.
+    """
     rows: list[dict[str, Any]] = []
-    for group in status.get("server", {}).get("groups", []):
+    server = status.get("server", {})
+    streams = {
+        stream.get("id", ""): stream.get("status", "")
+        for stream in server.get("streams", [])
+        if isinstance(stream, dict)
+    }
+    for group in server.get("groups", []):
+        stream_id = group.get("stream_id", "")
         for client in group.get("clients", []):
             volume = client.get("config", {}).get("volume", {})
             rows.append({
                 "group_id": group.get("id", ""),
-                "stream_id": group.get("stream_id", ""),
+                "stream_id": stream_id,
+                "stream_status": streams.get(stream_id, ""),
                 "client_id": client.get("id", ""),
                 "name": client.get("host", {}).get("name", ""),
                 "connected": bool(client.get("connected", False)),
+                "group_muted": bool(group.get("muted", False)),
                 "muted": bool(volume.get("muted", False)),
                 "volume_percent": _int_or(volume.get("percent", 100), 100),
                 "latency_ms": _int_or(

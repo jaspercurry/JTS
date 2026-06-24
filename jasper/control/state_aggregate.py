@@ -23,6 +23,7 @@ from ..audio_quality import (
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..multiroom.airplay_latency import with_airplay_latency_fit
+from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
@@ -176,6 +177,14 @@ def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
         }
     except Exception:  # noqa: BLE001
         logger.debug("disk snapshot read failed", exc_info=True)
+        return None
+
+
+def _multiroom_cascade_snapshot() -> dict[str, Any] | None:
+    try:
+        return cascade_timeline.snapshot()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        logger.debug("multiroom cascade timeline snapshot failed", exc_info=True)
         return None
 
 
@@ -670,7 +679,9 @@ async def _get_state(
     # enabled=False means grouping is off (solo); enabled=True with a
     # non-null error is the fail-LOUD "configured but broken" state.
     try:
-        grouping_state: dict | None = read_grouping_state()
+        grouping_state: dict | None = read_grouping_state(
+            local_outputd_reader=lambda: outputd_st,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("grouping state read failed")
         grouping_state = None
@@ -859,6 +870,12 @@ async def _get_state(
             # for this boot via runtime drop-ins — fix the failing
             # daemon, then reboot to re-arm.
             "bootloop_guard": bootloop_guard_state.snapshot(),
+            # Bounded after-the-fact timeline for multiroom restart cascades:
+            # existing event=multiroom.reconcile.*, restart_broker.*, and
+            # grouping_supervisor.* journal lines, scanned into a tiny ring so
+            # /state can answer "what kicked what recently?" without a raw log
+            # bundle.
+            "multiroom_cascade": _multiroom_cascade_snapshot(),
             # Effective mDNS identity (jasper-identity-reconcile, boot
             # + 5-min timer). status=collision means Avahi renamed us —
             # another device owns our hostname; the management
