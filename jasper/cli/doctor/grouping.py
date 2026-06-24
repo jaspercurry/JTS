@@ -585,6 +585,7 @@ def check_grouping_tts_lane() -> CheckResult:
     )
 
     label = "grouping: TTS lane"
+    fanin_tts_socket = "/run/jasper-fanin/tts.sock"
     cfg = load_config()
 
     voice_runtime_env, voice_runtime_error = _resolved_jasper_voice_env()
@@ -601,13 +602,13 @@ def check_grouping_tts_lane() -> CheckResult:
         if (
             voice_runtime_env is not None
             and voice_socket
-            and voice_socket != "/run/jasper-fanin/tts.sock"
+            and voice_socket != fanin_tts_socket
         ):
             return CheckResult(
                 label, "warn",
                 f"solo but jasper-voice runtime env resolves "
                 f"{VOICE_TTS_SOCKET_ENV} to {voice_socket} instead of "
-                "/run/jasper-fanin/tts.sock — assistant voice targets an "
+                f"{fanin_tts_socket} — assistant voice targets an "
                 "un-armed socket; run "
                 "jasper-grouping-reconcile",
             )
@@ -632,7 +633,7 @@ def check_grouping_tts_lane() -> CheckResult:
     lane_armed = bool(outputd_env.get(OUTPUTD_TTS_SOCKET_ENV))
 
     if active_endpoint:
-        if voice_socket or lane_armed:
+        if (voice_socket and voice_socket != fanin_tts_socket) or lane_armed:
             return CheckResult(
                 label, "warn",
                 "active bonded endpoint must keep assistant TTS on fan-in "
