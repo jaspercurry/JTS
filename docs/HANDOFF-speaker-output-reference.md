@@ -370,9 +370,9 @@ What exists:
   the first dongle. Runtime sink activation is intentionally stricter
   than hardware observation: `jasper-audio-hardware-reconcile` switches
   `/var/lib/jasper/outputd.env` to `JASPER_OUTPUTD_SINK=dual_apple` only
-  when the active-speaker startup-load state is `loaded`, CamillaDSP's
-  outputd statefile points at that active config, and the active config
-  is the expected four-channel `outputd_active_content_playback` graph.
+  when the active-speaker runtime contract proves the already-loaded endpoint
+  graph targets `outputd_active_content_playback` and its width fits the
+  profile cap.
   Until that graph evidence is present, the observed output-hardware
   profile remains dual Apple for UI/diagnostics, but the runtime DAC role
   is parked with `JASPER_OUTPUTD_BACKEND=fake` and logs
@@ -734,12 +734,15 @@ place to get it right and the most expensive to get wrong later.
 > emits the wide single env (item 3) — `JASPER_OUTPUTD_SINK=single_alsa`,
 > `JASPER_OUTPUTD_ACTIVE_CHANNELS=<active_outputd_lane_channels>`,
 > `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture` — for a recognized
-> coherent single DAC **only when an active baseline of that width is the loaded
-> CamillaDSP config**, decided by the width-aware cutover gate (item 5, the old
-> `dual_apple_active_graph_status` renamed to `active_graph_status`, status
-> `active_graph_width_mismatch expected=N got=M`); otherwise it stays
-> byte-identical stereo. The gate **drives what we use**: it reads the loaded
-> config's actual playback width W, accepts `2 ≤ W ≤ cap`
+> coherent single DAC **only when the active-speaker runtime contract proves the
+> already-loaded endpoint graph**. For solo active that endpoint is the graph in
+> `outputd-statefile.yml`. For an active leader, `outputd-statefile.yml` may be
+> the safe `program_bake_pipe` (`File`→`SNAPFIFO`, not a DAC); in that case the
+> gate follows `crossover-statefile.yml` and requires the camilla#2 graph to be a
+> re-proven `driver_domain_baseline` targeting `outputd_active_content_playback`.
+> Any missing/unsafe/wrong-device/over-cap paired graph fails closed to the
+> byte-identical stereo path. The gate **drives what we use**: it reads the live
+> endpoint config's actual playback width W, accepts `2 ≤ W ≤ cap`
 > (`active_outputd_lane_channels`), and emits **that W** as
 > `JASPER_OUTPUTD_ACTIVE_CHANNELS` (a managed var cleared in every non-active
 > branch). A DAC8x running a 2-way drives 2 outputs, an 8-driver speaker drives
@@ -1413,9 +1416,10 @@ exceptions rechecked against
 `jasper.cli.doctor.grouping`; fan-in solo `FLUSH_SYNC` playout-ledger ack
 previously verified against rust/jasper-fanin/src/{playout,tts}.rs;
 active-speaker runtime graph boundary rechecked against
-`jasper.active_speaker.runtime_contract`, install outputd-statefile selection,
-doctor runtime graph check, `resolve_output_layout`, and the active-lane
-`DacProfile` declarations; Stage-7 outputd loop unification previously
+`jasper.active_speaker.runtime_contract`,
+`outputd_active_lane_decision`'s paired active-leader statefile proof, install
+outputd-statefile selection, doctor runtime graph check, `resolve_output_layout`,
+and the active-lane `DacProfile` declarations; Stage-7 outputd loop unification previously
 rechecked against rust/jasper-outputd; solo fan-in TTS ownership and
 passive bonded-member outputd TTS ownership previously rechecked against
 rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path
