@@ -22,7 +22,9 @@
   `/correction/bass/` is a placeholder tab for subwoofer /
   low-frequency tuning. The plain-HTTP preflight accepts
   `?next=/correction/...` so HTTP-only setup flows can link directly to a
-  secure subflow after showing the certificate warning.
+  secure subflow after showing the certificate warning; its Proceed
+  button uses `/correction/proceed[/subflow]`, and nginx redirects to
+  `https://$host/...` so non-default hostnames survive the scheme switch.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /correction/`, `/correction/balance`, and
@@ -37,11 +39,16 @@
   page with `getSettings()` constraint verify lands at
   `https://jts.local/correction/`.
 - ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial.**
-  Implemented 2026-05-28. `http://jts.local/correction/` now serves a
-  static preflight page that explains the browser's self-signed-cert
-  warning and links to `https://jts.local/correction/` for the actual
-  measurement UI. The landing page links to the HTTP preflight, and
-  the HTTPS correction page's Home link points back to
+  Implemented 2026-05-28; hostname-safe proceed redirect added
+  2026-06-24. `http://jts.local/correction/` now serves a static
+  preflight page that explains the browser's self-signed-cert warning.
+  Its default OK button targets `/correction/proceed`, with optional
+  `/room`, `/crossover`, or `/bass` proceed suffixes when a safe
+  `?next=/correction/...` target is present. Nginx owns the final
+  `https://$host/...` redirect, so `jts3.local` and other configured
+  hostnames do not depend on client-side hostname rewriting. The landing
+  page links to the HTTP preflight, and the HTTPS correction page's Home
+  link points back to
   `http://jts.local/` so relative navigation does not inherit the
   HTTPS origin and hit the 443 catch-all. The 443 catch-all now
   redirects non-correction paths back to HTTP instead of returning 404,
@@ -602,9 +609,11 @@ declaring v2 shippable.
 ## Goal
 
 A measurement-and-correction loop that runs from a phone at the
-listening position. Start at `http://jts.local/correction/`, read the
-plain-HTTP warning preflight, then tap through to
-`https://jts.local/correction/` for the secure browser-mic page.
+listening position. Start at `http://jts.local/correction/` (or the
+speaker's actual hostname, such as `http://jts3.local/correction/`),
+read the plain-HTTP warning preflight, then tap through the
+hostname-safe `/correction/proceed` redirect to the secure browser-mic
+page.
 Optionally pick a calibrated USB measurement mic, the speaker plays a
 sweep, the phone records it, the Pi designs a PEQ filter set,
 hot-reloads CamillaDSP, and the next song plays through the corrected
@@ -674,8 +683,11 @@ loses the YouTube hook.
   that CA for the configured `JASPER_HOSTNAME`, its wildcard, the
   historical `jts.local`, and `127.0.0.1`.
 - Port 80 serves `http://jts.local/correction/` as a static preflight
-  page and `http://jts.local/jts-root-ca.crt` with
-  `application/x-x509-ca-cert`.
+  page, `/correction/proceed[/room|/crossover|/bass]` as no-JS
+  `https://$host/...` redirects, and `http://jts.local/jts-root-ca.crt`
+  with `application/x-x509-ca-cert`. The preflight HTML is served
+  `Cache-Control: no-store` so a phone cannot keep an old hard-coded
+  proceed target after deploy.
 - Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
   `/assets/` statically. The measurement UI's canonical look links
   `/assets/app.css` + its ES module by absolute path; without an `/assets/`
@@ -722,8 +734,12 @@ coordinator code; we do the same here for the
 ```
 HTTP port 80:
 GET  /correction/            static preflight explaining the HTTPS warning;
-                             OK button links to https://<host>/correction/
-                             or a safe ?next=/correction/... target
+                             OK button links to /correction/proceed, or
+                             /correction/proceed/<subflow> for safe
+                             ?next=/correction/... targets
+GET  /correction/proceed     redirect to https://$host/correction/
+GET  /correction/proceed/room|crossover|bass
+                             redirect to the matching https://$host/correction/ subflow
 GET  /jts-root-ca.crt        download private root CA for iOS trust
 
 HTTPS port 443 after nginx strips /correction/:
@@ -778,12 +794,15 @@ allows it.
 
 **Decision:** `http://jts.local/correction/` is the user-facing entry
 route. It serves a static preflight page on port 80, then the
-measurement flow switches to `https://jts.local/correction/` because
-browser microphone capture requires a secure context. The nginx
-port-80 landing page at `/usr/share/jasper-web/index.html` links to
-the preflight instead of directly to HTTPS. The 443 catch-all redirects
-non-correction paths back to HTTP — the one exception is `/assets/`, served
-statically so the measurement UI's CSS/JS aren't mixed-content-blocked; it
+measurement flow switches through `/correction/proceed` to
+`https://$host/correction/` because browser microphone capture requires
+a secure context. `$host` is important for non-default speakers such as
+`jts3.local`; the preflight must not hard-code `jts.local` or depend on
+client-side JavaScript for the hostname. The nginx port-80 landing page
+at `/usr/share/jasper-web/index.html` links to the preflight instead of
+directly to HTTPS. The 443 catch-all redirects non-correction paths back
+to HTTP — the one exception is `/assets/`, served statically so the
+measurement UI's CSS/JS aren't mixed-content-blocked; it
 does not proxy any extra wizard upstreams over HTTPS.
 
 **Why not `/room/` or `/measure/`?** User specified `/correction/`
@@ -1832,8 +1851,8 @@ Internal:
 
 ---
 
-Last verified: 2026-06-23 (`/correction/` hub routing, HTTP preflight
-`?next=/correction/...`, HTTPS asset serving, and correction-native
+Last verified: 2026-06-24 (`/correction/` hub routing, HTTP preflight
+`?next=/correction/...` + `/correction/proceed`, HTTPS asset serving, and correction-native
 active-crossover playback/capture routing rechecked against
 `jasper/web/correction_setup.py`,
 `jasper/web/correction_crossover_flow.py`,

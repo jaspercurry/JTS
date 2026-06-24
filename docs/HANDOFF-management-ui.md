@@ -181,7 +181,13 @@ is a **static** page (nginx `try_files`, no Python), so it can't call
 directly and `install.sh` stamps the build SHA into it exactly as it does for
 `deploy/index.html`. That's the static-page analog of the shell — same
 canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
-one `#icon-back` sprite symbol it needs.
+one `#icon-back` sprite symbol it needs. Its Proceed button targets
+`/correction/proceed`; nginx redirects that to `https://$host/correction/`
+so non-default hostnames such as `jts3.local` do not depend on client-side
+JavaScript to survive the HTTP → HTTPS hop. Safe `?next=/correction/...`
+subflows become `/correction/proceed/<subflow>`, and the preflight route sends
+`Cache-Control: no-store` so phones do not keep an obsolete navigation target
+across deploys.
 
 ### Archetype recipes
 
