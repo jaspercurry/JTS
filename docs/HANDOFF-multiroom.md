@@ -778,10 +778,16 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   (silent assistant). Solo speakers are byte-identical to pre-PR-2 (no
   socket env → outputd runs the exact prior period loop).
   **The supervisor (jasper.control.grouping_supervisor, built with PR-2):**
-  every bonded member polls outputd's `dac_content.serving_fifo` every 30 s
-  (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
-  `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min);
-  the leader additionally re-runs the `ensure_groups_on_stream` ownership
+  every bonded **dumb** member polls outputd's `dac_content.serving_fifo`
+  every 30 s (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
+  `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min). An
+  ACTIVE endpoint (active follower or active-speaker leader) feeds the DAC via
+  the camilla#2 active-content lane, not the `dac_content` round-trip, so the
+  reconciler disables `dac_content` there and the supervisor **skips** the
+  starvation watch for it (keyed on `is_active_speaker_box()` — the same
+  predicate the reconciler uses; its absence is correct, not starvation —
+  otherwise it self-kicked the reconciler every window).
+  The leader additionally re-runs the `ensure_groups_on_stream` ownership
   pin every poll, making binding read-repair continuous (a runtime rebind
   from any snapcast app self-heals in ≤30 s). Phase D of the control-plane
   auth work adds the matching grouping-plane self-heal: a rostered leader

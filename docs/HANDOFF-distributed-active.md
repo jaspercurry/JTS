@@ -1196,10 +1196,14 @@ loopback, upstream of Layer A — so it is band-limited (tweeter-safe) and
 post-camilla (full-range to the tweeter; the 2-ch outputd mixer also assumes
 L/R, not woofer/tweeter). Player ownership is a Slice 3/5 build detail:
 `jasper-voice` is parked and the reconciler is a oneshot, so a follower-local
-**long-running** writer — the grouping supervisor / `jasper-control`, which
-already watches the stream for starvation — writes the cue WAV into the camilla
-input; never `jasper-voice`, never the reconciler oneshot, never a post-camilla
-mix.
+**long-running** writer — the grouping supervisor / `jasper-control`, the
+per-member liveness loop — writes the cue WAV into the camilla input; never
+`jasper-voice`, never the reconciler oneshot, never a post-camilla mix. (The
+supervisor's `dac_content` starvation watch is **skipped on active endpoints**
+as of the 2026-06-23 fix — it watches the dumb-member round-trip, not the
+active follower's camilla#2 loopback. Detecting the active follower's *own*
+starvation, the loopback going silent, is the deferred prerequisite for
+*triggering* this cue.)
 
 ## Open questions
 
