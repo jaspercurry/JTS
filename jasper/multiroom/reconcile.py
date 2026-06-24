@@ -931,6 +931,34 @@ def _restart_unit(unit: str) -> bool:
     return True
 
 
+def _reset_failed_unit(unit: str) -> bool:
+    """Clear systemd failed/start-limit state before an operator-driven restart.
+
+    Grouping env application is a deliberate control-plane transition, not an
+    outputd crash. Resetting immediately before that restart keeps repeated
+    grouping applies from spending outputd's StartLimitAction=reboot budget;
+    real post-start crashes still run through systemd's Restart/StartLimit
+    ladder normally.
+    """
+    try:
+        subprocess.run(
+            ["systemctl", "reset-failed", unit],
+            check=True, capture_output=True, text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_reset_failed",
+            unit=unit,
+            error=e,
+            stderr=stderr.strip(),
+            level=logging.WARNING,
+        )
+        return False
+    return True
+
+
 def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
     """Run ``systemctl <verb...> jasper-camilla-crossover.service`` for the
     active-leader camilla#2 arm/teardown. Fail-soft (logged + reflected in the
@@ -1013,6 +1041,7 @@ def _write_follower_status(
 
 
 def _restart_outputd() -> bool:
+    _reset_failed_unit(OUTPUTD_UNIT)
     return _restart_unit(OUTPUTD_UNIT)
 
 

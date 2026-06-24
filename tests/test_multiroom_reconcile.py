@@ -20,6 +20,7 @@ plain asserts; file I/O goes to pytest's tmp_path.
 from __future__ import annotations
 
 import os
+import subprocess
 
 from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
@@ -893,6 +894,23 @@ def test_main_leader_second_run_skips_outputd_restart(tmp_path, monkeypatch):
     assert main([]) == 0
     # no outputd/voice restart on the unchanged second run
     assert order == ["write", "apply", "camilla_bonded", "stream_binding"]
+
+
+def test_restart_outputd_resets_failed_before_deliberate_restart(monkeypatch):
+    """A grouping-env apply must not spend outputd's reboot start-limit budget."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+
+    assert reconcile_mod._restart_outputd() is True
+    assert calls == [
+        ["systemctl", "reset-failed", "jasper-outputd.service"],
+        ["systemctl", "restart", "jasper-outputd.service"],
+    ]
 
 
 def test_main_nonleader_runs_solo_restore_not_bonded_apply(tmp_path, monkeypatch):

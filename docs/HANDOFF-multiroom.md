@@ -51,7 +51,10 @@ program and writes the snapserver pipe; every member's snapclient writes the
 round-trip FIFO (`--player file:`), which outputd's `dac_content` lane plays
 with the member's channel pick. The grouping reconciler is the single
 applier (camilla config swap + outputd lane env + member FIFO + units, in a
-load-bearing order — see `reconcile.main`'s docstring).
+load-bearing order — see `reconcile.main`'s docstring). The outputd restart
+is compare-before-write on `grouping-outputd.env`; when it is needed, the
+reconciler first clears `jasper-outputd.service` failed/start-limit state so
+deliberate grouping applies do not spend outputd's crash-reboot budget.
 **Increment 5 PR-2 (member-local TTS + the grouping supervisor) is BUILT
 (2026-06-11).** While bonded, every member's assistant TTS routes to its
 OWN outputd (`rust/jasper-outputd/src/tts.rs` — the fanin wire-protocol
@@ -74,8 +77,10 @@ CamillaDSP config does not write the snapserver pipe".
 "Stranded by this design" cleanup, §2): `SnapfifoSink` (`snapfifo.rs`)
 deleted, the `SNAPFIFO_PRODUCER_WIRED` mirror flag + `effective_leader_tap_path`
 removed, the reconciler's outputd tap-env write + try-restart limb removed
-(the reconciler no longer touches outputd at all), the unit's optional
-tap `EnvironmentFile=` dropped, and the doctor's `check_grouping_tts_separation`
+(the reconciler no longer has an outputd-as-producer limb; current grouping
+still owns `grouping-outputd.env` for the member lane and restarts outputd
+only on compare-before-write changes), the unit's optional tap
+`EnvironmentFile=` dropped, and the doctor's `check_grouping_tts_separation`
 folded into `check_grouping`'s runtime detail. The canonical producer is the
 leader's *CamillaDSP* feeding the pipe (Increments 3–5); when it lands, its
 liveness signal comes from the producing daemon's OWN status surface (daemon
