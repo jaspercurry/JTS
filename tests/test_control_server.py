@@ -3821,15 +3821,25 @@ def test_grouping_set_trim_settable_validated_and_preserved(
 
 
 def test_grouping_set_crossover_settable_validated_and_preserved(
-    monkeypatch, server_with_coordinator,
+    monkeypatch, tmp_path, server_with_coordinator,
 ):
     """crossover_hz: settable + persisted as JASPER_GROUPING_CROSSOVER_HZ,
-    range-validated ONLY for channel=sub (the shared validate rule),
-    rejected when non-numeric, and PRESERVED (omitted key) across writes
-    like codec/trim."""
+    range-validated for any sub-consuming write, rejected when non-numeric,
+    and preserved across plain non-sub writes like codec/trim."""
     import jasper.control.server as srv_mod
 
     writes = []
+    env = tmp_path / "grouping.env"
+    env.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=sub\n"
+        "JASPER_GROUPING_BOND_ID=b\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=120\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
     monkeypatch.setattr(
         srv_mod, "_atomic_rewrite_env",
         lambda path, updates: writes.append(dict(updates)),
@@ -3857,18 +3867,72 @@ def test_grouping_set_crossover_settable_validated_and_preserved(
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "20"
 
-    # But a non-sub MAIN in a subwoofer bond uses the corner for the matched
-    # high-pass, so the same bad value is rejected when bass management is on.
+    # But a non-sub MAIN in a subwoofer bond carries the bond-level sub corner,
+    # so the same bad value is rejected there too.
     status, resp = _post(
         f"{base}/grouping/set",
         {**non_sub, "crossover_hz": 20, "subwoofer_present": True},
     )
     assert status == 400 and "must be between" in resp["error"]
 
-    # Omitted → preserved (key not in this write).
+    # Omitted on a sub-consuming write resolves to the valid existing corner so
+    # validation and persistence describe the same config.
     status, _ = _post(f"{base}/grouping/set", sub)
     assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "120"
+
+    # Omitted on a plain non-sub write keeps the historical preserve contract.
+    status, _ = _post(
+        f"{base}/grouping/set",
+        {
+            "enabled": True,
+            "role": "leader",
+            "channel": "right",
+            "bond_id": "b",
+            "leader_addr": "",
+        },
+    )
+    assert status == 200
     assert "JASPER_GROUPING_CROSSOVER_HZ" not in writes[-1]
+
+
+def test_grouping_set_omitted_sub_crossover_replaces_invalid_existing_value(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """A direct /grouping/set sub write cannot preserve a fail-loud corner.
+
+    The browser bond flow always fans out crossover_hz explicitly, but the
+    device endpoint is still public to household peers. If it is asked to enable
+    a sub without a corner, it seeds the default when the existing file value is
+    outside the valid range.
+    """
+    import jasper.control.server as srv_mod
+
+    writes = []
+    env = tmp_path / "grouping.env"
+    env.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=sub\n"
+        "JASPER_GROUPING_BOND_ID=b\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=20\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    sub = {"enabled": True, "role": "follower", "channel": "sub",
+           "bond_id": "b", "leader_addr": "jts.local"}
+
+    status, _ = _post(f"{base}/grouping/set", sub)
+
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "80"
 
 
 def test_grouping_set_mains_highpass_toggle_round_trips(

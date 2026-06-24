@@ -624,7 +624,7 @@ slices land safest-first; each is independently mergeable.
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
 | **5** | ✅ | Active **leader** (2nd CamillaDSP; realization ratified 2026-06-21 — single rate loop = `outputd-summer`, camilla#2 `rate_adjust` **OFF**, the two `jasper-outputd` instances kept **separate** for inv-A, Option-3 TTS as a soft input, inv-B-through-Layer-A). Sequence: validated-seam music → swap-in-summer (soak gate) → arm TTS. **The v1 gate**; **CPU/thermal + summer-build pick** measured on `jts3` (active cooling). Details: "Stage B — the ratified active-leader realization" | yes |
 | **6a** | — | Local sub driver — **LANDED 2026-06-23**: sub lane (LR4 LP) + bass-management mains-HP in the active multi-output emitter (active + degenerate-1-way passive), matched re-proof, both guards lifted behind the safe path, `/sound/` Fc control + called-out PEQ band. On-device acoustic check owed (≥3-output DAC) | mixed |
-| **6b** | — | Wireless sub member + bass management. **Dumb receiver-side sub LANDED (2026-06-23)** — outputd `ChannelPick::Sub` LR4 low-pass + passive-main outputd LR4 high-pass at the same `crossover_hz` (default-on toggle), `crossover_hz` SSOT + `/rooms/` sub role + `/sound/` CTA (HW-free green; `jts`→`jts4` on-device validation in progress). The N-member `JASPER_GROUPING_ROSTER` + an "add a subwoofer to a stereo pair" (2.1) `/rooms/` flow landed 2026-06-23 (unbond disables every member — no orphaned sub). Remaining: the brainy/active-endpoint sub path, where Layer-A CamillaDSP owns the HP/LP rather than outputd `dac_content` | mixed |
+| **6b** | — | Wireless sub member + bass management. **Dumb receiver-side sub LANDED (2026-06-23)** — outputd `ChannelPick::Sub` LR4 low-pass + passive-main outputd LR4 high-pass at the same `crossover_hz` (default-on toggle), `crossover_hz` SSOT + `/rooms/` sub role + `/sound/` CTA (HW-free green; `jts`→`jts4` on-device validation passed 2026-06-23). The N-member `JASPER_GROUPING_ROSTER` + an "add a subwoofer to a stereo pair" (2.1) `/rooms/` flow landed 2026-06-23 (unbond disables every member — no orphaned sub). Remaining: the brainy/active-endpoint sub path, where Layer-A CamillaDSP owns the HP/LP rather than outputd `dac_content` | mixed |
 
 Slices 1–2 are hardware-free and independently shippable; 3 is where
 on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
@@ -1273,8 +1273,9 @@ HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + passive-main
 outputd LR4 high-pass at the same bond `crossover_hz`
 [config/validate/`/grouping/set`/reconcile/state/`/rooms/`] + `/rooms/` sub
 role + `/sound/` CTA, all behind Python + Rust scratch-crate + JS syntax
-checks; on-device `jts`→`jts4` validation still owed. The brainy/active sub
-path remains because CamillaDSP Layer A owns HP/LP there. Prior 2026-06-21:
+checks; on-device `jts`→`jts4` validation passed with a 90 Hz passive-main HP +
+sub LP bond, toggle-off, and solo restore. The brainy/active sub path remains
+because CamillaDSP Layer A owns HP/LP there. Prior 2026-06-21:
 Stage-B active-leader realization ratified — one rate
 loop = `outputd-summer`, camilla#2 `rate_adjust` OFF, the **two `jasper-outputd`
 instances kept separate for inv-A** [summer upstream / reference publisher

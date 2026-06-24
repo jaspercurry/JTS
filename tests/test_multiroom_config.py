@@ -893,8 +893,8 @@ def test_crossover_hz_default_when_absent_on_sub():
 def test_crossover_hz_parse_and_validation_matrix():
     """The wireless-sub crossover corner: parsed from the env file;
     blank/garbage falls back to the 80 Hz default (never a bypass); an
-    out-of-range value is fail-LOUD on a sub, and on a main only when a
-    sub is present and mains high-pass is enabled."""
+    out-of-range value is fail-LOUD on a sub, and on a main whenever a
+    sub is present."""
     from jasper.multiroom.config import DEFAULT_CROSSOVER_HZ, load_config
     import os
     import tempfile
@@ -929,25 +929,27 @@ def test_crossover_hz_parse_and_validation_matrix():
         "sub", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error
     # Non-sub: an out-of-range stray value is NOT an error (knob unused).
     assert cfg_for("right", "JASPER_GROUPING_CROSSOVER_HZ=500\n").error is None
-    # Non-sub + sub-present + HP enabled: the main will use the corner, so
-    # range it there too. Toggle-off reverts to augmentation mode and the
-    # stray corner becomes unused again.
+    # Non-sub + sub-present: the bond still has a sub low-pass corner even
+    # when mains high-pass is off, so the carried bond-level corner is ranged.
     assert "must be between" in cfg_for(
         "right",
         "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
         "JASPER_GROUPING_CROSSOVER_HZ=500\n",
     ).error
-    assert cfg_for(
+    assert "must be between" in cfg_for(
         "right",
         "JASPER_GROUPING_SUBWOOFER_PRESENT=on\n"
         "JASPER_GROUPING_MAINS_HIGHPASS=off\n"
         "JASPER_GROUPING_CROSSOVER_HZ=500\n",
-    ).error is None
+    ).error
 
 
-def test_validate_grouping_crossover_range_for_sub_or_armed_main():
-    """The shared rule ranges the corner for sub channels and for mains
-    that will use the complementary high-pass."""
+def test_validate_grouping_crossover_range_for_sub_or_sub_present_main():
+    """The shared rule ranges the corner for sub channels and sub-present mains.
+
+    Toggle-off disables the mains high-pass, not the sub's low-pass corner, so
+    a sub-present bond must keep carrying a valid crossover either way.
+    """
     from jasper.multiroom.config import validate_grouping
 
     assert "CROSSOVER_HZ" in validate_grouping(
@@ -972,7 +974,7 @@ def test_validate_grouping_crossover_range_for_sub_or_armed_main():
             subwoofer_present=True,
             mains_highpass_enabled=True,
         )
-        assert validate_grouping(
+        assert "CROSSOVER_HZ" in validate_grouping(
             role="follower",
             channel=ch,
             bond_id="b",
@@ -980,7 +982,7 @@ def test_validate_grouping_crossover_range_for_sub_or_armed_main():
             crossover_hz=10.0,
             subwoofer_present=True,
             mains_highpass_enabled=False,
-        ) is None
+        )
 
 
 def test_mains_highpass_toggle_parse_and_validation(tmp_path):

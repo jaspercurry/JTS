@@ -62,11 +62,14 @@ from . import (
     system_supervisor,
 )
 from ..multiroom.config import (
+    CROSSOVER_HZ_HI,
+    CROSSOVER_HZ_LO,
     DEFAULT_CROSSOVER_HZ,
     DEFAULT_MAINS_HIGHPASS_ENABLED,
     GROUPING_ENV_FILE,
     BondMember,
     format_roster,
+    load_config as load_grouping_config,
     validate_grouping,
     validate_roster,
 )
@@ -1111,6 +1114,29 @@ def _kick_grouping_reconciler() -> None:
     _grouping_reconciler_kick_coalescer.kick()
 
 
+def _resolve_grouping_crossover_hz_for_write(
+    *,
+    channel: str,
+    subwoofer_present: bool,
+    requested: float | None,
+) -> float | None:
+    """Return the crossover value this /grouping/set write must persist.
+
+    Plain stereo writes retain the historical omitted-means-preserve contract.
+    A sub channel or sub-present bond actively consumes the corner, though, so
+    an omitted request must validate and write the same value: a valid existing
+    operator value when one is present, otherwise the safe default.
+    """
+    if requested is not None:
+        return requested
+    if channel != "sub" and not subwoofer_present:
+        return None
+    existing = load_grouping_config(GROUPING_ENV_FILE).crossover_hz
+    if CROSSOVER_HZ_LO <= existing <= CROSSOVER_HZ_HI:
+        return existing
+    return DEFAULT_CROSSOVER_HZ
+
+
 def _write_grouping(
     *, enabled: bool, role: str, channel: str, bond_id: str, leader_addr: str,
     trim_db: "float | None" = None,
@@ -2121,6 +2147,16 @@ def _make_handler(
             # read) so we never persist a fail-loud config. A disabled
             # request needs no fields.
             if enabled:
+                effective_subwoofer_present = (
+                    subwoofer_present
+                    if subwoofer_present is not None
+                    else False
+                )
+                effective_crossover_hz = _resolve_grouping_crossover_hz_for_write(
+                    channel=channel,
+                    subwoofer_present=effective_subwoofer_present,
+                    requested=crossover_hz,
+                )
                 err = validate_grouping(
                     role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
@@ -2135,8 +2171,8 @@ def _make_handler(
                         right_delay_ms if right_delay_ms is not None else 0.0
                     ),
                     crossover_hz=(
-                        crossover_hz
-                        if crossover_hz is not None
+                        effective_crossover_hz
+                        if effective_crossover_hz is not None
                         else DEFAULT_CROSSOVER_HZ
                     ),
                     mains_highpass_enabled=(
@@ -2144,11 +2180,7 @@ def _make_handler(
                         if mains_highpass_enabled is not None
                         else DEFAULT_MAINS_HIGHPASS_ENABLED
                     ),
-                    subwoofer_present=(
-                        subwoofer_present
-                        if subwoofer_present is not None
-                        else False
-                    ),
+                    subwoofer_present=effective_subwoofer_present,
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
                     roster=roster_members,
@@ -2156,6 +2188,7 @@ def _make_handler(
                 if err:
                     self._send_json({"error": err}, status=400)
                     return
+                crossover_hz = effective_crossover_hz
             try:
                 _write_grouping(
                     enabled=enabled, role=role, channel=channel,

@@ -887,12 +887,14 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "mains_highpass_enabled": mains_highpass_enabled,
             "subwoofer_present": subwoofer_present,
         }
-        if subwoofer_present:
-            body["crossover_hz"] = sub_crossover_hz
         # Wireless-sub crossover: every member stores the same corner so the
         # sub's outputd low-pass and the mains' outputd high-pass are matched
-        # by construction. Without a sub, preserve any existing value.
-        if "crossover_hz" in m:
+        # by construction. When a sub is present, the sub member's corner is
+        # authoritative for the whole bond; without a sub, preserve any
+        # per-member value the caller supplied.
+        if subwoofer_present:
+            body["crossover_hz"] = sub_crossover_hz
+        elif "crossover_hz" in m:
             body["crossover_hz"] = m.get("crossover_hz")
         if role == "leader":
             # The LEADER records the full roster (any N): every OTHER member
