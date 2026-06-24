@@ -2898,6 +2898,11 @@ def main(argv: list[str] | None = None) -> int:
     # class). Costs one grouping.env read per 30 s when solo. Off via
     # JASPER_GROUPING_SUPERVISOR=disabled.
     grouping_supervisor.start_supervisor()
+    # After-the-fact multiroom cascade timeline: scans existing structured
+    # journal events into a small /state ring so restart chains are
+    # reconstructable without fetching raw logs first.
+    from ..multiroom import cascade_timeline
+    cascade_timeline.start_sampler()
     # Runtime debug toggle: clear an expired session left on disk, or
     # re-arm the auto-quiet timer if a debug session is still active
     # across this control restart. See jasper/control/debug_control.py.

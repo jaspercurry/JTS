@@ -21,7 +21,9 @@ from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
     _classify_reboot_state,
+    _classify_supervisor_snapshots,
     check_bootloop_guard,
+    check_supervisor_runtime_snapshots,
 )
 from jasper.music_sources import MUSIC_SOURCES
 
@@ -155,6 +157,65 @@ def test_bootloop_guard_registered_in_doctor_run():
 
     names = {c.func.__name__ for c in registered_checks()}
     assert "check_bootloop_guard" in names
+
+
+# ---- supervisor runtime snapshots ------------------------------------
+
+def test_supervisor_snapshots_quiet_is_ok():
+    res = _classify_supervisor_snapshots({
+        "shairport": {"enabled": True, "consecutive_failures": 0},
+        "grouping_supervisor": {
+            "enabled": True,
+            "last_poll_starved": False,
+            "consecutive_starved": 0,
+            "kick_count": 0,
+            "rate_limited_count": 0,
+            "binding": {"failed_total": 0},
+            "reassert": {"failed_total": 0, "last_ok": True},
+        },
+        "system_supervisor": {"enabled": True, "consecutive_failures": 0},
+    })
+    assert res.status == "ok"
+    assert "quiet" in res.detail
+
+
+def test_supervisor_snapshots_warn_on_non_converging_grouping():
+    res = _classify_supervisor_snapshots({
+        "grouping_supervisor": {
+            "enabled": True,
+            "last_poll_starved": True,
+            "consecutive_starved": 4,
+            "kick_count": 2,
+            "rate_limited_count": 1,
+            "binding": {"failed_total": 1},
+            "reassert": {
+                "failed_total": 1,
+                "last_ok": False,
+                "last_detail": "connection refused",
+            },
+        },
+    })
+    assert res.status == "warn"
+    assert "grouping lane starved consecutive=4" in res.detail
+    assert "grouping reconciler kicks=2" in res.detail
+    assert "binding repair failures=1" in res.detail
+    assert "connection refused" in res.detail
+
+
+def test_supervisor_snapshots_check_skips_when_state_unavailable(monkeypatch):
+    import jasper.cli.doctor.resilience as resilience
+
+    monkeypatch.setattr(resilience, "_read_resilience_state", lambda: None)
+    res = check_supervisor_runtime_snapshots()
+    assert res.status == "ok"
+    assert "unavailable" in res.detail
+
+
+def test_supervisor_snapshots_check_registered_in_doctor_run():
+    from jasper.cli.doctor import registered_checks
+
+    names = {c.func.__name__ for c in registered_checks()}
+    assert "check_supervisor_runtime_snapshots" in names
 
 
 # ---- shared-state group-writability (env) ----------------------------

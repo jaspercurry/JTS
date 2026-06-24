@@ -145,6 +145,19 @@ that generically.
 
 The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shairport-sync only), Tier 5 (hardware watchdog with persistent journal forensics), and the architectural choice that obviated kernel-state recovery for the AEC path.** Tier 4 stays on the deferred list with a clear trigger ("rmmod + modprobe if snd-aloop ever wedges again").
 
+Current production observability for this ladder lives under
+`/state.resilience`: `shairport`, `grouping_supervisor`,
+`system_supervisor`, `wifi_guardian`, `bootloop_guard`, `identity`,
+`disk`, and `multiroom_cascade`. The first three are resident supervisor
+snapshots; `jasper-doctor` now reads them through its `supervisor runtime
+snapshots` check so a supervisor that is kicking, rate-limited, or failing
+to converge is visible in one-shot diagnostics. `multiroom_cascade` is a
+bounded after-the-fact ring sourced from the existing persistent journal
+`event=multiroom.reconcile.*`, `event=restart_broker.*`, and
+`event=grouping_supervisor.*` lines. It is deliberately small, fail-soft,
+and fixed-shape: enough to reconstruct "what kicked what recently" without
+turning `/state` into a raw log bundle.
+
 ### 3. Wire third-party daemons into the ladder — protocol-level supervisor
 
 Tiers 1+2 catch one failure class exceptionally well: **liveness of
@@ -1277,4 +1290,6 @@ sudo journalctl -fu jasper-dongle-recover
 ---
 
 Last verified: 2026-06-22 (Wi-Fi scan-suppression root helper path verified on
-`jts3.local`; broader resilience doc last fully reviewed 2026-06-15)
+`jts3.local`; broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
+`/state.resilience` supervisor doctor surface and multiroom cascade ring
+rechecked against current code)
