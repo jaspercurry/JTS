@@ -39,7 +39,7 @@ from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..usage import (
-    ConnectionUptimeMeter,
+    BillableActivityMeter,
     SpendCap,
     UsageStore,
     load_pricing_overrides,
@@ -83,6 +83,52 @@ def _active_model(cfg: Config) -> str:
     lives on `Config.active_voice_model` (shared with jasper-doctor); the
     `<unknown:…>` sentinel keeps log lines legible for an unset provider."""
     return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
+
+
+def _wire_billable_activity_meter(
+    *,
+    connection: LiveConnection,
+    usage_store: UsageStore,
+    provider: str,
+    flat_per_hour_usd: float,
+) -> bool:
+    """Wire flat-rate realtime billing into a provider connection.
+
+    Token-billed providers skip this entirely. For flat-rate realtime
+    providers, the provider adapter owns what "billable activity" means
+    by exposing ``set_billable_activity_meter`` and marking the meter at
+    the right lifecycle points. A missing hook is observable because it
+    means the spend cap would otherwise under-count a priced provider.
+    """
+    if flat_per_hour_usd <= 0:
+        return False
+
+    set_meter = getattr(connection, "set_billable_activity_meter", None)
+    if not callable(set_meter):
+        set_meter = getattr(connection, "set_uptime_meter", None)
+    if not callable(set_meter):
+        log_event(
+            logger,
+            "pricing.flat_rate_meter_unavailable",
+            provider=provider,
+            flat_per_hour_usd=f"{flat_per_hour_usd:.6f}",
+            note=(
+                "active model has a flat realtime rate but its adapter does "
+                "not expose set_billable_activity_meter; spend cap will "
+                "not count that provider's realtime activity"
+            ),
+            level=logging.WARNING,
+        )
+        return False
+
+    set_meter(BillableActivityMeter(
+        usage_store, provider, flat_per_hour_usd,
+    ))
+    logger.info(
+        "realtime activity meter: enabled for %s at $%.2f/hour",
+        provider, flat_per_hour_usd,
+    )
+    return True
 
 
 def _active_voice(cfg: Config) -> str:
@@ -811,20 +857,15 @@ async def run() -> None:
     # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
     connection = _make_connection(cfg, speech_policy=speech_policy)
     # Time-billed providers (Grok: flat $/hour) price their per-turn token
-    # rows to $0; their real cost is connection uptime. Wire a meter —
-    # before start() so the initial connect's interval is captured — that
-    # records connect/disconnect intervals the spend queries fold in. No
-    # meter for token-billed providers (flat_per_hour_usd == 0).
-    if pricing.flat_per_hour_usd > 0:
-        set_meter = getattr(connection, "set_uptime_meter", None)
-        if callable(set_meter):
-            set_meter(ConnectionUptimeMeter(
-                usage_store, cfg.voice_provider, pricing.flat_per_hour_usd,
-            ))
-            logger.info(
-                "connection uptime meter: enabled for %s at $%.2f/hour",
-                cfg.voice_provider, pricing.flat_per_hour_usd,
-            )
+    # rows to $0. Wire a meter before start(); the connection will record
+    # active turn intervals that spend queries fold in. No meter for
+    # token-billed providers (flat_per_hour_usd == 0).
+    _wire_billable_activity_meter(
+        connection=connection,
+        usage_store=usage_store,
+        provider=cfg.voice_provider,
+        flat_per_hour_usd=pricing.flat_per_hour_usd,
+    )
     content_activity: ContentActivityTracker | None = None
     try:
         # Capture the linked-Google-accounts list at startup so the

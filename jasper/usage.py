@@ -30,12 +30,16 @@ the user's audio. The ``Pricing.estimate_cost`` method below splits
 correctly when the breakdown is present and falls back to flat audio
 rates when it isn't (Gemini, which doesn't surface a breakdown).
 
-Time-billed providers (``grok``): Grok Voice bills a flat hourly rate,
-not per-token, so its token rows price to $0. ``ConnectionUptimeMeter``
-records connect/disconnect intervals into the ``connection_intervals``
-table; the spend queries fold that uptime cost in at the flat rate, so
+Time-billed providers (``grok``): Grok Voice publishes a flat realtime
+hourly rate, not per-token, so its token rows price to $0. JTS records
+billable realtime-activity intervals into the legacy-named
+``connection_intervals`` table when a voice turn is active; warm idle
+WebSocket uptime is not counted because the xAI dashboard does not bill
+that like active conversation time. A schema discriminator tags old
+connection-uptime rows as legacy so they no longer false-trip the cap after
+upgrade. The spend queries fold active intervals in at the flat rate, so
 Grok's cost shows up in spend-cap status and counts against the cap. See
-``ConnectionUptimeMeter`` and ``UsageStore._time_billed_spend_by_provider``.
+``BillableActivityMeter`` and ``UsageStore._time_billed_spend_by_provider``.
 
 Display vs. circuit-breaker: the stored ``cost_usd`` is a best-effort
 TRUE estimate (provider list rates). The spend cap stays conservative
@@ -387,6 +391,20 @@ _SESSIONS_TABLE_DDL = """
     )
 """
 
+_BILLABLE_ACTIVITY_KIND = "billable_activity"
+_LEGACY_CONNECTION_UPTIME_KIND = "legacy_connection_uptime"
+
+_CONNECTION_INTERVALS_TABLE_DDL = f"""
+    CREATE TABLE IF NOT EXISTS connection_intervals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT,
+        rate_per_hour_usd REAL NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT '{_BILLABLE_ACTIVITY_KIND}'
+    )
+"""
+
 
 @dataclass
 class WriteHealth:
@@ -446,26 +464,21 @@ class UsageStore:
             if "provider" not in cols:
                 self._conn.execute("DROP TABLE sessions")
                 self._conn.execute(_SESSIONS_TABLE_DDL)
-            # Connection-uptime intervals for time-billed providers (Grok).
-            # Each open connection is a row; cost = duration × rate snapshot.
-            # Separate from `sessions` (which is per-turn) because the billable
-            # unit for a flat-rate provider is connection time, not turns.
+            # Billable realtime-activity intervals for time-billed providers
+            # (Grok). The table name is historical; each active turn is a row,
+            # and cost = duration × rate snapshot. Separate from `sessions`
+            # because sessions close with token usage while these rows cover
+            # active realtime duration for flat-rate providers.
             # NOTE: do NOT clean up dangling intervals here — UsageStore is
             # also constructed read-only by status surfaces, and closing the
             # live connection's open interval from a reader would be wrong.
-            # Crash cleanup lives in ConnectionUptimeMeter (daemon startup
+            # Crash cleanup lives in BillableActivityMeter (daemon startup
             # only).
-            self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS connection_intervals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    provider TEXT NOT NULL,
-                    opened_at TEXT NOT NULL,
-                    closed_at TEXT,
-                    rate_per_hour_usd REAL NOT NULL DEFAULT 0
-                )
-                """
-            )
+            self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
+            self._ensure_connection_interval_kind_column()
+        self._connection_intervals_have_kind = (
+            self._connection_interval_kind_column_exists()
+        )
         # Callers that don't pass `pricing=` (the dashboard read path, which
         # never computes cost, and tests) fall back to the cheapest current
         # model's rates. Production always passes the active model's pricing.
@@ -482,7 +495,7 @@ class UsageStore:
         """Insert a new session row and return its id.
 
         Fail-soft: a usage-accounting write must NEVER break the voice
-        turn (this mirrors ``ConnectionUptimeMeter`` and the module
+        turn (this mirrors ``BillableActivityMeter`` and the module
         contract). The voice loop calls this on the turn-open hot path,
         before the connection is even acquired. If the INSERT raises —
         chiefly ``sqlite3.OperationalError: attempt to write a readonly
@@ -657,57 +670,97 @@ class UsageStore:
         that recorded spend may be stale instead of silently flatlining."""
         return self._write_health.consecutive_failures > 0
 
+    def _connection_interval_columns(self) -> set[str]:
+        return {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(connection_intervals)")
+        }
+
+    def _connection_interval_kind_column_exists(self) -> bool:
+        return "kind" in self._connection_interval_columns()
+
+    def _ensure_connection_interval_kind_column(self) -> None:
+        """Mark pre-fix uptime rows as legacy so they stop counting as spend.
+
+        Before 2026-06-24 this table represented warm WebSocket uptime.
+        After the Grok billing investigation it represents active realtime
+        turn duration. Existing rows have the old meaning, so a value-preserving
+        migration would preserve the bug; instead we keep the rows for
+        forensics and tag them out of spend queries.
+        """
+        if self._connection_interval_kind_column_exists():
+            return
+        self._conn.execute(
+            "ALTER TABLE connection_intervals "
+            f"ADD COLUMN kind TEXT NOT NULL DEFAULT '{_LEGACY_CONNECTION_UPTIME_KIND}'"
+        )
+
     # ------------------------------------------------------------------
-    # Connection-uptime intervals (time-billed providers, e.g. Grok)
+    # Billable realtime-activity intervals (time-billed providers, e.g. Grok)
     # ------------------------------------------------------------------
-    def record_connection_open(
+    def record_billable_activity_open(
         self, provider: str, rate_per_hour_usd: float,
     ) -> None:
-        """Open a connection-uptime interval — called when a time-billed
-        provider's WebSocket connects. The rate is snapshotted so a later
-        rate change doesn't retroactively re-price past connection time."""
+        """Open a billable activity interval — called when a time-billed
+        provider starts a voice turn. The rate is snapshotted so a later
+        rate change doesn't retroactively re-price past activity time."""
         self._conn.execute(
             "INSERT INTO connection_intervals "
-            "(provider, opened_at, rate_per_hour_usd) VALUES (?, ?, ?)",
+            "(provider, opened_at, rate_per_hour_usd, kind) VALUES (?, ?, ?, ?)",
             (
                 provider,
                 datetime.now(timezone.utc).isoformat(),
                 float(rate_per_hour_usd),
+                _BILLABLE_ACTIVITY_KIND,
             ),
         )
 
-    def record_connection_close(self) -> None:
-        """Close any open connection interval — called on teardown /
-        reconnect / shutdown. Closes all open rows; there is only ever
-        one live connection, so this targets exactly it."""
+    def record_billable_activity_close(self) -> None:
+        """Close any open billable activity interval — called on turn
+        release / loss. Closes all open rows; there is only ever one
+        active voice turn, so this targets exactly it."""
         self._conn.execute(
             "UPDATE connection_intervals SET closed_at = ? "
-            "WHERE closed_at IS NULL",
-            (datetime.now(timezone.utc).isoformat(),),
+            "WHERE closed_at IS NULL AND kind = ?",
+            (datetime.now(timezone.utc).isoformat(), _BILLABLE_ACTIVITY_KIND),
         )
+
+    def record_connection_open(
+        self, provider: str, rate_per_hour_usd: float,
+    ) -> None:
+        """Back-compatible alias for ``record_billable_activity_open``."""
+        self.record_billable_activity_open(provider, rate_per_hour_usd)
+
+    def record_connection_close(self) -> None:
+        """Back-compatible alias for ``record_billable_activity_close``."""
+        self.record_billable_activity_close()
 
     def close_dangling_intervals(self) -> None:
         """Conservatively close intervals a crash left open (no clean
         teardown ran): set closed_at = opened_at (zero duration) so a
-        stale open row can't bill phantom uptime up to 'now' on the next
-        read. Run once at daemon start (ConnectionUptimeMeter), never
+        stale open row can't bill phantom activity up to 'now' on the next
+        read. Run once at daemon start (BillableActivityMeter), never
         from the read-only dashboard path."""
         self._conn.execute(
             "UPDATE connection_intervals SET closed_at = opened_at "
-            "WHERE closed_at IS NULL"
+            "WHERE closed_at IS NULL AND kind = ?",
+            (_BILLABLE_ACTIVITY_KIND,),
         )
 
     def _time_billed_spend_by_provider(
         self, since: datetime, until: datetime,
     ) -> dict[str, float]:
-        """Connection-uptime cost per provider over ``[since, until]``.
+        """Billable realtime-activity cost per provider over ``[since, until]``.
         Open intervals (closed_at IS NULL) are billed up to ``until``.
         Returns ``{}`` when no intervals overlap the window."""
+        if not self._connection_intervals_have_kind:
+            return {}
         cur = self._conn.execute(
             "SELECT provider, opened_at, closed_at, rate_per_hour_usd "
             "FROM connection_intervals "
-            "WHERE opened_at <= ? AND (closed_at IS NULL OR closed_at >= ?)",
-            (until.isoformat(), since.isoformat()),
+            "WHERE kind = ? "
+            "AND opened_at <= ? AND (closed_at IS NULL OR closed_at >= ?)",
+            (_BILLABLE_ACTIVITY_KIND, until.isoformat(), since.isoformat()),
         )
         out: dict[str, float] = {}
         for provider, opened_at, closed_at, rate in cur.fetchall():
@@ -774,7 +827,7 @@ class UsageStore:
            "last_session_at": "2026-05-11T..."}
         Pre-migration rows (NULL provider) bucket under "unknown".
         For time-billed providers (Grok) the per-turn token cost is $0;
-        their connection-uptime cost is folded into ``cost_usd`` here."""
+        their billable activity cost is folded into ``cost_usd`` here."""
         now = datetime.now(timezone.utc)
         if since_utc is None:
             since_utc = now.replace(
@@ -808,8 +861,8 @@ class UsageStore:
                 "last_session_at": row[5],
             })
             seen.add(row[0])
-        # Fold connection-uptime cost into each provider's total, and add
-        # a row for any provider that has connection time but no session
+        # Fold billable activity cost into each provider's total, and add
+        # a row for any provider that has active time but no session
         # rows in this window.
         time_billed = self._time_billed_spend_by_provider(since_utc, now)
         for r in out:
@@ -926,16 +979,19 @@ class SpendCap:
         return max(0.0, self._cap_usd - self._padded_spend())
 
 
-class ConnectionUptimeMeter:
-    """Meters connection uptime for a time-billed provider (Grok: flat
-    $/hour of open connection, not per-token).
+class BillableActivityMeter:
+    """Meters billable realtime activity for a time-billed provider.
+
+    Grok Voice publishes a flat $/hour realtime rate, not per-token.
+    The provider dashboard shows idle warm WebSocket time is not billed
+    like active conversation time, so the adapter marks this meter only
+    around voice turns.
 
     The voice daemon wires one meter to the active connection — only when
     ``pricing.flat_per_hour_usd > 0`` — before ``start()``. The connection
-    calls ``mark_connected()`` after each successful open and
-    ``mark_disconnected()`` on teardown / reconnect / shutdown, so the
-    recorded intervals exclude reconnect-backoff gaps. Cost is folded into
-    the spend queries from those intervals.
+    calls ``mark_started()`` when a turn starts and ``mark_ended()`` when
+    that turn releases or is lost. Cost is folded into the spend queries
+    from those intervals.
 
     All methods are fail-soft: a usage-accounting write must never break
     the voice path (mirrors the rest of this module)."""
@@ -948,20 +1004,37 @@ class ConnectionUptimeMeter:
         self._rate = float(rate_per_hour_usd)
         # A prior process that crashed without a clean teardown leaves an
         # interval open; close it conservatively now so it can't bill
-        # phantom uptime against this run.
+        # phantom activity against this run.
         try:
             store.close_dangling_intervals()
         except Exception as e:  # noqa: BLE001
-            logger.warning("uptime meter: dangling cleanup failed: %s", e)
+            logger.warning("activity meter: dangling cleanup failed: %s", e)
+
+    def mark_started(self) -> None:
+        try:
+            self._store.record_billable_activity_open(self._provider, self._rate)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("activity meter: open failed: %s", e)
+
+    def mark_ended(self) -> None:
+        try:
+            self._store.record_billable_activity_close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("activity meter: close failed: %s", e)
 
     def mark_connected(self) -> None:
-        try:
-            self._store.record_connection_open(self._provider, self._rate)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("uptime meter: open failed: %s", e)
+        """Back-compatible alias for ``mark_started``."""
+        self.mark_started()
 
     def mark_disconnected(self) -> None:
-        try:
-            self._store.record_connection_close()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("uptime meter: close failed: %s", e)
+        """Back-compatible alias for ``mark_ended``."""
+        self.mark_ended()
+
+
+class ConnectionUptimeMeter(BillableActivityMeter):
+    """Back-compatible name for ``BillableActivityMeter``.
+
+    Kept so older local imports fail soft during rolling development; new
+    code should use ``BillableActivityMeter`` to avoid reintroducing the
+    idle-socket billing model.
+    """
