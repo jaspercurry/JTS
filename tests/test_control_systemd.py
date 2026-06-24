@@ -21,11 +21,19 @@ config edit that drops it. Mirrors tests/test_fanin_systemd.py.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-control.service"
+GROUPING_TRAILING_SERVICE_PATH = (
+    REPO / "deploy" / "systemd" / "jasper-grouping-reconcile-trailing.service"
+)
+GROUPING_TRAILING_HELPER_PATH = (
+    REPO / "deploy" / "bin" / "jasper-grouping-reconcile-trailing"
+)
 
 
 def _read_unit() -> str:
@@ -51,6 +59,60 @@ def _value_for(unit_text: str, key: str) -> str | None:
 def test_unit_file_exists():
     assert UNIT_PATH.exists(), (
         f"jasper-control.service missing at {UNIT_PATH}."
+    )
+
+
+def test_grouping_reconcile_trailing_service_runs_fixed_helper():
+    from jasper.control import server as control_server
+
+    unit = GROUPING_TRAILING_SERVICE_PATH.read_text()
+    assert (
+        _value_for(unit, "ExecStart")
+        == "/usr/local/sbin/jasper-grouping-reconcile-trailing"
+    )
+    assert _value_for(unit, "Environment") == (
+        '"JASPER_GROUPING_TRAILING_DELAY_FILE='
+        f"{control_server._GROUPING_RECONCILE_TRAILING_DELAY_FILE}\""
+    )
+    assert _value_for(unit, "NoNewPrivileges") == "true"
+    assert _value_for(unit, "CapabilityBoundingSet") == ""
+
+
+def test_install_installs_grouping_reconcile_trailing_helper():
+    units_sh = (REPO / "deploy/lib/install/systemd-units.sh").read_text()
+    assert units_sh.count("jasper-grouping-reconcile-trailing.service") >= 2
+    assert units_sh.count("jasper-grouping-reconcile-trailing\"") >= 2
+
+
+def test_grouping_reconcile_trailing_helper_uses_decimal_delay(tmp_path):
+    delay_file = tmp_path / "delay"
+    delay_file.write_text("008\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sleep_log = tmp_path / "sleep.log"
+    systemctl_log = tmp_path / "systemctl.log"
+
+    sleep = bin_dir / "sleep"
+    sleep.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" > {sleep_log}\n")
+    sleep.chmod(0o755)
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {systemctl_log}\n",
+    )
+    systemctl.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "JASPER_GROUPING_TRAILING_DELAY_FILE": str(delay_file),
+    }
+
+    subprocess.run([str(GROUPING_TRAILING_HELPER_PATH)], env=env, check=True)
+
+    assert sleep_log.read_text() == "8\n"
+    assert (
+        systemctl_log.read_text()
+        == "restart --no-block jasper-grouping-reconcile.service\n"
     )
 
 

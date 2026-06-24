@@ -57,6 +57,7 @@ polkit.addRule(function(action, subject) {
         "jasper-aec-init.service",
         "jasper-aec-reconcile.service",
         "jasper-grouping-reconcile.service",
+        "jasper-grouping-reconcile-trailing.service",
         "jasper-camilla.service",
         "jasper-outputd.service",
         "jasper-doctor-json.service",

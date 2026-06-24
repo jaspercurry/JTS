@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+delay_file="${JASPER_GROUPING_TRAILING_DELAY_FILE:-/run/jasper-control/grouping-reconcile-trailing-delay}"
+delay_s="60"
+
+if [[ -r "${delay_file}" ]]; then
+    delay_s="$(tr -d '[:space:]' < "${delay_file}")"
+fi
+
+case "${delay_s}" in
+    ""|*[!0-9]*)
+        delay_s="60"
+        ;;
+esac
+
+delay_i=$((10#${delay_s}))
+if (( delay_i > 60 )); then
+    delay_i=60
+fi
+
+sleep "${delay_i}"
+systemctl restart --no-block jasper-grouping-reconcile.service

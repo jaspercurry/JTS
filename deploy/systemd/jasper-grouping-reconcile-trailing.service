@@ -1,0 +1,14 @@
+[Unit]
+Description=Delayed Jasper grouping reconcile kick after a coalesced burst
+
+[Service]
+Type=oneshot
+Environment="JASPER_GROUPING_TRAILING_DELAY_FILE=/run/jasper-control/grouping-reconcile-trailing-delay"
+ExecStart=/usr/local/sbin/jasper-grouping-reconcile-trailing
+
+CapabilityBoundingSet=
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+SystemCallFilter=@system-service

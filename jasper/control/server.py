@@ -37,6 +37,7 @@ import concurrent.futures
 import json
 import urllib.request
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -44,6 +45,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
@@ -832,6 +834,12 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # Forwarded pair-volume requests carry this header; its presence stops a
 # second hop (see _maybe_forward_volume_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
+_GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+_GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
+_GROUPING_RECONCILE_TRAILING_DELAY_FILE = (
+    "/run/jasper-control/grouping-reconcile-trailing-delay"
+)
+_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS = 60.0
 
 # Seam for tests: the forward's ONE network call. Patching the stdlib
 # urllib.request.urlopen would also intercept the test driver's own HTTP
@@ -851,18 +859,256 @@ def _pair_follower_leader_addr() -> str | None:
     return follower_leader_addr(load_config())
 
 
+def _launch_grouping_reconciler_kick(reason: str) -> None:
+    log_event(
+        logger,
+        "grouping.reconciler_kick",
+        reason=reason,
+    )
+    subprocess.Popen(
+        ["systemctl", "restart", "--no-block", _GROUPING_RECONCILE_UNIT],
+    )
+
+
+def _cancel_grouping_reconciler_trailing_service() -> None:
+    try:
+        subprocess.Popen(
+            [
+                "systemctl",
+                "stop",
+                "--no-block",
+                _GROUPING_RECONCILE_TRAILING_UNIT,
+            ],
+        )
+    except OSError:
+        logger.debug("grouping reconciler trailing service cancel failed", exc_info=True)
+
+
+def _write_grouping_reconciler_trailing_delay(delay_s: float) -> None:
+    delay_seconds = max(
+        0,
+        min(
+            math.ceil(delay_s),
+            math.ceil(_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS),
+        ),
+    )
+    path = Path(_GROUPING_RECONCILE_TRAILING_DELAY_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{delay_seconds}\n", encoding="ascii")
+
+
+def _arm_grouping_reconciler_trailing_service(delay_s: float) -> None:
+    _write_grouping_reconciler_trailing_delay(delay_s)
+    subprocess.run(
+        [
+            "systemctl",
+            "restart",
+            "--no-block",
+            _GROUPING_RECONCILE_TRAILING_UNIT,
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+class _ThreadingTrailingKickHandle:
+    def __init__(
+        self,
+        delay_s: float,
+        callback: Callable[[], None],
+        timer_factory: Callable[[float, Callable[[], None]], Any],
+    ) -> None:
+        self._timer = timer_factory(delay_s, callback)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+
+
+class _SystemdServiceTrailingKickHandle:
+    def __init__(
+        self,
+        delay_s: float,
+        mark_applied: Callable[[], None],
+        timer_factory: Callable[[float, Callable[[], None]], Any],
+    ) -> None:
+        _arm_grouping_reconciler_trailing_service(delay_s)
+        mark_timer = timer_factory(delay_s, mark_applied)
+        mark_timer.daemon = True
+        mark_timer.start()
+        self._mark_timer = mark_timer
+
+    def cancel(self) -> None:
+        self._mark_timer.cancel()
+        _cancel_grouping_reconciler_trailing_service()
+
+
+def _schedule_grouping_reconciler_trailing_kick(
+    delay_s: float,
+    run_trailing: Callable[[], None],
+    mark_applied: Callable[[], None],
+    *,
+    timer_factory: Callable[[float, Callable[[], None]], Any] = threading.Timer,
+) -> _SystemdServiceTrailingKickHandle | _ThreadingTrailingKickHandle:
+    try:
+        handle = _SystemdServiceTrailingKickHandle(
+            delay_s,
+            mark_applied,
+            timer_factory,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        log_event(
+            logger,
+            "grouping.reconciler_trailing_schedule_fallback",
+            delay_s=f"{delay_s:.3f}",
+            scheduler="threading.Timer",
+            error=str(exc),
+            level=logging.WARNING,
+        )
+        return _ThreadingTrailingKickHandle(delay_s, run_trailing, timer_factory)
+
+    log_event(
+        logger,
+        "grouping.reconciler_trailing_scheduled",
+        delay_s=f"{delay_s:.3f}",
+        scheduler="systemd-service",
+        unit=_GROUPING_RECONCILE_TRAILING_UNIT,
+    )
+    return handle
+
+
+class _GroupingReconcilerKickCoalescer:
+    """Leading-edge rate limit with a trailing guarantee for /grouping/set.
+
+    The HTTP handler writes grouping.env before calling this. If updates arrive
+    faster than the minimum interval, one delayed kick is enough. The packaged
+    trailing service survives a jasper-control restart and the oneshot reconciler
+    re-reads grouping.env when it finally runs, so the last write wins without
+    restarting outputd for every trim/delay/crossover sweep step.
+    """
+
+    def __init__(
+        self,
+        *,
+        cooldown_s: float,
+        launch: Callable[[str], None],
+        clock: Callable[[], float] = time.monotonic,
+        trailing_scheduler: Callable[
+            [float, Callable[[], None], Callable[[], None]],
+            Any,
+        ] = _schedule_grouping_reconciler_trailing_kick,
+        cancel_external_trailing: Callable[
+            [], None
+        ] = _cancel_grouping_reconciler_trailing_service,
+    ) -> None:
+        self._cooldown_s = float(cooldown_s)
+        self._launch = launch
+        self._clock = clock
+        self._trailing_scheduler = trailing_scheduler
+        self._cancel_external_trailing = cancel_external_trailing
+        self._lock = threading.Lock()
+        self._last_kick_at: float | None = None
+        self._trailing_handle: Any | None = None
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            if self._trailing_handle is not None:
+                self._trailing_handle.cancel()
+            self._trailing_handle = None
+            self._last_kick_at = None
+
+    def kick(self) -> None:
+        """Kick now if the cooldown is clear, else arm one trailing kick."""
+        reason: str | None = None
+        launched_at: float | None = None
+        with self._lock:
+            now = self._clock()
+            elapsed = (
+                None if self._last_kick_at is None else now - self._last_kick_at
+            )
+            if elapsed is None or elapsed >= self._cooldown_s:
+                if self._trailing_handle is not None:
+                    self._trailing_handle.cancel()
+                    self._trailing_handle = None
+                else:
+                    self._cancel_external_trailing()
+                self._last_kick_at = now
+                launched_at = now
+                reason = "leading"
+            else:
+                remaining = max(0.0, self._cooldown_s - elapsed)
+                if self._trailing_handle is None:
+                    self._trailing_handle = self._trailing_scheduler(
+                        remaining,
+                        self._run_trailing,
+                        self._mark_trailing_applied,
+                    )
+                    log_event(
+                        logger,
+                        "grouping.reconciler_kick_coalesced",
+                        delay_s=f"{remaining:.3f}",
+                        cooldown_s=f"{self._cooldown_s:.3f}",
+                    )
+                else:
+                    log_event(
+                        logger,
+                        "grouping.reconciler_kick_already_pending",
+                        cooldown_s=f"{self._cooldown_s:.3f}",
+                        level=logging.DEBUG,
+                    )
+                return
+        assert reason is not None
+        try:
+            self._launch(reason)
+        except OSError:
+            with self._lock:
+                if (
+                    launched_at is not None
+                    and self._last_kick_at == launched_at
+                    and self._trailing_handle is None
+                ):
+                    self._last_kick_at = None
+            raise
+
+    def _run_trailing(self) -> None:
+        with self._lock:
+            self._trailing_handle = None
+            self._last_kick_at = self._clock()
+        try:
+            self._launch("trailing")
+        except OSError:
+            logger.exception("grouping reconciler trailing kick failed")
+
+    def _mark_trailing_applied(self) -> None:
+        with self._lock:
+            self._trailing_handle = None
+            self._last_kick_at = self._clock()
+
+
+_grouping_reconciler_kick_coalescer = _GroupingReconcilerKickCoalescer(
+    cooldown_s=_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS,
+    launch=_launch_grouping_reconciler_kick,
+)
+
+
+def _reset_grouping_reconciler_kick_coalescer_for_tests() -> None:
+    _grouping_reconciler_kick_coalescer.reset_for_tests()
+
+
 def _kick_grouping_reconciler() -> None:
     """Apply a persisted grouping change through jasper-grouping-reconcile.
 
     Mirror of _kick_aec_reconciler: `restart` (not `start`) the Type=oneshot
     reconciler so a change written while a previous reconcile is still active
-    is not a no-op. The reconciler is the single writer of the snapcast unit
-    state + the outputd tap; this just nudges it to re-read grouping.env.
+    is not a no-op. The reconciler is the single applier of snapcast state and
+    outputd grouping env. This nudges it to re-read grouping.env, but coalesces
+    rapid /grouping/set bursts so trim/delay/crossover sweeps do not tear down
+    outputd on every intermediate value. A skipped kick always arms one trailing
+    retry; the final grouping.env write is therefore applied.
     """
-    subprocess.Popen(
-        ["systemctl", "restart", "--no-block",
-         "jasper-grouping-reconcile.service"],
-    )
+    _grouping_reconciler_kick_coalescer.kick()
 
 
 def _write_grouping(
