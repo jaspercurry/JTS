@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_profile_state import profile_env_updates
+from jasper.multiroom.tts_route import VOICE_PARK_ENV
+from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 
 
@@ -1172,8 +1174,8 @@ def test_reconcile_parks_voice_and_aec_for_bonded_follower(tmp_path: Path) -> No
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
     (tmp_path / "grouping-voice.env").write_text(
-        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
-        "JASPER_GROUPING_VOICE_PARK=1\n"
+        f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n"
+        f"{VOICE_PARK_ENV}=1\n"
     )
 
     result = _run_reconcile(tmp_path, "--reason", "test")
@@ -1195,7 +1197,7 @@ def test_reconcile_unparks_voice_when_flag_absent(tmp_path: Path) -> None:
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
     (tmp_path / "grouping-voice.env").write_text(
-        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+        f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n"
     )
 
     result = _run_reconcile(tmp_path, "--reason", "test")

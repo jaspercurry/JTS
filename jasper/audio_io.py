@@ -24,6 +24,7 @@ from .assistant_loudness import (
     update_profile_from_measurement,
 )
 from .log_event import log_event
+from .tts_routing import FANIN_TTS_SOCKET
 
 # `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
 # installed in the local dev venv and isn't needed by the pure-Python
@@ -1030,7 +1031,7 @@ class OutputdTtsPlayout(TtsPlayout):
 
     def __init__(
         self,
-        socket_path: str = "/run/jasper-fanin/tts.sock",
+        socket_path: str = FANIN_TTS_SOCKET,
         output_rate: int = _OUTPUTD_SAMPLE_RATE,
         gain_db: float = 0.0,
         *,
@@ -1434,7 +1435,7 @@ def make_tts_playout(
     output_rate: int,
     gain_db: float,
     drain_tail_sec: float,
-    outputd_socket: str = "/run/jasper-fanin/tts.sock",
+    outputd_socket: str = FANIN_TTS_SOCKET,
     provider: str = "",
     model: str = "",
     voice: str = "",

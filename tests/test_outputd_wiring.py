@@ -10,6 +10,13 @@ import shlex
 from pathlib import Path
 
 from jasper.audio_hardware import dac
+from jasper.tts_routing import (
+    DUCK_TRANSPORT_ENV,
+    FANIN_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET_ENV,
+    VOICE_TTS_SOCKET_ENV,
+)
 from tests.install_surface import installer_shell_paths, installer_text
 
 from ._voice_runtime_text import voice_runtime_text
@@ -312,8 +319,8 @@ def test_install_alsa_refreshes_asound_renderer_before_rendering():
 def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded():
     """systemd resolves env directives in order; the bonded override must win."""
     unit = (REPO / "deploy" / "systemd" / "jasper-voice.service").read_text()
-    assert 'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"' in unit
-    assert 'Environment="JASPER_DUCK_TRANSPORT=fanin"' in unit
+    assert f'Environment="{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"' in unit
+    assert f'Environment="{DUCK_TRANSPORT_ENV}=fanin"' in unit
     assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
     assert "EnvironmentFile=-/var/lib/jasper/grouping-voice.env" in unit
     env_directives = [
@@ -324,19 +331,19 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded():
 
     solo = _resolve_systemd_unit_env(unit, {})
     assert solo["JASPER_TTS_TRANSPORT"] == "outputd"
-    assert solo["JASPER_TTS_OUTPUTD_SOCKET"] == "/run/jasper-fanin/tts.sock"
-    assert solo["JASPER_DUCK_TRANSPORT"] == "fanin"
+    assert solo[VOICE_TTS_SOCKET_ENV] == FANIN_TTS_SOCKET
+    assert solo[DUCK_TRANSPORT_ENV] == "fanin"
 
     bonded = _resolve_systemd_unit_env(
         unit,
         {
             "/var/lib/jasper/grouping-voice.env": (
-                "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+                f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n"
                 "JASPER_GROUPING_VOICE_PARK=1\n"
             ),
         },
     )
-    assert bonded["JASPER_TTS_OUTPUTD_SOCKET"] == "/run/jasper-outputd/tts.sock"
+    assert bonded[VOICE_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
     assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
 
 
@@ -353,14 +360,14 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     outputd_main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     outputd_config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
     outputd_lib_rs = (REPO / "rust" / "jasper-outputd" / "src" / "lib.rs").read_text()
-    assert '"/run/jasper-fanin/tts.sock"' in config_rs
+    assert f'"{FANIN_TTS_SOCKET}"' in config_rs
     assert "spawn_tts_server(" in main_rs
     # outputd's twin: present, but constructed ONLY when the grouping
     # reconciler set the socket env (no baked-in default path).
     assert "spawn_tts_server(" in outputd_main_rs
     assert "if let Some(path) = &config.tts_socket_path" in outputd_main_rs
     assert (
-        'env_optional("JASPER_OUTPUTD_TTS_SOCKET")' in outputd_config_rs
+        f'env_optional("{OUTPUTD_TTS_SOCKET_ENV}")' in outputd_config_rs
     )  # Option, no baked-in default — unset env means solo, TTS off
     assert "pub mod protocol;" not in outputd_lib_rs
     assert "TtsCommand::FlushSync" in tts_rs
@@ -393,10 +400,10 @@ def test_voice_uses_fanin_tts_and_duck_for_all_output_profiles():
     voice_runtime = voice_runtime_text()
     config_py = (REPO / "jasper" / "config.py").read_text()
     assert "TTS_ENV_FILE" not in reconcile
-    assert "JASPER_TTS_OUTPUTD_SOCKET" not in reconcile
-    assert "JASPER_DUCK_TRANSPORT" not in reconcile
-    assert 'JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock' in voice_unit
-    assert 'JASPER_DUCK_TRANSPORT=fanin' in voice_unit
+    assert VOICE_TTS_SOCKET_ENV not in reconcile
+    assert DUCK_TRANSPORT_ENV not in reconcile
+    assert f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}" in voice_unit
+    assert f"{DUCK_TRANSPORT_ENV}=fanin" in voice_unit
     assert 'duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin")' in config_py
     assert 'cfg.duck_transport == "fanin"' in voice_runtime
     assert "FanInDucker" in voice_runtime

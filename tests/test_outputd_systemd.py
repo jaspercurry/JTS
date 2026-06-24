@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jasper.tts_routing import (
+    DUCK_TRANSPORT_ENV,
+    FANIN_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET_ENV,
+    TTS_TRANSPORT_ENV,
+    VOICE_TTS_SOCKET_ENV,
+)
 from tests.install_surface import installer_text
 
 from ._voice_runtime_text import voice_runtime_text
@@ -70,7 +77,7 @@ def test_outputd_unit_runtime_and_exec_paths():
     assert _value_for(unit, "ExecStopPost") == (
         "-/usr/local/sbin/jasper-outputd-failure-reconcile"
     )
-    assert "JASPER_OUTPUTD_TTS_SOCKET" not in unit
+    assert OUTPUTD_TTS_SOCKET_ENV not in unit
     for expected in [
         'Environment="JASPER_OUTPUTD_BACKEND=alsa"',
         'Environment="JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture"',
@@ -140,9 +147,9 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     ) in unit
     assert "jasper-fanin.service" in _value_for(unit, "Wants")
     assert "jasper-outputd.service" in _value_for(unit, "Wants")
-    assert 'Environment="JASPER_TTS_TRANSPORT=outputd"' in unit
-    assert 'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"' in unit
-    assert 'Environment="JASPER_DUCK_TRANSPORT=fanin"' in unit
+    assert f'Environment="{TTS_TRANSPORT_ENV}=outputd"' in unit
+    assert f'Environment="{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"' in unit
+    assert f'Environment="{DUCK_TRANSPORT_ENV}=fanin"' in unit
     assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
 
 

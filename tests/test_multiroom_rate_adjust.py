@@ -15,6 +15,13 @@ from jasper.multiroom.config import (
     GroupingConfig,
     is_active_member,
 )
+from jasper.multiroom.tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
+from jasper.tts_routing import (
+    FANIN_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET_ENV,
+    VOICE_TTS_SOCKET_ENV,
+)
 
 
 def _cfg(**kw) -> GroupingConfig:
@@ -568,7 +575,7 @@ def _tts_lane_check(
         resolved_voice_text = (
             voice_text
             if voice_text is not None
-            else "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock\n"
+            else f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n"
         )
     monkeypatch.setattr(
         groupmod,
@@ -586,7 +593,6 @@ def test_tts_lane_check_solo_clean_is_ok(monkeypatch):
 def test_tts_lane_check_solo_with_stale_override_warns(monkeypatch, tmp_path):
     """A solo speaker carrying a leftover outputd pointer has voice
     writing to a socket nobody serves — silent assistant, must warn."""
-    from jasper.multiroom.reconcile import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
     r = _tts_lane_check(
         monkeypatch, cfg=_cfg(),
         voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
@@ -594,6 +600,22 @@ def test_tts_lane_check_solo_with_stale_override_warns(monkeypatch, tmp_path):
     )
     assert r.status == "warn"
     assert "un-armed" in r.detail
+
+
+def test_tts_lane_check_solo_with_stale_park_flag_warns(monkeypatch, tmp_path):
+    """A solo speaker must not stay voice-parked after unbond."""
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=_cfg(),
+        resolved_voice_text=(
+            f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n"
+            f"{VOICE_PARK_ENV}=1\n"
+        ),
+        tmp_path=tmp_path,
+    )
+    assert r.status == "warn"
+    assert "still carries" in r.detail
+    assert VOICE_PARK_ENV in r.detail
 
 
 def test_tts_lane_check_bonded_without_voice_override_warns(monkeypatch):
@@ -623,9 +645,7 @@ def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
             f"{k}={v}\n"
             for k, v in outputd_grouping_env(cfg, active_endpoint=True).items()
         ),
-        resolved_voice_text=(
-            "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock\n"
-        ),
+        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
         tmp_path=tmp_path,
         active_box=True,
     )
@@ -633,10 +653,26 @@ def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
     assert "upstream of crossover" in r.detail
 
 
+def test_tts_lane_check_active_endpoint_stale_outputd_socket_warns(
+    monkeypatch, tmp_path,
+):
+    """Active endpoints must not carry a stale post-crossover outputd TTS lane."""
+    cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=cfg,
+        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
+        outputd_text=f"{OUTPUTD_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
+        tmp_path=tmp_path,
+        active_box=True,
+    )
+    assert r.status == "warn"
+    assert "must keep outputd's TTS socket unarmed" in r.detail
+
+
 def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
     """The worst drift: voice targets outputd's socket but the lane was
     never armed — assistant voice writes into the void."""
-    from jasper.multiroom.reconcile import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
     r = _tts_lane_check(
         monkeypatch,
         cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
@@ -655,8 +691,6 @@ def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path
     starts with, not the reconciler-written file in isolation.
     """
     from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET,
-        VOICE_TTS_SOCKET_ENV,
         outputd_grouping_env,
     )
     cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
@@ -664,7 +698,7 @@ def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path
         monkeypatch,
         cfg=cfg,
         voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
-        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}=/run/jasper-fanin/tts.sock\n",
+        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
         outputd_text="".join(
             f"{k}={v}\n"
             for k, v in outputd_grouping_env(cfg).items()
@@ -692,6 +726,86 @@ def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path
     )
     assert r.status == "ok"
     assert "member-local TTS wired" in r.detail
+
+
+def test_tts_lane_check_parked_sub_follower_is_ok(monkeypatch, tmp_path):
+    """A sub follower parks voice and must keep outputd TTS unarmed."""
+    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+
+    cfg = _cfg(
+        enabled=True,
+        role="follower",
+        channel="sub",
+        bond_id="b",
+        leader_addr="jts.local",
+    )
+    voice_text = "".join(f"{k}={v}\n" for k, v in voice_grouping_env(cfg).items())
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=cfg,
+        voice_text=voice_text,
+        resolved_voice_text=voice_text,
+        outputd_text="".join(
+            f"{k}={v}\n" for k, v in outputd_grouping_env(cfg).items()
+        ),
+        tmp_path=tmp_path,
+    )
+    assert r.status == "ok"
+    assert "sub follower" in r.detail
+
+
+def test_grouping_tts_route_matrix_matches_reconciler_writers():
+    """One matrix feeds both env writers, including special endpoints."""
+    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+
+    cases = (
+        (_cfg(), False),
+        (_cfg(enabled=True, role="leader", channel="left", bond_id="b"), False),
+        (
+            _cfg(
+                enabled=True,
+                role="follower",
+                channel="right",
+                bond_id="b",
+                leader_addr="jts.local",
+            ),
+            False,
+        ),
+        (_cfg(enabled=True, role="leader", channel="right", bond_id="b"), True),
+        (
+            _cfg(
+                enabled=True,
+                role="follower",
+                channel="right",
+                bond_id="b",
+                leader_addr="jts.local",
+            ),
+            True,
+        ),
+        (
+            _cfg(
+                enabled=True,
+                role="follower",
+                channel="sub",
+                bond_id="b",
+                leader_addr="jts.local",
+            ),
+            False,
+        ),
+        (_cfg(enabled=True, role="leader", channel="sub", bond_id="b"), False),
+    )
+
+    for cfg, active_endpoint in cases:
+        route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
+        voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
+        outputd_env = outputd_grouping_env(cfg, active_endpoint=active_endpoint)
+
+        if route.voice_env_socket is None:
+            assert VOICE_TTS_SOCKET_ENV not in voice_env
+        else:
+            assert voice_env[VOICE_TTS_SOCKET_ENV] == route.voice_env_socket
+        assert (voice_env.get(VOICE_PARK_ENV) == "1") is route.voice_parked
+        assert outputd_env[OUTPUTD_TTS_SOCKET_ENV] == route.outputd_tts_socket
 
 
 def test_camilla_block_field_shared_scanner():
@@ -728,19 +842,14 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     """PR-2: a passive bonded member's voice plays TTS via outputd
     (post-round-trip); solo and active endpoints OMIT the key entirely so voice
     falls back to fan-in upstream of the crossover."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET,
-        VOICE_PARK_ENV,
-        VOICE_TTS_SOCKET_ENV,
-        voice_grouping_env,
-    )
+    from jasper.multiroom.reconcile import voice_grouping_env
     leader = voice_grouping_env(
         _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
     assert leader == {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
-    # A FOLLOWER additionally carries the dumb-follower park flag (the
-    # validated signal jasper-aec-reconcile gates voice/AEC parking on);
-    # the socket stays armed so a promotion to leader un-parks with the
-    # right playout target already set.
+    # A non-sub FOLLOWER additionally carries the dumb-follower park flag (the
+    # validated signal jasper-aec-reconcile gates voice/AEC parking on) and the
+    # outputd socket route. Sub followers are parked too, but outputd TTS stays
+    # unarmed in their outputd env so speech cannot hit the sub post-low-pass.
     follower = voice_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
              bond_id="b", leader_addr="jts.local"))
@@ -759,6 +868,18 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
         active_endpoint=True,
     )
     assert active_follower == {VOICE_PARK_ENV: "1"}
+    sub_follower = voice_grouping_env(
+        _cfg(enabled=True, role="follower", channel="sub",
+             bond_id="b", leader_addr="jts.local"),
+    )
+    assert sub_follower == {
+        VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+        VOICE_PARK_ENV: "1",
+    }
+    sub_leader = voice_grouping_env(
+        _cfg(enabled=True, role="leader", channel="sub", bond_id="b"),
+    )
+    assert sub_leader == {}
     for cfg in (
         _cfg(),  # off
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
@@ -769,11 +890,7 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
 def test_outputd_grouping_env_arms_tts_socket_with_the_lane():
     """The TTS socket arms/clears in lockstep with the round-trip lane —
     one file, one writer, no half-armed member."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET,
-        OUTPUTD_TTS_SOCKET_ENV,
-        outputd_grouping_env,
-    )
+    from jasper.multiroom.reconcile import outputd_grouping_env
     bonded = outputd_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
              bond_id="b", leader_addr="jts.local"))

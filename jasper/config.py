@@ -12,6 +12,7 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
+from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .usage import (
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
     DEFAULT_DAILY_SPEND_CAP_USD,
@@ -136,13 +137,10 @@ def _validate(cfg: "Config") -> "Config":
         )
     if cfg.duck_transport not in {"camilla", "fanin"}:
         raise RuntimeError("JASPER_DUCK_TRANSPORT must be camilla or fanin")
-    if (
-        cfg.tts_outputd_socket == "/run/jasper-fanin/tts.sock"
-        and cfg.duck_transport != "fanin"
-    ):
+    if cfg.tts_outputd_socket == FANIN_TTS_SOCKET and cfg.duck_transport != "fanin":
         raise RuntimeError(
             "JASPER_DUCK_TRANSPORT=fanin is required when "
-            "JASPER_TTS_OUTPUTD_SOCKET points at jasper-fanin"
+            f"{VOICE_TTS_SOCKET_ENV} points at jasper-fanin"
         )
     if cfg.volume_regress_after_sec <= 0:
         raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
@@ -593,7 +591,7 @@ class Config:
             # CamillaDSP crossover/protection on every output profile.
             tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
             tts_outputd_socket=_env(
-                "JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-fanin/tts.sock",
+                VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET,
             ),
             # Top-level pcm.jasper_out runs at 48 kHz (matches the
             # dongle's native rate and CamillaDSP's chunk rate).

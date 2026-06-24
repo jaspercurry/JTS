@@ -561,15 +561,13 @@ def check_grouping_local_vs_wireless_sub() -> CheckResult:
 
 @doctor_check(order=75.6, group="grouping")
 def check_grouping_tts_lane() -> CheckResult:
-    """A bonded member's assistant TTS must route to its OWN outputd
-    (member-local, instant), not ride the synced stream (delayed by the
-    sync buffer + audible on every bonded speaker — the retired
-    Increment 5 PR-1 interim behavior). The reconciler wires this with
-    TWO env files that must agree: grouping-voice.env points jasper-voice
-    at outputd's TTS socket, and grouping-outputd.env arms outputd's TTS
-    server on that socket. Active endpoints are the safety exception: their
-    assistant audio rides fan-in upstream of the crossover because outputd's
-    post-crossover TTS mixer is forbidden on active lanes.
+    """A bonded non-sub passive member's assistant TTS must route to its OWN
+    outputd (member-local, instant), not ride the synced stream (delayed by the
+    sync buffer + audible on every bonded speaker — the retired Increment 5
+    PR-1 interim behavior). Active endpoints are the crossover safety
+    exception, and wireless sub followers are parked with outputd TTS unarmed.
+    The route matrix wires grouping-voice.env and grouping-outputd.env so the
+    voice socket, voice park flag, and outputd TTS server state agree.
 
     (Replaces ``check_grouping_tts_interim``, the standing bonded warn
     that existed while TTS still mixed in fanin pre-stream — Increment 5
@@ -577,16 +575,25 @@ def check_grouping_tts_lane() -> CheckResult:
     from ...multiroom.config import is_active_member, load_config
     from ...multiroom.reconcile import (
         OUTPUTD_GROUPING_ENV_FILE,
+        VOICE_GROUPING_ENV_FILE,
+        is_active_speaker_box,
+    )
+    from ...multiroom.tts_route import (
+        VOICE_PARK_ENV,
+        expected_grouping_tts_route,
+    )
+    from ...tts_routing import (
+        FANIN_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET_ENV,
-        VOICE_GROUPING_ENV_FILE,
         VOICE_TTS_SOCKET_ENV,
-        is_active_speaker_box,
     )
 
     label = "grouping: TTS lane"
-    fanin_tts_socket = "/run/jasper-fanin/tts.sock"
     cfg = load_config()
+    active = is_active_member(cfg)
+    active_endpoint = is_active_speaker_box() if active else False
+    route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 
     voice_runtime_env, voice_runtime_error = _resolved_jasper_voice_env()
     voice_socket = (
@@ -594,25 +601,36 @@ def check_grouping_tts_lane() -> CheckResult:
         if voice_runtime_env is not None
         else ""
     )
+    voice_parked = (
+        voice_runtime_env is not None
+        and voice_runtime_env.get(VOICE_PARK_ENV, "") == "1"
+    )
 
-    if not is_active_member(cfg):
-        # Solo must resolve to fanin. With grouping-voice.env layered last,
-        # a stale bonded override would make runtime voice target outputd's
-        # un-armed TTS server — silent assistant.
+    if not active:
+        # Solo must resolve to fan-in. With grouping-voice.env layered last,
+        # stale bonded overrides can target an unarmed socket or leave voice
+        # parked after unbond.
         if (
             voice_runtime_env is not None
             and voice_socket
-            and voice_socket != fanin_tts_socket
+            and voice_socket != FANIN_TTS_SOCKET
         ):
             return CheckResult(
                 label, "warn",
                 f"solo but jasper-voice runtime env resolves "
                 f"{VOICE_TTS_SOCKET_ENV} to {voice_socket} instead of "
-                f"{fanin_tts_socket} — assistant voice targets an "
+                f"{FANIN_TTS_SOCKET} — assistant voice targets an "
                 "un-armed socket; run "
                 "jasper-grouping-reconcile",
             )
-        return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+        if voice_parked:
+            return CheckResult(
+                label, "warn",
+                f"solo but jasper-voice runtime env still carries "
+                f"{VOICE_PARK_ENV}=1 — voice may remain parked; run "
+                "jasper-grouping-reconcile",
+            )
+        return CheckResult(label, "ok", route.ok_detail)
 
     if voice_runtime_env is None:
         return CheckResult(
@@ -621,8 +639,6 @@ def check_grouping_tts_lane() -> CheckResult:
             f"`systemctl show -p Environment`: {voice_runtime_error}",
         )
 
-    active_endpoint = is_active_speaker_box()
-
     outputd_env: dict[str, str] = {}
     outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if outputd_path.exists():
@@ -630,22 +646,47 @@ def check_grouping_tts_lane() -> CheckResult:
             outputd_env = _parse_env_file(outputd_path.read_text())
         except OSError as e:
             return CheckResult(label, "warn", f"could not read {outputd_path}: {e}")
-    lane_armed = bool(outputd_env.get(OUTPUTD_TTS_SOCKET_ENV))
+    outputd_socket = outputd_env.get(OUTPUTD_TTS_SOCKET_ENV, "")
+    lane_armed = bool(outputd_socket)
 
-    if active_endpoint:
-        if (voice_socket and voice_socket != fanin_tts_socket) or lane_armed:
-            return CheckResult(
-                label, "warn",
-                "active bonded endpoint must keep assistant TTS on fan-in "
-                "upstream of the crossover; outputd's post-crossover TTS "
-                "socket is unsafe on active lanes. Run jasper-grouping-reconcile",
-            )
+    if route.voice_parked and not voice_parked:
         return CheckResult(
-            label, "ok",
-            "active endpoint TTS uses fan-in upstream of crossover",
+            label, "warn",
+            f"{route.kind} route expects {VOICE_PARK_ENV}=1, but "
+            "jasper-voice runtime env does not carry the park flag; run "
+            "jasper-grouping-reconcile",
+        )
+    if not route.voice_parked and voice_parked:
+        return CheckResult(
+            label, "warn",
+            f"{route.kind} route should not park voice, but jasper-voice "
+            f"runtime env still carries {VOICE_PARK_ENV}=1; run "
+            "jasper-grouping-reconcile",
         )
 
-    if voice_socket == OUTPUTD_TTS_SOCKET and not lane_armed:
+    if not route.outputd_tts_armed:
+        if lane_armed:
+            return CheckResult(
+                label, "warn",
+                f"{route.kind} route must keep outputd's TTS socket unarmed "
+                f"but {OUTPUTD_TTS_SOCKET_ENV}={outputd_socket!r}; run "
+                "jasper-grouping-reconcile",
+            )
+        if (
+            route.expected_voice_socket is not None
+            and voice_socket
+            and voice_socket != route.expected_voice_socket
+        ):
+            return CheckResult(
+                label, "warn",
+                f"{route.kind} route expects jasper-voice runtime env "
+                f"{VOICE_TTS_SOCKET_ENV}={route.expected_voice_socket}, "
+                f"but it resolves to {voice_socket}; run "
+                "jasper-grouping-reconcile",
+            )
+        return CheckResult(label, "ok", route.ok_detail)
+
+    if voice_socket == OUTPUTD_TTS_SOCKET and outputd_socket != OUTPUTD_TTS_SOCKET:
         return CheckResult(
             label, "warn",
             f"bonded: jasper-voice runtime env targets {OUTPUTD_TTS_SOCKET} but "
@@ -664,9 +705,7 @@ def check_grouping_tts_lane() -> CheckResult:
             "plays on all bonded speakers); check "
             f"{VOICE_GROUPING_ENV_FILE} precedence and run jasper-grouping-reconcile",
         )
-    return CheckResult(
-        label, "ok", f"member-local TTS wired ({OUTPUTD_TTS_SOCKET})",
-    )
+    return CheckResult(label, "ok", route.ok_detail)
 
 
 @doctor_check(order=75.7, group="grouping")

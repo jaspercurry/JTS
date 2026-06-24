@@ -48,13 +48,15 @@ assistant audio must stay in fan-in upstream of CamillaDSP so it rides
 the crossover/protection graph; outputd's post-crossover TTS mixer is
 not armed on active endpoints.
 
-Passive/dumb bonded multiroom members are the exception: the grouping
-reconciler points voice at `/run/jasper-outputd/tts.sock`, and outputd
-mixes that speaker's own assistant audio into its local post-round-trip
-content lane so replies do not ride the shared sync buffer. See
+Passive/dumb bonded non-sub multiroom members are the exception: the
+grouping reconciler points voice at `/run/jasper-outputd/tts.sock`, and
+outputd mixes that speaker's own assistant audio into its local
+post-round-trip content lane so replies do not ride the shared sync
+buffer. Active endpoints stay on fan-in, and wireless sub followers park
+voice while keeping outputd TTS unarmed. See
 [HANDOFF-multiroom.md](HANDOFF-multiroom.md) Increment 5 PR-2 and
 [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
-active-endpoint exception.
+active-endpoint route.
 
 `jasper-outputd` normally reads the content capture lane directly. For
 lab validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
@@ -582,8 +584,9 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-<<<<<<< Updated upstream
-Last verified: 2026-06-24 (active-endpoint TTS fan-in path rechecked against
+Last verified: 2026-06-24 (active-endpoint and wireless-sub TTS route
+exceptions rechecked against
+`jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and
 `jasper.cli.doctor.grouping`; feedback-cue source profiles and standalone

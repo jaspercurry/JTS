@@ -44,6 +44,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import atomic_io
+from .. import tts_routing as _tts_routing
 from ..log_event import log_event
 from ..local_sources import local_source_park_units, local_source_restore_units
 from .config import (
@@ -52,8 +53,13 @@ from .config import (
     load_config,
     local_sources_parked,
 )
+from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
 
 logger = logging.getLogger(__name__)
+
+OUTPUTD_TTS_SOCKET = _tts_routing.OUTPUTD_TTS_SOCKET
+OUTPUTD_TTS_SOCKET_ENV = _tts_routing.OUTPUTD_TTS_SOCKET_ENV
+VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
 
 
 # ---------- Unit names (single source of truth) ----------
@@ -193,24 +199,15 @@ OUTPUTD_DAC_CONTENT_SUB_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ"
 # the per-bond toggle is on. Empty everywhere else so stale env can never leave
 # a main bass-light without a sub.
 OUTPUTD_DAC_CONTENT_HP_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"
-# Bonded-member TTS (Increment 5 PR-2): while bonded, outputd listens
-# on its TTS socket and mixes voice at the final output stage (post-
-# round-trip, pre-reference — inv-A), and jasper-voice's playout is
-# pointed at it. Solo keeps fanin-owned TTS. The socket path is
-# outputd's RuntimeDirectory (it already hosts control.sock).
-OUTPUTD_TTS_SOCKET_ENV = "JASPER_OUTPUTD_TTS_SOCKET"
-OUTPUTD_TTS_SOCKET = "/run/jasper-outputd/tts.sock"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
 
-# Voice-side flip: a reconciler-owned PERSISTENT env file layered LAST
-# in jasper-voice.service. Bonded => JASPER_TTS_OUTPUTD_SOCKET points
-# at outputd's socket; solo => the key is OMITTED ENTIRELY (never
-# present-but-empty: voice's env reader treats a set-empty value as a
-# real — invalid — path; omission falls back to the fanin default).
-# Same never-empty lesson as the CONTENT_BRIDGE pin.
+# Voice-side grouping route: a reconciler-owned PERSISTENT env file layered LAST
+# in jasper-voice.service. The TTS route matrix decides whether this file points
+# voice at outputd, parks voice/AEC, or omits the socket so voice falls back to
+# fan-in. Omission is intentional: present-but-empty is read as a real, invalid
+# path. Same never-empty lesson as the CONTENT_BRIDGE pin.
 VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
-VOICE_TTS_SOCKET_ENV = "JASPER_TTS_OUTPUTD_SOCKET"
 VOICE_UNIT = "jasper-voice.service"
 
 # Reconciler-owned PERSISTENT env file the shairport-sync unit's
@@ -277,13 +274,6 @@ class _PcmHandleProbeResult:
     def unknown(self) -> bool:
         return self.state == "unknown"
 
-
-# Derived, Python-validated park signal for the bash reconciler: written
-# into grouping-voice.env as exactly `JASPER_GROUPING_VOICE_PARK=1` for
-# an ACTIVE bonded FOLLOWER (the dumb-follower profile parks voice + the
-# AEC stack); omitted otherwise. The bash side gates on the exact line
-# (grep -Fxq) so bond-validity logic is never duplicated in shell.
-VOICE_PARK_ENV = "JASPER_GROUPING_VOICE_PARK"
 
 # The snapserver stream id — ONE definition: the argv builder names the
 # pipe source with it, the reconciler's binding pin re-binds persisted
@@ -589,12 +579,14 @@ def outputd_grouping_env(
     rate_match soak resumes. Bonding and the soak coexist; neither can
     crash outputd.
     """
+    route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
+
     if cfg.enabled and cfg.error is None:
         if active_endpoint:
             return {
                 OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
-                OUTPUTD_TTS_SOCKET_ENV: "",
+                OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
                 OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
                 # Empty = unset to outputd's env_f32 (default 0.0).
                 OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
@@ -613,12 +605,11 @@ def outputd_grouping_env(
             )
             else ""
         )
-        tts_socket = "" if cfg.channel == "sub" else OUTPUTD_TTS_SOCKET
         env = {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
-            OUTPUTD_TTS_SOCKET_ENV: tts_socket,
+            OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
             OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
             # Pair-balance trim (validated <= 0 by load_config; outputd
             # re-validates fail-closed). Always written while bonded so
@@ -637,7 +628,7 @@ def outputd_grouping_env(
             # but clear it so that hazard cannot exist by construction — same
             # disable-clears-stale idiom as the off path below (empty = unset to
             # outputd, so no TTS server is constructed on a sub).
-            env[OUTPUTD_TTS_SOCKET_ENV] = tts_socket
+            env[OUTPUTD_TTS_SOCKET_ENV] = route.outputd_tts_socket
         return env
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
@@ -655,22 +646,27 @@ def voice_grouping_env(
 ) -> dict[str, str]:
     """jasper-voice's grouping-derived env. PURE.
 
-    PASSIVE bonded speakers point voice's TTS playout socket at outputd so each
-    member's OWN replies mix at its OWN final output; inv-3 keeps the leader's
-    TTS out of the SHARED stream. ACTIVE endpoints omit the socket override so
-    voice falls back to fan-in, upstream of the crossover; outputd's TTS mixer is
-    post-crossover and forbidden on an active lane. Solo also returns an EMPTY
-    dict — the key is omitted, never present-but-empty (a set-empty value would
-    be read as a real, invalid socket path).
+    The route matrix owns the policy. Passive non-sub members point voice's TTS
+    playout socket at outputd so each member's OWN replies mix at its OWN final
+    output; inv-3 keeps the leader's TTS out of the SHARED stream. Active
+    endpoints and sub routes fail closed to fan-in or park, with outputd TTS
+    unarmed. Solo also returns an EMPTY dict — the key is omitted, never
+    present-but-empty (a set-empty value would be read as a real, invalid socket
+    path).
     """
+    route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
     if cfg.enabled and cfg.error is None:
-        env = {} if active_endpoint else {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
-        if cfg.role == "follower":
-            # The dumb-follower profile: voice (and the AEC stack) park
-            # while this speaker is a bonded follower. The flag is the
-            # validated cross-language contract jasper-aec-reconcile
-            # gates on; the TTS socket stays armed so a role flip to
-            # leader un-parks with the right playout target already set.
+        env = (
+            {}
+            if route.voice_env_socket is None
+            else {VOICE_TTS_SOCKET_ENV: route.voice_env_socket}
+        )
+        if route.voice_parked:
+            # Parked routes stop voice (and the AEC stack) through the
+            # validated cross-language contract jasper-aec-reconcile gates on.
+            # The route matrix still owns any socket override separately, so
+            # active endpoints and sub followers can fail closed without
+            # duplicating those safety rules here.
             env[VOICE_PARK_ENV] = "1"
         return env
     return {}

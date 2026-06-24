@@ -279,6 +279,7 @@ title = "Voice runtime, provider switching, prompts, and tools"
 safety = "voice-runtime"
 code = [
   "jasper/audio_io.py",
+  "jasper/tts_routing.py",
   "jasper/voice/**",
   "jasper/voice_daemon.py",
   "jasper/vad.py",
@@ -694,6 +695,7 @@ safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
   "jasper/local_sources/**",
+  "jasper/tts_routing.py",
   "jasper/web/rooms_setup.py",
   "jasper/control/grouping_supervisor.py",
   "jasper/control_advert.py",
