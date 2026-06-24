@@ -457,12 +457,13 @@ def test_follower_parks_renderer_stack_via_reconcile_plan():
     """Cross-reference: the dumb-follower runtime role (which provides the
     old "endpoint" behaviour) parks the renderer stack. The exhaustive
     per-unit coverage lives in tests/test_multiroom_reconcile.py."""
+    from jasper.local_sources import local_source_park_units
     from jasper.multiroom.config import (
         DEFAULT_BUFFER_MS,
         DEFAULT_CODEC,
         GroupingConfig,
     )
-    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS, plan
+    from jasper.multiroom.reconcile import plan
 
     cfg = GroupingConfig(
         enabled=True, role="follower", channel="left",
@@ -470,5 +471,5 @@ def test_follower_parks_renderer_stack_via_reconcile_plan():
         buffer_ms=DEFAULT_BUFFER_MS, codec=DEFAULT_CODEC, error=None,
     )
     by_unit = {i.unit: i.desired for i in plan(cfg).intents}
-    for unit in FOLLOWER_PARKED_UNITS:
+    for unit in local_source_park_units():
         assert by_unit.get(unit) == "stop", unit

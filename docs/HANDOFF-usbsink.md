@@ -6,12 +6,19 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-06-14)
+> ### Current operational truth (updated 2026-06-24)
 >
 > USB Audio Input is shipped and off by default. The installer writes
 > the gadget overlay/config and requires reboot for the host-facing
 > UAC2 device to appear; `/sources/` toggles the disabled-by-default
-> usbsink units. At runtime, `jasper-usbsink`
+> USB intent unit (`jasper-usbsink.service`). The host-visible gadget is
+> an implementation subresource owned by `jasper-usbsink-init.service`:
+> starting the intent unit brings it up via `Requires=`, but stopping the
+> intent unit alone is not enough to remove the host-visible device. When
+> this speaker is a bonded multiroom follower, the local-source lifecycle
+> registry (`jasper/local_sources/registry.py`) parks the whole USB source
+> group by stopping the init/gadget unit; unpair restores only the intent
+> unit if it is enabled. At runtime, `jasper-usbsink`
 > is a peer music renderer: it bridges the gadget capture endpoint into
 > `usbsink_substream`, and `jasper-fanin` sums that lane with AirPlay,
 > Spotify, Bluetooth, and correction audio into substream 7 for
@@ -21,6 +28,8 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > Cross-cutting source metadata lives in `jasper/music_sources.py`:
 > `Source.USBSINK` uses `VolumeMode.CAMILLA_MASTER`, so CamillaDSP is
 > the outbound volume carrier and the host slider is observed inbound.
+> Operational lifecycle resources live in `jasper/local_sources/registry.py`,
+> which separates the USB bridge daemon from the host-visible gadget.
 > `jasper-mux` owns source selection/preemption, and the landing-page
 > `/source/select` surface can choose USB without enabling/disabling
 > the source.
@@ -75,9 +84,11 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
 USB gadget audio becomes a fourth music source alongside AirPlay, Spotify
 Connect, and Bluetooth A2DP. The user plugs a computer into the Pi via
-USB-C, the computer sees the configured speaker name as a USB audio
-output device, audio flows through the existing CamillaDSP chain to the
-speakers.
+USB-C, and when this speaker is solo or a pair leader the computer sees
+the configured speaker name as a USB audio output device; audio flows
+through the existing CamillaDSP chain to the speakers. A bonded follower
+parks the host-visible gadget so the computer does not see that follower
+as an independent output device.
 
 PLAN.md previously marked this as v8 "Blocked on Pi linux #6289 / #6569
 being fixed". That deferral is obsolete: PiCorrect resolves #6289 by
@@ -229,10 +240,10 @@ already loads it.
 
 - Boot path: `modules-load.d/` does **not** auto-load `libcomposite`.
   `jasper-usbsink-init.service` carries `ExecStartPre=modprobe libcomposite`.
-- Service path: both `jasper-usbsink.service` and
-  `jasper-usbsink-init.service` ship as `enabled=false` by default. The
-  `/sources/` wizard's USB toggle flips them on; install.sh leaves them
-  off.
+- Service path: `jasper-usbsink.service` is the disabled-by-default
+  `/sources/` intent unit. `jasper-usbsink-init.service` is not enabled
+  separately; it starts through `Requires=` when the intent unit starts and
+  must be stopped explicitly when USB input is turned off or role-parked.
 - Teardown path: `ExecStopPost` in `jasper-usbsink-init.service`
   unbinds the gadget from the UDC, removes the ConfigFS descriptor,
   and rmmods `libcomposite` (best-effort — if rmmod fails because a
@@ -920,11 +931,19 @@ via httpx. Add httpx as a dep if not already (it's already used in
 
 ### 4.6 Wizard integration
 
+> **Historical note.** This phase-plan sketch predates the local-source
+> lifecycle registry. Current code treats `jasper-usbsink.service` as the
+> `/sources/` intent unit and `jasper-usbsink-init.service` as the
+> host-visible gadget owner; parking/off must stop the init unit.
+
 **Modified file**: `jasper/web/sources_setup.py`.
 
-Two systemd units to toggle (init + main), but they're chained via
-`Requires=` + `PartOf=` so `systemctl enable/disable --now jasper-usbsink`
-also brings init up/down.
+Two systemd units exist (init + main). The intent unit is
+`jasper-usbsink.service`; `jasper-usbsink-init.service` owns the
+host-visible ConfigFS gadget. `Requires=` brings init up when the intent
+unit starts, and `PartOf=` stops the bridge when init stops. Stopping the
+bridge does **not** stop init, so disable/parking paths must explicitly
+stop the init/gadget unit.
 
 Add to constants:
 
@@ -1706,4 +1725,4 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-14
+Last verified: 2026-06-24

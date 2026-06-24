@@ -278,7 +278,9 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
   Plug a computer into the Pi's USB data/OTG port through a compatible
   power/data splitter or hub and the host sees the configured speaker
-  name as a USB audio output device. Off by default; toggle at
+  name as a USB audio output device while this speaker is solo or a pair
+  leader. A bonded follower parks the USB gadget even if saved intent is
+  on, so it does not advertise itself as an independent input. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins
@@ -1227,7 +1229,8 @@ always-on `:8780/healthz`.
 "Endpoint behaviour" is now purely the multiroom **follower** grouping role
 at runtime — a runtime role, not a second frontend or a surprise package
 rewrite. A full or streambox box that joins a pair as a follower parks its
-local source renderers (and, on a full speaker, its voice/AEC brain)
+local source resource groups, including advertise-side resources such as
+the USB Audio Input gadget (and, on a full speaker, its voice/AEC brain),
 through the grouping reconciler and exposes the stripped paired-follower
 UI; when unpaired, those surfaces come back. Active-crossover driver-DSP
 remains a separate topology capability. See

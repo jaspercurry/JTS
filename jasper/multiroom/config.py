@@ -104,6 +104,11 @@ DEFAULT_MAINS_HIGHPASS_ENABLED = True
 ALLOWED_CODECS = ("pcm", "flac", "opus")
 DEFAULT_CODEC = "flac"
 
+# Role-derived local-source parking. Keep this as a stable vocabulary
+# so reconcilers, web surfaces, and doctor checks can agree on *why*
+# local sources are unavailable without each re-deriving "role=follower".
+LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER = "bonded_follower"
+
 # Per-member pair-balance trim (dB). Attenuate-only: balancing trims the
 # LOUDER speaker down — a boost would cost headroom and risk hearing
 # safety (enforced again fail-closed in outputd). The -24 floor marks
@@ -732,3 +737,25 @@ def follower_leader_addr(cfg: GroupingConfig) -> str | None:
     if is_active_member(cfg) and cfg.role == "follower" and cfg.leader_addr:
         return cfg.leader_addr
     return None
+
+
+def is_bonded_follower(cfg: GroupingConfig) -> bool:
+    """True when ``cfg`` describes an ACTIVE bonded FOLLOWER. PURE."""
+    return follower_leader_addr(cfg) is not None
+
+
+def local_sources_park_reason(cfg: GroupingConfig) -> str | None:
+    """Why local music sources are parked for this config, else ``None``.
+
+    This is the role-policy single source of truth. It deliberately knows
+    nothing about systemd units, USB gadgets, or wizard toggles; those are
+    source-resource details consumed by the reconciler and UI/state layers.
+    """
+    if is_bonded_follower(cfg):
+        return LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
+    return None
+
+
+def local_sources_parked(cfg: GroupingConfig) -> bool:
+    """True when local music sources must not run or advertise."""
+    return local_sources_park_reason(cfg) is not None

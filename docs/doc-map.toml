@@ -178,6 +178,7 @@ title = "Renderer source policy, fan-in, ALSA, and audio routing"
 safety = "audio-output-risk"
 code = [
   "jasper/music_sources.py",
+  "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/renderer.py",
   "jasper/source_state.py",
@@ -537,6 +538,7 @@ title = "USB Audio Input"
 safety = "boot-risk"
 code = [
   "jasper/usbsink/**",
+  "jasper/local_sources/**",
   "jasper/cli/usbsink_main.py",
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
@@ -691,6 +693,7 @@ title = "Multi-room speaker grouping (stereo pair / 2.1 / wireless sub)"
 safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
+  "jasper/local_sources/**",
   "jasper/web/rooms_setup.py",
   "jasper/control/grouping_supervisor.py",
   "jasper/control_advert.py",

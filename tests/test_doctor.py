@@ -579,7 +579,7 @@ def test_check_grouping_connected_follower_is_ok(monkeypatch):
         enabled=True, role="follower", channel="right",
         bond_id="living-room", leader_addr="192.168.1.50",
     )
-    # Connected follower (snapclient active) => ok; the parked renderer
+    # Connected follower (snapclient active) => ok; the parked source-resource
     # stack reads inactive by default, which can never degrade health
     # (only desired=start units can).
     _patch_grouping(monkeypatch, cfg, unit_states={

@@ -6,11 +6,12 @@ Description=Jasper USB sink — audio bridge from UAC2 gadget into the music cha
 # CamillaDSP, so it is just another renderer from the music chain's
 # perspective.
 #
-# Ships DISABLED. The /sources/ wizard toggle enables/disables this
-# service together with jasper-usbsink-init. When both are off,
-# libcomposite isn't loaded and the daemon doesn't run — total
-# resident cost is the ~50 KB dwc2 kernel module from the dtoverlay,
-# nothing in user space.
+# Ships DISABLED. The /sources/ wizard toggles this intent unit. Starting
+# it pulls jasper-usbsink-init in via Requires=; stopping this unit alone does
+# not tear down the host-visible gadget, so off/parking paths explicitly stop
+# jasper-usbsink-init too. When both are off, libcomposite isn't loaded and
+# the daemon doesn't run — total resident cost is the ~50 KB dwc2 kernel
+# module from the dtoverlay, nothing in user space.
 #
 # See docs/HANDOFF-usbsink.md for the full design.
 After=jasper-usbsink-init.service jasper-fanin.service jasper-camilla.service sound.target

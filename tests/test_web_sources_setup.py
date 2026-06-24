@@ -130,6 +130,7 @@ def stub_backends(monkeypatch):
                 mod.AIRPLAY_UNIT,
                 mod.SPOTIFY_CONNECT_UNIT,
                 mod.USBSINK_UNIT,
+                mod.USBSINK_INIT_UNIT,
             }
         available_set = set(available_units)
         monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
@@ -479,7 +480,7 @@ def test_es_module_has_no_native_dialogs_or_innerhtml():
 
 def test_set_rejected_while_bonded_follower(stub_backends, monkeypatch):
     """The dumb-follower profile parks every source; `enable --now` from
-    the wizard would START a parked renderer and reopen the
+    the wizard would START parked source resources and reopen the
     advertise/leak hole until the next reconcile — so /set 409s with the
     pair story and applies NOTHING."""
     stub_backends()

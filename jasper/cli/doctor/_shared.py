@@ -329,9 +329,9 @@ def _parked_as_bonded_follower() -> bool:
     NOT-parked: a broken read must never silently mask a real failure on
     a solo speaker."""
     try:
-        from ...multiroom.config import follower_leader_addr, load_config
+        from ...multiroom.config import is_bonded_follower, load_config
 
-        return follower_leader_addr(load_config()) is not None
+        return is_bonded_follower(load_config())
     except Exception:  # noqa: BLE001 — fail-open
         return False
 
