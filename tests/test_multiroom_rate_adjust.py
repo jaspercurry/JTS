@@ -623,6 +623,9 @@ def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
             f"{k}={v}\n"
             for k, v in outputd_grouping_env(cfg, active_endpoint=True).items()
         ),
+        resolved_voice_text=(
+            "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock\n"
+        ),
         tmp_path=tmp_path,
         active_box=True,
     )
