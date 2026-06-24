@@ -5,8 +5,9 @@
 > slice plan, v1 scope, AND the Stage-B active-leader clock realization are
 > ratified — **v1 gates on the matched-pair leader**. Stage A (the active
 > *follower*, Slice 3) has **passed** on `jts3`; the active *leader* (Slice 5)
-> is ratified-not-built; the matched pair (Stage C) is hardware-blocked (needs a
-> 2nd commissioned active speaker). See "On-device status (2026-06-21)". This is
+> has its HW-free Step 0 built but still needs on-device bring-up; the matched
+> pair (Stage C) is hardware-blocked (needs a 2nd commissioned active speaker).
+> See "On-device status (2026-06-21)". This is
 > the canonical design + slice plan for running an active
 > speaker's **driver-domain crossover (Layer A)** across a wireless pair: a
 > **follower** (and, in v1, the leader's own drivers) runs Layer A locally,
@@ -981,6 +982,30 @@ tweeter TTS, inv-B-through-Layer-A).
 > reboot hazard": a second CamillaDSP must never take the DAC until the always-on
 > camilla#1 has provably released it.
 
+> **Stage B Step 0 hardened again (2026-06-24) — positive active-content handle
+> barrier (jts3 EBUSY reboot-loop fix).** A real `jts3` active-leader run found a
+> tighter race: camilla#1's websocket bake reload can return successfully before
+> snd-aloop has actually closed the exclusive `outputd_active_content_playback`
+> PCM (`hw:Loopback,0,5`). If camilla#2 arms inside that close-lag, its open gets
+> `EBUSY`; camilla#1 is the reboot-budget unit, so the box reboot-looped. The
+> reconciler now inserts a bounded positive probe between `seed_crossover_statefile`
+> and `systemctl enable --now jasper-camilla-crossover.service`: poll the
+> per-substream ALSA status path `/proc/asound/Loopback/pcm0p/sub5/status` and
+> accept only exact `closed` as release. Timeout/still-open logs
+> `event=multiroom.reconcile.active_leader_blocked`, restores camilla#1 to the
+> re-proven solo-active baseline, leaves camilla#2 un-armed, records
+> `/state.grouping.endpoint.mode=blocked` with `active_content_pcm_busy`, and
+> exits nonzero so the next reconcile can retry. A missing probe tool is
+> fail-soft/compatibility-only (warning + proceed). **On-device validation
+> completed on `jts3` (2026-06-24):** with grouping off, that procfs path reported
+> non-`closed` while camilla#1 owned `hw:Loopback,0,5`; a forced busy probe logged
+> `active_leader_blocked`, restored camilla#1 to
+> `active_speaker_baseline.yml`, left camilla#2 un-armed, and surfaced
+> `/state.grouping.endpoint.blocked_reason=active_content_pcm_busy`; the next
+> real reconcile retried from that blocked state, read exact `closed` on attempt 1
+> (`timeout_sec=0.8`), armed camilla#2, and completed with `rc=0`. The box was
+> then restored to solo (camilla#2/snapcast inactive, no failed units, no reboot).
+
 **Stage C — matched pair (two identical active speakers, one as leader):
 BLOCKED.** Precondition is a **second commissioned active speaker with real
 drivers**; today only `jts3` qualifies (`jts5` is a dual-Apple-DAC bench box with
@@ -1238,7 +1263,12 @@ starvation, the loopback going silent, is the deferred prerequisite for
    local filter. The brainy/active-endpoint sub path remains separate because
    CamillaDSP Layer A, not outputd `dac_content`, owns driver protection there.
 
-Last verified: 2026-06-23 (dumb receiver-side wireless sub [gap 5] landed
+Last verified: 2026-06-24 (active-leader positive handle barrier added and
+validated on `jts3`: `/proc/asound/Loopback/pcm0p/sub5/status` reported
+non-`closed` under camilla#1, forced-busy fail-closed restored solo-active
+without arming camilla#2, and the real retry read exact `closed` on attempt 1
+before arming camilla#2; HW-free tests cover released/busy/tool-missing
+branches. Prior 2026-06-23: dumb receiver-side wireless sub [gap 5] landed
 HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + passive-main
 outputd LR4 high-pass at the same bond `crossover_hz`
 [config/validate/`/grouping/set`/reconcile/state/`/rooms/`] + `/rooms/` sub

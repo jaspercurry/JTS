@@ -1313,9 +1313,88 @@ def _patch_active_leader(monkeypatch, order):
         lambda: order.append("disable_camilla2") or True,
     )
     # Default: snapserver is up (the bake gate passes). The snapserver-down
-    # incident test overrides this.
-    monkeypatch.setattr(reconcile_mod, "_unit_is_active", lambda unit: True)
+    # incident test overrides this. camilla#2 defaults to inactive so the arm
+    # path exercises the new positive handle-release barrier.
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_unit_is_active",
+        lambda unit: unit == reconcile_mod.SNAPSERVER_UNIT,
+    )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        lambda: order.append("probe") or reconcile_mod._PcmHandleProbeResult(
+            "released",
+            "status_closed",
+            detail="closed",
+            attempts=1,
+            timeout_sec=0.8,
+        ),
+    )
     return alc_mod
+
+
+def test_active_content_pcm_probe_reports_released_on_closed_status():
+    """The release barrier keys on the per-substream procfs status: exact
+    `closed` means hw:Loopback,0,5 has no opener and camilla#2 may arm."""
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = "closed\n"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Proc()
+
+    result = reconcile_mod._wait_for_active_content_pcm_release(
+        status_path="/tmp/status",
+        run=fake_run,
+        timeout_sec=0,
+    )
+
+    assert result.released
+    assert result.reason == "status_closed"
+    assert result.attempts == 1
+    assert calls[0][0] == ["cat", "/tmp/status"]
+
+
+def test_active_content_pcm_probe_times_out_when_status_stays_open():
+    """Any non-closed ALSA substream status is treated as an open handle.
+    Timeout returns busy so the active-leader arm can fail closed."""
+
+    class Proc:
+        returncode = 0
+        stdout = "state: RUNNING\nowner_pid: 1234\n"
+        stderr = ""
+
+    result = reconcile_mod._wait_for_active_content_pcm_release(
+        status_path="/tmp/status",
+        run=lambda *a, **k: Proc(),
+        timeout_sec=0,
+    )
+
+    assert result.busy
+    assert result.reason == "timeout"
+    assert result.detail == "state: RUNNING"
+
+
+def test_active_content_pcm_probe_fail_soft_when_probe_tool_missing():
+    """If the probe tool is absent, the barrier reports unknown instead of
+    crashing the reconciler; main() logs a warning and preserves compatibility."""
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("cat")
+
+    result = reconcile_mod._wait_for_active_content_pcm_release(
+        status_path="/tmp/status",
+        run=fake_run,
+        timeout_sec=0,
+    )
+
+    assert result.unknown
+    assert result.reason == "probe_tool_missing"
 
 
 def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatch):
@@ -1335,7 +1414,7 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     # the arm (never-flat: a cold camilla#2 start must load the re-proven graph).
     assert order.index("precheck") < order.index("apply")
     assert order.index("apply") < order.index("bake") < order.index("seed")
-    assert order.index("seed") < order.index("arm_camilla2")
+    assert order.index("seed") < order.index("probe") < order.index("arm_camilla2")
     assert "stream_binding" in order  # the leader hosts the stream
     # snapclient targets the round-trip loopback (the leader is its own receiver),
     # not the dumb FIFO; the leader still runs snapserver.
@@ -1346,6 +1425,33 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     # endpoint status persisted as an active LEADER.
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"active_leader": true' in status
+
+
+def test_main_active_leader_already_armed_skips_release_probe(
+    tmp_path, monkeypatch,
+):
+    """Idempotency: once camilla#2 is active, it legitimately owns substream 5.
+    A steady-state reconcile must not probe that handle as if it were camilla#1
+    still lagging closed."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_unit_is_active",
+        lambda unit: unit in {
+            reconcile_mod.SNAPSERVER_UNIT,
+            reconcile_mod.CROSSOVER_UNIT,
+        },
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert "probe" not in order
+    assert "arm_camilla2" not in order
+    assert "stream_binding" in order
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
 
 
 def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkeypatch):
@@ -1486,6 +1592,85 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
     assert rc == 1
     assert "bake_attempt" in order  # the bake was attempted...
     assert "arm_camilla2" not in order  # ...but camilla#2 was NOT armed (no DAC fight)
+
+
+def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
+    tmp_path, monkeypatch,
+):
+    """jts3 EBUSY regression (2026-06-24): a successful camilla#1 bake is not
+    proof that snd-aloop substream 5 is closed. If the positive handle probe
+    times out busy, camilla#2 is NOT armed; camilla#1 is restored to solo-active
+    so the box keeps playing locally and a later reconcile can retry."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        lambda: order.append("probe_busy")
+        or reconcile_mod._PcmHandleProbeResult(
+            "busy",
+            "timeout",
+            detail="state: RUNNING",
+            attempts=17,
+            timeout_sec=0.8,
+        ),
+    )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert order.index("seed") < order.index("probe_busy")
+    assert "arm_camilla2" not in order
+    assert "leader_restore" in order
+    assert "stream_binding" not in order
+    # The first part of reconcile still writes the active endpoint snapclient
+    # args; fail-closed here is the late camilla handoff, not a permanent unbond.
+    body = target.read_text()
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"blocked_reason": "active_content_pcm_busy"' in status
+    assert '"active_leader": false' in status
+
+
+def test_main_active_leader_probe_missing_fails_soft_and_arms(
+    tmp_path, monkeypatch,
+):
+    """Compatibility guard: if the proc-status probe tool is missing, the
+    reconciler logs the unknown result but does not permanently strand active
+    leaders that lack the helper."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_wait_for_active_content_pcm_release",
+        lambda: order.append("probe_missing")
+        or reconcile_mod._PcmHandleProbeResult(
+            "unknown",
+            "probe_tool_missing",
+            detail="cat",
+            attempts=1,
+            timeout_sec=0.8,
+        ),
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 0
+    assert order.index("seed") < order.index("probe_missing")
+    assert order.index("probe_missing") < order.index("arm_camilla2")
+    assert "stream_binding" in order
+    status = (tmp_path / "grouping-follower-status.json").read_text()
+    assert '"active_leader": true' in status
+    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
 
 
 def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(

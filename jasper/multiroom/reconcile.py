@@ -30,13 +30,14 @@ Type=oneshot. It runs, applies the plan, and exits.
 """
 from __future__ import annotations
 
-import logging
 import argparse
 import json
+import logging
 import os
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -253,6 +254,42 @@ AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 # through the crossover — never reboots the household speaker (unlike the
 # always-on camilla#1).
 CROSSOVER_UNIT = "jasper-camilla-crossover.service"
+
+# The exclusive active-content PCM camilla#1 owns in solo-active mode and
+# camilla#2 owns after the active-leader handoff. `outputd_active_content_*`
+# resolves to raw snd-aloop pair 5 (see deploy/alsa/asoundrc.jasper), so the
+# per-substream `/proc/asound` status is the only cheap positive release signal:
+# the shared `/dev/snd/pcmC*D0p` node covers every playback substream and would
+# be a false "busy" while renderers hold 0..4 or fan-in holds 7.
+ACTIVE_CONTENT_PLAYBACK_PCM = "hw:Loopback,0,5"
+ACTIVE_CONTENT_PLAYBACK_STATUS_PATH = "/proc/asound/Loopback/pcm0p/sub5/status"
+ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC = 0.8
+ACTIVE_CONTENT_RELEASE_POLL_SEC = 0.05
+
+
+@dataclass(frozen=True)
+class _PcmHandleProbeResult:
+    """One bounded active-content PCM release probe result."""
+
+    state: str  # "released" | "busy" | "unknown"
+    reason: str
+    detail: str = ""
+    status_path: str = ACTIVE_CONTENT_PLAYBACK_STATUS_PATH
+    attempts: int = 0
+    timeout_sec: float = 0.0
+
+    @property
+    def released(self) -> bool:
+        return self.state == "released"
+
+    @property
+    def busy(self) -> bool:
+        return self.state == "busy"
+
+    @property
+    def unknown(self) -> bool:
+        return self.state == "unknown"
+
 
 # Derived, Python-validated park signal for the bash reconciler: written
 # into grouping-voice.env as exactly `JASPER_GROUPING_VOICE_PARK=1` for
@@ -740,6 +777,129 @@ def _unit_is_active(unit: str) -> bool:
         return False
 
 
+def _probe_active_content_pcm_once(
+    *,
+    status_path: str = ACTIVE_CONTENT_PLAYBACK_STATUS_PATH,
+    run=subprocess.run,
+    probe_timeout_sec: float = 0.5,
+) -> _PcmHandleProbeResult:
+    """Read snd-aloop's per-substream status once.
+
+    `/proc/asound/Loopback/pcm0p/sub5/status` reads exactly `closed` when
+    `hw:Loopback,0,5` has no opener. Any open status (RUNNING, PREPARED, etc.)
+    means the exclusive PCM is still held. A missing probe tool is the one
+    fail-soft case: older/minimal installs should not crash the reconciler just
+    because this positive barrier cannot run.
+    """
+    try:
+        proc = run(
+            ["cat", status_path],
+            capture_output=True,
+            text=True,
+            timeout=probe_timeout_sec,
+        )
+    except FileNotFoundError as e:
+        return _PcmHandleProbeResult(
+            "unknown",
+            "probe_tool_missing",
+            detail=str(e),
+            status_path=status_path,
+        )
+    except subprocess.TimeoutExpired as e:
+        return _PcmHandleProbeResult(
+            "busy",
+            "probe_timeout",
+            detail=str(e),
+            status_path=status_path,
+        )
+    except OSError as e:
+        return _PcmHandleProbeResult(
+            "busy",
+            "probe_error",
+            detail=str(e),
+            status_path=status_path,
+        )
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip() or f"rc={proc.returncode}"
+        return _PcmHandleProbeResult(
+            "busy",
+            "status_unavailable",
+            detail=detail,
+            status_path=status_path,
+        )
+
+    status = (proc.stdout or "").strip()
+    if status.lower() == "closed":
+        return _PcmHandleProbeResult(
+            "released",
+            "status_closed",
+            detail=status,
+            status_path=status_path,
+        )
+    if not status:
+        return _PcmHandleProbeResult(
+            "busy",
+            "status_empty",
+            status_path=status_path,
+        )
+    first_line = status.splitlines()[0].strip()
+    return _PcmHandleProbeResult(
+        "busy",
+        "status_open",
+        detail=first_line,
+        status_path=status_path,
+    )
+
+
+def _wait_for_active_content_pcm_release(
+    *,
+    timeout_sec: float = ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC,
+    interval_sec: float = ACTIVE_CONTENT_RELEASE_POLL_SEC,
+    status_path: str = ACTIVE_CONTENT_PLAYBACK_STATUS_PATH,
+    run=subprocess.run,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+) -> _PcmHandleProbeResult:
+    """Poll until camilla#1 has positively released the active-content PCM.
+
+    Returns `busy` on timeout/still-open so the caller can fail closed to
+    solo-active before camilla#2 is armed. Returns `unknown` only for the
+    explicit fail-soft case (probe tool missing), which the caller logs and
+    treats as a compatibility escape hatch.
+    """
+    deadline = monotonic() + max(timeout_sec, 0.0)
+    attempts = 0
+    last = _PcmHandleProbeResult(
+        "busy",
+        "not_probed",
+        status_path=status_path,
+        timeout_sec=timeout_sec,
+    )
+    while True:
+        attempts += 1
+        last = _probe_active_content_pcm_once(
+            status_path=status_path,
+            run=run,
+        )
+        if not last.busy:
+            return replace(last, attempts=attempts, timeout_sec=timeout_sec)
+        now = monotonic()
+        if now >= deadline:
+            detail = last.detail
+            if last.reason != "status_open":
+                detail = f"{last.reason}: {detail}" if detail else last.reason
+            return _PcmHandleProbeResult(
+                "busy",
+                "timeout",
+                detail=detail,
+                status_path=status_path,
+                attempts=attempts,
+                timeout_sec=timeout_sec,
+            )
+        sleep(min(interval_sec, max(deadline - now, 0.0)))
+
+
 def _unit_absent_stderr(stderr: str) -> bool:
     """True when a systemctl failure means THE UNIT DOES NOT EXIST.
 
@@ -1188,6 +1348,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     rc = 0
     endpoint_block_reason = ""
+    active_leader_arm_blocked = False
 
     # Grouping prerequisite: ensure the snapcast binaries are installed — the
     # "grouping opt-in's job" install.sh ships the units for but never installs
@@ -1548,11 +1709,98 @@ def main(argv: list[str] | None = None) -> int:
                     level=logging.ERROR,
                 )
                 rc = 1
-            # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
-            # released the DAC — otherwise leave it un-armed (no DAC fight).
+            # Arm camilla#2 (systemctl enable --now) ONLY when the bake
+            # positively released the exclusive active-content PCM. A successful
+            # CamillaDSP config reload is not enough: snd-aloop can lag the
+            # actual close, and arming camilla#2 into that window races EBUSY
+            # against camilla#1's reboot-budget unit.
             if bake_ok:
-                if not _arm_crossover_unit():
-                    rc = 1
+                if _unit_is_active(CROSSOVER_UNIT):
+                    log_event(
+                        logger,
+                        "multiroom.reconcile.active_leader_handle_probe",
+                        pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
+                        status_path=ACTIVE_CONTENT_PLAYBACK_STATUS_PATH,
+                        result="already_armed",
+                        reason="crossover_unit_active",
+                    )
+                else:
+                    probe = _wait_for_active_content_pcm_release()
+                    log_event(
+                        logger,
+                        "multiroom.reconcile.active_leader_handle_probe",
+                        pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
+                        status_path=probe.status_path,
+                        result=probe.state,
+                        reason=probe.reason,
+                        detail=probe.detail or "(none)",
+                        attempts=probe.attempts,
+                        timeout_sec=probe.timeout_sec,
+                        level=logging.WARNING if probe.unknown else logging.INFO,
+                    )
+                    if probe.busy:
+                        endpoint_block_reason = "active_content_pcm_busy"
+                        active_leader_arm_blocked = True
+                        log_event(
+                            logger,
+                            "multiroom.reconcile.active_leader_blocked",
+                            reason=endpoint_block_reason,
+                            detail=(
+                                "active-content playback PCM still busy after "
+                                "camilla#1 bake; restoring solo-active and "
+                                "leaving camilla#2 un-armed"
+                            ),
+                            pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
+                            status_path=probe.status_path,
+                            probe_reason=probe.reason,
+                            probe_detail=probe.detail or "(none)",
+                            attempts=probe.attempts,
+                            timeout_sec=probe.timeout_sec,
+                            level=logging.ERROR,
+                        )
+                        try:
+                            from jasper.camilla import CamillaUnavailable
+                            from jasper.dsp_apply import DspApplyError
+
+                            from .active_leader_config import (
+                                restore_active_leader_solo_sync,
+                            )
+
+                            restored = restore_active_leader_solo_sync()
+                            if restored:
+                                log_event(
+                                    logger,
+                                    "multiroom.reconcile.camilla",
+                                    result=(
+                                        "active_leader_solo_restored_after_"
+                                        "pcm_busy"
+                                    ),
+                                    path=restored,
+                                )
+                        except (
+                            CamillaUnavailable,
+                            DspApplyError,
+                            OSError,
+                            RuntimeError,
+                            TimeoutError,
+                            ValueError,
+                        ) as e:
+                            log_event(
+                                logger,
+                                "multiroom.reconcile.camilla_failed",
+                                action="active_leader_pcm_busy_restore",
+                                error=e,
+                                level=logging.ERROR,
+                            )
+                        _write_follower_status(
+                            active_follower=False,
+                            active_leader=False,
+                            blocked_reason=endpoint_block_reason,
+                            path=FOLLOWER_STATUS_FILE,
+                        )
+                        rc = 1
+                    elif not _arm_crossover_unit():
+                        rc = 1
             else:
                 log_event(
                     logger,
@@ -1562,7 +1810,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 rc = 1
 
-    if active_leader:
+    if active_leader and not active_leader_arm_blocked:
         # 6. The stream-binding pin (ANY leader hosts the stream; runs after the
         # camilla apply so snapserver has had its longest warm-up): re-bind every
         # PERSISTED snapcast group to our stream. A stale server.json binding (the

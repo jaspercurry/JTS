@@ -107,7 +107,10 @@ build_install_rust_daemon() {
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
-    mapfile -t cargo_env < <(rust_cargo_build_env)
+    local cargo_arg
+    while IFS= read -r cargo_arg; do
+        cargo_env+=("${cargo_arg}")
+    done < <(rust_cargo_build_env)
     if [[ "${#cargo_env[@]}" -gt 0 ]]; then
         echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; lto=false, codegen-units=16, jobs=1)"
     fi
