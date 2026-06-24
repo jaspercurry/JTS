@@ -146,12 +146,11 @@ EnvironmentFile=-/var/lib/jasper/peering.env
 Environment="JASPER_TTS_TRANSPORT=outputd"
 Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"
 Environment="JASPER_DUCK_TRANSPORT=fanin"
-# Grouping-derived TTS playout flip (Increment 5 PR-2): while bonded,
-# the reconciler points JASPER_TTS_OUTPUTD_SOCKET at outputd's socket
-# (voice mixes at the final output stage, post-round-trip — solo
-# latency on a bonded member); solo omits the key and the inline fanin
-# default above applies. Reconciler-owned, layered LAST so the derived
-# state wins. See docs/HANDOFF-multiroom.md §2.
+# Grouping-derived TTS playout route (Increment 5 PR-2): the reconciler's
+# route matrix either points JASPER_TTS_OUTPUTD_SOCKET at outputd's socket
+# for passive non-sub members, omits it so the inline fanin default above
+# applies, and/or parks voice with JASPER_GROUPING_VOICE_PARK. Reconciler-owned,
+# layered LAST so the derived state wins. See docs/HANDOFF-multiroom.md §2.
 EnvironmentFile=-/var/lib/jasper/grouping-voice.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper

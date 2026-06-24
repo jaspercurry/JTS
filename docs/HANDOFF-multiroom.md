@@ -55,15 +55,18 @@ with the member's channel pick. The grouping reconciler is the single
 applier (camilla config swap + outputd lane env + member FIFO + units, in a
 load-bearing order — see `reconcile.main`'s docstring).
 **Increment 5 PR-2 (member-local TTS + the grouping supervisor) is BUILT
-(2026-06-11).** While bonded, every member's assistant TTS routes to its
-OWN outputd (`rust/jasper-outputd/src/tts.rs` — the fanin wire-protocol
-twin feeding `OutputCore`), so voice answers are instant and member-local
-(inv-3) instead of riding the sync buffer to every speaker; `PROGRAM_DUCK`
-follows the same socket, ducking content on the speaking member only, and
-the barge-in `FLUSH_SYNC` ack carries DAC-true `audio_played_ms` from the
-playout ledger. The reconciler arms both ends (grouping-outputd.env +
-grouping-voice.env; drift check: `grouping: TTS lane`, which replaced the
-PR-1 standing `TTS interim` warn). Runtime liveness is owned by
+(2026-06-11).** While bonded, non-sub passive/dumb members route assistant
+TTS to their OWN outputd (`rust/jasper-outputd/src/tts.rs` — the fanin
+wire-protocol twin feeding `OutputCore`), so voice answers are instant and
+member-local (inv-3) instead of riding the sync buffer to every speaker;
+`PROGRAM_DUCK` follows the same socket, ducking content on the speaking
+member only, and the barge-in `FLUSH_SYNC` ack carries DAC-true
+`audio_played_ms` from the playout ledger. Active endpoints stay on fan-in
+upstream of the active graph; wireless sub followers park voice and keep
+outputd TTS unarmed. The reconciler derives that route matrix for both
+ends (grouping-outputd.env + grouping-voice.env; drift check:
+`grouping: TTS lane`, which replaced the PR-1 standing `TTS interim`
+warn). Runtime liveness is owned by
 `jasper.control.grouping_supervisor` (starvation watch → rate-limited
 reconciler kick; continuous leader binding read-repair; rostered-follower
 reassert using the household credential; off via
@@ -809,19 +812,22 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   `commit_prepared_period_with_dac_delay`. fanin's solo ack now carries its
   own per-segment playout ledger too (`rust/jasper-fanin/src/playout.rs`),
   but a mix-commit estimate that over-reads by the downstream pipeline
-  depth; outputd's port is the DAC-true one. PASSIVE bonded members flip voice's
-  TTS socket to their own outputd (inv-3: the leader's TTS never enters the
-  shared stream — each speaker's OWN replies mix locally, post-round-trip,
-  pre-reference, which is exactly inv-A's tap requirement; `PROGRAM_DUCK`
-  rides the same socket, so ducking is member-local too). Active endpoints
-  deliberately do not arm that socket; they keep TTS on fan-in upstream of
-  CamillaDSP, where it is split/protected by the active graph. The reconciler
-  arms both ends for passive members — `JASPER_OUTPUTD_TTS_SOCKET` in
-  grouping-outputd.env and `JASPER_TTS_OUTPUTD_SOCKET` in grouping-voice.env
-  (solo/active endpoint OMITS the key — present-but-empty would break voice's
-  fanin default; a fresh solo reconcile skips creating the empty file so first
-  boot doesn't restart voice) — and `grouping: TTS lane` (doctor) catches drift
-  between them,
+  depth; outputd's port is the DAC-true one. PASSIVE bonded non-sub members
+  flip voice's TTS socket to their own outputd (inv-3: the leader's TTS never
+  enters the shared stream — each speaker's OWN replies mix locally,
+  post-round-trip, pre-reference, which is exactly inv-A's tap requirement;
+  `PROGRAM_DUCK` rides the same socket, so ducking is member-local too).
+  Active endpoints deliberately do not arm that socket; they keep TTS on
+  fan-in upstream of CamillaDSP, where it is split/protected by the active
+  graph. Wireless sub followers are parked and keep outputd TTS unarmed so
+  full-range speech never reaches the sub. The reconciler derives the route
+  matrix in `jasper.multiroom.tts_route.expected_grouping_tts_route`, then
+  writes `JASPER_OUTPUTD_TTS_SOCKET` in grouping-outputd.env and
+  `JASPER_TTS_OUTPUTD_SOCKET` / `JASPER_GROUPING_VOICE_PARK` in
+  grouping-voice.env as that matrix requires (solo/active endpoint OMITS the
+  socket key — present-but-empty would break voice's fanin default; a fresh
+  solo reconcile skips creating the empty file so first boot doesn't restart
+  voice) — and `grouping: TTS lane` (doctor) catches drift between them,
   including the worst shape: voice targeting a socket outputd never armed
   (silent assistant). Solo speakers are byte-identical to pre-PR-2 (no
   socket env → outputd runs the exact prior period loop).
@@ -2059,9 +2065,9 @@ of the voice/bridge units and gains a single new park condition
 (grep -Fxq on the exact flag line; bond-validity logic is never
 re-derived in shell). Park is `disable --now` (mirroring the
 provider-unset park) so a reboot can't boot-start 240 MB of models for
-seconds before re-parking; un-park is automatic (flag disappears →
-restart_voice re-enables; the TTS socket stays armed so a promotion to
-leader resumes with the right playout target). Role park wins over every
+  seconds before re-parking; un-park is automatic (flag disappears →
+  restart_voice re-enables; the grouping route matrix rewrites the right
+  TTS socket state for the new role/channel). Role park wins over every
 mic/profile shape including the custom-mic early exit. Doctor: the
 bridge/mic liveness family (AEC bridge ×3, mic card, mic capture) reads
 "parked (bonded follower)" via the shared skip idiom; the landing page's
@@ -2641,8 +2647,10 @@ Last verified: 2026-06-24 (pair-lock runtime surface rechecked against
 coalescing and the durable trailing service rechecked against
 `jasper.control.server`,
 `deploy/systemd/jasper-grouping-reconcile-trailing.service`, and the grouped
-outputd env/reconcile path; active-endpoint TTS fan-in exception rechecked
-against `jasper.multiroom.reconcile` and `jasper.cli.doctor.grouping`;
+outputd env/reconcile path; active-endpoint and wireless-sub TTS route
+exceptions rechecked against
+`jasper.multiroom.tts_route.expected_grouping_tts_route`,
+`jasper.multiroom.reconcile`, and `jasper.cli.doctor.grouping`;
 local-source follower parking rechecked against `jasper/local_sources/registry.py`
 and `jasper.multiroom.reconcile`; wireless-sub 2.1 path from 2026-06-23
 unchanged)

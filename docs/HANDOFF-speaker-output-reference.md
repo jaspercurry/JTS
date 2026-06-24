@@ -55,7 +55,7 @@ Apple DACs.
 
 **Passive/dumb bonded multiroom member (Increment 5 PR-2):** the
 assistant path above is the solo/active-output topology. While a
-passive speaker is a bond member, the grouping reconciler points
+non-sub passive speaker is a bond member, the grouping reconciler points
 voice's `JASPER_TTS_OUTPUTD_SOCKET` at `/run/jasper-outputd/tts.sock`
 instead — outputd serves fanin's exact TTS wire protocol
 (`rust/jasper-outputd/src/tts.rs`) and mixes the member's own TTS/cues
@@ -64,7 +64,8 @@ holds; `PROGRAM_DUCK` ducks the content lane member-locally). Music
 keeps the synced snapcast path; only assistant audio goes local. Active
 endpoints deliberately do **not** arm this outputd TTS socket: voice
 stays on fan-in upstream of CamillaDSP so assistant audio is crossed
-over/protected at the endpoint's active width.
+over/protected at the endpoint's active width. Wireless sub followers
+park voice and keep outputd TTS unarmed.
 Canonical home: [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §0 /
 Increment 5 PR-2, plus
 [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
@@ -113,7 +114,7 @@ TTS is already a core realtime-voice component:
   provider/model/voice profile metadata to the active TTS IPC socket,
   tracks expected drain, and supports `flush()` for interruption. In the
   solo packaged topology that socket is `/run/jasper-fanin/tts.sock`; on
-  an active bonded multiroom member, the grouping reconciler instead
+  a passive bonded non-sub multiroom member, the grouping reconciler instead
   points voice at `/run/jasper-outputd/tts.sock` so assistant audio mixes
   post-round-trip at the final output owner.
 - Fan-in and outputd speak the same `jasper-tts-protocol` wire
@@ -1404,7 +1405,9 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-24 (active-endpoint TTS fan-in path rechecked against
+Last verified: 2026-06-24 (active-endpoint and wireless-sub TTS route
+exceptions rechecked against
+`jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and
 `jasper.cli.doctor.grouping`; fan-in solo `FLUSH_SYNC` playout-ledger ack
