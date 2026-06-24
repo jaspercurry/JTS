@@ -216,6 +216,7 @@ OUTPUTD_DAC_CONTENT_HP_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"
 OUTPUTD_TTS_SOCKET_ENV = "JASPER_OUTPUTD_TTS_SOCKET"
 OUTPUTD_TTS_SOCKET = "/run/jasper-outputd/tts.sock"
 OUTPUTD_UNIT = "jasper-outputd.service"
+CAMILLA_UNIT = "jasper-camilla.service"
 
 # Voice-side flip: a reconciler-owned PERSISTENT env file layered LAST
 # in jasper-voice.service. Bonded => JASPER_TTS_OUTPUTD_SOCKET points
@@ -244,6 +245,7 @@ AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 # those units here — it reads the derived park flag below and
 # restarts-or-parks voice per role + provider + mic, one writer total.
 AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
+AUDIO_HARDWARE_RECONCILE = "/usr/local/sbin/jasper-audio-hardware-reconcile"
 
 # camilla#2 — the endpoint-crossover CamillaDSP instance (:1235), armed ONLY on
 # an ACTIVE LEADER (HANDOFF-distributed-active.md "Stage B — the ratified
@@ -572,14 +574,20 @@ def outputd_grouping_env(
     solo loop — so a stale file can never half-configure the lane
     (mirrors ``_assemble_args``'s disable-clears-stale idiom).
 
-    ``active_endpoint`` (distributed-active Slice 3 — the ACTIVE follower):
-    DISABLES the ``dac_content`` ChannelPick on this box. The follower's
-    CamillaDSP owns BOTH the channel-pick and the ``2->N`` split (Layer A), so
-    outputd just runs its normal active sink fed by camilla — no FIFO, no
-    ChannelPick. This is the real capability that replaces the
+    ``active_endpoint`` (distributed-active Slice 3 — the ACTIVE follower, plus
+    the active leader's own drivers): DISABLES the ``dac_content`` ChannelPick
+    on this box. CamillaDSP owns BOTH the channel-pick and the ``2->N`` split
+    (Layer A), so outputd just runs its normal active sink fed by camilla — no
+    FIFO, no ChannelPick. This is the real capability that replaces the
     ``dac_content_lane_rejects_non_single_alsa_sink`` fail-closed: the active
     sink is now a legitimate bonded member (via CamillaDSP, not the dac_content
-    lane). Returns the cleared set, exactly like solo.
+    lane).
+
+    Active-mode TTS deliberately stays upstream of the crossover in fan-in. The
+    outputd TTS mixer is stereo-only and post-crossover; on an active lane, a
+    2-way speaker is also "2 channels", so arming that socket would send
+    full-range assistant audio to the tweeter. Active endpoints therefore clear
+    the outputd TTS socket along with the dac_content lane.
 
     WRITER/VALIDATOR COHERENCE (the jts3 2026-06-11 boot-loop incident):
     outputd FAIL-CLOSES on ``DAC_CONTENT_FIFO`` + ``CONTENT_BRIDGE=
@@ -596,7 +604,16 @@ def outputd_grouping_env(
     rate_match soak resumes. Bonding and the soak coexist; neither can
     crash outputd.
     """
-    if cfg.enabled and cfg.error is None and not active_endpoint:
+    if cfg.enabled and cfg.error is None:
+        if active_endpoint:
+            return {
+                OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
+                OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
+                OUTPUTD_TTS_SOCKET_ENV: "",
+                OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
+                # Empty = unset to outputd's env_f32 (default 0.0).
+                OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
+            }
         sub_present = (
             cfg.subwoofer_present
             or cfg.channel == "sub"
@@ -611,11 +628,12 @@ def outputd_grouping_env(
             )
             else ""
         )
+        tts_socket = "" if cfg.channel == "sub" else OUTPUTD_TTS_SOCKET
         env = {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
-            OUTPUTD_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+            OUTPUTD_TTS_SOCKET_ENV: tts_socket,
             OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
             # Pair-balance trim (validated <= 0 by load_config; outputd
             # re-validates fail-closed). Always written while bonded so
@@ -634,7 +652,7 @@ def outputd_grouping_env(
             # but clear it so that hazard cannot exist by construction — same
             # disable-clears-stale idiom as the off path below (empty = unset to
             # outputd, so no TTS server is constructed on a sub).
-            env[OUTPUTD_TTS_SOCKET_ENV] = ""
+            env[OUTPUTD_TTS_SOCKET_ENV] = tts_socket
         return env
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
@@ -647,18 +665,21 @@ def outputd_grouping_env(
     }
 
 
-def voice_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
+def voice_grouping_env(
+    cfg: GroupingConfig, *, active_endpoint: bool = False,
+) -> dict[str, str]:
     """jasper-voice's grouping-derived env. PURE.
 
-    Bonded (either role — each member's OWN replies mix at its OWN
-    final output; inv-3 keeps the leader's TTS out of the SHARED
-    stream): voice's TTS playout socket points at outputd. Solo: an
-    EMPTY dict — the key is omitted, never present-but-empty (a
-    set-empty value would be read as a real, invalid socket path;
-    omission falls back to the fanin default in jasper.env).
+    PASSIVE bonded speakers point voice's TTS playout socket at outputd so each
+    member's OWN replies mix at its OWN final output; inv-3 keeps the leader's
+    TTS out of the SHARED stream. ACTIVE endpoints omit the socket override so
+    voice falls back to fan-in, upstream of the crossover; outputd's TTS mixer is
+    post-crossover and forbidden on an active lane. Solo also returns an EMPTY
+    dict — the key is omitted, never present-but-empty (a set-empty value would
+    be read as a real, invalid socket path).
     """
     if cfg.enabled and cfg.error is None:
-        env = {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+        env = {} if active_endpoint else {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
         if cfg.role == "follower":
             # The dumb-follower profile: voice (and the AEC stack) park
             # while this speaker is a bonded follower. The flag is the
@@ -1133,6 +1154,92 @@ def _restart_unit(unit: str) -> bool:
     return True
 
 
+def _ensure_unit_active(unit: str, *, reason: str) -> bool:
+    """Start a required unit after clearing a stale start-limit state.
+
+    Active-leader self-healing can intentionally stop camilla#2 to release the
+    active-content lane. If camilla#1 previously hit StartLimit while camilla#2
+    held that lane, a plain ``systemctl start`` remains parked until
+    ``reset-failed`` runs. Keep this helper narrow and explicit so the common
+    restore/restart paths retain their existing semantics.
+    """
+    if _unit_is_active(unit):
+        return True
+    try:
+        subprocess.run(
+            ["systemctl", "reset-failed", unit],
+            check=False, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["systemctl", "start", unit],
+            check=True, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_start_failed",
+            unit=unit,
+            reason=reason,
+            error="systemctl_not_found",
+            level=logging.ERROR,
+        )
+        return False
+    except subprocess.CalledProcessError as e:
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_start_failed",
+            unit=unit,
+            reason=reason,
+            rc=e.returncode,
+            stderr=(e.stderr or "").strip(),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "multiroom.reconcile.unit_started",
+        unit=unit,
+        reason=reason,
+    )
+    return True
+
+
+def _run_audio_hardware_reconcile(*, reason: str) -> bool:
+    """Run the audio-hardware reconciler after an active-leader graph change.
+
+    That reconciler is the single writer of /var/lib/jasper/outputd.env. The
+    active-leader bake changes the live Camilla graph from the solo active
+    baseline to the roleful program-bake pipe; outputd must then switch from the
+    passive stereo lane to the active-content lane BEFORE camilla#2 is armed, or
+    the two Camilla instances/outputd fight over snd-aloop pair 6.
+    """
+    try:
+        subprocess.run(
+            [AUDIO_HARDWARE_RECONCILE, "--reason", reason],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        log_event(
+            logger,
+            "multiroom.reconcile.audio_hardware_failed",
+            reason=reason,
+            error=e,
+            stderr=stderr.strip(),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "multiroom.reconcile.audio_hardware",
+        reason=reason,
+        result="reconciled",
+    )
+    return True
+
+
 def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
     """Run ``systemctl <verb...> jasper-camilla-crossover.service`` for the
     active-leader camilla#2 arm/teardown. Fail-soft (logged + reflected in the
@@ -1558,8 +1665,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             rc = 1
 
-    # 3. outputd picks up the lane env only at unit start.
-    if env_changed and env_ok and not _restart_outputd():
+    # 3. outputd picks up the lane env only at unit start. For an active leader,
+    # defer that restart until after camilla#1's program-bake graph is live; the
+    # audio-hardware reconciler needs that graph as evidence to switch outputd
+    # from the passive stereo lane to the active-content lane before camilla#2
+    # is armed. Restarting here would read the grouping TTS env but still use
+    # the solo baseline, re-opening the passive lane that camilla#2 needs.
+    defer_outputd_restart = active_speaker_leader
+    if env_changed and env_ok and not defer_outputd_restart and not _restart_outputd():
         rc = 1
 
     # 3b. Voice's grouping-derived env (PR-2 TTS socket flip + the PR-B
@@ -1570,7 +1683,7 @@ def main(argv: list[str] | None = None) -> int:
     # voice/bridge units and decides restart-vs-park from the flag plus
     # its own provider + mic gates (writer/validator coherence — two
     # writers of one unit's state was the jts3 boot-loop class).
-    voice_env = voice_grouping_env(cfg)
+    voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
     voice_changed, voice_ok = _write_outputd_env(
         voice_env, path=VOICE_GROUPING_ENV_FILE,
     )
@@ -1676,6 +1789,8 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 level=logging.ERROR,
             )
+            if not _disable_crossover_unit():
+                rc = 1
             rc = 1
         else:
             # Wire is up. camilla#1 bakes to the now-readable pipe; THEN — only if
@@ -1686,35 +1801,49 @@ def main(argv: list[str] | None = None) -> int:
             # enable_rate_adjust ON — the validated active-follower seam, no
             # outputd-summer yet (HANDOFF-distributed-active.md "Sequencing" 1).
             bake_ok = False
-            try:
-                from .active_leader_config import (
-                    apply_active_leader_bake_sync,
-                    seed_crossover_statefile,
-                )
-
-                applied = apply_active_leader_bake_sync()
-                log_event(
-                    logger,
-                    "multiroom.reconcile.camilla",
-                    result="active_leader_bake",
-                    path=applied,
-                )
-                seed_crossover_statefile()
-                bake_ok = True
-            except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
-                log_event(
-                    logger,
-                    "multiroom.reconcile.camilla_failed",
-                    action="active_leader_bake_apply",
-                    error=e,
-                    level=logging.ERROR,
-                )
+            if not _disable_crossover_unit():
                 rc = 1
-            # Arm camilla#2 (systemctl enable --now) ONLY when the bake
-            # positively released the exclusive active-content PCM. A successful
-            # CamillaDSP config reload is not enough: snd-aloop can lag the
-            # actual close, and arming camilla#2 into that window races EBUSY
-            # against camilla#1's reboot-budget unit.
+            elif not _ensure_unit_active(
+                CAMILLA_UNIT, reason="active-leader-bake"
+            ):
+                rc = 1
+            else:
+                try:
+                    from .active_leader_config import (
+                        apply_active_leader_bake_sync,
+                        seed_crossover_statefile,
+                    )
+
+                    applied = apply_active_leader_bake_sync()
+                    log_event(
+                        logger,
+                        "multiroom.reconcile.camilla",
+                        result="active_leader_bake",
+                        path=applied,
+                    )
+                    bake_ok = True
+                    if not _run_audio_hardware_reconcile(
+                        reason="grouping-active-leader-bake",
+                    ):
+                        bake_ok = False
+                        rc = 1
+                    if bake_ok:
+                        seed_crossover_statefile()
+                except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+                    log_event(
+                        logger,
+                        "multiroom.reconcile.camilla_failed",
+                        action="active_leader_bake_apply",
+                        error=e,
+                        level=logging.ERROR,
+                    )
+                    rc = 1
+            # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
+            # moved camilla#1 off the active-content PCM, outputd re-converged
+            # to the active lane, and the exclusive handle positively released.
+            # A successful CamillaDSP config reload is not enough: snd-aloop can
+            # lag the actual close, and arming camilla#2 into that window races
+            # EBUSY against camilla#1's reboot-budget unit.
             if bake_ok:
                 if _unit_is_active(CROSSOVER_UNIT):
                     log_event(

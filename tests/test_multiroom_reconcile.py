@@ -508,14 +508,18 @@ def test_assemble_args_active_endpoint_writes_loopback_not_fifo():
 def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     """An ACTIVE follower disables outputd's dac_content ChannelPick — camilla
     owns the channel-pick + split, so outputd runs its normal active sink. The
-    lane env is cleared exactly like solo; a DUMB member still arms it."""
+    round-trip lane env is cleared; TTS also stays off outputd because active
+    voice rides fan-in upstream of the crossover. A DUMB member still arms the
+    FIFO lane."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        OUTPUTD_TTS_SOCKET_ENV,
         outputd_grouping_env,
     )
 
     active = outputd_grouping_env(_follower(), active_endpoint=True)
     assert active[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""  # cleared (no dac_content)
+    assert active[OUTPUTD_TTS_SOCKET_ENV] == ""
     dumb = outputd_grouping_env(_follower(), active_endpoint=False)
     assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
 
@@ -595,7 +599,9 @@ def test_outputd_grouping_env_clears_main_highpass_when_not_applicable():
 def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
     """A sub plays only low-passed bass and NEVER voice; outputd mixes TTS AFTER
     the low-pass, so a sub must NOT arm the outputd TTS lane (else full-range
-    speech would reach the subwoofer). Every non-sub member keeps it armed."""
+    speech would reach the subwoofer). Every non-sub PASSIVE member keeps it
+    armed; active endpoints keep it cleared regardless of channel because active
+    voice rides fan-in upstream of the crossover."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET_ENV,
@@ -604,10 +610,18 @@ def test_outputd_grouping_env_clears_tts_socket_for_a_sub():
 
     sub = outputd_grouping_env(_follower(channel="sub"))
     assert sub[OUTPUTD_TTS_SOCKET_ENV] == ""  # cleared = unset to outputd
+    active_sub = outputd_grouping_env(
+        _follower(channel="sub"), active_endpoint=True,
+    )
+    assert active_sub[OUTPUTD_TTS_SOCKET_ENV] == ""
 
     for ch in ("left", "right", "stereo", "mono"):
         env = outputd_grouping_env(_follower(channel=ch))
         assert env[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
+        active_env = outputd_grouping_env(
+            _follower(channel=ch), active_endpoint=True,
+        )
+        assert active_env[OUTPUTD_TTS_SOCKET_ENV] == ""
 
 
 def test_outputd_grouping_env_no_sub_corner_when_not_active_member():
@@ -1312,6 +1326,16 @@ def _patch_active_leader(monkeypatch, order):
         reconcile_mod, "_disable_crossover_unit",
         lambda: order.append("disable_camilla2") or True,
     )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_run_audio_hardware_reconcile",
+        lambda *, reason: order.append(f"audio_hardware:{reason}") or True,
+    )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_ensure_unit_active",
+        lambda unit, *, reason: order.append(f"ensure:{unit}:{reason}") or True,
+    )
     # Default: snapserver is up (the bake gate passes). The snapserver-down
     # incident test overrides this. camilla#2 defaults to inactive so the arm
     # path exercises the new positive handle-release barrier.
@@ -1410,11 +1434,24 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     rc = main(["--reason", "test"])
 
     assert rc == 0
-    # Gate before units; bake + re-seed + arm AFTER the unit plan; seed precedes
-    # the arm (never-flat: a cold camilla#2 start must load the re-proven graph).
+    # Gate before units; bake + output-hardware reconverge + re-seed + arm AFTER
+    # the unit plan; seed precedes the arm (never-flat: a cold camilla#2 start
+    # must load the re-proven graph).
     assert order.index("precheck") < order.index("apply")
-    assert order.index("apply") < order.index("bake") < order.index("seed")
+    assert order.index("apply") < order.index("disable_camilla2")
+    assert order.index("disable_camilla2") < order.index(
+        "ensure:jasper-camilla.service:active-leader-bake"
+    )
+    assert order.index(
+        "ensure:jasper-camilla.service:active-leader-bake"
+    ) < order.index("bake")
+    assert order.index("bake") < order.index("audio_hardware:grouping-active-leader-bake")
+    assert order.index("audio_hardware:grouping-active-leader-bake") < order.index("seed")
     assert order.index("seed") < order.index("probe") < order.index("arm_camilla2")
+    # The active leader defers outputd restart to the audio-hardware reconciler,
+    # because it must inspect the freshly loaded roleful graph before choosing
+    # the active-content lane.
+    assert "outputd_restart" not in order
     assert "stream_binding" in order  # the leader hosts the stream
     # snapclient targets the round-trip loopback (the leader is its own receiver),
     # not the dumb FIFO; the leader still runs snapserver.
@@ -1594,6 +1631,55 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
     assert "arm_camilla2" not in order  # ...but camilla#2 was NOT armed (no DAC fight)
 
 
+def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
+    tmp_path, monkeypatch,
+):
+    """After the bake, outputd must re-converge to the active-content lane before
+    camilla#2 can safely own the round-trip loopback. If that handoff fails,
+    leave camilla#2 unarmed."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_run_audio_hardware_reconcile",
+        lambda *, reason: order.append("audio_hardware_failed") or False,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "bake" in order
+    assert "audio_hardware_failed" in order
+    assert "seed" not in order
+    assert "probe" not in order
+    assert "arm_camilla2" not in order
+
+
+def test_main_active_leader_skips_bake_when_camilla1_cannot_restart(
+    tmp_path, monkeypatch,
+):
+    """If a prior failed active-leader attempt left camilla#2 holding the active
+    lane, reconcile first releases camilla#2 and reset-starts camilla#1. If
+    camilla#1 still cannot come back, do not bake or re-arm camilla#2."""
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
+    _patch_active_leader(monkeypatch, order)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_ensure_unit_active",
+        lambda unit, *, reason: order.append("camilla1_start_failed") or False,
+    )
+
+    rc = main(["--reason", "test"])
+
+    assert rc == 1
+    assert "disable_camilla2" in order
+    assert "camilla1_start_failed" in order
+    assert "bake" not in order
+    assert "arm_camilla2" not in order
+
+
 def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     tmp_path, monkeypatch,
 ):
@@ -1702,6 +1788,7 @@ def test_main_active_leader_skips_bake_and_arm_when_snapserver_down(
     rc = main(["--reason", "test"])
 
     assert rc == 1
+    assert "disable_camilla2" in order
     assert "bake" not in order  # never baked onto a reader-less pipe
     assert "arm_camilla2" not in order  # never armed camilla#2 (no DAC fight)
 

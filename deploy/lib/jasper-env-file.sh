@@ -118,6 +118,9 @@ jasper_env_file_set() {
         printf '%s=%s\n' "$key" "$quoted" > "$tmp"
     fi
 
+    if [[ -e "$file" ]]; then
+        chown --reference="$file" "$tmp" 2>/dev/null || true
+    fi
     chmod "$file_mode" "$tmp"
     mv "$tmp" "$file"
 }

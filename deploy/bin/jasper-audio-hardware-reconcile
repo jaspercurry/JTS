@@ -131,17 +131,16 @@ done
 load_env_file_lib
 load_asound_render_lib
 
+# Quoting is the shared lib's jasper_env_quote_value (sourced by
+# load_env_file_lib above); this thin alias keeps print_env readable.
+quote_env_value() {
+    jasper_env_quote_value "$1"
+}
+
 log_event() {
     local name="$1"
     shift
     echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
-}
-
-# Quoting is the shared lib's jasper_env_quote_value (sourced by
-# load_env_file_lib above); this thin alias keeps the script's many
-# call sites unchanged.
-quote_env_value() {
-    jasper_env_quote_value "$1"
 }
 
 find_card() {
@@ -205,54 +204,9 @@ env_file_value() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
-# Ensure an env file's parent dir exists WITHOUT re-moding it when it already
-# does. The installer owns each dir's canonical mode/group and they are NOT
-# uniform: /var/lib/jasper is root:jasper 0770 (ensure_state_dir, so the
-# now-non-root jasper-voice/-mux can write speaker_volume.json) and /etc/jasper
-# is 0755 (widen_control_secret_env_modes, so the group-jasper doctor-json
-# oneshot can traverse to read jasper.env). A blanket `install -d -m 0750` here
-# re-chmods on every install / boot (Before=jasper-outputd) / udev sound
-# add|remove|change reconcile and strips those bits — the exact trap
-# env-migrations.sh:ensure_state_dir warns about. So only backfill a genuinely
-# absent dir (with a conservative default the next install corrects); never
-# touch an existing one.
-ensure_env_dir() {
-    local dir="$1"
-    [[ -d "$dir" ]] || install -d -m 0750 "$dir"
-}
-
 set_env_var() {
     local key="$1" value="$2"
-    local dir tmp quoted
-
-    dir="$(dirname "$ENV_FILE")"
-    ensure_env_dir "$dir"
-    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
-    quoted="$(quote_env_value "$value")"
-
-    if [[ -f "$ENV_FILE" ]]; then
-        JASPER_ENV_FILE_LINE="${key}=${quoted}" \
-        awk -v key="$key" '
-            $0 ~ "^[[:space:]]*" key "=" {
-                if (!done) {
-                    print ENVIRON["JASPER_ENV_FILE_LINE"]
-                    done = 1
-                }
-                next
-            }
-            { print }
-            END {
-                if (!done) {
-                    print ENVIRON["JASPER_ENV_FILE_LINE"]
-                }
-            }
-        ' "$ENV_FILE" > "$tmp"
-    else
-        printf '%s=%s\n' "$key" "$quoted" > "$tmp"
-    fi
-
-    chmod 0640 "$tmp"
-    mv "$tmp" "$ENV_FILE"
+    jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750
 }
 
 set_env_var_if_changed() {
@@ -297,36 +251,7 @@ env_file_value_from() {
 
 set_env_file_var() {
     local file="$1" key="$2" value="$3"
-    local dir tmp quoted
-
-    dir="$(dirname "$file")"
-    ensure_env_dir "$dir"
-    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
-    quoted="$(quote_env_value "$value")"
-
-    if [[ -f "$file" ]]; then
-        JASPER_ENV_FILE_LINE="${key}=${quoted}" \
-        awk -v key="$key" '
-            $0 ~ "^[[:space:]]*" key "=" {
-                if (!done) {
-                    print ENVIRON["JASPER_ENV_FILE_LINE"]
-                    done = 1
-                }
-                next
-            }
-            { print }
-            END {
-                if (!done) {
-                    print ENVIRON["JASPER_ENV_FILE_LINE"]
-                }
-            }
-        ' "$file" > "$tmp"
-    else
-        printf '%s=%s\n' "$key" "$quoted" > "$tmp"
-    fi
-
-    chmod 0640 "$tmp"
-    mv "$tmp" "$file"
+    jasper_env_file_set "$file" "$key" "$value" 0640 0750
 }
 
 set_env_file_var_if_changed() {
@@ -603,7 +528,7 @@ render_asound_if_needed() {
 
     # Only create an absent dir; never re-mode the existing /etc/jasper on every
     # recognized-DAC render (the installer owns its 0755) — same only-if-absent
-    # discipline as ensure_env_dir above (#827).
+    # discipline as the env writers (#827).
     [[ -d "$(dirname "$ASOUND_TEMPLATE")" ]] || install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
     tmp="$(mktemp "${ASOUND_TEMPLATE}.XXXXXX")"
     jasper_asound_render_template "$ASOUND_SOURCE_TEMPLATE" "$tmp"

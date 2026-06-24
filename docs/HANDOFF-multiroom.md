@@ -299,7 +299,7 @@ Increment 6 (per-follower calibration). What exists:
   bond/unbond fan-out runs **concurrently** across members (one slow/absent
   peer doesn't serialize the rest). An SSRF guard limits cross-speaker
   POST/GET targets to private/loopback IPv4 and rejects bare hostnames (see
-  §7 "Grouping control plane — threat model"); audio flows end-to-end since Increment 5 PR-1 (leader CamillaDSP → snapserver pipe → member snapclients → outputd dac_content), and member-local TTS since PR-2; runtime health reads the live truth (active camilla config + snapcast client bindings). Untrusted mDNS
+  §7 "Grouping control plane — threat model"); audio flows end-to-end since Increment 5 PR-1 (leader CamillaDSP → snapserver pipe → member snapclients → outputd dac_content), passive-member local TTS works since PR-2, and active endpoints keep TTS on fan-in upstream of their crossover/protection graph (see HANDOFF-distributed-active); runtime health reads the live truth (active camilla config + snapcast client bindings). Untrusted mDNS
   fields never enter the server HTML (the shell is data-free; data ships as
   `application/json` and the module renders it via DOM/text APIs).
   On `jasper-control` itself the grouping HTTP surface is `POST
@@ -513,11 +513,13 @@ leader with headroom — no second content-DSP CamillaDSP.**
 **The shape, in one breath:** the leader's *one* CamillaDSP bakes a stereo program
 where the **left channel is corrected for the leader's seat and the right for the
 follower's seat**, writes it to a **pipe**, and `snapserver` streams that *single*
-stereo stream to everyone. Each speaker — including the leader's own localhost
-snapclient — **drops the channel it doesn't play** with a 3-line ALSA `route`
-(`ttable`) plug. The leader's **voice/TTS never enters that stream**; it is mixed
-back in **low-latency at the final output stage** (`jasper-outputd`), after the
-synced round-trip.
+stereo stream to everyone. Each passive speaker — including the leader's own
+localhost snapclient in the dumb stereo-pair shape — **drops the channel it
+doesn't play** with a 3-line ALSA `route` (`ttable`) plug. Passive members mix
+their own **voice/TTS** back in **low-latency at the final output stage**
+(`jasper-outputd`), after the synced round-trip. Active endpoints are the safety
+exception: their TTS stays upstream of the local crossover/protection graph; the
+ratified active-speaker shape lives in HANDOFF-distributed-active.
 
 ```
 SOLO (today, unchanged):
@@ -529,7 +531,7 @@ LEADER (stereo pair):
                             volume_limit:0.0 clamp; ONE instance)
             → pipe (FIFO)  → snapserver  (ONE stereo stream; Snapcast owns rate)
                 ├─ leader localhost snapclient (-h 127.0.0.1) → ALSA ttable drop→L
-                │     → outputd  (mix leader TTS HERE, low-latency) → DAC
+                │     → outputd  (passive pair: mix leader TTS here) → DAC
                 └─ follower snapclient → ALSA ttable drop→R → DAC   (no TTS)
 
 FOLLOWER (transport): snapclient → ttable drop→its channel → DAC.
@@ -568,14 +570,19 @@ FOLLOWER (driver-DSP, planned): snapclient → local driver crossover/protection
    oscillate" trap cannot occur here.
 
 **Voice stays local (inv-3; confirmed by Music Assistant).** Conversational TTS is
-low-latency and must not ride the ~buffer-delayed synced stream. So for a LEADER,
-TTS routes to **`jasper-outputd`** (post-round-trip) rather than into fanin's
-pre-stream music. This intentionally re-introduces an outputd TTS mix **for the
-leader role only** — 9102e13 retired it for the *solo* case (fanin-mix is simplest
-there); a *sample-locked* leader needs a post-buffer mix point, and outputd is the
-final output owner. Group-wide *announcements* (a timer ringing everywhere at once)
-MAY later ride the buffered stream ducked (MA's model) — a separate feature, not
-conversational TTS. Followers never receive TTS.
+low-latency and must not ride the ~buffer-delayed synced stream. For a passive
+leader/member, TTS routes to **`jasper-outputd`** (post-round-trip) rather than
+into fanin's pre-stream music. This intentionally re-introduces an outputd TTS
+mix for passive bonded roles — 9102e13 retired it for the *solo* case
+(fanin-mix is simplest there); a sample-locked passive member needs a
+post-buffer mix point, and outputd is the final output owner. For an active
+endpoint, outputd's 2-channel post-crossover TTS mixer is unsafe, so TTS stays
+on fan-in upstream of the local crossover/protection graph
+(HANDOFF-distributed-active "active-leader TTS band-limiting"). Group-wide
+*announcements* (a timer ringing everywhere at once) MAY later ride the
+buffered stream ducked (MA's model) — a separate feature, not conversational
+TTS. Followers never receive TTS unless they are local voice-capable passive
+members responding for themselves.
 
 **Two invariants the build MUST hold (added 2026-06-10 after adversarial design
 review — these are the design, not details):**
@@ -800,16 +807,19 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   `commit_prepared_period_with_dac_delay`. fanin's solo ack now carries its
   own per-segment playout ledger too (`rust/jasper-fanin/src/playout.rs`),
   but a mix-commit estimate that over-reads by the downstream pipeline
-  depth; outputd's port is the DAC-true one. EVERY bonded member's voice flips its TTS
-  socket to its own outputd (inv-3: the leader's TTS never enters the
+  depth; outputd's port is the DAC-true one. PASSIVE bonded members flip voice's
+  TTS socket to their own outputd (inv-3: the leader's TTS never enters the
   shared stream — each speaker's OWN replies mix locally, post-round-trip,
   pre-reference, which is exactly inv-A's tap requirement; `PROGRAM_DUCK`
-  rides the same socket, so ducking is member-local too). The reconciler
-  arms both ends — `JASPER_OUTPUTD_TTS_SOCKET` in grouping-outputd.env and
-  `JASPER_TTS_OUTPUTD_SOCKET` in grouping-voice.env (solo OMITS the key —
-  present-but-empty would break voice's fanin default; a fresh solo
-  reconcile skips creating the empty file so first boot doesn't restart
-  voice) — and `grouping: TTS lane` (doctor) catches drift between them,
+  rides the same socket, so ducking is member-local too). Active endpoints
+  deliberately do not arm that socket; they keep TTS on fan-in upstream of
+  CamillaDSP, where it is split/protected by the active graph. The reconciler
+  arms both ends for passive members — `JASPER_OUTPUTD_TTS_SOCKET` in
+  grouping-outputd.env and `JASPER_TTS_OUTPUTD_SOCKET` in grouping-voice.env
+  (solo/active endpoint OMITS the key — present-but-empty would break voice's
+  fanin default; a fresh solo reconcile skips creating the empty file so first
+  boot doesn't restart voice) — and `grouping: TTS lane` (doctor) catches drift
+  between them,
   including the worst shape: voice targeting a socket outputd never armed
   (silent assistant). Solo speakers are byte-identical to pre-PR-2 (no
   socket env → outputd runs the exact prior period loop).
@@ -2629,4 +2639,6 @@ Last verified: 2026-06-24 (pair-lock runtime surface rechecked against
 coalescing and the durable trailing service rechecked against
 `jasper.control.server`,
 `deploy/systemd/jasper-grouping-reconcile-trailing.service`, and the grouped
-outputd env/reconcile path; wireless-sub 2.1 path from 2026-06-23 unchanged)
+outputd env/reconcile path; active-endpoint TTS fan-in exception rechecked
+against `jasper.multiroom.reconcile` and `jasper.cli.doctor.grouping`;
+wireless-sub 2.1 path from 2026-06-23 unchanged)

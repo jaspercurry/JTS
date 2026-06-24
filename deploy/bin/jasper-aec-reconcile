@@ -44,8 +44,9 @@ OUTPUTD_RESTART_NEEDED=0
 # Opt-in chip-ref observe mode (default 0). When set, the software-AEC3
 # path additionally arms outputd's chip-ref writer FOR MEASUREMENT ONLY,
 # so the Layer-0 SRO drift estimator gets fed real DAC-vs-XVF counters on
-# DACs the reconciler will not (yet) trust for production chip-AEC. Set
-# from the mode file near the bottom (mirrors the LEG_* globals).
+# DACs the reconciler will not trust for production chip-AEC until live
+# measurement evidence is present. Set from the mode file near the bottom
+# (mirrors the LEG_* globals).
 CHIP_REF_OBSERVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
@@ -211,7 +212,10 @@ ensure_mode_file() {
 # specs like plughw:CARD=Array,DEV=0 and breaking read-back
 # idempotence).
 set_env_var() {
-    jasper_env_file_set "$1" "$2" "$3" 0600 0755
+    # /etc/jasper/jasper.env is non-secret runtime config. jasper-control
+    # fresh-reads it for /state after this reconciler mutates AEC/profile
+    # keys, so keep the file group-readable (install migration owns group).
+    jasper_env_file_set "$1" "$2" "$3" 0640 0755
 }
 
 write_mic_profile_env() {
@@ -315,10 +319,10 @@ chip_aec_dac_status() {
     local dac_id
     dac_id="$(normalize_output_dac_id "${1:-unknown}")"
     case "$dac_id" in
-        apple_usb_c_dongle)
+        apple_usb_c_dongle|hifiberry_dac8x)
             echo "supported"
             ;;
-        hifiberry_dac8x|hifiberry_dac8x_studio|dual_apple_usb_c_dac_4ch)
+        hifiberry_dac8x_studio|dual_apple_usb_c_dac_4ch)
             echo "needs_calibration"
             ;;
         *)
@@ -335,11 +339,14 @@ chip_aec_dac_static_detail() {
         supported:apple_usb_c_dongle)
             echo "Apple USB-C dongle is the measured known-good chip-AEC baseline"
             ;;
+        supported:hifiberry_dac8x)
+            echo "HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile"
+            ;;
         needs_calibration:unknown)
             echo "output DAC profile is unknown; run audio-hardware reconcile and calibrate chip-AEC timing before arming chip AEC"
             ;;
-        needs_calibration:hifiberry_dac8x|needs_calibration:hifiberry_dac8x_studio)
-            echo "HiFiBerry/DAC8x active profiles need per-profile chip-AEC timing calibration before arming chip AEC"
+        needs_calibration:hifiberry_dac8x_studio)
+            echo "HiFiBerry DAC8x Studio needs per-profile chip-AEC timing calibration before arming chip AEC"
             ;;
         needs_calibration:dual_apple_usb_c_dac_4ch)
             echo "dual Apple dongle profile has a measured-sync contract and needs calibration before arming chip AEC"
