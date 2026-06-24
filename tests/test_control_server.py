@@ -772,14 +772,10 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     assert status == 200
     assert applied == ["samplerate_best"]
     assert body["audio_quality"]["converter"] == "samplerate_best"
+    from jasper.local_sources import local_source_audio_refresh_units
+
     assert popens == [
-        [
-            "systemctl", "try-restart",
-            "shairport-sync.service",
-            "librespot.service",
-            "bluealsa-aplay.service",
-            "jasper-usbsink.service",
-        ],
+        ["systemctl", "try-restart", *local_source_audio_refresh_units()],
     ]
 
 
@@ -3736,11 +3732,38 @@ def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordin
     assert "parked" in body["error"]
 
 
+def test_system_restart_audio_uses_local_source_registry(
+    monkeypatch, server_with_coordinator,
+):
+    """restart-audio restarts core audio but only try-restarts local sources."""
+    import jasper.control.server as srv_mod
+    from jasper.local_sources import local_source_audio_refresh_units
+
+    seen = []
+
+    def fake_popen(argv, **kw):
+        seen.append(list(argv))
+
+        class _P:
+            pass
+
+        return _P()
+
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", fake_popen)
+    base, _fake = server_with_coordinator
+    status, _body = _post(f"{base}/system/restart/audio", {})
+    assert status == 200
+    assert seen == [
+        ["systemctl", "restart", "jasper-camilla.service"],
+        ["systemctl", "try-restart", *local_source_audio_refresh_units()],
+    ]
+
+
 def test_system_restart_audio_keeps_parked_renderers_parked(
     monkeypatch, server_with_coordinator,
 ):
     """restart-audio on a follower touches only the units the profile
-    keeps alive (camilla) — never the parked renderer stack."""
+    keeps alive (camilla) — never parked source resources."""
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
@@ -3760,6 +3783,8 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     assert "jasper-camilla.service" in flat
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat
+    assert "jasper-usbsink.service" not in flat
+    assert "jasper-usbsink-init.service" not in flat
 
 
 def test_grouping_set_trim_settable_validated_and_preserved(

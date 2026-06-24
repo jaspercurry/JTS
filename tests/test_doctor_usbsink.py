@@ -87,6 +87,51 @@ def test_usbsink_state_disabled_libcomposite_loaded_is_warn(monkeypatch):
     assert "ram" in r.detail.lower() or "drift" in r.detail.lower()
 
 
+def test_usbsink_state_parked_clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", tmp_path / "missing")
+    monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: False)
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: False)
+
+    r = doctor.check_usbsink_state()
+
+    assert r.status == "ok"
+    assert "parked" in r.detail.lower()
+    assert "gadget down" in r.detail.lower()
+
+
+def test_usbsink_state_parked_with_gadget_is_fail(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
+    gadget = tmp_path / "jts-usb-audio"
+    gadget.mkdir()
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: True)
+
+    def active(unit: str) -> bool:
+        return unit == doctor.usbsink.USBSINK_INIT_UNIT
+
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", active)
+
+    r = doctor.check_usbsink_state()
+
+    assert r.status == "fail"
+    assert "parked" in r.detail.lower()
+    assert "advertised" in r.detail.lower()
+    assert doctor.usbsink.USBSINK_INIT_UNIT in r.detail
+
+
+def test_usbsink_state_parked_module_only_is_warn(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", tmp_path / "missing")
+    monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: True)
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: False)
+
+    r = doctor.check_usbsink_state()
+
+    assert r.status == "warn"
+    assert "libcomposite" in r.detail.lower()
+
+
 def test_usbsink_state_active_no_state_file(monkeypatch, tmp_path):
     _patch_active(monkeypatch, True)
     _patch_libcomp_loaded(monkeypatch, True)

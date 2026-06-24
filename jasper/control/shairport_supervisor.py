@@ -282,9 +282,9 @@ class ShairportSupervisor:
         tests. Fail-open to NOT-parked: a broken read must never
         silently disable the wedge supervisor on a solo speaker."""
         try:
-            from ..multiroom.config import follower_leader_addr, load_config
+            from ..multiroom.config import load_config, local_sources_parked
 
-            return follower_leader_addr(load_config()) is not None
+            return local_sources_parked(load_config())
         except Exception:  # noqa: BLE001 — fail-open, keep supervising
             return False
 

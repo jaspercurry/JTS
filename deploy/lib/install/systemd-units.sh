@@ -638,9 +638,11 @@ install_systemd_units() {
     # jasper-usbsink: fourth music source (USB gadget audio in). The
     # init unit owns the ConfigFS gadget descriptor lifecycle; the
     # main service is the Python daemon that bridges gadget capture
-    # into usbsink_substream. Both ship DISABLED — the /sources/ wizard
-    # toggle owns enable/disable, and the dtoverlay must be set + Pi
-    # rebooted first (handled by set_usb_gadget_mode above).
+    # into usbsink_substream. The main unit is the disabled-by-default
+    # /sources intent unit; init is a required implementation subresource
+    # that owns the host-visible gadget and is stopped explicitly on
+    # off/parking paths. The dtoverlay must be set + Pi rebooted first
+    # (handled by set_usb_gadget_mode above).
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
         "${SYSTEMD_DIR}/jasper-usbsink-init.service"

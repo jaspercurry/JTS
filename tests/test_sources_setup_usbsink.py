@@ -162,6 +162,30 @@ def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
     assert state["usbsink"]["available"] is True
 
 
+def test_gather_state_usbsink_unavailable_when_init_unit_missing(monkeypatch):
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+
+    def available(unit: str) -> bool:
+        return unit != sources_setup.USBSINK_INIT_UNIT
+
+    monkeypatch.setattr(sources_setup, "_unit_available", available)
+    monkeypatch.setattr(
+        sources_setup,
+        "_systemctl",
+        lambda *args, **kw: (0, "inactive"),
+    )
+
+    async def fake_bt():
+        return (False, False, False)
+
+    monkeypatch.setattr(sources_setup, "_bt_state", fake_bt)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+
+    state = sources_setup._gather_state()
+    assert state["usbsink"]["available"] is False
+    assert "init unit" in state["usbsink"]["unavailableReason"]
+
+
 # ----------------------------------------------------------------------
 # _apply — systemctl drives the right unit
 # ----------------------------------------------------------------------
@@ -180,9 +204,9 @@ def test_apply_usbsink_enable_routes_through_broker(monkeypatch):
     )
     sources_setup._apply("usbsink", True)
     assert calls
-    # enable+start of the main unit; init.service follows via the
-    # PartOf/Requires chain.
+    # enable+start of the intent unit; init.service follows via Requires=.
     assert calls[0] == ((sources_setup.USBSINK_UNIT,), "enable-now")
+    assert not any(c[0] == (sources_setup.USBSINK_INIT_UNIT,) for c in calls)
 
 
 def test_apply_usbsink_disable_routes_through_broker(monkeypatch):
@@ -197,3 +221,21 @@ def test_apply_usbsink_disable_routes_through_broker(monkeypatch):
     sources_setup._apply("usbsink", False)
     assert calls
     assert calls[0] == ((sources_setup.USBSINK_UNIT,), "disable-now")
+    assert calls[1] == ((sources_setup.USBSINK_INIT_UNIT,), "stop")
+
+
+def test_apply_usbsink_rejects_missing_init_unit(monkeypatch):
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+
+    def available(unit: str) -> bool:
+        return unit != sources_setup.USBSINK_INIT_UNIT
+
+    monkeypatch.setattr(sources_setup, "_unit_available", available)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+
+    try:
+        sources_setup._apply("usbsink", True)
+    except RuntimeError as e:
+        assert "init unit" in str(e)
+    else:  # pragma: no cover - assertion shape
+        raise AssertionError("missing init unit should reject USB toggle")

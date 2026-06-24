@@ -537,7 +537,11 @@ def test_follower_leader_addr_predicate():
     """The ONE active-bonded-follower predicate behind every pair-forward
     gate (control server + voice tools) — composed from is_active_member
     so bond-validity semantics live in one place."""
-    from jasper.multiroom.config import GroupingConfig, follower_leader_addr
+    from jasper.multiroom.config import (
+        GroupingConfig,
+        follower_leader_addr,
+        is_bonded_follower,
+    )
 
     def cfg(**kw):
         base = dict(enabled=True, role="follower", channel="right",
@@ -547,10 +551,42 @@ def test_follower_leader_addr_predicate():
         return GroupingConfig(**base)
 
     assert follower_leader_addr(cfg()) == "jts.local"
+    assert is_bonded_follower(cfg()) is True
     assert follower_leader_addr(cfg(role="leader", leader_addr="")) is None
     assert follower_leader_addr(cfg(enabled=False)) is None
     assert follower_leader_addr(cfg(error="broken")) is None
     assert follower_leader_addr(cfg(leader_addr="")) is None
+    assert is_bonded_follower(cfg(role="leader", leader_addr="")) is False
+
+
+def test_local_sources_park_policy():
+    """Role policy only: a valid bonded follower parks local sources; solo,
+    leader, and invalid configs do not. Resource/unit ownership is tested
+    in the local-source registry and reconciler tests."""
+    from jasper.multiroom.config import (
+        LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER,
+        GroupingConfig,
+        local_sources_park_reason,
+        local_sources_parked,
+    )
+
+    def cfg(**kw):
+        base = dict(enabled=True, role="follower", channel="right",
+                    bond_id="b", leader_addr="jts.local", buffer_ms=400,
+                    codec="flac", error=None)
+        base.update(kw)
+        return GroupingConfig(**base)
+
+    follower = cfg()
+    assert local_sources_parked(follower) is True
+    assert (
+        local_sources_park_reason(follower)
+        == LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
+    )
+    assert local_sources_parked(cfg(role="leader", leader_addr="")) is False
+    assert local_sources_parked(cfg(enabled=False)) is False
+    assert local_sources_parked(cfg(error="broken")) is False
+    assert local_sources_parked(cfg(leader_addr="")) is False
 
 
 def test_is_active_leader_predicate():

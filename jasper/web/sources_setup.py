@@ -18,10 +18,9 @@ Playback-source toggles:
     to a Spotify account — claiming is a separate one-time OAuth step
     needed only for voice cold-start (see /spotify/). Basic phone-side
     Spotify Connect works without claiming.
-  - **USB Audio Input** ↔ `jasper-usbsink.service` (systemctl
-    enable/disable + start/stop). The main service owns the
-    `jasper-usbsink-init.service` ConfigFS lifecycle through systemd
-    Requires/PartOf wiring.
+  - **USB Audio Input** ↔ `jasper-usbsink.service` for persistent
+    enable/disable intent, plus `jasper-usbsink-init.service` for the
+    host-visible ConfigFS gadget lifecycle.
 
 AirPlay, Bluetooth, and Spotify Connect default ON. USB Audio Input
 defaults OFF so it has zero resident RAM cost until explicitly enabled.
@@ -80,10 +79,11 @@ logger = logging.getLogger(__name__)
 # systemd units are an implementation detail kept here.
 AIRPLAY_UNIT = "shairport-sync.service"
 SPOTIFY_CONNECT_UNIT = "librespot.service"
-# Toggling jasper-usbsink.service via systemctl --now also propagates
-# to jasper-usbsink-init.service via the Requires/PartOf chain in the
-# main unit. No need to touch the init unit directly.
+# jasper-usbsink.service is the persistent /sources intent unit; the
+# init unit is an implementation subresource that owns the host-visible
+# ConfigFS gadget.
 USBSINK_UNIT = "jasper-usbsink.service"
+USBSINK_INIT_UNIT = "jasper-usbsink-init.service"
 
 VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
 SOURCE_UNAVAILABLE = {
@@ -172,7 +172,7 @@ def _unit_active(unit: str) -> bool:
 
 
 def _local_sources_allowed() -> bool:
-    """True when this install role may run local source renderers."""
+    """True when this install role may run local source resource groups."""
     try:
         return install_profile_allows_local_sources(read_install_profile())
     except ValueError as e:
@@ -196,6 +196,18 @@ def _set_unit(unit: str, enabled: bool) -> None:
     if not resp.get("ok"):
         logger.warning(
             "source %s %s failed: %s", unit, verb,
+            resp.get("error") or f"rc={resp.get('rc')}",
+        )
+
+
+def _stop_unit(unit: str, *, reason: str) -> None:
+    resp = manage_units(
+        unit, verb="stop", reason=reason, no_block=False, timeout=10.0,
+    )
+    if not resp.get("ok"):
+        logger.warning(
+            "source %s stop failed: %s",
+            unit,
             resp.get("error") or f"rc={resp.get('rc')}",
         )
 
@@ -258,15 +270,26 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     systemctl probes."""
     bt_available, bt_powered, bt_has_hid = asyncio.run(_bt_state())
     local_sources_allowed = _local_sources_allowed()
-    usbsink_unit_available = (
+    usbsink_main_unit_available = (
         local_sources_allowed and _unit_available(USBSINK_UNIT)
     )
-    usbsink_dtoverlay_available = (
-        _usbsink_available() if usbsink_unit_available else False
+    usbsink_init_unit_available = (
+        local_sources_allowed and _unit_available(USBSINK_INIT_UNIT)
     )
-    usbsink_available = usbsink_unit_available and usbsink_dtoverlay_available
-    if not usbsink_unit_available:
+    usbsink_units_available = (
+        usbsink_main_unit_available and usbsink_init_unit_available
+    )
+    usbsink_dtoverlay_available = (
+        _usbsink_available() if usbsink_units_available else False
+    )
+    usbsink_available = usbsink_units_available and usbsink_dtoverlay_available
+    if not usbsink_main_unit_available:
         usbsink_reason = SOURCE_UNAVAILABLE["usbsink"]
+    elif not usbsink_init_unit_available:
+        usbsink_reason = (
+            "USB Audio Input is missing its gadget init unit. Re-run "
+            "install.sh to repair the local renderer stack."
+        )
     elif not usbsink_dtoverlay_available:
         usbsink_reason = (
             "USB gadget mode is not enabled in /boot/firmware/config.txt. "
@@ -328,16 +351,26 @@ def _apply(source: str, enabled: bool) -> None:
     elif source == "usbsink":
         if not (_local_sources_allowed() and _unit_available(USBSINK_UNIT)):
             raise RuntimeError(SOURCE_UNAVAILABLE["usbsink"])
+        if not _unit_available(USBSINK_INIT_UNIT):
+            raise RuntimeError(
+                "USB Audio Input is missing its gadget init unit. Re-run "
+                "install.sh to repair the local renderer stack."
+            )
         if not _usbsink_available():
             raise RuntimeError(
                 "USB gadget mode is not enabled in /boot/firmware/config.txt. "
                 "Re-run install.sh and reboot before enabling USB Audio Input."
             )
-        # jasper-usbsink.service Requires=+PartOf= the init.service, so
-        # systemctl enable/disable --now propagates to both — the init
-        # creates the ConfigFS gadget and loads libcomposite when on,
-        # tears down + rmmods when off, returning RAM to baseline.
-        _set_unit(USBSINK_UNIT, enabled)
+        if enabled:
+            # Starting the intent unit brings the ConfigFS gadget up through
+            # Requires=. The init unit itself is not user intent.
+            _set_unit(USBSINK_UNIT, True)
+        else:
+            # Disabling the bridge records household intent. Stopping the init
+            # unit tears down the host-visible gadget; its PartOf= stops the
+            # bridge if systemd has not already done so.
+            _set_unit(USBSINK_UNIT, False)
+            _stop_unit(USBSINK_INIT_UNIT, reason="USB source toggle off")
 
 
 # Per-page CSS layered on app.css. Just the source-row layout + notes; the
@@ -523,8 +556,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 if bonded_follower_active():
-                    # `enable --now` would START a parked renderer and
-                    # reopen the advertise/leak hole until the next
+                    # Mutating intent here would START parked source
+                    # resources and reopen the advertise/leak hole until the next
                     # reconcile. Sources are pair-managed while bonded;
                     # intent changes happen after unpairing.
                     self._send_json(
