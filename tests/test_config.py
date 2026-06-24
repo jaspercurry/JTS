@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from jasper.config import Config, VoiceProviderNotConfigured
+from jasper.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.voice import catalog
 
 _ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
@@ -99,7 +100,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.aec_chip_aec_enabled is False
     assert cfg.tts_device == "jasper_out"
     assert cfg.tts_transport == "outputd"
-    assert cfg.tts_outputd_socket == "/run/jasper-fanin/tts.sock"
+    assert cfg.tts_outputd_socket == FANIN_TTS_SOCKET
     assert cfg.tts_output_rate == 48000
     assert cfg.assistant_loudness_profile_path == (
         "/var/lib/jasper/assistant_loudness_profiles.json"
@@ -363,7 +364,7 @@ def test_invalid_env_values_raise(monkeypatch, name, value, expected):
 def test_tts_outputd_transport_env(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("JASPER_TTS_TRANSPORT", "outputd")
-    monkeypatch.setenv("JASPER_TTS_OUTPUTD_SOCKET", "/tmp/jasper-outputd.sock")
+    monkeypatch.setenv(VOICE_TTS_SOCKET_ENV, "/tmp/jasper-outputd.sock")
     cfg = Config.from_env()
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/tmp/jasper-outputd.sock"
@@ -380,7 +381,7 @@ def test_duck_transport_env_accepts_fanin(monkeypatch):
 
 def test_fanin_tts_socket_requires_fanin_duck_transport(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-fanin/tts.sock")
+    monkeypatch.setenv(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET)
     monkeypatch.setenv("JASPER_DUCK_TRANSPORT", "camilla")
 
     with pytest.raises(RuntimeError, match="JASPER_DUCK_TRANSPORT=fanin"):
