@@ -996,8 +996,11 @@ re-verified — see
 [HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)). During
 measurement, `/correction/start` uses the same carrier with `room_peqs=[]` and
 preference EQ disabled, so the sweep hears the raw room through the protected
-speaker baseline. The active×grouping case (a bonded active speaker) is still
-deferred — the graph carrier refuses it.
+speaker baseline. Active×grouping
+runtime behavior is now owned by
+[HANDOFF-distributed-active.md](HANDOFF-distributed-active.md): solo active
+graphs keep this contract, while bonded active members use the driver-domain
+Layer-A re-entry path described there.
 
 The speaker baseline is the thing that makes the box a coherent
 speaker. It should be commissioned once per hardware build and changed

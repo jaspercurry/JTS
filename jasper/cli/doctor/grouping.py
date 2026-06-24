@@ -204,13 +204,9 @@ def check_grouping_snapcast_installed() -> CheckResult:
     """Grouping needs the snapcast binaries — snapserver hosts the stream,
     snapclient plays it. install.sh ships the JTS snap units but deliberately
     does NOT apt-install the binaries (off-by-default, like the usbsink overlay),
-    on the theory that installing them is "the grouping opt-in's job". There is
-    no automated opt-in step today, so a box where grouping was enabled but
-    snapcast was never installed has the units present yet failing on every
-    start — invisible until you bond, and on an ACTIVE leader it was the
-    2026-06-23 reboot-loop trigger (now fail-closed in the reconciler). Surface
-    it: OFF skips (snapcast deliberately absent); ON fails if either binary is
-    missing, with the one-line remediation."""
+    and the grouping reconciler owns the opt-in install. This check reads the
+    runtime truth directly: OFF skips (snapcast deliberately absent); ON fails if
+    either binary is missing after provisioning, with the one-line remediation."""
     from ...multiroom.config import load_config as _load_grouping_config
 
     label = "grouping: snapcast installed"

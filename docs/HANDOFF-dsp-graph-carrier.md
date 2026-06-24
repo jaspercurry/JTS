@@ -371,18 +371,18 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   confirming the EQ'd baseline persists across a reconcile, before declaring the
   apply path shipped.
 
-## Deferred — distributed active (separate design increment)
+## Distributed active boundary
 
 **Design-of-record:
 [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md).** That doc
-now OWNS this boundary; this section is a pointer + the terse index. The
-active and multiroom subsystems have **zero cross-references** today, and
-solo-active EQ (PR-1→3) is safe in isolation precisely because active
-configs are *fenced off* from grouping (the leader bake refuses them; a
-follower parks its CamillaDSP). The increment relocates Layer A onto the
-follower's bonded path via **CamillaDSP re-entry** (`snapclient → loopback
-→ follower camilla [Layer A only] → outputd`), reusing the shipped emitter
-+ `classify_camilla_graph` re-proof. The gaps it resolves:
+OWNS the current runtime behavior; this section is only a terse boundary index.
+Solo-active EQ remains safe in isolation because ordinary solo graphs do not
+carry grouping state. Bonded active members use the distributed-active
+driver-domain path: **CamillaDSP re-entry** (`snapclient → loopback → member
+camilla [Layer A only] → outputd`) for active followers, and the two-Camilla
+active-leader path documented in the design-of-record. Both reuse the shipped
+emitter + `classify_camilla_graph` re-proof. The slices that formed the
+boundary:
 
 1. **Role / capture contract** — `OutputTopology`/commissioning gain a
    pure-data pairing-intent field; the reconciler resolves capture device

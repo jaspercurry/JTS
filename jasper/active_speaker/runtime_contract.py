@@ -109,6 +109,7 @@ ACTIVE_BASELINE_SOURCE = (
 ACTIVE_DRIVER_DOMAIN_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
 )
+_DRIVER_DOMAIN_PAIR_TRIM = "pair_balance_trim"
 # Both baseline-shaped sources run every output live (no per-output commission
 # mute) through a protective per-driver chain; they differ only in the
 # pre-split prefix (program-domain headroom + preference EQ vs the inter-speaker
@@ -601,18 +602,58 @@ def _program_domain_filter_step_names(view: GraphView) -> tuple[str, ...]:
     """Filter names wired to the stereo program bus ``[0, 1]``.
 
     A driver-domain follower has no program-domain Filter step at all: it mixes
-    channel_select -> split_active, then filters physical driver outputs. So a
-    Filter step on exactly channels [0, 1] is Layer B/C leaking onto the follower.
+    channel_select -> optional pair trim -> split_active, then filters physical
+    driver outputs. So a Filter step on exactly channels [0, 1] is Layer B/C
+    leaking onto the follower, except for the dedicated pair-balance trim.
     """
     names: list[str] = []
     for step in view.pipeline_steps:
         if step.channels == frozenset({0, 1}):
-            names.extend(step.names)
+            names.extend(
+                name for name in step.names if name != _DRIVER_DOMAIN_PAIR_TRIM
+            )
     return tuple(names)
 
 
 def _room_peq_filter_names(view: GraphView) -> tuple[str, ...]:
     return tuple(sorted(name for name in view.filters if name.startswith("room_peq")))
+
+
+def _driver_domain_pair_trim_between_select_and_split(
+    payload: dict[str, Any],
+) -> bool:
+    """Prove ``channel_select -> pair_balance_trim -> split_active_*`` order.
+
+    ``GraphView`` intentionally stores only Filter steps, so this raw-pipeline
+    check owns the mixed Mixer/Filter ordering proof for the optional pair trim.
+    """
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    select_idx: int | None = None
+    trim_idx: int | None = None
+    split_idxs: list[int] = []
+    for idx, raw_step in enumerate(pipeline):
+        step = raw_step if isinstance(raw_step, dict) else {}
+        step_type = step.get("type")
+        if step_type == "Mixer":
+            name = step.get("name")
+            if name == _channel_select_mixer_name and select_idx is None:
+                select_idx = idx
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_idxs.append(idx)
+            continue
+        if step_type != "Filter":
+            continue
+        names = step.get("names")
+        if not isinstance(names, list) or _DRIVER_DOMAIN_PAIR_TRIM not in names:
+            continue
+        if trim_idx is not None:
+            return False
+        trim_idx = idx
+    if select_idx is None or trim_idx is None or not split_idxs:
+        return False
+    return select_idx < trim_idx < min(split_idxs)
 
 
 def _pipeline_names_for_channels(
@@ -643,6 +684,31 @@ def _pipeline_names_for_channels(
             continue
         out.extend(str(name) for name in step.get("names", []) if name is not None)
     return tuple(out)
+
+
+def _driver_domain_pair_trim_safe(
+    payload: dict[str, Any],
+    view: GraphView,
+) -> bool:
+    """Optional pair-balance trim must be a non-positive Gain on the stereo bus."""
+    present = (
+        _DRIVER_DOMAIN_PAIR_TRIM in view.filters
+        or any(_DRIVER_DOMAIN_PAIR_TRIM in step.names for step in view.pipeline_steps)
+    )
+    if not present:
+        return True
+    gain = _float_value(_filter_params(payload, _DRIVER_DOMAIN_PAIR_TRIM).get("gain"))
+    return (
+        _filter_type(payload, _DRIVER_DOMAIN_PAIR_TRIM) == "Gain"
+        and gain is not None
+        and gain <= 0.0
+        and pipeline_contains_chain(
+            view,
+            channels={0, 1},
+            required_names=(_DRIVER_DOMAIN_PAIR_TRIM,),
+        )
+        and _driver_domain_pair_trim_between_select_and_split(payload)
+    )
 
 
 def _commission_mute_states(view: GraphView) -> dict[int, bool]:
@@ -1018,6 +1084,15 @@ def _active_graph_evidence(
                         "channels [0, 1] (the leader owns Layer B/C, not the "
                         "follower): "
                         + ", ".join(program_step_names)
+                    ),
+                ))
+            if not _driver_domain_pair_trim_safe(payload, view):
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_pair_trim_invalid",
+                    (
+                        "driver-domain pair-balance trim must be a non-positive "
+                        "Gain wired to the selected stereo bus before the driver split"
                     ),
                 ))
         unknown_baseline_outputs = sorted(graph_indexes - known_indexes)

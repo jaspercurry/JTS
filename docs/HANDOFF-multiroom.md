@@ -2028,22 +2028,30 @@ channel exclusivity, drive-delta sign, trim matrix) and
 tests/test_web_balance_flow.py (real background loop, terminable fake
 playback, exact lock offsets via t0 rewind: gates, single held window,
 keep_listening, not_heard + retry, full walkthrough → trims, stop,
-apply order/bodies, correction exclusion). Earlier same day: PAIR
-TRIM P1 — manual ±dB balance on /rooms.
-NEW JASPER_GROUPING_TRIM_DB (wizard/bond-owned intent, validated
-attenuate-only -24..0 — the LOUDER speaker trims down, never a boost;
-outputd re-validates fail-closed) → reconciler derives
-JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB into grouping-outputd.env (empty on
-solo = unset to env_f32) → outputd applies one precomputed linear gain
-to the whole dac_content-armed path (FIFO AND inv-B fallback periods —
-no level jump on starvation transitions; applied before duck/mix/publish
-so the AEC reference carries the trimmed program, inv-A) and reports
-trim_db in the dac_content STATUS block. Settable via /grouping/set
-(optional trim_db; PRESERVED when omitted, so bond/unbond/swap fan-outs
-never clobber a calibrated balance) and nudged from /rooms POST /trim
-(target self|peer — the peer resolves server-side like /swap; ±0.5 dB
-delta semantics, clamped). The phone-mic auto-match wizard (P2) will
-drive the same knob.) Earlier same day (DUMB-FOLLOWER PR-C — the role-state contract
+apply order/bodies, correction exclusion). Updated 2026-06-24: `/rooms/`
+now exposes pair balance as one centered slider. `POST /trim` still
+supports the legacy `target=self|peer` ±0.5 dB nudge, but the page uses
+`target=pair` + signed `balance_db`, which rewrites BOTH member trims
+absolutely and re-normalizes wasted attenuation so one side is always
+0 dB. `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent,
+validated attenuate-only -24..0 — the LOUDER speaker trims down, never a
+boost; outputd re-validates fail-closed. For dumb endpoints the
+reconciler derives `JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB` into
+grouping-outputd.env (empty on solo = unset to env_f32) and outputd
+applies one precomputed linear gain to the whole dac_content-armed path
+(FIFO AND inv-B fallback periods — no level jump on starvation
+transitions; applied before duck/mix/publish so the AEC reference carries
+the trimmed program, inv-A) and reports `trim_db` in the dac_content
+STATUS block. Active endpoints clear the dac_content lane, so their
+driver-domain graph carries a dedicated non-positive `pair_balance_trim`
+Gain after `channel_select` and before the driver split. An active leader
+disables camilla#2 before the bake, re-seeds the crossover statefile, proves
+the active-content PCM has been released, then starts camilla#2 from that
+statefile; trim-only graph rewrites are picked up by process start, never by
+trusting an idempotent `systemctl enable --now` to reload a running process.
+Settable via /grouping/set (optional trim_db; PRESERVED when omitted, so
+bond/unbond/swap fan-outs never clobber a calibrated balance). Earlier
+same day (DUMB-FOLLOWER PR-C — the role-state contract
 + mode-aware interfaces. NEW §7.5: the unit×role table with transition
 ownership, the interface contract, and the DSP two-kinds split (content
 DSP = leader-side baked into the stream; driver DSP = local to the DAC

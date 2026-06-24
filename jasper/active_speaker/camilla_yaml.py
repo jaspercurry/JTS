@@ -827,22 +827,30 @@ def _sub_baseline_pipeline_lines(preset: ActiveSpeakerPreset) -> list[str]:
     ]
 
 
-def _emit_driver_domain_pipeline(preset: ActiveSpeakerPreset) -> str:
+def _emit_driver_domain_pipeline(
+    preset: ActiveSpeakerPreset, *, pair_trim_db: float = 0.0,
+) -> str:
     # Driver-domain-only (follower) pipeline. The inter-speaker channel-select
     # runs FIRST (a 2->2 Mixer that picks L/R/mono from the leader's corrected
-    # stereo program), THEN the intra-speaker 2->N split, THEN each driver's
-    # crossover/delay/gain/limiter chain — exactly channel_split.py's documented
-    # composition order (inter-speaker axis before intra-speaker axis). There is
-    # NO program-domain (channels [0, 1]) Filter step: the leader baked Layer
-    # B/C, so this graph carries no headroom gain and no preference EQ — only
-    # the protective driver chain. Both stages are Mixer steps, so the [0, 1]
-    # bus is never the target of a Filter step here.
+    # stereo program), THEN the optional pair-balance trim on the selected stereo
+    # bus, THEN the intra-speaker 2->N split, THEN each driver's
+    # crossover/delay/gain/limiter chain. Exactly one helper owns this ordering so
+    # an edit to the safety-critical Layer-A pipeline cannot fork the trimmed and
+    # untrimmed cases.
     lines = [
         "  - type: Mixer",
         f"    name: {CHANNEL_SELECT_MIXER}",
+    ]
+    if pair_trim_db > 0.0:
+        lines.extend([
+            "  - type: Filter",
+            "    channels: [0, 1]",
+            "    names: [pair_balance_trim]",
+        ])
+    lines.extend([
         "  - type: Mixer",
         f"    name: split_active_{preset.way_count}way",
-    ]
+    ])
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
         chain = ", ".join(_driver_baseline_filter_chain(preset, role))
@@ -1475,6 +1483,7 @@ def emit_active_speaker_driver_domain_config(
     *,
     playback_device: str,
     program_channel: str,
+    pair_trim_db: float = 0.0,
     corrections: dict[str, dict[str, float | bool]] | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
@@ -1498,11 +1507,13 @@ def emit_active_speaker_driver_domain_config(
     no ``active_baseline_headroom`` gain and no preference-EQ band — because that
     domain belongs to the leader's bake instance.
 
-    The pipeline is ``channel_select (2->2 pick L/R/mono) -> split_active_<way>way
-    (2->N) -> per-driver chain``: the inter-speaker channel-select runs FIRST
-    (which channel of the pair this box plays), THEN the intra-speaker driver
-    split — exactly ``jasper.multiroom.channel_split``'s documented composition
-    order. ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``
+    The pipeline is ``channel_select (2->2 pick L/R/mono) -> optional
+    pair_balance_trim -> split_active_<way>way (2->N) -> per-driver chain``:
+    the inter-speaker channel-select runs FIRST (which channel of the pair this
+    box plays), THEN the attenuate-only pair trim for this physical member,
+    THEN the intra-speaker driver split — exactly
+    ``jasper.multiroom.channel_split``'s documented composition order.
+    ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``
     (``left`` / ``right`` / ``mono``); the channel-select mixer is the shared
     ``emit_channel_select_mixer`` primitive, so a follower and a bonded member
     spell the pick identically.
@@ -1530,6 +1541,9 @@ def emit_active_speaker_driver_domain_config(
             f"program_channel must be one of {DRIVER_DOMAIN_PROGRAM_CHANNELS}, "
             f"not {program_channel!r}"
         )
+    pair_trim_db = _finite_float(pair_trim_db, "pair_trim_db")
+    if pair_trim_db < 0.0 or pair_trim_db > 120.0:
+        raise ActiveSpeakerConfigError("pair_trim_db must be between 0 and 120 dB")
     capture_device = _yaml_string(capture_device, "capture_device")
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
@@ -1571,20 +1585,26 @@ def emit_active_speaker_driver_domain_config(
         }
 
     output_count = _output_count(preset)
-    filter_yaml = "\n".join(_emit_baseline_driver_definitions(
+    filter_lines = _emit_baseline_driver_definitions(
         preset,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
-    ))
+    )
+    if pair_trim_db > 0.0:
+        filter_lines.extend(emit_gain_filter("pair_balance_trim", -pair_trim_db))
+    filter_yaml = "\n".join(filter_lines)
     # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
     mixer_yaml = "\n".join((
         emit_channel_select_mixer(program_channel),
         _emit_split_mixer(preset),
     ))
-    pipeline_yaml = _emit_driver_domain_pipeline(preset)
+    pipeline_yaml = _emit_driver_domain_pipeline(
+        preset, pair_trim_db=pair_trim_db,
+    )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# program_channel={program_channel}",
+        f"# pair_trim_db={pair_trim_db:.3f}",
     ]
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")

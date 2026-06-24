@@ -206,6 +206,7 @@ async def precheck_active_follower(
         capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
         driver_domain=True,
         program_channel=program_channel,
+        driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
         **build_kwargs,
     )
     if not candidate.get("permissions", {}).get("may_apply"):

@@ -10,6 +10,7 @@ still-missing all resolve to a recorded ``failed`` status, never an exception)."
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,14 +27,18 @@ class _Runner:
     """A subprocess.run stub recording argv. ``apt-get install`` returns
     ``apt_rc`` (or raises ``apt_raise``); when it succeeds it flips ``installed``
     so a post-install which() sees the binaries. ``apt-get update`` returns 0 (or
-    raises ``update_raise``). systemctl calls return 0."""
+    raises ``update_raise``). systemctl calls return ``systemctl_rc``."""
 
-    def __init__(self, *, installed, apt_rc=0, apt_raise=None, update_raise=None):
+    def __init__(
+        self, *, installed, apt_rc=0, apt_raise=None, update_raise=None,
+        systemctl_rc=0,
+    ):
         self.calls: list[list[str]] = []
         self._installed = installed
         self._apt_rc = apt_rc
         self._apt_raise = apt_raise
         self._update_raise = update_raise
+        self._systemctl_rc = systemctl_rc
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -52,7 +57,11 @@ class _Runner:
                 stdout="",
                 stderr="E: boom" if self._apt_rc else "",
             )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(
+            returncode=self._systemctl_rc,
+            stdout="",
+            stderr="systemctl boom" if self._systemctl_rc else "",
+        )
 
 
 def test_snapcast_present() -> None:
@@ -127,6 +136,27 @@ def test_apt_update_failure_is_nonfatal(tmp_path) -> None:
         runner=runner, which=_which(present), status_path=str(tmp_path / "s.json"),
     )
     assert r["state"] == "installed"  # update failed, install still proceeded + succeeded
+
+
+def test_install_success_logs_nonzero_distro_unit_neutralise(
+    tmp_path, caplog,
+) -> None:
+    """Apt can succeed while the distro unit cleanup fails. That must remain
+    fail-soft, but the rogue-unit cleanup gap must be visible in the journal."""
+    present: set[str] = set()
+    runner = _Runner(installed=present, systemctl_rc=1)
+    status = str(tmp_path / "s.json")
+
+    with caplog.at_level(logging.WARNING):
+        r = provision.ensure_snapcast_installed(
+            runner=runner, which=_which(present), status_path=status,
+        )
+
+    assert r["state"] == "installed"
+    assert json.loads(Path(status).read_text())["state"] == "installed"
+    assert "multiroom.provision.distro_unit_neutralise_failed" in caplog.text
+    assert "rc=1" in caplog.text
+    assert "systemctl boom" in caplog.text
 
 
 def test_apt_nonzero_fails_soft(tmp_path) -> None:

@@ -1775,12 +1775,16 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
         else:
             # Wire is up. camilla#1 bakes to the now-readable pipe; THEN — only if
-            # that bake provably released the DAC — camilla#2 is armed onto it. The
-            # statefile is RE-SEEDED with the re-proven driver-domain graph BEFORE
-            # enabling the unit (the never-flat guarantee; the crossover guard
-            # repairs a dead pipe, not a flat statefile). camilla#2 keeps
-            # enable_rate_adjust ON — the validated active-follower seam, no
-            # outputd-summer yet (HANDOFF-distributed-active.md "Sequencing" 1).
+            # that bake provably released the DAC and outputd re-converged —
+            # camilla#2 is armed onto it. The statefile is RE-SEEDED with the
+            # re-proven driver-domain graph BEFORE enabling the unit (the
+            # never-flat guarantee; the crossover guard repairs a dead pipe, not
+            # a flat statefile). camilla#2 is disabled before the bake and later
+            # started from that statefile, so trim-only rewrites are picked up by
+            # process start rather than relying on an idempotent systemd no-op.
+            # camilla#2 keeps enable_rate_adjust ON — the validated
+            # active-follower seam, no outputd-summer yet
+            # (HANDOFF-distributed-active.md "Sequencing" 1).
             bake_ok = False
             if not _disable_crossover_unit():
                 rc = 1
@@ -1789,6 +1793,7 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 rc = 1
             else:
+                active_leader_action = "active_leader_bake_apply"
                 try:
                     from .active_leader_config import (
                         apply_active_leader_bake_sync,
@@ -1809,16 +1814,16 @@ def main(argv: list[str] | None = None) -> int:
                         bake_ok = False
                         rc = 1
                     if bake_ok:
+                        active_leader_action = "active_leader_crossover_seed"
                         seed_crossover_statefile()
                 except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
                     log_event(
                         logger,
                         "multiroom.reconcile.camilla_failed",
-                        action="active_leader_bake_apply",
+                        action=active_leader_action,
                         error=e,
                         level=logging.ERROR,
                     )
-                    rc = 1
             # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
             # moved camilla#1 off the active-content PCM, outputd re-converged
             # to the active lane, and the exclusive handle positively released.
@@ -1930,7 +1935,7 @@ def main(argv: list[str] | None = None) -> int:
                     logger,
                     "multiroom.reconcile.camilla",
                     result="active_leader_crossover_arm_skipped",
-                    reason="bake_not_applied",
+                    reason="crossover_not_ready",
                 )
                 rc = 1
 

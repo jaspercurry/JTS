@@ -199,12 +199,15 @@ def _active_baseline_yaml(
     )
 
 
-def _driver_domain_yaml(layout: str, way: int, *, channel: str = "left") -> str:
+def _driver_domain_yaml(
+    layout: str, way: int, *, channel: str = "left", pair_trim_db: float = 0.0,
+) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_driver_domain_config(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
         program_channel=channel,
+        pair_trim_db=pair_trim_db,
         baseline_id=f"follower-{layout}-{way}way",
     )
 
@@ -843,6 +846,56 @@ def test_driver_domain_source_marker_matches_verifier() -> None:
         line for line in text.splitlines() if line.startswith("# Source:")
     )
     assert source_line.split("# Source:")[1].strip() == ACTIVE_DRIVER_DOMAIN_SOURCE
+
+
+def test_driver_domain_pair_trim_is_allowed_and_non_positive() -> None:
+    text = _driver_domain_yaml("mono", 2, pair_trim_db=3.5)
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=text,
+    )
+    assert graph.allowed, graph.issues
+    assert "pair_balance_trim" in text
+    assert "parameters: { gain: -3.5000" in text
+    assert "active_baseline_headroom" not in text
+
+
+def test_driver_domain_pair_trim_positive_gain_is_rejected() -> None:
+    text = _driver_domain_yaml("mono", 2, pair_trim_db=3.5)
+    tampered = text.replace("gain: -3.5000", "gain: 3.5000")
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=tampered,
+    )
+
+    assert graph.allowed is False
+    assert any(
+        i.get("code") == "active_driver_domain_pair_trim_invalid"
+        for i in graph.issues
+    )
+
+
+def test_driver_domain_pair_trim_after_split_is_rejected() -> None:
+    text = _driver_domain_yaml("mono", 2, pair_trim_db=3.5)
+    trim_step = (
+        "  - type: Filter\n"
+        "    channels: [0, 1]\n"
+        "    names: [pair_balance_trim]\n"
+    )
+    split_step = (
+        "  - type: Mixer\n"
+        "    name: split_active_2way\n"
+    )
+    tampered = text.replace(trim_step + split_step, split_step + trim_step)
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=tampered,
+    )
+
+    assert graph.allowed is False
+    assert any(
+        i.get("code") == "active_driver_domain_pair_trim_invalid"
+        for i in graph.issues
+    )
 
 
 def test_driver_domain_rejects_injected_program_prefix() -> None:

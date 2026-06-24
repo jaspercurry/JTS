@@ -953,6 +953,12 @@ tweeter TTS, inv-B-through-Layer-A).
 > teardown is gated on the camilla#2 unit being enabled, so the active-FOLLOWER
 > path stays byte-identical. `/state.grouping.endpoint` surfaces
 > `mode=active_crossover, role=leader` (or `mode=blocked` + reason on fail-closed).
+> Updated 2026-06-24: every active-leader reconcile disables camilla#2 before the
+> bake, re-seeds the statefile with the re-proven driver-domain graph, proves the
+> active-content PCM has been released, and then starts camilla#2 from that
+> statefile. This matters for trim-only updates such as `/rooms/` pair balance:
+> the updated graph is picked up by process start, not by trusting an idempotent
+> `systemctl enable --now` to reload an already-running crossover process.
 > Pinned by [`tests/test_multiroom_active_leader_config.py`](../tests/test_multiroom_active_leader_config.py)
 > + the active-leader flow tests in
 > [`tests/test_multiroom_reconcile.py`](../tests/test_multiroom_reconcile.py).

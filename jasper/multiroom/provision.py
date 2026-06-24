@@ -120,12 +120,12 @@ def _write_status(path: str, state: str, detail: str) -> None:
         )
 
 
-def _neutralise_distro_units(runner) -> None:
+def _neutralise_distro_units(runner) -> bool:
     """Disable the distro's auto-enabled snapserver/snapclient units (mirror
     install.sh). Best-effort — a failure here does not fail the install (JTS owns
     jasper-snapserver/-snapclient; the distro units are merely dead weight)."""
     try:
-        runner(
+        result = runner(
             ["systemctl", "disable", "--now", *_DISTRO_UNITS],
             capture_output=True, text=True, timeout=30,
         )
@@ -136,6 +136,23 @@ def _neutralise_distro_units(runner) -> None:
             error=str(e),
             level=logging.WARNING,
         )
+        return False
+    rc = int(getattr(result, "returncode", 0) or 0)
+    if rc != 0:
+        detail = (
+            ((getattr(result, "stderr", "") or "")
+             + (getattr(result, "stdout", "") or "")).strip()[-300:]
+            or f"systemctl exited {rc}"
+        )
+        log_event(
+            logger,
+            "multiroom.provision.distro_unit_neutralise_failed",
+            rc=rc,
+            detail=detail,
+            level=logging.WARNING,
+        )
+        return False
+    return True
 
 
 def _apt_update(runner, *, timeout) -> None:

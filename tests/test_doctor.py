@@ -273,9 +273,8 @@ def test_check_snapcast_present_is_ok(monkeypatch):
 
 def test_check_snapcast_missing_fails_with_remediation(monkeypatch):
     """The JTS5 root state (2026-06-23): grouping enabled but the snapcast
-    binaries were never installed (no automated install path exists). Surface
-    it as a FAIL carrying the install command, so it can't stay invisible until
-    a bond reboot-loops the box."""
+    binaries are still absent. Surface it as a FAIL carrying the install command,
+    so a failed or skipped provisioning step cannot stay invisible."""
     _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
     monkeypatch.setattr("shutil.which", lambda name: None)
     r = doctor.check_grouping_snapcast_installed()

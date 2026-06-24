@@ -531,6 +531,7 @@ def build_baseline_profile_candidate(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     driver_domain: bool = False,
     program_channel: str | None = None,
+    driver_domain_pair_trim_db: float = 0.0,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -552,11 +553,13 @@ def build_baseline_profile_candidate(
     crossover/limiter`` — with **no** program-domain headroom and **no**
     preference EQ (the leader baked Layer B/C into the streamed program). It
     requires ``program_channel`` (one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``: the
-    inter-speaker channel this box plays). Default ``False`` keeps the full solo
-    baseline emit byte-identical (invariant 7); the reconciler's follower branch
-    passes ``driver_domain=True`` + ``program_channel`` + the loopback
-    ``capture_device``, writing to a follower-specific ``config_path`` /
-    ``state_path`` so the solo baseline artifacts are never clobbered.
+    inter-speaker channel this box plays). ``driver_domain_pair_trim_db`` is the
+    attenuate-only pair-balance trim for this member, applied after
+    channel-select and before the driver split; default zero keeps the full solo
+    baseline emit byte-identical (invariant 7). The reconciler's active-member
+    branches pass ``driver_domain=True`` + ``program_channel`` + the loopback
+    ``capture_device``, writing to role-specific ``config_path`` / ``state_path``
+    so the solo baseline artifacts are never clobbered.
     """
     if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
         raise ValueError(
@@ -722,6 +725,7 @@ def build_baseline_profile_candidate(
                 preset,
                 playback_device=resolved_playback_device,
                 program_channel=program_channel,
+                pair_trim_db=driver_domain_pair_trim_db,
                 corrections=corrections,
                 capture_device=capture_device,
                 capture_format=capture_format,
@@ -965,6 +969,7 @@ async def apply_baseline_profile(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     driver_domain: bool = False,
     program_channel: str | None = None,
+    driver_domain_pair_trim_db: float = 0.0,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -976,9 +981,12 @@ async def apply_baseline_profile(
     default keeps the solo apply byte-identical.
 
     ``driver_domain`` + ``program_channel`` switch the emit to a wireless active
-    follower's driver-domain-only Layer-A graph (Slice 2 emitter). The follower
-    branch of the multiroom reconciler passes follower-specific ``state_path`` /
-    ``config_path`` alongside these so the solo baseline state is not overwritten.
+    follower's driver-domain-only Layer-A graph (Slice 2 emitter). The optional
+    ``driver_domain_pair_trim_db`` follows the same parameter on
+    :func:`build_baseline_profile_candidate` so direct apply callers cannot drift
+    from the candidate builder. The follower branch of the multiroom reconciler
+    passes follower-specific ``state_path`` / ``config_path`` alongside these so
+    the solo baseline state is not overwritten.
     """
 
     state_target = baseline_profile_state_path(state_path)
@@ -994,6 +1002,7 @@ async def apply_baseline_profile(
         capture_format=capture_format,
         driver_domain=driver_domain,
         program_channel=program_channel,
+        driver_domain_pair_trim_db=driver_domain_pair_trim_db,
         validate=validate,
     )
     if not candidate.get("permissions", {}).get("may_apply"):
