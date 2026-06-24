@@ -1087,6 +1087,23 @@ def test_post_bond_forwards_crossover_hz_for_a_sub_member(monkeypatch):
     assert all(c[1]["mains_highpass_enabled"] is True for c in calls)
 
 
+def test_post_bond_sub_corner_is_authoritative_for_all_members(monkeypatch):
+    """A sub bond has one crossover corner by construction.
+
+    Even if a non-browser caller supplies stale per-main crossover values, the
+    sub member's corner is the bond-level value fanned out to every member.
+    """
+    members = [
+        {"addr": "192.168.1.5", "role": "leader", "channel": "stereo",
+         "crossover_hz": 55},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "sub",
+         "crossover_hz": 90},
+    ]
+    h, calls = _post_bond({"members": members}, monkeypatch=monkeypatch)
+    assert h.status == 200
+    assert all(c[1]["crossover_hz"] == 90 for c in calls)
+
+
 def test_post_bond_omits_crossover_hz_when_absent(monkeypatch):
     """A plain stereo pair sends no crossover_hz key — the fan-out only
     forwards it when the bond contains a sub, so non-sub members stay clean."""

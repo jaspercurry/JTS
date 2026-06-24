@@ -174,9 +174,10 @@ class GroupingConfig:
     # graph consumes them when generating the shared stereo stream.
     left_delay_ms: float = 0.0
     right_delay_ms: float = 0.0
-    # Receiver-side wireless-sub low-pass corner (Hz). Only meaningful
-    # when channel=="sub"; also used as the matched mains high-pass corner
-    # when this bond has a sub and mains_highpass_enabled is true.
+    # Bond-level wireless-sub crossover corner (Hz). A sub member always uses
+    # it as its low-pass corner; mains use the same value as their matched
+    # high-pass corner when this bond has a sub and mains_highpass_enabled is
+    # true.
     # Defaulted so the wide existing constructor surface stays
     # source-compatible; load_config always sets it explicitly.
     crossover_hz: float = DEFAULT_CROSSOVER_HZ
@@ -497,15 +498,12 @@ def validate_grouping(
                 f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
                 f"and {CHANNEL_DELAY_MS_HI}"
             )
-    # The crossover corner is mandatory for a sub, and for a main when
-    # bass management is armed for a bond that contains a sub. A non-sub
-    # member in a plain stereo pair can still carry a stale corner without
-    # failing loud because the reconciler clears the HP env unless a sub is
-    # present.
-    uses_crossover = (
-        channel == "sub"
-        or (subwoofer_present and mains_highpass_enabled and channel != "sub")
-    )
+    # The crossover corner is mandatory for a sub bond. The sub always uses it
+    # for its local low-pass, and mains use the same value when bass management
+    # is armed. A non-sub member in a plain stereo pair can still carry a stale
+    # corner without failing loud because the reconciler clears the HP env
+    # unless a sub is present.
+    uses_crossover = channel == "sub" or subwoofer_present
     if uses_crossover and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
         return (
             f"JASPER_GROUPING_CROSSOVER_HZ={crossover_hz} must be between "
