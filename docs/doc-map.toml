@@ -583,7 +583,7 @@ requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
 ]
 verification = [
-  "pytest tests/test_correction_*.py",
+  "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
 ]
 
 [[subsystem]]

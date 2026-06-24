@@ -68,7 +68,8 @@ class ReemitResult:
 
     ``yaml`` is always the emitted config text (the durable path also writes
     it to ``out_path``); ``room_peq_count`` is how many room-correction PEQs
-    the carrier preserved (0 for the flat baseline), surfaced for telemetry.
+    the carrier emitted. For ``/sound`` this is the preserved count; for
+    ``/correction`` it is the explicitly replaced count.
     """
 
     yaml: str
@@ -114,6 +115,7 @@ class _StereoHostCarrier:
         profile_id: str | None = None,
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
+        room_peqs: list | None = None,
     ) -> ReemitResult:
         # Refuse (typed, honest) before emitting/loading a flat program graph
         # when the saved topology assigns a protected tweeter. This is the
@@ -142,7 +144,7 @@ class _StereoHostCarrier:
 
             member_kwargs = member_camilla_kwargs()
 
-        room_peqs = self._compute_room_peqs()
+        room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
         yaml = emit_sound_config(
             profile,
             room_peqs=room_peqs,
@@ -218,6 +220,7 @@ class _ActiveGraphCarrier:
         profile_id: str | None = None,
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
+        room_peqs: list | None = None,
     ) -> ReemitResult:
         if not self._is_baseline:
             raise CarrierCannotHostEq(
@@ -240,10 +243,18 @@ class _ActiveGraphCarrier:
                 "ungroup it first. Your crossover and driver protection are "
                 "unchanged.",
             )
-        yaml = _recompose_active_baseline_with_eq(
-            profile, output_trim_db=output_trim_db, out_path=out_path
+        room_peqs = (
+            extract_room_peqs_from_config(self._current_path)
+            if room_peqs is None
+            else list(room_peqs)
         )
-        return ReemitResult(yaml=yaml, room_peq_count=0)
+        yaml = _recompose_active_baseline_with_eq(
+            profile,
+            room_peqs=room_peqs,
+            output_trim_db=output_trim_db,
+            out_path=out_path,
+        )
+        return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
 
 class _UnknownCarrier:
@@ -263,6 +274,7 @@ class _UnknownCarrier:
         profile_id: str | None = None,
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
+        room_peqs: list | None = None,
     ) -> ReemitResult:
         raise CarrierCannotHostEq(
             "unknown_config",
@@ -284,7 +296,11 @@ def _bonded_active_member() -> bool:
 
 
 def _recompose_active_baseline_with_eq(
-    profile, *, output_trim_db: float = 0.0, out_path: str | Path | None = None
+    profile,
+    *,
+    room_peqs: list | None = None,
+    output_trim_db: float = 0.0,
+    out_path: str | Path | None = None,
 ):
     """Recompose the SOLO active baseline with ``profile``'s preference EQ
     inserted pre-split, returning the emitted YAML (written to ``out_path`` when
@@ -305,6 +321,10 @@ def _recompose_active_baseline_with_eq(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        classify_camilla_graph,
+    )
     from jasper.output_topology import load_output_topology
     from jasper.sound.profile import build_sound_filters
 
@@ -317,6 +337,7 @@ def _recompose_active_baseline_with_eq(
         topology,
         crossover_preview=crossover_preview,
         measurements=measurements,
+        room_peqs=room_peqs or [],
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         out_path=out_path,
@@ -329,6 +350,17 @@ def _recompose_active_baseline_with_eq(
             "active_baseline_recompose_unavailable",
             "JTS couldn't rebuild this speaker's active baseline to add sound EQ: "
             f"{detail}. Your crossover and driver protection are unchanged.",
+        )
+    graph = classify_camilla_graph(topology=topology, text=yaml)
+    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        detail = (
+            graph.issues[0].get("message") if graph.issues else None
+        ) or "the recomposed active baseline did not pass the runtime contract"
+        raise CarrierCannotHostEq(
+            "active_baseline_recompose_unsafe",
+            "JTS rebuilt this speaker's active baseline, but the safety "
+            f"contract rejected it: {detail}. Your crossover and driver "
+            "protection are unchanged.",
         )
     return yaml
 

@@ -95,29 +95,35 @@ existing layering):
     (`ACTIVE_BASELINE_SOURCE`, the same signal the verifier's `is_baseline`
     branch keys on) decides which it is. *PR-1:* raised
     `CarrierCannotHostEq("eq_on_active_not_wired", …)` for all three. *PR-3
-    (DONE):* a **SOLO baseline** inserts preference EQ pre-split — recomposed from
-    the saved evidence via
+    (DONE):* a **SOLO baseline** inserts room PEQs and preference EQ pre-split
+    — recomposed from the saved evidence via
     [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py),
     NEVER through the stereo template (invariant 3). Startup/commissioning still
     refuse `eq_on_active_not_wired`; a **bonded** baseline refuses
     `eq_on_active_bonded_member` (invariant 7 — the active×grouping decision is
     deferred); a baseline whose saved evidence has gone missing refuses
-    `active_baseline_recompose_unavailable`. All four are 200-with-body blocked
-    outcomes, never a 5xx, and the durable apply's pre-check dry-runs the active
-    carrier so a refusal records no `prepare_failed` state (SF-2).
+    `active_baseline_recompose_unavailable`. Active re-emit preserves existing
+    `room_peq_*` filters by default; callers pass an explicit `room_peqs=[]`
+    when they are intentionally measuring or resetting with Layer B cleared.
+    All four are 200-with-body blocked outcomes, never a 5xx, and the durable
+    apply's pre-check dry-runs the active carrier so a refusal records no
+    `prepare_failed` state (SF-2).
   - `is_jts_generated_config` (name) → **sound/correction carrier**
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
     relocated **verbatim**, including the `member_camilla_kwargs()` splat
   - otherwise → **unknown carrier** → `CarrierCannotHostEq("unknown_config", …)`
-- `Carrier.reemit(profile, *, out_path=None, profile_id=None, output_trim_db=0.0, member_kwargs=None) -> ReemitResult`
+- `Carrier.reemit(profile, *, room_peqs=None, out_path=None, profile_id=None, output_trim_db=0.0, member_kwargs=None) -> ReemitResult`
   — `out_path=None` returns YAML (live-draft); a path writes the file
   (durable), exactly like `emit_sound_config`. `ReemitResult` carries the
-  emitted YAML + the preserved room-PEQ count (telemetry). Each carrier owns
-  its own preservation strategy and its grouping kwargs: base/sound default to
-  `member_camilla_kwargs()` (a disk read); the bonded-leader bake is the one
-  caller that passes `member_kwargs=member_camilla_kwargs(cfg)` explicitly
-  (its pipe sink + rate_adjust off). The active/unknown carriers ignore it and
-  refuse — see grouping boundary below.
+  emitted YAML + the room-PEQ count (telemetry). `room_peqs=None` means
+  "preserve whatever the current graph carries"; an explicit list means
+  "replace Layer B with exactly this set" (`[]` clears room correction for
+  measurement/reset). Each carrier owns its own preservation strategy and its
+  grouping kwargs: base/sound default to `member_camilla_kwargs()` (a disk
+  read); the bonded-leader bake is the one caller that passes
+  `member_kwargs=member_camilla_kwargs(cfg)` explicitly (its pipe sink +
+  rate_adjust off). The active/unknown carriers ignore it and refuse — see
+  grouping boundary below.
 
 **Stereo hosts refuse a protected-tweeter topology (L0).** Both stereo-host
 carriers (base-flat + sound/correction) emit a 2-channel program graph with no
@@ -170,7 +176,7 @@ raised `CarrierCannotHostEq`); any future `/audition` HTTP client must branch
 on `payload.status` the way the `/sound` page does for `/apply` and
 `/live-draft`.
 
-## Where preference EQ slots into the active graph (PR-3)
+## Where room and preference EQ slot into the active graph (PR-3)
 
 The active baseline pipeline
 ([`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py),
@@ -180,37 +186,41 @@ The active baseline pipeline
 wired tweeter high-pass)`.
 
 Preference EQ + room correction are program-domain, so they MUST sit on
-the program channels **before** the split mixer. That placement is what
-makes them safe:
+the program channels **before** the split mixer. Room correction (Layer B)
+is per-channel PEQ from `/correction/`; preference EQ (Layer C) is the
+saved `/sound/` profile. That placement is what makes both layers safe:
 
 1. Upstream of every per-driver crossover → cannot move a crossover
    corner or leak energy into a band a driver can't handle.
 2. Upstream of every per-driver `Limiter` and the tweeter HP → a
-   preference *boost* cannot bypass the limiter.
+   boost cannot bypass the limiter.
 3. **Explicit headroom is folded into the single
    `active_baseline_headroom` gain**, not added as a sibling pre-split
    attenuation. This gain carries baseline headroom plus the household's
    `output_trim_db` (manual headroom + loudness match), gated on the
-   profile actually having EQ, exactly like the stereo path. Preference
+   profile actually having EQ and any positive room boost. Preference
    boosts themselves ride at unity ("boosts boost"), while safety comes
    from their pre-split placement, the crossover/limiters/tweeter HP, and
    the 0 dB volume ceiling.
 
-**Compose, don't text-splice.** `emit_active_speaker_baseline_config` grew an
-optional `preference_filters` param wired pre-split (a separate Filter step on
-`[0, 1]` after the headroom step, before the split Mixer), so all active-graph
-shape decisions stay in `active_speaker.camilla_yaml`. The carrier composes via
+**Compose, don't text-splice.** `emit_active_speaker_baseline_config` grew
+optional `room_peqs` and `preference_filters` params wired pre-split (separate
+Filter steps on `[0, 1]` after the headroom step, before the split Mixer), so
+all active-graph shape decisions stay in `active_speaker.camilla_yaml`. The
+carrier composes via
 [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py) — a
 thin helper that rebuilds the structural baseline from the saved evidence using
 the **same derivation primitives** `build_baseline_profile_candidate` uses
 (`resolve_active_playback_device` → `compile_preset_from_crossover_preview` →
-`_derive_corrections` → the emitter), then inserts the preference bands. It is
-a sibling of `build_baseline_profile_candidate`, **not** a new param on it: the
+`_derive_corrections` → the emitter), then inserts the room and preference
+bands. It is a sibling of `build_baseline_profile_candidate`, **not** a new
+param on it: the
 durable baseline (`active_speaker_baseline.yml`, the reconcile fallback) stays
-EQ-free, while the carrier writes the EQ'd baseline to the `/sound` apply target
-(`sound.yml`). It never parses the running config (the extract-from-running-
-config anti-pattern). For the live-draft slider, the helper returns the YAML
-text without a durable write.
+EQ-free, while the carrier writes the EQ'd baseline to `/sound`/`/correction`
+apply targets. It never parses active topology out of the running config (the
+extract-from-running-config anti-pattern); it only extracts current
+`room_peq_*` filters when the caller asked to preserve Layer B. For the
+live-draft slider, the helper returns the YAML text without a durable write.
 
 ### The safety contract (what makes PR-3 provably safe)
 
@@ -268,16 +278,14 @@ each caller wires the names into its own pipeline. Output is
 list — **data**, not a `SoundProfile`), `total_positive_boost_db`, and the
 `camilla_emit` leaves.
 
-**Headroom-policy seam.** Active and stereo preference EQ now share the
-same policy: preference boosts ride at unity, and explicit
-`output_trim_db` is the only preference-layer global attenuation. Stereo
-room correction still emits a standalone `room_headroom` gain for the
-worst-case **room** boost only (`max` over `room_peqs`/`room_peqs_right`).
-If active room correction later grows a producer, do not splice the
-stereo `room_headroom` into the active graph as a sibling; have the
-builder surface the room-headroom value so the active caller can fold
-room headroom into `active_baseline_headroom`, or compose at the
-`emit_filter_spec` level.
+**Headroom-policy seam.** Active and stereo preference EQ now share the same
+policy: preference boosts ride at unity, and explicit `output_trim_db` is the
+only preference-layer global attenuation. Stereo room correction emits a
+standalone `room_headroom` gain for the worst-case **room** boost only (`max`
+over `room_peqs`/`room_peqs_right`). Active room correction folds positive room
+boost into the existing `active_baseline_headroom` gain instead of adding a
+sibling attenuation step; the verifier requires that headroom step to remain
+present and non-positive.
 
 **Layering note (why it's a neutral leaf module).** The builder takes the
 preference `FilterSpec` list and emits it, so it needs `FilterSpec` +
@@ -301,6 +309,8 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
 | 2 | **Keystone:** `ActiveGraphCarrier.reemit` output, fed back through `classify_camilla_graph` for the same topology, classifies `GRAPH_APPROVED_ACTIVE_RUNTIME` / `allowed=True` - inserting EQ never breaks the contract | 3 |
 | 4 | Emitter-side: a `+N` dB preference boost keeps `active_baseline_headroom` unchanged without explicit trim and keeps `volume_limit == 0.0`; `output_trim_db` still folds into the headroom gain. **Test with a shelf, not just a peak** | 3 |
 | 5 | The preference filter step is wired on the program channels strictly **before** the split mixer (pipeline index of pref step < Mixer step) | 3 |
+| — | Active room PEQs are wired on the program channels before the split mixer; explicit `room_peqs=[]` replaces/purges existing room PEQs for measurement/reset | 2026-06-24 |
+| — | Runtime verifier rejects `room_peq*` and other program-domain filters if they drift into follower/driver-domain steps | 2026-06-24 |
 | — | `build_stereo_prefix` is byte-identical to today for the solo stereo case (golden) | 2 |
 | 7 | Bonded-member + active baseline → `ActiveGraphCarrier` refuses with a clear reason (the deferred active×grouping decision) | 3 |
 
@@ -420,6 +430,7 @@ follower's bonded path via **CamillaDSP re-entry** (`snapclient → loopback
 - UI: [`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js)
 - Tests: `tests/test_sound_graph_carrier.py` (new),
   `tests/test_sound_setup.py`, `tests/test_sound_camilla_yaml.py`,
-  `tests/test_active_speaker_runtime_contract.py`
+  `tests/test_active_speaker_runtime_contract.py`,
+  `tests/test_active_speaker_baseline_profile.py`
 
-Last verified: 2026-06-22
+Last verified: 2026-06-24

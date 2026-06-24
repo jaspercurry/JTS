@@ -14,6 +14,9 @@ from . import bundles, strategy
 _CORRECTION_FILENAME_RE = re.compile(
     r"^correction_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
 )
+_MEASUREMENT_FILENAME_RE = re.compile(
+    r"^correction_measurement_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
+)
 _SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
 _ACTIVE_SPEAKER_FILENAME_RE = re.compile(r"^active_speaker_.*\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
@@ -81,26 +84,75 @@ def describe_current_config(
             "current_correction": None,
         }
 
+    text: str | None
+    try:
+        text = p.read_text()
+    except OSError:
+        text = None
+
+    if text is not None:
+        for source, label in _ACTIVE_SPEAKER_LABELS.items():
+            if f"Source: {source}" not in text:
+                continue
+            peq_count = len(_PEQ_KEY_RE.findall(text))
+            correction = None
+            if peq_count:
+                match = _CORRECTION_FILENAME_RE.match(p.name)
+                try:
+                    applied_at_epoch = (
+                        int(match.group("ts")) if match else int(p.stat().st_mtime)
+                    )
+                except (OSError, ValueError):
+                    applied_at_epoch = 0
+                correction = {
+                    "path": str(p),
+                    "session_id": match.group("id") if match else "active_speaker",
+                    "applied_at_epoch": applied_at_epoch,
+                    "peq_count": peq_count,
+                }
+            return {
+                "kind": (
+                    "active_speaker_with_correction"
+                    if correction
+                    else "active_speaker"
+                ),
+                "managed": True,
+                "path": str(p),
+                "label": label,
+                "message": (
+                    "Active-speaker DSP is active and includes room correction PEQs."
+                    if correction
+                    else (
+                        "Active-speaker DSP is active; no room correction PEQs "
+                        "are applied by this graph."
+                    )
+                ),
+                "current_correction": correction,
+            }
+
     m = _CORRECTION_FILENAME_RE.match(p.name)
     if not m:
-        if _ACTIVE_SPEAKER_FILENAME_RE.match(p.name):
-            try:
-                text = p.read_text()
-            except OSError:
-                text = ""
-            for source, label in _ACTIVE_SPEAKER_LABELS.items():
-                if f"Source: {source}" in text:
-                    return {
-                        "kind": "active_speaker",
-                        "managed": True,
-                        "path": str(p),
-                        "label": label,
-                        "message": (
-                            "Active-speaker DSP is active; no room "
-                            "correction PEQs are applied by this graph."
-                        ),
-                        "current_correction": None,
-                    }
+        if _MEASUREMENT_FILENAME_RE.match(p.name):
+            return {
+                "kind": "measurement_baseline",
+                "managed": True,
+                "path": str(p),
+                "label": "JTS room-correction measurement baseline",
+                "message": (
+                    "Room-correction measurement is using a temporary baseline "
+                    "with preference and room-correction filters removed."
+                ),
+                "current_correction": None,
+            }
+        if _ACTIVE_SPEAKER_FILENAME_RE.match(p.name) and text is None:
+            return {
+                "kind": "unknown",
+                "managed": False,
+                "path": str(p),
+                "label": "Unreadable active-speaker config",
+                "message": "JTS could not read the active-speaker config file.",
+                "current_correction": None,
+            }
         if not _SOUND_FILENAME_RE.match(p.name):
             return {
                 "kind": "custom",
@@ -114,8 +166,7 @@ def describe_current_config(
                 "current_correction": None,
             }
         try:
-            text = p.read_text()
-            peq_count = len(_PEQ_KEY_RE.findall(text))
+            peq_count = len(_PEQ_KEY_RE.findall(text or ""))
             applied_at_epoch = int(p.stat().st_mtime)
         except OSError:
             return {
@@ -161,10 +212,6 @@ def describe_current_config(
             "current_correction": None,
         }
     peq_count = 0
-    try:
-        text = p.read_text()
-    except OSError:
-        text = ""
     if text:
         peq_count = len(_PEQ_KEY_RE.findall(text))
     correction = {
@@ -275,6 +322,16 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "config_path": (
             str(session.config_path) if session.config_path else None
         ),
+        "measurement_config_path": (
+            str(session.measurement_config_path)
+            if getattr(session, "measurement_config_path", None)
+            else None
+        ),
+        "pre_measurement_config_path": (
+            str(session.pre_measurement_config_path)
+            if getattr(session, "pre_measurement_config_path", None)
+            else None
+        ),
         "verify_metrics": session.verify_metrics,
         "autolevel": session.autolevel.snapshot(),
     }
@@ -318,6 +375,16 @@ def info_json_payload(session: Any) -> dict[str, Any]:
         "design_report": session.design_report,
         "config_path": (
             str(session.config_path) if session.config_path else None
+        ),
+        "measurement_config_path": (
+            str(session.measurement_config_path)
+            if getattr(session, "measurement_config_path", None)
+            else None
+        ),
+        "pre_measurement_config_path": (
+            str(session.pre_measurement_config_path)
+            if getattr(session, "pre_measurement_config_path", None)
+            else None
         ),
         "verify_metrics": session.verify_metrics,
         "config": session_config_payload(session),

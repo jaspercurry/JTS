@@ -11,6 +11,7 @@ import pytest
 
 from jasper.correction.runtime_safety import (
     CorrectionRuntimeSafetyError,
+    assert_correction_graph_safe,
     assert_flat_apply_safe,
     flat_measurement_config_path,
     reset_config_path,
@@ -122,6 +123,11 @@ def test_assert_flat_apply_safe_allows_full_range() -> None:
     # No protected tweeter -> the common room-correction apply is unaffected.
     assert_flat_apply_safe(_full_range_stereo())
     assert_flat_apply_safe(_full_range_mono())
+
+
+def test_assert_correction_graph_safe_rejects_mono_width_mismatch() -> None:
+    with pytest.raises(CorrectionRuntimeSafetyError, match="exposes 2 output"):
+        assert_correction_graph_safe(_flat_yaml(), topology=_full_range_mono())
 
 
 def test_assert_flat_apply_safe_fail_closed_on_corrupt_topology(

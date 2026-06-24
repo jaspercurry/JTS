@@ -21,6 +21,7 @@ from jasper.active_speaker.measurement import (
     record_summed_test_artifact,
     record_summed_validation,
 )
+from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
@@ -1133,6 +1134,60 @@ def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
     )
     assert trim_match is not None and float(trim_match.group(1)) == -4.0
     assert classify_camilla_graph(topology=topology, text=trimmed_yaml).allowed is True
+
+
+def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
+    tmp_path: Path,
+) -> None:
+    # Active room correction rides the same safe pre-split program bus as
+    # preference EQ, but positive room boosts are correction safety headroom:
+    # they fold into active_baseline_headroom instead of emitting a separate
+    # room_headroom gain.
+    import re
+
+    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        classify_camilla_graph,
+    )
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+
+    room_peqs = [
+        PeqFilter(freq=45.0, q=5.0, gain=2.0),
+        PeqFilter(freq=80.0, q=6.0, gain=-4.0),
+        PeqFilter(freq=120.0, q=4.0, gain=1.0),
+    ]
+    room_yaml, room_issues = recompose_baseline_yaml(
+        topology,
+        crossover_preview=preview,
+        measurements=measurements,
+        room_peqs=room_peqs,
+    )
+    assert room_issues == []
+    assert room_yaml is not None
+    assert "room_peq_1:" in room_yaml and "room_peq_3:" in room_yaml
+    assert "room_headroom" not in room_yaml
+    match = re.search(
+        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
+        room_yaml,
+    )
+    assert match is not None
+    assert float(match.group(1)) == -3.0
+
+    pipeline = room_yaml[room_yaml.index("\npipeline:"):]
+    assert (
+        pipeline.index("names: [room_peq_1, room_peq_2, room_peq_3]")
+        < pipeline.index("names: [active_baseline_headroom]")
+        < pipeline.index("type: Mixer")
+    )
+
+    graph = classify_camilla_graph(topology=topology, text=room_yaml)
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert graph.allowed is True, graph.issues
 
 
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
