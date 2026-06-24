@@ -34,10 +34,11 @@ program over Snapcast; the follower/receiver owns the driver domain
 channels never leave the box that owns the DACs.
 
 **The bug that motivates this work:** `/sound/` preference-EQ apply
-*refuses* whenever an active-speaker baseline is the loaded config. Both
-EQ entry points (`_live_draft_profile`, `_load_profile_config` in
-[`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py)) run an
-identical 3-arm branch:
+*refused* whenever an active-speaker baseline was the loaded config. The
+two EQ entry points (live draft in
+[`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py) and durable
+load/apply in [`jasper/sound/runtime.py`](../jasper/sound/runtime.py))
+used to run an identical 3-arm branch:
 
 ```
 if is_base_config(p):            room_peqs = []
@@ -151,7 +152,8 @@ set and only the active carrier needs new behavior; per AGENTS.md
 durable shape. Defer a `Protocol` to a "when a 3rd host kind exists"
 appendix.
 
-**Call sites.** Replace both `sound_setup.py` triplet branches with
+**Call sites.** `sound_setup.py`'s live-draft path and
+`jasper.sound.runtime.load_profile_config` resolve the current graph with
 `carrier_for_loaded_config(...).reemit(...)`. Map `CarrierCannotHostEq`
 to a **`200` with `{status:"blocked", reason_code, message}`** (NOT a
 502), so the UI renders an honest hint and the live-draft/active-speaker
@@ -159,15 +161,15 @@ UI's existing `status:"blocked"` vocabulary handles it directly. The carrier
 is resolved **under the dsp-apply writer lock** so it always re-emits against
 the config actually loaded — never a stereo config over an active graph a
 concurrent load swapped in (a TOCTOU crossover-drop). The durable path also
-does a **pre-lock fast-check**: a steady-state non-hostable graph raises
-`CarrierCannotHostEq` before the apply transaction so a household EQ apply on
-an active speaker records no `prepare_failed` state (a refusal is a handled
-"blocked" outcome, not a DSP failure — jasper-doctor / `/state` stay clean);
-live-draft likewise refuses inside its own writer lock. The route discriminates
-`CarrierCannotHostEq` raw (the pre-check / live-draft) or via `__cause__` (the
-in-lock re-check in the rare concurrent-swap race) — `jasper/dsp_apply.py`'s
-contract stays untouched. Collapsing the copy-pasted branch (3 copies — see
-below) is itself a CLEAN win.
+does a **pre-transaction fast-check**: a steady-state non-hostable graph raises
+`CarrierCannotHostEq` before recording an apply transaction, so a household EQ
+apply on an active speaker records no `prepare_failed` state (a refusal is a
+handled "blocked" outcome, not a DSP failure — jasper-doctor / `/state` stay
+clean); live-draft likewise refuses inside its own writer lock. The route
+discriminates `CarrierCannotHostEq` raw (the fast-check / live-draft) or via
+`__cause__` (the in-lock re-check in the rare concurrent-swap race) —
+`jasper/dsp_apply.py`'s public failure contract stays untouched. Collapsing
+the copy-pasted branch (3 copies — see below) is itself a CLEAN win.
 
 The HTTP `/audition` route shares this handler, so it too can return
 `200 {status:"blocked"}`. No HTTP client calls `/audition` today (the
@@ -417,6 +419,9 @@ follower's bonded path via **CamillaDSP re-entry** (`snapclient → loopback
 - Rewire: [`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py)
   (`_live_draft_profile`, `_load_profile_config`, the `/audition`,
   `/live-draft`, `/apply` POST dispatch)
+- Shared durable runtime:
+  [`jasper/sound/runtime.py`](../jasper/sound/runtime.py)
+  (`load_profile_config`, `reconcile_current_dsp`)
 - Recognizers/emitter: [`jasper/sound/camilla_yaml.py`](../jasper/sound/camilla_yaml.py)
   (`is_base_config`, `is_jts_generated_config`, `extract_room_peqs_from_config`,
   `emit_sound_config` — now calls `build_stereo_prefix`)

@@ -22,6 +22,7 @@ WARN, so the install always reaches the recovery surface. The systemd
 `check_outputd_service` remain the real runtime guards. These tests pin that
 invariant so the bare-fatal form cannot silently regress.
 """
+
 from __future__ import annotations
 
 import re
@@ -120,6 +121,11 @@ def test_require_outputd_ready_is_owned_by_profile_runtime_starters():
 
     assert streambox_runtime.group(1).count("require_outputd_ready") == 1
     assert full_runtime.group(1).count("require_outputd_ready") == 1
+    for block in (streambox_runtime.group(1), full_runtime.group(1)):
+        assert "reconcile_sound_dsp_state" in block
+        assert block.index("require_outputd_ready") < block.index(
+            "reconcile_sound_dsp_state"
+        )
 
 
 def test_recovery_surface_is_wired_after_systemd_units_in_main():
