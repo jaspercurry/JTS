@@ -1640,12 +1640,16 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     assert '"active_leader": false' in status
 
 
-def test_main_active_leader_probe_missing_fails_soft_and_arms(
+def test_main_active_leader_fails_closed_when_probe_tool_missing(
     tmp_path, monkeypatch,
 ):
-    """Compatibility guard: if the proc-status probe tool is missing, the
-    reconciler logs the unknown result but does not permanently strand active
-    leaders that lack the helper."""
+    """Hardening (P1 review #3): `unknown` (probe tool missing) is NOT positive
+    proof of release, so the reconciler fails CLOSED — restores solo-active and
+    leaves camilla#2 un-armed, exactly like the busy path — rather than arming
+    into a possible DAC fight. `cat` is universal on a real Pi, so this branch
+    is theoretical-only; the point is that 'can't prove it' never arms."""
+    import jasper.multiroom.active_leader_config as alc_mod
+
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
     _patch_active_leader(monkeypatch, order)
@@ -1661,15 +1665,24 @@ def test_main_active_leader_probe_missing_fails_soft_and_arms(
             timeout_sec=0.8,
         ),
     )
+    monkeypatch.setattr(
+        alc_mod,
+        "restore_active_leader_solo_sync",
+        lambda: order.append("leader_restore") or "active_speaker_baseline.yml",
+    )
 
     rc = main(["--reason", "test"])
 
-    assert rc == 0
+    assert rc == 1
     assert order.index("seed") < order.index("probe_missing")
-    assert order.index("probe_missing") < order.index("arm_camilla2")
-    assert "stream_binding" in order
+    assert "arm_camilla2" not in order
+    assert "leader_restore" in order
+    assert "stream_binding" not in order
     status = (tmp_path / "grouping-follower-status.json").read_text()
-    assert '"active_leader": true' in status
+    assert '"blocked_reason": "active_content_pcm_unverified"' in status
+    assert '"active_leader": false' in status
+    # Still wrote the active endpoint snapclient args — fail-closed here is the
+    # late camilla handoff, not a permanent unbond.
     assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
 
 

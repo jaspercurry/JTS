@@ -863,10 +863,11 @@ def _wait_for_active_content_pcm_release(
 ) -> _PcmHandleProbeResult:
     """Poll until camilla#1 has positively released the active-content PCM.
 
-    Returns `busy` on timeout/still-open so the caller can fail closed to
-    solo-active before camilla#2 is armed. Returns `unknown` only for the
-    explicit fail-soft case (probe tool missing), which the caller logs and
-    treats as a compatibility escape hatch.
+    Returns `busy` on timeout/still-open and `unknown` only for the fail-soft
+    case (probe tool missing). The caller arms camilla#2 ONLY on a positive
+    `released`; both `busy` and `unknown` fail closed to solo-active (it logs
+    `unknown` at WARNING since arming without proof risks the EBUSY reboot
+    loop). `unknown` is theoretical-only — `cat` is universal on a real Pi.
     """
     deadline = monotonic() + max(timeout_sec, 0.0)
     attempts = 0
@@ -1738,17 +1739,30 @@ def main(argv: list[str] | None = None) -> int:
                         timeout_sec=probe.timeout_sec,
                         level=logging.WARNING if probe.unknown else logging.INFO,
                     )
-                    if probe.busy:
-                        endpoint_block_reason = "active_content_pcm_busy"
+                    if not probe.released:
+                        # Arm camilla#2 ONLY on a POSITIVE release proof. `busy`
+                        # (still-open/timeout) and `unknown` (probe tool missing)
+                        # both fail closed to solo-active — arming without proof
+                        # is the exact jts3 EBUSY reboot-loop this barrier exists
+                        # to prevent, and `cat` is universal on a real Pi so the
+                        # `unknown` branch is a theoretical-only safety net, not a
+                        # path we ever want to arm through.
+                        endpoint_block_reason = (
+                            "active_content_pcm_busy"
+                            if probe.busy
+                            else "active_content_pcm_unverified"
+                        )
                         active_leader_arm_blocked = True
                         log_event(
                             logger,
                             "multiroom.reconcile.active_leader_blocked",
                             reason=endpoint_block_reason,
                             detail=(
-                                "active-content playback PCM still busy after "
-                                "camilla#1 bake; restoring solo-active and "
-                                "leaving camilla#2 un-armed"
+                                "active-content playback PCM not positively "
+                                f"released after camilla#1 bake (state="
+                                f"{probe.state}, reason={probe.reason}); "
+                                "restoring solo-active and leaving camilla#2 "
+                                "un-armed"
                             ),
                             pcm=ACTIVE_CONTENT_PLAYBACK_PCM,
                             status_path=probe.status_path,

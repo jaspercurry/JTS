@@ -28,6 +28,11 @@ JOURNAL_INTERVAL_SEC = 15.0
 JOURNAL_LOOKBACK_SEC = 15 * 60.0
 EVENT_RING_SIZE = 40
 SUBPROCESS_TIMEOUT_SEC = 2.0
+# Belt-and-suspenders memory cap on a 1 GB Pi: bound the journalctl read so a
+# burst inside one window can't load an unbounded stdout into RAM before
+# filtering. The ring only keeps EVENT_RING_SIZE; the per-scan window is short
+# (JOURNAL_INTERVAL_SEC), so the most-recent N entries is plenty of headroom.
+JOURNAL_SCAN_LINE_CAP = 1000
 
 JOURNAL_UNITS = (
     "jasper-control",
@@ -221,6 +226,7 @@ class CascadeTimelineSampler:
                     "-u", unit,
                     "--since", f"@{since:.3f}",
                     "--until", f"@{now:.3f}",
+                    "-n", str(JOURNAL_SCAN_LINE_CAP),
                     "--no-pager",
                     "-o", "json",
                 ],
