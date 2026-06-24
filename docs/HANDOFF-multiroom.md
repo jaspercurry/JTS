@@ -220,6 +220,25 @@ Increment 6 (per-follower calibration). What exists:
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
   anti-storm `Restart`/`StartLimit`.
+- **Reconciler `reset-failed`s before every deliberate restart
+  (config-apply ≠ crash).** `_restart_unit` runs `systemctl reset-failed
+  <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`→voice
+  / shairport / snap units), so a rapid burst of `/grouping/set` applies — e.g.
+  an active-crossover calibration/trim/delay sweep on the leader re-fanned to a
+  follower — can never spend a reboot-budget unit's `StartLimitBurst` and
+  escalate to `StartLimitAction=reboot`. Genuine crash loops still escalate (the
+  daemon's own `Restart=` path does not `reset-failed`, so only deliberate
+  reconciler restarts are exempted). Generalizes the outputd-only guard and
+  mirrors `grouping_supervisor.kick_reconciler` +
+  `shairport_supervisor.restart_shairport`. **Root incident:** 2026-06-24
+  jts.local (bonded follower) took six `/grouping/set` POSTs from the leader in
+  44 s — each restarting `jasper-outputd` — and rebooted on outputd
+  start-limit-hit. Pinned by `test_restart_unit_resets_failed_before_restart`
+  (+ fail-soft siblings) in `tests/test_multiroom_reconcile.py`. NOTE: this is
+  the reboot *floor* (no reboot); coalescing the per-apply restarts so a
+  calibration sweep doesn't briefly thrash audio is a tracked follow-up
+  (leading-edge rate-limit with a guaranteed trailing apply, sender-side
+  debounce, or live trim/delay apply without an outputd restart).
 - **`deploy/install.sh`** — `migrate_grouping` (seed/strip env) + unit
   install (not enabled) + `--dry-run` line.
 - **`jasper-doctor`** — `check_grouping` (ok off / ok on-valid / warn

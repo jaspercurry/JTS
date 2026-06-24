@@ -1560,3 +1560,62 @@ def test_main_solo_does_not_provision(tmp_path, monkeypatch):
     main(["--reason", "test"])
 
     assert "provision" not in order
+
+
+# ---------- _restart_unit: reset-failed before a deliberate restart ----------
+# Regression for the 2026-06-24 jts.local follower reboot: six /grouping/set
+# POSTs from the leader in 44 s each restarted jasper-outputd; with no
+# reset-failed the 6th tripped outputd's StartLimitBurst and systemd escalated
+# to StartLimitAction=reboot, rebooting the Pi from deliberate config churn.
+
+
+def test_restart_unit_resets_failed_before_restart(monkeypatch):
+    """A reconciler restart is a DELIBERATE config-apply: it MUST run
+    `systemctl reset-failed <unit>` FIRST so a rapid grouping-config burst
+    cannot spend the target's StartLimitBurst and escalate to a Pi reboot."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-outputd.service") is True
+    # reset-failed strictly precedes restart, both targeting the same unit.
+    assert calls[0] == ["systemctl", "reset-failed", "jasper-outputd.service"]
+    assert calls[1][:2] == ["systemctl", "restart"]
+    assert calls[1][-1] == "jasper-outputd.service"
+
+
+def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):
+    """reset-failed is best-effort: a reset-failed failure must NOT block the
+    restart it precedes — the restart is the load-bearing action."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1] == "reset-failed":
+            raise FileNotFoundError("systemctl")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-camilla.service") is True
+    assert ["systemctl", "restart", "jasper-camilla.service"] in calls
+
+
+def test_restart_unit_reports_real_restart_failure(monkeypatch):
+    """reset-failed succeeding must not mask a real restart failure — the
+    caller still sees False (and flips the reconcile exit code)."""
+    import subprocess as sp
+
+    def fake_run(argv, **kw):
+        if argv[1] == "reset-failed":
+            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+        raise sp.CalledProcessError(1, argv, stderr="Job for unit failed.")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit("jasper-outputd.service") is False
