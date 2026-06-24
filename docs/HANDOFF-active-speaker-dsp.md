@@ -319,7 +319,7 @@
 > matches the saved topology/guard evidence, the result is fail-closed rather
 > than silently restoring flat stereo. `jasper-doctor` uses the same classifier
 > and fails when a saved tweeter/protected topology is running a flat
-> full-range graph. Correction reset/start paths ask
+> full-range graph. Correction start/apply/reset paths ask
 > `jasper.correction.runtime_safety`, which delegates roleful graph policy back
 > to this runtime contract.
 > **Recovery — drift back to a passive speaker.** A saved topology can drift
@@ -980,22 +980,24 @@ source/renderers
   -> physical outputs
 ```
 
-**Implementation status (PR-3, solo speaker).** Layer C preference EQ now
-lands on the active graph for a SOLO active baseline. `/sound` preference apply
-recomposes the baseline (via
+**Implementation status (PR-3 + 2026-06-24 room-correction path, solo
+speaker).** Layer C preference EQ and Layer B room PEQs now land on the active
+graph for a SOLO active baseline. `/sound` preference apply and `/correction`
+measurement/apply/reset recompose the baseline (via
 [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py)) with
-the preference bands wired on the program channels `[0, 1]` **strictly before
-the split mixer** — upstream of every per-driver crossover, limiter, and
+room and preference filters wired on the program channels `[0, 1]` **strictly
+before the split mixer** — upstream of every per-driver crossover, limiter, and
 tweeter high-pass. Preference boosts ride at unity, matching the ordinary
-`/sound` path; only explicit `output_trim_db` (manual headroom or
-match-loudness attenuation) folds into the single
-`active_baseline_headroom` gain. The recomposed graph re-proves as
+`/sound` path; explicit `output_trim_db` and any positive room-correction boost
+fold into the single `active_baseline_headroom` gain. The recomposed graph
+re-proves as
 `GRAPH_APPROVED_ACTIVE_RUNTIME` (the protection contract is independently
 re-verified — see
-[HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)). Layer B room
-correction for active speakers is the same pre-split slot but has no measurement
-producer yet, so it rides as an empty room-PEQ set today. The active×grouping
-case (a bonded active speaker) is deferred — the graph carrier refuses it.
+[HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)). During
+measurement, `/correction/start` uses the same carrier with `room_peqs=[]` and
+preference EQ disabled, so the sweep hears the raw room through the protected
+speaker baseline. The active×grouping case (a bonded active speaker) is still
+deferred — the graph carrier refuses it.
 
 The speaker baseline is the thing that makes the box a coherent
 speaker. It should be commissioned once per hardware build and changed
@@ -1655,8 +1657,13 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-23 (active-speaker `/sound/` commissioning UX checked
-against `deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`,
+Last verified: 2026-06-24 (room-correction start/apply/reset on solo active
+baselines checked against `jasper.web.correction_setup`,
+`jasper.sound.graph_carrier`, `jasper.active_speaker.camilla_yaml`,
+`jasper.active_speaker.baseline_profile`, and
+`jasper.active_speaker.runtime_contract`; prior 2026-06-23 pass covered
+active-speaker `/sound/` commissioning UX checked against
+`deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`,
 `jasper.active_speaker.calibration_level`, and the focused `/sound/` tests for
 channel selectors, cancellable combined-test Stop, phone-mic removal from the
 core flow, one-intent save/apply, and the 10 dB audible ramp step. Prior

@@ -597,6 +597,24 @@ def _channel_select_precedes_split(mixer_names: list[str]) -> bool:
     return bool(split_idxs) and select_idx < min(split_idxs)
 
 
+def _program_domain_filter_step_names(view: GraphView) -> tuple[str, ...]:
+    """Filter names wired to the stereo program bus ``[0, 1]``.
+
+    A driver-domain follower has no program-domain Filter step at all: it mixes
+    channel_select -> split_active, then filters physical driver outputs. So a
+    Filter step on exactly channels [0, 1] is Layer B/C leaking onto the follower.
+    """
+    names: list[str] = []
+    for step in view.pipeline_steps:
+        if step.channels == frozenset({0, 1}):
+            names.extend(step.names)
+    return tuple(names)
+
+
+def _room_peq_filter_names(view: GraphView) -> tuple[str, ...]:
+    return tuple(sorted(name for name in view.filters if name.startswith("room_peq")))
+
+
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -977,6 +995,29 @@ def _active_graph_evidence(
                     (
                         "driver-domain graph carries a program-domain headroom "
                         "filter (the leader owns Layer B/C, not the follower)"
+                    ),
+                ))
+            room_peqs = _room_peq_filter_names(view)
+            if room_peqs:
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_room_peq_present",
+                    (
+                        "driver-domain graph carries room-correction PEQ filters "
+                        "(the leader owns Layer B, not the follower): "
+                        + ", ".join(room_peqs)
+                    ),
+                ))
+            program_step_names = _program_domain_filter_step_names(view)
+            if program_step_names:
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_program_filter_step_present",
+                    (
+                        "driver-domain graph wires program-domain filters on "
+                        "channels [0, 1] (the leader owns Layer B/C, not the "
+                        "follower): "
+                        + ", ".join(program_step_names)
                     ),
                 ))
         unknown_baseline_outputs = sorted(graph_indexes - known_indexes)

@@ -318,6 +318,8 @@ class MeasurementSession:
 
         self.peqs: list[PEQJSON] = []
         self.config_path: Path | None = None
+        self.pre_measurement_config_path: Path | None = None
+        self.measurement_config_path: Path | None = None
 
         # Sweep cache.
         self.sweep_meta: sweep.SweepMeta | None = None
@@ -1654,38 +1656,56 @@ class MeasurementSession:
                 PEQ(freq=p.freq_hz, q=p.q, gain=p.gain_db)
                 for p in self.peqs
             ]
-            from jasper.correction.runtime_safety import assert_flat_apply_safe
             from jasper.multiroom.member_config import member_camilla_kwargs
-            from jasper.sound.camilla_yaml import (
-                emit_sound_config,
-            )
+            from jasper.sound.camilla_yaml import emit_sound_config
             from jasper.sound.profile import build_sound_filters, load_profile
         except Exception as e:  # noqa: BLE001
             async with self._lock:
                 await self._fail(f"YAML emit failed: {e}")
             raise
 
-        def _prepare_config() -> dict[str, int]:
-            # L0 backstop: a flat 2-channel correction graph must not go live
-            # under a protected-tweeter topology (stale measurements applied
-            # after a driver was reassigned to an active role). The sweep entry
-            # gates the common path; this covers measure-then-reassign. Raised
-            # inside prepare so apply_dsp_config records a clean prepare_failed
-            # and the session fails honestly (no silent flat apply).
-            assert_flat_apply_safe()
+        async def _prepare_config() -> dict[str, Any]:
             profile = load_profile()
-            # A bonded member correcting its own seat (/correction) needs the
-            # SAME grouping transforms as /sound — inv-5 rate_adjust off + its
-            # channel-split. One policy owns the decision (member_camilla_kwargs)
-            # so this path can't drift from /sound; solo → unchanged.
-            emit_sound_config(
-                profile,
-                room_peqs=peq_objs,
-                out_path=out_path,
-                profile_id=self.session_id,
-                **member_camilla_kwargs(),
-            )
+            prior_config_path: str | None = None
+            if camilla_get_config is not None:
+                from jasper.sound.graph_carrier import carrier_for_loaded_config
+
+                prior_config_path = await camilla_get_config()
+                if not prior_config_path:
+                    raise RuntimeError(
+                        "CamillaDSP did not report a loaded config path"
+                    )
+                carrier = carrier_for_loaded_config(
+                    prior_config_path,
+                    config_dir=self.cfg.config_dir,
+                )
+                result = carrier.reemit(
+                    profile,
+                    room_peqs=peq_objs,
+                    out_path=out_path,
+                    profile_id=self.session_id,
+                )
+                from jasper.correction.runtime_safety import (
+                    assert_correction_graph_safe,
+                )
+
+                assert_correction_graph_safe(result.yaml)
+            else:
+                # Compatibility for tests and older direct callers that provide
+                # only a setter. The web surface always passes camilla_get_config
+                # and therefore uses the topology-aware carrier above.
+                from jasper.correction.runtime_safety import assert_flat_apply_safe
+
+                assert_flat_apply_safe()
+                emit_sound_config(
+                    profile,
+                    room_peqs=peq_objs,
+                    out_path=out_path,
+                    profile_id=self.session_id,
+                    **member_camilla_kwargs(),
+                )
             return {
+                "prior_config_path": prior_config_path,
                 "room_peq_count": len(peq_objs),
                 "sound_filter_count": len(build_sound_filters(profile)),
             }
@@ -1705,6 +1725,16 @@ class MeasurementSession:
             if e.state.result == "prepare_failed":
                 async with self._lock:
                     await self._fail(f"YAML emit failed: {e}")
+                from jasper.sound.graph_carrier import CarrierCannotHostEq
+                from jasper.correction.runtime_safety import (
+                    CorrectionRuntimeSafetyError,
+                )
+
+                if isinstance(
+                    e.__cause__,
+                    (CarrierCannotHostEq, CorrectionRuntimeSafetyError),
+                ):
+                    raise e.__cause__ from e
                 raise
             async with self._lock:
                 await self._fail(f"CamillaDSP reload failed: {e}")

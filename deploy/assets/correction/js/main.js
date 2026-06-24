@@ -737,6 +737,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       currentCorrectionLabel.textContent =
         'Preference EQ is active; no room correction is applied.';
       currentCorrectionResetBtn.classList.add('hidden');
+    } else if (config && config.kind === 'active_speaker') {
+      currentCorrectionBanner.className = 'flat';
+      currentCorrectionLabel.textContent =
+        'Active-speaker DSP is active; no room correction is applied.';
+      currentCorrectionResetBtn.classList.add('hidden');
+    } else if (config && config.kind === 'measurement_baseline') {
+      currentCorrectionBanner.className = 'flat';
+      currentCorrectionLabel.textContent =
+        'Measurement baseline is active; correction and preference EQ are bypassed.';
+      currentCorrectionResetBtn.classList.add('hidden');
     } else if (config && config.kind === 'unknown') {
       currentCorrectionBanner.className = 'custom';
       currentCorrectionLabel.textContent =
@@ -764,7 +774,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   async function resetFromBanner() {
     currentCorrectionResetBtn.disabled = true;
-    currentCorrectionLabel.textContent = 'Resetting to flat…';
+    currentCorrectionLabel.textContent = 'Resetting correction…';
     try {
       await postJson('reset', {});
     } catch (e) {
@@ -2121,7 +2131,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   async function resetCorrection() {
     resetBtn.disabled = true;
-    setStateBadge('analyzing', 'rolling back to flat…');
+    setStateBadge('analyzing', 'resetting correction…');
     try {
       await postJson('reset', {});
       pollState();
@@ -2134,12 +2144,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   // Always-available escape from an in-flight measurement. POSTs the same
-  // /reset that rolls CamillaDSP back to flat and forces the session to IDLE,
+  // /reset that restores the pre-measurement graph and forces the session to IDLE,
   // so a stranded awaiting_capture (or any active state) is recoverable from
   // the UI without SSH. The server-side watchdog also auto-recovers after
   // ~2 min; this is the instant manual path.
   async function cancelMeasurement() {
-    if (!(await jtsConfirm('Cancel this measurement and reset to flat?', {danger: true}))) {
+    if (!(await jtsConfirm('Cancel this measurement and restore the speaker?', {danger: true}))) {
       return;
     }
     cancelMeasureBtn.disabled = true;

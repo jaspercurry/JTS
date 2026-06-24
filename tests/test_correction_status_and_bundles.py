@@ -9,10 +9,11 @@ Two features land in this PR. Both are exercised here:
   A) `parse_current_correction` keeps the backwards-compatible
      "JTS room correction or None" behavior, while
      `describe_current_config` gives UI/doctor surfaces the fuller
-     truth about flat outputd baseline, preference, correction, or
-     custom CamillaDSP configs. /start auto-resets CamillaDSP to the
-     base config first so every measurement reflects the
-     raw room rather than the existing correction.
+     truth about flat outputd baseline, preference, correction, active
+     speaker baselines, measurement baselines, or custom CamillaDSP
+     configs. /start loads a topology-preserving measurement baseline
+     first so every measurement reflects the raw room rather than the
+     existing correction.
   B) Each MeasurementSession writes a self-contained bundle at
      /var/lib/jasper/correction/sessions/<session_id>/ containing
      info.json (session params + state), result.json (chart curves +
@@ -39,6 +40,8 @@ from jasper.correction.session import (
     describe_current_config,
     parse_current_correction,
 )
+from jasper.camilla_config_contract import PeqFilter
+from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from ._web_test_helpers import json_post_with_csrf
 from .correction_bundle_fixtures import write_golden_correction_bundle
@@ -119,6 +122,64 @@ def test_parse_current_correction_ignores_sound_config_without_room_peqs(
     yaml_path.write_text("filters:\n  sound_simple_bass:\n    type: Biquad\n")
 
     assert parse_current_correction(str(yaml_path), config_dir=cfg_dir) is None
+
+
+def test_describe_current_config_active_content_beats_sound_filename(
+    tmp_path: Path,
+):
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    yaml_path = cfg_dir / "sound_current.yml"
+    yaml_path.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+
+    descriptor = describe_current_config(str(yaml_path), config_dir=cfg_dir)
+
+    assert descriptor["kind"] == "active_speaker"
+    assert descriptor["managed"] is True
+    assert descriptor["current_correction"] is None
+    assert "Active-speaker DSP" in descriptor["message"]
+
+
+def test_parse_current_correction_detects_room_peqs_in_active_content(
+    tmp_path: Path,
+):
+    from jasper.camilla_config_contract import PeqFilter
+    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    yaml_path = cfg_dir / "correction_abc123_1700000000.yml"
+    yaml_path.write_text(
+        _active_baseline_yaml(
+            "mono",
+            2,
+            room_peqs=(PeqFilter(freq=80.0, q=4.0, gain=-3.0),),
+        ),
+        encoding="utf-8",
+    )
+
+    cc = parse_current_correction(str(yaml_path), config_dir=cfg_dir)
+
+    assert cc is not None
+    assert cc["session_id"] == "abc123"
+    assert cc["peq_count"] == 1
+
+
+def test_describe_current_config_measurement_baseline_is_managed(
+    tmp_path: Path,
+):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    measurement = cfg_dir / "correction_measurement_abc123_1700000000.yml"
+    measurement.write_text("filters:\n  flat:\n    type: Gain\n", encoding="utf-8")
+
+    descriptor = describe_current_config(str(measurement), config_dir=cfg_dir)
+
+    assert descriptor["kind"] == "measurement_baseline"
+    assert descriptor["managed"] is True
+    assert descriptor["current_correction"] is None
 
 
 def test_parse_current_correction_unknown_filename_returns_none(
@@ -282,6 +343,8 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "peqs",
         "design_report",
         "config_path",
+        "measurement_config_path",
+        "pre_measurement_config_path",
         "verify_metrics",
         "autolevel",
     }
@@ -323,6 +386,8 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "peqs",
         "design_report",
         "config_path",
+        "measurement_config_path",
+        "pre_measurement_config_path",
         "verify_metrics",
         "config",
     }
@@ -505,6 +570,85 @@ async def test_correction_apply_preserves_saved_sound_profile(
 
 
 @pytest.mark.asyncio
+async def test_correction_apply_replaces_existing_room_peqs(
+    tmp_path: Path,
+    monkeypatch,
+):
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.READY
+    from jasper.correction.session import PEQJSON
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0)]
+    current = sess.cfg.config_dir / "correction_old_1700000000.yml"
+    current.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=45.0, q=3.0, gain=-6.0)],
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    loaded = {"path": str(current)}
+
+    async def fake_set_config(path: str) -> bool:
+        loaded["path"] = path
+        return True
+
+    async def fake_get_config() -> str:
+        return loaded["path"]
+
+    await sess.apply(fake_set_config, camilla_get_config=fake_get_config)
+
+    assert sess.config_path is not None
+    yaml = sess.config_path.read_text(encoding="utf-8")
+    assert "freq: 80.0000" in yaml
+    assert "freq: 45.0000" not in yaml
+
+
+@pytest.mark.asyncio
+async def test_reset_no_room_config_preserves_preference_and_strips_room(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+
+    sess = _make_session(tmp_path)
+    current = sess.cfg.config_dir / "correction_old_1700000000.yml"
+    current.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=45.0, q=3.0, gain=-6.0)],
+        ),
+        encoding="utf-8",
+    )
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(
+        SoundProfile(curve_id="harman", simple_eq=SimpleEq(treble_db=1.5)),
+        profile_path,
+    )
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
+    safety_checks: list[str] = []
+    monkeypatch.setattr(
+        "jasper.correction.runtime_safety.assert_correction_graph_safe",
+        lambda text: safety_checks.append(text),
+    )
+    fake_cam = _FakeCamilla(current_path=str(current))
+
+    out_path = await correction_setup._write_no_room_correction_config(sess, fake_cam)
+
+    yaml = out_path.read_text(encoding="utf-8")
+    assert safety_checks == [yaml]
+    assert out_path.name == "sound_current.yml"
+    assert "room_peq_1:" not in yaml
+    assert "sound_curve_harman_bass:" in yaml
+    assert "sound_simple_treble:" in yaml
+
+
+@pytest.mark.asyncio
 async def test_design_writes_result_json(tmp_path: Path):
     """After spatial average + PEQ design, result.json captures the
     measured / target / predicted curves so a copied-off bundle is
@@ -640,8 +784,7 @@ async def test_design_writes_result_json(tmp_path: Path):
 
 
 class _FakeCamilla:
-    """Records calls to set_config_file_path so we can assert the
-    /start handler resets to base BEFORE the sweep kicks off."""
+    """Records calls to set_config_file_path so /start ordering is assertable."""
     def __init__(self, current_path: str, *, reset_ok: bool = True) -> None:
         self.current_path = current_path
         self.reset_ok = reset_ok
@@ -707,16 +850,19 @@ class _DummyJsonHandler:
         self.rfile = io.BytesIO(body)
 
 
-def test_start_handler_resets_to_base_before_sweep(
+def test_start_handler_loads_measurement_baseline_before_sweep(
     tmp_path: Path, monkeypatch,
 ):
-    """Pin the load-bearing behavior: /start calls
-    CamillaController.set_config_file_path(base_config_path) BEFORE
-    it kicks off the measurement window. Without this, a sweep run
-    on top of an existing correction would design new filters from
-    the already-corrected curve and produce compounding distortion.
+    """Pin the load-bearing behavior: /start loads a generated baseline
+    with room/preference filters stripped BEFORE it kicks off measurement.
+    Without this, a sweep run on top of an existing correction would design
+    new filters from the already-corrected curve and compound distortion.
     """
     from jasper.web import correction_setup
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
     monkeypatch.setattr(correction_setup, "_session", None)
     fake_cam = _FakeCamilla(
         current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
@@ -769,10 +915,14 @@ def test_start_handler_resets_to_base_before_sweep(
         server.server_close()
 
     sess = captured["sess"]
-    # The /start handler should have called set_config_file_path
-    # exactly once before kicking off the sweep, with the base
-    # config path.
-    assert fake_cam.set_calls == [str(sess.cfg.base_config_path)]
+    # The /start handler should have called set_config_file_path exactly once
+    # before kicking off the sweep, with the generated measurement baseline.
+    assert len(fake_cam.set_calls) == 1
+    assert Path(fake_cam.set_calls[0]).name.startswith("correction_measurement_")
+    assert Path(fake_cam.set_calls[0]).exists()
+    generated = Path(fake_cam.set_calls[0]).read_text(encoding="utf-8")
+    assert "room_peq_1" not in generated
+    assert "sound_curve_" not in generated
     # And snapshot the prior correction descriptor in the response so
     # the UI can render "was: correction_xyz" if it wants.
     prior = body["current_correction_at_start"]
@@ -781,15 +931,96 @@ def test_start_handler_resets_to_base_before_sweep(
     assert prior["current_correction"]["session_id"] == "xyz"
     assert body["strategy_choice"] == "balanced"
     assert body["correction_strategy"]["strategy_id"] == "balanced"
+    assert body["measurement_config_path"] == fake_cam.set_calls[0]
+    assert sess.pre_measurement_config_path == Path(
+        tmp_path / "configs" / "correction_xyz_1700.yml"
+    )
 
 
-def test_start_handler_aborts_if_reset_to_base_fails(
+@pytest.mark.asyncio
+async def test_measurement_baseline_snapshots_locked_prior_config(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The bundle descriptor must name the graph replaced under the DSP lock.
+
+    If another JTS writer swaps CamillaDSP after the first best-effort read but
+    before the apply transaction prepares the candidate, the measurement graph
+    is derived from the locked anchor. The saved prior descriptor should match
+    that same anchor, not the stale pre-lock path.
+    """
+    from jasper.web import correction_setup
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    monkeypatch.setattr(
+        "jasper.correction.runtime_safety.assert_correction_graph_safe",
+        lambda text: None,
+    )
+    sess = _make_session(tmp_path)
+    old_path = sess.cfg.config_dir / "correction_old_1700000000.yml"
+    old_path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=45.0, q=3.0, gain=-6.0)],
+        ),
+        encoding="utf-8",
+    )
+    new_path = sess.cfg.config_dir / "correction_new_1700000001.yml"
+    new_path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        ),
+        encoding="utf-8",
+    )
+
+    class SwappingCamilla:
+        def __init__(self) -> None:
+            self.current_path = str(old_path)
+            self.get_calls = 0
+            self.set_calls: list[str] = []
+
+        async def get_config_file_path(self, *, best_effort: bool = False):
+            self.get_calls += 1
+            if self.get_calls == 1:
+                return str(old_path)
+            if self.get_calls == 2:
+                self.current_path = str(new_path)
+                return str(new_path)
+            return self.current_path
+
+        async def set_config_file_path(
+            self, path: str, *, best_effort: bool = False,
+        ) -> bool:
+            self.set_calls.append(path)
+            self.current_path = path
+            return True
+
+    payload = await correction_setup._load_measurement_baseline(
+        sess,
+        SwappingCamilla(),
+    )
+
+    assert payload["prior_config_path"] == str(new_path)
+    assert sess.pre_measurement_config_path == new_path
+    assert payload["current_correction_at_start"]["current_correction"][
+        "session_id"
+    ] == "new"
+
+
+def test_start_handler_aborts_if_measurement_baseline_load_fails(
     tmp_path: Path, monkeypatch,
 ):
-    """If CamillaDSP cannot switch to the flat base config, /start must
-    fail before playing a sweep. Measuring through an existing
-    correction would compound filters and corrupt the result."""
+    """If CamillaDSP cannot switch to the measurement baseline, /start must
+    fail before playing a sweep."""
     from jasper.web import correction_setup
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
     monkeypatch.setattr(correction_setup, "_session", None)
 
     fake_cam = _FakeCamilla(
@@ -821,11 +1052,11 @@ def test_start_handler_aborts_if_reset_to_base_fails(
         fake_schedule,
     )
 
-    with pytest.raises(RuntimeError, match="reset speaker to flat"):
+    with pytest.raises(RuntimeError, match="CamillaDSP reload failed"):
         correction_setup._handle_start(_DummyJsonHandler())
 
-    sess = captured["sess"]
-    assert fake_cam.set_calls == [str(sess.cfg.base_config_path)]
+    assert fake_cam.set_calls
+    assert Path(fake_cam.set_calls[0]).name.startswith("correction_measurement_")
     assert scheduled["value"] is False
     assert correction_setup._start_in_progress is False
 
@@ -1208,10 +1439,9 @@ def test_render_page_includes_current_correction_banner():
     assert 'id="current-correction"' in body
     assert 'id="current-correction-label"' in body
     assert 'id="current-correction-reset"' in body
-    # The hint near the Run measurement button explains the auto-
-    # reset behavior so users aren't surprised by sweeps wiping
-    # their correction.
-    assert "Each measurement starts from flat" in body
+    # The hint near the Run measurement button explains the bypass behavior so
+    # users aren't surprised by sweeps ignoring correction/preference layers.
+    assert "Each measurement bypasses your current correction" in body
     module_js = (
         Path(__file__).resolve().parents[1]
         / "deploy" / "assets" / "correction" / "js" / "main.js"

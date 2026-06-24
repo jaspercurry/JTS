@@ -4,9 +4,9 @@
 
 """Runtime graph safety helpers for room-correction entry points.
 
-Room correction owns measurement state, not speaker-role policy. When it needs
-to reset CamillaDSP, it asks ``jasper.active_speaker.runtime_contract`` whether
-the flat baseline is legal for the saved output topology.
+Room correction owns measurement state, not speaker-role policy. Every generated
+measurement, apply, or reset graph is re-checked against the saved output
+topology before CamillaDSP is allowed to load it.
 """
 
 from __future__ import annotations
@@ -55,18 +55,12 @@ def _load_topology_for_correction() -> OutputTopology:
 
 
 def assert_flat_apply_safe(topology: OutputTopology | None = None) -> None:
-    """Refuse to apply a flat room-correction graph under a protected topology.
+    """Refuse the legacy flat apply path under a protected topology.
 
-    Room correction emits a flat 2-channel program graph (sweep PEQs over the
-    base path). The sweep ENTRY already refuses a roleful/protected topology
-    (:func:`flat_measurement_config_path`), so the common flow can't even
-    measure on an active speaker. This is the apply-time backstop for the one
-    gap that leaves open: measurements taken on a full-range topology, then
-    APPLIED after a driver was reassigned to an active tweeter role — which
-    would otherwise send full-range program to a compression driver. Fail
-    closed (the runtime contract owns the L0 judgement); the corrupt-topology
-    case blocks too, since :func:`flat_program_graph_blocked_reason` is itself
-    fail-closed.
+    The web flow now applies through the topology-aware graph carrier. This is
+    the compatibility backstop for older direct callers that still emit a flat
+    2-channel program graph. Fail closed: under a roleful/protected topology,
+    that graph could send full-range program to a compression driver.
     """
     reason = flat_program_graph_blocked_reason(topology)
     if reason is not None:
@@ -84,9 +78,9 @@ def flat_measurement_config_path(
     """Return the flat correction sweep target, or raise if it is unsafe.
 
     A flat sweep is only a measurement baseline for ordinary full-range output.
-    Saved roleful/protected topology, invalid topology, and explicit mono
-    topology that would be driven by a wider flat graph all fail before any
-    sweep playback starts.
+    The web flow now prefers a topology-preserving measurement graph; this
+    helper remains for legacy callers and tests that ask for the old flat
+    target explicitly.
     """
 
     topology = topology or _load_topology_for_correction()
@@ -140,4 +134,21 @@ def reset_config_path(
     raise CorrectionRuntimeSafetyError(
         "room-correction reset has no legal graph for the saved active-speaker "
         f"topology: {_first_issue(decision.issues)}"
+    )
+
+
+def assert_correction_graph_safe(
+    text: str,
+    *,
+    topology: OutputTopology | None = None,
+) -> None:
+    """Refuse a generated correction graph that violates the saved topology."""
+
+    topology = topology or _load_topology_for_correction()
+    graph = classify_camilla_graph(topology=topology, text=text)
+    if graph.allowed:
+        return
+    raise CorrectionRuntimeSafetyError(
+        "room-correction generated graph is unsafe for the saved output "
+        f"topology: {_first_issue(graph.issues)}"
     )
