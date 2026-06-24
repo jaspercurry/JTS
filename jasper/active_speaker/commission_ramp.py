@@ -81,7 +81,7 @@ RAMP_STATE_KIND = "jts_active_speaker_commission_ramp"
 DEFAULT_RAMP_STATE_PATH = Path("/var/lib/jasper/active_speaker_commission_ramp.json")
 RAMP_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE"
 RAMP_BACKEND = "commission_gain_ramp"
-COMMISSION_RAMP_MAX_LEVEL_DBFS = -12.0
+COMMISSION_RAMP_MAX_LEVEL_DBFS = 0.0
 
 # Low-frequency first: a driver is ramped audible only after its lower siblings
 # are floor-confirmed. The protective tweeter high-pass is re-asserted live
@@ -717,6 +717,7 @@ async def ramp_audible_step(
         config_path=config_path,
         statefile_path=statefile_path,
         state_path=commission_load_state_path,
+        reconcile_output_hardware=False,
         **load_kwargs,
     )
     if (load_payload.get("load") or {}).get("status") != "loaded":

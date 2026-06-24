@@ -82,7 +82,7 @@ def test_commissioning_view_records_result_after_audible_combined_test():
             "test_signal": {
                 "requested_level_dbfs": -68.0,
                 "min_level_dbfs": -80.0,
-                "max_level_dbfs": -30.0,
+                "max_level_dbfs": 0.0,
                 "step_db": 1.0,
             },
             "software_gain_guard": {

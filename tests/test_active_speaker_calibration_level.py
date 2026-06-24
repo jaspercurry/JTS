@@ -35,7 +35,8 @@ def test_calibration_level_defaults_to_floor() -> None:
 def test_clamp_test_level_dbfs_enforces_commissioning_bounds() -> None:
     assert clamp_test_level_dbfs(-100) == MIN_TEST_LEVEL_DBFS
     assert clamp_test_level_dbfs(-55) == -55
-    assert clamp_test_level_dbfs(-10) == MAX_TEST_LEVEL_DBFS
+    assert clamp_test_level_dbfs(-10) == -10
+    assert clamp_test_level_dbfs(6) == MAX_TEST_LEVEL_DBFS
     assert clamp_test_level_dbfs("not-a-number") == DEFAULT_TEST_LEVEL_DBFS
 
 

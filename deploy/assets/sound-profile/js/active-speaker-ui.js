@@ -281,6 +281,7 @@ function commissionIssueCodes(payload) {
   [
     payload && payload.issues,
     payload && payload.load && payload.load.issues,
+    payload && payload.load && payload.load.load && payload.load.load.issues,
     payload && payload.startup_setup && payload.startup_setup.issues,
     payload && payload.startup_setup && payload.startup_setup.load &&
       payload.startup_setup.load.issues,
@@ -315,6 +316,9 @@ function commissionIssueReason(codes) {
   }
   if (codes.indexOf('commission_output_hardware_reconcile_failed') >= 0) {
     return 'JTS could not switch the speaker output path into active-driver mode, so it did not start the tone.';
+  }
+  if (codes.indexOf('stage5_ramp_load_failed') >= 0) {
+    return 'JTS could not keep the driver test path loaded while raising the tone, so it re-muted the driver. Start the tone again.';
   }
   if (
     codes.indexOf('commission_tone_playback_failed') >= 0 ||

@@ -108,6 +108,23 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(!/no longer open|expired/i.test(roleOrder));
 }
 
+// Ramp-step load failures wrap the actual backend load payload one level deeper
+// than arm failures. The UI must still surface the specific output-path reason.
+{
+  const reconcileFailure = commissionPayloadFailure({
+    status: "load_failed",
+    issues: [{ code: "stage5_ramp_load_failed" }],
+    load: {
+      load: {
+        status: "failed",
+        issues: [{ code: "commission_output_hardware_reconcile_failed" }],
+      },
+    },
+  });
+  assert.ok(/speaker output path/i.test(reconcileFailure));
+  assert.ok(!/earlier setup/i.test(reconcileFailure));
+}
+
 // Near-field copy — the level match is OPTIONAL and the copy must say so.
 assert.ok(nearfieldCaptureHint("Tweeter").includes("Tweeter"));
 assert.ok(nearfieldCaptureHint("Tweeter").includes("2–5 cm"));
