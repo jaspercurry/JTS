@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 from jasper.audio_hardware import dac
@@ -22,6 +23,42 @@ def _non_comment(text: str) -> str:
         line for line in text.splitlines()
         if not line.lstrip().startswith("#")
     )
+
+
+def _env_file_text_to_map(text: str) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key.strip()] = value.strip().strip('"').strip("'")
+    return env
+
+
+def _resolve_systemd_unit_env(
+    unit_text: str,
+    env_files: dict[str, str],
+) -> dict[str, str]:
+    """Resolve the unit's Environment* directives in declaration order."""
+    env: dict[str, str] = {}
+    for raw in unit_text.splitlines():
+        line = raw.strip()
+        if line.startswith("EnvironmentFile="):
+            path = line.partition("=")[2].strip().strip('"').strip("'")
+            if path.startswith("-"):
+                path = path[1:]
+            if path in env_files:
+                env.update(_env_file_text_to_map(env_files[path]))
+            continue
+        if line.startswith("Environment="):
+            payload = line.partition("=")[2].strip()
+            for assignment in shlex.split(payload):
+                if "=" not in assignment:
+                    continue
+                key, _, value = assignment.partition("=")
+                env[key] = value
+    return env
 
 
 def _pcm_block(text: str, name: str) -> str:
@@ -272,15 +309,35 @@ def test_install_alsa_refreshes_asound_renderer_before_rendering():
     assert render_lib_install < render_call
 
 
-def test_voice_tts_socket_is_canonical_fanin_path():
-    """SOLO contract: voice's TTS rides fanin. The bonded override is a
-    reconciler-owned env file layered AFTER the default (Increment 5
-    PR-2) — EnvironmentFile= beats Environment=, later files win."""
+def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded():
+    """systemd resolves env directives in order; the bonded override must win."""
     unit = (REPO / "deploy" / "systemd" / "jasper-voice.service").read_text()
     assert 'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"' in unit
     assert 'Environment="JASPER_DUCK_TRANSPORT=fanin"' in unit
     assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
     assert "EnvironmentFile=-/var/lib/jasper/grouping-voice.env" in unit
+    env_directives = [
+        line.strip() for line in unit.splitlines()
+        if line.strip().startswith(("Environment=", "EnvironmentFile="))
+    ]
+    assert env_directives[-1] == "EnvironmentFile=-/var/lib/jasper/grouping-voice.env"
+
+    solo = _resolve_systemd_unit_env(unit, {})
+    assert solo["JASPER_TTS_TRANSPORT"] == "outputd"
+    assert solo["JASPER_TTS_OUTPUTD_SOCKET"] == "/run/jasper-fanin/tts.sock"
+    assert solo["JASPER_DUCK_TRANSPORT"] == "fanin"
+
+    bonded = _resolve_systemd_unit_env(
+        unit,
+        {
+            "/var/lib/jasper/grouping-voice.env": (
+                "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+                "JASPER_GROUPING_VOICE_PARK=1\n"
+            ),
+        },
+    )
+    assert bonded["JASPER_TTS_OUTPUTD_SOCKET"] == "/run/jasper-outputd/tts.sock"
+    assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
 
 
 def test_fanin_exposes_outputd_compatible_tts_socket():
