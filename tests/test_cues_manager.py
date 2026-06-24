@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import wave
 
@@ -25,8 +26,8 @@ from jasper.cues.registry import find
 
 
 class _FakeBackend:
-    def __init__(self, samples_24k: int = 240) -> None:
-        self._pcm = b"\x00\x00" * samples_24k
+    def __init__(self, samples_24k: int = 240, pcm: bytes | None = None) -> None:
+        self._pcm = pcm if pcm is not None else b"\x00\x00" * samples_24k
         self.calls: list[str] = []
 
     def synthesise(self, text: str) -> TTSResult:
@@ -35,12 +36,11 @@ class _FakeBackend:
 
 
 class _FakeTtsPlayout:
-    """Captures bytes that would be played back. Mirrors TtsPlayout's
-    `async def write(pcm: bytes)` shape — that's the only method
-    AudioCueManager touches."""
+    """Captures bytes/segment metadata that would be played back."""
 
     def __init__(self) -> None:
         self.writes: list[bytes] = []
+        self.segments: list[dict] = []
         self.waits = 0
         self.fail_with: Exception | None = None
 
@@ -49,8 +49,28 @@ class _FakeTtsPlayout:
             raise self.fail_with
         self.writes.append(pcm)
 
+    async def write_segment(self, pcm: bytes, **kwargs) -> None:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.segments.append({"pcm": pcm, **kwargs})
+        self.writes.append(pcm)
+
     async def wait_drained(self) -> None:
         self.waits += 1
+
+
+def _tone_pcm(
+    *,
+    samples: int = WAV_RATE,
+    freq_hz: float = 440.0,
+    amplitude: float = 0.25,
+) -> bytes:
+    out = bytearray(samples * 2)
+    for i in range(samples):
+        value = int(math.sin(2.0 * math.pi * freq_hz * i / WAV_RATE) * amplitude * 32767)
+        out[2 * i] = value & 0xFF
+        out[2 * i + 1] = (value >> 8) & 0xFF
+    return bytes(out)
 
 
 def _hand_write_wav(path: str, pcm_24k: bytes) -> None:
@@ -195,6 +215,56 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     # WAVs are at Gemini's native 24kHz mono — 240 samples = 480 bytes.
     # TtsPlayout upsamples to 48k internally; the manager doesn't.
     assert len(tts.writes[0]) == 480
+
+
+def test_play_passes_measured_cue_source_profile(tmp_path):
+    cue = find("spend_cap_reached")
+    pcm = _tone_pcm()
+    tts = _FakeTtsPlayout()
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=tts,
+    )
+    _hand_write_wav(mgr.expected_path(cue), pcm)
+
+    ok = asyncio.run(mgr.play("spend_cap_reached"))
+
+    assert ok is True
+    assert len(tts.segments) == 1
+    segment = tts.segments[0]
+    assert segment["segment_kind"] == "cue"
+    assert segment["pcm"] == pcm
+    profile = segment["source_profile"]
+    assert profile.provider == "jts"
+    assert profile.model == "cue-spend_cap_reached"
+    assert profile.voice == "Aoede"
+    assert profile.source_lufs < 0.0
+    assert profile.source_peak_dbfs < 0.0
+    assert profile.confidence == 1.0
+
+
+def test_speak_text_passes_measured_dynamic_source_profile(tmp_path):
+    pcm = _tone_pcm(freq_hz=660.0)
+    backend = _FakeBackend(pcm=pcm)
+    tts = _FakeTtsPlayout()
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=backend, tts_playout=tts,
+    )
+
+    assert asyncio.run(mgr.speak_text("Your timer is up.")) is True
+
+    assert len(tts.segments) == 1
+    segment = tts.segments[0]
+    assert segment["segment_kind"] == "cue"
+    assert segment["pcm"] == pcm
+    profile = segment["source_profile"]
+    assert profile.provider == "jts"
+    assert profile.model == "dynamic-text"
+    assert profile.voice == "Aoede"
+    assert profile.source_lufs < 0.0
+    assert profile.source_peak_dbfs < 0.0
+    assert profile.confidence == 1.0
 
 
 def test_play_returns_false_with_no_tts_playout(tmp_path):

@@ -48,6 +48,15 @@ they are sub-100 ms sine blips, not phrases worth caching through
   `chirp` segment kind is semantic now — it keeps lifecycle-specific
   ledger/log visibility without bypassing loudness matching.
 
+Spoken cue WAVs and dynamic cue text follow the same contract. The cue
+manager reads the 24 kHz mono WAV, measures that exact PCM with
+`measure_pcm_24k_mono`, and passes a `source_profile` with
+`segment_kind="cue"` so fan-in/outputd do not have to borrow the active
+live-assistant profile. WakeLoop also prepares feedback loudness context
+before standalone cue/click playback; that lets the mix owner snapshot
+pre-duck content loudness when music is playing, or use the current
+listening-level-derived silence target when the room is quiet.
+
 ---
 
 ## Architecture at a glance
@@ -303,4 +312,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-06-20
+Last verified: 2026-06-24

@@ -309,6 +309,14 @@ Python owns only provider source profiles:
   (idempotently) by turn teardown, so providers whose iterator only
   closes on release (Gemini) still train the profile. Cues and
   chirps never train the profile.
+- Cached cue WAVs and dynamic cue text do not train persisted
+  provider profiles. `AudioCueManager` measures the exact 24 kHz mono
+  cue PCM at playback and sends a one-shot `source_profile`
+  (`provider=jts`, `model=cue-...` / `dynamic-text`) with
+  `segment_kind="cue"`. Standalone feedback paths prepare assistant
+  loudness context before ducking, so fan-in uses the current content
+  baseline or listening-level-derived silence target instead of falling
+  back to its built-in quiet-room target.
 - Profiles are advisory. If a profile is missing or malformed, the mix owner
   uses conservative built-in fallback source loudness/peak values and
   still clamps the final gain.
@@ -565,10 +573,12 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
+<<<<<<< Updated upstream
 Last verified: 2026-06-24 (active-endpoint TTS fan-in path rechecked against
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and
-`jasper.cli.doctor.grouping`; active-speaker direct-DAC diagnostic route removed,
+`jasper.cli.doctor.grouping`; feedback-cue source profiles and standalone
+loudness context rechecked; active-speaker direct-DAC diagnostic route removed,
 dynamic route width, summed-test transient active graph, and outputd-only
 durable apply boundary rechecked against `playback_route.py`,
 `output_topology.py`, `sound_setup.py`, `playback.py`, `staging.py`,

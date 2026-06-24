@@ -1796,6 +1796,7 @@ class WakeLoop:
         if self._cues is None:
             logger.warning("dynamic text play skipped: cues unavailable")
             return False
+        await self._prepare_feedback_loudness_context(kind="dynamic_text")
         if isinstance(self._ducker, FanInDucker):
             played = False
             try:
@@ -1869,6 +1870,7 @@ class WakeLoop:
             return False
         played = False
         try:
+            await self._prepare_feedback_loudness_context(kind="cue", slug=slug)
             try:
                 await self._ducker.duck()
             except Exception as e:  # noqa: BLE001
@@ -2084,6 +2086,7 @@ class WakeLoop:
         """Best-effort. If the TTS stream isn't open or write fails,
         the visual feedback on the web UI is enough — never raise."""
         try:
+            await self._prepare_feedback_loudness_context(kind="mute_click")
             pcm = (
                 self._mute_click_on_pcm
                 if going_on else self._mute_click_off_pcm
@@ -2099,6 +2102,35 @@ class WakeLoop:
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("mic mute click failed: %s", e)
+
+
+    async def _prepare_feedback_loudness_context(
+        self,
+        *,
+        kind: str,
+        slug: str | None = None,
+    ) -> None:
+        """Prime fan-in/outputd loudness context for standalone feedback.
+
+        Ordinary voice turns prepare this context before wake chirps and
+        assistant speech. Reactive/proactive cues and mute clicks can play
+        outside that turn flow, so they need the same context here: current
+        content loudness before ducking, or the current listening-level-derived
+        silence target when the room is quiet. Failure is intentionally
+        non-fatal; a quiet cue is still better than a silent failure path.
+        """
+        try:
+            await self._prepare_assistant_loudness_context()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+            fields: dict[str, object] = {
+                "kind": kind,
+                "exc_type": type(e).__name__,
+                "err": str(e),
+                "level": logging.WARNING,
+            }
+            if slug:
+                fields["slug"] = slug
+            log_event(logger, "feedback_loudness.prepare_failed", **fields)
 
 
     async def _play_listening_chirp(self, *, going_on: bool) -> None:

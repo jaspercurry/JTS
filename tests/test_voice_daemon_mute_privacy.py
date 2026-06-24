@@ -20,6 +20,8 @@ import types
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
+
 
 # Stub heavyweight/host-specific deps only when genuinely absent —
 # a fake httpx shadowing a real install breaks jasper.tools imports.
@@ -122,3 +124,141 @@ async def test_public_play_cue_reports_playback_failure() -> None:
     wl._cues = _FakeCues()
 
     assert await wl.play_cue("cant_connect") == "play_failed"
+
+
+async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None:
+    from jasper.assistant_loudness import silence_target_lufs_for_level
+    from jasper.voice_daemon import WakeLoop
+
+    events: list[tuple[str, object]] = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            events.append(("prepare", kwargs))
+
+    class _Ducker:
+        async def duck(self) -> None:
+            events.append(("duck", None))
+
+        async def restore(self) -> None:
+            events.append(("restore", None))
+
+    class _Cues:
+        async def play(self, slug: str) -> bool:
+            events.append(("play", slug))
+            return True
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 92
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.voice_provider = "grok"
+    wl._cfg.grok_model = "grok-voice-think-fast-1.0"
+    wl._cfg.grok_voice = "eve"
+    wl._tts = _Tts()
+    wl._ducker = _Ducker()
+    wl._cues = _Cues()
+    wl._volume_coordinator = _Volume()
+
+    assert await wl._play_cue("spend_cap_reached") is True
+
+    assert [name for name, _ in events] == ["prepare", "duck", "play", "restore"]
+    prepare = events[0][1]
+    assert prepare["provider"] == "grok"
+    assert prepare["model"] == "grok-voice-think-fast-1.0"
+    assert prepare["voice"] == "eve"
+    assert prepare["silence_target_lufs"] == pytest.approx(
+        silence_target_lufs_for_level(92)
+    )
+
+
+async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() -> None:
+    from jasper.assistant_loudness import silence_target_lufs_for_level
+    from jasper.voice_daemon import FanInDucker, WakeLoop
+
+    events: list[tuple[str, object]] = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            events.append(("prepare", kwargs))
+
+    class _Ducker(FanInDucker):
+        def __init__(self) -> None:
+            self._ducked = False
+
+        async def duck(self) -> None:
+            events.append(("duck", None))
+            self._ducked = True
+
+        async def restore(self) -> None:
+            events.append(("restore", None))
+            self._ducked = False
+
+    class _Cues:
+        async def speak_text(self, text: str) -> bool:
+            events.append(("speak", text))
+            return True
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 64
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.voice_provider = "gemini"
+    wl._cfg.gemini_model = "gemini-3.1-flash-live-preview"
+    wl._cfg.gemini_voice = "Aoede"
+    wl._tts = _Tts()
+    wl._ducker = _Ducker()
+    wl._cues = _Cues()
+    wl._volume_coordinator = _Volume()
+
+    assert await wl._play_dynamic_text("Your timer is up.") is True
+
+    assert [name for name, _ in events] == ["prepare", "duck", "speak", "restore"]
+    prepare = events[0][1]
+    assert prepare["provider"] == "gemini"
+    assert prepare["model"] == "gemini-3.1-flash-live-preview"
+    assert prepare["voice"] == "Aoede"
+    assert prepare["silence_target_lufs"] == pytest.approx(
+        silence_target_lufs_for_level(64)
+    )
+
+
+async def test_mute_click_prepares_loudness_context_before_write() -> None:
+    from jasper.assistant_loudness import silence_target_lufs_for_level
+    from jasper.voice_daemon import WakeLoop
+
+    events: list[tuple[str, object]] = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            events.append(("prepare", kwargs))
+
+        async def write_segment(self, pcm: bytes, **kwargs) -> None:
+            events.append(("write_segment", {"pcm": pcm, **kwargs}))
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 77
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.voice_provider = "openai"
+    wl._cfg.openai_model = "gpt-realtime-2"
+    wl._cfg.openai_voice = "marin"
+    wl._tts = _Tts()
+    wl._volume_coordinator = _Volume()
+
+    await wl._play_mute_click(going_on=False)
+
+    assert [name for name, _ in events] == ["prepare", "write_segment"]
+    prepare = events[0][1]
+    assert prepare["provider"] == "openai"
+    assert prepare["model"] == "gpt-realtime-2"
+    assert prepare["voice"] == "marin"
+    assert prepare["silence_target_lufs"] == pytest.approx(
+        silence_target_lufs_for_level(77)
+    )
+    segment = events[1][1]
+    assert segment["segment_kind"] == "cue"
+    assert segment["source_profile"].provider == "jts"
