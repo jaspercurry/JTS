@@ -180,6 +180,14 @@ def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
         return None
 
 
+def _multiroom_cascade_snapshot() -> dict[str, Any] | None:
+    try:
+        return cascade_timeline.snapshot()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        logger.debug("multiroom cascade timeline snapshot failed", exc_info=True)
+        return None
+
+
 def _same_config_path(left: Any, right: Any) -> bool:
     if not left or not right:
         return False
@@ -867,7 +875,7 @@ async def _get_state(
             # grouping_supervisor.* journal lines, scanned into a tiny ring so
             # /state can answer "what kicked what recently?" without a raw log
             # bundle.
-            "multiroom_cascade": cascade_timeline.snapshot(),
+            "multiroom_cascade": _multiroom_cascade_snapshot(),
             # Effective mDNS identity (jasper-identity-reconcile, boot
             # + 5-min timer). status=collision means Avahi renamed us —
             # another device owns our hostname; the management

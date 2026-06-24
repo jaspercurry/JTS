@@ -155,8 +155,11 @@ is a bounded in-memory event ring sourced from persistent journald:
 `grouping_supervisor.*` lines are classified into recent
 restart-cascade events so an operator can reconstruct "what restarted
 what, when" from `/state` without first digging through the journal. It
-is production truth, not a log bundle: small deque, fixed shape, fail-soft
-to an empty/disabled snapshot. Note: the `/system/` dashboard does **not**
+is production truth, not a log bundle: small deque, fixed shape, a bounded
+startup lookback (15 minutes) into persistent journald, journal
+`occurred_at` timestamps preserved separately from sampler `observed_at`,
+and fail-soft to an empty/disabled/null snapshot. Note: the `/system/`
+dashboard does **not**
 render a resilience card today (the docs correctly never claim it does) —
 adding one is a natural extension of the debug card below.
 

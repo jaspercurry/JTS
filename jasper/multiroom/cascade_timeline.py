@@ -12,6 +12,7 @@ no raw journal retention, no unbounded history.
 """
 from __future__ import annotations
 
+import json
 import logging
 import shlex
 import subprocess
@@ -24,6 +25,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 JOURNAL_INTERVAL_SEC = 15.0
+JOURNAL_LOOKBACK_SEC = 15 * 60.0
 EVENT_RING_SIZE = 40
 SUBPROCESS_TIMEOUT_SEC = 2.0
 
@@ -107,7 +109,7 @@ def _event_detail(event: str, fields: dict[str, str]) -> str:
 
 
 def classify_journal_line(
-    unit: str, line: str, *, observed_at: float,
+    unit: str, line: str, *, observed_at: float, occurred_at: float | None = None,
 ) -> dict[str, Any] | None:
     """Classify one journal line into the cascade ring shape. PURE."""
     parsed = _parse_logfmt_event(line)
@@ -117,6 +119,7 @@ def classify_journal_line(
     if not event.startswith(EVENT_PREFIXES):
         return None
     return {
+        "occurred_at": occurred_at if occurred_at is not None else observed_at,
         "observed_at": observed_at,
         "unit": unit,
         "event": event,
@@ -126,7 +129,8 @@ def classify_journal_line(
     }
 
 
-JournalReader = Callable[[str, float, float], list[str]]
+JournalRecord = tuple[float, str]
+JournalReader = Callable[[str, float, float], list[JournalRecord]]
 
 
 class CascadeTimelineSampler:
@@ -136,15 +140,18 @@ class CascadeTimelineSampler:
         self,
         *,
         journal_interval_sec: float = JOURNAL_INTERVAL_SEC,
+        journal_lookback_sec: float = JOURNAL_LOOKBACK_SEC,
         ring_size: int = EVENT_RING_SIZE,
         journal_reader: JournalReader | None = None,
         time_func: Callable[[], float] = time.time,
     ) -> None:
         self._journal_interval = journal_interval_sec
+        self._journal_lookback = max(0.0, journal_lookback_sec)
         self._time = time_func
         self._journal_reader = journal_reader or self._read_journal_lines
         now = self._time()
-        self._journal_since = {unit: now for unit in JOURNAL_UNITS}
+        start = max(0.0, now - self._journal_lookback)
+        self._journal_since = {unit: start for unit in JOURNAL_UNITS}
         self._last_scan_at: float | None = None
         self._lock = threading.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=ring_size)
@@ -168,6 +175,7 @@ class CascadeTimelineSampler:
             return {
                 "enabled": True,
                 "journal_interval_sec": self._journal_interval,
+                "journal_lookback_sec": self._journal_lookback,
                 "last_scan_at": self._last_scan_at,
                 "events": [dict(event) for event in self._events],
             }
@@ -187,12 +195,16 @@ class CascadeTimelineSampler:
         for unit in JOURNAL_UNITS:
             since = self._journal_since.get(unit, now)
             try:
-                lines = self._journal_reader(unit, since, now)
+                records = self._journal_reader(unit, since, now)
             except (OSError, RuntimeError, subprocess.SubprocessError, TypeError, ValueError):
                 logger.debug("cascade journal scan failed for %s", unit, exc_info=True)
-                lines = []
-            for line in lines:
-                event = classify_journal_line(unit, line, observed_at=now)
+                records = []
+            for occurred_at, line in records:
+                event = classify_journal_line(
+                    unit, line,
+                    observed_at=now,
+                    occurred_at=occurred_at,
+                )
                 if event is not None:
                     with self._lock:
                         self._events.append(event)
@@ -201,7 +213,7 @@ class CascadeTimelineSampler:
             self._last_scan_at = now
 
     @staticmethod
-    def _read_journal_lines(unit: str, since: float, now: float) -> list[str]:
+    def _read_journal_lines(unit: str, since: float, now: float) -> list[JournalRecord]:
         try:
             proc = subprocess.run(
                 [
@@ -210,7 +222,7 @@ class CascadeTimelineSampler:
                     "--since", f"@{since:.3f}",
                     "--until", f"@{now:.3f}",
                     "--no-pager",
-                    "-o", "cat",
+                    "-o", "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -221,7 +233,32 @@ class CascadeTimelineSampler:
             return []
         if proc.returncode not in (0, 1):
             return []
-        return proc.stdout.splitlines()
+        records: list[JournalRecord] = []
+        for raw in proc.stdout.splitlines():
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            message = payload.get("MESSAGE")
+            if not isinstance(message, str) or not message:
+                continue
+            occurred_at = _journal_realtime_seconds(
+                payload.get("__REALTIME_TIMESTAMP"), now,
+            )
+            records.append((occurred_at, message))
+        return records
+
+
+def _journal_realtime_seconds(value: Any, fallback: float) -> float:
+    try:
+        micros = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if micros <= 0:
+        return fallback
+    return micros / 1_000_000.0
 
 
 _sampler: CascadeTimelineSampler | None = None

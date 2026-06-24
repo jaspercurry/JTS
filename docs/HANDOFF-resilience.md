@@ -156,7 +156,10 @@ bounded after-the-fact ring sourced from the existing persistent journal
 `event=multiroom.reconcile.*`, `event=restart_broker.*`, and
 `event=grouping_supervisor.*` lines. It is deliberately small, fail-soft,
 and fixed-shape: enough to reconstruct "what kicked what recently" without
-turning `/state` into a raw log bundle.
+turning `/state` into a raw log bundle. On sampler startup it scans a bounded
+15-minute journal lookback, then advances per-unit cursors; each event carries
+the journal occurrence time (`occurred_at`) and the sampler time
+(`observed_at`) separately.
 
 ### 3. Wire third-party daemons into the ladder — protocol-level supervisor
 
