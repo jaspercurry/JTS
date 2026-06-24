@@ -11,7 +11,7 @@ State shape (read by jasper.source_state.usbsink_playing, the
       "playing": bool,         RMS-based, hysteresis-debounced
       "preempted": bool,       mux has silenced us
       "host_connected": bool,  /proc/asound/UAC2Gadget present
-      "rms_dbfs": float,       last observed (-inf when silent)
+      "rms_dbfs": float|null,  last finite observation; null before one exists
       "updated_at": str        ISO 8601 UTC
     }
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -69,6 +70,11 @@ DEFAULT_HOST_CARD_PATH = "/proc/asound/UAC2Gadget"
 # but we also write at this cadence so the `updated_at` field has a
 # steady cadence — useful for staleness detection in jasper-doctor.
 TICK_SEC = 1.0
+
+
+def _json_rms_dbfs(raw: float) -> float | None:
+    """Return a standards-compliant JSON value for an internal RMS reading."""
+    return float(raw) if math.isfinite(raw) else None
 
 
 @dataclass
@@ -201,7 +207,7 @@ class StatePublisher:
             "playing": self._debounce.published_playing,
             "preempted": self._bridge.is_preempted,
             "host_connected": host_connected,
-            "rms_dbfs": self._bridge.last_rms_dbfs,
+            "rms_dbfs": _json_rms_dbfs(self._bridge.last_rms_dbfs),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         # State-change log surfaces preempted / host_connected edges
@@ -232,7 +238,12 @@ class StatePublisher:
         """Write tempfile + os.replace. Same pattern as
         jasper.mic_mute_persistence — partial JSON on crash is
         impossible."""
-        data = json.dumps(payload, indent=None, separators=(",", ":"))
+        data = json.dumps(
+            payload,
+            indent=None,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
         # Tempfile in the same directory so os.replace is fs-atomic.
         fd, tmp_path = tempfile.mkstemp(
             prefix=".state.", suffix=".json.tmp",

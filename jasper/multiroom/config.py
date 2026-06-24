@@ -729,9 +729,9 @@ def is_active_leader(cfg: GroupingConfig) -> bool:
 def follower_leader_addr(cfg: GroupingConfig) -> str | None:
     """The leader's handle when ``cfg`` is an ACTIVE bonded FOLLOWER, else
     None. The one predicate behind every pair-forward gate (jasper-control's
-    /volume* proxy, the voice tools' loopback reuse of it) — composed from
-    :func:`is_active_member` so bond-validity semantics can grow in one
-    place. PURE."""
+    /volume*, /transport/*, and /source/select proxy paths, plus the voice
+    tools' loopback reuse of it) — composed from :func:`is_active_member` so
+    bond-validity semantics can grow in one place. PURE."""
     if is_active_member(cfg) and cfg.role == "follower" and cfg.leader_addr:
         return cfg.leader_addr
     return None

@@ -8,6 +8,7 @@ Type=simple
 # JTS is a headless speaker. Its single default BlueZ agent advertises
 # NoInputNoOutput so pairing is no-code "Just Works"; PIN/passkey/numeric
 # comparison flows are rejected as unsupported.
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-agent
 TimeoutStopSec=10s
 Restart=always

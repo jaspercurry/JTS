@@ -23,6 +23,7 @@ ConditionPathExists=/sys/kernel/config
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 # modprobe libcomposite drags in u_audio + configfs deps. Failing
 # modprobe means the kernel is missing CONFIG_USB_GADGET / CONFIG_USB_
 # CONFIGFS — surface that as a unit failure rather than letting the

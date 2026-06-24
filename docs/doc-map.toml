@@ -544,6 +544,7 @@ code = [
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
   "deploy/systemd/jasper-usbsink*.service",
+  "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
   "docs/HANDOFF-usbsink.md",
@@ -555,7 +556,7 @@ requires_docs_when = [
   "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
 ]
 verification = [
-  "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py",
+  "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py",
 ]
 
 [[subsystem]]
@@ -714,6 +715,13 @@ code = [
   "deploy/systemd/jasper-snapserver.service",
   "deploy/systemd/jasper-snapclient.service",
   "deploy/systemd/jasper-grouping-reconcile.service",
+  "deploy/systemd/shairport-sync.service",
+  "deploy/systemd/nqptp.service",
+  "deploy/systemd/librespot.service",
+  "deploy/systemd/bt-agent.service",
+  "deploy/systemd/bluealsa*.service.d/**",
+  "deploy/systemd/jasper-usbsink*.service",
+  "deploy/systemd/jasper-mux.service",
   "scripts/multiroom-spike.sh",
   "scripts/multiroom-spike-measure.py",
 ]
@@ -730,7 +738,7 @@ requires_docs_when = [
   "The shared mDNS browse (jasper/mdns.py), the Avahi *.service renderer (jasper/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
 ]
 verification = [
-  "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py tests/test_mdns.py tests/test_avahi_service.py tests/test_identity.py tests/test_speaker_name.py tests/test_web_rooms_setup.py",
+  "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_mdns.py tests/test_avahi_service.py tests/test_identity.py tests/test_speaker_name.py tests/test_web_rooms_setup.py",
 ]
 
 [[subsystem]]
