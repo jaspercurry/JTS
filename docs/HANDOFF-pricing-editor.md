@@ -177,8 +177,9 @@ can flag it. We do **not** invent a rate.
 
 [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) `run()`:
 `pricing = pricing_for_model(_active_model(cfg), overrides=load_pricing_overrides())`.
-Log the resolved label (incl. `unpriced:`/custom). `ConnectionUptimeMeter`
-wiring is unchanged (keys off `pricing.flat_per_hour_usd > 0`).
+Log the resolved label (incl. `unpriced:`/custom). `BillableActivityMeter`
+wiring keys off `pricing.flat_per_hour_usd > 0`; for Grok it records
+active realtime turn intervals, not idle WebSocket uptime.
 
 ### Tests (`tests/test_usage.py`)
 - bundled JSON parses; every entry has valid buckets; `as_of` present.
@@ -343,7 +344,11 @@ per-provider price integrations.
 - **Minor, settle during build:** `/pricing` save with an all-default form
   → **delete** `pricing.json` (lean) vs write `{}`.
 
-Last verified: 2026-06-13 (all three phases implemented and merged —
+Last verified: 2026-06-24 (Grok `flat_per_hour_usd` wiring rechecked
+against xAI Voice pricing/dashboard behavior: `BillableActivityMeter`
+records active realtime turn intervals, not idle WebSocket uptime, and
+legacy uptime rows are tagged out of spend queries. Prior verification
+retained: all three phases implemented and merged —
 model-ID-keyed pricing in `jasper/usage.py` + dated
 `jasper/data/model_pricing.json`, the `/voice` per-model editor, and the
 chatbot research-prompt/import. Doc reflects shipped code, not a plan.

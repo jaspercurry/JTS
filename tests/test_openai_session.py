@@ -2454,39 +2454,42 @@ async def test_committed_stops_send_audio():
 
 
 # ---------------------------------------------------------------------------
-# Connection-uptime meter hooks (time-billed providers, e.g. Grok)
+# Billable realtime-activity meter hooks (time-billed providers, e.g. Grok)
 # ---------------------------------------------------------------------------
-async def test_uptime_meter_hooks_fire_on_open_and_teardown():
-    """The connection must call the wired uptime meter on a successful
-    open and on teardown — the bridge that makes time-billed (Grok) cost
-    non-zero. Regression guard: if these hooks are dropped, Grok cost
-    silently reverts to $0 while every other test still passes. Grok
-    inherits this connection wholesale, so the base class covers it."""
+async def test_activity_meter_hooks_fire_on_turn_acquire_and_release():
+    """The connection must meter active turns, not idle socket time.
+
+    Regression guard: if these hooks move back to WebSocket open/teardown,
+    Grok spend runs ahead of xAI's dashboard and can false-trip the cap.
+    Grok inherits this connection wholesale, so the base class covers it.
+    """
     conn, _factory = _make_conn()
     events: list[str] = []
 
     class _StubMeter:
-        def mark_connected(self) -> None:
-            events.append("connected")
+        def mark_started(self) -> None:
+            events.append("started")
 
-        def mark_disconnected(self) -> None:
-            events.append("disconnected")
+        def mark_ended(self) -> None:
+            events.append("ended")
 
-    conn.set_uptime_meter(_StubMeter())
+    conn.set_billable_activity_meter(_StubMeter())
     registry = ToolRegistry()
     await conn.start(registry, "")
-    # _open_session is awaited inside start(), so the open is recorded
-    # deterministically by the time start() returns.
-    assert events == ["connected"]
+    assert events == []
+    turn = await conn.acquire_turn()
+    assert events == ["started"]
+    await turn.release()
+    assert events == ["started", "ended"]
     await conn.stop()
-    assert events == ["connected", "disconnected"]
+    assert events == ["started", "ended"]
 
 
-async def test_no_uptime_meter_by_default_is_safe():
+async def test_no_activity_meter_by_default_is_safe():
     """Token-billed providers (OpenAI/Gemini) never get a meter wired;
     open/teardown must be no-ops on that path, not raise."""
     conn, _factory = _make_conn()
-    assert conn._uptime_meter is None
+    assert conn._billable_activity_meter is None
     registry = ToolRegistry()
     await conn.start(registry, "")
     await conn.stop()  # must not raise with no meter set
