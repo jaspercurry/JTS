@@ -104,6 +104,7 @@ MANAGED_UNITS = frozenset({
     "jasper-aec-init.service",
     "jasper-aec-reconcile.service",
     "jasper-grouping-reconcile.service",
+    "jasper-grouping-reconcile-trailing.service",
     "jasper-camilla.service",
     "jasper-outputd.service",
     # Root oneshot that captures `jasper-doctor --json` at full fidelity for the

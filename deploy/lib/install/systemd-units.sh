@@ -144,6 +144,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
             "${SYSTEMD_DIR}/jasper-snapclient.service"
             "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
             "${SYSTEMD_DIR}/jasper-web.service"
             "${SYSTEMD_DIR}/jasper-web.socket"
             "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
@@ -251,6 +252,12 @@ install_grouping_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile-trailing.service" \
+        "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-trailing" \
+        /usr/local/sbin/jasper-grouping-reconcile-trailing
 
     for distro_unit in snapserver.service snapclient.service; do
         if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
@@ -701,6 +708,12 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile-trailing.service" \
+        "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-trailing" \
+        /usr/local/sbin/jasper-grouping-reconcile-trailing
 
     # If the snapcast apt packages ARE present (the grouping opt-in
     # installed them), neutralise their DISTRO units: Trixie's snapserver

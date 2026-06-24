@@ -244,11 +244,18 @@ Increment 6 (per-follower calibration). What exists:
   jts.local (bonded follower) took six `/grouping/set` POSTs from the leader in
   44 s — each restarting `jasper-outputd` — and rebooted on outputd
   start-limit-hit. Pinned by `test_restart_unit_resets_failed_before_restart`
-  (+ fail-soft siblings) in `tests/test_multiroom_reconcile.py`. NOTE: this is
-  the reboot *floor* (no reboot); coalescing the per-apply restarts so a
-  calibration sweep doesn't briefly thrash audio is a tracked follow-up
-  (leading-edge rate-limit with a guaranteed trailing apply, sender-side
-  debounce, or live trim/delay apply without an outputd restart).
+  (+ fail-soft siblings) in `tests/test_multiroom_reconcile.py`. The matching
+  audio-thrash fix now lives at the `/grouping/set` kick site in
+  `jasper.control.server`: the first write still kicks promptly, later writes
+  inside the 60 s window write the remaining delay to `/run/jasper-control/`
+  and start one on-demand `jasper-grouping-reconcile-trailing.service`, which
+  sleeps for that delay and then starts the existing oneshot reconciler. Because
+  the reconciler re-reads `grouping.env`, a trim/delay/crossover sweep applies
+  the final value exactly once after the burst even if `jasper-control` exits
+  before the trailing kick.
+  Hardware-free coverage:
+  `test_grouping_set_burst_coalesces_kicks_and_applies_last_env`
+  (+ trailing-service scheduler tests) in `tests/test_control_server.py`.
 - **`deploy/install.sh`** — `migrate_grouping` (seed/strip env) + unit
   install (not enabled) + `--dry-run` line.
 - **`jasper-doctor`** — `check_grouping` (ok off / ok on-valid / warn
@@ -2617,8 +2624,9 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-23 (wireless-sub 2.1 path rechecked against current code:
-receiver-side outputd sub LR4 LP + passive-main outputd LR4 HP at the same bond
-`crossover_hz`, full-range shared stream, default-on `/rooms/` mains-HP toggle,
-active-endpoint HP/LP left to CamillaDSP Layer A; 2026-06-24 pair-lock runtime
-surface rechecked against `state.py`, `snapcast_rpc.py`, and doctor wiring)
+Last verified: 2026-06-24 (pair-lock runtime surface rechecked against
+`state.py`, `snapcast_rpc.py`, and doctor wiring; control-side grouping kick
+coalescing and the durable trailing service rechecked against
+`jasper.control.server`,
+`deploy/systemd/jasper-grouping-reconcile-trailing.service`, and the grouped
+outputd env/reconcile path; wireless-sub 2.1 path from 2026-06-23 unchanged)
