@@ -15,6 +15,7 @@ makes the fix the single implementation for every env-file writer.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -31,12 +32,20 @@ RECONCILERS = [
 ]
 
 
-def _bash(script: str) -> subprocess.CompletedProcess[str]:
+def _bash(
+    script: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     return subprocess.run(
         ["bash", "-c", f'source "{LIB}"\n{script}'],
         check=False,
         text=True,
         capture_output=True,
+        env=run_env,
     )
 
 
@@ -104,6 +113,42 @@ def test_env_file_set_creates_file_with_requested_mode(tmp_path: Path) -> None:
     assert env_file.read_text() == "KEY=v,w\n"
     assert (env_file.stat().st_mode & 0o777) == 0o640
     assert (env_file.parent.stat().st_mode & 0o777) == 0o750
+
+
+def test_env_file_set_preserves_existing_ownership_before_rename(
+    tmp_path: Path,
+) -> None:
+    """Atomic rewrites must not drop a pre-existing group-readable owner/group.
+
+    On the Pi, /etc/jasper/jasper.env is root:jasper 0640 so non-root
+    jasper-control can fresh-read status after reconcilers mutate it.
+    A root-created tempfile renamed over it would become root:root unless the
+    writer copies ownership from the existing file first.
+    """
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("A=1\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    chown_log = tmp_path / "chown.log"
+    fake_chown = fake_bin / "chown"
+    fake_chown.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" >> \"$JTS_CHOWN_LOG\"\n"
+    )
+    fake_chown.chmod(0o755)
+
+    result = _bash(
+        f'PATH="{fake_bin}:$PATH" '
+        f'JTS_CHOWN_LOG="{chown_log}" '
+        f'jasper_env_file_set "{env_file}" A 2 0640 0755'
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text() == "A=2\n"
+    args = chown_log.read_text().splitlines()
+    assert args[0] == f"--reference={env_file}"
+    assert args[1].startswith(str(env_file.parent / ".A."))
+    assert args[1] != str(env_file)
 
 
 def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:

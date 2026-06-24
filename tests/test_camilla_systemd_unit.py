@@ -100,15 +100,16 @@ def test_install_sh_creates_camilladsp_state_dirs():
     assert "install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs" in body
 
 
-def test_install_sh_repairs_active_speaker_config_modes_for_web_commissioning():
-    """Stale active-speaker YAML may predate the non-root web arm flow.
+def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons():
+    """Stale generated YAML may predate the non-root control/web readers.
 
-    The sudo CLI can read root:root 0600 generated configs, but jasper-web must
-    read the all-muted startup anchor before arming a driver silently.
+    The sudo CLI can read root:root 0600 generated configs, but jasper-control
+    and jasper-web read configs/*.yml for /state, /sound, and active-driver
+    flows. Repair all generated YAMLs, not just active-speaker baselines.
     """
 
     body = INSTALL_SH.read_text()
-    assert "-name 'active_speaker_*.yml'" in body
+    assert "-name '*.yml'" in body
     assert "-exec chgrp jasper {} +" in body
     assert "-exec chmod 0640 {} +" in body
 

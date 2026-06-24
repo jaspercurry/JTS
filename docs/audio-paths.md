@@ -43,14 +43,18 @@ TTS / CUE chain (CROSSED OVER on every output profile)
                                    → selected DAC(s) → amps → drivers
 ```
 
-That TTS chain is the SOLO topology. On an active multiroom bond member,
-the grouping reconciler repoints voice at `/run/jasper-outputd/tts.sock`
-— outputd serves fanin's exact TTS wire protocol and mixes assistant
-audio into the post-round-trip content lane locally, so replies don't
-ride the sync buffer to every speaker (no CamillaDSP crossover on that
-path; acceptable for speech, same trade the retired pre-fanin outputd
-TTS path made). See
-[HANDOFF-multiroom.md](HANDOFF-multiroom.md) Increment 5 PR-2.
+That TTS chain is also the active-output topology. On active speakers,
+assistant audio must stay in fan-in upstream of CamillaDSP so it rides
+the crossover/protection graph; outputd's post-crossover TTS mixer is
+not armed on active endpoints.
+
+Passive/dumb bonded multiroom members are the exception: the grouping
+reconciler points voice at `/run/jasper-outputd/tts.sock`, and outputd
+mixes that speaker's own assistant audio into its local post-round-trip
+content lane so replies do not ride the shared sync buffer. See
+[HANDOFF-multiroom.md](HANDOFF-multiroom.md) Increment 5 PR-2 and
+[HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
+active-endpoint exception.
 
 `jasper-outputd` normally reads the content capture lane directly. For
 lab validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
@@ -561,7 +565,10 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-22 (active-speaker direct-DAC diagnostic route removed,
+Last verified: 2026-06-24 (active-endpoint TTS fan-in path rechecked against
+`jasper.multiroom.reconcile.outputd_grouping_env`,
+`jasper.multiroom.reconcile.voice_grouping_env`, and
+`jasper.cli.doctor.grouping`; active-speaker direct-DAC diagnostic route removed,
 dynamic route width, summed-test transient active graph, and outputd-only
 durable apply boundary rechecked against `playback_route.py`,
 `output_topology.py`, `sound_setup.py`, `playback.py`, `staging.py`,

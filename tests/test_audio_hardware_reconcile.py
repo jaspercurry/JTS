@@ -410,13 +410,24 @@ def test_reconcile_preserves_existing_env_dir_modes(tmp_path: Path):
     assert oct(etc_dir.stat().st_mode & 0o777) == "0o755"
 
 
+def test_env_writer_preserves_existing_jasper_env_ownership() -> None:
+    """A DAC reconcile must not turn root:jasper jasper.env into root:root.
+
+    jasper-control relies on group-read access for fresh /state reads; the
+    audio-hardware reconciler also atomically rewrites /etc/jasper/jasper.env.
+    """
+    text = SCRIPT.read_text()
+    assert 'jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750' in text
+    assert 'jasper_env_file_set "$file" "$key" "$value" 0640 0750' in text
+
+
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
     """render_asound_if_needed must NOT re-chmod the existing /etc/jasper.
 
     The asound-template dir create ran `install -d -m 0755 $(dirname
     $ASOUND_TEMPLATE)` (== /etc/jasper) on EVERY recognized-DAC reconcile,
-    bypassing ensure_env_dir — the same re-mode trap #827 closed for the env
-    writers, one sibling site away. Pin that a pre-created non-0755 dir survives
+    bypassing the env writer discipline — the same re-mode trap #827 closed.
+    Pin that a pre-created non-0755 dir survives
     an Apple (recognized-DAC) reconcile that renders the template into it.
     """
     etc_dir = tmp_path / "etc-jasper"

@@ -31,6 +31,12 @@ _ACTIVE_SPEAKER_LABELS = {
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_commissioning_config": (
         "JTS active-speaker commissioning"
     ),
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config": (
+        "JTS active-speaker driver-domain graph"
+    ),
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config": (
+        "JTS active-leader program bake"
+    ),
 }
 
 
@@ -120,11 +126,13 @@ def describe_current_config(
                 "path": str(p),
                 "label": label,
                 "message": (
-                    "Active-speaker DSP is active and includes room correction PEQs."
+                    "Active-speaker DSP is active and includes room correction "
+                    "PEQs; correction state is managed by the active-speaker/"
+                    "grouping graph."
                     if correction
                     else (
-                        "Active-speaker DSP is active; no room correction PEQs "
-                        "are applied by this graph."
+                        "Active-speaker DSP is active; correction state is "
+                        "managed by the active-speaker/grouping graph."
                     )
                 ),
                 "current_correction": correction,

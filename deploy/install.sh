@@ -1888,10 +1888,10 @@ widen_jasper_web_writable_dirs() {
     # install_avahi_jasper_control's /etc/avahi/services widening (3b-2). The
     # ordinary sound-profile files inside keep their own owners (root reads/writes
     # them fine; the group-writable dir is what lets the dropped daemon swap them
-    # atomically). Active-speaker startup/commissioning YAML is also read by
-    # jasper-web during the driver-test arm flow, so repair stale root:root 0600
-    # files from earlier builds to root:jasper 0640. The shared DSP-apply lock is
-    # written by root CLIs and non-root web flows, so it must be group-writable.
+    # atomically). Every generated YAML is also read by jasper-control /state or
+    # jasper-web, so repair stale root:root 0600 files from earlier builds to
+    # root:jasper 0640. The shared DSP-apply lock is written by root CLIs and
+    # non-root web flows, so it must be group-writable.
     # Idempotent; harmless while jasper-web is still root.
     if getent group jasper >/dev/null 2>&1; then
         if [[ -d /etc/bluetooth ]]; then
@@ -1902,7 +1902,7 @@ widen_jasper_web_writable_dirs() {
         touch /var/lib/camilladsp/configs/.dsp_apply.lock
         chgrp jasper /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
         chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
-        find /var/lib/camilladsp/configs -maxdepth 1 -type f -name 'active_speaker_*.yml' \
+        find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
             -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi

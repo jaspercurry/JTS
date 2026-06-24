@@ -15,14 +15,16 @@
 
 ## TL;DR — current state
 
-> **Status (2026-06-22).** Layer 0 (the SRO drift estimator), **chip-ref
+> **Status (2026-06-24).** Layer 0 (the SRO drift estimator), **chip-ref
 > observe mode**, and the **verdict-driven reconciler gate** are shipped.
 > The first production-path measurement is in: **JTS3 (HiFiBerry DAC8x) is
 > clock-coherent — 0.157 ppm mean over ~18 min, 36/36 `coherent`** — so the
-> Layer-2 resampler is *not* needed for that DAC. When outputd reports a
-> locked `reference_outputs.aec_clock.verdict=coherent`, the reconciler may
-> arm production chip-AEC for that DAC. `compensable` / `fallback` /
-> `observing` still degrade visibly to software AEC3. **Chip-AEC is the
+> Layer-2 resampler is *not* needed for that DAC. **HiFiBerry DAC8x is now a
+> codified known-good chip-AEC output profile**, alongside the Apple USB-C
+> dongle baseline; other DACs can still be promoted by live outputd evidence
+> when `reference_outputs.aec_clock.verdict=coherent` and locked.
+> `compensable` / `fallback` / `observing` still degrade visibly to software
+> AEC3 for unapproved DACs. **Chip-AEC is the
 > preferred echo canceller** (a dedicated on-chip DSP doing fixed-beam + AEC,
 > materially better than software AEC3), so the objective is to get *any*
 > suitable DAC onto chip-AEC, not just one.
@@ -133,7 +135,7 @@ until such hardware exists.
 | Box | DAC | Clock topology | What it proves |
 |---|---|---|---|
 | **JTS** | Apple USB-C dongle (single) | Coherent — DAC + mic + reference all on USB SOF (~1 ppm) | The coherent path: SRO ≈ 0, loop is a no-op, chip-AEC "just works." Regression guard that we never break the working case. |
-| **JTS3** | HiFiBerry DAC8x (I2S HAT) | **Measured coherent** — the DAC8x is I2S-clock-coherent with the XVF (shares the Pi clock root), *not* a free-running crystal | **✅ MEASURED 2026-06-19: 0.157 ppm mean, 36/36 `coherent`.** Layer 2 not needed for it. First DAC validated through the general pipeline; production chip-AEC can arm through the shipped verdict-driven gate when outputd reports locked `coherent`. Persistent known-good profile promotion remains the next step ([Roadmap](#roadmap-productize-chip-aec-across-any-dac) item 2). |
+| **JTS3** | HiFiBerry DAC8x (I2S HAT) | **Measured coherent** — the DAC8x is I2S-clock-coherent with the XVF (shares the Pi clock root), *not* a free-running crystal | **✅ MEASURED 2026-06-19: 0.157 ppm mean over ~18 min, 36/36 `coherent`; promoted 2026-06-24 to a static known-good chip-AEC profile after repeated JTS3 runtime testing.** Layer 2 not needed for it; live SRO remains observability, not the boot-time approval gate. |
 | **JTS5** | Dual Apple USB-C (composite) | Likely coherent per child (both on USB SOF) + inter-child sync | **The composite box.** Tests the composite *reference fold* and the inter-child delay-divergence guard. Most-likely-coherent composite shape, so it tests fold > drift. Verifies fail-closed when composite can't support chip-AEC. |
 
 Per-box verdict: **JTS3 → `coherent` (measured, 0.157 ppm).** JTS (Apple) →
@@ -168,15 +170,14 @@ turn that into a self-driving production capability. None is foundational
 rework — each builds on what is already merged.
 
 **1. Verdict-driven gate (shipped 2026-06-22).** `jasper-aec-reconcile`
-keeps the Apple USB-C dongle as the static known-good baseline, but other DACs
-can now be promoted by live outputd evidence: locked
+keeps the Apple USB-C dongle and HiFiBerry DAC8x as static known-good profiles,
+but other DACs can still be promoted by live outputd evidence: locked
 `/state.outputd.reference_outputs.aec_clock.verdict=coherent` arms production
 chip-AEC. `compensable`, `fallback`, `observing`, missing outputd STATUS, or an
 inactive chip-ref writer all remain on software AEC3, visibly. This closes the
-loop from "measured" → "running in production" for coherent DACs such as
-JTS3's HiFiBerry without hard-coding `hifiberry_dac8x = supported`; that
-per-DAC hack is the anti-pattern the gate avoids. `compensable` still awaits
-Layer 2 before it can arm production chip-AEC.
+loop from "measured" → "running in production" for newly coherent DACs without
+making them edit-only forever. `compensable` still awaits Layer 2 before it can
+arm production chip-AEC.
 
 **2. Calibration-artifact persistence + shippable profiles.** Record a DAC's
 measured verdict as a durable per-profile fact (mirror
@@ -245,12 +246,11 @@ YAGNI lines, to resist over-engineering:
 
 The Layer-0 estimator only ticks while outputd's chip-ref writer runs, and
 the writer only runs when `JASPER_OUTPUTD_CHIP_REF_PCM` is set. But
-`jasper-aec-reconcile` refuses to arm chip-AEC on an independent-clock DAC
-(HiFiBerry/DAC8x → `chip_aec_dac_status=needs_calibration` → it falls back to
-software AEC3 and *clears* `JASPER_OUTPUTD_CHIP_REF_PCM`). So on the very box
-that needs the measurement (JTS3), the writer is off, the estimator is never
-fed, and we cannot measure the drift that would *produce* the calibration —
-a deadlock.
+`jasper-aec-reconcile` refuses to arm chip-AEC on an unapproved
+independent-clock DAC (`chip_aec_dac_status=needs_calibration` → it falls back
+to software AEC3 and *clears* `JASPER_OUTPUTD_CHIP_REF_PCM`). So on a box that
+needs the measurement, the writer is off, the estimator is never fed, and we
+cannot measure the drift that would *produce* the calibration — a deadlock.
 
 **Observe mode** is the opt-in escape hatch: it arms the chip-ref writer
 **for measurement only**, without arming chip-AEC as the production mic path.
@@ -292,7 +292,7 @@ curl -s http://jts3.local:8780/state \
 ```
 
 The resulting `chip_ref_sro_ppm` / `verdict` is the calibration evidence that
-decides whether the HiFiBerry needs Layer 2 (compensable) or is coherent
+decides whether the tested DAC needs Layer 2 (compensable) or is coherent
 enough to arm chip-AEC directly — see the [hardware test matrix](#hardware-test-matrix).
 Turn observe back off (`JASPER_AEC_CHIP_REF_OBSERVE=0` → reconcile) once the
 measurement is captured; it is a diagnostic, not a steady state.
@@ -313,7 +313,8 @@ cancels echo *somehow*. Never a brick.
 ## Open unknowns / risks
 
 - **Production-path long-window drift — measured on JTS3 (0.157 ppm,
-  `coherent`).** Closed for the HiFiBerry via Layer 0 + observe mode. Other
+  `coherent`).** Closed for the HiFiBerry via Layer 0 + observe mode + static
+  profile promotion. Other
   DACs (Apple, dual Apple) are not yet read; each new DAC re-opens this until
   measured.
 - **`snd_pcm_delay` truthfulness** on the XVF USB endpoint is unverified.
@@ -337,4 +338,4 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 - Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md)
 - DAC registry: [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
 
-Last verified: 2026-06-22
+Last verified: 2026-06-24

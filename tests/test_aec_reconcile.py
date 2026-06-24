@@ -435,6 +435,25 @@ def test_reconcile_preserves_existing_mode_file_dir_mode(tmp_path: Path) -> None
     assert oct(state_dir.stat().st_mode & 0o777) == "0o770"
 
 
+def test_reconcile_keeps_jasper_env_group_readable(tmp_path: Path) -> None:
+    """jasper-control fresh-reads jasper.env after AEC reconciles.
+
+    The install migration sets /etc/jasper/jasper.env to root:jasper 0640.
+    Reconciler rewrites must keep the group-read bit; otherwise /state.aec
+    falls back to jasper-control's stale startup environment and reports
+    chip-AEC as pending after the runtime env has actually been applied.
+    """
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
+    assert oct(env_file.stat().st_mode & 0o777) == "0o640"
+
+
 def test_ensure_mode_file_appends_missing_leg_keys(tmp_path: Path) -> None:
     """Pre-leg-toggle deploy: aec_mode.env has only JASPER_AEC_MODE.
     Reconciler should append the new keys with defaults — preserving
@@ -507,7 +526,7 @@ def test_mic_profile_resolver_failure_clears_stale_chip_support(
 @pytest.mark.parametrize(
     ("dac_id", "stderr_phrase"),
     [
-        ("hifiberry_dac8x", "HiFiBerry/DAC8x active profiles need per-profile"),
+        ("hifiberry_dac8x_studio", "HiFiBerry DAC8x Studio needs per-profile"),
         ("mystery_usb_audio", "has no codified chip-AEC calibration"),
     ],
 )
@@ -560,12 +579,15 @@ def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
 
 
-def test_explicit_chip_profile_uses_hifiberry_when_outputd_verdict_is_coherent(
+def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     tmp_path: Path,
 ) -> None:
-    """JTS3 path: HiFiBerry is not statically blessed, but a locked
-    outputd aec_clock=coherent verdict is calibration evidence and permits
-    production chip-AEC."""
+    """JTS3 path: measured HiFiBerry DAC8x hardware is codified known-good.
+
+    It must not depend on outputd's live SRO verdict at reconcile time; that
+    verdict is useful observability, but it is too noisy to be the boot gate for
+    hardware we have already approved.
+    """
     _write_env(
         tmp_path,
         "udp:9876",
@@ -574,18 +596,10 @@ def test_explicit_chip_profile_uses_hifiberry_when_outputd_verdict_is_coherent(
     _write_profile_mode(tmp_path, "xvf_chip_aec")
     _write_card(tmp_path, channels=6)
 
-    with _fake_outputd_status_socket(
-        _outputd_status_payload(verdict="coherent", status="locked"),
-    ) as socket_path:
-        result = _run_reconcile(
-            tmp_path,
-            "--reason",
-            "test",
-            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": socket_path},
-        )
+    result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "outputd aec_clock permits chip-AEC" in result.stderr
+    assert "outputd aec_clock permits chip-AEC" not in result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE=udp:9876" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
@@ -596,15 +610,14 @@ def test_explicit_chip_profile_uses_hifiberry_when_outputd_verdict_is_coherent(
     assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
 
 
-def test_auto_profile_uses_outputd_coherent_verdict_for_non_apple_dac(
+def test_auto_profile_uses_outputd_coherent_verdict_for_uncodified_dac(
     tmp_path: Path,
 ) -> None:
-    """Auto also promotes non-Apple DACs when outputd has locked a coherent
-    chip-ref clock verdict."""
+    """Future DACs can still promote through live outputd calibration evidence."""
     _write_env(
         tmp_path,
         "udp:9876",
-        extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n",
+        extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n",
     )
     _write_card(tmp_path, channels=6)
 
@@ -1040,11 +1053,11 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
 # JASPER_AEC_CHIP_REF_OBSERVE (opt-in, default off) arms outputd's chip-ref
 # writer FOR DRIFT MEASUREMENT ONLY on the software-AEC3 leg path — the mic
 # path stays software AEC3 (chip-AEC NOT armed). It breaks the bootstrap
-# deadlock on independent-clock DACs (HiFiBerry/DAC8x): the reconciler won't
-# arm chip-AEC until drift is measured, but drift can only be measured while
-# the writer runs. The estimator then reads real DAC-vs-XVF counters that
-# become the calibration. CRITICAL safety property: observe NEVER touches the
-# mic path — only adds the chip-ref producer.
+# deadlock on unapproved independent-clock DACs: the reconciler won't arm
+# chip-AEC until drift is measured, but drift can only be measured while the
+# writer runs. The estimator then reads real DAC-vs-XVF counters that become
+# the calibration. CRITICAL safety property: observe NEVER touches the mic path
+# — only adds the chip-ref producer.
 
 
 def test_ensure_mode_file_seeds_chip_ref_observe_default(tmp_path: Path) -> None:
@@ -1081,9 +1094,8 @@ def test_chip_ref_observe_arms_writer_but_keeps_software_aec3_mic_path(
     that falls back from auto) arms outputd's chip-ref writer FOR MEASUREMENT
     but leaves the mic path on software AEC3 — chip-AEC stays disabled and
     the raw/AEC3 leg stays intact. This is the bootstrap path that feeds the
-    Layer-0 SRO estimator on the HiFiBerry."""
-    # HiFiBerry/DAC8x: auto falls back to software AEC3 (needs_calibration).
-    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n")
+    Layer-0 SRO estimator for DACs that are not yet approved."""
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n")
     _write_mode_with_legs(
         tmp_path, mode="auto", raw="1", dtln="0", chip_aec="0",
         chip_ref_observe="1",
@@ -1111,7 +1123,7 @@ def test_chip_ref_observe_off_keeps_writer_off_on_software_aec3(
 ) -> None:
     """observe=0 (default) preserves current behavior: the software-AEC3 path
     leaves the chip-ref writer OFF and the observe flag clear."""
-    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n")
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n")
     _write_mode_with_legs(
         tmp_path, mode="auto", raw="1", dtln="0", chip_aec="0",
         chip_ref_observe="0",
@@ -1134,7 +1146,7 @@ def test_chip_ref_observe_noops_without_chip_capable_mic(tmp_path: Path) -> None
     forces observe_flag=0). Guards against arming a producer on the
     direct-mic fallback shape."""
     _write_env(
-        tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n"
+        tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n"
     )
     _write_mode_with_legs(
         tmp_path, mode="auto", raw="1", dtln="0", chip_aec="0",

@@ -381,6 +381,7 @@ def check_grouping_channel_pick() -> CheckResult:
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
         OUTPUTD_GROUPING_ENV_FILE,
+        is_active_speaker_box,
     )
 
     label = "grouping: channel pick"
@@ -388,8 +389,15 @@ def check_grouping_channel_pick() -> CheckResult:
     if not is_active_member(cfg):
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
 
+    active_endpoint = is_active_speaker_box()
     path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if not path.exists():
+        if active_endpoint:
+            return CheckResult(
+                label, "ok",
+                "active endpoint uses the snapclient/CamillaDSP loopback path "
+                "(no outputd channel-pick lane)",
+            )
         return CheckResult(
             label, "warn",
             f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active bond "
@@ -404,6 +412,19 @@ def check_grouping_channel_pick() -> CheckResult:
     want_channel = cfg.channel or "stereo"
     fifo = env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV, "")
     channel = env.get(OUTPUTD_DAC_CONTENT_CHANNEL_ENV, "")
+    if active_endpoint:
+        if fifo or channel:
+            return CheckResult(
+                label, "warn",
+                f"active endpoint should have outputd channel-pick lane cleared "
+                f"(fifo={fifo or '(unset)'} channel={channel or '(unset)'}) — "
+                "active speakers receive the round-trip through the "
+                "snapclient/CamillaDSP loopback path; run jasper-grouping-reconcile",
+            )
+        return CheckResult(
+            label, "ok",
+            "active endpoint uses snapclient/CamillaDSP loopback channel pick",
+        )
     if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
         return CheckResult(
             label, "warn",
@@ -546,9 +567,9 @@ def check_grouping_tts_lane() -> CheckResult:
     Increment 5 PR-1 interim behavior). The reconciler wires this with
     TWO env files that must agree: grouping-voice.env points jasper-voice
     at outputd's TTS socket, and grouping-outputd.env arms outputd's TTS
-    server on that socket. Drift between them is the worst shape — voice
-    writing to a socket nobody serves makes the assistant SILENT, which
-    the no-silent-failure rule says must be visible here.
+    server on that socket. Active endpoints are the safety exception: their
+    assistant audio rides fan-in upstream of the crossover because outputd's
+    post-crossover TTS mixer is forbidden on active lanes.
 
     (Replaces ``check_grouping_tts_interim``, the standing bonded warn
     that existed while TTS still mixed in fanin pre-stream — Increment 5
@@ -560,6 +581,7 @@ def check_grouping_tts_lane() -> CheckResult:
         OUTPUTD_TTS_SOCKET_ENV,
         VOICE_GROUPING_ENV_FILE,
         VOICE_TTS_SOCKET_ENV,
+        is_active_speaker_box,
     )
 
     label = "grouping: TTS lane"
@@ -598,6 +620,8 @@ def check_grouping_tts_lane() -> CheckResult:
             f"`systemctl show -p Environment`: {voice_runtime_error}",
         )
 
+    active_endpoint = is_active_speaker_box()
+
     outputd_env: dict[str, str] = {}
     outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if outputd_path.exists():
@@ -606,6 +630,19 @@ def check_grouping_tts_lane() -> CheckResult:
         except OSError as e:
             return CheckResult(label, "warn", f"could not read {outputd_path}: {e}")
     lane_armed = bool(outputd_env.get(OUTPUTD_TTS_SOCKET_ENV))
+
+    if active_endpoint:
+        if voice_socket or lane_armed:
+            return CheckResult(
+                label, "warn",
+                "active bonded endpoint must keep assistant TTS on fan-in "
+                "upstream of the crossover; outputd's post-crossover TTS "
+                "socket is unsafe on active lanes. Run jasper-grouping-reconcile",
+            )
+        return CheckResult(
+            label, "ok",
+            "active endpoint TTS uses fan-in upstream of crossover",
+        )
 
     if voice_socket == OUTPUTD_TTS_SOCKET and not lane_armed:
         return CheckResult(
