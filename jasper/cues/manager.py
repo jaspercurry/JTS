@@ -32,6 +32,8 @@ import os
 import wave
 from typing import Any
 
+from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
+from ..log_event import log_event
 from .generator import (
     backend_model,
     cue_hash,
@@ -44,6 +46,9 @@ from .generator import (
 from .registry import CUES, CueDef, find as find_cue
 
 logger = logging.getLogger(__name__)
+
+_CUE_AUDIO_PROFILE_PROVIDER = "jts"
+_CUE_AUDIO_PROFILE_UPDATED_AT = "static"
 
 
 def _preview(text: str, limit: int = 40) -> str:
@@ -66,6 +71,59 @@ async def _wait_tts_drained(tts: Any) -> None:
         await wait_drained()
     else:
         await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
+
+
+def _profile_token(value: str, fallback: str) -> str:
+    token = "".join(ch if ch.isascii() and not ch.isspace() else "_" for ch in value)
+    token = token.strip("_")
+    return token or fallback
+
+
+def _cue_source_profile(
+    *,
+    model: str,
+    voice: str,
+    pcm: bytes,
+    fallback_source_lufs: float = -24.0,
+    fallback_peak_dbfs: float = -6.0,
+) -> AssistantLoudnessProfile:
+    """Describe the PCM source loudness for a cached/spoken cue.
+
+    The final gain decision still belongs to fan-in/outputd. This profile only
+    tells that owner what loudness/peak this exact cue WAV starts with, so cues
+    do not have to borrow the active live-assistant profile.
+    """
+    model = _profile_token(model, "cue")
+    voice = _profile_token(voice, "voice")
+    try:
+        measurement = measure_pcm_24k_mono(pcm)
+        source_lufs = measurement.source_lufs
+        source_peak_dbfs = measurement.source_peak_dbfs
+        confidence = 1.0
+    except (ImportError, RuntimeError, ValueError) as e:
+        log_event(
+            logger,
+            "cue.source_profile",
+            result="fallback",
+            model=model,
+            voice=voice,
+            exc_type=type(e).__name__,
+            err=str(e),
+            level=logging.WARNING,
+        )
+        source_lufs = fallback_source_lufs
+        source_peak_dbfs = fallback_peak_dbfs
+        confidence = 0.0
+    return AssistantLoudnessProfile(
+        provider=_CUE_AUDIO_PROFILE_PROVIDER,
+        model=model,
+        voice=voice,
+        source_lufs=round(float(source_lufs), 2),
+        source_peak_dbfs=round(float(source_peak_dbfs), 2),
+        confidence=confidence,
+        updated_at=_CUE_AUDIO_PROFILE_UPDATED_AT,
+        method="cue_wav",
+    )
 
 
 class AudioCueManager:
@@ -212,7 +270,15 @@ class AudioCueManager:
         try:
             write_segment = getattr(self._tts, "write_segment", None)
             if callable(write_segment):
-                await write_segment(pcm, segment_kind="cue")
+                await write_segment(
+                    pcm,
+                    segment_kind="cue",
+                    source_profile=_cue_source_profile(
+                        model=f"cue-{cue.slug}",
+                        voice=self._voice,
+                        pcm=pcm,
+                    ),
+                )
             else:
                 await self._tts.write(pcm)
         except Exception as e:  # noqa: BLE001
@@ -301,7 +367,15 @@ class AudioCueManager:
         try:
             write_segment = getattr(self._tts, "write_segment", None)
             if callable(write_segment):
-                await write_segment(pcm, segment_kind="cue")
+                await write_segment(
+                    pcm,
+                    segment_kind="cue",
+                    source_profile=_cue_source_profile(
+                        model="dynamic-text",
+                        voice=self._voice,
+                        pcm=pcm,
+                    ),
+                )
             else:
                 await self._tts.write(pcm)
         except Exception as e:  # noqa: BLE001

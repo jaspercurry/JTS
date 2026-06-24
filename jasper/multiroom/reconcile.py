@@ -4,9 +4,10 @@
 
 """Multiroom grouping reconciler — pure plan + thin systemctl entrypoint.
 
-The reconciler is the single writer of the snapcast unit state. It reads
-the wizard-owned GroupingConfig (see jasper.multiroom.config) and decides
-which units should be running:
+The reconciler is the single writer of the snapcast unit state and the
+applier of role-derived local-source parking. It reads the wizard-owned
+GroupingConfig (see jasper.multiroom.config) and decides which units should
+be running:
 
   - solo / grouping OFF        => neither snapserver nor snapclient runs.
   - grouping ON but INVALID    => neither runs (fail-safe: never bring up a
@@ -14,7 +15,8 @@ which units should be running:
   - ON, valid, role=leader     => snapserver + snapclient (the leader hosts
                                   the stream AND plays its own channel).
   - ON, valid, role=follower   => snapclient only (consumes the leader's
-                                  stream).
+                                  stream) and local source resource groups
+                                  are parked via jasper.local_sources.
 
 Mirrors the jasper-aec-reconcile / jasper-wifi-guardian shape: the
 decision is a PURE, total function (`plan`) that is unit-tested with
@@ -43,7 +45,13 @@ from pathlib import Path
 
 from .. import atomic_io
 from ..log_event import log_event
-from .config import GroupingConfig, is_active_leader, load_config
+from ..local_sources import local_source_park_units, local_source_restore_units
+from .config import (
+    GroupingConfig,
+    is_active_leader,
+    load_config,
+    local_sources_parked,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,29 +65,6 @@ SNAPCLIENT_UNIT = "jasper-snapclient.service"
 # on bond/unbond (a bonded leader folds in the Snapcast round-trip buffer
 # — see airplay_grouping_env + main()).
 SHAIRPORT_UNIT = "shairport-sync.service"
-
-# The renderer/source stack a bonded FOLLOWER parks (dumb-follower
-# profile, HANDOFF-multiroom Increment 5). A follower's local sources
-# are structurally unplayable — bonded content bypasses its CamillaDSP,
-# and worse, a "silent" AirPlay/Spotify session into the direct lane
-# AUDIBLY LEAKS during outputd's inv-B starvation-fallback periods. So
-# while role=follower these advertise nothing and run nothing. STOP,
-# never disable: /sources/ owns systemd enable/disable as the
-# household's intent, so restore is start-if-enabled ("restore" intent).
-# jasper-voice/jasper-aec-bridge are NOT here — those units belong to
-# jasper-aec-reconcile (single-writer rule), which parks them per role
-# in the PR-B increment.
-FOLLOWER_PARKED_UNITS = (
-    SHAIRPORT_UNIT,
-    "nqptp.service",
-    "librespot.service",
-    "bluealsa-aplay.service",
-    "bluealsa.service",
-    "bt-agent.service",
-    "jasper-mux.service",
-    "jasper-usbsink.service",
-)
-
 
 # ---------- Snapcast wiring constants ----------
 
@@ -322,7 +307,7 @@ class UnitIntent:
     `desired` is one of {"start", "stop", "restore"}; `reason` is a
     short human-readable explanation for the log line. "restore" means
     start ONLY if the unit is systemd-enabled — the shape that puts a
-    parked renderer back exactly per the /sources/ wizard's intent
+    parked source resource back exactly per the /sources/ wizard's intent
     (a wizard-disabled source must stay off after an unbond).
     """
     unit: str
@@ -358,7 +343,7 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
     """
     restore_renderers = tuple(
         UnitIntent(u, "restore", "not a bonded follower — sources per wizard")
-        for u in FOLLOWER_PARKED_UNITS
+        for u in local_source_restore_units()
     )
 
     if not cfg.enabled:
@@ -392,12 +377,12 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
             summary=f"grouping leader (bond {cfg.bond_id}, channel {cfg.channel})",
         )
 
-    # role == "follower" (validated: a valid enabled config is one of the
-    # two ALLOWED_ROLES, and leader is handled above). The dumb-follower
-    # profile: the local source stack parks alongside snapserver.
+    # role-policy says local sources are parked (today: valid bonded
+    # follower). The dumb-follower profile stops whole source resource
+    # groups, including advertise-side units such as the USB gadget init.
     parked = tuple(
         UnitIntent(u, "stop", "parked (bonded follower)")
-        for u in FOLLOWER_PARKED_UNITS
+        for u in local_source_park_units()
     )
     return ReconcilePlan(
         intents=(
@@ -937,7 +922,7 @@ def _apply(plan_: ReconcilePlan) -> int:
 
     Intent kinds: `start` / `stop` map to systemctl verbs; `restore`
     is start-only-if-enabled (the un-park shape — /sources/ keeps
-    enable/disable as the household's intent, so a parked renderer
+    enable/disable as the household's intent, so a parked source resource
     comes back exactly per the wizard). A failure on one intent is
     logged and surfaced in the exit code but does not abort the rest of
     the plan — a half-applied bond is worse than a best-effort one.
@@ -1737,7 +1722,7 @@ def main(argv: list[str] | None = None) -> int:
     # reaches here on the bonded->solo transition (airplay_changed). One
     # restart, only on a real offset change — never on the steady-state
     # solo reconcile.
-    is_bonded_follower = active and cfg.role == "follower"
+    is_bonded_follower = local_sources_parked(cfg)
     if airplay_changed and airplay_ok and not is_bonded_follower:
         if not _restart_unit(SHAIRPORT_UNIT):
             rc = 1

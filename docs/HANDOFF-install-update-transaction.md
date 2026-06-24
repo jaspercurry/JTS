@@ -85,7 +85,24 @@ Both read the Pi over ssh and so are **skipped under interactive sudo**
 identity and direction guards. Passwordless sudo (BRINGUP Phase 2.5) is
 the posture that gets fully-verified deploys.
 
-### 3. Collateral OOM kills are surfaced, never silent
+### 3. Derived audio state is repaired best-effort, never a manifest gate
+
+Generated CamillaDSP sound YAML is a cache of saved JTS intent, not the
+source of truth. During install's runtime-unit bring-up, after outputd/Camilla
+readiness and statefile repair, `install.sh` runs
+`jasper-sound reconcile-current-dsp --fail-open` under an outer 30 s process
+timeout. This deliberately refreshes only a currently-loaded JTS-owned
+`sound_current.yml` from `/var/lib/jasper/sound_profile.json` and
+`/var/lib/jasper/sound_settings.json`, so DSP-renderer fixes take effect on
+deploy instead of accidentally waiting for someone to open `/sound/`.
+
+This reconcile is **not** part of the verified-install claim. It fails open,
+prints a structured result into the deploy transcript, skips unsaved
+`sound_audition.yml` previews, and leaves the current legal graph in place on
+failure or timeout. That keeps the manifest invariant clean: the install can
+complete honestly even if a derived-cache refresh needs a later manual retry.
+
+### 4. Collateral OOM kills are surfaced, never silent
 
 Problem #2/#5: a build OOM-killed nginx *and* jasper-voice, and the
 tooling exited silently. Now the deploy captures the Pi's clock before
@@ -114,7 +131,7 @@ The pure parsers live in `scripts/_lib.sh` (`oom_killed_units`,
 `oom_killed_comms`, `oom_unit_is_production`) and are unit-tested against
 captured kernel-log text.
 
-### 4. A failed install leaves live services running
+### 5. A failed install leaves live services running
 
 On install failure, `deploy-to-pi.sh` exits **before** the
 restart/reconcile section. The running daemons keep their old code in RAM,

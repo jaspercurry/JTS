@@ -378,6 +378,7 @@ start_streambox_runtime_units() {
     require_outputd_ready || \
         echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
     JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1 ensure_outputd_camilla_statefile
+    reconcile_sound_dsp_state
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
@@ -638,9 +639,11 @@ install_systemd_units() {
     # jasper-usbsink: fourth music source (USB gadget audio in). The
     # init unit owns the ConfigFS gadget descriptor lifecycle; the
     # main service is the Python daemon that bridges gadget capture
-    # into usbsink_substream. Both ship DISABLED — the /sources/ wizard
-    # toggle owns enable/disable, and the dtoverlay must be set + Pi
-    # rebooted first (handled by set_usb_gadget_mode above).
+    # into usbsink_substream. The main unit is the disabled-by-default
+    # /sources intent unit; init is a required implementation subresource
+    # that owns the host-visible gadget and is stopped explicitly on
+    # off/parking paths. The dtoverlay must be set + Pi rebooted first
+    # (handled by set_usb_gadget_mode above).
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
         "${SYSTEMD_DIR}/jasper-usbsink-init.service"
@@ -951,6 +954,7 @@ install_systemd_units() {
     require_outputd_ready || \
         echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
     JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1 ensure_outputd_camilla_statefile
+    reconcile_sound_dsp_state
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service

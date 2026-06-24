@@ -104,6 +104,11 @@ DEFAULT_MAINS_HIGHPASS_ENABLED = True
 ALLOWED_CODECS = ("pcm", "flac", "opus")
 DEFAULT_CODEC = "flac"
 
+# Role-derived local-source parking. Keep this as a stable vocabulary
+# so reconcilers, web surfaces, and doctor checks can agree on *why*
+# local sources are unavailable without each re-deriving "role=follower".
+LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER = "bonded_follower"
+
 # Per-member pair-balance trim (dB). Attenuate-only: balancing trims the
 # LOUDER speaker down — a boost would cost headroom and risk hearing
 # safety (enforced again fail-closed in outputd). The -24 floor marks
@@ -169,9 +174,10 @@ class GroupingConfig:
     # graph consumes them when generating the shared stereo stream.
     left_delay_ms: float = 0.0
     right_delay_ms: float = 0.0
-    # Receiver-side wireless-sub low-pass corner (Hz). Only meaningful
-    # when channel=="sub"; also used as the matched mains high-pass corner
-    # when this bond has a sub and mains_highpass_enabled is true.
+    # Bond-level wireless-sub crossover corner (Hz). A sub member always uses
+    # it as its low-pass corner; mains use the same value as their matched
+    # high-pass corner when this bond has a sub and mains_highpass_enabled is
+    # true.
     # Defaulted so the wide existing constructor surface stays
     # source-compatible; load_config always sets it explicitly.
     crossover_hz: float = DEFAULT_CROSSOVER_HZ
@@ -492,15 +498,12 @@ def validate_grouping(
                 f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
                 f"and {CHANNEL_DELAY_MS_HI}"
             )
-    # The crossover corner is mandatory for a sub, and for a main when
-    # bass management is armed for a bond that contains a sub. A non-sub
-    # member in a plain stereo pair can still carry a stale corner without
-    # failing loud because the reconciler clears the HP env unless a sub is
-    # present.
-    uses_crossover = (
-        channel == "sub"
-        or (subwoofer_present and mains_highpass_enabled and channel != "sub")
-    )
+    # The crossover corner is mandatory for a sub bond. The sub always uses it
+    # for its local low-pass, and mains use the same value when bass management
+    # is armed. A non-sub member in a plain stereo pair can still carry a stale
+    # corner without failing loud because the reconciler clears the HP env
+    # unless a sub is present.
+    uses_crossover = channel == "sub" or subwoofer_present
     if uses_crossover and not (CROSSOVER_HZ_LO <= crossover_hz <= CROSSOVER_HZ_HI):
         return (
             f"JASPER_GROUPING_CROSSOVER_HZ={crossover_hz} must be between "
@@ -732,3 +735,25 @@ def follower_leader_addr(cfg: GroupingConfig) -> str | None:
     if is_active_member(cfg) and cfg.role == "follower" and cfg.leader_addr:
         return cfg.leader_addr
     return None
+
+
+def is_bonded_follower(cfg: GroupingConfig) -> bool:
+    """True when ``cfg`` describes an ACTIVE bonded FOLLOWER. PURE."""
+    return follower_leader_addr(cfg) is not None
+
+
+def local_sources_park_reason(cfg: GroupingConfig) -> str | None:
+    """Why local music sources are parked for this config, else ``None``.
+
+    This is the role-policy single source of truth. It deliberately knows
+    nothing about systemd units, USB gadgets, or wizard toggles; those are
+    source-resource details consumed by the reconciler and UI/state layers.
+    """
+    if is_bonded_follower(cfg):
+        return LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
+    return None
+
+
+def local_sources_parked(cfg: GroupingConfig) -> bool:
+    """True when local music sources must not run or advertise."""
+    return local_sources_park_reason(cfg) is not None

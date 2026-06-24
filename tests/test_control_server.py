@@ -772,14 +772,10 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     assert status == 200
     assert applied == ["samplerate_best"]
     assert body["audio_quality"]["converter"] == "samplerate_best"
+    from jasper.local_sources import local_source_audio_refresh_units
+
     assert popens == [
-        [
-            "systemctl", "try-restart",
-            "shairport-sync.service",
-            "librespot.service",
-            "bluealsa-aplay.service",
-            "jasper-usbsink.service",
-        ],
+        ["systemctl", "try-restart", *local_source_audio_refresh_units()],
     ]
 
 
@@ -3736,11 +3732,38 @@ def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordin
     assert "parked" in body["error"]
 
 
+def test_system_restart_audio_uses_local_source_registry(
+    monkeypatch, server_with_coordinator,
+):
+    """restart-audio restarts core audio but only try-restarts local sources."""
+    import jasper.control.server as srv_mod
+    from jasper.local_sources import local_source_audio_refresh_units
+
+    seen = []
+
+    def fake_popen(argv, **kw):
+        seen.append(list(argv))
+
+        class _P:
+            pass
+
+        return _P()
+
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", fake_popen)
+    base, _fake = server_with_coordinator
+    status, _body = _post(f"{base}/system/restart/audio", {})
+    assert status == 200
+    assert seen == [
+        ["systemctl", "restart", "jasper-camilla.service"],
+        ["systemctl", "try-restart", *local_source_audio_refresh_units()],
+    ]
+
+
 def test_system_restart_audio_keeps_parked_renderers_parked(
     monkeypatch, server_with_coordinator,
 ):
     """restart-audio on a follower touches only the units the profile
-    keeps alive (camilla) — never the parked renderer stack."""
+    keeps alive (camilla) — never parked source resources."""
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
@@ -3760,6 +3783,8 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     assert "jasper-camilla.service" in flat
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat
+    assert "jasper-usbsink.service" not in flat
+    assert "jasper-usbsink-init.service" not in flat
 
 
 def test_grouping_set_trim_settable_validated_and_preserved(
@@ -3796,15 +3821,25 @@ def test_grouping_set_trim_settable_validated_and_preserved(
 
 
 def test_grouping_set_crossover_settable_validated_and_preserved(
-    monkeypatch, server_with_coordinator,
+    monkeypatch, tmp_path, server_with_coordinator,
 ):
     """crossover_hz: settable + persisted as JASPER_GROUPING_CROSSOVER_HZ,
-    range-validated ONLY for channel=sub (the shared validate rule),
-    rejected when non-numeric, and PRESERVED (omitted key) across writes
-    like codec/trim."""
+    range-validated for any sub-consuming write, rejected when non-numeric,
+    and preserved across plain non-sub writes like codec/trim."""
     import jasper.control.server as srv_mod
 
     writes = []
+    env = tmp_path / "grouping.env"
+    env.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=sub\n"
+        "JASPER_GROUPING_BOND_ID=b\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=120\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
     monkeypatch.setattr(
         srv_mod, "_atomic_rewrite_env",
         lambda path, updates: writes.append(dict(updates)),
@@ -3832,18 +3867,72 @@ def test_grouping_set_crossover_settable_validated_and_preserved(
     assert status == 200
     assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "20"
 
-    # But a non-sub MAIN in a subwoofer bond uses the corner for the matched
-    # high-pass, so the same bad value is rejected when bass management is on.
+    # But a non-sub MAIN in a subwoofer bond carries the bond-level sub corner,
+    # so the same bad value is rejected there too.
     status, resp = _post(
         f"{base}/grouping/set",
         {**non_sub, "crossover_hz": 20, "subwoofer_present": True},
     )
     assert status == 400 and "must be between" in resp["error"]
 
-    # Omitted → preserved (key not in this write).
+    # Omitted on a sub-consuming write resolves to the valid existing corner so
+    # validation and persistence describe the same config.
     status, _ = _post(f"{base}/grouping/set", sub)
     assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "120"
+
+    # Omitted on a plain non-sub write keeps the historical preserve contract.
+    status, _ = _post(
+        f"{base}/grouping/set",
+        {
+            "enabled": True,
+            "role": "leader",
+            "channel": "right",
+            "bond_id": "b",
+            "leader_addr": "",
+        },
+    )
+    assert status == 200
     assert "JASPER_GROUPING_CROSSOVER_HZ" not in writes[-1]
+
+
+def test_grouping_set_omitted_sub_crossover_replaces_invalid_existing_value(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """A direct /grouping/set sub write cannot preserve a fail-loud corner.
+
+    The browser bond flow always fans out crossover_hz explicitly, but the
+    device endpoint is still public to household peers. If it is asked to enable
+    a sub without a corner, it seeds the default when the existing file value is
+    outside the valid range.
+    """
+    import jasper.control.server as srv_mod
+
+    writes = []
+    env = tmp_path / "grouping.env"
+    env.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=sub\n"
+        "JASPER_GROUPING_BOND_ID=b\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        "JASPER_GROUPING_CROSSOVER_HZ=20\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    sub = {"enabled": True, "role": "follower", "channel": "sub",
+           "bond_id": "b", "leader_addr": "jts.local"}
+
+    status, _ = _post(f"{base}/grouping/set", sub)
+
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CROSSOVER_HZ"] == "80"
 
 
 def test_grouping_set_mains_highpass_toggle_round_trips(

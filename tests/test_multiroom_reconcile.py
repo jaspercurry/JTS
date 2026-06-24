@@ -155,18 +155,18 @@ def test_plan_disabled_stops_both():
 
 
 def test_plan_disabled_stops_snap_units_and_restores_renderers():
-    """Solo: snap units stop; the parked renderer stack carries RESTORE
+    """Solo: snap units stop; parked source resources carry RESTORE
     intents (start-only-if-enabled — the un-park after a bond dissolves;
     a no-op on a speaker that was never bonded since the units are
     already running or wizard-disabled)."""
-    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS
+    from jasper.local_sources import local_source_restore_units
     p = plan(_disabled())
     by_unit = {i.unit: i.desired for i in p.intents}
     assert by_unit[SNAPSERVER_UNIT] == "stop"
     assert by_unit[SNAPCLIENT_UNIT] == "stop"
-    for u in FOLLOWER_PARKED_UNITS:
+    for u in local_source_restore_units():
         assert by_unit[u] == "restore"
-    assert len(p.intents) == 2 + len(FOLLOWER_PARKED_UNITS)
+    assert len(p.intents) == 2 + len(local_source_restore_units())
 
 
 # ---------- plan(): enabled + error => stop both (never start a broken bond) ----------
@@ -187,7 +187,7 @@ def test_plan_invalid_summary_surfaces_error_and_not_starting():
 
 def test_plan_invalid_starts_nothing():
     """Fail-safe: a broken bond must never produce a START intent for the
-    snap units — and it RESTORES the parked renderer stack (a broken bond
+    snap units — and it RESTORES parked source resources (a broken bond
     must not keep the household's sources parked on top of not playing).
     "restore" is start-only-if-enabled, applied at the I/O layer."""
     p = plan(_invalid())
@@ -1078,14 +1078,14 @@ def test_main_fresh_solo_first_reconcile_never_touches_voice(
 # ---------- dumb-follower profile: park + restore + absent-unit no-ops ----
 
 
-def test_plan_follower_parks_the_renderer_stack():
-    """role=follower stops every FOLLOWER_PARKED_UNITS member (the dumb
+def test_plan_follower_parks_the_local_source_resource_groups():
+    """role=follower stops every local-source parked resource (the dumb
     follower advertises and runs no local sources — and a phantom local
     session would audibly leak during inv-B fallback periods)."""
-    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS
+    from jasper.local_sources import local_source_park_units
     p = plan(_follower())
     by_unit = {i.unit: i.desired for i in p.intents}
-    for u in FOLLOWER_PARKED_UNITS:
+    for u in local_source_park_units():
         assert by_unit[u] == "stop", u
     assert by_unit[SNAPCLIENT_UNIT] == "start"
     assert by_unit[SNAPSERVER_UNIT] == "stop"
@@ -1094,15 +1094,37 @@ def test_plan_follower_parks_the_renderer_stack():
     assert kinds.index("start") == len(kinds) - 1
 
 
+def test_plan_follower_parks_usbsink_gadget_not_only_bridge():
+    """USB input owns a bridge daemon and a host-visible gadget init unit.
+    Follower parking must stop the gadget owner so a laptop cannot still
+    see the follower as a USB audio device."""
+    p = plan(_follower())
+    by_unit = {i.unit: i.desired for i in p.intents}
+    assert by_unit["jasper-usbsink-init.service"] == "stop"
+    assert by_unit["jasper-usbsink.service"] == "stop"
+
+
+def test_plan_follower_parks_source_arbiter_infrastructure():
+    """The mux is shared local-source infrastructure. It is not one source's
+    daemon, but it must stop while a follower has no local source authority."""
+    p = plan(_follower())
+    by_unit = {i.unit: i.desired for i in p.intents}
+    assert by_unit["jasper-mux.service"] == "stop"
+
+
 def test_plan_leader_keeps_sources_restored():
     """The leader is the pair's input hub — its renderer stack is never
     parked; the restore intents put a just-demoted ex-follower's sources
     back per the /sources/ wizard."""
-    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS
+    from jasper.local_sources import local_source_restore_units
     p = plan(_leader())
     by_unit = {i.unit: i.desired for i in p.intents}
-    for u in FOLLOWER_PARKED_UNITS:
+    for u in local_source_restore_units():
         assert by_unit[u] == "restore", u
+    assert by_unit["jasper-mux.service"] == "restore"
+    assert "jasper-usbsink-init.service" not in {
+        i.unit for i in p.intents if i.desired == "restore"
+    }
 
 
 def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(),

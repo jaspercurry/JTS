@@ -14,7 +14,11 @@ import json
 import os
 from pathlib import Path
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _parked_as_bonded_follower, _run
+
+USBSINK_UNIT = "jasper-usbsink.service"
+USBSINK_INIT_UNIT = "jasper-usbsink-init.service"
+USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
 
 def _systemd_is_active(unit: str) -> bool:
     """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
@@ -84,8 +88,41 @@ def check_usbsink_state() -> CheckResult:
     descriptor is leaking RAM (~60 KB). Not catastrophic but worth
     surfacing so the operator can `sudo rmmod libcomposite` or reboot.
     """
-    active = _systemd_is_active("jasper-usbsink.service")
+    active = _systemd_is_active(USBSINK_UNIT)
+    init_active = _systemd_is_active(USBSINK_INIT_UNIT)
     libcomp = _module_loaded("libcomposite")
+
+    if _parked_as_bonded_follower():
+        gadget_visible = init_active or USBSINK_GADGET_PATH.exists()
+        if active or gadget_visible:
+            details: list[str] = []
+            if active:
+                details.append(f"{USBSINK_UNIT}=active")
+            if init_active:
+                details.append(f"{USBSINK_INIT_UNIT}=active")
+            if USBSINK_GADGET_PATH.exists():
+                details.append("ConfigFS gadget present")
+            return CheckResult(
+                "usbsink state",
+                "fail",
+                "parked (bonded follower) but USB Audio Input is still "
+                f"running/advertised ({', '.join(details)}). Run "
+                "jasper-grouping-reconcile or unpair/re-pair so the "
+                "local-source park plan stops the USB gadget owner.",
+            )
+        if libcomp:
+            return CheckResult(
+                "usbsink state",
+                "warn",
+                "parked (bonded follower); service and gadget are down, "
+                "but libcomposite is still loaded — reboot or run "
+                "`sudo rmmod u_audio libcomposite` to clear RAM drift.",
+            )
+        return CheckResult(
+            "usbsink state",
+            "ok",
+            "parked (bonded follower) — bridge and host-visible gadget down",
+        )
 
     if not active:
         if libcomp:

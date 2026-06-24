@@ -551,12 +551,12 @@ def restart_systemd_units(*units: str) -> None:
 def bonded_follower_active() -> bool:
     """True when this speaker is an ACTIVE bonded multiroom FOLLOWER —
     the dumb-follower profile parks voice/AEC/renderers while paired.
-    The ONE shared predicate (multiroom.config.follower_leader_addr),
+    The ONE shared predicate (multiroom.config.is_bonded_follower),
     fail-open to False so a broken read never blocks a solo wizard."""
     try:
-        from ..multiroom.config import follower_leader_addr, load_config
+        from ..multiroom.config import is_bonded_follower, load_config
 
-        return follower_leader_addr(load_config()) is not None
+        return is_bonded_follower(load_config())
     except Exception:  # noqa: BLE001 — fail-open
         return False
 

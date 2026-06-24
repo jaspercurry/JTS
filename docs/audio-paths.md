@@ -96,7 +96,10 @@ Ownership is deliberately split:
   mode is latest-source-wins; manual mode is the user-selected source.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
-  CamillaDSP or by a push-to-source volume API.
+  CamillaDSP or by a push-to-source volume API. Operational lifecycle
+  resources live in `jasper/local_sources/registry.py`: the systemd units
+  that run, advertise, park while paired as a follower, restore on unpair,
+  and refresh after audio graph changes.
 - Before mux exposes a new lane, it asks
   `VolumeCoordinator.prepare_source_handoff(...)` to make the target
   volume carrier safe. Only then does it send `SELECT <label>` to
@@ -172,45 +175,51 @@ mixer, a second output device, or a new volume model.
    `False` plus debug logging. This state feeds mux, volume, transport,
    dashboards, and voice tools, so avoid duplicating probes in each
    caller.
-5. **Declare the source once.** Add one `Source` enum member and one
+5. **Declare source metadata.** Add one `Source` enum member and one
    `MusicSourceSpec` in `jasper/music_sources.py`: public ID, fan-in
    label, renderer active key, `/sources/` wizard key, display name,
    and `volume_mode`. `VolumeMode.PUSH` means the source's own volume
    API carries `listening_level` and CamillaDSP returns to 0 dB.
    `VolumeMode.CAMILLA_MASTER` means CamillaDSP carries
    `listening_level`.
-6. **Define preemption.** Add the source-specific stop/pause/silence
+6. **Declare source lifecycle resources.** Add the source's operational
+   resource group in `jasper/local_sources/registry.py`: persistent intent
+   unit, runtime units, parked-follower units, restore-if-enabled units,
+   advertise units, and audio-refresh units. Keep implementation
+   subresources explicit here, as USB does with its bridge daemon and
+   host-visible gadget init unit.
+7. **Define preemption.** Add the source-specific stop/pause/silence
    path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
    uses shairport-sync MPRIS `Stop` when it loses the lane, Spotify uses
    Web API pause with a restart fallback, and USB sink uses its local
    silence endpoint. If the source cannot be controlled from the Pi,
    document the intentional fallback ("may briefly mix") and expose an
    operator escape hatch only when the failure mode justifies one.
-7. **Wire manual source selection.** The mux/control allow-lists derive
+8. **Wire manual source selection.** The mux/control allow-lists derive
    from `jasper/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.
    `/source/select` only picks the lane the speaker should currently
    pass.
-8. **Teach the coordinator source-specific volume I/O.** The handoff
+9. **Teach the coordinator source-specific volume I/O.** The handoff
    safety policy comes from `volume_mode`, but push-mode sources still
    need one `_set_<source>` dispatcher. Add inbound observation only if
    the source has a reliable user-facing volume surface.
-9. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
+10. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
    `previous`, or `now playing` can control the source, wire
    `jasper/tools/transport.py` and document the backend in
    `HANDOFF-voice-music-control.md`. If not, return a concrete "not
    supported for this source" response.
-10. **Add operator surfaces and observability.** Update `/sources/` if
+11. **Add operator surfaces and observability.** Update `/sources/` if
    the source can be enabled/disabled, `/state` if it has useful live
    state, `jasper-doctor` for topology drift and runtime health, and
    `jts-audio.slice` / no-swap checks for any resident audio-path
    daemon.
-11. **Protect measurements and tests.** Add the source to the
+12. **Protect measurements and tests.** Add the source to the
    correction `measurement_window()` pause list if it can emit during a
    sweep. Add tests for asound wiring, fan-in config, source-state
    fail-soft behavior, mux preemption, source-handoff safety, volume
    dispatch, and any source wizard toggles.
-12. **Update docs in one place, then link.** This section covers the
+13. **Update docs in one place, then link.** This section covers the
     cross-cutting checklist. Source-specific quirks belong in a
     focused HANDOFF only when they are non-obvious, as USB sink does in
     `HANDOFF-usbsink.md`. README's documentation map should link the
@@ -309,6 +318,14 @@ Python owns only provider source profiles:
   (idempotently) by turn teardown, so providers whose iterator only
   closes on release (Gemini) still train the profile. Cues and
   chirps never train the profile.
+- Cached cue WAVs and dynamic cue text do not train persisted
+  provider profiles. `AudioCueManager` measures the exact 24 kHz mono
+  cue PCM at playback and sends a one-shot `source_profile`
+  (`provider=jts`, `model=cue-...` / `dynamic-text`) with
+  `segment_kind="cue"`. Standalone feedback paths prepare assistant
+  loudness context before ducking, so fan-in uses the current content
+  baseline or listening-level-derived silence target instead of falling
+  back to its built-in quiet-room target.
 - Profiles are advisory. If a profile is missing or malformed, the mix owner
   uses conservative built-in fallback source loudness/peak values and
   still clamps the final gain.
@@ -565,10 +582,12 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
+<<<<<<< Updated upstream
 Last verified: 2026-06-24 (active-endpoint TTS fan-in path rechecked against
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and
-`jasper.cli.doctor.grouping`; active-speaker direct-DAC diagnostic route removed,
+`jasper.cli.doctor.grouping`; feedback-cue source profiles and standalone
+loudness context rechecked; active-speaker direct-DAC diagnostic route removed,
 dynamic route width, summed-test transient active graph, and outputd-only
 durable apply boundary rechecked against `playback_route.py`,
 `output_topology.py`, `sound_setup.py`, `playback.py`, `staging.py`,

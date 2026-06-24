@@ -62,16 +62,23 @@ from . import (
     system_supervisor,
 )
 from ..multiroom.config import (
+    CROSSOVER_HZ_HI,
+    CROSSOVER_HZ_LO,
     DEFAULT_CROSSOVER_HZ,
     DEFAULT_MAINS_HIGHPASS_ENABLED,
     GROUPING_ENV_FILE,
     BondMember,
     format_roster,
+    load_config as load_grouping_config,
     validate_grouping,
     validate_roster,
 )
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..local_sources import (
+    local_source_audio_refresh_units,
+    local_source_park_units,
+)
 from ..transit.state import read_state as read_transit_state
 from ..audio_profile_state import (
     normalize_audio_input_profile,
@@ -100,12 +107,8 @@ SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 _peering_lock = threading.Lock()
 _peering_loop: asyncio.AbstractEventLoop | None = None
 _peering_stop_requested = threading.Event()
-AUDIO_QUALITY_RENDERER_UNITS = [
-    "shairport-sync.service",
-    "librespot.service",
-    "bluealsa-aplay.service",
-    "jasper-usbsink.service",
-]
+CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
+LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
 ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME = "active_speaker_staged_startup.yml"
 _DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
@@ -1109,6 +1112,29 @@ def _kick_grouping_reconciler() -> None:
     retry; the final grouping.env write is therefore applied.
     """
     _grouping_reconciler_kick_coalescer.kick()
+
+
+def _resolve_grouping_crossover_hz_for_write(
+    *,
+    channel: str,
+    subwoofer_present: bool,
+    requested: float | None,
+) -> float | None:
+    """Return the crossover value this /grouping/set write must persist.
+
+    Plain stereo writes retain the historical omitted-means-preserve contract.
+    A sub channel or sub-present bond actively consumes the corner, though, so
+    an omitted request must validate and write the same value: a valid existing
+    operator value when one is present, otherwise the safe default.
+    """
+    if requested is not None:
+        return requested
+    if channel != "sub" and not subwoofer_present:
+        return None
+    existing = load_grouping_config(GROUPING_ENV_FILE).crossover_hz
+    if CROSSOVER_HZ_LO <= existing <= CROSSOVER_HZ_HI:
+        return existing
+    return DEFAULT_CROSSOVER_HZ
 
 
 def _write_grouping(
@@ -2121,6 +2147,16 @@ def _make_handler(
             # read) so we never persist a fail-loud config. A disabled
             # request needs no fields.
             if enabled:
+                effective_subwoofer_present = (
+                    subwoofer_present
+                    if subwoofer_present is not None
+                    else False
+                )
+                effective_crossover_hz = _resolve_grouping_crossover_hz_for_write(
+                    channel=channel,
+                    subwoofer_present=effective_subwoofer_present,
+                    requested=crossover_hz,
+                )
                 err = validate_grouping(
                     role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
@@ -2135,8 +2171,8 @@ def _make_handler(
                         right_delay_ms if right_delay_ms is not None else 0.0
                     ),
                     crossover_hz=(
-                        crossover_hz
-                        if crossover_hz is not None
+                        effective_crossover_hz
+                        if effective_crossover_hz is not None
                         else DEFAULT_CROSSOVER_HZ
                     ),
                     mains_highpass_enabled=(
@@ -2144,11 +2180,7 @@ def _make_handler(
                         if mains_highpass_enabled is not None
                         else DEFAULT_MAINS_HIGHPASS_ENABLED
                     ),
-                    subwoofer_present=(
-                        subwoofer_present
-                        if subwoofer_present is not None
-                        else False
-                    ),
+                    subwoofer_present=effective_subwoofer_present,
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
                     roster=roster_members,
@@ -2156,6 +2188,7 @@ def _make_handler(
                 if err:
                     self._send_json({"error": err}, status=400)
                     return
+                crossover_hz = effective_crossover_hz
             try:
                 _write_grouping(
                     enabled=enabled, role=role, channel=channel,
@@ -2692,7 +2725,7 @@ def _make_handler(
                     [
                         "systemctl",
                         "try-restart",
-                        *AUDIO_QUALITY_RENDERER_UNITS,
+                        *LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
                     ],
                 )
             except (OSError, subprocess.SubprocessError) as e:
@@ -2710,7 +2743,7 @@ def _make_handler(
             self._send_json({
                 "ok": True,
                 "action": "audio-quality",
-                "try_restart_units": AUDIO_QUALITY_RENDERER_UNITS,
+                "try_restart_units": LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
                 "audio_quality": state,
             })
             return
@@ -2728,6 +2761,8 @@ def _make_handler(
             # trusted WiFi can trigger these; the dashboard's
             # confirm dialogs are UX, not security.
             parked = _pair_follower_leader_addr() is not None
+            restart_units: list[str] = []
+            try_restart_units: list[str] = []
             if self.path == "/system/restart/voice":
                 if parked:
                     # The dumb-follower profile keeps voice disabled
@@ -2742,24 +2777,20 @@ def _make_handler(
                     )
                     return
                 units = ["jasper-voice.service"]
+                restart_units = units
                 action = "restart-voice"
             elif self.path == "/system/restart/audio":
-                units = [
-                    "jasper-camilla.service",
-                    "librespot.service",
-                    "shairport-sync.service",
-                    "bluealsa-aplay.service",
-                ]
+                restart_units = list(CORE_AUDIO_RESTART_UNITS)
+                try_restart_units = list(LOCAL_SOURCE_AUDIO_REFRESH_UNITS)
                 if parked:
                     # Restart only the units the follower profile keeps
-                    # alive — derived from the parked set so the two
-                    # can never drift (FOLLOWER_PARKED_UNITS is the one
-                    # source of truth for what a follower parks).
-                    from ..multiroom.reconcile import FOLLOWER_PARKED_UNITS
-
-                    units = [
-                        u for u in units if u not in FOLLOWER_PARKED_UNITS
+                    # alive — derived from the local-source lifecycle
+                    # registry so it cannot drift from follower parking.
+                    parked_units = set(local_source_park_units())
+                    try_restart_units = [
+                        u for u in try_restart_units if u not in parked_units
                     ]
+                units = restart_units + try_restart_units
                 action = "restart-audio"
             elif self.path == "/system/reboot":
                 units = []  # systemctl reboot — no units
@@ -2792,11 +2823,18 @@ def _make_handler(
                 elif action == "poweroff":
                     subprocess.Popen(["systemctl", "poweroff"])
                 else:
-                    # Use start-after-stop semantics. Don't block
-                    # on the systemctl call (jasper-aec-bridge +
-                    # jasper-voice both take up to 90s to stop
-                    # cleanly under the SIGTERM timeout).
-                    subprocess.Popen(["systemctl", "restart", *units])
+                    # Use start-after-stop semantics for core services. Local
+                    # source daemons use try-restart so dashboard audio restart
+                    # never turns on a source the household disabled in
+                    # /sources/ (USB would otherwise re-advertise its gadget).
+                    if restart_units:
+                        subprocess.Popen(["systemctl", "restart", *restart_units])
+                    if try_restart_units:
+                        subprocess.Popen([
+                            "systemctl",
+                            "try-restart",
+                            *try_restart_units,
+                        ])
             except (OSError, subprocess.SubprocessError) as e:
                 self._send_json(
                     {"error": f"systemctl invocation failed: {e}"},
@@ -2807,6 +2845,8 @@ def _make_handler(
                 "ok": True,
                 "action": action,
                 "units": units,
+                "restart_units": restart_units,
+                "try_restart_units": try_restart_units,
             })
             return
 

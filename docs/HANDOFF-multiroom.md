@@ -38,9 +38,11 @@ former third tier (`endpoint` / `satellite`) was removed; those tokens are
 still accepted and map to `streambox` so a field box auto-migrates on its
 next deploy. A box that just plays a bonded channel — the old "endpoint" — is
 now any full/streambox box acting as a multiroom **follower**: the grouping
-reconciler parks its local source renderers (and, on a full speaker, the
-voice/AEC brain via the derived park flag), and the landing page suppresses
-Source/Sound + relabels Volume for followers. Every member, either role, uses
+reconciler parks its local source resource groups (bridge daemons plus any
+advertise-side resources such as the USB Audio Input gadget, via
+`jasper/local_sources/registry.py`) and, on a full speaker, its voice/AEC
+brain via the derived park flag; the landing page suppresses Source/Sound +
+relabels Volume for followers. Every member, either role, uses
 the single `snapclient -> FIFO -> outputd` member lane; there is no longer a
 direct-ALSA endpoint variant. The Zero 2 W lab runbook lives in
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md).
@@ -1524,7 +1526,7 @@ rearchitecture.
 | jasper-camilla / jasper-fanin | run | run (camilla bakes the pipe) | run (inv-B fallback lane only) | grouping reconciler (config swap) |
 | jasper-snapserver | stopped | runs | stopped | grouping reconciler (plan) |
 | jasper-snapclient | stopped | runs | runs | grouping reconciler (plan) |
-| shairport-sync + nqptp, librespot, bluealsa(+aplay), bt-agent, jasper-mux, jasper-usbsink | per /sources/ wizard | per /sources/ wizard | **parked** (stop; restore-if-enabled on exit) | grouping reconciler (plan; STOP never disable — /sources/ owns enable/disable) |
+| Local source resource groups (`jasper/local_sources/registry.py`: AirPlay+nqptp, Spotify, Bluetooth audio/agent, USB bridge+gadget, shared mux arbiter) | per /sources/ wizard | per /sources/ wizard | **parked** (stop resource groups; restore intent units on exit) | grouping reconciler (plan; STOP never disable — /sources/ owns enable/disable) |
 | jasper-voice + jasper-aec-bridge (+aec-init) | per provider/mic gates | per provider/mic gates | **parked** (disable --now) | **jasper-aec-reconcile only** — grouping derives `JASPER_GROUPING_VOICE_PARK=1` into grouping-voice.env and kicks it; bond-validity logic is never re-derived in shell |
 
 Interface contract while a follower (every surface tells the same
@@ -2066,10 +2068,10 @@ bridge/mic liveness family (AEC bridge ×3, mic card, mic capture) reads
 mic card says "Paired — the assistant listens on the pair leader".
 Accepted costs (owner sign-off): follower timers die on bond-form; dial
 hold-to-talk is dead on a follower (volume/transport still forward).)
-Earlier same day (DUMB-FOLLOWER PR-A — the renderer stack parks
-while bonded. plan() role=follower now stops FOLLOWER_PARKED_UNITS
-(shairport-sync, nqptp, librespot, bluealsa + bluealsa-aplay, bt-agent,
-jasper-mux, jasper-usbsink): a follower's local sources are structurally
+Earlier same day (DUMB-FOLLOWER PR-A — local source resource groups park
+while bonded. `plan()` role=follower now stops the registry-owned park
+units from `jasper/local_sources/registry.py`, including advertise-side
+resources such as `jasper-usbsink-init.service`): a follower's local sources are structurally
 unplayable — and a phantom AirPlay/Spotify session into the direct lane
 AUDIBLY LEAKS during outputd's inv-B starvation-fallback periods, so
 parking is correctness, not just UX. STOP, never disable — /sources/
@@ -2641,4 +2643,6 @@ coalescing and the durable trailing service rechecked against
 `deploy/systemd/jasper-grouping-reconcile-trailing.service`, and the grouped
 outputd env/reconcile path; active-endpoint TTS fan-in exception rechecked
 against `jasper.multiroom.reconcile` and `jasper.cli.doctor.grouping`;
-wireless-sub 2.1 path from 2026-06-23 unchanged)
+local-source follower parking rechecked against `jasper/local_sources/registry.py`
+and `jasper.multiroom.reconcile`; wireless-sub 2.1 path from 2026-06-23
+unchanged)

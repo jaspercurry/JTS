@@ -1112,6 +1112,40 @@ ensure_outputd_camilla_statefile() {
     fi
 }
 
+reconcile_sound_dsp_state() {
+    # Generated CamillaDSP YAML is a cache of saved JTS sound intent. After a
+    # deploy changes DSP render semantics, refresh only JTS-owned/re-renderable
+    # graphs through the normal sound apply transaction. Fail open: the safety
+    # statefile guard above has already ensured the current graph is legal.
+    local output
+    if [[ ! -x /opt/jasper/.venv/bin/jasper-sound ]]; then
+        echo "  WARN: jasper-sound CLI missing; skipping sound DSP reconcile"
+        return 0
+    fi
+    echo "  Reconciling current sound DSP graph"
+    local -a cmd=(/opt/jasper/.venv/bin/jasper-sound reconcile-current-dsp --fail-open)
+    if command -v timeout >/dev/null 2>&1; then
+        cmd=(timeout --kill-after=5s 30s "${cmd[@]}")
+    else
+        echo "  WARN: coreutils timeout missing; sound DSP reconcile may block"
+    fi
+    local status
+    set +e
+    output="$("${cmd[@]}" 2>&1)"
+    status=$?
+    set -e
+    if (( status != 0 )); then
+        printf '%s\n' "${output}"
+        if (( status == 124 || status == 137 )); then
+            echo "  WARN: sound DSP reconcile timed out after 30s; leaving current legal graph in place"
+        else
+            echo "  WARN: sound DSP reconcile command failed; leaving current legal graph in place"
+        fi
+        return 0
+    fi
+    printf '%s\n' "${output}"
+}
+
 ensure_crossover_camilla_statefile() {
     # Seed camilla#2's OWN statefile (crossover-statefile.yml) so the
     # endpoint-crossover instance (jasper-camilla-crossover.service, :1235)

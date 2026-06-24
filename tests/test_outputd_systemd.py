@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Lock down the jasper-outputd service shape."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -92,10 +93,9 @@ def test_outputd_unit_runtime_and_exec_paths():
 
 def test_outputd_operator_retune_file_is_after_packaged_defaults():
     unit = _read_unit()
-    assert (
-        unit.index('Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"')
-        < unit.index("EnvironmentFile=-/var/lib/jasper/outputd.env")
-    )
+    assert unit.index(
+        'Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"'
+    ) < unit.index("EnvironmentFile=-/var/lib/jasper/outputd.env")
 
 
 def test_install_builds_installs_and_enables_outputd():
@@ -113,17 +113,22 @@ def test_install_builds_installs_and_enables_outputd():
     assert "systemctl restart jasper-outputd.service" in install_sh
     assert "require_outputd_ready" in install_sh
     assert "jasper-outputd STATUS probe failed" in install_sh
+    assert "timeout --kill-after=5s 30s" in install_sh
+    assert "jasper-sound reconcile-current-dsp --fail-open" in install_sh
+    assert "sound DSP reconcile timed out after 30s" in install_sh
     assert "systemctl stop jasper-voice.service" in install_sh
     restart_block = install_sh.split(
-        "systemctl stop jasper-voice.service", 1,
+        "systemctl stop jasper-voice.service",
+        1,
     )[1].split("systemctl enable jasper-wifi-guardian.service", 1)[0]
-    assert (
-        restart_block.index("jasper-audio-hardware-reconcile --reason install")
-        < restart_block.index("require_outputd_ready")
+    assert restart_block.index(
+        "jasper-audio-hardware-reconcile --reason install"
+    ) < restart_block.index("require_outputd_ready")
+    assert restart_block.index("require_outputd_ready") < restart_block.index(
+        "reconcile_sound_dsp_state"
     )
-    assert (
-        restart_block.index("require_outputd_ready")
-        < restart_block.index("reconcile_aec_state")
+    assert restart_block.index("reconcile_sound_dsp_state") < restart_block.index(
+        "reconcile_aec_state"
     )
 
 
