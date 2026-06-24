@@ -590,6 +590,46 @@ def test_check_grouping_connected_follower_is_ok(monkeypatch):
     assert "follower connected" in r.detail
 
 
+def test_check_grouping_pair_lock_registered():
+    assert "check_grouping_pair_lock" in _registered_check_names()
+
+
+def test_check_grouping_pair_lock_warns_when_clock_lock_unobservable(monkeypatch):
+    cfg = _grouping_cfg(
+        enabled=True, role="follower", channel="right",
+        bond_id="living-room", leader_addr="192.168.1.50",
+    )
+    _patch_grouping(monkeypatch, cfg, unit_states={
+        "jasper-snapclient.service": "active",
+    })
+    monkeypatch.setattr(doctor.grouping, "_read_outputd_status", lambda: {
+        "dac_content": {"enabled": True, "serving_fifo": True},
+    })
+
+    r = doctor.check_grouping_pair_lock()
+
+    assert r.status == "warn"
+    assert "clock lock is unobservable" in r.detail
+
+
+def test_check_grouping_pair_lock_warns_when_fifo_not_serving(monkeypatch):
+    cfg = _grouping_cfg(
+        enabled=True, role="follower", channel="right",
+        bond_id="living-room", leader_addr="192.168.1.50",
+    )
+    _patch_grouping(monkeypatch, cfg, unit_states={
+        "jasper-snapclient.service": "active",
+    })
+    monkeypatch.setattr(doctor.grouping, "_read_outputd_status", lambda: {
+        "dac_content": {"enabled": True, "serving_fifo": False},
+    })
+
+    r = doctor.check_grouping_pair_lock()
+
+    assert r.status == "warn"
+    assert "not serving FIFO bytes" in r.detail
+
+
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple USB probe should not run")

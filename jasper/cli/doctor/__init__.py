@@ -216,8 +216,10 @@ from .memory import (
 from . import resilience as resilience
 from .resilience import (
     _EXPECTED_START_LIMIT_ACTION,
+    _classify_supervisor_snapshots,
     check_start_limit_action,
     check_service_runtime_state,
+    check_supervisor_runtime_snapshots,
     check_bootloop_guard,
 )
 from . import aec as aec
@@ -306,6 +308,7 @@ from .grouping import (
     check_grouping_leader_pipe,
     check_grouping_local_vs_wireless_sub,
     check_grouping_pair_channels,
+    check_grouping_pair_lock,
     check_grouping_snapcast_installed,
     check_grouping_tts_lane,
     check_grouping_rate_adjust,
@@ -527,8 +530,10 @@ __all__ = [
     "check_correction_storage",
     "check_wake_events_storage",
     "_EXPECTED_START_LIMIT_ACTION",
+    "_classify_supervisor_snapshots",
     "check_start_limit_action",
     "check_service_runtime_state",
+    "check_supervisor_runtime_snapshots",
     "check_bootloop_guard",
     "_aec_mode_setting",
     "_aec_profile_setting",
@@ -593,6 +598,7 @@ __all__ = [
     "check_grouping_leader_pipe",
     "check_grouping_local_vs_wireless_sub",
     "check_grouping_pair_channels",
+    "check_grouping_pair_lock",
     "check_grouping_snapcast_installed",
     "check_grouping_tts_lane",
     "check_grouping_rate_adjust",

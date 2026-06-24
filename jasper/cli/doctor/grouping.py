@@ -10,13 +10,48 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _camilla_block_field, _run
+
+_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+
+
+def _read_outputd_status(
+    socket_path: str = _OUTPUTD_STATUS_SOCKET,
+) -> dict | None:
+    """Best-effort local outputd STATUS read for grouping verdicts."""
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(socket_path)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError:
+        return None
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    try:
+        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
@@ -45,10 +80,8 @@ def check_grouping() -> CheckResult:
       - **runtime degraded** — configured-valid but a snap unit the
         reconciler's plan wants running is not `active` (e.g. a follower
         whose snapclient can't reach its leader, a leader whose snapserver
-        is down), OR a bonded LEADER, always, today: no music producer
-        feeds the snapfifo yet (HANDOFF-multiroom.md §2, Increments 3–5),
-        so snapserver reads green `active` while the FIFO is empty and
-        followers get silence. This is §7's "make it visible, not
+        is down), OR a bonded leader whose active CamillaDSP config does not
+        write the snapserver pipe. This is §7's "make it visible, not
         invisible": a green config with silent breakage underneath is
         exactly what we refuse to show. Runtime health is derived by the
         same pure `derive_grouping_runtime` the /state surface uses."""
@@ -108,6 +141,62 @@ def check_grouping() -> CheckResult:
 
     status = "warn" if runtime["health"] == "degraded" else "ok"
     return CheckResult(label, status, f"{base} — {runtime['detail']}")
+
+
+@doctor_check(order=71.2, group="grouping")
+def check_grouping_pair_lock() -> CheckResult:
+    """Surface the composite pair-lock truth used by ``/state.grouping``.
+
+    This deliberately reuses ``derive_grouping_runtime`` rather than
+    re-scoring the bond in the doctor. The verdict includes the honest
+    Snapcast limitation: local FIFO bytes and client connection/volume are
+    observable today, but follower buffer-fill/drift/time-lock are not
+    exposed by Snapcast's documented JSON-RPC surface.
+    """
+    from ...multiroom.config import load_config as _load_grouping_config
+    from ...multiroom.leader_config import active_leader_pipe_path
+    from ...multiroom.reconcile import SNAP_STREAM_ID, plan
+    from ...multiroom.snapcast_rpc import read_stream_clients
+    from ...multiroom.state import derive_grouping_runtime, _self_client_name
+
+    label = "grouping: pair lock"
+    cfg = _load_grouping_config()
+    if not cfg.enabled:
+        return CheckResult(label, "ok", "single-speaker (grouping off)")
+    if cfg.error is not None:
+        return CheckResult(label, "warn", cfg.error)
+
+    units = [it.unit for it in plan(cfg).intents]
+    out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
+    states = (
+        {u: (out[i].strip() or "unknown") for i, u in enumerate(units)}
+        if len(out) == len(units)
+        else {u: "unknown" for u in units}
+    )
+
+    stream_clients = None
+    if cfg.role == "leader":
+        stream_clients = read_stream_clients()
+        if stream_clients is None:
+            stream_clients = "unreachable"
+
+    runtime = derive_grouping_runtime(
+        cfg,
+        states,
+        leader_tap_path=active_leader_pipe_path() if cfg.role == "leader" else "",
+        stream_clients=stream_clients,
+        self_name=_self_client_name(),
+        want_stream=SNAP_STREAM_ID,
+        local_outputd_status=_read_outputd_status(),
+    )
+    pair_lock = runtime.get("pair_lock") or {}
+    status = str(pair_lock.get("status") or "unknown")
+    detail = str(pair_lock.get("detail") or "pair-lock verdict unavailable")
+    if status == "degraded":
+        return CheckResult(label, "warn", detail)
+    if status == "unknown":
+        return CheckResult(label, "warn", detail)
+    return CheckResult(label, "ok", detail)
 
 
 @doctor_check(order=71.5, group="grouping")

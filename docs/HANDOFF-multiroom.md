@@ -112,20 +112,30 @@ Increment 6 (per-follower calibration). What exists:
 - **`jasper/multiroom/state.py`** — `read_grouping_state()`, fresh-read
   (never `os.environ`); wired into `jasper-control` `/state.grouping`
   (fail-soft). Now also carries a **`runtime` health block** when grouping
-  is enabled: the pure `derive_grouping_runtime(cfg, unit_states)` compares
-  the reconciler plan's expected units against their live `systemctl
-  is-active` state and reports `off` / `invalid` / `ok` / `degraded` — a
-  follower whose snapclient can't reach its leader shows `degraded` with
-  the leader addr, not a green-looking config. The `systemctl` probe is
-  the thin injectable I/O edge; on a solo speaker there is NO probe and NO
-  `runtime` key (zero added cost). The same pure derive feeds
-  `jasper-doctor`'s `check_grouping` (warn on degraded). §7 "make it
-  visible, not invisible". **A leader that is configured but whose outputd
-  is not actually tapping the snapfifo (env unset / writer down → snapserver
-  reads a dry FIFO → followers get silence) now reads `degraded` too** — the
-  pure derive takes the leader's current tap path as an injected arg
-  (`leader_tap_path`); `read_grouping_state` / `check_grouping` read it via
-  `reconcile._read_outputd_snapfifo_path` only for a valid leader.
+  is enabled: the pure `derive_grouping_runtime(...)` compares the
+  reconciler plan's expected units against their live `systemctl is-active`
+  state and reports `off` / `invalid` / `ok` / `degraded` — a follower whose
+  snapclient can't reach its leader shows `degraded` with the leader addr,
+  not a green-looking config. The `systemctl` probe is the thin injectable
+  I/O edge; on a solo speaker there is NO probe and NO `runtime` key (zero
+  added cost). The same pure derive feeds `jasper-doctor`'s `check_grouping`
+  (warn on degraded). §7 "make it visible, not invisible". **A leader that is
+  configured but whose active CamillaDSP config does not write the snapserver
+  pipe reads `degraded` too** — the pure derive takes the leader's current
+  tap path as an injected arg (`leader_tap_path`); `read_grouping_state` /
+  `check_grouping` read it via `leader_config.active_leader_pipe_path()` only
+  for a valid leader. The runtime block also carries `pair_lock`, the
+  composite "pair locked + healthy" verdict shared with `jasper-doctor`'s
+  `grouping: pair lock` check. Today it distinguishes three truths:
+  unit/binding health, local FIFO byte flow (`outputd.dac_content.serving_fifo`
+  means bytes flow, not clock lock), and follower clock-lock. Snapcast's
+  documented JSON-RPC (`Server.GetStatus`) exposes connection, binding,
+  latency, stream status, and volume, but **not** follower buffer fill, drift,
+  or time-lock, so `pair_lock.signals.follower_clock_lock.status` honestly
+  reads `unobservable` and the overall verdict is `unknown` rather than
+  pretending bytes flow proves lock. This is intentional: P2's rejoin gate can
+  consume the shape now and tighten the one signal when a real lock source
+  exists.
 - **`jasper/atomic_io.py`** — the single home for atomic text-file writes
   (`atomic_write_text(path, text, *, mode=0o644)`: same-dir tempfile →
   `chmod`-before-`os.replace`, parent created, RAISES on failure + cleans up
@@ -2610,4 +2620,5 @@ deferred/unmeasured until the spike runs on hardware.)
 Last verified: 2026-06-23 (wireless-sub 2.1 path rechecked against current code:
 receiver-side outputd sub LR4 LP + passive-main outputd LR4 HP at the same bond
 `crossover_hz`, full-range shared stream, default-on `/rooms/` mains-HP toggle,
-and active-endpoint HP/LP left to CamillaDSP Layer A)
+active-endpoint HP/LP left to CamillaDSP Layer A; 2026-06-24 pair-lock runtime
+surface rechecked against `state.py`, `snapcast_rpc.py`, and doctor wiring)

@@ -24,6 +24,10 @@ def _status(groups):
     return {"server": {"groups": groups}}
 
 
+def _status_with_streams(groups, streams):
+    return {"server": {"groups": groups, "streams": streams}}
+
+
 def _group(gid, stream, clients):
     return {"id": gid, "stream_id": stream, "clients": clients}
 
@@ -64,7 +68,8 @@ def test_summarize_groups_flattens_and_defaults_safe():
     ]))
     assert rows[0] == {
         "group_id": "g1", "stream_id": "jts", "name": "jts",
-        "connected": True, "muted": False, "volume_percent": 100,
+        "stream_status": "", "connected": True, "group_muted": False,
+        "muted": False, "volume_percent": 100,
         "client_id": "id-jts", "latency_ms": 0,
     }
     assert rows[1]["stream_id"] == "default"
@@ -72,6 +77,18 @@ def test_summarize_groups_flattens_and_defaults_safe():
     assert rows[1]["latency_ms"] == 0
     # Missing keys default safe, never raise.
     assert rows[2]["name"] == "" and rows[2]["connected"] is False
+
+
+def test_summarize_groups_carries_actual_exposed_stream_and_group_state():
+    rows = summarize_groups(_status_with_streams([
+        {
+            **_group("g1", "jts", [_client("jts", muted=False, percent=82)]),
+            "muted": True,
+        },
+    ], [{"id": "jts", "status": "playing"}]))
+    assert rows[0]["stream_status"] == "playing"
+    assert rows[0]["group_muted"] is True
+    assert rows[0]["latency_ms"] == 0
 
 
 def test_ensure_rebinds_wrong_groups_including_disconnected():

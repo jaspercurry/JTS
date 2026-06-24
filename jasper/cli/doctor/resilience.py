@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
@@ -137,6 +138,110 @@ def check_service_runtime_state() -> CheckResult:
         "service runtime state", "ok",
         f"{len(_RUNTIME_STATE_UNITS)} tracked units have no failed state or restarts",
     )
+
+
+def _int_field(snapshot: dict[str, Any], key: str) -> int:
+    try:
+        return int(snapshot.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
+    """Classify ``/state.resilience`` supervisor snapshots for doctor.
+
+    The supervisors already expose their counters in ``/state``; this is
+    the doctor-facing reader so a non-converging repair loop is visible
+    during one-shot diagnostics too.
+    """
+    issues: list[str] = []
+
+    shairport = resilience.get("shairport")
+    if isinstance(shairport, dict) and shairport.get("enabled") is not False:
+        consecutive = _int_field(shairport, "consecutive_failures")
+        restarts = _int_field(shairport, "restart_count")
+        suppressed = _int_field(shairport, "suppressed_count")
+        if consecutive:
+            issues.append(f"shairport probe failing consecutive={consecutive}")
+        if restarts:
+            issues.append(f"shairport supervisor restarts={restarts}")
+        if suppressed:
+            issues.append(f"shairport restart suppressed={suppressed}")
+
+    grouping = resilience.get("grouping_supervisor")
+    if isinstance(grouping, dict) and grouping.get("enabled") is not False:
+        consecutive = _int_field(grouping, "consecutive_starved")
+        if grouping.get("last_poll_starved") is True or consecutive:
+            issues.append(f"grouping lane starved consecutive={consecutive}")
+        kicks = _int_field(grouping, "kick_count")
+        rate_limited = _int_field(grouping, "rate_limited_count")
+        if kicks:
+            issues.append(f"grouping reconciler kicks={kicks}")
+        if rate_limited:
+            issues.append(f"grouping reconciler kick rate-limited={rate_limited}")
+        binding = grouping.get("binding")
+        if isinstance(binding, dict):
+            failed = _int_field(binding, "failed_total")
+            if failed:
+                issues.append(f"grouping snapcast binding repair failures={failed}")
+        reassert = grouping.get("reassert")
+        if isinstance(reassert, dict):
+            failed = _int_field(reassert, "failed_total")
+            if failed:
+                issues.append(f"grouping peer reassert failures={failed}")
+            if reassert.get("last_ok") is False:
+                detail = str(reassert.get("last_detail") or "failed")
+                issues.append(f"grouping peer reassert last failed: {detail}")
+
+    system = resilience.get("system_supervisor")
+    if isinstance(system, dict) and system.get("enabled") is not False:
+        consecutive = _int_field(system, "consecutive_failures")
+        reboots = _int_field(system, "reboot_count")
+        suppressed = _int_field(system, "suppressed_count")
+        failed_probe = str(system.get("last_failed_probe") or "")
+        if consecutive:
+            suffix = f" last_failed={failed_probe}" if failed_probe else ""
+            issues.append(f"system supervisor probe failing consecutive={consecutive}{suffix}")
+        if reboots:
+            issues.append(f"system supervisor reboots={reboots}")
+        if suppressed:
+            issues.append(f"system supervisor reboot suppressed={suppressed}")
+
+    if issues:
+        return CheckResult(
+            "supervisor runtime snapshots",
+            "warn",
+            "; ".join(issues),
+        )
+    return CheckResult(
+        "supervisor runtime snapshots",
+        "ok",
+        "supervisor snapshots quiet",
+    )
+
+
+def _read_resilience_state() -> dict[str, Any] | None:
+    try:
+        from ...control import client as control
+
+        state = control.get_state(timeout=2.0)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    resilience = state.get("resilience") if isinstance(state, dict) else None
+    return resilience if isinstance(resilience, dict) else None
+
+
+@doctor_check(order=40.5, group="resilience")
+def check_supervisor_runtime_snapshots() -> CheckResult:
+    """Surface supervisor state that otherwise only appears in ``/state``."""
+    resilience = _read_resilience_state()
+    if resilience is None:
+        return CheckResult(
+            "supervisor runtime snapshots",
+            "ok",
+            "skipped — jasper-control /state unavailable",
+        )
+    return _classify_supervisor_snapshots(resilience)
 
 
 # Wall-clock skew tolerance before a future-dated last-reboot timestamp
