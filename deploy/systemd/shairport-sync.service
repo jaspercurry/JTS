@@ -26,6 +26,7 @@ Type=simple
 # back to the unprivileged shairport-sync user. The renderer is
 # idempotent and fast (sed substitution), so running it on every
 # start has negligible cost.
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode
 ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync

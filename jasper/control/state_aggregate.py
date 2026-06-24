@@ -416,6 +416,14 @@ async def _get_state(
             return None
         return [_round_db(pair[0]), _round_db(pair[1])]
 
+    def _finite_float_or_none(raw: Any) -> float | None:
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        value = float(raw)
+        if not math.isfinite(value):
+            return None
+        return value
+
     async def _camilla_status() -> dict[str, Any]:
         status: dict[str, Any] = {
             "main_volume_db": None,
@@ -608,7 +616,7 @@ async def _get_state(
             "host_connected": bool(
                 usbsink_blob.get("host_connected", False),
             ),
-            "rms_dbfs": usbsink_blob.get("rms_dbfs"),
+            "rms_dbfs": _finite_float_or_none(usbsink_blob.get("rms_dbfs")),
             "updated_at": usbsink_blob.get("updated_at"),
         }
     except (OSError, ValueError, json.JSONDecodeError):

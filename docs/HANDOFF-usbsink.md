@@ -18,7 +18,10 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > this speaker is a bonded multiroom follower, the local-source lifecycle
 > registry (`jasper/local_sources/registry.py`) parks the whole USB source
 > group by stopping the init/gadget unit; unpair restores only the intent
-> unit if it is enabled. At runtime, `jasper-usbsink`
+> unit if it is enabled. The parked units also carry
+> `ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed`, so a boot
+> or manual start while the speaker is a valid bonded follower skips before the
+> host-visible gadget can advertise. At runtime, `jasper-usbsink`
 > is a peer music renderer: it bridges the gadget capture endpoint into
 > `usbsink_substream`, and `jasper-fanin` sums that lane with AirPlay,
 > Spotify, Bluetooth, and correction audio into substream 7 for
@@ -36,6 +39,9 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 >
 > The daemon publishes `/run/jasper-usbsink/state.json` with
 > `{playing, preempted, host_connected, rms_dbfs, updated_at}`.
+> `rms_dbfs` is a finite JSON number or `null` before any finite sample exists;
+> the bridge may use `-inf` internally, but state files and `/state` stay
+> standards-compliant JSON.
 > `playing` is the RMS/hysteresis signal from the host stream;
 > `preempted` is separate mux state and does not change `playing`.
 > Mux preempts USB via the local `/preempt` endpoint on port 8781.

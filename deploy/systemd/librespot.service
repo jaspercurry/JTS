@@ -53,6 +53,7 @@ CacheDirectoryMode=0700
 # lane. jasper-fanin reads the capture side and publishes the summed
 # music stream to CamillaDSP/AEC. The private lane keeps renderer
 # opens independent; latest-source-wins remains jasper-mux policy.
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/usr/bin/librespot \
     --name=${JASPER_SPEAKER_NAME} \
     --device-type speaker \

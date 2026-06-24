@@ -7,6 +7,7 @@
 from .registry import (
     LocalSourceInfrastructureLifecycle,
     LocalSourceLifecycle,
+    local_source_lifecycle,
     local_source_advertise_units,
     local_source_audio_refresh_units,
     local_source_infrastructure_lifecycles,
@@ -19,6 +20,7 @@ from .registry import (
 __all__ = [
     "LocalSourceInfrastructureLifecycle",
     "LocalSourceLifecycle",
+    "local_source_lifecycle",
     "local_source_advertise_units",
     "local_source_audio_refresh_units",
     "local_source_infrastructure_lifecycles",

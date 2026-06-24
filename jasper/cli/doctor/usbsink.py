@@ -11,6 +11,7 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from ._registry import doctor_check
@@ -19,6 +20,18 @@ from ._shared import CheckResult, _parked_as_bonded_follower, _run
 USBSINK_UNIT = "jasper-usbsink.service"
 USBSINK_INIT_UNIT = "jasper-usbsink-init.service"
 USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
+
+
+def _format_rms_dbfs(raw: object) -> tuple[str | None, str | None]:
+    if raw is None:
+        return "unknown", None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None, f"rms_dbfs not numeric: {raw!r}"
+    value = float(raw)
+    if not math.isfinite(value):
+        return None, f"rms_dbfs not finite: {raw!r}"
+    return f"{value:.1f}", None
+
 
 def _systemd_is_active(unit: str) -> bool:
     """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
@@ -176,11 +189,18 @@ def check_usbsink_state() -> CheckResult:
             "(systemd watchdog should catch it within 15 s — check "
             "again in a moment)",
         )
+    rms_text, rms_error = _format_rms_dbfs(data.get("rms_dbfs"))
+    if rms_error is not None:
+        return CheckResult(
+            "usbsink state",
+            "warn",
+            f"{rms_error} — schema drift?",
+        )
     return CheckResult(
         "usbsink state", "ok",
         f"active, playing={data.get('playing')} "
         f"host_connected={data.get('host_connected')} "
-        f"rms_dbfs={data.get('rms_dbfs'):.1f}",
+        f"rms_dbfs={rms_text}",
     )
 
 @doctor_check(order=59, group="usbsink")

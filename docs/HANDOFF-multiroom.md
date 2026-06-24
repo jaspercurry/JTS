@@ -1,36 +1,34 @@
 # Handoff: multi-room / multi-speaker audio (stereo pair, 2.1, wireless sub)
 
-> **Status: in progress — architecture settled and producer/consumer halves
-> built; the audio path does NOT work end-to-end yet.** This is the canonical
-> design home for grouped/synchronized playback across multiple JTS speakers
-> (stereo pairs, 2.1 with a wireless sub, and multi-room). SHIPPED, all off by
-> default: the control/observability scaffolding (config/state/reconcile, the
-> `/rooms` bond-forming UI, the channel-split weave, inv-5), **Increment 1**
-> (fanin's music-only output — the voice/music split), **Increment 2** (the
-> per-channel correction axis — one CamillaDSP bakes L-for-leader-seat /
-> R-for-follower-seat), and the 2026-06-11 cleanup that removed the retired
+> **Status: core bonded music dataplane shipped, still off by default.** This
+> is the canonical design home for grouped/synchronized playback across
+> multiple JTS speakers (stereo pairs, 2.1 with a wireless sub, and
+> multi-room). SHIPPED: the control/observability scaffolding
+> (config/state/reconcile, the `/rooms` bond-forming UI, the channel-split
+> weave, inv-5), **Increment 1** (fanin's music-only output — the voice/music
+> split), **Increment 2** (the per-channel correction axis — one CamillaDSP
+> bakes L-for-leader-seat / R-for-follower-seat), **Increment 5 PR-1** (leader
+> CamillaDSP → snapserver pipe → snapclient FIFO → member outputd
+> `dac_content` lane), **Increment 5 PR-2** (member-local TTS + grouping
+> supervisor), and the 2026-06-11 cleanup that removed the retired
 > outputd-as-producer machinery. The **P0 spike RAN on hardware** (2026-06-10,
 > jts3↔jts): resource gate passed (snapcast ≈ ~15 MB Pss / ~0.2 % CPU) and the
-> software sync proxy was clean; the **acoustic** L/R confirmation is still
-> pending (Increment 4). What is NOT done: **no audio flows to followers yet** —
-> the leader's music producer (CamillaDSP → snapserver pipe) and the round-trip
-> are **Increments 3–5** (§2 increment plan, with sequencing + owner gates at
-> its end), gated on inv-A (the AEC-reference/wake-during-music hardware gate)
-> and inv-B (the self-loop fallback). A bonded leader honestly reads `degraded`
-> until then. **§0 "Implementation status" is the live single source of truth**
-> for what exists; treat the design sections below as *intended* operational
-> truth, promoted to live prose as each phase ships. The existing
+> software sync proxy was clean. Still to build: Increment 6
+> (per-follower calibration) and any future auto-unwind policy. **§0
+> "Implementation status" is the live single source of truth** for what exists;
+> treat older design sections below as intended truth only after checking them
+> against §0. The existing
 > `jasper/peering/` subsystem ([HANDOFF-peering.md](HANDOFF-peering.md)) is
 > **wake arbitration only** — picking which speaker *answers* "Hey Jarvis" — a
 > different subsystem, though this design reuses its discovery/identity
 > substrate.
 >
 > Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
-> code: 2026-06-12 (see §0 + the footer changelog).
+> code: 2026-06-24 (see §0 + the footer changelog).
 
 ---
 
-## 0. Implementation status (2026-06-12)
+## 0. Implementation status (2026-06-24)
 
 **"Endpoint behaviour" is the runtime FOLLOWER role, not a separate install
 tier.** There are exactly two install profiles — `full` and `streambox`. The
@@ -40,8 +38,11 @@ next deploy. A box that just plays a bonded channel — the old "endpoint" — i
 now any full/streambox box acting as a multiroom **follower**: the grouping
 reconciler parks its local source resource groups (bridge daemons plus any
 advertise-side resources such as the USB Audio Input gadget, via
-`jasper/local_sources/registry.py`) and, on a full speaker, its voice/AEC
-brain via the derived park flag; the landing page suppresses Source/Sound +
+`jasper/local_sources/registry.py`) and each parked local-source unit also
+has the `jasper-local-source-allowed` `ExecCondition` start gate, so boot and
+manual starts skip while the role is a valid bonded follower. On a full
+speaker, the reconciler parks its voice/AEC brain via the derived park flag;
+the landing page suppresses Source/Sound and
 relabels Volume for followers. Every member, either role, uses
 the single `snapclient -> FIFO -> outputd` member lane; there is no longer a
 direct-ALSA endpoint variant. The Zero 2 W lab runbook lives in
@@ -78,9 +79,11 @@ CamillaDSP config does not write the snapserver pipe".
 **The retired outputd-as-producer machinery was REMOVED on 2026-06-11** (the
 "Stranded by this design" cleanup, §2): `SnapfifoSink` (`snapfifo.rs`)
 deleted, the `SNAPFIFO_PRODUCER_WIRED` mirror flag + `effective_leader_tap_path`
-removed, the reconciler's outputd tap-env write + try-restart limb removed
-(the reconciler no longer touches outputd at all), the unit's optional
-tap `EnvironmentFile=` dropped, and the doctor's `check_grouping_tts_separation`
+removed, the reconciler's outputd tap-env write + try-restart limb removed,
+and the unit's optional tap `EnvironmentFile=` dropped. The reconciler still
+writes the live member outputd lane/TTS env and restarts outputd as the lane
+applier; what is gone is outputd as the snapfifo producer. The doctor's
+`check_grouping_tts_separation`
 folded into `check_grouping`'s runtime detail. The canonical producer is the
 leader's *CamillaDSP* feeding the pipe (Increments 3–5); when it lands, its
 liveness signal comes from the producing daemon's OWN status surface (daemon
@@ -898,7 +901,7 @@ each step needs from the owner):**
 **Stranded by this design — cleanup EXECUTED 2026-06-11 for the dead half:**
 `SnapfifoSink` (deleted), `SNAPFIFO_PRODUCER_WIRED` + `effective_leader_tap_path`
 (removed), the outputd-tap reconciler limb + the unit's optional tap
-`EnvironmentFile=` (removed — the reconciler no longer touches outputd at all),
+`EnvironmentFile=` (removed — outputd no longer produces the snapfifo),
 and the doctor's `check_grouping_tts_separation` (folded into `check_grouping`'s
 runtime detail) all assumed **outputd** feeds the pipe; the canonical design has
 **CamillaDSP** feed it, so that machinery was dead **by design** and is now gone.
