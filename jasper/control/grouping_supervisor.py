@@ -29,9 +29,14 @@ bring-up, both of which left every systemd unit green:
      continuous. The pin IS the repair — no kick needed, and a healthy
      poll costs one loopback RPC (~1 ms).
 
-Starvation watch runs on EVERY bonded member (leader and follower —
-the local dataplane is identical); binding repair runs on the leader
-(snapserver's RPC is loopback-only).
+Starvation watch runs on every bonded member whose content rides the
+dumb-member `dac_content` round-trip — leader and follower alike, the
+local dataplane is identical there. It is SKIPPED on an ACTIVE endpoint
+(active follower or active-speaker leader): those feed the DAC through the
+camilla#2 active-content lane, so the reconciler disables `dac_content` for
+them and its (correct) absence must not be read as starvation — see
+`active_endpoint()` and the skip in `_starvation_tick`. Binding repair runs
+on every leader, active or passive (snapserver's RPC is loopback-only).
 
 No active-session gate, deliberately: a starved lane means no music is
 reaching the DAC, so there is nothing to disrupt, and the kick is a
@@ -69,7 +74,7 @@ from jasper.log_event import log_event
 from . import household_credential
 from .client import AsyncControlClient, DEFAULT_PORT
 from ..multiroom.config import GroupingConfig, is_active_member, load_config
-from ..multiroom.reconcile import SNAP_STREAM_ID
+from ..multiroom.reconcile import SNAP_STREAM_ID, is_active_speaker_box
 from ..multiroom.state import parse_grouping_response
 from ..multiroom.snapcast_rpc import ensure_groups_on_stream
 
@@ -298,6 +303,23 @@ class GroupingSupervisor:
         )
 
     async def _starvation_tick(self) -> None:
+        if self.active_endpoint():
+            # This box feeds the DAC through the camilla#2 active-content
+            # lane, not the dumb-member `dac_content` round-trip — the
+            # reconciler intentionally disables `dac_content` here
+            # (outputd_grouping_env active_endpoint=True). Reading its
+            # CORRECT absence as starvation kicked the reconciler every
+            # window on a healthy active leader/follower (the 2026-06-23
+            # jts3 self-kick churn). The `dac_content` watch does not apply;
+            # round-trip starvation of the active lane (the camilla#2
+            # loopback going silent) is a separate signal outputd does not
+            # yet surface — deferred until observed. Reset like the
+            # not-watching gate so a later passive re-bond starts clean.
+            self.last_poll_starved = None
+            self.consecutive_starved = 0
+            self._streak_warned = False
+            self._rate_limit_warned_window = None
+            return
         status = None
         try:
             status = await self.outputd_status()
@@ -388,6 +410,22 @@ class GroupingSupervisor:
     def load_grouping(self) -> GroupingConfig:
         """Fresh read of the wizard-owned grouping.env (one file read)."""
         return load_config()
+
+    def active_endpoint(self) -> bool:
+        """True when this bonded box runs its content through the camilla#2
+        active-content lane rather than the dumb-member ``dac_content``
+        round-trip — an ACTIVE follower or an ACTIVE-speaker leader, for which
+        the reconciler disables ``dac_content``.
+
+        Re-derived from the saved output topology via the SAME predicate the
+        reconciler keys on (:func:`jasper.multiroom.reconcile.is_active_speaker_box`),
+        so the supervisor and reconciler can never disagree about whether the
+        lane *should* be armed. Inside ``_starvation_tick`` the box is already
+        known bonded-valid (the ``_tick`` gate), so ``is_active_speaker_box()``
+        alone distinguishes an active endpoint from a dumb member. Fail-soft to
+        ``False`` (the dumb-member path, which keeps the real starvation watch
+        running). One small topology read per poll; overridable for tests."""
+        return is_active_speaker_box()
 
     async def outputd_status(self) -> dict | None:
         """One-shot STATUS probe of outputd's control socket.
