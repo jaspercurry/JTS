@@ -448,6 +448,18 @@ function setupHarness(fetchHandler, options = {}) {
       fn({ target });
     }
   };
+  const dispatchToggle = (attrs) => {
+    const target = {
+      open: attrs.open !== undefined ? attrs.open : true,
+      getAttribute(name) { return attrs[name] || ""; },
+      matches() { return false; },
+      classList: { contains(name) { return name === "output-step"; } },
+    };
+    for (const fn of viewBody._listeners.toggle || []) {
+      fn({ target });
+    }
+    return target;
+  };
   const dispatchInput = (attrs, value = "") => {
     const target = {
       value,
@@ -459,7 +471,7 @@ function setupHarness(fetchHandler, options = {}) {
     }
   };
   const flush = () => new Promise((r) => setTimeout(r, 0));
-  return { elements, dispatchClick, dispatchChange, dispatchInput, flush };
+  return { elements, dispatchClick, dispatchChange, dispatchToggle, dispatchInput, flush };
 }
 
 function baseFetch(overrides = {}) {
@@ -1078,6 +1090,50 @@ async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
     fail("changing channel assignment should clear stale human labels", { channels });
   }
   return { twoOutputChannelSelectorAutoAssignsPeerOnSave: true };
+}
+
+async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
+  const topology = activeTwoWayTopologyPayload();
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes('data-output-step="map" open')) {
+    fail("unconfirmed active outputs should start on the Confirm outputs card", { initialHtml });
+  }
+
+  harness.dispatchChange({
+    value: "1",
+    getAttribute(name) {
+      return { "data-group-id": "main", "data-role": "woofer" }[name] || "";
+    },
+    hasAttribute(name) { return name === "data-output-channel"; },
+  });
+  await harness.flush();
+
+  const dirtyHtml = harness.elements.get("view-body").innerHTML;
+  if (!dirtyHtml.includes('data-output-step="map" open')) {
+    fail("changing a DAC assignment should keep Confirm outputs open for saving", { dirtyHtml });
+  }
+  if (!dirtyHtml.includes("Save channel assignments")) {
+    fail("dirty channel assignment should expose the save action in Confirm outputs", { dirtyHtml });
+  }
+  if (dirtyHtml.includes('data-output-step="layout" open')) {
+    fail("changing a DAC assignment should not bounce back to Choose speaker layout", { dirtyHtml });
+  }
+  const reopened = harness.dispatchToggle({
+    "data-output-step": "map",
+    open: true,
+  });
+  if (!reopened.open) {
+    fail("dirty Confirm outputs should remain reopenable until the draft is saved", { dirtyHtml });
+  }
+  return { channelSelectorKeepsConfirmOutputsOpenWhenDraftDirty: true };
 }
 
 async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
@@ -2383,6 +2439,7 @@ results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCombinedTestButtonStopsActiveRequest());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
+results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());

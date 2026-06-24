@@ -1754,7 +1754,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return (outputStepOverride || defaultOutputStep()) === step;
   }
   function outputStepCanOpen(step, topology) {
-    return outputStepState(step, topology) !== 'todo';
+    if (outputStepState(step, topology) !== 'todo') return true;
+    // Dirty output remaps are saved from the map card itself.
+    return step === 'map' && outputTopology.dirty && outputStepOverride === 'map';
   }
   function openOutputStep(step) {
     outputStepOverride = step;
@@ -4216,6 +4218,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         }
       });
     }
+    outputStepOverride = 'map';
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
   }
