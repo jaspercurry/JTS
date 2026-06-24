@@ -25,6 +25,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO / "deploy" / "index.html"
 _PREFLIGHT_PATH = _REPO / "deploy" / "correction-preflight.html"
 _NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
+_STREAMBOX_NGINX_PATH = _REPO / "deploy" / "nginx-jasper-streambox.conf"
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
 _WEB_ASSETS_LIB_PATH = _REPO / "deploy" / "lib" / "install" / "web-assets.sh"
 _FONT_DIR = _REPO / "deploy" / "assets" / "fonts"
@@ -41,6 +42,15 @@ def _app_css() -> str:
 
 def _preflight_html() -> str:
     return _PREFLIGHT_PATH.read_text(encoding="utf-8")
+
+
+def _nginx_location_block(nginx: str, location: str) -> str:
+    match = re.search(
+        rf"(?ms)^    {re.escape(location)} \{{\n(?P<body>.*?)^    \}}",
+        nginx,
+    )
+    assert match is not None, f"missing nginx block: {location}"
+    return match.group(0)
 
 
 def _volume_slider_script(html: str) -> str:
@@ -435,22 +445,25 @@ def test_room_correction_card_uses_http_preflight() -> None:
 def test_room_correction_preflight_switches_to_https() -> None:
     html = _preflight_html()
 
-    assert 'id="proceed"' in html
+    assert 'id="proceed" href="/correction/proceed"' in html
     assert "OK, proceed" in html
     assert "Your connection is not private" in html
     assert "Show Details" in html
     assert "Other JTS pages remain" not in html
     assert "new URLSearchParams(window.location.search" in html
     assert "new URL(requested, window.location.origin)" in html
-    assert "'/correction/crossover/': true" in html
-    assert "https://' + window.location.hostname + next" in html
+    assert "'/correction/crossover/': '/crossover'" in html
+    assert "Object.prototype.hasOwnProperty.call(allowed, path)" in html
+    assert "proceed.href = proceedPath" in html
+    assert "window.location.hostname" not in html
+    assert "https://jts.local/correction/" not in html
 
 
 def test_room_correction_preflight_rejects_normalized_path_escape() -> None:
     html = _preflight_html()
 
     assert "parsed.pathname" in html
-    assert "allowed[path]" in html
+    assert "Object.prototype.hasOwnProperty.call(allowed, path)" in html
     assert "/correction/../sound/" not in html
 
 
@@ -472,17 +485,44 @@ def test_room_correction_preflight_uses_canonical_design() -> None:
 
 def test_nginx_serves_correction_preflight_on_http_only() -> None:
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    preflight_block = _nginx_location_block(nginx, "location = /correction/")
+    proceed_block = _nginx_location_block(nginx, "location = /correction/proceed")
+    room_block = _nginx_location_block(nginx, "location = /correction/proceed/room")
+    crossover_block = _nginx_location_block(
+        nginx,
+        "location = /correction/proceed/crossover",
+    )
+    bass_block = _nginx_location_block(nginx, "location = /correction/proceed/bass")
+    https_block = _nginx_location_block(nginx, "location /correction/")
 
     assert "location = /correction" in nginx
     assert "return 308 /correction/;" in nginx
-    assert "location = /correction/" in nginx
-    assert "try_files /correction-preflight.html =404;" in nginx
+    assert "try_files /correction-preflight.html =404;" in preflight_block
+    assert 'add_header Cache-Control "no-store";' in preflight_block
     assert "safe ?next=/correction/..." in nginx
-    assert "location /correction/" in nginx
-    assert "proxy_pass http://127.0.0.1:8770/;" in nginx
+    assert "return 308 https://$host/correction/;" in proceed_block
+    assert "return 308 https://$host/correction/room/;" in room_block
+    assert "return 308 https://$host/correction/crossover/;" in crossover_block
+    assert "return 308 https://$host/correction/bass/;" in bass_block
+    assert "proxy_pass http://127.0.0.1:8770/;" in https_block
     assert "return 308 http://$host$request_uri;" in nginx
     assert "Do not add HSTS here" in nginx
     assert "Strict-Transport-Security" not in nginx
+
+
+def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
+    nginx = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
+    preflight_block = _nginx_location_block(nginx, "location = /correction/")
+    proceed_block = _nginx_location_block(nginx, "location = /correction/proceed")
+    crossover_block = _nginx_location_block(
+        nginx,
+        "location = /correction/proceed/crossover",
+    )
+
+    assert "try_files /correction-preflight.html =404;" in preflight_block
+    assert 'add_header Cache-Control "no-store";' in preflight_block
+    assert "return 308 https://$host/correction/;" in proceed_block
+    assert "return 308 https://$host/correction/crossover/;" in crossover_block
 
 
 def test_nginx_serves_static_management_assets() -> None:

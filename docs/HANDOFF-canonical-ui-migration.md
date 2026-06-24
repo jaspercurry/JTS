@@ -210,8 +210,10 @@ at your request.
      fire the "TURNING WI-FI OFF WILL DISCONNECT THIS PI" danger
      confirm**; a failed connect must roll back to the prior network.
    - `/bluetooth/` — scan → pair → connect → forget.
-   - `/correction/` — load over **HTTPS** (`https://jts.local/correction/`),
-     mic level meter moves (getUserMedia), a measurement sweep runs.
+   - `/correction/` — load over **HTTPS** using the configured hostname
+     (`https://jts.local/correction/`, or `https://jts3.local/correction/`
+     on a `jts3.local` box), mic level meter moves (getUserMedia), a
+     measurement sweep runs.
    - `/wake-corpus/` — "Begin a session" with capture-option toggles.
    - `/dial/`, `/voice/`, `/sources/`, `/wake/` — provision, provider
      save, source toggles, sensitivity slider.

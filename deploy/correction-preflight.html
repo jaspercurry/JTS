@@ -63,7 +63,7 @@
     </p>
 
     <div class="form-actions">
-      <a class="btn btn--primary" id="proceed" href="https://jts.local/correction/">OK, proceed</a>
+      <a class="btn btn--primary" id="proceed" href="/correction/proceed">OK, proceed</a>
       <a class="btn btn--ghost" href="/">Cancel</a>
     </div>
   </main>
@@ -75,23 +75,25 @@
       var params = new URLSearchParams(window.location.search || '');
       var requested = params.get('next') || '/correction/';
       var allowed = {
-        '/correction/': true,
-        '/correction/room/': true,
-        '/correction/crossover/': true,
-        '/correction/bass/': true
+        '/correction/': '',
+        '/correction/room/': '/room',
+        '/correction/crossover/': '/crossover',
+        '/correction/bass/': '/bass'
       };
-      var next = '/correction/';
+      var proceedPath = '/correction/proceed';
       try {
         var parsed = new URL(requested, window.location.origin);
         if (parsed.origin === window.location.origin) {
           var path = parsed.pathname;
           if (path.slice(-1) !== '/') path += '/';
-          if (allowed[path]) next = path;
+          if (Object.prototype.hasOwnProperty.call(allowed, path)) {
+            proceedPath += allowed[path];
+          }
         }
       } catch (_) {
-        next = '/correction/';
+        proceedPath = '/correction/proceed';
       }
-      proceed.href = 'https://' + window.location.hostname + next;
+      proceed.href = proceedPath;
     }());
   </script>
 </body>
