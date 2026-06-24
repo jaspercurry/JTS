@@ -10,7 +10,9 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 from ._registry import doctor_check
@@ -239,6 +241,42 @@ def _parse_env_file(text: str) -> dict[str, str]:
     return out
 
 
+def _parse_systemd_environment(text: str) -> dict[str, str]:
+    """Parse ``systemctl show -p Environment`` output into a key/value map."""
+    text = text.strip()
+    if text.startswith("Environment="):
+        text = text[len("Environment="):]
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    env: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        env[key] = value.strip().strip('"').strip("'")
+    return env
+
+
+def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
+    """Return jasper-voice's systemd-resolved environment, if available."""
+    try:
+        proc = _run(
+            [
+                "systemctl", "show", "-p", "Environment", "--value",
+                "jasper-voice.service",
+            ],
+            timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        return None, str(e)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        return None, detail or f"systemctl exited {proc.returncode}"
+    return _parse_systemd_environment(proc.stdout), ""
+
+
 @doctor_check(order=75.3, group="grouping")
 def check_grouping_channel_pick() -> CheckResult:
     """An ACTIVE member's outputd round-trip lane must be wired with THIS
@@ -438,28 +476,38 @@ def check_grouping_tts_lane() -> CheckResult:
     label = "grouping: TTS lane"
     cfg = load_config()
 
-    voice_path = Path(VOICE_GROUPING_ENV_FILE)
-    voice_env: dict[str, str] = {}
-    if voice_path.exists():
-        try:
-            voice_env = _parse_env_file(voice_path.read_text())
-        except OSError as e:
-            return CheckResult(label, "warn", f"could not read {voice_path}: {e}")
-    voice_socket = voice_env.get(VOICE_TTS_SOCKET_ENV, "")
+    voice_runtime_env, voice_runtime_error = _resolved_jasper_voice_env()
+    voice_socket = (
+        voice_runtime_env.get(VOICE_TTS_SOCKET_ENV, "")
+        if voice_runtime_env is not None
+        else ""
+    )
 
     if not is_active_member(cfg):
-        # Solo must NOT carry a stale outputd override: outputd's TTS
-        # server is only armed while bonded, so a leftover pointer would
-        # have voice writing to a socket nobody serves — silent assistant.
-        if voice_socket:
+        # Solo must resolve to fanin. With grouping-voice.env layered last,
+        # a stale bonded override would make runtime voice target outputd's
+        # un-armed TTS server — silent assistant.
+        if (
+            voice_runtime_env is not None
+            and voice_socket
+            and voice_socket != "/run/jasper-fanin/tts.sock"
+        ):
             return CheckResult(
                 label, "warn",
-                f"solo but {VOICE_GROUPING_ENV_FILE} still points "
-                f"{VOICE_TTS_SOCKET_ENV} at {voice_socket} — assistant "
-                "voice targets an un-armed socket; run "
+                f"solo but jasper-voice runtime env resolves "
+                f"{VOICE_TTS_SOCKET_ENV} to {voice_socket} instead of "
+                "/run/jasper-fanin/tts.sock — assistant voice targets an "
+                "un-armed socket; run "
                 "jasper-grouping-reconcile",
             )
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+
+    if voice_runtime_env is None:
+        return CheckResult(
+            label, "warn",
+            "bonded but could not read jasper-voice resolved env via "
+            f"`systemctl show -p Environment`: {voice_runtime_error}",
+        )
 
     outputd_env: dict[str, str] = {}
     outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
@@ -473,7 +521,7 @@ def check_grouping_tts_lane() -> CheckResult:
     if voice_socket == OUTPUTD_TTS_SOCKET and not lane_armed:
         return CheckResult(
             label, "warn",
-            f"bonded: voice targets {OUTPUTD_TTS_SOCKET} but "
+            f"bonded: jasper-voice runtime env targets {OUTPUTD_TTS_SOCKET} but "
             f"{OUTPUTD_GROUPING_ENV_FILE} does not arm "
             f"{OUTPUTD_TTS_SOCKET_ENV} — assistant voice is BROKEN "
             "(writing to a socket nobody serves); run "
@@ -482,10 +530,12 @@ def check_grouping_tts_lane() -> CheckResult:
     if voice_socket != OUTPUTD_TTS_SOCKET:
         return CheckResult(
             label, "warn",
-            f"bonded but {VOICE_GROUPING_ENV_FILE} does not point "
-            f"{VOICE_TTS_SOCKET_ENV} at {OUTPUTD_TTS_SOCKET} — assistant "
+            f"bonded but jasper-voice runtime env resolves "
+            f"{VOICE_TTS_SOCKET_ENV} to {voice_socket or '(unset)'} instead of "
+            f"{OUTPUTD_TTS_SOCKET} — assistant "
             f"voice rides the synced stream (delayed ~{cfg.buffer_ms} ms, "
-            "plays on all bonded speakers); run jasper-grouping-reconcile",
+            "plays on all bonded speakers); check "
+            f"{VOICE_GROUPING_ENV_FILE} precedence and run jasper-grouping-reconcile",
         )
     return CheckResult(
         label, "ok", f"member-local TTS wired ({OUTPUTD_TTS_SOCKET})",
