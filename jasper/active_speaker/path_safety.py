@@ -27,6 +27,7 @@ from typing import Any
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import issue as _issue
+from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
@@ -459,7 +460,7 @@ def _calibration_level_controlled(calibration_level: dict[str, Any] | None) -> b
         values["min_level_dbfs"]
         <= values["requested_level_dbfs"]
         <= values["max_level_dbfs"]
-        <= -30.0
+        <= MAX_TEST_LEVEL_DBFS
     )
 
 

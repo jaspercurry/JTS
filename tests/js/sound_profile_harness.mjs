@@ -303,7 +303,7 @@ function activePayloads() {
     status: "ready",
     test_signal: {
       min_level_dbfs: -80,
-      max_level_dbfs: -30,
+      max_level_dbfs: 0,
       step_db: 1,
       default_level_dbfs: -80,
       requested_level_dbfs: -72,
@@ -365,7 +365,7 @@ function levelPayload(value) {
     status: "ready",
     test_signal: {
       min_level_dbfs: -80,
-      max_level_dbfs: -30,
+      max_level_dbfs: 0,
       step_db: 1,
       default_level_dbfs: -80,
       requested_level_dbfs: value,
@@ -866,7 +866,7 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
       test_level: {
         requested_level_dbfs: -72,
         min_level_dbfs: -80,
-        max_level_dbfs: -30,
+        max_level_dbfs: 0,
         step_db: 1,
         upward_step_limit_db: 6,
       },
@@ -928,7 +928,7 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
   await loadAndSetActiveState(harness);
 
   let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Combined test level") || !html.includes('min="-80"') || !html.includes('max="-30"')) {
+  if (!html.includes("Combined test level") || !html.includes('min="-80"') || !html.includes('max="0"')) {
     fail("Combined card should expose the full commissioning level envelope", { html });
   }
   harness.dispatchInput({ "data-summed-test-level": "main" }, "-40");
@@ -974,7 +974,7 @@ async function testCombinedTestButtonStopsActiveRequest() {
       test_level: {
         requested_level_dbfs: -72,
         min_level_dbfs: -80,
-        max_level_dbfs: -30,
+        max_level_dbfs: 0,
         step_db: 1,
       },
       combined_groups: [{
@@ -1973,6 +1973,114 @@ async function testSummedByEarValidationExcludesMicCapture() {
   return { summedByEarValidationExcludesMicCapture: true };
 }
 
+async function testSummedValidationRefreshesBaselineProfileState() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  const initialMeasurements = {
+    status: "needs_summed_validation",
+    summary: summedSummary({
+      main: {
+        captured: true,
+        audio_emitted: true,
+        summed_test_id: "sum-1",
+        playback_id: "sum-1",
+      },
+    }),
+    permissions: {},
+    issues: [],
+  };
+  const validatedMeasurements = {
+    status: "ready_for_baseline",
+    summary: {
+      ...summedSummary({
+        main: {
+          captured: true,
+          audio_emitted: true,
+          summed_test_id: "sum-1",
+          playback_id: "sum-1",
+        },
+      }),
+      validated_summed_group_count: 1,
+      summed_validation_complete: true,
+      latest_summed_validations: {
+        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
+      },
+    },
+    permissions: { may_compile_baseline: true },
+    issues: [],
+  };
+  let measurements = initialMeasurements;
+  let viewStatus = "needs_combined_check";
+  let baselineFetches = 0;
+  const baselineApplied = {
+    status: "applied",
+    permissions: { may_compile: false, may_apply: false },
+    config: { basename: "active_speaker_baseline.yml" },
+    issues: [],
+  };
+  const baselineReadyToCompile = {
+    status: "ready_to_compile",
+    permissions: { may_compile: true, may_apply: false },
+    config: { basename: "active_speaker_baseline.yml" },
+    issues: [],
+  };
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/baseline-profile": () => {
+      baselineFetches += 1;
+      return Promise.resolve(response(
+        baselineFetches === 1 ? baselineApplied : baselineReadyToCompile
+      ));
+    },
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: viewStatus,
+      test_level: levelPayload(-72).test_signal,
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: viewStatus,
+        status_label: viewStatus === "ready_to_save_profile" ? "ready" : "next",
+        has_audible_test: true,
+        validated: viewStatus === "ready_to_save_profile",
+        actions: {
+          record_combined_result: {
+            id: "record_combined_result",
+            enabled: true,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "sum-1" },
+          },
+        },
+      }],
+    })),
+    "./active-speaker/summed-validation": () => {
+      measurements = validatedMeasurements;
+      viewStatus = "ready_to_save_profile";
+      return Promise.resolve(response(validatedMeasurements));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "record-summed-validation",
+    "data-group-id": "main",
+    "data-summed-test-id": "sum-1",
+    "data-outcome": "blend_ok",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="save-apply-baseline-profile"')) {
+    fail("saving the combined check must refresh stale applied profile state and show the save action", {
+      baselineFetches,
+      html,
+    });
+  }
+  if (!html.includes("Save and apply")) {
+    fail("ready-to-compile baseline profile should invite save/apply after combined validation", { html });
+  }
+  return { summedValidationRefreshesBaselineProfileState: true };
+}
+
 async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   const commissionState = {
     commission_load: {
@@ -2196,7 +2304,7 @@ async function testCommissionRampLimitStopsAutoRamp() {
   let commissionState = {
     commission_load: {
       status: "loaded",
-      target: { role: "woofer", audible_gain_db: -30 },
+      target: { role: "woofer", audible_gain_db: 0 },
       rollback_available: true,
     },
     ramp: { confirmed_roles: [], pending: null },
@@ -2216,9 +2324,9 @@ async function testCommissionRampLimitStopsAutoRamp() {
         status: "blocked",
         role: "woofer",
         speaker_group_id: "main",
-        current_gain_db: -30,
-        next_gain_db: -30,
-        max_gain_db: -30,
+        current_gain_db: 0,
+        next_gain_db: 0,
+        max_gain_db: 0,
         issues: [{
           severity: "blocker",
           code: "commission_ramp_at_limit",
@@ -2453,6 +2561,7 @@ results.push(await testCommissionCompleteDoesNotWrapToWoofer());
 results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
 results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());
 results.push(await testSummedByEarValidationExcludesMicCapture());
+results.push(await testSummedValidationRefreshesBaselineProfileState());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());

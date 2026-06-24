@@ -228,12 +228,28 @@ def test_gate_passes_woofer_floor_step():
 
 
 def test_gate_rejects_gain_above_ceiling_envelope():
-    g = _gate(
-        _two_way(),
-        role="woofer",
-        running_gain=COMMISSION_RAMP_MAX_LEVEL_DBFS,
+    preset = _two_way()
+    role = "woofer"
+    audible = set(audible_outputs_for_role(preset, role))
+    ev = driver_commission_audible_evidence(
+        _emit(preset, audible, gain=COMMISSION_RAMP_MAX_LEVEL_DBFS),
+        preset=preset,
+        audible_outputs=audible,
+        expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+    )
+    running = _emit(preset, audible, gain=COMMISSION_RAMP_MAX_LEVEL_DBFS)
+    g = build_stage5_ramp_gate(
+        running_config_raw=running,
+        role=role,
+        present_roles={"woofer", "tweeter"},
+        audible_outputs=ev["audible_outputs"],
+        muted_outputs=ev["muted_outputs"],
+        tweeter_outputs=ev["tweeter_outputs"],
+        protective_hp_hz=ev["protective_highpass_hz"],
         current_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS,
         next_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS + 10,
+        confirmed_roles=frozenset(),
+        prior_step_cleared=True,
     )
     assert g["checks"]["gain_within_envelope"] is False
     assert g["passed"] is False
