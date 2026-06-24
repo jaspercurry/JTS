@@ -902,10 +902,51 @@ def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
     return True
 
 
+def _reset_failed_unit(unit: str) -> None:
+    """`systemctl reset-failed <unit>` before a DELIBERATE reconciler restart.
+
+    The reconciler's restarts are control-plane CONFIG-APPLIES, not crash
+    recovery. A rapid burst of /grouping/set updates — e.g. an active-crossover
+    calibration / trim / delay sweep on the leader re-fanned to a follower —
+    legitimately re-derives the lane env many times in seconds, and each apply
+    spends a slot of the target unit's StartLimitBurst. Once that burst is
+    exhausted inside StartLimitIntervalSec, systemd escalates to
+    StartLimitAction=reboot for the reboot-budget units (outputd / camilla /
+    voice) and the Pi reboots from deliberate churn — the 2026-06-24 jts.local
+    follower reboot (six /grouping/set POSTs from the leader in 44 s tripped
+    outputd's start-limit). reset-failed clears any prior failed / start-limit
+    parking so a config-apply restart never consumes the crash-reboot budget.
+    Genuine crash loops still escalate: the daemon's own Restart= path does NOT
+    call this, so only reconciler-initiated (deliberate) restarts are exempted.
+
+    Fail-soft and BEST-EFFORT: a reset-failed failure must never block the
+    restart it precedes. Mirrors grouping_supervisor.kick_reconciler and
+    shairport_supervisor.restart_shairport, which reset-failed the same way."""
+    try:
+        subprocess.run(
+            ["systemctl", "reset-failed", unit],
+            check=False, capture_output=True, text=True,
+        )
+    except (FileNotFoundError, OSError) as e:
+        log_event(
+            logger,
+            "multiroom.reconcile.reset_failed_error",
+            unit=unit,
+            error=e,
+            level=logging.WARNING,
+        )
+
+
 def _restart_unit(unit: str) -> bool:
     """Restart a unit so it re-reads its grouping env. Fail-soft (a
     failure is logged + reflected in the exit code by the caller; the
-    doctor's drift checks surface a lane left unwired)."""
+    doctor's drift checks surface a lane left unwired).
+
+    reset-failed FIRST (see :func:`_reset_failed_unit`) so a config-apply
+    restart never spends the target's crash-reboot budget — this is the single
+    guard that turns a rapid grouping-config burst into harmless restarts
+    instead of a Pi reboot."""
+    _reset_failed_unit(unit)
     try:
         subprocess.run(
             ["systemctl", "restart", unit],
