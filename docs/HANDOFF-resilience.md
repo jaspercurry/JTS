@@ -929,7 +929,8 @@ Array would make `jasper-aec-bridge` fail because `/proc/asound/Array`
 was gone while `jasper-voice` still listened on UDP for packets that
 would never arrive. The reconciler closes that loop:
 
-- `JASPER_AEC_MODE=auto` + 6-channel `JASPER_AEC_MIC_DEVICE` present:
+- `JASPER_AEC_MODE=auto` + profile-managed 6-channel XVF present:
+  derive `JASPER_AEC_MIC_DEVICE` from the detected mic profile, then
   set `JASPER_MIC_DEVICE=udp:<port>`, enable/start
   `jasper-aec-init` + `jasper-aec-bridge`, restart voice.
 - A configured direct mic candidate is present but AEC is unavailable
@@ -942,13 +943,13 @@ would never arrive. The reconciler closes that loop:
   escape hatch for future mics while we keep the production default
   simple.
 
-The future-mic hook is intentionally small: `JASPER_AEC_MIC_DEVICE`
-defaults to `Array`, and `JASPER_MIC_DEVICE_CANDIDATES` defaults to
-`Array`. If we add another supported mic later, add it to the
-candidate list (comma-separated, or shell-quoted if using spaces) and
-the same reconciler can select it as the direct fallback. If the future
-mic needs its own AEC path, that should be a deliberate second policy
-branch rather than baking more assumptions into the Array path.
+The future-mic hook is intentionally small: XVF identity lives in
+`jasper.mics.xvf3800`, exported as `JASPER_XVF_*` by
+`jasper-xvf-profile`, and the reconciler is the single writer of the
+concrete bridge mic (`JASPER_AEC_MIC_DEVICE`) for selectable profiles.
+`JASPER_MIC_DEVICE_CANDIDATES` remains a direct-mic fallback hint, not
+the source of truth for supported XVF card identity. `custom` is the
+escape hatch for a deliberately hand-pinned mic.
 
 ### WiFi profile recovery — sidebar to the ladder
 
@@ -1128,9 +1129,11 @@ For anyone touching the resilience code:
   `LoopbackAEC`.
 - `deploy/bin/jasper-aec-reconcile` — the mic/AEC policy reconciler.
   It reads `/etc/jasper/jasper.env` plus
-  `/var/lib/jasper/aec_mode.env`, detects the configured mic card under
-  `/proc/asound`, clears stale UDP when the Array is absent, and starts
-  or parks `jasper-aec-*` + `jasper-voice` accordingly.
+  `/var/lib/jasper/aec_mode.env`, derives the active XVF card from the
+  detected mic profile (`Array` for legacy square/circular,
+  `L16K6Ch` for Flex LINEAR-4) for selectable profiles, clears stale
+  UDP when no owned mic candidate is present, and starts or parks
+  `jasper-aec-*` + `jasper-voice` accordingly.
 - `deploy/systemd/jasper-aec-reconcile.service` — oneshot wrapper used
   at install, boot, and udev-triggered hardware changes.
 - `deploy/install.sh:reconcile_aec_state` — seeds
@@ -1211,8 +1214,9 @@ manual verification.
   @ 16000 Hz)`.
 - `ss -ulpn | grep 9876` shows the voice process owning the UDP
   socket.
-- If the Array is absent, `journalctl -u jasper-aec-reconcile -e`
-  should show stale UDP being cleared to `Array`; `jasper-aec-bridge`
+- If the selected XVF card (`Array` or `L16K6Ch`) is absent,
+  `journalctl -u jasper-aec-reconcile -e` should show stale owned UDP
+  state being cleared to the first candidate; `jasper-aec-bridge`
   should be disabled/inactive and `jasper-voice` should be stopped
   rather than watchdog-looping.
 - `journalctl -u jasper-control | grep 'event=shairport.start'` shows
@@ -1292,7 +1296,9 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-22 (Wi-Fi scan-suppression root helper path verified on
-`jts3.local`; broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
+Last verified: 2026-06-25 (AEC reconciler mic-profile ownership rechecked:
+`JASPER_AEC_MIC_DEVICE` is derived from detected XVF profile for selectable
+profiles; Wi-Fi scan-suppression root helper path verified on `jts3.local`
+2026-06-22; broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
 `/state.resilience` supervisor doctor surface and multiroom cascade ring
 rechecked against current code)

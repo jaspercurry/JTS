@@ -297,6 +297,7 @@ def _audio_profile_status(
         capture_channels = runtime_profile.capture_channels
         recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
         display_name = runtime_profile.display_name
+        alsa_card_name = runtime_profile.alsa_card_name
         variant_id = runtime_profile.variant_id
         geometry = runtime_profile.geometry
         chip_beam_plan = runtime_profile.chip_beam_plan_id
@@ -306,6 +307,7 @@ def _audio_profile_status(
         capture_channels = None
         recommended_channels = 6
         display_name = "Seeed ReSpeaker XVF3800 (USB UA)"
+        alsa_card_name = ""
         variant_id = ""
         geometry = ""
         chip_beam_plan = ""
@@ -325,6 +327,7 @@ def _audio_profile_status(
             capture_channels=capture_channels,
             recommended_channels=recommended_channels,
             display_name=display_name,
+            alsa_card_name=alsa_card_name,
             variant_id=variant_id,
             geometry=geometry,
             chip_beam_plan=chip_beam_plan,

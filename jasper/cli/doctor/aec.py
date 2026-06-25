@@ -144,6 +144,7 @@ def _audio_profile_status_for_doctor(
                 capture_channels=runtime_profile.capture_channels,
                 recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
                 display_name=runtime_profile.display_name,
+                alsa_card_name=runtime_profile.alsa_card_name,
                 variant_id=runtime_profile.variant_id,
                 geometry=runtime_profile.geometry,
                 chip_beam_plan=runtime_profile.chip_beam_plan_id,

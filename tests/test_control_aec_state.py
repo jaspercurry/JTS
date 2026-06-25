@@ -733,6 +733,39 @@ def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
     assert "not applied" in " ".join(status["microphone"]["warnings"])
 
 
+def test_aec_full_status_names_stale_saved_aec_card(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    _stub_xvf_runtime(monkeypatch)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["audio_profile"]["state"] == "waiting_bridge"
+    assert "configured AEC mic L16K6Ch" in status["audio_profile"]["reason"]
+    warnings = " ".join(status["microphone"]["warnings"])
+    assert "Configured AEC mic L16K6Ch" in warnings
+    assert "detected XVF card Array" in warnings
+
+
 def test_aec_full_status_chip_aec_applied_requires_runtime_env(
     aec_mode_file, wake_model_file, monkeypatch,
 ):

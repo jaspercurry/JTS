@@ -750,6 +750,47 @@ split_candidates() {
     MIC_CANDIDATES=($raw)
 }
 
+mic_candidates_contains() {
+    local needle="$1"
+    local candidate
+    for candidate in "${MIC_CANDIDATES[@]}"; do
+        [[ "$candidate" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+prepend_mic_candidate() {
+    local candidate="$1"
+    [[ -n "$candidate" ]] || return 0
+    mic_candidates_contains "$candidate" && return 0
+    MIC_CANDIDATES=("$candidate" "${MIC_CANDIDATES[@]}")
+}
+
+profile_managed_mic_resolution() {
+    # `custom` is the escape hatch for operator-managed mic routing. Every
+    # selectable product profile is reconciler-owned: the detected mic
+    # profile supplies the concrete ALSA card, so swapping XVF variants cannot
+    # leave an old card id pinned in /etc/jasper/jasper.env.
+    [[ "${AUDIO_INPUT_PROFILE:-custom}" != "custom" ]]
+}
+
+derive_profile_managed_aec_mic_device() {
+    local detected_card old_card
+    profile_managed_mic_resolution || return 0
+    detected_card="${JASPER_XVF_ALSA_CARD:-}"
+    [[ -n "$detected_card" ]] || return 0
+    mic_present "$detected_card" || return 0
+
+    old_card="${AEC_MIC_DEVICE:-}"
+    AEC_MIC_DEVICE="$detected_card"
+    prepend_mic_candidate "$detected_card"
+    if [[ -n "$old_card" && "$old_card" != "$detected_card" ]]; then
+        log "event=aec_reconcile.aec_mic_device_rederived profile=${AUDIO_INPUT_PROFILE} old=${old_card} new=${detected_card} variant=${JASPER_XVF_VARIANT:-unknown} reason=detected_xvf_profile_wins"
+    elif [[ -z "$old_card" ]]; then
+        log "event=aec_reconcile.aec_mic_device_derived profile=${AUDIO_INPUT_PROFILE} new=${detected_card} variant=${JASPER_XVF_VARIANT:-unknown}"
+    fi
+}
+
 first_candidate() {
     if [[ ${#MIC_CANDIDATES[@]} -gt 0 ]]; then
         echo "${MIC_CANDIDATES[0]}"
@@ -931,6 +972,7 @@ load_env_file "$MODE_FILE"
 observe_mic_profile_state
 
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
+AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
 AEC_MIC_DEVICE="${JASPER_AEC_MIC_DEVICE:-}"
 AEC_UDP_PORT="${JASPER_AEC_UDP_PORT:-9876}"
 AEC_UDP_PORT_RAW="${JASPER_AEC_UDP_PORT_RAW:-9877}"
@@ -947,6 +989,9 @@ if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
     MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_ALSA_CARD},${DEFAULT_MIC_DEVICE_CANDIDATES}"
 fi
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE:-$MIC_DEVICE_CANDIDATES_DEFAULT}}"
+if [[ "$CHECK_ONLY" != "1" ]]; then
+    derive_profile_managed_aec_mic_device
+fi
 if [[ -z "$AEC_MIC_DEVICE" ]]; then
     if AEC_MIC_DEVICE="$(first_present_candidate)"; then
         :
@@ -954,7 +999,11 @@ if [[ -z "$AEC_MIC_DEVICE" ]]; then
         AEC_MIC_DEVICE="$(first_candidate)"
     fi
 fi
-OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-plughw:CARD=${AEC_MIC_DEVICE},DEV=0}"
+if profile_managed_mic_resolution && [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
+    OUTPUTD_CHIP_REF_PCM="plughw:CARD=${AEC_MIC_DEVICE},DEV=0"
+else
+    OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-plughw:CARD=${AEC_MIC_DEVICE},DEV=0}"
+fi
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
 # Additive wake-detection legs (see write_leg_env for the mapping).
 # JASPER_AEC_MODE remains the master toggle; these only matter when
@@ -972,7 +1021,6 @@ LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
 # Only the software-AEC3 leg path in write_leg_env acts on it.
 CHIP_REF_OBSERVE="$(normalize_bool "$(mode_file_value JASPER_AEC_CHIP_REF_OBSERVE 0)")"
 AUDIO_DAC_ID="$(normalize_output_dac_id "${JASPER_AUDIO_DAC_ID:-unknown}")"
-AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
 CHIP_AEC_TESTING_REQUESTED=0
 if [[ "$AUDIO_INPUT_PROFILE" == "xvf_chip_aec_testing" ]]; then
     CHIP_AEC_TESTING_REQUESTED=1
@@ -1006,6 +1054,9 @@ fi
 
 log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC}"
 write_mic_profile_env
+if profile_managed_mic_resolution; then
+    set_env_var "$ENV_FILE" JASPER_AEC_MIC_DEVICE "$AEC_MIC_DEVICE"
+fi
 write_chip_aec_gate_env
 
 if grouping_voice_parked; then

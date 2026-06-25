@@ -74,6 +74,66 @@ def test_chip_aec_pending_when_runtime_env_not_applied():
     assert "not applied" in " ".join(status["microphone"]["warnings"])
 
 
+def test_profile_status_warns_when_saved_aec_card_is_stale():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            aec_device="L16K6Ch",
+            chip_enabled=False,
+        ),
+        MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="Array",
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
+        ),
+        bridge_active=False,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"]["state"] == "waiting_bridge"
+    assert "configured AEC mic L16K6Ch" in status["audio_profile"]["reason"]
+    assert "detected XVF card Array" in status["audio_profile"]["reason"]
+    warnings = " ".join(status["microphone"]["warnings"])
+    assert "Configured AEC mic L16K6Ch" in warnings
+    assert "detected XVF card Array" in warnings
+    assert "run the reconciler" in warnings
+
+
+def test_chip_aec_active_requires_detected_aec_card_match():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            aec_device="L16K6Ch",
+            chip_enabled=True,
+            chip_aec_150_device="udp:9887",
+            chip_aec_210_device="udp:9888",
+        ),
+        MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="Array",
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
+        ),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "pending"
+    assert "Configured AEC mic L16K6Ch" in " ".join(
+        status["microphone"]["warnings"]
+    )
+
+
 def test_software_aec3_profile_reports_optional_legs():
     status = build_audio_profile_status(
         AecIntent(mode="auto", raw_enabled=True, dtln_enabled=True),

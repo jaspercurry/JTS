@@ -84,6 +84,7 @@ class MicProbe:
     capture_channels: int | None
     recommended_channels: int = 6
     display_name: str = "Seeed ReSpeaker XVF3800 (USB UA)"
+    alsa_card_name: str = ""
     variant_id: str = ""
     geometry: str = ""
     chip_beam_plan: str = ""
@@ -461,16 +462,33 @@ def build_audio_profile_status(
     else:
         mic_name = "No supported mic detected"
 
+    warnings: list[str] = []
+    managed_selection = selection != PROFILE_CUSTOM
+    configured_aec_device = (runtime.aec_device or "").strip()
+    detected_aec_device = (mic.alsa_card_name or "").strip()
+    aec_device_mismatch = bool(
+        managed_selection
+        and mic.xvf_present
+        and configured_aec_device
+        and detected_aec_device
+        and configured_aec_device != detected_aec_device
+    )
+    aec_device_mismatch_reason = (
+        f"configured AEC mic {configured_aec_device} does not match "
+        f"detected XVF card {detected_aec_device}"
+        if aec_device_mismatch else ""
+    )
+
     chip_runtime_active = bool(
         effective_intent.mode == "auto"
         and bridge_active
         and chip_available
         and gate_permitted
+        and not aec_device_mismatch
         and runtime.chip_enabled
         and runtime.chip_aec_150_device
         and runtime.chip_aec_210_device
     )
-    warnings: list[str] = []
 
     if effective_intent.mode != "auto":
         processing_mode = "Direct mic"
@@ -525,6 +543,14 @@ def build_audio_profile_status(
                 gate_detail
                 or "Chip-AEC is not permitted for this output DAC."
             )
+        elif aec_device_mismatch:
+            session_source = "waiting for AEC bridge"
+            profile_state = "pending" if bridge_active else "waiting_bridge"
+            active_profile = None
+            profile_reason = (
+                "AEC bridge is not using the detected XVF card because "
+                f"{aec_device_mismatch_reason}."
+            )
         elif not bridge_active:
             session_source = "waiting for AEC bridge"
             profile_state = "waiting_bridge"
@@ -545,15 +571,30 @@ def build_audio_profile_status(
         if effective_intent.dtln_enabled:
             wake_legs.append("DTLN")
         requested_profile = PROFILE_XVF_SOFTWARE_AEC3
-        active_profile = PROFILE_XVF_SOFTWARE_AEC3 if bridge_active else None
-        profile_state = "active" if bridge_active else "waiting_bridge"
-        profile_reason = (
-            "Software AEC3 bridge is active."
-            if bridge_active else "AEC bridge is not active yet."
-        )
+        if aec_device_mismatch:
+            active_profile = None
+            profile_state = "pending" if bridge_active else "waiting_bridge"
+        else:
+            active_profile = PROFILE_XVF_SOFTWARE_AEC3 if bridge_active else None
+            profile_state = "active" if bridge_active else "waiting_bridge"
+        if bridge_active and not aec_device_mismatch:
+            profile_reason = "Software AEC3 bridge is active."
+        elif aec_device_mismatch:
+            profile_reason = (
+                "AEC bridge is not using the detected XVF card because "
+                f"{aec_device_mismatch_reason}."
+            )
+        else:
+            profile_reason = "AEC bridge is not active yet."
 
     if effective_intent.mode == "auto" and not bridge_active:
         warnings.append("AEC bridge is not active yet.")
+    if aec_device_mismatch:
+        warnings.append(
+            f"Configured AEC mic {configured_aec_device} does not match "
+            f"detected XVF card {detected_aec_device}; run the reconciler "
+            "to update derived mic state."
+        )
     if effective_intent.chip_aec_enabled and not chip_available:
         warnings.append(
             "Chip-AEC needs a validated XVF3800 chip beam plan for the "

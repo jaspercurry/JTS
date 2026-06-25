@@ -2287,8 +2287,9 @@ Files involved in the AEC subsystem:
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
   `pyusb`, `libusb_package`, `pyalsaaudio` deps
 - `.env.example` — mic/AEC env knobs:
-  `JASPER_AEC_MIC_DEVICE`, `JASPER_MIC_DEVICE_CANDIDATES`, UDP
-  transport settings, and tuning gains
+  profile-managed `JASPER_AEC_MIC_DEVICE` derived by the reconciler,
+  `JASPER_MIC_DEVICE_CANDIDATES` direct-fallback hints, UDP transport
+  settings, and tuning gains
 - `scripts/aec-probe-timing.py` — current multi-source diagnostic timing
   probe for outputd's final speaker-reference UDP stream, outputd's
   chip-ref writer tee, the legacy `jasper_capture` tap, and selected
@@ -2645,6 +2646,6 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-25 (central chip-AEC DAC gate and
-`xvf_chip_aec_testing` profile rechecked against the reconciler, `/aec`,
-doctor, and validation paths).
+Last verified: 2026-06-25 (central chip-AEC DAC gate,
+`xvf_chip_aec_testing`, and profile-managed XVF mic-card derivation rechecked
+against the reconciler, `/aec`, doctor, and validation paths).

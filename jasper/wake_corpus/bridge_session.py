@@ -620,6 +620,7 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
         display_name=identity.get(
             "display_name", "Seeed ReSpeaker XVF3800 (USB UA)",
         ),
+        alsa_card_name=str(identity.get("alsa_card", "")),
         variant_id=str(identity.get("variant_id", "")),
         geometry=str(identity.get("geometry", "")),
         chip_beam_plan=str(identity.get("chip_beam_plan", "")),
