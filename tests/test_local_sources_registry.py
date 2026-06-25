@@ -3,11 +3,29 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from jasper.local_sources import (
+    local_source_lifecycle,
     local_source_advertise_units,
     local_source_audio_refresh_units,
+    local_source_lifecycles,
     local_source_park_units,
     local_source_restore_units,
+    local_source_runtime_units,
 )
+from jasper.music_sources import MUSIC_SOURCE_SPECS, Source
+
+
+def test_every_declared_music_source_has_lifecycle():
+    lifecycles = {lifecycle.source for lifecycle in local_source_lifecycles()}
+    sources = {spec.id for spec in MUSIC_SOURCE_SPECS}
+    assert lifecycles == sources
+    for spec in MUSIC_SOURCE_SPECS:
+        assert local_source_lifecycle(spec.id).source == spec.id
+
+
+def test_usb_runtime_includes_host_visible_gadget_owner():
+    lifecycle = local_source_lifecycle(Source.USBSINK)
+    assert "jasper-usbsink-init.service" in lifecycle.runtime_units
+    assert "jasper-usbsink-init.service" in local_source_runtime_units()
 
 
 def test_usb_parking_includes_host_visible_gadget_owner():

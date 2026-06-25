@@ -44,7 +44,7 @@ from tests.test_active_speaker_baseline_profile import (
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 
 
-def _cfg(channel: str = "left") -> GroupingConfig:
+def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
     return GroupingConfig(
         enabled=True,
         role="leader",
@@ -53,6 +53,7 @@ def _cfg(channel: str = "left") -> GroupingConfig:
         leader_addr="",
         buffer_ms=400,
         codec="flac",
+        trim_db=trim_db,
         error=None,
     )
 
@@ -154,6 +155,25 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert not any(
         n.startswith("split_active_") for n in bake_doc.get("mixers", {})
     )
+
+
+def test_precheck_threads_pair_trim_into_leader_crossover(
+    monkeypatch, tmp_path,
+) -> None:
+    """The active leader's own speaker path is camilla#2, not outputd's
+    dac_content lane, so grouping trim must be in the driver-domain graph."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+
+    asyncio.run(alc.precheck_active_leader(_cfg("left", trim_db=-4.0), validate=_valid_config))
+
+    crossover_yaml = Path(alc.CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8")
+    assert "# pair_trim_db=4.000" in crossover_yaml
+    assert "pair_balance_trim:" in crossover_yaml
+    assert "parameters: { gain: -4.0000" in crossover_yaml
 
 
 def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:

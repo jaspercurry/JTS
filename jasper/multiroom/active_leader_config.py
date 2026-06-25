@@ -51,7 +51,9 @@ differences from the follower:
     guard repairs only a dead pipe (NOT a flat statefile), so the never-flat
     (never full-range to a tweeter) guarantee for an ARMED camilla#2 rests on
     THIS arm-time re-seed (deploy/install.sh ``ensure_crossover_camilla_statefile``
-    flags exactly this hand-off).
+    flags exactly this hand-off). The reconciler owns camilla#2 unit lifecycle:
+    disable before bake, then start from the reseeded statefile after the active
+    content PCM release is proven.
 
 The unbond restore re-uses :func:`jasper.multiroom.follower_config.restore_active_camilla_solo`
 (the shared "restore camilla#1 to a RE-PROVEN active baseline, never passive"
@@ -238,6 +240,7 @@ async def precheck_active_leader(
         capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
         driver_domain=True,
         program_channel=program_channel,
+        driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
         **build_kwargs,
     )
     if not candidate.get("permissions", {}).get("may_apply"):

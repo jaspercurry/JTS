@@ -210,12 +210,40 @@ a.room-row:hover .room-row__go {
   margin-top: 0.9rem;
 }
 
-.trim-block { margin: 0.9rem 0 0.2rem; }
-.trim-row {
+.balance-block { margin: 0.9rem 0 0.2rem; }
+.balance-control {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  margin-top: 0.45rem;
+  margin-top: 0.55rem;
 }
-.trim-row__label { min-width: 9.5em; }
-.trim-value { min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.balance-end {
+  flex: 0 0 2.6rem;
+  color: var(--muted, #777);
+  font-size: 0.88em;
+  font-weight: 600;
+}
+.balance-end:last-child { text-align: right; }
+.balance-slider {
+  flex: 1 1 14rem;
+  min-width: 8rem;
+}
+.balance-readout {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.55rem;
+}
+.balance-value {
+  min-width: 7.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.balance-trims {
+  color: var(--muted, #777);
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+}
+.balance-status:empty { display: none; }
+.balance-status { margin-top: 0.45rem; }

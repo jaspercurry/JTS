@@ -3073,6 +3073,18 @@ async def _active_speaker_ensure_commission_startup_anchor(
     }
 
 
+def _active_speaker_confirmed_driver_roles(
+    topology: OutputTopology,
+    *,
+    group: str,
+) -> list[str]:
+    from jasper.active_speaker.measurement import confirmed_driver_roles
+
+    if not group:
+        return []
+    return confirmed_driver_roles(topology, speaker_group_id=group)
+
+
 async def _active_speaker_commission_load_payload(
     raw: dict[str, Any],
     *,
@@ -3221,7 +3233,13 @@ async def _active_speaker_commission_load_payload(
     if (payload.get("load") or {}).get("status") == "loaded":
         from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
 
-        payload["ramp"] = clear_pending_ramp_step(speaker_group_id=group)
+        payload["ramp"] = clear_pending_ramp_step(
+            speaker_group_id=group,
+            confirmed_roles=_active_speaker_confirmed_driver_roles(
+                topology,
+                group=group,
+            ),
+        )
     return payload
 
 
@@ -3294,6 +3312,10 @@ async def _active_speaker_commission_ramp_step_payload(
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
         play_tone=_play_commission_tone,
+        confirmed_roles=_active_speaker_confirmed_driver_roles(
+            topology,
+            group=group,
+        ),
     )
     logger.info(
         "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
@@ -3332,12 +3354,12 @@ async def _active_speaker_commission_ramp_ack_payload(
     # load_config lets any terminal by-ear outcome re-mute the transient graph.
     load_config, _, _ = commission_seams(cam)
     payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
-    if (
+    should_record_driver_evidence = (
         outcome == "heard_correct_driver"
         and payload.get("status") == "confirmed"
         and not payload.get("issues")
-        and isinstance(pending, dict)
-    ):
+    ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
+    if should_record_driver_evidence and isinstance(pending, dict):
         measurements = record_driver_measurement(
             topology,
             {
@@ -3394,7 +3416,10 @@ async def _active_speaker_commission_state_payload(
     pure read. The arm/step that run the preflight are POST-only.
     """
 
-    from jasper.active_speaker.commission_ramp import load_ramp_state
+    from jasper.active_speaker.commission_ramp import (
+        effective_confirmed_roles,
+        load_ramp_state,
+    )
     from jasper.active_speaker.safe_playback import load_safe_playback_state
     from jasper.active_speaker.startup_load import (
         commission_load_runtime_status,
@@ -3415,6 +3440,17 @@ async def _active_speaker_commission_state_payload(
             commission_load_runtime_status(commission, running_raw),
         )
     ramp = load_ramp_state()
+    target = commission.get("target") or {}
+    group = str(
+        target.get("speaker_group_id") or ramp.get("speaker_group_id") or ""
+    ).strip()
+    durable_confirmed: list[str] = []
+    if group:
+        topology = load_output_topology()
+        durable_confirmed = _active_speaker_confirmed_driver_roles(
+            topology,
+            group=group,
+        )
     quiet = load_safe_playback_state().get("quiet_start") or {}
     stale = commission.get("status") == "stale"
     pending = None if stale else ramp.get("pending")
@@ -3431,7 +3467,11 @@ async def _active_speaker_commission_state_payload(
             "issues": commission.get("issues") or [],
         },
         "ramp": {
-            "confirmed_roles": ramp.get("confirmed_roles") or [],
+            "confirmed_roles": effective_confirmed_roles(
+                ramp,
+                speaker_group_id=group,
+                confirmed_roles=durable_confirmed,
+            ),
             "pending": pending,
         },
         "floor": {

@@ -1508,6 +1508,7 @@ async def load_driver_commissioning_config(
     config_path: str | Path | None = None,
     statefile_path: str | Path | None = None,
     state_path: str | Path | None = None,
+    reconcile_output_hardware: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1526,8 +1527,10 @@ async def load_driver_commissioning_config(
 
     Precondition: the active graph (the staged all-muted config) is already live
     via :func:`load_protected_startup_config`. Commissioning swaps the running
-    graph at the same width, then waits for the output-hardware reconciler so
-    outputd is reading the active lane before the audible ramp can start.
+    graph at the same width. The first arm waits for the output-hardware
+    reconciler so outputd is reading the active lane before the audible ramp can
+    start; later same-target ramp updates may skip that reconciler because they
+    only change the transient CamillaDSP gain/mask, not the output lane.
     """
 
     try:
@@ -1808,7 +1811,27 @@ async def load_driver_commissioning_config(
         dsp_apply=apply_state.to_dict(),
         issues=[],
     )
-    _record_commission_state(payload, state_path=state_path)
+    if not reconcile_output_hardware:
+        payload["output_reconcile"] = {
+            "status": "skipped",
+            "reason": "same_active_output_lane",
+            "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
+        }
+        _record_commission_state(payload, state_path=state_path)
+        logger.info(
+            "event=active_speaker.driver_commission_load action=output_reconcile "
+            "status=skipped reason=same_active_output_lane"
+        )
+        logger.info(
+            "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
+            "durable_intact=%s op_id=%s",
+            candidate_path,
+            staged_path,
+            captured.get("durable_intact"),
+            apply_state.op_id,
+        )
+        return {"preflight": preflight, "load": payload}
+
     if not _trigger_audio_hardware_reconcile(
         source="active_speaker_driver_commission_load"
     ):
@@ -1833,6 +1856,10 @@ async def load_driver_commissioning_config(
                 )
             ],
         )
+        payload["output_reconcile"] = {
+            "status": "failed",
+            "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
+        }
         _record_commission_state(payload, state_path=state_path)
         logger.warning(
             "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
@@ -1842,6 +1869,11 @@ async def load_driver_commissioning_config(
             apply_state.op_id,
         )
         return {"preflight": preflight, "load": payload}
+    payload["output_reconcile"] = {
+        "status": "succeeded",
+        "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
+    }
+    _record_commission_state(payload, state_path=state_path)
     logger.info(
         "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
         "durable_intact=%s op_id=%s",

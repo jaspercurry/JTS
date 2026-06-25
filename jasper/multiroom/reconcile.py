@@ -1486,7 +1486,7 @@ def main(argv: list[str] | None = None) -> int:
                 from .follower_config import precheck_active_follower_sync
 
                 precheck_active_follower_sync(cfg)
-        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+state
+        except RuntimeError as e:
             endpoint_block_reason = getattr(
                 e, "reason", "active_endpoint_precheck_error",
             )
@@ -1783,7 +1783,10 @@ def main(argv: list[str] | None = None) -> int:
             # Only if that bake and outputd env handoff succeed, and camilla#1 has
             # provably released the DAC, is camilla#2 armed onto it. This is the
             # never-flat guarantee: the crossover guard repairs a dead pipe, not a
-            # flat statefile. camilla#2 keeps enable_rate_adjust ON — the validated
+            # flat statefile. camilla#2 is disabled before the bake and later
+            # started from that statefile, so trim-only rewrites are picked up by
+            # process start rather than relying on an idempotent systemd no-op.
+            # camilla#2 keeps enable_rate_adjust ON — the validated
             # active-follower seam, no outputd-summer yet
             # (HANDOFF-distributed-active.md "Sequencing" 1).
             bake_ok = False
@@ -1794,6 +1797,7 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 rc = 1
             else:
+                active_leader_action = "active_leader_bake_apply"
                 try:
                     from .active_leader_config import (
                         apply_active_leader_bake_sync,
@@ -1808,6 +1812,7 @@ def main(argv: list[str] | None = None) -> int:
                         path=applied,
                     )
                     bake_ok = True
+                    active_leader_action = "active_leader_crossover_seed"
                     seed_crossover_statefile()
                     if not _run_audio_hardware_reconcile(
                         reason="grouping-active-leader-bake",
@@ -1818,7 +1823,7 @@ def main(argv: list[str] | None = None) -> int:
                     log_event(
                         logger,
                         "multiroom.reconcile.camilla_failed",
-                        action="active_leader_bake_apply",
+                        action=active_leader_action,
                         error=e,
                         level=logging.ERROR,
                     )
@@ -1934,7 +1939,7 @@ def main(argv: list[str] | None = None) -> int:
                     logger,
                     "multiroom.reconcile.camilla",
                     result="active_leader_crossover_arm_skipped",
-                    reason="bake_not_applied",
+                    reason="crossover_not_ready",
                 )
                 rc = 1
 

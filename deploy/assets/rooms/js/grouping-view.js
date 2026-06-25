@@ -8,6 +8,38 @@
 // consumes these and does the (DOM-only, untestable-without-a-browser)
 // assembly via its h() helper. Tested by tests/js/rooms_grouping_view_test.mjs.
 
+export const BALANCE_MIN_DB = -24;
+export const BALANCE_MAX_DB = 24;
+
+export function clampBalanceDb(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(BALANCE_MIN_DB, Math.min(BALANCE_MAX_DB, n));
+}
+
+export function formatBalanceDb(value) {
+  return Number(value).toFixed(1) + " dB";
+}
+
+export function balanceText(value) {
+  const db = clampBalanceDb(value);
+  if (Math.abs(db) < 0.05) return "Centered";
+  return (db > 0 ? "Right louder by " : "Left louder by ")
+    + formatBalanceDb(Math.abs(db));
+}
+
+export function trimsForBalance(value) {
+  const db = clampBalanceDb(value);
+  return {
+    left: Math.min(0, -db),
+    right: Math.min(0, db),
+  };
+}
+
+export function balanceTrimRequest(value) {
+  return { target: "pair", balance_db: clampBalanceDb(value) };
+}
+
 // The bonded-leader "AirPlay lip-sync" row's presentation, or null when no row
 // should render. `fit` is /state.grouping.airplay_latency_fit (shape from
 // jasper/multiroom/airplay_latency.py): {applicable, tight?, residual_lag_sec?}

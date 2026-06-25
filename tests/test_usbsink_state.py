@@ -117,6 +117,17 @@ def test_publisher_initially_writes_not_playing(tmp_path):
     assert state["playing"] is False
     assert state["preempted"] is False
     assert state["host_connected"] is False
+    assert state["rms_dbfs"] is None
+    assert "Infinity" not in state_file.read_text()
+
+
+def test_publisher_writes_finite_rms_as_json_number(tmp_path):
+    pub, bridge, state_file = _make_publisher(tmp_path)
+    bridge.last_rms_dbfs = -42.5
+    pub._tick()
+
+    state = _read_state_file(state_file)
+    assert state["rms_dbfs"] == -42.5
 
 
 def test_publisher_active_transition_requires_debounce(tmp_path):

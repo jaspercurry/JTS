@@ -52,7 +52,7 @@ from jasper.multiroom.reconcile import (
 from tests.test_active_speaker_profile import _two_way_preset
 
 
-def _cfg(channel: str = "left") -> GroupingConfig:
+def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
     return GroupingConfig(
         enabled=True,
         role="follower",
@@ -61,6 +61,7 @@ def _cfg(channel: str = "left") -> GroupingConfig:
         leader_addr="jts.local",
         buffer_ms=400,
         codec="flac",
+        trim_db=trim_db,
         error=None,
     )
 
@@ -141,6 +142,31 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == (
         "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
     )
+
+
+def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> None:
+    """Active followers clear outputd's dac_content trim lane, so grouping trim
+    must be emitted into the relocated driver-domain graph."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+
+    cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
+    asyncio.run(
+        fc.apply_active_follower_config(
+            _cfg("right", trim_db=-2.5),
+            camilla_factory=lambda: cam,
+            validate=_valid_config,
+        )
+    )
+
+    yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
+    assert "# pair_trim_db=2.500" in yaml
+    assert "pair_balance_trim:" in yaml
+    assert "parameters: { gain: -2.5000" in yaml
 
 
 def test_apply_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:

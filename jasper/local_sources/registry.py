@@ -105,7 +105,7 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
     LocalSourceLifecycle(
         source=Source.USBSINK,
         intent_unit="jasper-usbsink.service",
-        runtime_units=("jasper-usbsink.service",),
+        runtime_units=("jasper-usbsink-init.service", "jasper-usbsink.service"),
         # Stop init first: it owns the host-visible gadget, and its PartOf=
         # relationship stops the bridge too. The bridge is included as a
         # belt-and-suspenders stop for systems with partial unit drift.
@@ -142,6 +142,14 @@ def _unique(units: tuple[str, ...]) -> tuple[str, ...]:
 
 def local_source_lifecycles() -> tuple[LocalSourceLifecycle, ...]:
     return _LIFECYCLES
+
+
+def local_source_lifecycle(source: Source) -> LocalSourceLifecycle:
+    """Return the lifecycle resources for one declared music source."""
+    for lifecycle in _LIFECYCLES:
+        if lifecycle.source == source:
+            return lifecycle
+    raise KeyError(source)
 
 
 def local_source_infrastructure_lifecycles() -> tuple[

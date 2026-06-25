@@ -63,9 +63,10 @@ URL surface (after nginx strips the /rooms/ prefix):
                     roles/bond untouched; partial failure rolls back, and a
                     stuck same-channel pair is REPAIRED to left/right rather
                     than rejected (CSRF-verified)
-  POST /trim        nudge one member's pair-balance trim by ±delta_db
-                    (target self|peer; attenuate-only, clamped; applied
-                    via the member's /grouping/set) (CSRF-verified)
+  POST /trim        set the pair balance absolutely (target=pair,
+                    balance_db) or nudge one member's legacy pair-balance
+                    trim by ±delta_db (target self|peer); attenuate-only,
+                    clamped, applied via /grouping/set (CSRF-verified)
   POST /mains-highpass
                     toggle wireless-sub bass management for every reachable
                     member in this bond via /grouping/set (CSRF-verified)
@@ -79,6 +80,7 @@ import http.client
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -125,6 +127,13 @@ CONTROL_MDNS_TYPE = "_jasper-control._tcp.local."
 # to it when an instance resolves without one. The management UI lives on
 # port 80 (nginx), so the click-through URLs use the bare address.
 CONTROL_HTTP_PORT = 8780
+CONTROL_HTTP_TIMEOUT_SEC = 5.0
+
+# Read-only balance display must not make the 7 s /rooms.json poll feel dead
+# when a paired speaker is powered off. Mutations still use the full control
+# timeout so an apply has a fair chance to reach a slow peer; the snapshot only
+# needs fresh-enough display state and can surface "unavailable" quickly.
+BALANCE_SNAPSHOT_PEER_TIMEOUT_SEC = 0.75
 
 # How long to browse for sibling speakers. python-zeroconf re-broadcasts
 # with backoff (1s, 2s, 4s); 2s captures the common PTR→SRV→TXT roundtrip
@@ -378,7 +387,8 @@ def _build_rooms_payload() -> dict:
       {
         "self": {name, hostname, room, address,
                  grouping: <read_grouping_state() dict
-                            + airplay_latency_fit: {applicable, tight?, …}>,
+                            + airplay_latency_fit: {applicable, tight?, …}
+                            + balance: {applicable, ok?, balance_db?, …}>,
                  peering: {enabled, primary}},
         "peers": [{name, room, address, home_url, system_url}, ...]
       }
@@ -389,6 +399,11 @@ def _build_rooms_payload() -> dict:
     """
     me = identity.read_identity()
     own = _self_addresses()
+    grouping = with_airplay_latency_fit(read_grouping_state())
+    balance = _pair_balance_snapshot(grouping, own)
+    if balance.get("applicable"):
+        grouping = dict(grouping)
+        grouping["balance"] = balance
     self_block = {
         "name": me.name,
         "hostname": me.hostname,
@@ -398,7 +413,7 @@ def _build_rooms_payload() -> dict:
         # false} unless this speaker is an active bonded leader) — the same
         # composer /state uses, so /rooms shows the bonded-leader lip-sync
         # status without re-deriving it.
-        "grouping": with_airplay_latency_fit(read_grouping_state()),
+        "grouping": grouping,
         "peering": _read_peering_block(),
     }
 
@@ -692,7 +707,7 @@ def _post_grouping_to_member(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=CONTROL_HTTP_TIMEOUT_SEC) as r:
             return (200 <= r.status < 300), f"HTTP {r.status}"
     except urllib.error.HTTPError as e:
         detail = (e.read() or b"").decode(errors="replace")[:200] if e.fp else ""
@@ -763,7 +778,10 @@ def _fan_out_grouping(
     )
 
 
-def _get_member_grouping(addr: str, known: set[str] | None = None) -> dict | None:
+def _get_member_grouping(
+    addr: str, known: set[str] | None = None, *,
+    timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
+) -> dict | None:
     """Read ONE member's grouping state by GETting its jasper-control
     ``/grouping`` (the CSRF-free read on `jasper-control`; unlike the gated
     ``POST /grouping/set``, the ``GET`` read is genuinely unauthenticated).
@@ -785,7 +803,7 @@ def _get_member_grouping(addr: str, known: set[str] | None = None) -> dict | Non
     url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping"
     req = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             if not (200 <= r.status < 300):
                 return None
             parsed = json.loads(r.read().decode("utf-8"))
@@ -1133,7 +1151,8 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
 
 
 def _resolve_bond_peer(
-    grouping: dict, known: set[str] | None = None,
+    grouping: dict, known: set[str] | None = None, *,
+    grouping_reader=None,
 ) -> tuple[str, dict | None, str]:
     """Resolve THIS speaker's one pair sibling → (addr, peer_grouping, err).
 
@@ -1151,16 +1170,21 @@ def _resolve_bond_peer(
     fall back to the legacy inference (every discovered device claiming
     our bond_id), which still errors on ambiguity.
 
+    ``grouping_reader`` is the one I/O policy seam: normal mutations use the
+    default full-timeout reader, while read-only UI snapshots can provide a
+    shorter reader without duplicating peer-resolution rules.
+
     ``err`` is "" on success; on failure addr is "" and grouping None.
     """
     if known is None:
         known = _self_addresses()
+    read_grouping = grouping_reader or _get_member_grouping
     bond_id = str(grouping.get("bond_id") or "").strip()
     roster_addr = str(grouping.get("peer_addr") or "").strip()
     roster_name = str(grouping.get("peer_name") or "").strip()
 
     if roster_addr:
-        pg = _get_member_grouping(roster_addr, known)
+        pg = read_grouping(roster_addr, known)
         if (pg is not None
                 and str(pg.get("bond_id") or "").strip() == bond_id):
             return roster_addr, pg, ""
@@ -1171,7 +1195,7 @@ def _resolve_bond_peer(
                 addr = str(row.get("address") or "").strip()
                 if not addr or addr in known or addr == roster_addr:
                     continue
-                pg2 = _get_member_grouping(addr, known)
+                pg2 = read_grouping(addr, known)
                 if (pg2 is not None
                         and str(pg2.get("bond_id") or "").strip()
                         == bond_id):
@@ -1197,7 +1221,7 @@ def _resolve_bond_peer(
         ) if a and a not in known
     ]
     candidate_groupings = _map_peers(
-        lambda a: _get_member_grouping(a, known), candidate_addrs,
+        lambda a: read_grouping(a, known), candidate_addrs,
     )
     peers = [
         (a, pg) for a, pg in zip(candidate_addrs, candidate_groupings)
@@ -1358,6 +1382,278 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
+def _trim_float(value) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return out if math.isfinite(out) else 0.0
+
+
+def _balance_trims_from_db(balance_db: float) -> tuple[float, float, bool]:
+    """Map a signed balance slider to absolute trims.
+
+    ``balance_db`` is positive toward RIGHT and negative toward LEFT. The
+    louder side stays at 0 dB and the opposite side is attenuated, so the pair
+    keeps as much digital headroom as the requested relative balance allows.
+    """
+    from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
+
+    requested = float(balance_db)
+    left = min(TRIM_DB_MAX, -requested)
+    right = min(TRIM_DB_MAX, requested)
+    left_clamped = max(TRIM_DB_MIN, left)
+    right_clamped = max(TRIM_DB_MIN, right)
+    return round(left_clamped, 1), round(right_clamped, 1), (
+        left != left_clamped or right != right_clamped
+    )
+
+
+def _balance_db_from_trims(left_trim_db: float, right_trim_db: float) -> float:
+    """Signed slider value: positive means right is louder than left."""
+    return round(float(right_trim_db) - float(left_trim_db), 1)
+
+
+def _get_member_grouping_for_balance_snapshot(
+    addr: str, known: set[str] | None = None,
+) -> dict | None:
+    return _get_member_grouping(
+        addr, known, timeout=BALANCE_SNAPSHOT_PEER_TIMEOUT_SEC,
+    )
+
+
+def _pair_balance_snapshot(grouping: dict, known: set[str] | None = None) -> dict:
+    """Compact live balance state for the /rooms/ slider.
+
+    The snapshot is present only for a two-speaker left/right bond. It resolves
+    the peer through the same roster-first path used by swap/trim so the UI does
+    not display a stale peer trim.
+    """
+    if not grouping.get("enabled") or grouping.get("error"):
+        return {"applicable": False}
+    self_channel = str(grouping.get("channel") or "").strip()
+    if self_channel not in ("left", "right"):
+        return {"applicable": False}
+    bond_id = str(grouping.get("bond_id") or "").strip()
+    if not bond_id:
+        return {"applicable": False}
+    if known is None:
+        known = _self_addresses()
+    peer_addr, peer_grouping, perr = _resolve_bond_peer(
+        grouping, known,
+        grouping_reader=_get_member_grouping_for_balance_snapshot,
+    )
+    if perr:
+        return {"applicable": True, "ok": False, "error": perr}
+    assert peer_grouping is not None
+    peer_channel = str(peer_grouping.get("channel") or "").strip()
+    if {self_channel, peer_channel} != {"left", "right"}:
+        return {
+            "applicable": True,
+            "ok": False,
+            "error": (
+                "balance needs one left and one right speaker "
+                f"(this speaker is {self_channel or '?'}, peer is "
+                f"{peer_channel or '?'})"
+            ),
+        }
+    self_trim = round(_trim_float(grouping.get("trim_db")), 1)
+    peer_trim = round(_trim_float(peer_grouping.get("trim_db")), 1)
+    if self_channel == "left":
+        left_trim, right_trim = self_trim, peer_trim
+    else:
+        left_trim, right_trim = peer_trim, self_trim
+    return {
+        "applicable": True,
+        "ok": True,
+        "left_trim_db": left_trim,
+        "right_trim_db": right_trim,
+        "balance_db": _balance_db_from_trims(left_trim, right_trim),
+        "self_channel": self_channel,
+        "peer_channel": peer_channel,
+        "peer_addr": peer_addr,
+    }
+
+
+def _grouping_body_with_trim(grouping: dict, trim_db: float) -> dict:
+    return {
+        "enabled": True,
+        "role": str(grouping.get("role") or ""),
+        "channel": str(grouping.get("channel") or ""),
+        "bond_id": str(grouping.get("bond_id") or ""),
+        "leader_addr": str(grouping.get("leader_addr") or ""),
+        "trim_db": trim_db,
+    }
+
+
+def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
+    """Handle POST /trim with ``target=pair`` and absolute ``balance_db``.
+
+    One slider value rewrites BOTH member trims to the loudness-maximizing
+    attenuate-only pair: one side is always 0 dB, the other is <= 0 dB.
+    """
+    if "balance_db" not in parsed:
+        _send_json(
+            handler,
+            {"ok": False, "error": "balance_db must be a number"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+    try:
+        balance_db = float(parsed.get("balance_db"))
+    except (TypeError, ValueError):
+        _send_json(
+            handler,
+            {"ok": False, "error": "balance_db must be a number"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+    if not math.isfinite(balance_db):
+        _send_json(
+            handler,
+            {"ok": False, "error": "balance_db must be finite"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    grouping = read_grouping_state()
+    if (not grouping.get("enabled") or grouping.get("error")
+            or not str(grouping.get("bond_id") or "").strip()):
+        _send_json(
+            handler, {"ok": False, "error": "not in a bond"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+    self_channel = str(grouping.get("channel") or "").strip()
+    if self_channel not in ("left", "right"):
+        _send_json(
+            handler,
+            {"ok": False, "error": "balance needs a left/right pair"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    known = _self_addresses()
+    peer_addr, peer_grouping, perr = _resolve_bond_peer(grouping, known)
+    if perr:
+        _send_json(
+            handler,
+            {"ok": False, "error": f"balance {perr}"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+    assert peer_grouping is not None
+    peer_channel = str(peer_grouping.get("channel") or "").strip()
+    if {self_channel, peer_channel} != {"left", "right"}:
+        _send_json(
+            handler,
+            {"ok": False, "error": (
+                "balance needs a left/right pair (this speaker is "
+                f"{self_channel or '?'}, peer is {peer_channel or '?'})"
+            )},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    left_trim, right_trim, clamped = _balance_trims_from_db(balance_db)
+    trims_by_channel = {"left": left_trim, "right": right_trim}
+    members = [
+        (
+            "",
+            grouping,
+            trims_by_channel[self_channel],
+            round(_trim_float(grouping.get("trim_db")), 1),
+        ),
+        (
+            peer_addr,
+            peer_grouping,
+            trims_by_channel[peer_channel],
+            round(_trim_float(peer_grouping.get("trim_db")), 1),
+        ),
+    ]
+    members.sort(key=lambda item: item[0] == "")  # peer first
+
+    token = _request_control_token(handler)
+    results: list[dict] = []
+    applied: list[tuple[str, dict, float]] = []
+    rollbacks: list[dict] = []
+    all_ok = True
+    for addr, member_grouping, trim, original_trim in members:
+        ok, detail = _post_grouping_to_member(
+            addr,
+            _grouping_body_with_trim(member_grouping, trim),
+            known,
+            token=token,
+        )
+        results.append({
+            "addr": addr,
+            "channel": str(member_grouping.get("channel") or ""),
+            "trim_db": trim,
+            "ok": ok,
+            "detail": detail,
+        })
+        all_ok = all_ok and ok
+        if not ok:
+            break
+        applied.append((addr, member_grouping, original_trim))
+
+    if not all_ok and applied:
+        for rb_addr, rb_grouping, original_trim in reversed(applied):
+            rb_ok, rb_detail = _post_grouping_to_member(
+                rb_addr,
+                _grouping_body_with_trim(rb_grouping, original_trim),
+                known,
+                token=token,
+            )
+            rollback = {
+                "addr": rb_addr,
+                "channel": str(rb_grouping.get("channel") or ""),
+                "trim_db": original_trim,
+                "ok": rb_ok,
+                "detail": rb_detail,
+            }
+            rollbacks.append(rollback)
+            log_event(
+                logger,
+                "rooms.balance.rollback",
+                addr=rb_addr or "(self)",
+                channel=rollback["channel"],
+                trim=f"{original_trim:.1f}",
+                ok=rb_ok,
+                detail=rb_detail,
+                level=logging.WARNING,
+            )
+
+    log_event(
+        logger,
+        "rooms.balance",
+        requested=f"{balance_db:.1f}",
+        left=f"{left_trim:.1f}",
+        right=f"{right_trim:.1f}",
+        clamped=clamped,
+        ok=all_ok,
+    )
+    payload = {
+        "ok": all_ok,
+        "balance": {
+            "applicable": True,
+            "ok": all_ok,
+            "left_trim_db": left_trim,
+            "right_trim_db": right_trim,
+            "balance_db": _balance_db_from_trims(left_trim, right_trim),
+            "clamped": clamped,
+        },
+        "results": results,
+    }
+    if rollbacks:
+        payload["rollbacks"] = rollbacks
+    _send_json(
+        handler,
+        payload,
+        status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
+    )
+
+
 TRIM_STEP_LIMIT_DB = 3.0  # max single nudge; UI sends ±0.5
 
 
@@ -1382,6 +1678,9 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
                    status=HTTPStatus.BAD_REQUEST)
         return
     target = str(parsed.get("target") or "self").strip()
+    if target == "pair":
+        _set_pair_balance(handler, parsed)
+        return
     try:
         delta = float(parsed.get("delta_db"))
     except (TypeError, ValueError):

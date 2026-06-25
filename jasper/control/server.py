@@ -834,8 +834,8 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
         )
 
 
-# Forwarded pair-volume requests carry this header; its presence stops a
-# second hop (see _maybe_forward_volume_to_leader's loop breaker).
+# Forwarded pair action requests carry this header; its presence stops a
+# second hop (see _maybe_forward_pair_action_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
 _GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
 _GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
@@ -1474,13 +1474,14 @@ def _make_handler(
             # curve as the live audio path so diagnostics match what is heard.
             return {"db": round(_percent_to_db(percent), 3), "percent": percent}
 
-        def _maybe_forward_volume_to_leader(self) -> bool:
-            """Bonded-follower volume proxy. Returns True when the request
+        def _maybe_forward_pair_action_to_leader(self) -> bool:
+            """Bonded-follower pair-action proxy. Returns True when the request
             was handled (forwarded or rejected) and the caller must stop.
 
-            Used by the four /volume* handlers AND /transport/* — every
-            surface where a bonded follower's local action must target
-            the PAIR. While this speaker is an ACTIVE bonded follower,
+            Used by the four /volume* handlers, /transport/*, and
+            /source/select — every surface where a bonded follower's
+            local action must target the PAIR. While this speaker is an
+            ACTIVE bonded follower,
             its local volume knobs are INERT — bonded content bypasses the local
             CamillaDSP entirely (the leader's one Camilla bakes the
             program; HANDOFF-multiroom.md §2). Without this, the landing
@@ -1550,7 +1551,7 @@ def _make_handler(
                     relayed.setdefault("pair_leader", leader)
                 log_event(
                     logger,
-                    "volume.pair_forward_rejected",
+                    "pair.action_forward_rejected",
                     leader=leader,
                     path=self.path,
                     status=e.code,
@@ -1561,7 +1562,7 @@ def _make_handler(
             except Exception as e:  # noqa: BLE001 — transport failure: 502
                 log_event(
                     logger,
-                    "volume.pair_forward_failed",
+                    "pair.action_forward_failed",
                     leader=leader,
                     path=self.path,
                     error=str(e),
@@ -1611,7 +1612,7 @@ def _make_handler(
             self._send_json({"ok": True})
 
         def _get_volume(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             try:
                 percent = asyncio.run(_get_op())
@@ -1919,7 +1920,7 @@ def _make_handler(
             return False
 
         def _post_volume_adjust(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             body = self._read_json()
             # Support both legacy delta_db (dial firmware compat,
@@ -1967,7 +1968,7 @@ def _make_handler(
             self._send_json(self._volume_payload(new_pct))
 
         def _post_volume_set(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             body = self._read_json()
             # Support both legacy `db` (dial / older clients) and
@@ -2243,7 +2244,7 @@ def _make_handler(
             return
 
         def _post_volume_mute(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             # Default is TOGGLE: muted → unmute (restore pre-mute
             # level), unmuted → mute. Used by HID accessory clicks
@@ -2283,7 +2284,7 @@ def _make_handler(
             # renderer stack parked (dumb-follower profile) the local
             # mux has nothing to toggle — the leader owns playback, so
             # the request forwards exactly like /volume*.
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
             try:
@@ -2308,6 +2309,8 @@ def _make_handler(
             # POST /source/select body: {"source": "airplay"} or
             # {"source": "auto"}. The mux validates policy and
             # forwards the low-level lane choice to fan-in.
+            if self._maybe_forward_pair_action_to_leader():
+                return
             body = self._read_json()
             source = str(body.get("source") or "").strip().lower()
             if source == "auto":

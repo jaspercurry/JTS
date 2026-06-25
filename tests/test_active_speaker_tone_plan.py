@@ -13,7 +13,6 @@ from jasper.active_speaker import (
     driver_test_signal_plan_from_edges,
     tone_targets_payload,
 )
-from jasper.active_speaker.calibration_level import MAX_TEST_LEVEL_DBFS
 
 
 def _preset(*, fc_hz: float = 1600) -> ActiveSpeakerPreset:
@@ -193,11 +192,11 @@ def test_build_safe_tone_plan_ready_still_cannot_play() -> None:
     assert plan["channel_map"] == {"layout": "mono", "output_count": 2}
     assert plan["target"]["output_index"] == 1
     assert plan["tone"]["frequency_hz"] == 6250.0
-    assert plan["tone"]["level_dbfs"] == MAX_TEST_LEVEL_DBFS
+    assert plan["tone"]["level_dbfs"] == -10.0
     assert plan["tone"]["duration_ms"] == 500
     assert (
         plan["calibration_level"]["test_signal"]["requested_level_dbfs"]
-        == MAX_TEST_LEVEL_DBFS
+        == -10.0
     )
     assert plan["tone"]["band_limit"] == {
         "type": "highpass",

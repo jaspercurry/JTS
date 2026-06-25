@@ -15,6 +15,8 @@ exec real systemd in unit tests.
 """
 from __future__ import annotations
 
+from jasper.local_sources import local_source_lifecycle
+from jasper.music_sources import MUSIC_SOURCE_SPECS, Source
 from jasper.web import sources_setup
 
 
@@ -25,10 +27,21 @@ from jasper.web import sources_setup
 
 def test_usbsink_in_valid_sources():
     assert "usbsink" in sources_setup.VALID_SOURCES
-    # Should be the only new addition — keep the surface tight.
     assert set(sources_setup.VALID_SOURCES) == {
-        "airplay", "bluetooth", "spotify_connect", "usbsink",
+        spec.wizard_key for spec in MUSIC_SOURCE_SPECS
     }
+
+
+def test_systemd_units_come_from_local_source_lifecycle_registry():
+    assert sources_setup.AIRPLAY_UNIT == (
+        local_source_lifecycle(Source.AIRPLAY).intent_unit
+    )
+    assert sources_setup.SPOTIFY_CONNECT_UNIT == (
+        local_source_lifecycle(Source.SPOTIFY).intent_unit
+    )
+    usbsink = local_source_lifecycle(Source.USBSINK)
+    assert sources_setup.USBSINK_UNIT == usbsink.intent_unit
+    assert sources_setup.USBSINK_INIT_UNIT in usbsink.advertise_units
 
 
 def test_index_html_uses_shared_toggle_markup_and_csrf_meta():

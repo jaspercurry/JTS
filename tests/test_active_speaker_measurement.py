@@ -9,6 +9,7 @@ from pathlib import Path
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
+    confirmed_driver_roles,
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
@@ -267,6 +268,105 @@ def test_driver_measurement_counts_correct_driver_without_requiring_mic(
         "captured"
     ] is True
     assert captured["summary"]["captured_driver_count"] == 1
+
+
+def test_confirmed_driver_roles_are_current_topology_captured_roles(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "playback-woofer",
+            "test_level_dbfs": -72,
+        },
+        safe_session=_safe_session(
+            role="woofer",
+            output_index=0,
+            playback_id="playback-woofer",
+        ),
+        state_path=state_path,
+    )
+    record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "tweeter",
+            "outcome": "heard_wrong_driver",
+            "playback_id": "playback-tweeter",
+            "test_level_dbfs": -72,
+        },
+        safe_session=_safe_session(
+            role="tweeter",
+            output_index=1,
+            playback_id="playback-tweeter",
+        ),
+        state_path=state_path,
+    )
+
+    assert confirmed_driver_roles(
+        topology,
+        speaker_group_id="mono",
+        state_path=state_path,
+    ) == ["woofer"]
+    assert confirmed_driver_roles(
+        _topology(tweeter_output=2),
+        speaker_group_id="mono",
+        state_path=state_path,
+    ) == ["woofer"]
+
+
+def test_latest_wrong_driver_result_removes_confirmed_driver_role(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "playback-woofer-ok",
+        },
+        safe_session=_safe_session(
+            role="woofer",
+            output_index=0,
+            playback_id="playback-woofer-ok",
+        ),
+        state_path=state_path,
+    )
+    assert confirmed_driver_roles(
+        topology,
+        speaker_group_id="mono",
+        state_path=state_path,
+    ) == ["woofer"]
+
+    record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_wrong_driver",
+            "playback_id": "playback-woofer-wrong",
+        },
+        safe_session=_safe_session(
+            role="woofer",
+            output_index=0,
+            playback_id="playback-woofer-wrong",
+        ),
+        state_path=state_path,
+    )
+
+    assert confirmed_driver_roles(
+        topology,
+        speaker_group_id="mono",
+        state_path=state_path,
+    ) == []
 
 
 def test_summed_validation_waits_for_all_driver_measurements(

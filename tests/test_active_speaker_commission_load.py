@@ -217,6 +217,7 @@ def _load(
     statefile_target: str | None = None,
     camilla: FakeCommissionCamilla | None = None,
     with_path_safety: bool = True,
+    reconcile_output_hardware: bool = True,
 ):
     staged = _staged(tmp_path)
     staged_path = staged["config"]["path"]
@@ -250,6 +251,7 @@ def _load(
             config_path=tmp_path / "commission.yml",
             statefile_path=statefile,
             state_path=state_path,
+            reconcile_output_hardware=reconcile_output_hardware,
             validate=_valid_config,
         )
     )
@@ -328,6 +330,28 @@ def test_summed_commissioning_load_happy_path(monkeypatch, tmp_path, reconcile_t
         "no_block": False,
         "timeout": 15.0,
     }]
+
+
+def test_commissioning_ramp_reload_can_skip_output_reconcile(
+    monkeypatch, tmp_path, reconcile_triggers
+):
+    result, _cam, _staged, _staged_path, _statefile, state_path = _load(
+        tmp_path,
+        monkeypatch,
+        role="woofer",
+        reconcile_output_hardware=False,
+    )
+
+    assert result["load"]["status"] == "loaded"
+    assert result["load"]["output_reconcile"] == {
+        "status": "skipped",
+        "reason": "same_active_output_lane",
+        "unit": startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,
+    }
+    assert reconcile_triggers == []
+    state = load_commission_load_state(state_path=state_path)
+    assert state["status"] == "loaded"
+    assert state["output_reconcile"]["status"] == "skipped"
 
 
 def test_commissioning_load_fails_closed_when_reconcile_trigger_fails(

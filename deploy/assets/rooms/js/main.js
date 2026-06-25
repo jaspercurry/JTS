@@ -42,7 +42,20 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
-import { addSubPlan, airplayLipSyncRow, createFaceCopy, snapcastProvisionRow, subCornerLabel } from "./grouping-view.js";
+import {
+  BALANCE_MAX_DB,
+  BALANCE_MIN_DB,
+  addSubPlan,
+  airplayLipSyncRow,
+  balanceText,
+  balanceTrimRequest,
+  clampBalanceDb,
+  createFaceCopy,
+  formatBalanceDb,
+  snapcastProvisionRow,
+  subCornerLabel,
+  trimsForBalance,
+} from "./grouping-view.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -583,49 +596,94 @@ function makeBondCard() {
     { type: "button" }, "Swap left \u2194 right");
   const dissolveRow = h("div.bond-dissolve", null, swapBtn, dissolveBtn);
 
-  // Pair-balance trim: one row per member, \u00b10.5 dB nudges. Delta
-  // semantics — the server resolves the peer and returns the new value,
-  // so this card carries no peer addressing or trim state.
-  function makeTrimRow(label, target) {
-    const value = h("span.trim-value", null, "\u2014");
-    const minus = h("button.btn", { type: "button",
-      "attr:aria-label": label + " quieter" }, "\u22120.5 dB");
-    const plus = h("button.btn", { type: "button",
-      "attr:aria-label": label + " louder" }, "+0.5 dB");
-    async function nudge(delta) {
-      minus.disabled = plus.disabled = true;
-      try {
-        const data = await postJSON("trim", { target, delta_db: delta });
-        value.textContent = data.trim_db.toFixed(1) + " dB";
-        status.textContent = "";
-      } catch (e) {
-        console.error("rooms: trim failed", e);
-        status.textContent = "Couldn't trim \u2014 " + describeBondFailure(e);
-      } finally {
-        minus.disabled = plus.disabled = false;
-      }
-    }
-    minus.addEventListener("click", () => nudge(-0.5));
-    plus.addEventListener("click", () => nudge(0.5));
-    return {
-      el: h("div.trim-row", null,
-        h("span.trim-row__label", null, label), minus, value, plus),
-      value,
-    };
+  // Pair balance: one signed slider, rendered as absolute left/right trims.
+  // The server maps the value to the headroom-maximising attenuate-only pair:
+  // one side remains at 0 dB, the other side is <= 0 dB.
+  let balanceSaving = false;
+  let balanceDirty = false;
+  const balanceRange = h("input.balance-slider", {
+    type: "range",
+    min: String(BALANCE_MIN_DB),
+    max: String(BALANCE_MAX_DB),
+    step: "0.5",
+    value: "0",
+    "attr:aria-label": "Left-right balance",
+  });
+  const balanceValue = h("span.balance-value", null, "Centered");
+  const balanceTrims = h("span.balance-trims", null, "L 0.0 dB / R 0.0 dB");
+  const balanceReset = h("button.btn", { type: "button" }, "Center");
+  const balanceStatus = h("p.balance-status.info-card__note",
+    { "attr:aria-live": "polite" });
+
+  function reflectBalance(value) {
+    const db = clampBalanceDb(value);
+    balanceRange.value = String(db);
+    balanceValue.textContent = balanceText(db);
+    const trims = trimsForBalance(db);
+    balanceTrims.textContent =
+      "L " + formatBalanceDb(trims.left) + " / R "
+      + formatBalanceDb(trims.right);
   }
-  const trimSelf = makeTrimRow("This speaker", "self");
-  const trimPeer = makeTrimRow("Paired speaker", "peer");
+
+  function setBalanceEnabled(on) {
+    balanceRange.disabled = !on;
+    balanceReset.disabled = !on;
+  }
+
+  async function commitBalance() {
+    if (balanceSaving) return;
+    const request = balanceTrimRequest(balanceRange.value);
+    const db = request.balance_db;
+    balanceDirty = false;
+    balanceSaving = true;
+    setBalanceEnabled(false);
+    balanceStatus.textContent = "Applying…";
+    try {
+      const data = await postJSON("trim", request);
+      const b = data && data.balance;
+      if (b && typeof b.balance_db === "number") {
+        reflectBalance(b.balance_db);
+      }
+      balanceStatus.textContent = b && b.clamped
+        ? "Applied at the trim limit."
+        : "Applied.";
+    } catch (e) {
+      console.error("rooms: balance failed", e);
+      balanceStatus.textContent = "Couldn't apply balance — " + describeBondFailure(e);
+    } finally {
+      balanceSaving = false;
+      setBalanceEnabled(true);
+    }
+  }
+
+  balanceRange.addEventListener("input", () => {
+    balanceDirty = true;
+    reflectBalance(balanceRange.value);
+    balanceStatus.textContent = "";
+  });
+  balanceRange.addEventListener("change", commitBalance);
+  balanceReset.addEventListener("click", () => {
+    reflectBalance(0);
+    commitBalance();
+  });
+
   const trimIntro = h("p.info-card__note", null,
-    "Balance the pair by ear: trim the LOUDER speaker down (0.0 dB = " +
-    "no trim; trims only attenuate, never boost).");
+    "Balance the pair by ear while keeping the louder side at full trim.");
   const balanceLink = h("a", {
     href: "https://" + location.hostname + "/balance/",
   }, "Balance automatically with your phone’s microphone ↗");
   const balanceNote = h("p.info-card__note", null,
     "Or: ", balanceLink,
     " (uses the same measurement certificate as room correction).");
-  const trimBlock = h("div.trim-block", null,
-    trimIntro, trimSelf.el, trimPeer.el, balanceNote);
+  const balanceBlock = h("div.balance-block", null,
+    trimIntro,
+    h("div.balance-control", null,
+      h("span.balance-end", null, "Left"),
+      balanceRange,
+      h("span.balance-end", null, "Right")),
+    h("div.balance-readout", null, balanceValue, balanceTrims, balanceReset),
+    balanceStatus,
+    balanceNote);
 
   const mainsHpCb = h("input", {
     type: "checkbox",
@@ -676,8 +734,8 @@ function makeBondCard() {
     crossoverRow,
     dissolveIntro,
     currentSummary,
-    trimBlock,
     mainsHpRow,
+    balanceBlock,
     addSubPanel,
     dissolveRow,
     status,
@@ -708,8 +766,8 @@ function makeBondCard() {
     dissolveIntro.style.display = bonded ? "" : "none";
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
-    trimBlock.style.display = bonded ? "" : "none";
     mainsHpRow.style.display = "none";
+    balanceBlock.style.display = bonded ? "" : "none";
     // The add-sub panel rides the dissolve face but is further gated by
     // addSubPlan in sync(); hide it on the create face here, let sync own it
     // back on the dissolve face.
@@ -719,6 +777,25 @@ function makeBondCard() {
     title.textContent = bonded
       ? "Speaker grouping"
       : createFaceCopy(roleSelect.value).title;
+  }
+
+  function syncBalance(g) {
+    const b = g && typeof g.balance === "object" ? g.balance : null;
+    if (!b || !b.applicable) {
+      balanceBlock.style.display = "none";
+      return;
+    }
+    balanceBlock.style.display = "";
+    if (!b.ok) {
+      setBalanceEnabled(false);
+      balanceStatus.textContent = "Balance unavailable — " + (b.error || "pair not ready");
+      return;
+    }
+    setBalanceEnabled(!balanceSaving);
+    if (!balanceSaving && !balanceDirty && typeof b.balance_db === "number") {
+      reflectBalance(b.balance_db);
+      balanceStatus.textContent = "";
+    }
   }
 
   // One-line legible summary of the current bond. Untrusted channel/leader_addr
@@ -778,9 +855,7 @@ function makeBondCard() {
       // Dissolve face: rebuild the summary text from the current grouping.
       currentSummary.textContent = "";
       appendChildren(currentSummary, summarize(g));
-      if (typeof g.trim_db === "number") {
-        trimSelf.value.textContent = g.trim_db.toFixed(1) + " dB";
-      }
+      syncBalance(g);
       const hasSub = groupingHasSubwoofer(g);
       mainsHpRow.style.display = hasSub ? "" : "none";
       mainsHpCb.checked = g.mains_highpass_enabled !== false;

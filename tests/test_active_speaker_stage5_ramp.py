@@ -228,12 +228,28 @@ def test_gate_passes_woofer_floor_step():
 
 
 def test_gate_rejects_gain_above_ceiling_envelope():
-    g = _gate(
-        _two_way(),
-        role="woofer",
-        running_gain=COMMISSION_RAMP_MAX_LEVEL_DBFS,
+    preset = _two_way()
+    role = "woofer"
+    audible = set(audible_outputs_for_role(preset, role))
+    ev = driver_commission_audible_evidence(
+        _emit(preset, audible, gain=COMMISSION_RAMP_MAX_LEVEL_DBFS),
+        preset=preset,
+        audible_outputs=audible,
+        expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+    )
+    running = _emit(preset, audible, gain=COMMISSION_RAMP_MAX_LEVEL_DBFS)
+    g = build_stage5_ramp_gate(
+        running_config_raw=running,
+        role=role,
+        present_roles={"woofer", "tweeter"},
+        audible_outputs=ev["audible_outputs"],
+        muted_outputs=ev["muted_outputs"],
+        tweeter_outputs=ev["tweeter_outputs"],
+        protective_hp_hz=ev["protective_highpass_hz"],
         current_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS,
         next_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS + 10,
+        confirmed_roles=frozenset(),
+        prior_step_cleared=True,
     )
     assert g["checks"]["gain_within_envelope"] is False
     assert g["passed"] is False
@@ -348,6 +364,7 @@ def _ramp_step(
     *,
     role,
     confirm_first=None,
+    durable_confirmed=None,
     env_report=_READY_ENV,
     play_tone=None,
 ):
@@ -376,6 +393,8 @@ def _ramp_step(
     )
     if play_tone is not None:
         common["play_tone"] = play_tone
+    if durable_confirmed is not None:
+        common["confirmed_roles"] = durable_confirmed
     if confirm_first:
         # Pre-seed the ramp's ordering memory (e.g. woofer already confirmed).
         from jasper.active_speaker.commission_ramp import _record_ramp_state, _ramp_base_state, ramp_state_path
@@ -484,6 +503,18 @@ def test_ramp_tweeter_blocked_until_woofer_confirmed_loads_nothing(
     assert step["gate"]["checks"]["role_order_woofer_first"] is False
     # Only the arm loaded; the ramp loaded nothing more.
     assert cam.loaded_paths == [str(tmp_path / "commission.yml")]
+
+
+def test_ramp_tweeter_accepts_durable_woofer_confirmation(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path,
+        monkeypatch,
+        role="tweeter",
+        durable_confirmed={"woofer"},
+    )
+    assert step["status"] == "stepped"
+    assert step["gate"]["checks"]["role_order_woofer_first"] is True
+    assert step["ramp"]["confirmed_roles"] == ["woofer"]
 
 
 def test_ramp_step_then_pending_blocks_a_second_step(monkeypatch, tmp_path):

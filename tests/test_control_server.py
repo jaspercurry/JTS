@@ -2456,6 +2456,32 @@ def test_state_usbsink_section_populated_when_enabled(
     assert section["rms_dbfs"] == -12.3
 
 
+def test_state_usbsink_section_scrubs_legacy_nonfinite_rms(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Old jasper-usbsink versions could write -Infinity. /state must still
+    return standards-compliant JSON values."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(
+        '{"playing":false,"preempted":false,"host_connected":true,'
+        '"rms_dbfs":-Infinity,"updated_at":"2026-05-16T00:00:00+00:00"}'
+    )
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["renderers"]["usbsink"]["rms_dbfs"] is None
+    json.dumps(body, allow_nan=False)
+
+
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
@@ -3718,6 +3744,19 @@ def test_follower_transport_toggle_forwards_to_leader(follower_server):
     assert body["pair_leader"] == "jts.local"
     req, _ = seen[0]
     assert req.full_url.endswith("/transport/toggle")
+
+
+def test_follower_source_select_forwards_to_leader(follower_server):
+    """A bonded follower's local mux is parked, so source selection targets
+    the pair leader instead of producing a local mux-unreachable error."""
+    base, fake, seen = follower_server
+    status, body = _post(f"{base}/source/select", {"source": "airplay"})
+    assert status == 200
+    assert body["pair_leader"] == "jts.local"
+    assert fake.calls == []
+    req, _ = seen[0]
+    assert req.full_url.endswith("/source/select")
+    assert json.loads(req.data) == {"source": "airplay"}
 
 
 def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):

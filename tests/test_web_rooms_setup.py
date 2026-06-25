@@ -341,6 +341,91 @@ def test_rooms_json_carries_tight_airplay_fit_for_a_bonded_leader(monkeypatch):
     assert fit["residual_lag_sec"] == 0.55
 
 
+def test_rooms_json_carries_live_pair_balance_snapshot(monkeypatch):
+    """A left/right bond includes the peer's live trim so the slider does not
+    guess or display stale peer state."""
+    self_g = {
+        **_OFF_GROUPING,
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "b",
+        "trim_db": -3.0,
+    }
+    peer_g = {
+        **_OFF_GROUPING,
+        "enabled": True,
+        "role": "follower",
+        "channel": "right",
+        "bond_id": "b",
+        "leader_addr": "jts.local",
+        "trim_db": 0.0,
+    }
+    _patch_discovery(
+        monkeypatch,
+        speakers=[{
+            "name": "Right", "room": "", "hostname": "jts3",
+            "address": "192.168.1.9", "port": 8780,
+        }],
+        grouping=self_g,
+    )
+    monkeypatch.setattr(
+        rooms_setup, "_get_member_grouping",
+        lambda a, known=None, *, timeout=rooms_setup.CONTROL_HTTP_TIMEOUT_SEC: (
+            dict(peer_g) if a == "192.168.1.9" else None
+        ),
+    )
+
+    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
+    balance = data["self"]["grouping"]["balance"]
+
+    assert balance["applicable"] is True
+    assert balance["ok"] is True
+    assert balance["left_trim_db"] == -3.0
+    assert balance["right_trim_db"] == 0.0
+    assert balance["balance_db"] == 3.0
+    assert balance["peer_addr"] == "192.168.1.9"
+
+
+def test_rooms_json_balance_snapshot_uses_short_peer_read(monkeypatch):
+    """The balance display is read-only and polled every 7 s, so an offline peer
+    must not make the whole Speakers page wait on the full mutation timeout."""
+    self_g = {
+        **_OFF_GROUPING,
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "b",
+        "peer_addr": "192.168.1.9",
+        "peer_name": "Right",
+        "trim_db": 0.0,
+    }
+    peer_g = {
+        **_OFF_GROUPING,
+        "enabled": True,
+        "role": "follower",
+        "channel": "right",
+        "bond_id": "b",
+        "leader_addr": "jts.local",
+        "trim_db": -2.0,
+    }
+    timeouts: list[float] = []
+    _patch_discovery(monkeypatch, speakers=[], grouping=self_g)
+
+    def fake_get_grouping(
+        addr, known=None, *, timeout=rooms_setup.CONTROL_HTTP_TIMEOUT_SEC,
+    ):
+        timeouts.append(timeout)
+        return dict(peer_g) if addr == "192.168.1.9" else None
+
+    monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
+
+    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
+
+    assert data["self"]["grouping"]["balance"]["ok"] is True
+    assert timeouts == [rooms_setup.BALANCE_SNAPSHOT_PEER_TIMEOUT_SEC]
+
+
 def test_rooms_json_peer_links_never_fall_back_to_raw_ip(monkeypatch):
     _patch_discovery(
         monkeypatch,
@@ -1980,13 +2065,21 @@ def test_post_swap_repairs_a_same_channel_pair(monkeypatch):
 
 
 # ----------------------------------------------------------------------
-# POST /trim — pair-balance nudges (delta semantics, attenuate-only).
+# POST /trim — pair-balance writes/nudges (attenuate-only).
 # ----------------------------------------------------------------------
 
 
 def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
-               peer_grouping=None):
+               peer_grouping=None, post_results=None):
     posts: list[tuple[str, dict]] = []
+    outcomes = list(post_results or [])
+
+    def _post(addr, body, known=None, *, token=None, household=None):
+        posts.append((addr, body))
+        if outcomes:
+            return outcomes.pop(0)
+        return True, "HTTP 200"
+
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
     monkeypatch.setattr(rooms_setup, "read_grouping_state",
                         lambda *a, **k: dict(self_grouping))
@@ -1995,8 +2088,7 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
     monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_get_member_grouping",
                         lambda a, known=None: (peer_grouping or {}).get(a))
-    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
-                        lambda a, b, known=None, *, token=None, household=None: posts.append((a, b)) or (True, "HTTP 200"))
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", _post)
     handler_cls = rooms_setup._make_handler()
     h = _FakeHandler("/trim")
     raw = json.dumps(body).encode()
@@ -2045,6 +2137,89 @@ def test_post_trim_peer_resolves_the_bond_sibling(monkeypatch):
     assert json.loads(h.wfile.getvalue())["trim_db"] == -1.5
     assert posts[0][0] == "192.168.1.9"
     assert posts[0][1]["channel"] == "right"  # everything else preserved
+
+
+def test_post_trim_pair_writes_absolute_headroom_maximized_balance(monkeypatch):
+    """The slider writes absolute pair trims: one side stays at 0 dB, the
+    opposite side is attenuated. Positive balance_db means right is louder."""
+    h, posts = _post_trim(
+        monkeypatch=monkeypatch,
+        body={"target": "pair", "balance_db": 3.0},
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "b", "leader_addr": "", "trim_db": 0.0},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": {
+            "enabled": True, "role": "follower", "channel": "right",
+            "bond_id": "b", "leader_addr": "jts.local", "trim_db": -12.0,
+        }},
+    )
+
+    payload = json.loads(h.wfile.getvalue())
+    assert h.status == 200
+    assert payload["balance"]["left_trim_db"] == -3.0
+    assert payload["balance"]["right_trim_db"] == 0.0
+    assert payload["balance"]["balance_db"] == 3.0
+    assert [addr for addr, _ in posts] == ["192.168.1.9", ""]
+    assert posts[0][1]["trim_db"] == 0.0       # right peer
+    assert posts[1][1]["trim_db"] == -3.0      # left self
+
+
+def test_post_trim_pair_clamps_at_the_attenuation_floor(monkeypatch):
+    h, posts = _post_trim(
+        monkeypatch=monkeypatch,
+        body={"target": "pair", "balance_db": 30.0},
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "b", "leader_addr": "", "trim_db": 0.0},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": {
+            "enabled": True, "role": "follower", "channel": "right",
+            "bond_id": "b", "leader_addr": "jts.local", "trim_db": 0.0,
+        }},
+    )
+
+    payload = json.loads(h.wfile.getvalue())
+    assert h.status == 200
+    assert payload["balance"]["clamped"] is True
+    assert payload["balance"]["left_trim_db"] == -24.0
+    assert payload["balance"]["right_trim_db"] == 0.0
+    assert posts[1][1]["trim_db"] == -24.0
+
+
+def test_post_trim_pair_rolls_back_peer_when_self_apply_fails(monkeypatch):
+    """A pair balance apply is two writes. If the peer accepted the new trim but
+    the local write failed, restore the peer to its original trim so a failed
+    request does not leave the pair audibly half-applied."""
+    h, posts = _post_trim(
+        monkeypatch=monkeypatch,
+        body={"target": "pair", "balance_db": 3.0},
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "b", "leader_addr": "", "trim_db": -1.0},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": {
+            "enabled": True, "role": "follower", "channel": "right",
+            "bond_id": "b", "leader_addr": "jts.local", "trim_db": -2.0,
+        }},
+        post_results=[
+            (True, "HTTP 200"),
+            (False, "loopback busy"),
+            (True, "HTTP 200"),
+        ],
+    )
+
+    payload = json.loads(h.wfile.getvalue())
+    assert h.status == 502
+    assert payload["ok"] is False
+    assert [addr for addr, _ in posts] == ["192.168.1.9", "", "192.168.1.9"]
+    assert posts[0][1]["trim_db"] == 0.0     # peer accepted requested right trim
+    assert posts[1][1]["trim_db"] == -3.0    # self failed requested left trim
+    assert posts[2][1]["trim_db"] == -2.0    # peer restored to original trim
+    assert payload["rollbacks"] == [{
+        "addr": "192.168.1.9",
+        "channel": "right",
+        "trim_db": -2.0,
+        "ok": True,
+        "detail": "HTTP 200",
+    }]
 
 
 # ----------------------------------------------------------------------

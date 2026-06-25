@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 
 import yaml
 
@@ -81,7 +81,7 @@ RAMP_STATE_KIND = "jts_active_speaker_commission_ramp"
 DEFAULT_RAMP_STATE_PATH = Path("/var/lib/jasper/active_speaker_commission_ramp.json")
 RAMP_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE"
 RAMP_BACKEND = "commission_gain_ramp"
-COMMISSION_RAMP_MAX_LEVEL_DBFS = -12.0
+COMMISSION_RAMP_MAX_LEVEL_DBFS = 0.0
 
 # Low-frequency first: a driver is ramped audible only after its lower siblings
 # are floor-confirmed. The protective tweeter high-pass is re-asserted live
@@ -158,6 +158,43 @@ def load_ramp_state(*, state_path: str | Path | None = None) -> dict[str, Any]:
     return state
 
 
+def _normalised_roles(roles: Iterable[str] | None) -> set[str]:
+    if roles is None or isinstance(roles, str):
+        return set()
+    return {
+        str(role).strip().lower()
+        for role in roles
+        if isinstance(role, str) and str(role).strip()
+    }
+
+
+def _ordered_roles(roles: Iterable[str] | None) -> list[str]:
+    order = {role: index for index, role in enumerate(RAMP_ROLE_ORDER)}
+    return sorted(
+        _normalised_roles(roles),
+        key=lambda role: (order.get(role, len(order)), role),
+    )
+
+
+def effective_confirmed_roles(
+    ramp_state: dict[str, Any],
+    *,
+    speaker_group_id: str,
+    confirmed_roles: Iterable[str] | None = None,
+) -> list[str]:
+    """Merge transient ramp memory with durable current-topology evidence."""
+
+    group = str(speaker_group_id or "").strip()
+    ramp_group = str(ramp_state.get("speaker_group_id") or "").strip()
+    same_group = not ramp_group or not group or ramp_group == group
+    transient = (
+        _normalised_roles(ramp_state.get("confirmed_roles") or [])
+        if same_group
+        else set()
+    )
+    return _ordered_roles(transient | _normalised_roles(confirmed_roles))
+
+
 def _record_ramp_state(
     payload: dict[str, Any], *, state_path: str | Path | None = None
 ) -> dict[str, Any]:
@@ -183,18 +220,28 @@ def reset_ramp_state(*, state_path: str | Path | None = None) -> dict[str, Any]:
 def clear_pending_ramp_step(
     *,
     speaker_group_id: str,
+    confirmed_roles: Iterable[str] | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Start a fresh silent arm with no stale audible step awaiting ACK."""
 
     prior = load_ramp_state(state_path=state_path)
-    group = str(speaker_group_id or "")
-    same_group = not prior.get("speaker_group_id") or prior.get("speaker_group_id") == group
+    group = str(speaker_group_id or "").strip()
+    same_group = (
+        not prior.get("speaker_group_id") or prior.get("speaker_group_id") == group
+    )
+    merged_confirmed_roles: list[str] = []
+    if same_group or confirmed_roles:
+        merged_confirmed_roles = effective_confirmed_roles(
+            prior,
+            speaker_group_id=group,
+            confirmed_roles=confirmed_roles,
+        )
     return _record_ramp_state(
         {
             **_ramp_base_state(ramp_state_path(state_path)),
             "speaker_group_id": group or prior.get("speaker_group_id"),
-            "confirmed_roles": prior.get("confirmed_roles") if same_group else [],
+            "confirmed_roles": merged_confirmed_roles,
             "pending": None,
             "last_action": "clear_pending",
         },
@@ -431,6 +478,7 @@ async def ramp_audible_step(
     validate: Callable[..., Any] | None = None,
     play_tone: ToneEmitter | None = None,
     auto_retry_pending: bool = False,
+    confirmed_roles: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
 
@@ -467,6 +515,11 @@ async def ramp_audible_step(
         )
 
     ramp_state = load_ramp_state(state_path=ramp_state_path_override)
+    ramp_confirmed_roles = effective_confirmed_roles(
+        ramp_state,
+        speaker_group_id=group_id,
+        confirmed_roles=confirmed_roles,
+    )
     pending = ramp_state.get("pending")
     replaced_pending: dict[str, Any] | None = None
     if isinstance(pending, dict):
@@ -559,7 +612,7 @@ async def ramp_audible_step(
         protective_hp_hz=evidence.get("protective_highpass_hz"),
         current_gain_db=current_gain_db,
         next_gain_db=next_gain_db,
-        confirmed_roles=set(ramp_state.get("confirmed_roles") or []),
+        confirmed_roles=set(ramp_confirmed_roles),
         prior_step_cleared=prior_step_cleared,
     )
     if not gate["passed"]:
@@ -583,10 +636,7 @@ async def ramp_audible_step(
             "next_gain_db": next_gain_db,
             "gate": gate,
             "load": None,
-            "issues": [
-                _issue("blocker", "stage5_ramp_gate_blocked", f"gate failed: {f}")
-                for f in failed
-            ],
+            "issues": [_stage5_gate_issue(f) for f in failed],
         }
 
     # Precondition (fail-closed): the per-driver operator-confirmation session must
@@ -667,6 +717,7 @@ async def ramp_audible_step(
         config_path=config_path,
         statefile_path=statefile_path,
         state_path=commission_load_state_path,
+        reconcile_output_hardware=False,
         **load_kwargs,
     )
     if (load_payload.get("load") or {}).get("status") != "loaded":
@@ -800,7 +851,7 @@ async def ramp_audible_step(
         {
             **_ramp_base_state(ramp_state_path(ramp_state_path_override)),
             "speaker_group_id": group_id,
-            "confirmed_roles": sorted(set(ramp_state.get("confirmed_roles") or [])),
+            "confirmed_roles": ramp_confirmed_roles,
             "pending": {
                 "role": role,
                 "gain_db": next_gain_db,
@@ -1104,6 +1155,16 @@ def _blocked(
     if extra:
         payload.update(extra)
     return payload
+
+
+def _stage5_gate_issue(check: str) -> dict[str, str]:
+    if check == "role_order_woofer_first":
+        return _issue(
+            "blocker",
+            "stage5_ramp_role_order_woofer_first",
+            "confirm the lower-frequency driver before testing this driver",
+        )
+    return _issue("blocker", "stage5_ramp_gate_blocked", f"gate failed: {check}")
 
 
 def _present_roles(prepare: dict[str, Any]) -> set[str]:

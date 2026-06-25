@@ -1754,7 +1754,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return (outputStepOverride || defaultOutputStep()) === step;
   }
   function outputStepCanOpen(step, topology) {
-    return outputStepState(step, topology) !== 'todo';
+    if (outputStepState(step, topology) !== 'todo') return true;
+    // Dirty output remaps are saved from the map card itself.
+    return step === 'map' && outputTopology.dirty && outputStepOverride === 'map';
   }
   function openOutputStep(step) {
     outputStepOverride = step;
@@ -2780,7 +2782,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       viewLevel.step_db != null ? viewLevel.step_db : signal.step_db
     );
     if (!isFinite(min)) min = -80;
-    if (!isFinite(max)) max = -30;
+    if (!isFinite(max)) max = 0;
     if (!isFinite(step) || step <= 0) step = 1;
     if (!isFinite(requested)) requested = min;
     requested = clamp(requested, min, max);
@@ -4216,6 +4218,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         }
       });
     }
+    outputStepOverride = 'map';
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
   }
@@ -5019,6 +5022,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       });
       await refreshCommissioningView();
+      try {
+        patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
+      } catch (profileError) {
+        patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile});
+      }
       if (summedValidationComplete()) outputStepOverride = 'profile';
       status('Combined crossover check saved. Save and apply the active profile when ready.');
     } catch (e) {

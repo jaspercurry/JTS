@@ -46,6 +46,7 @@ from jasper.active_speaker.commission_wiring import (
     write_commission_path_safety,
 )
 from jasper.active_speaker.measurement import (
+    confirmed_driver_roles,
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
@@ -951,7 +952,13 @@ async def start_driver_test(
             path_safety_evidence_path=evidence_path,
         )
         if (load_payload.get("load") or {}).get("status") == "loaded":
-            clear_pending_ramp_step(speaker_group_id=group)
+            clear_pending_ramp_step(
+                speaker_group_id=group,
+                confirmed_roles=confirmed_driver_roles(
+                    topology,
+                    speaker_group_id=group,
+                ),
+            )
     else:
         load_payload = {"status": "loaded", "load": commission}
 
@@ -976,6 +983,10 @@ async def start_driver_test(
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
         play_tone=_play_commission_tone,
+        confirmed_roles=confirmed_driver_roles(
+            topology,
+            speaker_group_id=group,
+        ),
     )
     log_event(
         logger,
@@ -1015,12 +1026,12 @@ async def confirm_driver_test(
         outcome=outcome,
         load_config=commission_load_config(cam),
     )
-    if (
+    should_record_driver_evidence = (
         outcome == "heard_correct_driver"
         and payload.get("status") == "confirmed"
         and not payload.get("issues")
-        and isinstance(pending, dict)
-    ):
+    ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
+    if should_record_driver_evidence and isinstance(pending, dict):
         topology = load_output_topology()
         measurements = record_driver_measurement(
             topology,

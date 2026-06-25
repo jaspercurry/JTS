@@ -38,10 +38,12 @@ from jasper.active_speaker.startup_load import (
 )
 from jasper.active_speaker.commission_ramp import (
     abort_ramp,
+    effective_confirmed_roles,
     load_ramp_state,
     ramp_audible_step,
     record_ramp_operator_ack,
 )
+from jasper.active_speaker.measurement import confirmed_driver_roles
 from jasper.active_speaker.commission_wiring import (
     commission_load_config,
     commission_seams,
@@ -561,6 +563,10 @@ def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
             crossover_preview=crossover_preview,
             path_safety_evidence_path=evidence_path,
             staged_config=staged,
+            confirmed_roles=confirmed_driver_roles(
+                topology,
+                speaker_group_id=args.group,
+            ),
         )
 
     payload = asyncio.run(_run())
@@ -596,9 +602,30 @@ def _cmd_commission_ramp_ack(args: argparse.Namespace) -> int:
 
 
 def _cmd_commission_ramp_status(args: argparse.Namespace) -> int:
+    commission = load_commission_load_state()
+    ramp = load_ramp_state()
+    target = commission.get("target") or {}
+    group = str(
+        target.get("speaker_group_id") or ramp.get("speaker_group_id") or ""
+    ).strip()
+    durable_confirmed: list[str] = []
+    if group:
+        try:
+            topology = load_output_topology_strict(args.topology)
+        except OutputTopologyError:
+            durable_confirmed = []
+        else:
+            durable_confirmed = confirmed_driver_roles(topology, speaker_group_id=group)
     payload = {
-        "commission_load": load_commission_load_state(),
-        "ramp": load_ramp_state(),
+        "commission_load": commission,
+        "ramp": {
+            **ramp,
+            "confirmed_roles": effective_confirmed_roles(
+                ramp,
+                speaker_group_id=group,
+                confirmed_roles=durable_confirmed,
+            ),
+        },
         "safe_playback": load_safe_playback_state(),
     }
     if args.json:

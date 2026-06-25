@@ -152,7 +152,7 @@ def _combined_test_level(
     return {
         "requested_level_dbfs": requested,
         "min_level_dbfs": test_signal.get("min_level_dbfs", -80.0),
-        "max_level_dbfs": test_signal.get("max_level_dbfs", -30.0),
+        "max_level_dbfs": test_signal.get("max_level_dbfs", 0.0),
         "step_db": test_signal.get("step_db", 1.0),
         "upward_step_limit_db": software_guard.get("upward_step_limit_db", 6.0),
     }
