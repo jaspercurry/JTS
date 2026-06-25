@@ -245,8 +245,11 @@ tune_wifi_for_airplay() {
     # a few-ms WiFi stall correlates with shairport-sync sync errors
     # and underruns. nmcli value 2 = disable. `connection.autoconnect-retries
     # 0` means retry forever; the default `-1` delegates to NM's global retry
-    # budget, which can be exhausted by a long router/ISP flap. Both settings
-    # persist in the NetworkManager keyfile, so a future reinstall is a no-op.
+    # budget, which can be exhausted by a long router/ISP flap. `ipv6.method
+    # link-local` preserves fast mDNS `.local` resolution for iOS/macOS without
+    # enabling routed IPv6; profiles set to `ignore` make clients wait on IPv6
+    # mDNS before falling back to IPv4. All settings persist in the
+    # NetworkManager keyfile, so a future reinstall is a no-op.
     if ! command -v nmcli >/dev/null 2>&1; then
         echo "  nmcli not present; skipping WiFi power-save tweak."
         return 0
@@ -262,10 +265,11 @@ tune_wifi_for_airplay() {
         connection.autoconnect yes \
         connection.autoconnect-retries 0 \
         802-11-wireless.powersave 2 \
+        ipv6.method link-local \
         2>/dev/null || true
     # Apply without dropping the connection. If the driver doesn't
     # accept a live reapply (some brcmfmac variants), the change
     # still takes effect on the next reconnect/reboot.
     nmcli dev reapply wlan0 2>/dev/null || true
-    echo "  WiFi power-save disabled and autoconnect retries set to forever on connection '$wlan_conn'."
+    echo "  WiFi power-save disabled, autoconnect retries set to forever, and link-local IPv6 enabled on connection '$wlan_conn'."
 }

@@ -4068,6 +4068,43 @@ def test_check_wifi_guardian_registered_in_sync_checks():
     assert "check_wifi_guardian" in _registered_check_names()
 
 
+def test_check_wifi_link_local_ipv6_ok(monkeypatch):
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home:802-11-wireless:wlan0\n",
+        "link-local\n",
+        "2: wlan0    inet6 fe80::1/64 scope link\n",
+    ])
+    r = doctor.check_wifi_link_local_ipv6()
+    assert r.status == "ok"
+    assert "link-local IPv6" in r.detail
+
+
+def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch):
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home:802-11-wireless:wlan0\n",
+        "ignore\n",
+    ])
+    r = doctor.check_wifi_link_local_ipv6()
+    assert r.status == "warn"
+    assert "ipv6.method=ignore" in r.detail
+    assert "Apple clients" in r.detail
+
+
+def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home:802-11-wireless:wlan0\n",
+        "auto\n",
+        "",
+    ])
+    r = doctor.check_wifi_link_local_ipv6()
+    assert r.status == "warn"
+    assert "no link-local IPv6" in r.detail
+
+
+def test_check_wifi_link_local_ipv6_registered_in_sync_checks():
+    assert "check_wifi_link_local_ipv6" in _registered_check_names()
+
+
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     def fake_run(cmd, timeout=5.0):
         unit = cmd[-1]

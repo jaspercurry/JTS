@@ -1356,17 +1356,20 @@ as root (tests/operator shell), the same Python helper can execute
 in-process. Structured logs use `event=wifi_scan_repair.*` plus the broker's
 `event=restart_broker.*` line for the unit start.
 
-The same NetworkManager profile-hardening triple —
+The same NetworkManager profile-hardening set —
 `connection.autoconnect=yes`, `connection.autoconnect-retries=0` (NM's
-retry-forever value), and `802-11-wireless.powersave=2` — is written from
+retry-forever value), `802-11-wireless.powersave=2`, and
+`ipv6.method=link-local` — is written from
 **three** places so a recovered profile is as resilient as a freshly-
-connected one: `/wifi/` wizard connects
+connected one: power-save stays off for audio stability, and link-local
+IPv6 stays on so Apple clients do not stall on `.local` mDNS before
+falling back to IPv4. The three writers are `/wifi/` wizard connects
 (`jasper.web.wifi_setup._harden_wifi_profile`), install-time
 (`tune_wifi_for_airplay`), and the guardian after it activates/recreates a
 profile (`jasper-wifi-guardian`'s `harden_profile`). Keep every one of
 those writes best-effort — a profile-hardening failure must not turn a
 successful user connect (or a successful recovery) into a failure. Because
-the triple now lives in three writers (Python + two bash), drift is pinned
+the set now lives in three writers (Python + two bash), drift is pinned
 by [`tests/test_wifi_profile_hardening_contract.py`](tests/test_wifi_profile_hardening_contract.py);
 add any new key there too.
 
