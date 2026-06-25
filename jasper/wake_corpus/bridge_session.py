@@ -36,10 +36,18 @@ from jasper.log_event import log_event
 from jasper.audio_profile_state import (
     AecIntent,
     MicProbe,
+    PROFILE_XVF_CHIP_AEC,
+    PROFILE_XVF_CHIP_AEC_TESTING,
     build_audio_profile_status,
     env_value,
+    infer_audio_input_profile,
+    normalize_audio_input_profile,
     parse_env_bool,
     runtime_env_from_mapping,
+)
+from jasper.chip_aec_policy import (
+    gate_from_runtime_env,
+    resolve_chip_aec_dac_gate,
 )
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
@@ -64,6 +72,34 @@ from jasper.web._common import (
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
+
+
+def _mic_chip_aec_available(mic_probe: MicProbe) -> bool:
+    """Whether the detected mic profile has a chip-AEC beam plan."""
+
+    return bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+
+
+def _chip_aec_gate_for_status(
+    system_env: Mapping[str, str],
+    intent: AecIntent,
+) -> dict[str, object]:
+    """Resolve the same DAC gate used by /aec for metadata-only snapshots."""
+
+    selection = normalize_audio_input_profile(
+        intent.profile_selection,
+        default=infer_audio_input_profile(intent),
+    )
+    testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
+    runtime_gate = gate_from_runtime_env(system_env)
+    if runtime_gate is not None and (
+        not testing_requested or runtime_gate.arm_allowed
+    ):
+        return runtime_gate.to_dict()
+    return resolve_chip_aec_dac_gate(
+        system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+        testing_requested=testing_requested,
+    ).to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +539,7 @@ def _read_aec_intent() -> AecIntent:
         chip_aec_enabled=parse_env_bool(
             env.get("JASPER_WAKE_LEG_CHIP_AEC", "0"), default=False,
         ),
+        profile_selection=env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
     )
 
 
@@ -798,15 +835,14 @@ def build_session_audio_context(
         runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
         mic_probe, mic_identity = _mic_probe_and_identity()
         bridge_outputs = bridge_output_status()
+        chip_gate = _chip_aec_gate_for_status(system_env, intent)
         profile_status = build_audio_profile_status(
             intent,
             runtime,
             mic_probe,
             bridge_active=aec_bridge_active(),
-            chip_available=(
-                mic_probe.xvf_present
-                and mic_probe.capture_channels == mic_probe.recommended_channels
-            ),
+            chip_available=_mic_chip_aec_available(mic_probe),
+            chip_gate=chip_gate,
         )
     except Exception as e:  # noqa: BLE001 - metadata must not block recording
         log_event(
@@ -1693,7 +1729,8 @@ def _primary_on_leg_overlay(
     if not isinstance(active_audio_profile, Mapping):
         return None
     if (
-        active_audio_profile.get("active") != "xvf_chip_aec"
+        active_audio_profile.get("active")
+        not in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
         or active_audio_profile.get("state") != "active"
     ):
         return None
@@ -1727,15 +1764,14 @@ def _capture_plan_runtime_context() -> tuple[dict[str, Any] | None, dict[str, An
         system_env = read_env_file(str(SYSTEM_ENV_PATH))
         runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
         mic_probe, _ = _mic_probe_and_identity()
+        chip_gate = _chip_aec_gate_for_status(system_env, intent)
         profile_status = build_audio_profile_status(
             intent,
             runtime,
             mic_probe,
             bridge_active=aec_bridge_active(),
-            chip_available=(
-                mic_probe.xvf_present
-                and mic_probe.capture_channels == mic_probe.recommended_channels
-            ),
+            chip_available=_mic_chip_aec_available(mic_probe),
+            chip_gate=chip_gate,
         )
     except Exception as e:  # noqa: BLE001 - advisory metadata only
         log_event(

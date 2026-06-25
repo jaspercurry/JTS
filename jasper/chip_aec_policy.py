@@ -12,8 +12,6 @@ as an operator testing run.
 """
 from __future__ import annotations
 
-import argparse
-import shlex
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
@@ -25,16 +23,13 @@ ChipAecGateStatus = Literal["approved", "testing", "needs_calibration"]
 
 STATUS_APPROVED: Literal["approved"] = "approved"
 STATUS_TESTING: Literal["testing"] = "testing"
-STATUS_TRIAL: Literal["testing"] = STATUS_TESTING
 STATUS_NEEDS_CALIBRATION: Literal["needs_calibration"] = "needs_calibration"
 
 ACTION_USE_CHIP_AEC = "use_chip_aec"
 ACTION_RUN_TESTING_AND_VALIDATE = "run_chip_aec_testing_and_validate"
 ACTION_USE_SOFTWARE_OR_TEST = "use_software_aec3_or_enable_testing"
-ACTION_CALIBRATE_BEFORE_CHIP_AEC = "calibrate_output_dac_before_chip_aec"
 ACTION_FIX_MIC_PROFILE = "fix_mic_profile_before_chip_aec"
 
-SOURCE_MIC = "mic"
 SOURCE_STATIC = "static"
 SOURCE_OUTPUTD_AEC_CLOCK = "outputd_aec_clock"
 SOURCE_OPERATOR_TESTING = "explicit_testing"
@@ -310,7 +305,13 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
     )
     if not status:
         return None
-    dac_id = env.get("JASPER_AUDIO_DAC_ID", "unknown")
+    active_dac_id = normalize_dac_id(env.get("JASPER_AUDIO_DAC_ID", "unknown"))
+    raw_gate_dac_id = str(env.get("JASPER_AEC_CHIP_AEC_DAC_ID") or "").strip()
+    if not raw_gate_dac_id:
+        return None
+    gate_dac_id = normalize_dac_id(raw_gate_dac_id)
+    if gate_dac_id != active_dac_id:
+        return None
     source = str(
         env.get("JASPER_AEC_CHIP_AEC_DAC_SOURCE")
         or SOURCE_RUNTIME_ENV
@@ -343,7 +344,7 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
     if testing_requested and gate_status == STATUS_NEEDS_CALIBRATION:
         trial_allowed = True
     return ChipAecGate(
-        dac_id=normalize_dac_id(dac_id),
+        dac_id=gate_dac_id,
         status=gate_status,
         source=source,
         detail=detail,
@@ -352,136 +353,3 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
         trial_allowed=trial_allowed,
         blockers=blockers,
     )
-
-
-def resolve_chip_aec_gate(
-    dac_id: object,
-    *,
-    mic_supported: bool,
-    mic_detail: str = "",
-    outputd_clock: OutputdAecClockEvidence | None = None,
-    allow_trial: bool = False,
-) -> ChipAecGate:
-    """Return the shared chip-AEC gate for one requested runtime shape."""
-
-    normalized = normalize_dac_id(dac_id)
-    if not mic_supported:
-        return ChipAecGate(
-            dac_id=normalized,
-            status=STATUS_NEEDS_CALIBRATION,
-            source=SOURCE_MIC,
-            detail=mic_detail or "mic has no validated production chip-AEC beam plan",
-            auto_allowed=False,
-            arm_allowed=False,
-            trial_allowed=False,
-            blockers=("mic",),
-        )
-
-    static = static_dac_qualification(normalized)
-    if static.status == STATUS_APPROVED:
-        return ChipAecGate(
-            dac_id=normalized,
-            status=STATUS_APPROVED,
-            source=static.source,
-            detail=static.detail,
-            auto_allowed=True,
-            arm_allowed=True,
-            trial_allowed=True,
-        )
-
-    if outputd_clock is not None and outputd_clock.ok:
-        return ChipAecGate(
-            dac_id=normalized,
-            status=STATUS_APPROVED,
-            source=SOURCE_OUTPUTD_AEC_CLOCK,
-            detail=outputd_clock.detail,
-            auto_allowed=True,
-            arm_allowed=True,
-            trial_allowed=True,
-        )
-
-    outputd_detail = ""
-    if outputd_clock is not None and outputd_clock.detail:
-        outputd_detail = f"; {outputd_clock.detail}"
-    if allow_trial:
-        return ChipAecGate(
-            dac_id=normalized,
-            status=STATUS_TESTING,
-            source=SOURCE_OPERATOR_TESTING,
-            detail=(
-                f"operator testing profile permits chip-AEC trial for "
-                f"output DAC {normalized}; {static.detail}{outputd_detail}"
-            ),
-            auto_allowed=False,
-            arm_allowed=True,
-            trial_allowed=True,
-        )
-
-    return ChipAecGate(
-        dac_id=normalized,
-        status=STATUS_NEEDS_CALIBRATION,
-        source=static.source,
-        detail=f"{static.detail}{outputd_detail}",
-        auto_allowed=False,
-        arm_allowed=False,
-        trial_allowed=True,
-        blockers=("dac",),
-    )
-
-
-def _shell_bool(value: bool) -> str:
-    return "1" if value else "0"
-
-
-def _shell_assignments(gate: ChipAecGate) -> str:
-    values = {
-        "CHIP_AEC_GATE_DAC_ID": gate.dac_id,
-        "CHIP_AEC_GATE_STATUS": gate.status,
-        "CHIP_AEC_GATE_SOURCE": gate.source,
-        "CHIP_AEC_GATE_DETAIL": gate.detail,
-        "CHIP_AEC_GATE_AUTO_ALLOWED": _shell_bool(gate.auto_allowed),
-        "CHIP_AEC_GATE_ARM_ALLOWED": _shell_bool(gate.arm_allowed),
-        "CHIP_AEC_GATE_TRIAL_ALLOWED": _shell_bool(gate.trial_allowed),
-        "CHIP_AEC_GATE_BLOCKERS": ",".join(gate.blockers),
-    }
-    return "\n".join(
-        f"{key}={shlex.quote(str(value))}"
-        for key, value in values.items()
-    )
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dac-id", default="unknown")
-    parser.add_argument("--mic-supported", action="store_true")
-    parser.add_argument("--mic-detail", default="")
-    parser.add_argument("--allow-trial", action="store_true")
-    parser.add_argument("--outputd-clock-ok", action="store_true")
-    parser.add_argument("--outputd-clock-detail", default="")
-    parser.add_argument("--shell", action="store_true")
-    args = parser.parse_args(argv)
-
-    evidence = None
-    if args.outputd_clock_ok or args.outputd_clock_detail:
-        evidence = OutputdAecClockEvidence(
-            ok=bool(args.outputd_clock_ok),
-            detail=args.outputd_clock_detail,
-        )
-    gate = resolve_chip_aec_gate(
-        args.dac_id,
-        mic_supported=bool(args.mic_supported),
-        mic_detail=args.mic_detail,
-        outputd_clock=evidence,
-        allow_trial=bool(args.allow_trial),
-    )
-    if args.shell:
-        print(_shell_assignments(gate))
-    else:
-        import json
-
-        print(json.dumps(gate.to_dict(), sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

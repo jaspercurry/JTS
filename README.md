@@ -1017,9 +1017,10 @@ wake legs; software AEC3 is the fallback for hardware that cannot use
 chip-AEC.
 
 **Wake/input configuration is profile-first.** The `/wake/` page exposes
-the canonical choices (`auto`, `xvf_chip_aec`, `xvf_software_aec3`,
-`direct_mic`) and keeps individual AEC/raw/DTLN/chip-leg toggles as
-advanced custom controls for corpus tests and nonstandard hardware.
+the canonical choices (`auto`, `xvf_chip_aec`,
+`xvf_chip_aec_testing`, `xvf_software_aec3`, `direct_mic`) and keeps
+individual AEC/raw/DTLN/chip-leg toggles as advanced custom controls
+for corpus tests and nonstandard hardware.
 Changing a profile or custom layer runs `jasper-aec-reconcile`, which
 restarts the affected bridge/voice services and updates `/state`,
 doctor, and the dashboard.
