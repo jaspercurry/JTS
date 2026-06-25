@@ -746,6 +746,91 @@ def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
     assert step_tweeter["ramp"]["confirmed_roles"] == ["woofer"]
 
 
+def test_commission_ack_records_backend_acknowledged_step_when_ramp_races(
+    monkeypatch,
+    tmp_path,
+):
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+
+    stale_pending = {
+        "speaker_group_id": "mono",
+        "confirmed_roles": ["woofer"],
+        "pending": {
+            "role": "tweeter",
+            "playback_id": "old-playback",
+            "gain_db": -80.0,
+        },
+    }
+
+    async def _fake_ack(**kwargs):
+        return {
+            "status": "confirmed",
+            "outcome": "heard_correct_driver",
+            "acknowledged_step": {
+                "role": "tweeter",
+                "playback_id": "new-playback",
+                "gain_db": -70.0,
+            },
+            "issues": [],
+            "ramp": {
+                "speaker_group_id": "mono",
+                "confirmed_roles": ["woofer", "tweeter"],
+                "pending": None,
+            },
+            "safe_playback": {"floor_status": "floor_confirmed"},
+            "rollback": {"status": "rolled_back"},
+        }
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.load_ramp_state",
+        lambda *args, **kwargs: stale_pending,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
+        _fake_ack,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.safe_playback.load_safe_playback_state",
+        lambda *args, **kwargs: {
+            "status": "armed",
+            "quiet_start": {
+                "status": "floor_confirmed",
+                "floor_audio_confirmed": True,
+                "last_operator_result": {
+                    "accepted": True,
+                    "outcome": "heard_correct_driver",
+                    "playback_id": "new-playback",
+                    "target": {
+                        "speaker_group_id": "mono",
+                        "role": "tweeter",
+                        "output_index": 1,
+                    },
+                },
+            },
+        },
+    )
+
+    ack = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_ack_payload(
+            {"outcome": "heard_correct_driver"}, camilla_factory=lambda: controller
+        )
+    )
+
+    latest = ack["measurements"]["summary"]["latest_driver_measurements"][
+        "mono:tweeter"
+    ]
+    assert latest["captured"] is True
+    assert latest["playback_id"] == "new-playback"
+    assert latest["test_level_dbfs"] == -70.0
+    assert latest["playback_id"] != stale_pending["pending"]["playback_id"]
+
+
 def test_commission_wrong_driver_ack_records_negative_driver_evidence(
     monkeypatch,
     tmp_path,
@@ -868,23 +953,19 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
 
     wav_path = tmp_path / "summed.wav"
     wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
-    requested_wavs: list[dict[str, float]] = []
-
-    def _fake_wav_path(
-        *,
-        frequency_hz: float,
-        duration_s: float = sound_setup.COMMISSION_TONE_DURATION_S,
-    ) -> Path:
-        requested_wavs.append({
-            "frequency_hz": float(frequency_hz),
-            "duration_s": float(duration_s),
-        })
-        return wav_path
-
     monkeypatch.setattr(
         sound_setup,
-        "_commission_tone_wav_path",
-        _fake_wav_path,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+                "phrase_repetitions": 4,
+            },
+        ),
     )
     fanin_actions: list[str] = []
     monkeypatch.setattr(
@@ -930,7 +1011,7 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
         sort_keys=True,
         default=str,
     )
-    assert playback["backend"] == sound_setup.SUMMED_COMMISSION_TONE_BACKEND
+    assert playback["backend"] == sound_setup.SUMMED_COMMISSION_SPEECH_BACKEND
     assert playback["audio_emitted"] is True
     assert playback["tone"]["level_dbfs"] == -40.0
     assert payload["calibration_level"]["test_signal"][
@@ -942,7 +1023,8 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert playback["rollback"]["rollback"]["status"] == "rolled_back"
     assert latest["captured"] is True
     assert latest["audio_emitted"] is True
-    assert latest["backend"] == sound_setup.SUMMED_COMMISSION_TONE_BACKEND
+    assert latest["backend"] == sound_setup.SUMMED_COMMISSION_SPEECH_BACKEND
+    assert latest["stimulus"]["text"] == "Like and subscribe to Jasper tech."
     assert latest["target_output_indices"] == [0, 1]
     assert len(controller.applied_texts) == 2
     assert "audible_outputs=[0, 1]" in controller.applied_texts[0]
@@ -957,7 +1039,7 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
         "-q",
         str(wav_path),
     ]]
-    assert requested_wavs and requested_wavs[0]["frequency_hz"] > 0
+    assert playback["stimulus"]["duration_ms"] == 12000
 
 
 def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path):
@@ -979,8 +1061,16 @@ def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path)
     wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
     monkeypatch.setattr(
         sound_setup,
-        "_commission_tone_wav_path",
-        lambda *, frequency_hz, duration_s=sound_setup.COMMISSION_TONE_DURATION_S: wav_path,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+            },
+        ),
     )
     fanin_actions: list[str] = []
     monkeypatch.setattr(

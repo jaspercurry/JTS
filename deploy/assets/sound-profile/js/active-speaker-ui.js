@@ -262,7 +262,7 @@ export function commissionPayloadFailure(payload) {
   var load = payload.load && typeof payload.load === 'object' ? payload.load : null;
   var blocked = payload.status === 'blocked' || payload.status === 'failed' ||
     payload.status === 'gate_blocked' || payload.status === 'load_failed' ||
-    payload.status === 'tone_failed' ||
+    payload.status === 'tone_failed' || payload.status === 'expired' ||
     (load && load.status && load.status !== 'loaded');
   if (!blocked) return '';
   var issueReason = commissionIssueReason(commissionIssueCodes(payload));
@@ -274,6 +274,10 @@ export function commissionPayloadFailure(payload) {
     if (gates[i] && gates[i].passed === false) return commissionGateReason(gates[i].id);
   }
   return 'This driver can’t be tested yet — finish the earlier setup steps first.';
+}
+
+export function commissionPayloadHasIssue(payload, code) {
+  return commissionIssueCodes(payload).indexOf(code) >= 0;
 }
 
 function commissionIssueCodes(payload) {
@@ -301,6 +305,9 @@ function commissionIssueCodes(payload) {
 function commissionIssueReason(codes) {
   if (codes.indexOf('commission_live_state_stale') >= 0) {
     return 'The previous tone session expired safely. Start the tone again so JTS can reopen it quietly.';
+  }
+  if (codes.indexOf('commission_ramp_ack_expired') >= 0) {
+    return 'That driver tone expired before it could be confirmed. Start it again so JTS can reopen it quietly.';
   }
   if (codes.indexOf('stage5_ramp_role_order_woofer_first') >= 0) {
     return 'Confirm the woofer first, then start the tweeter tone.';

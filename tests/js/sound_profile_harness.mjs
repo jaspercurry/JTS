@@ -882,7 +882,7 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
             label: "Play combined test",
             enabled: true,
             endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, duration_ms: 500 },
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
           },
           record_combined_result: {
             id: "record_combined_result",
@@ -945,6 +945,9 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
   if (posts[0].level_dbfs !== -40) {
     fail("Combined test should POST the selected level inside the envelope", { posts });
   }
+  if (posts[0].stimulus !== "speech" || posts[0].duration_ms !== 12000) {
+    fail("Combined test should request the looped speech stimulus", { posts });
+  }
   return { combinedTestLevelPostsSelectedBoundedLevel: true };
 }
 
@@ -989,7 +992,7 @@ async function testCombinedTestButtonStopsActiveRequest() {
             label: "Play combined test",
             enabled: true,
             endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, duration_ms: 500 },
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
           },
         },
       }],
@@ -2300,7 +2303,7 @@ async function testCommissionToneFailureStopsAutoRamp() {
   return { commissionToneFailureStopsAutoRamp: true };
 }
 
-async function testCommissionRampLimitStopsAutoRamp() {
+async function testCommissionRampLimitKeepsConfirmationOpen() {
   let commissionState = {
     commission_load: {
       status: "loaded",
@@ -2320,6 +2323,18 @@ async function testCommissionRampLimitStopsAutoRamp() {
       if (body.role === "tweeter") {
         fail("safe-limit stop must not advance into the tweeter", { posts });
       }
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: "woofer", audible_gain_db: 0 },
+          rollback_available: true,
+        },
+        ramp: {
+          confirmed_roles: [],
+          pending: { role: "woofer", gain_db: 0, frequency_hz: 80 },
+        },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
       return Promise.resolve(response({
         status: "blocked",
         role: "woofer",
@@ -2336,12 +2351,7 @@ async function testCommissionRampLimitStopsAutoRamp() {
     },
     "./active-speaker/commission-ramp-abort": (p, o) => {
       posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      commissionState = {
-        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "aborted" }));
+      fail("safe-limit response must not abort the pending confirmation", { posts });
     },
   });
   const harness = setupHarness(fetchHandler);
@@ -2355,14 +2365,17 @@ async function testCommissionRampLimitStopsAutoRamp() {
   if (rampSteps.length !== 1) {
     fail("safe-limit response must stop the automatic ramp after one blocked step", { posts });
   }
-  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
-    fail("safe-limit response should hard Stop the continuous tone", { posts });
+  if (posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
+    fail("safe-limit response must leave the pending tone confirmable", { posts });
   }
   const html = harness.elements.get("view-body").innerHTML;
   if (!html.includes("Reached the safe test limit")) {
     fail("safe-limit response should surface the room-facing action", { html });
   }
-  return { commissionRampLimitStopsAutoRamp: true };
+  if (!html.includes("I hear the woofer")) {
+    fail("safe-limit response should keep the heard-confirmation CTA visible", { html });
+  }
+  return { commissionRampLimitKeepsConfirmationOpen: true };
 }
 
 async function testResetPartialCleanupSurfacesWarning() {
@@ -2567,7 +2580,7 @@ results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());
 results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
-results.push(await testCommissionRampLimitStopsAutoRamp());
+results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());

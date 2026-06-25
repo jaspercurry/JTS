@@ -701,6 +701,38 @@ def test_operator_ack_rejected_floor_confirm_does_not_record_role(
     assert ramp["pending"] is not None  # step left pending for a real re-confirm
 
 
+def test_operator_ack_expired_pending_step_reopens_driver_test(monkeypatch, tmp_path):
+    step, cam, staged_path, state_path, _ = _ramp_step(
+        tmp_path, monkeypatch, role="woofer"
+    )
+    assert step["status"] == "stepped"
+
+    safe_path = tmp_path / "safe.json"
+    safe_data = json.loads(safe_path.read_text(encoding="utf-8"))
+    safe_data["expires_at"] = "1970-01-01T00:00:00Z"
+    safe_path.write_text(json.dumps(safe_data), encoding="utf-8")
+
+    ack = asyncio.run(
+        record_ramp_operator_ack(
+            outcome="heard_correct_driver",
+            load_config=cam.apply_running_config,
+            ramp_state_path_override=tmp_path / "ramp.json",
+            safe_playback_state_path=safe_path,
+            commission_load_state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+
+    assert ack["status"] == "expired"
+    assert "commission_ramp_ack_expired" in {
+        issue["code"] for issue in ack["issues"]
+    }
+    ramp = load_ramp_state(state_path=tmp_path / "ramp.json")
+    assert ramp["confirmed_roles"] == []
+    assert ramp["pending"] is None
+    assert cam.loaded_paths[-1] == staged_path
+
+
 def test_silent_floor_allows_a_louder_retry(monkeypatch, tmp_path):
     step, cam, staged_path, state_path, common = _ramp_step(
         tmp_path, monkeypatch, role="woofer"

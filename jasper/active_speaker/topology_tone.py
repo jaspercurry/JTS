@@ -504,7 +504,7 @@ def build_summed_topology_tone_plan(
         },
         "issues": issues,
         "next_step": (
-            "Ready for a short combined-driver test."
+            "Ready for a looped spoken combined-driver test."
             if allowed else
             "Resolve the setup items before running the combined-driver test."
             if issues else
