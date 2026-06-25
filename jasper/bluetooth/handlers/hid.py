@@ -4,18 +4,18 @@
 
 """HID device handler.
 
-Matches any device advertising the HID service UUID (0x1124). The
-heavy lifting is already done by `jasper-input` (the evdev bridge
-from Phase A) — once bluez `Connect()`s the device, the kernel
-exposes it under `/dev/input/event*` and the bridge's pyudev watcher
-opens it automatically. So this handler is mostly a no-op; it just
-yields status events so the user sees progress in the UI.
+Matches devices advertising either classic HID (0x1124) or BLE HID
+over GATT (0x1812). The heavy lifting is already done by `jasper-input`
+(the evdev bridge from Phase A) — once bluez `Connect()`s the device,
+the kernel exposes it under `/dev/input/event*` and the bridge's pyudev
+watcher opens it automatically. So this handler is mostly a no-op; it
+just yields status events so the user sees progress in the UI.
 """
 from __future__ import annotations
 
 from typing import AsyncIterator
 
-from ..models import UUID_HID, BluetoothDevice
+from ..models import BluetoothDevice, is_hid_uuids
 from .base import StatusEvent
 
 
@@ -24,8 +24,7 @@ class HIDHandler:
     label = "HID accessory"
 
     def applies_to(self, device: BluetoothDevice) -> bool:
-        uu = " ".join(device.uuids).lower()
-        return UUID_HID in uu
+        return is_hid_uuids(device.uuids)
 
     async def post_pair(
         self, device: BluetoothDevice,
