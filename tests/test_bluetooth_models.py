@@ -57,6 +57,20 @@ def test_is_hid_uuids_matches_classic_hid_and_hogp() -> None:
     assert is_hid_uuids([]) is False
 
 
+def test_bluetooth_device_uses_input_icon_for_hogp_without_bluez_hint() -> None:
+    device = BluetoothDevice.from_props(
+        "/org/bluez/hci0/dev_CA_AC_04_04_09_D7",
+        {
+            "Address": "CA:AC:04:04:09:D7",
+            "Name": "WiiM Remote 2",
+            "UUIDs": [f"{UUID_HOGP}0000-1000-8000-00805f9b34fb"],
+            "Paired": True,
+        },
+    )
+
+    assert device.icon == "input-keyboard"
+
+
 def test_bluetooth_device_merges_battery_percentage_when_bluez_exposes_it() -> None:
     device = BluetoothDevice.from_props(
         "/org/bluez/hci0/dev_11_22_33_44_55_66",
