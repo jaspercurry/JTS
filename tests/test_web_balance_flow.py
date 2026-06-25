@@ -17,7 +17,7 @@ import concurrent.futures
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from http import HTTPStatus
 
 import pytest
@@ -104,7 +104,8 @@ def pair_env(loop_thread, monkeypatch):
     """A healthy bonded pair plus fakes for every seam; returns the
     call log + the schedule/run_async bridges bound to the loop."""
     calls = {"window_open": 0, "window_closed": 0, "futures": [],
-             "spawned": [], "procs": [], "posted": []}
+             "spawned": [], "procs": [], "posted": [],
+             "volume_normalized": 0, "volume_restored": 0}
     monkeypatch.setattr(
         mstate, "read_grouping_state", lambda *a, **k: dict(LEADER_G))
     monkeypatch.setattr(rooms, "_self_addresses",
@@ -127,6 +128,28 @@ def pair_env(loop_thread, monkeypatch):
             calls["window_closed"] += 1
 
     monkeypatch.setattr(coordinator, "measurement_window", fake_window)
+
+    class FakeVolumeGuardReport:
+        def public_dict(self):
+            return {
+                "snapshot": {
+                    "main_volume_db": -28.0,
+                    "snapcast_clients": [],
+                },
+                "calibration_main_volume_db": -12.0,
+                "calibration_snapcast_percent": 100,
+            }
+
+    @asynccontextmanager
+    async def fake_volume_guard(hostname, members):
+        calls["volume_normalized"] += 1
+        try:
+            yield FakeVolumeGuardReport()
+        finally:
+            calls["volume_restored"] += 1
+
+    monkeypatch.setattr(balance_flow, "_volume_guard_context",
+                        fake_volume_guard)
 
     async def fake_spawn(wav_path):
         proc = FakeProc()
@@ -165,7 +188,9 @@ def pair_env(loop_thread, monkeypatch):
                 fut.result(timeout=remaining)
             except concurrent.futures.TimeoutError:
                 fut.cancel()
-            except Exception:  # noqa: BLE001
+                with suppress(concurrent.futures.CancelledError, RuntimeError):
+                    fut.result(timeout=0)
+            except (concurrent.futures.CancelledError, RuntimeError):
                 pass
 
     calls["schedule"] = schedule
@@ -196,6 +221,7 @@ def start_ok(env) -> dict:
 
 
 def ramp_ok(env, channel: str) -> dict:
+    seed_floor()
     body = f'{{"channel": "{channel}"}}'.encode()
     payload, status = balance_flow.handle_ramp(
         FakeHandler(body), env["run_async"], env["schedule"])
@@ -210,6 +236,17 @@ def lock_at(env, channel: str, offset_s: float) -> tuple[dict, int]:
         balance_flow._state["ramp"]["t0"] = time.monotonic() - offset_s
     body = f'{{"channel": "{channel}"}}'.encode()
     return balance_flow.handle_lock(FakeHandler(body))
+
+
+def meter_frame(db: float = -70.0) -> tuple[dict, int]:
+    body = f'{{"db": {db}}}'.encode()
+    return balance_flow.handle_meter(FakeHandler(body))
+
+
+def seed_floor(db: float = -70.0, count: int = 4) -> None:
+    for _ in range(count):
+        payload, status = meter_frame(db)
+        assert status == 200, payload
 
 
 def drive_at(offset_s: float) -> float:
@@ -263,6 +300,7 @@ def test_start_opens_one_window_and_rejects_double_start(pair_env):
     assert payload["members"]["right"]["label"] == "jts3"
     assert pair_env["window_open"] == 1
     assert pair_env["window_closed"] == 0  # held across the session
+    assert pair_env["volume_normalized"] == 1
     assert balance_flow.active_phase() == "measuring"
     payload, status = balance_flow.handle_start(
         "jts.local", pair_env["schedule"])
@@ -289,12 +327,49 @@ def test_ramp_plays_the_channel_wav_once(pair_env):
     start_ok(pair_env)
     payload = ramp_ok(pair_env, "left")
     assert payload["duration_s"] > 20
+    assert payload["target_dbfs"] == -55.0
     assert pair_env["spawned"] == ["/tmp/left.wav"]
     assert balance_flow.handle_status()["ramping"] == "left"
     payload, status = balance_flow.handle_ramp(
         FakeHandler(b'{"channel": "right"}'),
         pair_env["run_async"], pair_env["schedule"])
     assert status == 409 and "already playing" in payload["error"]
+
+
+def test_ramp_waits_for_backend_mic_floor(pair_env):
+    start_ok(pair_env)
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "left"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 200
+    assert payload["ok"] is False
+    assert payload["need_floor"] is True
+    assert "microphone level frames" in payload["error"]
+    assert payload["meter"]["frames"] == 0
+    assert pair_env["spawned"] == []
+
+
+def test_ramp_fails_visibly_when_mic_floor_never_arrives(pair_env):
+    start_ok(pair_env)
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "left"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 200 and payload["need_floor"]
+    with balance_flow._lock:
+        balance_flow._state["floor_wait_started_at"] = (
+            time.monotonic() - balance_flow.FLOOR_WAIT_TIMEOUT_S - 0.1
+        )
+
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "left"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 409
+    assert payload["ok"] is False
+    assert payload["need_floor"] is False
+    assert "microphone" in payload["error"]
+    assert pair_env["spawned"] == []
+    with balance_flow._lock:
+        assert balance_flow._state["floor_wait_started_at"] is None
 
 
 def test_early_lock_keeps_listening(pair_env):
@@ -339,6 +414,27 @@ def test_full_walkthrough_computes_trims(pair_env):
         time.sleep(0.02)
     assert pair_env["window_closed"] == 1  # renderers restored
     assert balance_flow.active_phase() is None  # analyzed ≠ active
+    deadline = time.monotonic() + 2.0
+    while (pair_env["volume_restored"] != 1
+           and time.monotonic() < deadline):
+        time.sleep(0.02)
+    assert pair_env["volume_restored"] == 1
+
+
+def test_backend_meter_frames_lock_the_ramp(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    with balance_flow._lock:
+        balance_flow._state["ramp"]["t0"] = time.monotonic() - 10.0
+
+    # Two hits over target are not enough; the third backend frame locks.
+    for _ in range(2):
+        payload, status = meter_frame(-50.0)
+        assert status == 200 and not payload["locked"]
+    payload, status = meter_frame(-50.0)
+    assert status == 200 and payload["locked"]
+    assert payload["drive_dbfs"] == pytest.approx(drive_at(10.0), abs=0.1)
+    assert pair_env["procs"][0].terminated
 
 
 def test_lock_in_ceiling_hold_uses_ceiling_drive(pair_env):
@@ -381,6 +477,31 @@ def test_stop_terminates_playback_and_releases_window(pair_env):
         time.sleep(0.02)
     assert pair_env["window_closed"] == 1
     assert balance_flow.handle_status()["phase"] == "idle"
+
+
+def test_stop_during_ramp_spawn_terminates_unregistered_playback(
+    pair_env, monkeypatch,
+):
+    start_ok(pair_env)
+    seed_floor()
+
+    async def stop_during_spawn(wav_path):
+        proc = FakeProc()
+        pair_env["spawned"].append(wav_path)
+        pair_env["procs"].append(proc)
+        balance_flow.handle_stop()
+        return proc
+
+    monkeypatch.setattr(balance_flow, "_start_playback", stop_during_spawn)
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "left"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 409
+    assert "session" in payload["error"]
+    assert pair_env["procs"][0].terminated
+    st = balance_flow.handle_status()
+    assert st["phase"] == "idle"
+    assert st["ramping"] == ""
 
 
 def test_activity_advances_the_idle_deadline(pair_env):

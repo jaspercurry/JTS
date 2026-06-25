@@ -15,7 +15,9 @@ from __future__ import annotations
 from jasper.multiroom.snapcast_rpc import (
     ensure_groups_on_stream,
     read_stream_clients,
+    set_client_volume,
     set_client_latency,
+    set_group_mute,
     summarize_groups,
 )
 
@@ -164,6 +166,39 @@ def test_set_client_latency_fail_soft_false():
     ) is False
 
 
+def test_set_client_volume_calls_snapcast_rpc():
+    calls = []
+
+    def transport(method, params=None, *, url=None):
+        calls.append((method, params))
+        return {}
+
+    assert set_client_volume(
+        "abc", percent=112, muted=False, transport=transport,
+    ) is True
+    assert calls == [(
+        "Client.SetVolume",
+        {"id": "abc", "volume": {"percent": 100, "muted": False}},
+    )]
+
+
+def test_set_client_volume_fail_soft_false():
+    assert set_client_volume(
+        "abc", percent=100, muted=False, transport=lambda *a, **k: None,
+    ) is False
+
+
+def test_set_group_mute_calls_snapcast_rpc():
+    calls = []
+
+    def transport(method, params=None, *, url=None):
+        calls.append((method, params))
+        return {}
+
+    assert set_group_mute("grp", True, transport=transport) is True
+    assert calls == [("Group.SetMute", {"id": "grp", "mute": True})]
+
+
 # ---------- ownership-rule semantics (review polish) ----------
 
 
@@ -245,7 +280,10 @@ def test_probe_cache_returns_defensive_copies():
     from jasper.multiroom.snapcast_rpc import _ProbeCache
 
     cache = _ProbeCache(ttl_sec=60.0)
-    transport = lambda *a, **k: _status([_group("g", "jts", [_client("jts")])])  # noqa: E731
+
+    def transport(*_args, **_kwargs):
+        return _status([_group("g", "jts", [_client("jts")])])
+
     first = cache.read(transport=transport, now=lambda: 1.0)
     first[0]["stream_id"] = "vandalized"
     second = cache.read(transport=transport, now=lambda: 2.0)  # same window

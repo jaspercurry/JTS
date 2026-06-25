@@ -2009,16 +2009,28 @@ ramp WAV (silence-lead-in, then 500 Hz–2 kHz seeded noise rising
 -42 → -12 dBFS at 1.5 dB/s with a 4 s ceiling hold; the other channel
 silent, so each bonded member's outputd channel pick emits it from
 exactly one physical speaker through the FULL normal chain including
-its current trim). The phone at the listening position meters its own
-in-band level (biquad band-pass in the AudioWorklet — no audio is
-uploaded) and POSTs /balance/lock when it crosses noise-floor + 15 dB;
-the server derives the DRIVE level from monotonic-since-playback via
-the pure ramp_emission_dbfs function. Spawn/buffer/LAN/detection
-latencies are identical across the two passes and cancel in
-drive_delta_db; locks inside the lead-in get keep_listening (noise
-transient); a ramp that ends unheard marks that channel not_heard —
-the actionable per-speaker error ("check it's powered"), retryable
-per-speaker. recommend_trims is unchanged from v1 (attenuate-only,
+its current trim during normal playback). The balance session now
+normalizes the owned measurement path before playing: inside
+`measurement_window`, `jasper.measurement.volume_guard` snapshots
+CamillaDSP `main_volume` plus both Snapcast clients' volume/mute/group
+mute state, sets Camilla to the bounded calibration level and the pair's
+Snapcast clients to 100% unmuted, then restores the snapshot in
+`finally` before renderers resume. If Snapcast/Camilla cannot be
+resolved or normalized, `/balance/start` fails visibly rather than
+measuring through hidden attenuation. The phone at the listening
+position meters its own in-band level (biquad band-pass in the
+AudioWorklet — no audio is uploaded) and streams dBFS frames to
+`/balance/meter`; the server computes recent floor, target (floor + 15
+dB, min −55 dBFS), frame liveness, bounded floor-wait failure, and
+lock. `/balance/lock` remains as a compatibility/manual seam, but the
+shipped page no longer decides locks client-side. The server derives the
+DRIVE level from monotonic-since-playback via the pure
+`ramp_emission_dbfs` function.
+Spawn/buffer/LAN/detection latencies are identical across the two passes
+and cancel in `drive_delta_db`; locks inside the lead-in get
+`keep_listening` (noise transient); a ramp that ends unheard marks that
+channel `not_heard` — the actionable per-speaker error, retryable
+per-speaker. `recommend_trims` is unchanged from v1 (attenuate-only,
 quieter side renormalized to 0 dB, −24 floor surfaced as clamped).
 The wizard (https://<host>/balance/, linked from the /rooms bonded
 card; jasper/web/balance_flow.py riding INSIDE the correction
@@ -2035,11 +2047,15 @@ idle check. /balance/apply writes one absolute /grouping/set per
 member (peer first; partial failure reported per-member; idempotent
 retry). Tests: tests/test_multiroom_balance.py (emission-function
 contract incl. WAV-envelope relative-law tracking, determinism,
-channel exclusivity, drive-delta sign, trim matrix) and
+channel exclusivity, drive-delta sign, trim matrix),
 tests/test_web_balance_flow.py (real background loop, terminable fake
-playback, exact lock offsets via t0 rewind: gates, single held window,
-keep_listening, not_heard + retry, full walkthrough → trims, stop,
-apply order/bodies, correction exclusion). Updated 2026-06-24: `/rooms/`
+playback, backend mic floor, backend meter-frame locks, exact lock
+offsets via t0 rewind: gates, single held window, keep_listening,
+not_heard + retry, full walkthrough → trims, stop, apply order/bodies,
+correction exclusion), tests/test_measurement_volume_guard.py
+(Camilla/Snapcast snapshot-normalize-restore), and
+tests/test_multiroom_snapcast_rpc.py (Snapcast volume/mute RPC seams).
+Updated 2026-06-24: `/rooms/`
 now exposes pair balance as one centered slider. `POST /trim` still
 supports the legacy `target=self|peer` ±0.5 dB nudge, but the page uses
 `target=pair` + signed `balance_db`, which rewrites BOTH member trims
@@ -2661,7 +2677,10 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-25 (Camilla pipe-guard/recovery-budget wording
+Last verified: 2026-06-25 (pair-balance backend-meter flow and
+Camilla/Snapcast volume guard rechecked against `jasper/web/balance_flow.py`,
+`jasper/measurement/volume_guard.py`, and `deploy/assets/balance/js/main.js`;
+Camilla pipe-guard/recovery-budget wording
 rechecked against `deploy/systemd/jasper-camilla.service` and
 `deploy/bin/jasper-camilla-recover`; 2026-06-24 pair-lock runtime surface
 rechecked against
