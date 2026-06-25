@@ -181,6 +181,50 @@ def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():
     )
 
 
+def test_commissioning_view_surfaces_superseded_profile_revalidation():
+    view = build_commissioning_view(
+        _topology(),
+        measurements={
+            "summary": {
+                "driver_checks_complete": True,
+                "captured_driver_check_count": 2,
+                "required_driver_check_count": 2,
+                "summed_validation_complete": False,
+                "validated_summed_group_count": 0,
+                "required_summed_group_count": 1,
+                "latest_summed_tests": {
+                    "mono": {
+                        "captured": True,
+                        "audio_emitted": True,
+                        "summed_test_id": "summed-playback-newer",
+                        "issues": [],
+                    },
+                },
+                "latest_summed_validations": {
+                    "mono": {
+                        "validated": True,
+                        "summed_test_id": "summed-playback-audible",
+                    },
+                },
+            },
+        },
+        baseline_profile={
+            "status": "blocked",
+            "revalidation": {
+                "required": True,
+                "reason": "applied_profile_superseded",
+                "next_step": "combined_check",
+            },
+        },
+    )
+
+    assert view["status"] == "needs_revalidation"
+    assert view["revalidation"]["required"] is True
+    assert view["next_action"]["id"] == "record_combined_result"
+    combined_step = next(step for step in view["steps"] if step["id"] == "combined")
+    assert "Re-run the combined crossover check" in combined_step["message"]
+
+
 def test_commissioning_view_uses_backend_failure_copy_for_combined_group():
     view = build_commissioning_view(
         _topology(),

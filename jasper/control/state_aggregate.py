@@ -22,6 +22,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
@@ -702,6 +703,14 @@ async def _get_state(
     # journal), so the grouping section survives a broken read.
     grouping_state = with_airplay_latency_fit(grouping_state)
 
+    try:
+        active_speaker_setup = read_active_speaker_setup_status(
+            active_config_path=camilla_st.get("active_config_path"),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        logger.exception("active speaker setup status read failed")
+        active_speaker_setup = None
+
     # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
     # os.environ — jasper-control isn't restarted on a /transit/ save, only
     # jasper-voice is). read_transit_state is itself total, but guard the
@@ -821,6 +830,7 @@ async def _get_state(
             "sound": sound_profile,
             "output_hardware": output_hardware_state,
         },
+        "active_speaker_setup": active_speaker_setup,
         "renderers": {
             "spotify": spotify,
             "airplay": (

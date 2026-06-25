@@ -121,6 +121,7 @@
       -webkit-user-select: none;
     }
     .volume-wrap.safety-muted {
+      cursor: not-allowed;
       opacity: 0.48;
       filter: grayscale(0.55);
     }
@@ -555,7 +556,7 @@
             </div>
           </div>
           <p class="volume-safety-note" id="volume-safety-note" hidden>
-            Speaker output is safety-muted during active crossover setup.
+            Speaker output is locked until active crossover setup is complete.
             <a href="/sound/">Continue setup in Sound</a>
           </p>
         </section>
@@ -939,6 +940,7 @@
       var pending = null;
       var inFlight = false;
       var flushing = false;
+      var safetyMuted = false;
       var desiredPct = null;
       var ignorePollUntil = 0;
       var lastSentAt = 0;
@@ -976,6 +978,9 @@
         if (safety && typeof safety.safety_muted === 'boolean') {
           return safety.safety_muted;
         }
+        if (safety && typeof safety.volume_allowed === 'boolean') {
+          return !safety.volume_allowed;
+        }
         var audio = (data && data.audio) || {};
         var sound = audio.sound || {};
         var runtime = sound.runtime || {};
@@ -993,12 +998,19 @@
       }
 
       function setSafetyMuted(muted) {
-        hit.classList.toggle('safety-muted', !!muted);
-        if (safetyNote) safetyNote.hidden = !muted;
-        if (muted) {
+        safetyMuted = !!muted;
+        hit.classList.toggle('safety-muted', safetyMuted);
+        if (safetyNote) safetyNote.hidden = !safetyMuted;
+        if (safetyMuted) {
+          dragging = false;
+          pending = null;
+          desiredPct = null;
+          ignorePollUntil = 0;
           hit.setAttribute('aria-describedby', 'volume-safety-note');
+          hit.setAttribute('aria-disabled', 'true');
         } else {
           hit.removeAttribute('aria-describedby');
+          hit.removeAttribute('aria-disabled');
         }
       }
 
@@ -1009,6 +1021,7 @@
       }
 
       function setFromPointer(e) {
+        if (safetyMuted) return;
         var pct = clampPct(xToPercent(e.clientX));
         setUI(pct);
         sendThrottled(pct);
@@ -1020,6 +1033,7 @@
       }
 
       function sendThrottled(pct) {
+        if (safetyMuted) return;
         desiredPct = clampPct(pct);
         pending = desiredPct;
         ignorePollUntil = Date.now() + SETTLE_MS;
@@ -1069,6 +1083,10 @@
 
       hit.addEventListener('pointerdown', function(e) {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
+        if (safetyMuted) {
+          e.preventDefault();
+          return;
+        }
         dragging = true;
         try { hit.focus({preventScroll: true}); } catch (_) { hit.focus(); }
         try { hit.setPointerCapture(e.pointerId); } catch (_) {}
@@ -1107,6 +1125,7 @@
           default: return;
         }
         e.preventDefault();
+        if (safetyMuted) return;
         next = clampPct(next);
         setUI(next);
         sendThrottled(next);

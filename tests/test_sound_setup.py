@@ -594,6 +594,10 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "body.level_dbfs = requestedLevel" in js
     assert "operator_listening_check: true" in js
     assert "Test each driver" in js
+    assert "function baselineProfileRevalidation()" in js
+    assert "Revalidate crossover blend" in js
+    assert "Revalidation is saved. Save and apply a fresh active profile." in js
+    assert "Your active speaker setup changed after the current profile was applied." in js
     assert "By-ear" not in js
     assert "Status" in js
     assert "auto_retry_pending" in js

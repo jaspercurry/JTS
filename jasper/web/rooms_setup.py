@@ -93,6 +93,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
+from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..control import household_credential
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
@@ -816,6 +817,54 @@ def _get_member_grouping(
     return parse_grouping_response(parsed)
 
 
+def _get_member_active_speaker_setup(
+    addr: str, known: set[str] | None = None, *,
+    timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
+) -> dict | None:
+    """Read one member's active-speaker setup contract from ``/state``.
+
+    Returns None on any failure so the bond preflight can fail closed before
+    writing grouping.env anywhere.
+    """
+    target = _lan_target(addr, known)
+    if target is None:
+        return None
+    if target == "127.0.0.1":
+        try:
+            return read_active_speaker_setup_status()
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            return None
+    url = f"http://{target}:{CONTROL_HTTP_PORT}/state"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if not (200 <= r.status < 300):
+                return None
+            parsed = json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, http.client.HTTPException,
+            UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    setup = parsed.get("active_speaker_setup") if isinstance(parsed, dict) else None
+    return setup if isinstance(setup, dict) else None
+
+
+def _preflight_grouping_target(
+    addr: str, body: dict, known: set[str] | None = None,
+) -> tuple[bool, str]:
+    """Fail closed when an active member cannot safely join this bond."""
+    if not body.get("enabled"):
+        return True, "disabled"
+    setup = _get_member_active_speaker_setup(addr, known)
+    if setup is None:
+        return False, "could not read active speaker setup readiness"
+    if setup.get("active") and not setup.get("grouping_allowed", False):
+        return False, (
+            str(setup.get("detail") or "")
+            or "active speaker setup is not ready for grouping"
+        )
+    return True, "ready"
+
+
 def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /bond: form a bond by configuring every member's role.
 
@@ -951,6 +1000,44 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         targets.append((addr, body))
         target_idx.append(i)
 
+    known = _self_addresses()
+    preflight = _map_peers(
+        lambda t: _preflight_grouping_target(t[0], t[1], known),
+        targets,
+    )
+    blocked = [
+        {
+            "addr": addr,
+            "role": body.get("role"),
+            "ok": ok,
+            "detail": detail,
+        }
+        for (addr, body), (ok, detail) in zip(targets, preflight)
+        if not ok
+    ]
+    if blocked:
+        for r in blocked:
+            log_event(
+                logger,
+                "rooms.bond.preflight_failed",
+                bond=bond_id,
+                addr=r.get("addr") or "?",
+                role=r.get("role") or "?",
+                detail=r["detail"],
+                level=logging.WARNING,
+            )
+        _send_json(
+            handler,
+            {
+                "ok": False,
+                "bond_id": bond_id,
+                "error": "one or more speakers are not ready to join a group",
+                "results": blocked,
+            },
+            status=HTTPStatus.CONFLICT,
+        )
+        return
+
     # Mint the household credential on THIS leader before the fan-out, so each
     # member's /grouping/set carries it (X-JTS-Household, attached live by
     # _post_grouping_to_member) and adopts it on receipt — locking down every
@@ -971,7 +1058,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         )
     token = _request_control_token(handler)
     for slot, (addr, body), (ok, detail) in zip(
-        target_idx, targets, _fan_out_grouping(targets, token=token)
+        target_idx, targets, _fan_out_grouping(targets, known=known, token=token)
     ):
         results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
 

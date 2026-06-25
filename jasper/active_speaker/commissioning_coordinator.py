@@ -305,6 +305,12 @@ def build_commissioning_view(
     )
     profile_status = str((baseline_profile or {}).get("status") or "")
     profile_applied = profile_status == "applied"
+    revalidation = (
+        (baseline_profile or {}).get("revalidation")
+        if isinstance((baseline_profile or {}).get("revalidation"), Mapping)
+        else {}
+    )
+    revalidation_required = revalidation.get("required") is True
     active_targets = active_summed_targets(topology)
     has_layout = bool(topology.speaker_groups)
     combined_groups = [
@@ -354,6 +360,8 @@ def build_commissioning_view(
             (
                 "Combined crossover check is saved."
                 if summed_complete
+                else "Re-run the combined crossover check for the updated setup."
+                if revalidation_required
                 else "Run one quiet combined test and record what you heard."
             ),
         ),
@@ -364,6 +372,8 @@ def build_commissioning_view(
             (
                 "This is now the active speaker profile."
                 if profile_applied
+                else "Save and apply a fresh profile after revalidation."
+                if revalidation_required and summed_complete
                 else "Save the active speaker profile after the combined check."
             ),
         ),
@@ -395,6 +405,7 @@ def build_commissioning_view(
     status = (
         "applied" if profile_applied else
         "ready_to_save_profile" if summed_complete else
+        "needs_revalidation" if revalidation_required else
         "needs_combined_check" if driver_checks_complete else
         "needs_driver_checks" if output_identity_complete else
         "needs_output_confirmation" if has_layout else
@@ -430,6 +441,7 @@ def build_commissioning_view(
             "validated": int(summary.get("validated_summed_group_count") or 0),
             "required": int(summary.get("required_summed_group_count") or 0),
         },
+        "revalidation": dict(revalidation),
         "test_level": (
             dict(combined_groups[0]["test_level"])
             if combined_groups else _combined_test_level(calibration_level)

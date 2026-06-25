@@ -498,6 +498,93 @@ def _load_saved_state(path: Path) -> dict[str, Any] | None:
     return raw
 
 
+def _revalidation_payload(
+    saved: Mapping[str, Any] | None,
+    current_source: Mapping[str, Any],
+    *,
+    status: str,
+    issues: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    """Describe whether a previously applied profile is stale.
+
+    ``build_baseline_profile_candidate`` deliberately re-derives readiness from
+    current evidence instead of trusting the saved JSON. When that re-derivation
+    invalidates a profile that had already been applied, keep that fact visible:
+    the household needs a "revalidate" path, not a mysterious blocked profile.
+    """
+
+    if not isinstance(saved, Mapping) or saved.get("status") != "applied":
+        return {"required": False, "status": "not_required"}
+    saved_source = (
+        saved.get("source") if isinstance(saved.get("source"), Mapping) else {}
+    )
+    saved_fingerprint = saved_source.get("fingerprint")
+    current_fingerprint = current_source.get("fingerprint")
+    if not saved_fingerprint or saved_fingerprint == current_fingerprint:
+        return {"required": False, "status": "not_required"}
+
+    issue_codes = {
+        str(issue.get("code") or "")
+        for issue in (issues or [])
+        if isinstance(issue, Mapping)
+    }
+    if "baseline_summed_validation_missing" in issue_codes:
+        next_step = "combined_check"
+        message = (
+            "active speaker setup changed after this profile was applied; "
+            "re-run the combined crossover check, then save and apply a fresh profile"
+        )
+    elif status in {"ready_to_compile", "ready_to_apply", "compiled_apply_blocked"}:
+        next_step = "save_profile" if status == "ready_to_compile" else "apply_profile"
+        message = (
+            "active speaker revalidation is saved; save and apply a fresh profile"
+        )
+    else:
+        next_step = "setup_checks"
+        message = (
+            "active speaker setup changed after this profile was applied; "
+            "finish the highlighted setup checks, then save and apply a fresh profile"
+        )
+
+    changed = [
+        key
+        for key in (
+            "topology_fingerprint",
+            "design_draft_updated_at",
+            "crossover_preview_updated_at",
+            "crossover_preview_fingerprint",
+            "measurements_updated_at",
+            "measurement_summary_fingerprint",
+        )
+        if saved_source.get(key) != current_source.get(key)
+    ]
+    saved_config = (
+        saved.get("config") if isinstance(saved.get("config"), Mapping) else {}
+    )
+    saved_config_path = str(saved_config.get("path") or "")
+    return {
+        "required": True,
+        "status": "required",
+        "reason": "applied_profile_superseded",
+        "next_step": next_step,
+        "message": message,
+        "changed": changed,
+        "applied_at": saved.get("applied_at"),
+        "applied_source_fingerprint": saved_fingerprint,
+        "current_source_fingerprint": current_fingerprint,
+        "superseded_profile": {
+            "status": saved.get("status"),
+            "updated_at": saved.get("updated_at"),
+            "applied_at": saved.get("applied_at"),
+            "config": {
+                "path": saved_config_path or None,
+                "basename": saved_config.get("basename"),
+                "exists": bool(saved_config_path) and Path(saved_config_path).exists(),
+            },
+        },
+    }
+
+
 def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
     """True when the saved crossover preview is a fresh, staging-ready artifact.
 
@@ -582,6 +669,19 @@ def build_baseline_profile_candidate(
         playback_device=playback_device,
     )
     saved = _load_saved_state(state_target)
+
+    def finalize(payload: dict[str, Any]) -> dict[str, Any]:
+        payload["revalidation"] = _revalidation_payload(
+            saved,
+            source,
+            status=str(payload.get("status") or ""),
+            issues=[
+                issue for issue in payload.get("issues", [])
+                if isinstance(issue, Mapping)
+            ],
+        )
+        return payload
+
     if (
         not write
         and saved
@@ -612,7 +712,7 @@ def build_baseline_profile_candidate(
             "ready_to_apply",
             "compiled_apply_blocked",
         }
-        return out
+        return finalize(out)
 
     issues: list[dict[str, str]] = []
     summary = measurements.get("summary") if isinstance(measurements.get("summary"), Mapping) else {}
@@ -683,7 +783,7 @@ def build_baseline_profile_candidate(
             )
             issues.extend(preset_issues)
     if issues:
-        return _blocked_payload(
+        return finalize(_blocked_payload(
             topology=topology,
             source=source,
             issues=issues,
@@ -691,9 +791,9 @@ def build_baseline_profile_candidate(
             config_path=config_target,
             playback_device=resolved_playback_device,
             playback_device_source=playback_device_source,
-        )
+        ))
     if preset is None or resolved_playback_device is None:
-        return _blocked_payload(
+        return finalize(_blocked_payload(
             topology=topology,
             source=source,
             issues=[
@@ -707,7 +807,7 @@ def build_baseline_profile_candidate(
             config_path=config_target,
             playback_device=resolved_playback_device,
             playback_device_source=playback_device_source,
-        )
+        ))
 
     corrections, correction_issues, correction_meta = _derive_corrections(
         preset,
@@ -834,6 +934,7 @@ def build_baseline_profile_candidate(
         },
         "issues": issues,
     }
+    payload = finalize(payload)
     if write:
         atomic_write_text(
             state_target,
@@ -1061,6 +1162,7 @@ async def apply_baseline_profile(
         "applied_at": _utc_now(),
         "updated_at": _utc_now(),
         "apply": apply_state.to_dict(),
+        "revalidation": {"required": False, "status": "not_required"},
     }
     applied["permissions"] = dict(applied.get("permissions") or {})
     applied["permissions"]["may_apply"] = False
