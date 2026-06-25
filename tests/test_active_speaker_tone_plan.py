@@ -13,7 +13,6 @@ from jasper.active_speaker import (
     driver_test_signal_plan_from_edges,
     tone_targets_payload,
 )
-from jasper.active_speaker.calibration_level import MAX_TEST_LEVEL_DBFS
 
 
 def _preset(*, fc_hz: float = 1600) -> ActiveSpeakerPreset:
