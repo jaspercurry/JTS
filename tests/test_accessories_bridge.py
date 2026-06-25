@@ -29,7 +29,7 @@ import pytest
 from jasper.accessories.bridge import (
     COALESCE_WINDOW_SEC, _Coalescer, _post_once, _read_device, _TapCounter,
 )
-from jasper.accessories.registry import Device, KeyAction, TapAction
+from jasper.accessories.registry import Device, HoldAction, KeyAction, TapAction
 from jasper.control.client import ControlError, ControlResponse
 
 
@@ -307,6 +307,58 @@ def _install_fake_evdev(monkeypatch, *, input_device) -> None:
     ecodes = types.SimpleNamespace(EV_KEY=1, keys={})
     fake.ecodes = ecodes
     monkeypatch.setitem(sys.modules, "evdev", fake)
+
+
+@pytest.mark.asyncio
+async def test_read_device_hold_action_posts_on_press_and_release(monkeypatch):
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 217
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            # Press, autorepeat, release. HoldAction should ignore repeat.
+            for value in (1, 2, 0):
+                yield _Event(value)
+                await asyncio.sleep(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = Device(
+        name="WiiM Remote 2",
+        vendor_id=0x2717,
+        product_id=0x32B9,
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        return ControlResponse(200, b"")
+
+    await _read_device("/dev/input/event9", device, post)
+    await asyncio.sleep(0)
+    assert calls == [
+        ("POST", "/session/start", None),
+        ("POST", "/session/end", None),
+    ]
 
 
 @pytest.mark.asyncio

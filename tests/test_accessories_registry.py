@@ -15,11 +15,13 @@ from jasper.accessories.registry import (
     KEY_NEXTSONG,
     KEY_PLAYPAUSE,
     KEY_PREVIOUSSONG,
+    KEY_SEARCH,
     KEY_VOLUMEDOWN,
     KEY_VOLUMEUP,
     KNOWN_DEVICES,
     VK01,
     WIIM_REMOTE_2,
+    HoldAction,
     KeyAction,
     TapAction,
     lookup,
@@ -103,6 +105,10 @@ def test_wiim_remote_2_media_keymap_targets_control_routes():
         "POST", "/transport/previous", {},
     )
     assert keymap[KEY_MUTE] == KeyAction("POST", "/volume/mute", {})
+    assert keymap[KEY_SEARCH] == HoldAction(
+        on_press=KeyAction("POST", "/session/start", {}),
+        on_release=KeyAction("POST", "/session/end", {}),
+    )
 
 
 def test_wiim_remote_2_name_fallback_matches_bluez_name():

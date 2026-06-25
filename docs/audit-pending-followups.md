@@ -264,15 +264,16 @@ session from cold (nothing playing on the iPhone, nothing AirPlay'd,
 "play Kanye"). The phone has to be sending AirPlay for that case to
 work, and the user has explicitly said this is out of scope.
 
-### Bluetooth transport (AVRCP)
+### Bluetooth transport (AVRCP) - RESOLVED 2026-06-25
 
-When `btactive=1`, transport routes to bluez's MediaPlayer1 interface
-via DBus. Object path is dynamic — something like
+When `btactive=1`, transport now routes to bluez's MediaPlayer1 interface
+via DBus in `jasper/tools/transport.py`. Object path is dynamic — something like
 `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0`. Discovery: enumerate
 under `/org/bluez/hci0` for objects implementing
 `org.bluez.MediaPlayer1`. Methods are the standard MPRIS-shaped set
-(`Play`, `Pause`, `Next`, `Previous`). Easy follow-on once the
-A2DP path is exercised; see `bluez/doc/mediaapi.txt` for the contract.
+(`Play`, `Pause`, `Next`, `Previous`). Remaining follow-on is the broader
+source-capability extraction and health surfacing described in
+`docs/HANDOFF-source-capabilities.md`.
 
 ### `get_now_playing` is now source-aware
 
