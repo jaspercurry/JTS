@@ -23,9 +23,11 @@
   low-frequency tuning. The plain-HTTP preflight accepts
   `?next=/correction/...` so HTTP-only setup flows can link directly to a
   secure subflow after showing the certificate warning; its Proceed
-  button uses `/correction/proceed[/subflow]`, and nginx uses temporary,
-  non-cacheable redirects to `https://$host/...` so non-default hostnames
-  survive the scheme switch without teaching mobile browsers a permanent rule.
+  button uses `/correction/proceed[/subflow]`, adds a per-page-load
+  `jts_cb` cache-bust/query token when JavaScript is available, and nginx uses
+  temporary, non-cacheable redirects to `https://$host/...` while preserving
+  query args so non-default hostnames survive the scheme switch without
+  teaching mobile browsers a permanent rule or reusing a stale handoff URL.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /correction/`, `/correction/balance`, and
@@ -43,12 +45,13 @@
   Implemented 2026-05-28; hostname-safe proceed redirect added
   2026-06-24. `http://jts.local/correction/` now serves a static
   preflight page that explains the browser's self-signed-cert warning.
-  Its default OK button targets `/correction/proceed`, with optional
-  `/room`, `/crossover`, or `/bass` proceed suffixes when a safe
-  `?next=/correction/...` target is present. Nginx owns the final temporary
-  `https://$host/...` redirect, so `jts3.local` and other configured
-  hostnames do not depend on client-side hostname rewriting or sticky 308
-  state in Safari. The landing
+  Its default OK button targets `/correction/proceed` with a build-token
+  fallback query string; JavaScript replaces that with a fresh `jts_cb` token
+  on each preflight page load, with optional `/room`, `/crossover`, or `/bass`
+  proceed suffixes when a safe `?next=/correction/...` target is present.
+  Nginx owns the final temporary `https://$host/...` redirect and preserves
+  query args, so `jts3.local` and other configured hostnames do not depend on
+  client-side hostname rewriting or sticky 308 state in Safari. The landing
   page links to the HTTP preflight, and the HTTPS correction page's Home
   link points back to
   `http://jts.local/` so relative navigation does not inherit the
@@ -695,8 +698,10 @@ loses the YouTube hook.
   page, `/correction/proceed[/room|/crossover|/bass]` as no-JS
   `302` + `Cache-Control: no-store` redirects to `https://$host/...`, and
   `http://jts.local/jts-root-ca.crt` with `application/x-x509-ca-cert`. The
-  preflight HTML and proceed redirects are non-cacheable so a phone cannot keep
-  an old hard-coded or wrong-scheme target after deploy.
+  preflight HTML and proceed redirects are non-cacheable, and the Proceed link
+  carries a build-token fallback plus a JavaScript-generated `jts_cb` token
+  that nginx preserves into the HTTPS URL, so a phone cannot keep an old
+  hard-coded or wrong-scheme target after deploy.
 - Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
   `/assets/` statically. The measurement UI's canonical look links
   `/assets/app.css` + its ES module by absolute path; without an `/assets/`
@@ -745,10 +750,11 @@ HTTP port 80:
 GET  /correction/            static preflight explaining the HTTPS warning;
                              OK button links to /correction/proceed, or
                              /correction/proceed/<subflow> for safe
-                             ?next=/correction/... targets
-GET  /correction/proceed     redirect to https://$host/correction/
+                             ?next=/correction/... targets; JS appends jts_cb
+GET  /correction/proceed     redirect to https://$host/correction/$is_args$args
 GET  /correction/proceed/room|crossover|bass
-                             redirect to the matching https://$host/correction/ subflow
+                             redirect to the matching https://$host/correction/
+                             subflow, preserving query args
 GET  /jts-root-ca.crt        download private root CA for iOS trust
 
 HTTPS port 443 after nginx strips /correction/:
@@ -1863,10 +1869,11 @@ Internal:
 ---
 
 Last verified: 2026-06-25 (`/correction/` hub routing, HTTP preflight
-`?next=/correction/...` + `/correction/proceed` temporary no-store redirects,
-and HTTPS asset serving rechecked against `deploy/correction-preflight.html`,
-`deploy/nginx-jasper.conf`, `deploy/nginx-jasper-streambox.conf`, and
-`tests/test_landing_page_html.py`; prior 2026-06-24 pass covered
+`?next=/correction/...` + `/correction/proceed` temporary no-store redirects
+with preserved `jts_cb` query tokens, and HTTPS asset serving rechecked
+against `deploy/correction-preflight.html`, `deploy/nginx-jasper.conf`,
+`deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`;
+prior 2026-06-24 pass covered
 topology-preserving correction start/apply/reset behavior,
 correction-native active-crossover playback/capture routing, and the mapped
 runtime files listed in that verification pass; prior 2026-06-18 pass covered
