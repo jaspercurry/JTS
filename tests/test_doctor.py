@@ -4838,6 +4838,35 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
     assert "Chip AEC 150 beam via :9876" in result.detail
 
 
+def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_audio_profile_status_for_doctor",
+        lambda *, bridge_active=None: {
+            "audio_profile": {"active": "xvf_chip_aec"},
+            "microphone": {"processing_mode": "Chip-AEC"},
+            "chip_aec_gate": {"status": "approved", "source": "static"},
+        },
+    )
+
+    result = doctor.aec.check_aec_bridge_running()
+
+    assert result.status == "ok"
+    assert "chip-AEC beam forwarding" in result.detail
+    assert "WebRTC AEC3 bypassed" in result.detail
+    assert "gate=approved/static" in result.detail
+    assert "software AEC enabled" not in result.detail
+
+
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {
