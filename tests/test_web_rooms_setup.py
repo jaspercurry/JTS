@@ -1452,6 +1452,19 @@ def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monk
     assert results == [(False, "slow boom"), (True, "HTTP 200")]
 
 
+def test_grouping_set_success_detail_distinguishes_live_and_scheduled_apply():
+    assert rooms_setup._grouping_set_success_detail(
+        200,
+        b'{"ok":true,"live_apply":{"applied":true,"mode":"outputd","trim_db":-2.5}}',
+    ) == "Applied live."
+    assert rooms_setup._grouping_set_success_detail(
+        200,
+        b'{"ok":true,"reconciler_kicked":true,'
+        b'"live_apply":{"applied":false,"mode":"outputd","trim_db":-2.5}}',
+    ) == "Saved; audio update scheduled."
+    assert rooms_setup._grouping_set_success_detail(200, b"") == "HTTP 200"
+
+
 def test_fan_out_grouping_empty_targets_is_empty_list():
     assert rooms_setup._fan_out_grouping([]) == []
 

@@ -841,12 +841,11 @@ def _emit_driver_domain_pipeline(
         "  - type: Mixer",
         f"    name: {CHANNEL_SELECT_MIXER}",
     ]
-    if pair_trim_db > 0.0:
-        lines.extend([
-            "  - type: Filter",
-            "    channels: [0, 1]",
-            "    names: [pair_balance_trim]",
-        ])
+    lines.extend([
+        "  - type: Filter",
+        "    channels: [0, 1]",
+        "    names: [pair_balance_trim]",
+    ])
     lines.extend([
         "  - type: Mixer",
         f"    name: split_active_{preset.way_count}way",
@@ -1590,8 +1589,7 @@ def emit_active_speaker_driver_domain_config(
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
     )
-    if pair_trim_db > 0.0:
-        filter_lines.extend(emit_gain_filter("pair_balance_trim", -pair_trim_db))
+    filter_lines.extend(emit_gain_filter("pair_balance_trim", -pair_trim_db))
     filter_yaml = "\n".join(filter_lines)
     # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
     mixer_yaml = "\n".join((

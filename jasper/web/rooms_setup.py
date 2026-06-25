@@ -708,7 +708,11 @@ def _post_grouping_to_member(
     )
     try:
         with urllib.request.urlopen(req, timeout=CONTROL_HTTP_TIMEOUT_SEC) as r:
-            return (200 <= r.status < 300), f"HTTP {r.status}"
+            raw = r.read() if hasattr(r, "read") else b""
+            return (
+                200 <= r.status < 300,
+                _grouping_set_success_detail(r.status, raw),
+            )
     except urllib.error.HTTPError as e:
         detail = (e.read() or b"").decode(errors="replace")[:200] if e.fp else ""
         return False, f"HTTP {e.code}: {detail}".strip()
@@ -717,6 +721,25 @@ def _post_grouping_to_member(
         # OSError subclass — a malformed/truncated reply from one peer must
         # still return (False, …), never escape and crash the fan-out batch.
         return False, str(e)
+
+
+def _grouping_set_success_detail(status: int, raw: bytes) -> str:
+    try:
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return f"HTTP {status}"
+    if not isinstance(payload, dict):
+        return f"HTTP {status}"
+    live = payload.get("live_apply")
+    if isinstance(live, dict):
+        mode = str(live.get("mode") or "")
+        if live.get("applied"):
+            return "Applied live." if mode != "noop" else "Already applied."
+        if payload.get("reconciler_kicked"):
+            return "Saved; audio update scheduled."
+    if payload.get("reconciler_kicked"):
+        return "Saved; audio update scheduled."
+    return f"HTTP {status}"
 
 
 # Bounded concurrency for every cross-speaker fan-out / discovery. Caps the
