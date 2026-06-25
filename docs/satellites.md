@@ -111,6 +111,13 @@ It's the canonical reference for the "physical control" pillar, and
 its onboarding/discovery/control patterns are reused by every satellite
 that follows.
 
+Third-party HID remotes can reuse the same push-to-talk endpoints
+(`/session/start` on press, `/session/end` on release). Unless they
+also expose a standard Linux audio capture device and JTS explicitly
+adds a mic source for them, they are control surfaces only: the active
+session still uses the speaker's configured mic/AEC path and does not
+enter multi-mic arbitration.
+
 ### Jasper AMOLED Satellite — Waveshare ESP32-S3-Touch-AMOLED-1.8
 
 **Status:** Phase 0 (mic capture, 2026-05-08) and Phase 1.1 (WiFi +
