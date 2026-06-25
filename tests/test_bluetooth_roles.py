@@ -25,6 +25,30 @@ def test_role_store_writes_group_readable_0640(tmp_path):
     assert mode & stat.S_IRGRP, "bt_roles.json must be group-readable for non-root daemons"
 
 
+def test_role_store_inherits_parent_group_on_write(tmp_path, monkeypatch):
+    import jasper.bluetooth.roles as roles
+
+    calls = []
+
+    def fake_atomic_write_text(path, text, *, mode, group_from_parent=False):
+        calls.append({
+            "path": path,
+            "text": text,
+            "mode": mode,
+            "group_from_parent": group_from_parent,
+        })
+
+    monkeypatch.setattr(roles, "atomic_write_text", fake_atomic_write_text)
+
+    p = tmp_path / "bt_roles.json"
+    roles.RoleStore(path=str(p)).set("AA:BB:CC:DD:EE:FF", "hid_dial")
+
+    assert calls
+    assert calls[0]["path"] == p
+    assert calls[0]["mode"] == 0o640
+    assert calls[0]["group_from_parent"] is True
+
+
 def test_role_store_round_trips(tmp_path):
     p = tmp_path / "bt_roles.json"
     store = RoleStore(path=str(p))

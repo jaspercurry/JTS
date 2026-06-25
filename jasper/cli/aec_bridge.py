@@ -2,16 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Software AEC bridge — `jasper-aec-bridge` (Python).
+"""AEC bridge — `jasper-aec-bridge` (Python).
 
-REPLACES the CamillaDSP-based aec-bridge. Default production echo
-cancellation is software AEC3. Opt-in chip-AEC production mode
-(`JASPER_AEC_CHIP_AEC_ENABLED=1`) routes outputd's final speaker
-buffer into the XVF3800 USB-IN reference, captures the chip's
-150°/210° ASR beams, forwards the selected primary beam on :9876,
-and emits both beams on :9887/:9888 for wake scoring. The wake-corpus
-recorder uses the same chip profile under its corpus-only flag so
-the labeled comparison data and production mode stay aligned.
+REPLACES the CamillaDSP-based aec-bridge. In software fallback mode this
+process runs WebRTC AEC3. In chip-AEC production mode
+(`JASPER_AEC_CHIP_AEC_ENABLED=1`) it does not instantiate the WebRTC AEC3
+engine; it routes outputd's final speaker buffer into the XVF3800 USB-IN
+reference, captures the chip's 150°/210° ASR beams, forwards the selected
+primary beam on :9876, and emits both beams on :9887/:9888 for wake
+scoring. The wake-corpus recorder uses the same chip profile under its
+corpus-only flag so the labeled comparison data and production mode stay
+aligned.
 
 In default mode this bridge does the AEC in software, with the
 recommended XVF capture channel as near-end and the host-side music

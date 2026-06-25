@@ -1671,7 +1671,7 @@ def _make_handler(
             self._send_json(_augment_source_payload(result))
 
         def _get_aec(self) -> None:
-            # Software AEC bridge state + per-leg config + wake
+            # AEC bridge state + per-leg config + wake
             # threshold. Mode and leg booleans are the persisted
             # request (what the operator asked for, via the /wake/
             # page or aec_mode.env directly); bridge_active is the
@@ -2514,16 +2514,16 @@ def _make_handler(
             return
 
         def _post_aec_toggle(self) -> None:
-            # Flip JASPER_AEC_MODE between auto and disabled, then
-            # kick the reconciler. The reconciler stops/starts
-            # jasper-aec-bridge.service and restarts jasper-voice
-            # with the new JASPER_MIC_DEVICE (udp:9876 vs chip
-            # direct). Called by the /wake/ page's AEC layer toggle
-            # (after a current-state read for idempotent set-state
-            # semantics). Non-blocking — the wizard polls /aec to
-            # see when the transition lands (~10-15 s). The kick
-            # uses systemctl restart so rapid toggles cannot be
-            # swallowed while the oneshot reconciler is already active.
+            # Flip the software-AEC3/direct-mic mode between auto and disabled,
+            # then kick the reconciler. Chip-AEC profiles bypass WebRTC AEC3
+            # but still need jasper-aec-bridge.service as the chip-beam UDP
+            # carrier, so attempts to disable "software AEC3" while chip-AEC is
+            # active are rejected below. Called by the /wake/ page's software
+            # AEC3 layer toggle (after a current-state read for idempotent
+            # set-state semantics). Non-blocking — the wizard polls /aec to
+            # see when the transition lands (~10-15 s). The kick uses systemctl
+            # restart so rapid toggles cannot be swallowed while the oneshot
+            # reconciler is already active.
             #
             # Risk model: LAN-local + browser-origin guard, same
             # as /system/restart/*. This is still not auth; it is
@@ -2532,6 +2532,23 @@ def _make_handler(
             # curl, local proxies, and accessories working.
             current = _read_aec_mode()
             new_mode = "disabled" if current == "auto" else "auto"
+            if new_mode == "disabled":
+                status = _aec_full_status()
+                if status.get("software_aec3", {}).get("bypassed"):
+                    self._send_json(
+                        {
+                            "error": (
+                                "Software AEC3 is already bypassed by the "
+                                "chip-AEC profile. Choose Direct mic to stop "
+                                "the chip-AEC bridge carrier, or choose XVF "
+                                "software AEC3 to use WebRTC AEC3."
+                            ),
+                            "mode": current,
+                            "bridge_role": status.get("bridge_role"),
+                        },
+                        status=409,
+                    )
+                    return
             try:
                 _write_aec_mode(new_mode)
             except (OSError, ValueError) as e:

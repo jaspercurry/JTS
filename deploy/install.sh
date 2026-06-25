@@ -1078,14 +1078,12 @@ EOF
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
-    # now a Python software AEC daemon (jasper-aec-bridge, see
-    # jasper/cli/aec_bridge.py). The chip's on-chip AEC turned out
-    # to be incompatible with our external-DAC topology, so we run
-    # WebRTC AEC3 on the host using the XVF chip's ASR beam
-    # (channel 1 of 6-ch firmware) + the dsnoop-tapped music
-    # reference. Old aec-bridge.yml is removed if present from a
-    # prior install.
+    # NOTE: aec-bridge is no longer a CamillaDSP instance. It is now a
+    # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
+    # that either runs WebRTC AEC3 for the software fallback profile or,
+    # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
+    # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
+    # removed if present from a prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
 }
 

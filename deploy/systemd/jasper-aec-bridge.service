@@ -1,5 +1,5 @@
 [Unit]
-Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF raw mic
+Description=AEC bridge — carries XVF mic audio via software AEC3 or chip-AEC
 # Captures the far-end reference from outputd's UDP final-speaker
 # monitor and the near-end mic from the reconciler-selected XVF ALSA
 # card (`Array` for legacy square/circular firmware, `L16K6Ch` for
@@ -16,16 +16,16 @@ Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF ra
 # kernel-side loopback_cable wedged on consumer SIGKILL and
 # required a reboot to clear. UDP has no such state.
 #
-# Engine: WebRTC AEC3 via the jasper_aec3 pybind11 binding around
-# Trixie's libwebrtc-audio-processing-1 v1.3-3. Tuning knobs
-# (JASPER_AEC_REF_GAIN_DB, JASPER_AEC_MIC_GAIN_DB, JASPER_AEC_AGC2)
-# come from /etc/jasper/jasper.env — see docs/HANDOFF-aec.md
-# "Tuning findings" for the chosen production values.
+# Software engine: when chip-AEC is not armed, WebRTC AEC3 runs via the
+# jasper_aec3 pybind11 binding around Trixie's libwebrtc-audio-processing-1
+# v1.3-3. Tuning knobs (JASPER_AEC_REF_GAIN_DB, JASPER_AEC_MIC_GAIN_DB,
+# JASPER_AEC_AGC2) come from /etc/jasper/jasper.env — see
+# docs/HANDOFF-aec.md "Tuning findings" for the chosen production values.
 #
-# REPLACES the previous CamillaDSP-based bridge. The default production
-# path is WebRTC AEC3; the user-authorized chip-AEC carve-out is narrow
-# and opt-in, with outputd owning the XVF USB-IN reference producer.
-# See jasper/cli/aec_bridge.py and docs/CHIP-AEC-EXPERIMENT.md.
+# REPLACES the previous CamillaDSP-based bridge. The software fallback path is
+# WebRTC AEC3; the chip-AEC profile bypasses that engine while reusing this
+# service as the bridge from the chip beam into jasper-voice. See
+# jasper/cli/aec_bridge.py and docs/HANDOFF-aec.md.
 After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service sound.target
 Requires=jasper-camilla.service
 # `Wants=` so init runs whenever bridge starts (init is a one-shot

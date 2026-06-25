@@ -355,6 +355,32 @@ def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
     assert cap["status"] == 200
 
 
+def test_apply_aec_layer_off_is_noop_when_software_aec3_bypassed(monkeypatch):
+    calls: list[str] = []
+
+    def fake_proxy_get(path, *, control_base, timeout):
+        calls.append(f"GET {path}")
+        return 200, (
+            b'{"mode":"auto","bridge_role":"chip_aec_carrier",'
+            b'"software_aec3":{"bypassed":true}}'
+        )
+
+    def fake_proxy_post(path, *, control_base, timeout, body=b""):
+        calls.append(f"POST {path}")
+        return 200, b'{"ok":true}'
+
+    monkeypatch.setattr(wake_setup, "proxy_get", fake_proxy_get)
+    monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
+
+    status, body = wake_setup._apply_layer(
+        "aec", False, control_base="http://control",
+    )
+
+    assert status == 200
+    assert b"chip_aec_carrier" in body
+    assert calls == ["GET /aec"]
+
+
 def test_post_layer_unknown_layer_400(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)

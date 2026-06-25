@@ -161,26 +161,42 @@ function applyState(s) {
   const bridgeOn = !!s.bridge_active;
   const legs = s.legs || {};
   const gate = s.chip_aec_gate || {};
+  const software = s.software_aec3 || {};
   const aecOn = mode === "auto";
   const rawOn = !!(legs.raw && legs.raw.configured);
   const dtlnOn = !!(legs.dtln && legs.dtln.configured);
   const chipOn = !!(legs.chip_aec && legs.chip_aec.configured);
   const chipProductionAvailable = !!gate.production_available;
+  const softwareBypassed = !!software.bypassed;
+  const softwareConfigured =
+    Object.prototype.hasOwnProperty.call(software, "configured")
+      ? !!software.configured
+      : aecOn && !chipOn;
+  const softwareActive =
+    Object.prototype.hasOwnProperty.call(software, "active")
+      ? !!software.active
+      : bridgeOn && softwareConfigured;
 
   applyProfileStatus(s);
   applyMicStatus(s);
 
-  // AEC master row.
+  // Software AEC3 row. Chip-AEC still uses jasper-aec-bridge as a UDP
+  // carrier, but WebRTC AEC3 itself is bypassed and should not be toggled.
   if (!dirty.aec) {
-    el("layer-aec").checked = aecOn;
-    el("layer-aec").disabled = false;
+    el("layer-aec").checked = softwareConfigured;
+    el("layer-aec").disabled = softwareBypassed;
   }
-  el("layer-status-aec").textContent = aecOn
-    ? bridgeOn
-      ? "✓ active"
-      : "⏳ starting (or chip not on 6-ch firmware)"
-    : "— disabled";
-  el("layer-row-aec").classList.toggle("is-disabled", !aecOn);
+  el("layer-status-aec").textContent = softwareBypassed
+    ? "— bypassed (chip-AEC active)"
+    : softwareConfigured
+      ? softwareActive
+        ? "✓ active"
+        : "⏳ starting…"
+      : "— disabled";
+  el("layer-row-aec").classList.toggle(
+    "is-disabled",
+    softwareBypassed || !softwareConfigured,
+  );
 
   // Raw + DTLN legs require AEC, AND are mutually exclusive with the
   // chip-AEC beams — one chip can't emit both, so when chip-AEC is on the
@@ -356,9 +372,10 @@ LAYERS.forEach((name) => {
       name === "aec" &&
       !cb.checked &&
       !(await jtsConfirm(
-        "Disable AEC echo cancellation?\n\n" +
+        "Disable software AEC3?\n\n" +
           "jasper-voice will restart — wake unavailable ~15 s. Turning AEC " +
-          "off also pauses the raw + DTLN layers (they need the bridge running).",
+          "off also pauses the raw + DTLN layers (they need the bridge running). " +
+          "Chip-AEC profiles bypass software AEC3 automatically.",
         { danger: true },
       ))
     ) {
