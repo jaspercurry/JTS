@@ -7,8 +7,9 @@
 Watches /dev/input/event* for any device matching `registry.KNOWN_DEVICES`
 (by USB VID/PID). For each match, opens an async evdev reader and
 translates key events into HTTP calls against jasper-control on
-localhost. Volume-rotation bursts are coalesced into one POST per
-~80 ms window so a fast spin doesn't hammer the daemon.
+localhost. Volume bursts are coalesced into at most one POST per ~80 ms
+window so a fast spin or held remote button doesn't hammer the daemon
+while still moving promptly during the gesture.
 
 Hot-plug: a pyudev monitor catches "add" events on /dev/input/* and
 opens a reader for matched devices. "remove" is handled passively —
@@ -64,11 +65,12 @@ Poster = Callable[[str, str, Optional[dict]], Awaitable[ControlResponse]]
 
 class _Coalescer:
     """Per-keycode accumulator: sums `delta_percent` over a short
-    window, fires one HTTP POST when the window quiets.
+    window, fires one HTTP POST per window while hits continue.
 
-    A new event resets the flush timer — the POST goes out after
-    COALESCE_WINDOW_SEC of idle, so a continuous fast spin emits
-    one POST every ~80 ms with the summed delta in between."""
+    The first event starts the timer; later events add to the pending
+    delta without pushing the timer out. If new hits arrive while the
+    HTTP POST is in flight, this task keeps ownership and flushes the
+    next batch after another window."""
 
     def __init__(
         self,
@@ -85,37 +87,41 @@ class _Coalescer:
 
     def hit(self) -> None:
         self._pending += self._per_hit_delta
-        if self._flush is not None and not self._flush.done():
-            self._flush.cancel()
-        self._flush = asyncio.create_task(self._flush_after_delay())
+        if self._flush is None or self._flush.done():
+            self._flush = asyncio.create_task(self._flush_loop())
 
-    async def _flush_after_delay(self) -> None:
-        try:
-            await asyncio.sleep(COALESCE_WINDOW_SEC)
-        except asyncio.CancelledError:
-            return
-        delta = self._pending
-        self._pending = 0
-        try:
-            resp = await self._post(
-                "POST", self._path, {"delta_percent": delta},
-            )
-            log_event(
-                logger,
-                "knob.adjust",
-                device=self._device_name,
-                delta=f"{delta:+d}",
-                status=resp.status,
-            )
-        except ControlError as e:
-            log_event(
-                logger,
-                "knob.adjust.failed",
-                level=logging.WARNING,
-                device=self._device_name,
-                delta=f"{delta:+d}",
-                err=str(e),
-            )
+    async def _flush_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(COALESCE_WINDOW_SEC)
+            except asyncio.CancelledError:
+                return
+            delta = self._pending
+            self._pending = 0
+            if delta == 0:
+                return
+            try:
+                resp = await self._post(
+                    "POST", self._path, {"delta_percent": delta},
+                )
+                log_event(
+                    logger,
+                    "knob.adjust",
+                    device=self._device_name,
+                    delta=f"{delta:+d}",
+                    status=resp.status,
+                )
+            except ControlError as e:
+                log_event(
+                    logger,
+                    "knob.adjust.failed",
+                    level=logging.WARNING,
+                    device=self._device_name,
+                    delta=f"{delta:+d}",
+                    err=str(e),
+                )
+            if self._pending == 0:
+                return
 
 
 async def _post_once(
@@ -338,9 +344,9 @@ async def _read_device(
                 tasks.add(t)
                 t.add_done_callback(tasks.discard)
                 continue
-            if ev.value != 1:  # press only; ignore release + autorepeat
-                continue
             if isinstance(action, TapAction):
+                if ev.value != 1:  # taps are press-only; ignore release + autorepeat
+                    continue
                 tc = tap_counters.get(ev.code)
                 if tc is None:
                     tc = _TapCounter(
@@ -349,12 +355,16 @@ async def _read_device(
                     tap_counters[ev.code] = tc
                 tc.hit()
             elif action.coalesce:
+                if ev.value not in (1, 2):  # press + autorepeat; ignore release
+                    continue
                 cz = coalescers.get(ev.code)
                 if cz is None:
                     cz = _Coalescer(post, action, device.name)
                     coalescers[ev.code] = cz
                 cz.hit()
             else:
+                if ev.value != 1:  # press only; ignore release + autorepeat
+                    continue
                 t = asyncio.create_task(_post_once(
                     post, action, device.name, key_name,
                 ))
