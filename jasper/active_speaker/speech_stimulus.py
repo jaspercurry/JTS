@@ -60,11 +60,7 @@ def _bounded_duration(value: Any) -> float:
 
 
 def _cache_dir(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get("JASPER_ACTIVE_SPEAKER_STIMULUS_DIR")
-        or DEFAULT_CACHE_DIR
-    )
+    return Path(path or DEFAULT_CACHE_DIR)
 
 
 def _voice_and_model(env: dict[str, str]) -> tuple[str, str]:
