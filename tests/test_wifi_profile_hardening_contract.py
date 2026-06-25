@@ -4,7 +4,8 @@
 
 """Drift guard for the NetworkManager profile-hardening contract.
 
-The same resilience triple — autoconnect on, retry forever, power-save off —
+The same resilience profile — autoconnect on, retry forever, power-save off,
+link-local IPv6 on —
 is written from THREE places so a recovered profile is as resilient as a
 freshly-connected one:
 
@@ -16,7 +17,7 @@ They can't share code (one Python, two bash standalone root scripts), so this
 test pins the key+value set across all three. If a future change adds a key or
 changes a value in one writer and not the others, this fails — keeping the
 contract single-source-of-truth in spirit even though it lives in three files.
-See AGENTS.md "the same NetworkManager profile-hardening triple".
+See AGENTS.md "the same NetworkManager profile-hardening set".
 """
 from __future__ import annotations
 
@@ -29,11 +30,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # The canonical contract. `connection.autoconnect-retries 0` is NM's
 # retry-forever value (see NetworkManager docs: 0 = forever, -1 = global
-# default of 4).
+# default of 4). `ipv6.method link-local` keeps `.local` mDNS hostname
+# resolution fast on Apple clients without requiring routed IPv6.
 REQUIRED_PAIRS = [
     ("connection.autoconnect", "yes"),
     ("connection.autoconnect-retries", "0"),
     ("802-11-wireless.powersave", "2"),
+    ("ipv6.method", "link-local"),
 ]
 
 

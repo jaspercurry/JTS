@@ -1047,7 +1047,12 @@ layer is a periodic nudge around that same policy:
   Successful connects also harden the NM profile:
   `connection.autoconnect=yes`, `connection.autoconnect-retries=0`
   (NetworkManager's retry-forever value), and
-  `802-11-wireless.powersave=2`.
+  `802-11-wireless.powersave=2`. As of 2026-06-25 they also set
+  `ipv6.method=link-local`: this keeps `.local` mDNS resolution fast on
+  iOS/macOS without enabling routed IPv6. Profiles with
+  `ipv6.method=ignore` leave Apple clients waiting on IPv6 mDNS before
+  falling back to IPv4, which made `jts5.local/correction` look like a
+  stalled page load.
 - **Install-time seed** in `install.sh`'s `migrate_wifi_guardian`
   so SSH-driven setup paths arm recovery on the first deploy
   rather than waiting for the user to open the wizard.
