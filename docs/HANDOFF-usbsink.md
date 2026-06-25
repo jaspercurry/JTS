@@ -513,11 +513,11 @@ if not any(current.values()):
 #### Bluetooth analogy
 
 For AirPlay and Spotify, mux's `_pause()` calls a clean API. For
-Bluetooth, mux logs "no graceful pause API" and lives with brief
-mixing. For USB, the silencing-the-daemon approach gives us a clean
-pause that works as well as Spotify's. **USB does NOT degrade to the
-Bluetooth-fallback behavior** — the daemon silences its own output
-deterministically.
+Bluetooth, mux now tries BlueZ AVRCP `MediaPlayer1.Pause` when the
+phone/player exposes an AVRCP player object and logs a concrete fallback
+when it cannot. For USB, the silencing-the-daemon approach gives us a
+clean local pause that does not depend on upstream host cooperation —
+the daemon silences its own output deterministically.
 
 ## 4. Component design (file map)
 
@@ -1731,4 +1731,4 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-24
+Last verified: 2026-06-25

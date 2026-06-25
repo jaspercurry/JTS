@@ -321,6 +321,7 @@ async def _read_device(
 
     coalescers: dict[int, _Coalescer] = {}
     tap_counters: dict[int, _TapCounter] = {}
+    active_holds: dict[int, tuple[HoldAction, str]] = {}
     tasks: set[asyncio.Task] = set()  # retain non-coalescing dispatch tasks
 
     try:
@@ -334,15 +335,16 @@ async def _read_device(
             if isinstance(action, HoldAction):
                 if ev.value == 1:
                     target = action.on_press
+                    active_holds[ev.code] = (action, key_name)
                 elif ev.value == 0:
                     target = action.on_release
+                    active_holds.pop(ev.code, None)
                 else:
                     continue
-                t = asyncio.create_task(_post_once(
-                    post, target, device.name, key_name,
-                ))
-                tasks.add(t)
-                t.add_done_callback(tasks.discard)
+                # Hold actions encode stateful press→release edges
+                # (e.g. push-to-talk). Preserve wire order instead of
+                # firing independent tasks that can race each other.
+                await _post_once(post, target, device.name, key_name)
                 continue
             if isinstance(action, TapAction):
                 if ev.value != 1:  # taps are press-only; ignore release + autorepeat
@@ -380,6 +382,9 @@ async def _read_device(
             reason=str(e),
         )
     finally:
+        for _code, (action, key_name) in list(active_holds.items()):
+            await _post_once(post, action.on_release, device.name, key_name)
+        active_holds.clear()
         try:
             dev.close()
         except Exception:  # noqa: BLE001

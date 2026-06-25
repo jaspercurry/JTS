@@ -174,9 +174,9 @@ class RendererClient:
     # ------------------------------------------------------------------
     # pause_airplay — pauses an active AirPlay session via MPRIS so
     # another source can take the speaker. Spotify pause goes via the
-    # Spotify Web API at the caller's spotify_router instance (librespot
-    # has no local control HTTP); Bluetooth has no graceful pause API
-    # on bluez-alsa, so its caller logs and moves on.
+    # Spotify Web API at the caller's spotify_router instance
+    # (librespot has no local control HTTP); Bluetooth transport lives
+    # in jasper.bluetooth.avrcp.
     # ------------------------------------------------------------------
 
     async def pause_airplay(self) -> None:

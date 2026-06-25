@@ -418,6 +418,114 @@ async def test_read_device_hold_action_posts_on_press_and_release(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_read_device_hold_action_preserves_press_release_order(monkeypatch):
+    calls: List[tuple[str, str, Optional[dict]]] = []
+    start_posted = asyncio.Event()
+    release_start_post = asyncio.Event()
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 217
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            for value in (1, 0):
+                yield _Event(value)
+                await asyncio.sleep(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = Device(
+        name="WiiM Remote 2",
+        vendor_id=0x2717,
+        product_id=0x32B9,
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        if path == "/session/start":
+            start_posted.set()
+            await release_start_post.wait()
+        return ControlResponse(200, b"")
+
+    task = asyncio.create_task(_read_device("/dev/input/event9", device, post))
+    await asyncio.wait_for(start_posted.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+    assert calls == [("POST", "/session/start", None)]
+    release_start_post.set()
+    await task
+    assert calls == [
+        ("POST", "/session/start", None),
+        ("POST", "/session/end", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_read_device_hold_action_releases_on_disconnect(monkeypatch):
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        type = 1
+        code = 217
+        value = 1
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            yield _Event()
+            raise OSError("simulated: remote disconnected while held")
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = Device(
+        name="WiiM Remote 2",
+        vendor_id=0x2717,
+        product_id=0x32B9,
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        return ControlResponse(200, b"")
+
+    await _read_device("/dev/input/event9", device, post)
+    assert calls == [
+        ("POST", "/session/start", None),
+        ("POST", "/session/end", None),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_read_device_counts_autorepeat_for_coalesced_volume(monkeypatch):
     """Held remote volume keys surface as EV_KEY autorepeat. Coalesced
     volume actions should treat repeat as another step, while still
