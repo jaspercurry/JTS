@@ -83,6 +83,7 @@ from .staging import load_staged_startup_config
 
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
 DEFAULT_LEGACY_FLAT_CONFIG = Path("/etc/camilladsp/v1.yml")
+DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 
 GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
@@ -126,6 +127,14 @@ CONTRACT_ACTIVE_STEREO_3WAY = "active_stereo_3way"
 CONTRACT_SUBWOOFER_PRESENT = "subwoofer_present"
 CONTRACT_PROTECTED_OUTPUTS_PRESENT = "protected_outputs_present"
 CONTRACT_UNKNOWN_OR_INVALID = "unknown_or_invalid"
+
+OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
+OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS = frozenset((
+    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_GUARDED_COMMISSIONING,
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GRAPH_DRIVER_DOMAIN_BASELINE,
+))
 
 
 @dataclass(frozen=True)
@@ -264,6 +273,30 @@ class SafeGraphDecision:
                 self.fallback_graph.to_dict() if self.fallback_graph else None
             ),
             "issues": list(self.issues),
+        }
+
+
+@dataclass(frozen=True)
+class OutputdActiveLaneDecision:
+    ok: bool
+    width: int | None
+    reason: str
+    source: str | None = None
+    primary_graph: GraphSafety | None = None
+    endpoint_graph: GraphSafety | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "width": self.width,
+            "reason": self.reason,
+            "source": self.source,
+            "primary_graph": (
+                self.primary_graph.to_dict() if self.primary_graph else None
+            ),
+            "endpoint_graph": (
+                self.endpoint_graph.to_dict() if self.endpoint_graph else None
+            ),
         }
 
 
@@ -1493,6 +1526,161 @@ def classify_camilla_graph(
             details=graph.details,
         )
     return graph
+
+
+def _config_path_from_statefile_with_reason(
+    statefile_path: str | Path,
+    *,
+    missing: str,
+    unreadable: str,
+    config_missing: str,
+    target_missing: str,
+) -> tuple[Path | None, str | None]:
+    target = Path(statefile_path)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, missing
+    except OSError as exc:
+        return None, f"{unreadable}:{type(exc).__name__}"
+
+    config_path_s = parse_camilla_statefile_config_path(text)
+    if not config_path_s:
+        return None, config_missing
+
+    config_path = Path(config_path_s)
+    if not config_path.exists():
+        return None, target_missing
+    return config_path, None
+
+
+def _outputd_endpoint_width(
+    graph: GraphSafety,
+    cap_channels: int,
+    *,
+    classifications: frozenset[str] = OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
+) -> tuple[int | None, str | None]:
+    if not graph.allowed:
+        issue = graph.issues[0]["code"] if graph.issues else graph.classification
+        return None, f"active_graph_unsafe:{issue}"
+    if graph.classification not in classifications:
+        return None, f"active_graph_not_outputd_endpoint:{graph.classification}"
+    if graph.playback_device != OUTPUTD_ACTIVE_PLAYBACK_DEVICE:
+        return None, "active_outputd_lane_missing"
+
+    got = int(graph.playback_channels or 0)
+    if got < 2 or got > cap_channels:
+        return None, f"active_graph_width_out_of_range got={got} cap={cap_channels}"
+    return got, None
+
+
+def outputd_active_lane_decision(
+    cap_channels: int,
+    *,
+    statefile_path: str | Path | None = None,
+    crossover_statefile_path: str | Path | None = None,
+    topology: OutputTopology | None = None,
+    topology_path: str | Path | None = None,
+    staged_config: dict[str, Any] | None = None,
+) -> OutputdActiveLaneDecision:
+    """Decide whether outputd may open its active content lane.
+
+    This does not select or load a CamillaDSP graph. It only proves that the
+    graph already live in the relevant CamillaDSP statefile(s) is an outputd
+    endpoint graph, then returns the width outputd should open.
+    """
+
+    try:
+        cap = int(cap_channels)
+    except (TypeError, ValueError):
+        return OutputdActiveLaneDecision(
+            ok=False, width=None, reason="active_graph_cap_channels_invalid",
+        )
+    if cap < 2:
+        return OutputdActiveLaneDecision(
+            ok=False, width=None, reason=f"active_graph_cap_channels_invalid:{cap}",
+        )
+
+    primary_statefile = statefile_path or DEFAULT_CAMILLA_STATEFILE
+
+    current_config, problem = _config_path_from_statefile_with_reason(
+        primary_statefile,
+        missing="camilla_statefile_missing",
+        unreadable="camilla_statefile_unreadable",
+        config_missing="camilla_statefile_config_path_missing",
+        target_missing="active_config_missing",
+    )
+    if problem:
+        return OutputdActiveLaneDecision(ok=False, width=None, reason=problem)
+
+    topology = topology or load_output_topology_strict(topology_path)
+    staged = staged_config if isinstance(staged_config, dict) else load_staged_startup_config()
+    primary_graph = classify_camilla_graph(
+        current_config,
+        topology,
+        staged_config=staged,
+    )
+    width, problem = _outputd_endpoint_width(primary_graph, cap)
+    if width is not None:
+        return OutputdActiveLaneDecision(
+            ok=True,
+            width=width,
+            reason="active_outputd_endpoint",
+            source="primary_statefile",
+            primary_graph=primary_graph,
+            endpoint_graph=primary_graph,
+        )
+
+    if primary_graph.classification != GRAPH_PROGRAM_BAKE_PIPE:
+        return OutputdActiveLaneDecision(
+            ok=False,
+            width=None,
+            reason=problem or f"active_graph_not_outputd_endpoint:{primary_graph.classification}",
+            primary_graph=primary_graph,
+        )
+
+    crossover_config, crossover_problem = _config_path_from_statefile_with_reason(
+        crossover_statefile_path or DEFAULT_CAMILLA2_STATEFILE,
+        missing="camilla2_statefile_missing",
+        unreadable="camilla2_statefile_unreadable",
+        config_missing="camilla2_statefile_config_path_missing",
+        target_missing="active_crossover_config_missing",
+    )
+    if crossover_problem:
+        return OutputdActiveLaneDecision(
+            ok=False,
+            width=None,
+            reason=f"program_bake_pipe_without_active_crossover:{crossover_problem}",
+            primary_graph=primary_graph,
+        )
+
+    crossover_graph = classify_camilla_graph(
+        crossover_config,
+        topology,
+        staged_config=staged,
+    )
+    width, problem = _outputd_endpoint_width(
+        crossover_graph,
+        cap,
+        classifications=frozenset((GRAPH_DRIVER_DOMAIN_BASELINE,)),
+    )
+    if width is None:
+        return OutputdActiveLaneDecision(
+            ok=False,
+            width=None,
+            reason=f"program_bake_pipe_without_active_crossover:{problem}",
+            primary_graph=primary_graph,
+            endpoint_graph=crossover_graph,
+        )
+
+    return OutputdActiveLaneDecision(
+        ok=True,
+        width=width,
+        reason="active_leader_crossover_endpoint",
+        source="crossover_statefile",
+        primary_graph=primary_graph,
+        endpoint_graph=crossover_graph,
+    )
 
 
 def running_graph_violations(

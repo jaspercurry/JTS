@@ -1189,10 +1189,11 @@ def _run_audio_hardware_reconcile(*, reason: str) -> bool:
     """Run the audio-hardware reconciler after an active-leader graph change.
 
     That reconciler is the single writer of /var/lib/jasper/outputd.env. The
-    active-leader bake changes the live Camilla graph from the solo active
-    baseline to the roleful program-bake pipe; outputd must then switch from the
-    passive stereo lane to the active-content lane BEFORE camilla#2 is armed, or
-    the two Camilla instances/outputd fight over snd-aloop pair 6.
+    active-leader bake changes camilla#1 from the solo active baseline to the
+    program-bake pipe, and the freshly seeded camilla#2 statefile names the
+    endpoint graph. Outputd must then switch from the passive stereo lane to the
+    active-content lane BEFORE camilla#2 is armed, or camilla#2 can fight an
+    existing opener for the exclusive active-content playback PCM.
     """
     try:
         subprocess.run(
@@ -1647,11 +1648,13 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
 
     # 3. outputd picks up the lane env only at unit start. For an active leader,
-    # defer that restart until after camilla#1's program-bake graph is live; the
-    # audio-hardware reconciler needs that graph as evidence to switch outputd
-    # from the passive stereo lane to the active-content lane before camilla#2
-    # is armed. Restarting here would read the grouping TTS env but still use
-    # the solo baseline, re-opening the passive lane that camilla#2 needs.
+    # defer that restart until after camilla#1's program-bake graph is live and
+    # camilla#2's statefile has been seeded with the re-proven endpoint graph.
+    # The audio-hardware reconciler needs that graph pair as evidence to switch
+    # outputd from the passive stereo lane to the active-content lane before
+    # camilla#2 is armed. Restarting here would read the grouping TTS env but
+    # still use the solo baseline, re-opening the passive lane that camilla#2
+    # needs.
     defer_outputd_restart = active_speaker_leader
     if env_changed and env_ok and not defer_outputd_restart and not _restart_outputd():
         rc = 1
@@ -1774,12 +1777,13 @@ def main(argv: list[str] | None = None) -> int:
                 rc = 1
             rc = 1
         else:
-            # Wire is up. camilla#1 bakes to the now-readable pipe; THEN — only if
-            # that bake provably released the DAC and outputd re-converged —
-            # camilla#2 is armed onto it. The statefile is RE-SEEDED with the
-            # re-proven driver-domain graph BEFORE enabling the unit (the
-            # never-flat guarantee; the crossover guard repairs a dead pipe, not
-            # a flat statefile). camilla#2 is disabled before the bake and later
+            # Wire is up. camilla#1 bakes to the now-readable pipe; THEN the
+            # camilla#2 statefile is RE-SEEDED with the re-proven driver-domain
+            # graph before audio-hardware reconcile sizes outputd's active lane.
+            # Only if that bake and outputd env handoff succeed, and camilla#1 has
+            # provably released the DAC, is camilla#2 armed onto it. This is the
+            # never-flat guarantee: the crossover guard repairs a dead pipe, not a
+            # flat statefile. camilla#2 is disabled before the bake and later
             # started from that statefile, so trim-only rewrites are picked up by
             # process start rather than relying on an idempotent systemd no-op.
             # camilla#2 keeps enable_rate_adjust ON — the validated
@@ -1808,14 +1812,13 @@ def main(argv: list[str] | None = None) -> int:
                         path=applied,
                     )
                     bake_ok = True
+                    active_leader_action = "active_leader_crossover_seed"
+                    seed_crossover_statefile()
                     if not _run_audio_hardware_reconcile(
                         reason="grouping-active-leader-bake",
                     ):
                         bake_ok = False
                         rc = 1
-                    if bake_ok:
-                        active_leader_action = "active_leader_crossover_seed"
-                        seed_crossover_statefile()
                 except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
                     log_event(
                         logger,
@@ -1824,6 +1827,7 @@ def main(argv: list[str] | None = None) -> int:
                         error=e,
                         level=logging.ERROR,
                     )
+                    rc = 1
             # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
             # moved camilla#1 off the active-content PCM, outputd re-converged
             # to the active lane, and the exclusive handle positively released.

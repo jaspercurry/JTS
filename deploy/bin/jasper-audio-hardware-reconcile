@@ -27,6 +27,7 @@ OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWAR
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
+CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
@@ -387,13 +388,13 @@ for child in mapping.child_devices:
 #
 # $1 = the DAC's active-lane channel CAP — the resolved DacProfile's
 # active_outputd_lane_channels (2 for single Apple, 4 for the dual-Apple
-# composite, 8 for a HiFiBerry DAC8x single). On success prints the loaded
-# active config's ACTUAL
-# playback width W (the number of physical outputs the speaker actually drives,
-# in 2..cap) and returns 0 — ONLY when the live CamillaDSP config is legal for
-# the saved output topology, targets outputd's active playback lane, and its
-# playback width is valid within the cap. A 100-output DAC powering a 2-way drives
-# 2, not 100: outputd opens the
+# composite, 8 for a HiFiBerry DAC8x single). On success prints the live
+# endpoint config's ACTUAL playback width W (the number of physical outputs the
+# speaker actually drives, in 2..cap) and returns 0 — ONLY when the current
+# CamillaDSP graph, or the active-leader camilla#2 crossover graph paired with a
+# camilla#1 program bake, is legal for the saved output topology, targets
+# outputd's active playback lane, and its playback width is valid within the
+# cap. A 100-output DAC powering a 2-way drives 2, not 100: outputd opens the
 # DAC at W and the reconciler emits W as JASPER_OUTPUTD_ACTIVE_CHANNELS, so we
 # never pump muted channels we are not using. Otherwise it prints a reason and
 # returns non-zero so the caller fails closed: the composite shape parks, a
@@ -407,16 +408,13 @@ active_graph_status() {
         return 1
     fi
     JASPER_CAMILLA_STATEFILE="$CAMILLA_STATEFILE" \
+    JASPER_CAMILLA2_STATEFILE="$CAMILLA2_STATEFILE" \
     JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
     JASPER_ACTIVE_GRAPH_CAP_CHANNELS="$cap_channels" \
     "$OUTPUT_HARDWARE_PYTHON" - <<'PY'
 import os
-import re
 import sys
-from pathlib import Path
 
-camilla_statefile = Path(os.environ["JASPER_CAMILLA_STATEFILE"])
-output_topology_path = Path(os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"])
 try:
     cap_channels = int(os.environ["JASPER_ACTIVE_GRAPH_CAP_CHANNELS"])
 except (KeyError, ValueError):
@@ -424,65 +422,28 @@ except (KeyError, ValueError):
     raise SystemExit(1)
 
 try:
-    statefile_text = camilla_statefile.read_text(encoding="utf-8")
-except FileNotFoundError:
-    print("camilla_statefile_missing")
-    raise SystemExit(1)
-except Exception as exc:
-    print(f"camilla_statefile_unreadable:{type(exc).__name__}")
-    raise SystemExit(1)
+    from jasper.active_speaker.runtime_contract import (
+        outputd_active_lane_decision,
+    )
 
-match = re.search(r"(?m)^config_path:\s*['\"]?([^'\"\n]+)['\"]?\s*$", statefile_text)
-if not match:
-    print("camilla_statefile_config_path_missing")
-    raise SystemExit(1)
-
-current_config = Path(match.group(1).strip())
-if not current_config.exists():
-    print("active_config_missing")
-    raise SystemExit(1)
-
-try:
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
-    from jasper.active_speaker.staging import load_staged_startup_config
-    from jasper.output_topology import load_output_topology_strict
-
-    topology = load_output_topology_strict(output_topology_path)
-    graph = classify_camilla_graph(
-        current_config,
-        topology,
-        staged_config=load_staged_startup_config(),
+    decision = outputd_active_lane_decision(
+        cap_channels,
+        statefile_path=os.environ["JASPER_CAMILLA_STATEFILE"],
+        crossover_statefile_path=os.environ["JASPER_CAMILLA2_STATEFILE"],
+        topology_path=os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"],
     )
 except Exception as exc:
     detail = getattr(exc, "name", None) or type(exc).__name__
     print(f"active_graph_contract_unavailable:{type(exc).__name__}:{detail}")
     raise SystemExit(1)
 
-if not graph.allowed:
-    issue = graph.issues[0]["code"] if graph.issues else graph.classification
-    print(f"active_graph_unsafe:{issue}")
-    raise SystemExit(1)
-
-if graph.classification not in {
-    "all_muted_active_startup",
-    "guarded_commissioning",
-    "approved_active_runtime",
-}:
-    print(f"active_graph_not_roleful:{graph.classification}")
-    raise SystemExit(1)
-
-if graph.playback_device != "outputd_active_content_playback":
-    print("active_outputd_lane_missing")
-    raise SystemExit(1)
-
-got = int(graph.playback_channels or 0)
-if got < 2 or got > cap_channels:
-    print(f"active_graph_width_out_of_range got={got} cap={cap_channels}")
+if not decision.ok:
+    print(decision.reason)
     raise SystemExit(1)
 
 # Stdout payload on success is the ACTUAL driven width; the reconciler emits it
 # as JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at exactly W.
-print(got)
+print(decision.width)
 PY
 }
 

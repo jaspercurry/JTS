@@ -1456,9 +1456,10 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     rc = main(["--reason", "test"])
 
     assert rc == 0
-    # Gate before units; bake + output-hardware reconverge + re-seed + arm AFTER
-    # the unit plan; seed precedes the arm (never-flat: a cold camilla#2 start
-    # must load the re-proven graph).
+    # Gate before units; bake + re-seed + output-hardware reconverge + arm AFTER
+    # the unit plan. Seed precedes both audio-hardware reconcile and the arm:
+    # outputd recovery needs the camilla#2 endpoint graph, and a cold camilla#2
+    # start must load that re-proven graph.
     assert order.index("precheck") < order.index("apply")
     assert order.index("apply") < order.index("disable_camilla2")
     assert order.index("disable_camilla2") < order.index(
@@ -1467,9 +1468,13 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     assert order.index(
         "ensure:jasper-camilla.service:active-leader-bake"
     ) < order.index("bake")
-    assert order.index("bake") < order.index("audio_hardware:grouping-active-leader-bake")
-    assert order.index("audio_hardware:grouping-active-leader-bake") < order.index("seed")
-    assert order.index("seed") < order.index("probe") < order.index("arm_camilla2")
+    assert order.index("bake") < order.index("seed")
+    assert order.index("seed") < order.index("audio_hardware:grouping-active-leader-bake")
+    assert (
+        order.index("audio_hardware:grouping-active-leader-bake")
+        < order.index("probe")
+        < order.index("arm_camilla2")
+    )
     # The active leader defers outputd restart to the audio-hardware reconciler,
     # because it must inspect the freshly loaded roleful graph before choosing
     # the active-content lane.
@@ -1656,9 +1661,9 @@ def test_main_active_leader_skips_arm_when_bake_fails(tmp_path, monkeypatch):
 def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
     tmp_path, monkeypatch,
 ):
-    """After the bake, outputd must re-converge to the active-content lane before
-    camilla#2 can safely own the round-trip loopback. If that handoff fails,
-    leave camilla#2 unarmed."""
+    """After the bake and inert camilla#2 statefile seed, outputd must
+    re-converge to the active-content lane before camilla#2 can safely own the
+    round-trip loopback. If that handoff fails, leave camilla#2 unarmed."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "is_active_speaker_box", lambda: True)
     _patch_active_leader(monkeypatch, order)
@@ -1672,8 +1677,8 @@ def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
 
     assert rc == 1
     assert "bake" in order
+    assert "seed" in order
     assert "audio_hardware_failed" in order
-    assert "seed" not in order
     assert "probe" not in order
     assert "arm_camilla2" not in order
 
