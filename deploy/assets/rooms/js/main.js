@@ -572,11 +572,14 @@ function makeBondCard() {
   // stay out of its const temporal-dead-zone.
   function syncRoleControls() {
     const copy = createFaceCopy(roleSelect.value);
+    const subRole = roleSelect.value === "sub";
     crossoverRow.style.display = roleSelect.value === "sub" ? "" : "none";
     title.textContent = copy.title;
     createIntro.textContent = copy.intro;
     pickerLabel.textContent = copy.label;
     createBtn.textContent = copy.button;
+    createBtn.classList.toggle("btn--primary", !subRole);
+    createBtn.classList.toggle("btn--ghost", subRole);
   }
   roleSelect.addEventListener("change", syncRoleControls);
 
@@ -720,10 +723,10 @@ function makeBondCard() {
     type: "number", min: "40", max: "200", step: "1", value: "80",
     "attr:aria-label": "Subwoofer low-pass corner (Hz)",
   });
-  const addSubBtn = h("button.btn.btn--primary",
+  const addSubBtn = h("button.btn.btn--ghost",
     { type: "button" }, "Add subwoofer");
   const addSubIntro = h("p.info-card__note", null,
-    "Add a subwoofer to this pair: the speaker you pick plays only the low " +
+    "Optional: add a subwoofer to this pair. The speaker you pick plays only the low " +
     "end (low-passed locally on that box). The pair keeps playing as-is.");
   const addSubPanel = h("div.add-sub-panel", null,
     addSubIntro,
@@ -784,7 +787,7 @@ function makeBondCard() {
     // back on the dissolve face.
     if (!bonded) addSubPanel.style.display = "none";
     // Bonded → a neutral dissolve-face title; create → the role-aware title
-    // (so a 7 s poll re-asserts "Add a wireless subwoofer", not "stereo pair").
+    // (so a 7 s poll re-asserts the selected role copy, not "stereo pair").
     title.textContent = bonded
       ? "Speaker grouping"
       : createFaceCopy(roleSelect.value).title;

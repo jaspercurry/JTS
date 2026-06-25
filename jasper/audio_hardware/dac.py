@@ -30,6 +30,7 @@ ClockDomainContract = Literal[
     "independent",
     "measured_sync_required",
 ]
+ChipAecQualification = Literal["approved", "needs_calibration"]
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 
@@ -101,6 +102,8 @@ class DacProfile:
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
     validation_profile: str | None = None
+    chip_aec_qualification: ChipAecQualification = "needs_calibration"
+    chip_aec_detail: str = ""
     udev_rule: str | None = None
     dtoverlay: str | None = None
 
@@ -123,6 +126,11 @@ class DacProfile:
             raise ValueError(
                 f"{self.id}: unsupported clock_domain_contract "
                 f"{self.clock_domain_contract!r}"
+            )
+        if self.chip_aec_qualification not in ("approved", "needs_calibration"):
+            raise ValueError(
+                f"{self.id}: unsupported chip_aec_qualification "
+                f"{self.chip_aec_qualification!r}"
             )
         if not self.outputd_sink.strip():
             raise ValueError(f"{self.id}: outputd_sink is required")
@@ -245,6 +253,8 @@ APPLE_USB_C_DONGLE = DacProfile(
     # width-aware single-ALSA active lane used by wider coherent DACs.
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=2,
+    chip_aec_qualification="approved",
+    chip_aec_detail="Apple USB-C dongle is the measured known-good chip-AEC baseline",
     udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
 )
 
@@ -270,6 +280,8 @@ HIFIBERRY_DAC8X = DacProfile(
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=8,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
+    chip_aec_qualification="approved",
+    chip_aec_detail="HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile",
     dtoverlay="hifiberry-dac8x",
 )
 
@@ -292,6 +304,10 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=8,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
+    chip_aec_detail=(
+        "HiFiBerry DAC8x Studio needs per-profile chip-AEC timing "
+        "calibration before arming production chip AEC"
+    ),
     dtoverlay="hifiberry-dac8x",
 )
 
@@ -311,6 +327,10 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=4,
     headphone_pinned_100=True,
+    chip_aec_detail=(
+        "dual Apple dongle profile has a measured-sync contract and needs "
+        "calibration before arming production chip AEC"
+    ),
 )
 
 

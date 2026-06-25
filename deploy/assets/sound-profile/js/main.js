@@ -29,6 +29,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionCardState,
+  commissionPayloadHasIssue,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanMode,
@@ -77,6 +78,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     match_loudness: false,
     volume_floor_db: -50
   };  // global output settings
+  var volumeFloorDraftDb = null;
+  var volumeFloorSaving = false;
   var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
@@ -94,7 +97,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     commission: null, commissioningView: null,
     commissionBusy: '', commissionError: ''
   };
-  var summedTestRequest = {token: 0, armTimer: null};
+  var summedTestRequest = {token: 0, armTimer: null, current: null};
+  var summedTestLevelUpdate = {timer: null, inFlight: false, pending: null};
   var commissionAutoRamp = {
     running: false,
     token: 0,
@@ -134,7 +138,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     timer: null,
     inFlight: false,
     pending: null,
-    generation: 0
+    generation: 0,
+    savedNotice: false
   };
   var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
 
@@ -591,33 +596,64 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!isFinite(v)) v = -50;
     return v.toFixed(1) + ' dB';
   }
-  function setVolumeFloorReadout(v) {
-    var node = el('set-volume-floor-readout');
-    if (node) node.textContent = fmtVolumeFloor(v);
-    setVolumeFloorResetButton(v);
+  function volumeFloorLimits() {
+    var floorMin = Number(limits.volume_floor_min_db);
+    var floorMax = Number(limits.volume_floor_max_db);
+    if (!isFinite(floorMin)) floorMin = -60;
+    if (!isFinite(floorMax)) floorMax = -10;
+    return {min: floorMin, max: floorMax};
   }
-  function setVolumeFloorResetButton(v) {
-    var button = el('view-body').querySelector('[data-act="reset-volume-floor"]');
-    if (!button) return;
-    var value = Number(v);
-    if (!isFinite(value)) value = -50;
-    button.disabled = Math.abs(value - (-50)) < 0.05;
+  function savedVolumeFloorDb() {
+    var bounds = volumeFloorLimits();
+    var floor = Number(soundSettings.volume_floor_db);
+    if (!isFinite(floor)) floor = -50;
+    return clamp(floor, bounds.min, bounds.max);
+  }
+  function coerceVolumeFloorDb(value) {
+    var bounds = volumeFloorLimits();
+    var floor = Number(value);
+    if (!isFinite(floor)) floor = savedVolumeFloorDb();
+    return clamp(floor, bounds.min, bounds.max);
+  }
+  function volumeFloorValue() {
+    return volumeFloorDraftDb === null || volumeFloorDraftDb === undefined ?
+      savedVolumeFloorDb() : coerceVolumeFloorDb(volumeFloorDraftDb);
+  }
+  function volumeFloorDirty(v) {
+    return Math.abs(coerceVolumeFloorDb(v) - savedVolumeFloorDb()) >= 0.05;
+  }
+  function syncVolumeFloorControls(v) {
+    var value = coerceVolumeFloorDb(v);
+    var node = el('set-volume-floor-readout');
+    if (node) node.textContent = fmtVolumeFloor(value);
+    var resetButton = el('view-body').querySelector('[data-act="reset-volume-floor"]');
+    if (resetButton) resetButton.disabled = Math.abs(value - (-50)) < 0.05;
+    var saveButton = el('volume-floor-save-button');
+    if (saveButton) {
+      var dirty = volumeFloorDirty(value);
+      saveButton.disabled = volumeFloorSaving || !dirty;
+      saveButton.textContent = volumeFloorSaving ? 'Saving' : (dirty ? 'Save floor' : 'Saved');
+    }
+  }
+  function setVolumeFloorDraft(v) {
+    volumeFloorDraftDb = coerceVolumeFloorDb(v);
+    syncVolumeFloorControls(volumeFloorDraftDb);
   }
   function renderSoundSettings() {
     var ml = soundSettings.match_loudness ? ' checked' : '';
     var trim = Number(soundSettings.headroom_trim_db) || 0;
     var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
-    var floorMin = Number(limits.volume_floor_min_db);
-    var floorMax = Number(limits.volume_floor_max_db);
-    if (!isFinite(floorMin)) floorMin = -60;
-    if (!isFinite(floorMax)) floorMax = -10;
+    var floorBounds = volumeFloorLimits();
+    var floorMin = floorBounds.min;
+    var floorMax = floorBounds.max;
     var defaultFloor = -50;
-    var floor = Number(soundSettings.volume_floor_db);
-    if (!isFinite(floor)) floor = defaultFloor;
-    floor = clamp(floor, floorMin, floorMax);
+    var floor = volumeFloorValue();
     var advancedOpen = trim > 0 || Math.abs(floor - defaultFloor) >= 0.05;
     var toneLabel = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
     var resetDisabled = Math.abs(floor - defaultFloor) < 0.05 ? ' disabled' : '';
+    var saveDisabled = (volumeFloorSaving || !volumeFloorDirty(floor)) ? ' disabled' : '';
+    var saveLabel = volumeFloorSaving ? 'Saving' :
+      (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
     return '<section class="sound-settings">' +
       '<div class="setting-row">' +
         '<div class="setting-row__text">' +
@@ -639,6 +675,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               '" max="' + floorMax + '" step="1" value="' + floor + '" aria-label="Volume floor in dB">' +
             '<button type="button" class="btn btn--ghost btn--compact" id="volume-floor-tone-button" ' +
               'data-act="toggle-volume-floor-tone">' + toneLabel + '</button>' +
+            '<button type="button" class="btn btn--primary btn--compact" id="volume-floor-save-button" ' +
+              'data-act="save-volume-floor"' + saveDisabled + '>' + saveLabel + '</button>' +
             '<button type="button" class="btn btn--ghost btn--compact" data-act="reset-volume-floor"' +
               resetDisabled + '>Reset floor</button>' +
             '<span class="headroom-readout" id="set-volume-floor-readout">' + fmtVolumeFloor(floor) + '</span>' +
@@ -1733,6 +1771,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function baselineProfileApplied() {
     return activeSpeaker.baselineProfile && activeSpeaker.baselineProfile.status === 'applied';
   }
+  function baselineProfileRevalidation() {
+    var profile = activeSpeaker.baselineProfile || {};
+    return profile.revalidation && typeof profile.revalidation === 'object' ?
+      profile.revalidation : {};
+  }
+  function baselineProfileNeedsRevalidation() {
+    return baselineProfileRevalidation().required === true;
+  }
   function outputStepContext(topology) {
     return {
       hasLayout: outputGroups(topology).length > 0,
@@ -1741,7 +1787,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearchSatisfied: driverResearchStepSatisfied(),
       outputIdentityComplete: outputIdentityComplete(),
       driverChecksComplete: driverChecksComplete(),
-      baselineProfileApplied: baselineProfileApplied()
+      baselineProfileApplied: baselineProfileApplied(),
+      baselineProfileNeedsRevalidation: baselineProfileNeedsRevalidation()
     };
   }
   function outputStepState(step, topology) {
@@ -2259,7 +2306,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return String(issue && issue.code || '');
     });
     if (codes.indexOf('tone_backend_failed') >= 0) {
-      return 'JTS could not prepare the combined test tone. Retry after the setup finishes; if it fails again, open System status.';
+      return 'JTS could not prepare the combined test audio. Retry after the setup finishes; if it fails again, open System status.';
     }
     if (codes.indexOf('summed_commission_load_failed') >= 0 ||
         codes.indexOf('safe_session_not_armed') >= 0) {
@@ -2803,9 +2850,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var cfg = combinedTestLevelConfig();
     return clamp(value, cfg.min, cfg.max);
   }
-  function renderSummedLevelControl(groupId) {
+  function renderSummedLevelControl(groupId, options) {
+    options = options || {};
     var cfg = combinedTestLevelConfig();
     var value = combinedTestLevelDbfs();
+    var disabled = options.disabled === true;
+    var live = options.live === true;
+    var hint = live ?
+      'Changes apply while the test audio is playing.' :
+      (disabled ?
+        'Preparing the test path. Level changes will be available in a moment.' :
+        'Choose a careful level. You can adjust it while the test audio plays.');
     return '<label class="active-speaker-summed-level">' +
       '<span class="active-speaker-summed-level__head">' +
         '<span>Combined test level</span>' +
@@ -2818,31 +2873,38 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ' max="' + escapeHtml(String(cfg.max)) + '"' +
         ' step="' + escapeHtml(String(cfg.step)) + '"' +
         ' value="' + escapeHtml(String(value)) + '"' +
+        (disabled ? ' disabled' : '') +
         ' aria-label="Combined test level">' +
-      '<span class="setting-row__hint">Start low. Raise slowly, and stop immediately if anything sounds wrong.</span>' +
+      '<span class="setting-row__hint">' + escapeHtml(hint) + '</span>' +
     '</label>';
   }
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
     if (!groups.length) return '';
     var canRecord = driverChecksComplete();
+    var revalidation = baselineProfileRevalidation();
+    var revalidating = revalidation.required === true;
+    var revalidationNeedsCombined = revalidating &&
+      (revalidation.next_step || '') === 'combined_check';
     var rows = groups.map(function(group) {
       var groupView = commissioningGroupView(group.id);
       var startAction = commissioningGroupAction(groupView, 'start_combined_test');
       var recordAction = commissioningGroupAction(groupView, 'record_combined_result');
       var latest = latestSummedValidation(group.id);
       var latestTest = latestSummedTest(group.id);
-      var ok = latest && latest.validated === true;
+      var ok = groupView ? groupView.validated === true :
+        (latest && latest.validated === true);
       var hasAudibleTest = latestTest && latestTest.captured === true &&
         latestTest.audio_emitted === true && !playbackHasBlocker(latestTest);
       if (groupView && groupView.has_audible_test === true) hasAudibleTest = true;
-      if (groupView && groupView.validated === true) ok = true;
       var statusText = groupView && groupView.status_label ? groupView.status_label :
         (ok ? 'validated' : (hasAudibleTest ? 'ready' : 'not tested'));
       var combinedStarting = activeSpeaker.action === 'Starting combined test';
       var combinedPlaying = activeSpeaker.action === 'Playing combined test';
       var combinedStopping = activeSpeaker.action === 'Stopping combined test';
-      var combinedBusy = combinedStarting || combinedPlaying || combinedStopping;
+      var combinedSaving = activeSpeaker.action === 'Saving combined check';
+      var combinedControlsLocked = combinedStarting || combinedStopping || combinedSaving;
+      var combinedPlaybackActive = combinedStarting || combinedPlaying || combinedStopping;
       var testButton;
       if (combinedPlaying) {
         testButton = '<button type="button" class="btn btn--danger" ' +
@@ -2861,8 +2923,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '>' + escapeHtml(startAction && startAction.label || 'Play combined test') +
           '</button>';
       }
-      var recordEnabled = !combinedBusy &&
+      var recordEnabled = !combinedControlsLocked &&
         (recordAction ? recordAction.enabled === true : hasAudibleTest);
+      if (combinedPlaying) recordEnabled = true;
       var summedTestId =
         recordAction && recordAction.body && recordAction.body.summed_test_id ||
         latestTest && (latestTest.summed_test_id || latestTest.playback_id) || '';
@@ -2875,8 +2938,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '>Sounds right</button>';
       var backButton = '<button type="button" class="btn btn--ghost" ' +
         'data-act="back-to-crossover-config"' +
-        (combinedBusy ? ' disabled' : '') + '>Back to adjust crossover</button>';
-      var hint = groupView && groupView.message ? groupView.message : (hasAudibleTest ?
+        (combinedPlaybackActive || combinedSaving ? ' disabled' : '') + '>Back to adjust crossover</button>';
+      var hint = revalidationNeedsCombined ?
+        (hasAudibleTest ?
+          'Revalidation test played. Save the result if the speaker sounds coherent.' :
+          'Your active speaker setup changed after the current profile was applied. Play the combined check again, then save the result.') :
+        groupView && groupView.message ? groupView.message : (hasAudibleTest ?
         'After the combined test, save the result if the speaker sounds coherent.' :
         (canRecord ?
           'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
@@ -2896,18 +2963,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<span class="status-pill' + (ok ? ' status-pill--ready' : '') + '">' +
             escapeHtml(statusText) + '</span>' +
         '</div>' +
-        renderSummedLevelControl(group.id) +
+        renderSummedLevelControl(group.id, {
+          disabled: combinedControlsLocked,
+          live: combinedPlaying
+        }) +
         '<div class="active-speaker-actions">' + testButton + blendOkButton +
           backButton + '</div>' +
       '</div>';
     }).join('');
     return '<div class="output-card output-card--summed-validation">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Combined crossover check</p>' +
+      '<div class="output-card__head"><div><p class="output-card__title">' +
+        escapeHtml(revalidationNeedsCombined ? 'Revalidate crossover blend' : 'Combined crossover check') + '</p>' +
         '<p class="setting-row__hint">' + escapeHtml(canRecord ?
-          'Choose a careful level, play the combined speaker, then save the check if it sounds right.' :
+          (revalidationNeedsCombined ?
+            'Play the combined speaker again, then save the check if it still sounds right.' :
+            'Choose a careful level, play the combined speaker, then save the check if it sounds right.') :
           'Test each driver first, then validate the combined crossover.') + '</p></div>' +
         '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(summedValidationComplete() ? 'ready' : (canRecord ? 'next' : 'after driver checks')) + '</span></div>' +
+          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after driver checks'))) + '</span></div>' +
       '<div class="active-speaker-validation">' + rows + '</div>' +
     '</div>';
   }
@@ -2958,8 +3031,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var readyToApply = permissions.may_apply === true;
     var mayCompile = summedValidationComplete();
     var applyBlocked = baselineProfileApplyBlocked(profile);
-    var busy = activeSpeaker.action === 'Saving active profile' ||
-      activeSpeaker.action === 'Applying active profile';
+    var revalidating = baselineProfileNeedsRevalidation();
+    var busy = activeSpeaker.action === 'Finishing active profile';
+    var canFinish = !applyBlocked && (mayCompile || readyToApply);
     var issues = Array.isArray(profile.issues) ? profile.issues : [];
     var issueRows = issues.filter(function(issue) {
       return issue && issue.severity === 'blocker';
@@ -2970,27 +3044,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<p class="setting-row__hint">This is now your active speaker profile: ' +
         escapeHtml(config.basename || config.path || 'active speaker baseline') + '.</p>' :
       (applyBlocked ?
-        '<p class="setting-row__hint">The active profile was saved for review, but this hardware path cannot be applied from this page yet.</p>' :
+        '<p class="setting-row__hint">This profile cannot be made active from this page yet. Review the setup issue below.</p>' :
       (readyToApply ?
-        '<p class="setting-row__hint">Your active speaker profile is saved. Apply it to start using it.</p>' :
+        '<p class="setting-row__hint">Your active speaker profile is saved. Finish applying it to start using it.</p>' :
+      (revalidating ?
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
-          'Save the checked crossover as your active speaker profile. No sound plays.' :
-          'Finish the combined crossover check before saving the active profile.') + '</p>'));
+          'Revalidation is saved. Save and apply a fresh active profile.' :
+          'Your active speaker setup changed after the current profile was applied. Revalidate the combined crossover, then save and apply a fresh profile.') + '</p>' :
+        '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
+          'Save the checked crossover as your active speaker profile. JTS validates and applies it in one step; no sound plays.' :
+          'Finish the combined crossover check before saving the active profile.') + '</p>')));
     var actionLabel = busy ?
-      (activeSpeaker.action === 'Applying active profile' ? 'Applying profile' : 'Saving profile') :
-      (readyToApply ? 'Apply profile' : (applyBlocked ? 'Save profile' : 'Save and apply'));
-    var actions = applied ? '' :
+      'Saving and applying' :
+      'Save and apply';
+    var actions = (applied || applyBlocked) ? '' :
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
-        '<button type="button" class="btn ' + (readyToApply ? 'btn--danger' : 'btn--primary') +
+        '<button type="button" class="btn btn--primary' +
           '" data-act="save-apply-baseline-profile"' +
-          ((busy || (!mayCompile && !readyToApply)) ? ' disabled' : '') + '>' +
+          ((busy || !canFinish) ? ' disabled' : '') + '>' +
           escapeHtml(actionLabel) + '</button>' +
       '</div>';
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and driver checks.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
+          escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
       renderLevelMatchSummary(profile) +
       (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
@@ -3318,12 +3396,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   }
 
-  function volumeFloorValue() {
-    var floorInput = el('set-volume-floor');
-    var value = Number(floorInput ? floorInput.value : soundSettings.volume_floor_db);
-    return isFinite(value) ? value : -50;
-  }
-
   function setVolumeFloorToneButton() {
     var button = el('volume-floor-tone-button');
     if (!button) return;
@@ -3364,7 +3436,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       volumeFloorTone.active = true;
       setVolumeFloorToneButton();
-      status('1% calibration tone at ' + fmtVolumeFloor(payload.volume_floor_db || value) + '.');
+      var toneStatus = '1% calibration tone at ' +
+        fmtVolumeFloor(payload.volume_floor_db || value) + '.';
+      if (volumeFloorTone.savedNotice) {
+        toneStatus = 'Volume floor saved. ' + toneStatus;
+        volumeFloorTone.savedNotice = false;
+      }
+      status(toneStatus);
     } catch (e) {
       volumeFloorTone.active = false;
       setVolumeFloorToneButton();
@@ -3380,6 +3458,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function startVolumeFloorTone() {
     volumeFloorTone.active = true;
     volumeFloorTone.generation += 1;
+    volumeFloorTone.savedNotice = false;
     setVolumeFloorToneButton();
     scheduleVolumeFloorToneUpdate(volumeFloorValue(), {force: true, immediate: true});
   }
@@ -3388,10 +3467,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var floor = -50;
     var floorInput = el('set-volume-floor');
     if (floorInput) floorInput.value = floor;
-    setVolumeFloorReadout(floor);
+    setVolumeFloorDraft(floor);
+    await saveVolumeFloor();
+  }
+
+  async function saveVolumeFloor() {
+    var floor = volumeFloorValue();
+    volumeFloorSaving = true;
+    syncVolumeFloorControls(floor);
     var saved = await saveSettings({volume_floor_db: floor});
-    if (saved && volumeFloorTone.active) {
-      scheduleVolumeFloorToneUpdate(floor, {immediate: true});
+    volumeFloorSaving = false;
+    if (saved) {
+      volumeFloorDraftDb = null;
+      syncVolumeFloorControls(savedVolumeFloorDb());
+      if (volumeFloorTone.active) {
+        volumeFloorTone.savedNotice = true;
+        scheduleVolumeFloorToneUpdate(savedVolumeFloorDb(), {immediate: true});
+      } else {
+        status('Volume floor saved.');
+      }
+    } else {
+      syncVolumeFloorControls(volumeFloorValue());
     }
   }
 
@@ -3399,6 +3495,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     options = options || {};
     volumeFloorTone.active = false;
     volumeFloorTone.generation += 1;
+    volumeFloorTone.savedNotice = false;
     volumeFloorTone.pending = null;
     if (volumeFloorTone.timer) {
       clearTimeout(volumeFloorTone.timer);
@@ -3560,6 +3657,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (volumeFloorTone.active) stopVolumeFloorTone();
       else startVolumeFloorTone();
     }
+    else if (act === 'save-volume-floor') { saveVolumeFloor(); }
     else if (act === 'reset-volume-floor') { resetVolumeFloor(); }
   });
   // Mode + band-type segmented buttons (delegated).
@@ -3636,6 +3734,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '[data-summed-level-readout="' + summedLevel + '"]'
       );
       if (summedReadout) summedReadout.textContent = fmtDb(nextSummedLevel);
+      scheduleSummedTestLevelUpdate(summedLevel, nextSummedLevel);
       return;
     }
     if (field) {
@@ -3670,8 +3769,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'set-volume-floor') {
       var floor = Number(ev.target.value);
-      setVolumeFloorReadout(floor);
-      scheduleVolumeFloorToneUpdate(floor);
+      setVolumeFloorDraft(floor);
+      scheduleVolumeFloorToneUpdate(volumeFloorValue());
     }
   });
   el('view-body').addEventListener('change', function(ev) {
@@ -3714,11 +3813,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
     else if (ev.target.id === 'set-volume-floor') {
       var floor = Number(ev.target.value);
-      setVolumeFloorReadout(floor);
-      (async function() {
-        var saved = await saveSettings({volume_floor_db: floor});
-        if (saved) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
-      })();
+      setVolumeFloorDraft(floor);
+      if (volumeFloorTone.active) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
     }
   });
   el('view-body').addEventListener('toggle', function(ev) {
@@ -4073,6 +4169,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!result || !result.ok) {
         var stopMessage = result && result.error ?
           result.error : 'Stopped. JTS could not play the driver test.';
+        if (result && result.payload &&
+            commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
+          stopCommissionAutoRamp(stopMessage);
+          patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
+          status(stopMessage, true);
+          render();
+          return;
+        }
         await stopAndAbortCommissionAutoRamp(stopMessage);
         return;
       }
@@ -4842,6 +4946,73 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       summedTestRequest.armTimer = null;
     }
   }
+  function clearSummedTestLevelTimer() {
+    if (summedTestLevelUpdate.timer) {
+      window.clearTimeout(summedTestLevelUpdate.timer);
+      summedTestLevelUpdate.timer = null;
+    }
+  }
+  function scheduleSummedTestLevelUpdate(groupId, levelDbfs, options) {
+    options = options || {};
+    if (activeSpeaker.action !== 'Playing combined test') return;
+    summedTestLevelUpdate.pending = {
+      groupId: groupId,
+      levelDbfs: combinedTestLevelDbfsFrom(levelDbfs)
+    };
+    clearSummedTestLevelTimer();
+    summedTestLevelUpdate.timer = window.setTimeout(function() {
+      summedTestLevelUpdate.timer = null;
+      flushSummedTestLevelUpdate();
+    }, options.immediate ? 0 : 120);
+  }
+  async function flushSummedTestLevelUpdate() {
+    if (summedTestLevelUpdate.inFlight) return;
+    var pending = summedTestLevelUpdate.pending;
+    summedTestLevelUpdate.pending = null;
+    if (!pending) return;
+    summedTestLevelUpdate.inFlight = true;
+    try {
+      var resp = await fetch('./active-speaker/summed-test/level', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: pending.groupId,
+          level_dbfs: pending.levelDbfs
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'combined test level failed');
+      if (payload.status === 'idle') return;
+      if (payload.status !== 'loaded') {
+        throw new Error(payload.reason || 'combined test level was not applied');
+      }
+      patchActiveSpeaker({
+        calibrationLevel: payload.calibration_level || activeSpeaker.calibrationLevel,
+        combinedTestLevelDbfs: pending.levelDbfs,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+    } catch (e) {
+      status('Could not update combined test level: ' + e.message, true);
+    } finally {
+      summedTestLevelUpdate.inFlight = false;
+      if (summedTestLevelUpdate.pending) flushSummedTestLevelUpdate();
+    }
+  }
+  function latestSummedTestIdFromPayload(payload, groupId) {
+    var measurements = payload && payload.measurements || activeSpeaker.measurements || {};
+    var summary = measurements.summary || {};
+    var latest = summary.latest_summed_tests || {};
+    var test = latest[String(groupId || '')] || null;
+    if (!test || test.captured !== true || test.audio_emitted !== true) return '';
+    return test && (test.summed_test_id || test.playback_id) || '';
+  }
+  async function finishPlayingSummedTestForValidation(groupId) {
+    var current = summedTestRequest.current;
+    if (!current || current.groupId !== groupId || !current.promise) return '';
+    await stopSummedTest({reason: 'operator_confirmed', quiet: true});
+    var payload = await current.promise;
+    return latestSummedTestIdFromPayload(payload, groupId);
+  }
   async function prepareSummedTest(button) {
     var groupId = button.getAttribute('data-group-id') || '';
     var label = button.getAttribute('data-label') || groupId || 'speaker';
@@ -4850,7 +5021,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (!await jtsConfirm(
-      'Play a short combined test for "' + label +
+      'Play a looped spoken combined test for "' + label +
         '" at ' + fmtDb(combinedTestLevelDbfs()) +
         '? JTS uses the prepared crossover and keeps the test level bounded.',
       {danger: true}
@@ -4861,6 +5032,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var requestToken = summedTestRequest.token + 1;
     summedTestRequest.token = requestToken;
     clearSummedTestArmTimer();
+    clearSummedTestLevelTimer();
+    summedTestLevelUpdate.pending = null;
     patchActiveSpeaker({
       loading: false, action: 'Starting combined test',
       error: '',
@@ -4888,16 +5061,30 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var body = Object.assign({
         speaker_group_id: groupId,
         audio: true,
-        duration_ms: 500
+        stimulus: 'speech',
+        duration_ms: 12000
       }, action && action.body || {});
       body.level_dbfs = requestedLevel;
-      var resp = await fetch(action && action.endpoint || './active-speaker/summed-test', {
+      var startPromise = fetch(action && action.endpoint || './active-speaker/summed-test', {
         method: 'POST',
         headers: jsonHeaders(),
         body: JSON.stringify(body)
+      }).then(async function(resp) {
+        var payload = await resp.json();
+        if (!resp.ok) throw new Error(payload.error || 'combined speaker test failed');
+        return payload;
       });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'combined speaker test failed');
+      summedTestRequest.current = {
+        token: requestToken,
+        groupId: groupId,
+        promise: startPromise,
+        payload: null
+      };
+      var payload = await startPromise;
+      if (summedTestRequest.current &&
+          summedTestRequest.current.token === requestToken) {
+        summedTestRequest.current.payload = payload;
+      }
       if (summedTestRequest.token !== requestToken) return;
       clearSummedTestArmTimer();
       var appliedLevel = NaN;
@@ -4917,14 +5104,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       await refreshCommissioningView();
       var playback = payload.playback || {};
       var emitted = playbackConfirmable(playback);
-      status(playback.status === 'stopped' ?
-        'Combined speaker test stopped.' : (emitted ?
-        'Combined speaker test played. Record what you heard.' :
-        'Combined speaker test did not play. Review the message in this card.'),
-        playback.status !== 'stopped' && !emitted);
+      if (playback.stop_reason !== 'operator_confirmed') {
+        status(playback.status === 'stopped' ?
+          'Combined speaker test stopped.' : (emitted ?
+          'Combined speaker test played. Record what you heard.' :
+          'Combined speaker test did not play. Review the message in this card.'),
+          playback.status !== 'stopped' && !emitted);
+      }
+      if (summedTestRequest.current &&
+          summedTestRequest.current.token === requestToken) {
+        summedTestRequest.current = null;
+      }
     } catch (e) {
       if (summedTestRequest.token !== requestToken) return;
       clearSummedTestArmTimer();
+      if (summedTestRequest.current &&
+          summedTestRequest.current.token === requestToken) {
+        summedTestRequest.current = null;
+      }
       patchActiveSpeaker({
         loading: false, action: '',
         error: e.message,
@@ -4934,10 +5131,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  async function stopSummedTest() {
-    var requestToken = summedTestRequest.token + 1;
-    summedTestRequest.token = requestToken;
+  async function stopSummedTest(options) {
+    options = options || {};
+    var requestToken = summedTestRequest.token;
+    var payload = null;
     clearSummedTestArmTimer();
+    clearSummedTestLevelTimer();
+    summedTestLevelUpdate.pending = null;
     patchActiveSpeaker({
       loading: false, action: 'Stopping combined test',
       error: '',
@@ -4948,11 +5148,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var resp = await fetch('./active-speaker/summed-test/stop', {
         method: 'POST',
         headers: jsonHeaders(),
-        body: JSON.stringify({reason: 'operator_stop'})
+        body: JSON.stringify({reason: options.reason || 'operator_stop'}),
+        keepalive: !!options.keepalive
       });
-      var payload = await resp.json();
+      payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'combined speaker stop failed');
-      if (summedTestRequest.token !== requestToken) return;
+      if (summedTestRequest.token !== requestToken) return payload;
       patchActiveSpeaker({
         loading: false,
         action: '',
@@ -4960,11 +5161,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       });
       await refreshCommissioningView();
-      status(payload.status === 'idle' ?
-        'No combined speaker test is playing.' :
-        'Combined speaker test stopped.');
+      if (!options.quiet) {
+        status(payload.status === 'idle' ?
+          'No combined speaker test is playing.' :
+          'Combined speaker test stopped.');
+      }
     } catch (e) {
-      if (summedTestRequest.token !== requestToken) return;
+      if (summedTestRequest.token !== requestToken) return payload;
       patchActiveSpeaker({
         loading: false,
         action: '',
@@ -4972,8 +5175,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       });
       status('Could not stop the combined speaker test: ' + e.message, true);
+      render();
+      throw e;
     }
     render();
+    return payload;
   }
   async function recordSummedValidation(button) {
     var groupId = button.getAttribute('data-group-id') || '';
@@ -4982,6 +5188,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!groupId || !outcome) {
       status('Choose a speaker group and validation result before saving the combined check.', true);
       return;
+    }
+    if (!summedTestId && activeSpeaker.action === 'Playing combined test') {
+      try {
+        summedTestId = await finishPlayingSummedTestForValidation(groupId);
+      } catch (e) {
+        status('Could not finish the combined speaker test: ' + e.message, true);
+        return;
+      }
     }
     if (!summedTestId) {
       status('Run the combined speaker test first, then record what you heard.', true);
@@ -5039,21 +5253,46 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  async function applyBaselineProfilePayload(configName) {
+  async function saveAndApplyBaselineProfile() {
+    var profile = activeSpeaker.baselineProfile || {};
+    var config = profile.config || {};
+    var readyToApply = (profile.permissions || {}).may_apply === true;
+    var mayCompile = summedValidationComplete();
+    var applyBlocked = baselineProfileApplyBlocked(profile);
+    var configName = config.basename || 'active speaker baseline';
+    if (applyBlocked) {
+      status('This active profile cannot be made active from here yet. Review the issue in this card.', true);
+      return;
+    }
+    if (!readyToApply && !mayCompile) {
+      status('Test each driver and save the combined crossover check before saving the active profile.', true);
+      return;
+    }
+    if (!await jtsConfirm(
+      'Save and apply the active speaker profile "' + configName + '"?' +
+        ' This makes it your normal speaker profile.',
+      {danger: true}
+    )) {
+      return;
+    }
+    if (!readyToApply && !summedValidationComplete()) {
+      status('Test each driver and save the combined crossover check before saving the active profile.', true);
+      return;
+    }
     patchActiveSpeaker({
-      loading: false, action: 'Applying active profile',
+      loading: false, action: 'Finishing active profile',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
     render();
     try {
-      var resp = await fetch('./active-speaker/baseline-profile/apply', {
+      var resp = await fetch('./active-speaker/baseline-profile/save-and-apply', {
         method: 'POST',
         headers: jsonHeaders(),
         body: '{}'
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'active profile apply failed');
+      if (!resp.ok) throw new Error(payload.error || 'active profile save/apply failed');
       patchActiveSpeaker({
         loading: false, action: '',
         baselineProfile: payload.profile || payload,
@@ -5062,7 +5301,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       await refreshCommissioningView();
       status(payload.status === 'applied' ?
-        'Active speaker profile applied.' :
+        'Active speaker profile saved and applied.' :
         'Active speaker profile was not applied; review the message in this card.',
         payload.status !== 'applied');
     } catch (e) {
@@ -5071,75 +5310,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not apply active profile' +
-        (configName ? ' "' + configName + '"' : '') + ': ' + e.message, true);
-    }
-    render();
-  }
-  async function saveAndApplyBaselineProfile() {
-    var profile = activeSpeaker.baselineProfile || {};
-    var config = profile.config || {};
-    var readyToApply = (profile.permissions || {}).may_apply === true;
-    var mayCompile = summedValidationComplete();
-    var configName = config.basename || 'active speaker baseline';
-    if (!readyToApply && !mayCompile) {
-      status('Test each driver and save the combined crossover check before saving the active profile.', true);
-      return;
-    }
-    if (!await jtsConfirm(
-      (readyToApply ? 'Apply the active speaker profile "' + configName + '"?' :
-        'Save and apply this active speaker profile?') +
-        ' This makes it your normal speaker profile.',
-      {danger: true}
-    )) {
-      return;
-    }
-    if (readyToApply) {
-      await applyBaselineProfilePayload(configName);
-      return;
-    }
-    if (!summedValidationComplete()) {
-      status('Test each driver and save the combined crossover check before saving the active profile.', true);
-      return;
-    }
-    patchActiveSpeaker({
-      loading: false, action: 'Saving active profile',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var resp = await fetch('./active-speaker/baseline-profile', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'active profile save failed');
-      patchActiveSpeaker({
-        loading: false, action: '',
-        baselineProfile: payload,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      await refreshCommissioningView();
-      if (payload.permissions && payload.permissions.may_apply) {
-        await applyBaselineProfilePayload(
-          (payload.config && payload.config.basename) || 'active speaker baseline'
-        );
-        return;
-      }
-      status(baselineProfileApplyBlocked(payload) ?
-        'Active profile saved for review. This hardware path cannot be applied from here yet.' :
-        'Active profile could not be applied yet; review the message in this card.',
-        !baselineProfileApplyBlocked(payload));
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not save active profile: ' + e.message, true);
+      status('Could not save and apply active profile: ' + e.message, true);
     }
     render();
   }
@@ -5187,6 +5358,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     refreshOutputTopology({silent: true});
   }
   window.addEventListener('pagehide', function() {
+    if (activeSpeaker.action === 'Starting combined test' ||
+        activeSpeaker.action === 'Playing combined test') {
+      stopSummedTest({keepalive: true, quiet: true, reason: 'pagehide'});
+    }
     if (volumeFloorTone.active || volumeFloorTone.inFlight) {
       stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'});
     }

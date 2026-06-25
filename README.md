@@ -167,13 +167,14 @@ cannot expose a full-scale transient. When no source has a guarded
 winner yet, mux keeps fan-in in `NONE` so a newly started renderer does
 not leak through between polls.
 
-There's also a reconciler-managed software AEC bridge
-(`jasper-aec-bridge`) that taps the music chain via a
-`pcm.jasper_capture` dsnoop, runs WebRTC AEC3 echo cancellation
-against the chip's raw mic, and emits a cleaned-up mono signal over
-UDP localhost for jasper-voice to consume. It runs automatically only
-when the configured AEC mic is present with 6-channel firmware — see
-§ below.
+There's also a reconciler-managed AEC bridge (`jasper-aec-bridge`).
+In the software fallback profile it consumes outputd's final-speaker
+UDP monitor, runs WebRTC AEC3 against the XVF mic, and emits the
+cleaned-up mono signal over UDP localhost for jasper-voice. In the
+chip-AEC profile, the same bridge process bypasses WebRTC AEC3 and
+forwards the selected hardware-AEC chip beam over that carrier. It
+runs automatically only when the configured AEC mic is present with
+6-channel firmware — see § below.
 
 ---
 
@@ -308,7 +309,7 @@ when the configured AEC mic is present with 6-channel firmware — see
   falls back to software AEC3/direct mic as hardware allows. Current
   findings live at
   [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
-- ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
+- ✅ AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
 - ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
   short-press, hold-to-talk long-press all working on hardware.
@@ -1006,9 +1007,10 @@ recommended 6-channel XVF3800 hardware plus a supported/calibrated output
 DAC profile, `auto` resolves to the chip-AEC profile: `jasper-outputd`
 fans out the final speaker buffer to the XVF3800 USB-IN reference, the
 chip emits fixed 150°/210° AEC beams, and the bridge forwards the selected
-chip beam to `jasper-voice`. If that hardware path is unavailable or the
-active output DAC still needs calibration, `auto` falls back to software
-AEC3 or a direct mic path rather than stacking incompatible processing.
+chip beam to `jasper-voice` while WebRTC AEC3 is bypassed. If that hardware
+path is unavailable or the active output DAC still needs calibration, `auto`
+falls back to software AEC3 or a direct mic path rather than stacking
+incompatible processing.
 
 The chip is still useful — its **beamforming, noise suppression,
 and AGC** all run in the XVF processing pipeline. The key rule is not
@@ -1017,9 +1019,10 @@ wake legs; software AEC3 is the fallback for hardware that cannot use
 chip-AEC.
 
 **Wake/input configuration is profile-first.** The `/wake/` page exposes
-the canonical choices (`auto`, `xvf_chip_aec`, `xvf_software_aec3`,
-`direct_mic`) and keeps individual AEC/raw/DTLN/chip-leg toggles as
-advanced custom controls for corpus tests and nonstandard hardware.
+the canonical choices (`auto`, `xvf_chip_aec`,
+`xvf_chip_aec_testing`, `xvf_software_aec3`, `direct_mic`) and keeps
+individual AEC/raw/DTLN/chip-leg toggles as advanced custom controls
+for corpus tests and nonstandard hardware.
 Changing a profile or custom layer runs `jasper-aec-reconcile`, which
 restarts the affected bridge/voice services and updates `/state`,
 doctor, and the dashboard.

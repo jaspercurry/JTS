@@ -485,6 +485,7 @@ def test_aec_full_status_includes_legs_and_threshold(
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
         },
     )
     validation_filters = []
@@ -497,10 +498,18 @@ def test_aec_full_status_includes_legs_and_threshold(
     status = server._aec_full_status()
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
+    assert status["bridge_role"] == "software_aec3"
+    assert status["software_aec3"] == {
+        "configured": True,
+        "active": True,
+        "bypassed": False,
+        "reason": "Software AEC3 bridge is active.",
+    }
     assert status["legs"]["raw"]["configured"] is True
     assert status["legs"]["dtln"]["configured"] is True
     assert status["legs"]["chip_aec"]["configured"] is False
     assert status["legs"]["chip_aec"]["available"] is True
+    assert status["chip_aec_gate"]["status"] == "approved"
     assert status["threshold"] == 0.40
     assert status["audio_profile"]["requested"] == "xvf_software_aec3"
     assert status["audio_profile"]["active"] == "xvf_software_aec3"
@@ -514,7 +523,7 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert validation_filters == [{
         "requested_profile": "xvf_software_aec3",
         "mic_id": "xvf3800",
-        "dac_id": "outputd_dac",
+        "dac_id": "apple_usb_c_dongle",
     }]
     assert status["wake_word"]["label"]
 
@@ -536,12 +545,17 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     assert status["mode"] == "disabled"
     assert status["profile"] == "direct_mic"
     assert status["bridge_active"] is False
-    assert status["legs"] == {
-        "raw": {"configured": False},
-        "dtln": {"configured": False},
-        # chip default off; not available off the 6-ch firmware.
-        "chip_aec": {"configured": False, "available": False},
+    assert status["bridge_role"] == "off"
+    assert status["software_aec3"] == {
+        "configured": False,
+        "active": False,
+        "bypassed": False,
+        "reason": "AEC bridge is disabled by the direct-mic profile.",
     }
+    assert status["legs"]["raw"] == {"configured": False}
+    assert status["legs"]["dtln"] == {"configured": False}
+    assert status["legs"]["chip_aec"]["configured"] is False
+    assert status["legs"]["chip_aec"]["available"] is False
     assert status["raw_intent"]["leg_raw"] is True
     # Unconfigured threshold falls back to the daemon default (0.3), not
     # a higher value the slider would otherwise misrepresent as live.
@@ -576,6 +590,11 @@ def test_aec_full_status_chip_available_tracks_firmware(
     assert "Chip-AEC needs" in " ".join(status["microphone"]["warnings"])
 
     _stub_xvf_runtime(monkeypatch)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
@@ -598,6 +617,7 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
@@ -607,11 +627,65 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     status = server._aec_full_status()
 
     assert status["profile"] == "auto"
+    assert status["bridge_role"] == "chip_aec_carrier"
+    assert status["software_aec3"] == {
+        "configured": False,
+        "active": False,
+        "bypassed": True,
+        "reason": (
+            "Chip-AEC profile selected; WebRTC AEC3 is bypassed while "
+            "the bridge carries the chip beam to voice."
+        ),
+    }
     assert status["legs"]["raw"]["configured"] is False
     assert status["legs"]["chip_aec"]["configured"] is True
     assert status["raw_intent"]["leg_raw"] is True
     assert status["audio_profile"]["selection"] == "auto"
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
+    assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
+    assert status["chip_aec_gate"]["production_available"] is True
+
+
+def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec_testing\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    _stub_xvf_runtime(monkeypatch)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
+            "JASPER_AEC_CHIP_AEC_DAC_STATUS": "testing",
+            "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "explicit_testing",
+            "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "operator validation",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["profile"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["active"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
+    assert status["chip_aec_gate"]["status"] == "testing"
+    assert status["chip_aec_gate"]["auto_allowed"] is False
+    assert status["chip_aec_gate"]["testing_available"] is True
+    assert status["legs"]["chip_aec"]["available"] is True
+    assert status["legs"]["chip_aec"]["production_available"] is False
 
 
 def test_aec_full_status_flex_linear_auto_resolves_software_aec3(
@@ -669,6 +743,7 @@ def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
@@ -680,6 +755,39 @@ def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
     assert status["legs"]["chip_aec"]["configured"] is True
     assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
     assert "not applied" in " ".join(status["microphone"]["warnings"])
+
+
+def test_aec_full_status_names_stale_saved_aec_card(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    _stub_xvf_runtime(monkeypatch)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["audio_profile"]["state"] == "waiting_bridge"
+    assert "configured AEC mic L16K6Ch" in status["audio_profile"]["reason"]
+    warnings = " ".join(status["microphone"]["warnings"])
+    assert "Configured AEC mic L16K6Ch" in warnings
+    assert "detected XVF card Array" in warnings
 
 
 def test_aec_full_status_chip_aec_applied_requires_runtime_env(
@@ -698,6 +806,7 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",

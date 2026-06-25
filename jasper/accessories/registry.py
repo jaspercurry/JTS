@@ -23,6 +23,9 @@ from typing import Mapping, Union
 KEY_MUTE = 113
 KEY_VOLUMEDOWN = 114
 KEY_VOLUMEUP = 115
+KEY_PREVIOUSSONG = 165
+KEY_NEXTSONG = 163
+KEY_PLAYPAUSE = 164
 
 
 @dataclass(frozen=True)
@@ -121,7 +124,37 @@ VK01 = Device(
 )
 
 
-KNOWN_DEVICES: list[Device] = [VK01]
+# WiiM Voice Remote 2 (BLE HID over GATT).
+#
+# Captured on jts5.local with Linux evdev on 2026-06-25:
+#   - Consumer Control: volume, play/pause, next, previous, mute
+#   - Keyboard: input/source as KEY_BACK
+#   - Consumer Control: voice as KEY_SEARCH
+#
+# Input/source needs a JTS source-selection semantic, and voice needs
+# press/release support before we can safely make it push-to-talk, so
+# the first integration maps only the direct media-control buttons.
+WIIM_REMOTE_2 = Device(
+    name="WiiM Remote 2",
+    vendor_id=0x2717,
+    product_id=0x32B9,
+    keymap={
+        KEY_VOLUMEUP: KeyAction(
+            "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
+        ),
+        KEY_VOLUMEDOWN: KeyAction(
+            "POST", "/volume/adjust", {"delta_percent": -2}, coalesce=True,
+        ),
+        KEY_PLAYPAUSE: KeyAction("POST", "/transport/toggle", {}),
+        KEY_NEXTSONG: KeyAction("POST", "/transport/next", {}),
+        KEY_PREVIOUSSONG: KeyAction("POST", "/transport/previous", {}),
+        KEY_MUTE: KeyAction("POST", "/volume/mute", {}),
+    },
+    bt_name_regex=r"(?i)\bwiim remote 2\b",
+)
+
+
+KNOWN_DEVICES: list[Device] = [VK01, WIIM_REMOTE_2]
 
 
 def lookup(vendor_id: int, product_id: int) -> Device | None:

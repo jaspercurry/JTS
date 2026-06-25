@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -640,6 +641,53 @@ def test_baseline_profile_blocks_until_summed_validation_exists(
     }
 
 
+def test_baseline_profile_blocks_when_summed_validation_is_superseded(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    state_path = tmp_path / "measurements.json"
+    _measurements(topology, tmp_path)
+    measurements = record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-newer",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed-playback-newer.wav",
+                    "metadata_basename": "tone_summed-playback-newer.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-14T12:04:00Z",
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        state_path=tmp_path / "baseline_profile.json",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert measurements["summary"]["summed_validation_complete"] is False
+    assert "baseline_summed_validation_missing" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
 def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
     tmp_path: Path,
 ) -> None:
@@ -690,6 +738,104 @@ def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
     assert "baseline_driver_measurements_missing" in {
         issue["code"] for issue in stale["issues"]
     }
+
+
+def test_superseded_applied_profile_reports_revalidation_path(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(
+        draft,
+        created_at="2026-06-14T12:10:00Z",
+    )
+    measurements = _measurements(topology, tmp_path)
+    measurements_path = tmp_path / "measurements.json"
+    baseline_state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    ready = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        created_at="2026-06-14T12:20:00Z",
+    )
+    assert ready["status"] == "ready_to_apply"
+
+    applied = {**ready, "status": "applied", "applied_at": "2026-06-14T12:21:00Z"}
+    applied["permissions"] = {**applied["permissions"], "may_apply": False}
+    baseline_state_path.write_text(json.dumps(applied), encoding="utf-8")
+
+    newer_test = record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-newer",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed-playback-newer.wav",
+                    "metadata_basename": "tone_summed-playback-newer.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=measurements_path,
+        now="2026-06-14T12:22:00Z",
+    )
+    blocked = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=newer_test,
+        write=False,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert blocked["status"] == "blocked"
+    assert blocked["revalidation"]["required"] is True
+    assert blocked["revalidation"]["reason"] == "applied_profile_superseded"
+    assert blocked["revalidation"]["next_step"] == "combined_check"
+    assert blocked["revalidation"]["superseded_profile"]["config"]["exists"] is True
+    assert "measurement_summary_fingerprint" in blocked["revalidation"]["changed"]
+
+    revalidated = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40.0,
+            "polarity": "normal",
+            "delay_ms": 0.0,
+            "summed_test_id": "summed-playback-newer",
+        },
+        state_path=measurements_path,
+        now="2026-06-14T12:23:00Z",
+    )
+    ready_to_save = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=revalidated,
+        write=False,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert ready_to_save["status"] == "ready_to_compile"
+    assert ready_to_save["revalidation"]["required"] is True
+    assert ready_to_save["revalidation"]["next_step"] == "save_profile"
 
 
 def test_baseline_profile_never_emits_positive_driver_gain(

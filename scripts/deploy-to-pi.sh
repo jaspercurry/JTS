@@ -644,7 +644,9 @@ echo "==> Installed profile: ${REMOTE_INSTALL_PROFILE}"
 
 # Restart/reconcile the Python daemons that run application code so a
 # code change in this deploy actually takes effect. install.sh already
-# restarts jasper-mux + jasper-input + the wizard sockets. Voice is
+# restarts jasper-mux + jasper-input + the wizard sockets. Socket
+# activation does not replace an already-warm wizard process, so restart
+# jasper-web explicitly after installing code. Voice is
 # mic-hardware-dependent, so do not restart jasper-voice directly here:
 # `jasper-aec-reconcile` restarts it when a valid mic path exists and
 # parks it cleanly when no configured mic is present.
@@ -652,8 +654,6 @@ echo "==> Installed profile: ${REMOTE_INSTALL_PROFILE}"
 # Notable omissions:
 #   - jasper-camilla — runs the Rust camilladsp binary, no Python.
 #     No restart needed for Python code changes.
-#   - The wizard servers — socket-activated, naturally pick up new
-#     code on the next request.
 if [[ "${SKIP_RESTART:-}" == "1" ]]; then
     echo "==> SKIP_RESTART=1 — leaving daemons on prior code"
     finish_airplay_health_maintenance
@@ -665,6 +665,10 @@ fi
 echo "==> Restarting code daemon: jasper-control.service"
 run_remote_sudo "systemctl restart jasper-control.service" || \
     echo "  (jasper-control restart returned non-zero — see scripts/fetch-pi-logs.sh)"
+
+echo "==> Restarting web setup service: jasper-web.service"
+run_remote_sudo "systemctl restart jasper-web.service jasper-web.socket" || \
+    echo "  (jasper-web restart returned non-zero — see scripts/fetch-pi-logs.sh)"
 
 if [[ "$REMOTE_INSTALL_PROFILE" == "streambox" ]]; then
     echo "==> Reconciling grouping state"

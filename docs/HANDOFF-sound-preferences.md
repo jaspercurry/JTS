@@ -344,35 +344,40 @@ the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
 the protected graph. The normal product UI does not require a user to understand
 or click those controls.
 The same walkthrough then opens **Validate and apply**. That card first runs a
-short combined-speaker test through `/sound/active-speaker/summed-test`; while
-that request is preparing/playing, the same CTA moves through **Preparing** into
-a red **Stop** state backed by `/sound/active-speaker/summed-test/stop`. The
-summed crossover validation POST at
+looped spoken combined-speaker test through
+`/sound/active-speaker/summed-test`; while that request is preparing/playing,
+the same CTA moves through **Preparing** into a red **Stop** state backed by
+`/sound/active-speaker/summed-test/stop`. The combined-test card has its own
+bounded test-level slider so low-sensitivity drivers can be raised from the safe
+floor without changing normal listening volume; while the loop is playing, the
+slider posts live level changes to `/sound/active-speaker/summed-test/level`.
+The backend reloads the protected all-drivers-live graph at the requested level
+only after CamillaDSP accepts the new graph, clamps absolute min/max bounds, and
+leaves the active loop metadata unchanged if the reload fails. The loop
+continues until the operator stops it, presses **Sounds right**, or the backend
+watchdog expires it. The summed crossover validation POST at
 `/sound/active-speaker/summed-validation` must reference the latest audible
-combined-test record for that group. The combined-test card has its own bounded
-test-level slider so low-sensitivity drivers can be raised from the safe floor
-without changing normal listening volume; the operator controls the requested
-combined-test level across the commissioning envelope, while the backend still
-clamps absolute min/max bounds and logs the emitted level. For the current
-product flow, an explicit operator listening result
-(`operator_listening_check`) can validate **Sounds right** when no browser
-microphone reading is captured. The `/sound/` core flow no longer offers a
-phone-mic capture button; microphone-based level and delay work belongs in the
-HTTPS measurement/correction experience. Artifact-only or stale summed-test
-records cannot unlock the active profile. After summed validation,
+combined-test record for that group: artifact-only, stale, stopped-before-audio,
+or watchdog-expired records cannot unlock the active profile. For the current
+product flow, an explicit operator listening result (`operator_listening_check`)
+can validate **Sounds right** when no browser microphone reading is captured.
+The `/sound/` core flow no longer offers a phone-mic capture button;
+microphone-based level and delay work belongs in the HTTPS
+measurement/correction experience. After summed validation,
 `/sound/active-speaker/baseline-profile` compiles the saved topology, visible
 crossover settings, fresh crossover preview, driver-check evidence, and summed
 validation into
 `/var/lib/camilladsp/configs/active_speaker_baseline.yml` plus
 `/var/lib/jasper/active_speaker_baseline_profile.json`. Compile is still
 no-audio and does not load CamillaDSP. The UI exposes one final intent,
-**Save and apply**; the frontend saves the profile, then applies it through the
-separate `/sound/active-speaker/baseline-profile/apply` endpoint when the
-backend reports that this hardware path supports the shared DSP handoff. It is
-currently enabled only for the outputd-owned active output lane; other hardware
-paths can save the profile for review and get clear copy that JTS cannot switch
-normal playback from this page yet. After apply succeeds the UI can truthfully
-say this is now the active speaker profile.
+**Save and apply**, through
+`/sound/active-speaker/baseline-profile/save-and-apply`. That backend-owned
+operation compiles, validates hardware apply support, applies through the shared
+DSP handoff, and reports one result. The product handoff is currently enabled
+only for the outputd-owned active output lane; unsupported hardware paths show
+clear apply-blocked copy and do not expose a fake save CTA that cannot make the
+profile active. After apply succeeds the UI can truthfully say this is now the
+active speaker profile.
 The guarded startup substrate still persists readable evidence at
 `/var/lib/jasper/active_speaker_staged_config.json` and
 `active_speaker_path_safety.json`. The loader treats saved path-safety evidence
@@ -494,14 +499,20 @@ room PEQs from the configs it can host:
   room PEQs.
 - `/var/lib/camilladsp/configs/sound_current.yml` → extract room PEQs.
 - `/var/lib/camilladsp/configs/sound_audition.yml` → extract room PEQs.
+- `/var/lib/camilladsp/configs/grouping_active_leader_bake.yml` → active-leader
+  program bake; extract room PEQs, but only while grouping state still resolves
+  to `File` → Snapcast FIFO with `enable_rate_adjust=false`.
 
 Anything the carrier cannot host fails **closed** with a typed reason rather
 than being silently overwritten. An active-speaker crossover graph is
 recognized (by the same structural signal the runtime safety classifier
 uses — re-emitting it through the stereo template would drop the
 crossover/limiter/protective-HP) and refused with
-`reason_code="eq_on_active_not_wired"`; any other unrecognized config refuses
-with `unknown_config`. The refusal returns as an HTTP 200
+`reason_code="eq_on_active_not_wired"` unless it is a solo active baseline that
+can be recomposed through the active emitter. A program bake whose grouping
+state no longer resolves to the pipe sink refuses with
+`program_bake_pipe_unavailable`; any other unrecognized config refuses with
+`unknown_config`. The refusal returns as an HTTP 200
 `{status:"blocked", reason_code, message}` body so the wizard renders an
 honest hint instead of a 502. See the design-of-record for the dispatcher and
 the program/driver-domain boundary.
@@ -794,13 +805,19 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-24 (deploy/startup sound-DSP reconciliation checked
-against `jasper.sound.runtime`, `jasper.cli.sound`, `deploy/install.sh`, and
-the focused reconcile/CLI/install tests; active-crossover `/sound/` flow
-checked against `deploy/assets/sound-profile/js/main.js`,
-`jasper.web.sound_setup`, and the focused sound setup tests for channel
-selectors, simplified driver/combined CTAs, cancellable combined-test Stop,
-bounded combined-level control, and the one-intent save/apply UI. Prior
+Last verified: 2026-06-25 (active-leader program-bake carrier support checked
+for `/sound` and `/correction/start` on JTS5; active-crossover combined-test
+live-level route, pre-audio confirmation guard, backend watchdog, failed
+live-reload metadata guard, and backend-owned save/apply flow checked against
+`jasper.web.sound_setup`, `deploy/assets/sound-profile/js/main.js`, and the
+focused sound setup tests. Prior 2026-06-24 recheck covered deploy/startup
+sound-DSP reconciliation against `jasper.sound.runtime`, `jasper.cli.sound`,
+`deploy/install.sh`, and the focused reconcile/CLI/install tests;
+active-crossover `/sound/` flow checked against
+`deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`, and the
+focused sound setup tests for channel selectors, simplified driver/combined
+CTAs, cancellable combined-test Stop, bounded combined-level control, and the
+one-intent save/apply UI. Prior
 2026-06-22 recheck covered volume-floor global setting and continuous
 calibration-tone endpoints against `jasper.sound.settings`,
 `jasper.web.sound_setup`, and the `/sound/` static module; active-crossover

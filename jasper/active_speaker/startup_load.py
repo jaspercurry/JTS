@@ -1903,6 +1903,7 @@ async def load_summed_commissioning_config(
     config_path: str | Path | None = None,
     statefile_path: str | Path | None = None,
     state_path: str | Path | None = None,
+    reconcile_output_hardware: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1933,6 +1934,7 @@ async def load_summed_commissioning_config(
         config_path=config_path,
         statefile_path=statefile_path,
         state_path=state_path,
+        reconcile_output_hardware=reconcile_output_hardware,
         validate=validate,
     )
     payload["operation"] = "summed_commissioning"

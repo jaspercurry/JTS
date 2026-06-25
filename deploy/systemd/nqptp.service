@@ -17,6 +17,7 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/usr/local/bin/nqptp
 Restart=always
 RestartSec=2

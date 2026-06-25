@@ -581,6 +581,33 @@ def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
 
 
+def test_testing_chip_profile_arms_uncalibrated_output_dac_as_testing(
+    tmp_path: Path,
+) -> None:
+    """Testing profile is an explicit operator opt-in, not auto approval."""
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n",
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec_testing")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "status=testing source=explicit_testing" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED=1" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_ID=mystery_usb_audio" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=testing" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_SOURCE=explicit_testing" in body
+
+
 def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     tmp_path: Path,
 ) -> None:
@@ -610,6 +637,36 @@ def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
+
+
+def test_custom_chip_leg_cannot_bypass_unapproved_dac_gate(
+    tmp_path: Path,
+) -> None:
+    """The low-level layer toggle is not a back door around profile policy."""
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n",
+    )
+    _write_mode_with_legs(
+        tmp_path,
+        mode="auto",
+        raw="0",
+        dtln="0",
+        chip_aec="1",
+    )
+    with (tmp_path / "aec_mode.env").open("a", encoding="utf-8") as f:
+        f.write("JASPER_AUDIO_INPUT_PROFILE=custom\n")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "custom chip-AEC leg requested" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=needs_calibration" in body
 
 
 def test_auto_profile_uses_outputd_coherent_verdict_for_uncodified_dac(
@@ -942,6 +999,136 @@ def test_flex_linear_auto_discovers_card_but_does_not_arm_square_chip_beams(
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "aec_mic=L16K6Ch" in result.stderr
     assert "no validated production chip beam plan" in result.stderr
+
+
+def test_flex_linear_profile_managed_mode_rederives_stale_array_card(
+    tmp_path: Path,
+) -> None:
+    """The reverse swap is also product behavior: replacing a legacy
+    Array-flashed XVF with Flex linear must not leave Array pinned."""
+    env_file = _write_env(
+        tmp_path,
+        "udp:9876",
+        extra=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AEC_MIC_DEVICE=Array\n"
+        ),
+    )
+    _write_profile_mode(tmp_path, "auto")
+    _write_card(tmp_path, card="L16K6Ch", channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "old=Array new=L16K6Ch" in result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_MIC_DEVICE=L16K6Ch" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_XVF_VARIANT=xvf3800_flex_linear_6ch" in body
+    assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+
+
+def test_profile_managed_mic_swap_rederives_stale_aec_card(
+    tmp_path: Path,
+) -> None:
+    """Swapping Flex linear (L16K6Ch) for square/circular XVF (Array)
+    must not leave the old card id pinned as the bridge capture device.
+
+    The selected profile is product intent; the detected mic profile owns the
+    concrete ALSA card in normal non-custom modes.
+    """
+    env_file = _write_env(
+        tmp_path,
+        "udp:9876",
+        extra=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AEC_MIC_DEVICE=L16K6Ch\n"
+            "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0\n"
+        ),
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec")
+    _write_card(tmp_path, card="Array", channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "event=aec_reconcile.aec_mic_device_rederived" in result.stderr
+    assert "old=L16K6Ch new=Array" in result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_MIC_DEVICE=Array" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
+    assert "plughw:CARD=L16K6Ch,DEV=0" not in body
+
+
+def test_check_only_does_not_mask_stale_profile_managed_aec_card(
+    tmp_path: Path,
+) -> None:
+    """The bridge ExecCondition is read-only and must not say "ready" for
+    an env file the bridge itself would still read as the wrong card. The
+    normal reconciler pass heals this before enabling/restarting the unit."""
+    env_file = _write_env(
+        tmp_path,
+        "udp:9876",
+        extra=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AEC_MIC_DEVICE=L16K6Ch\n"
+        ),
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec")
+    _write_card(tmp_path, card="Array", channels=6)
+
+    result = _run_reconcile(tmp_path, "--check-aec-ready")
+
+    assert result.returncode == 1
+    assert "JASPER_AEC_MIC_DEVICE=L16K6Ch" in env_file.read_text()
+
+
+def test_custom_profile_preserves_hand_pinned_aec_card_and_chip_ref(
+    tmp_path: Path,
+) -> None:
+    """`custom` is the low-level escape hatch.
+
+    Even when the XVF profile detector sees a different supported card first,
+    a custom profile must not rewrite the operator-pinned AEC capture card or
+    its matching chip-reference PCM.
+    """
+    env_file = _write_env(
+        tmp_path,
+        "udp:9876",
+        extra=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AEC_MIC_DEVICE=L16K6Ch\n"
+            "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0\n"
+        ),
+    )
+    _write_mode_with_legs(
+        tmp_path,
+        mode="auto",
+        raw="1",
+        dtln="0",
+        chip_aec="0",
+        chip_ref_observe="1",
+    )
+    with (tmp_path / "aec_mode.env").open("a", encoding="utf-8") as f:
+        f.write("JASPER_AUDIO_INPUT_PROFILE=custom\n")
+    _write_card(tmp_path, card="Array", channels=6)
+    _write_card(tmp_path, card="L16K6Ch", channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "event=aec_reconcile.aec_mic_device_rederived" not in result.stderr
+    assert "aec_mic=L16K6Ch" in result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_MIC_DEVICE=L16K6Ch" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
 
 
 def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:

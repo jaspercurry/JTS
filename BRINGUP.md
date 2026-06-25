@@ -785,8 +785,13 @@ fine, surface the exact fix when not):
 - **Audio profile** — read-only intent-vs-runtime truth from the same
   classifier as `/aec` and `/state.aec`: requested profile, active
   profile, session source, wake legs, and any pending/unavailable warning.
-- **AEC bridge service** — software AEC is the *desired* state, so:
-  - `ok (running)` — bridge active, AEC on
+- **AEC bridge service** — the bridge should be active whenever a mic
+  profile needs its UDP outputs. In software profiles it runs WebRTC
+  AEC3; in chip-AEC profiles it forwards the selected chip beam and
+  bypasses WebRTC AEC3.
+  - `ok (running (software AEC3 enabled))` — software profile active
+  - `ok (running (chip-AEC beam forwarding; WebRTC AEC3 bypassed; ...))`
+    — chip-AEC profile active
   - `ok (disabled JASPER_AEC_MODE=disabled)` — explicit operator opt-out
   - `warn (off — XVF on 2-channel firmware)` — gentle nudge to DFU-flash
   - `warn (off — Array chip not present)` — XVF needs to be plugged in
@@ -1095,17 +1100,14 @@ to known-good values for the newly-exposed ch2-5 (which can
 otherwise persist a stale mute from before the firmware change —
 see "The reconciler step matters" below).
 
-On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` and
-`JASPER_AEC_MIC_DEVICE` from the detected card. On an existing Pi that
-was first installed with the legacy square board, update the frozen
-env seed before reconciling:
-
-```sh
-sudo sed -i \
-  -e 's/^JASPER_AEC_MIC_DEVICE=.*/JASPER_AEC_MIC_DEVICE=L16K6Ch/' \
-  -e 's/^JASPER_MIC_DEVICE_CANDIDATES=.*/JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch/' \
-  /etc/jasper/jasper.env
-```
+On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from
+the detected card. On existing Pis, do not hand-pin
+`JASPER_AEC_MIC_DEVICE` when swapping between legacy square/circular
+(`Array`) and Flex LINEAR-4 (`L16K6Ch`) firmware. The reconciler derives
+that bridge mic from the detected XVF profile for selectable input
+profiles and writes the current card back to `/etc/jasper/jasper.env`.
+`JASPER_AUDIO_INPUT_PROFILE=custom` remains the escape hatch for a
+deliberately hand-pinned mic.
 
 ```sh
 sudo systemctl start jasper-aec-reconcile
@@ -1113,7 +1115,7 @@ sudo systemctl start jasper-aec-reconcile
 # Confirm everything's healthy:
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(Audio profile|AEC bridge|XVF)'
 # Expect four "✓" lines:
-#   AEC bridge service       running (software AEC enabled)
+#   AEC bridge service       running (software AEC3 enabled)
 #   Audio profile            requested=xvf_software_aec3, active=xvf_software_aec3, ...
 #   XVF firmware 6-ch        capture is 6-channel
 #   XVF mixer state          all 6 capture channels open

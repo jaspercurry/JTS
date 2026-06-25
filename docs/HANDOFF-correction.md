@@ -23,8 +23,9 @@
   low-frequency tuning. The plain-HTTP preflight accepts
   `?next=/correction/...` so HTTP-only setup flows can link directly to a
   secure subflow after showing the certificate warning; its Proceed
-  button uses `/correction/proceed[/subflow]`, and nginx redirects to
-  `https://$host/...` so non-default hostnames survive the scheme switch.
+  button uses `/correction/proceed[/subflow]`, and nginx uses temporary,
+  non-cacheable redirects to `https://$host/...` so non-default hostnames
+  survive the scheme switch without teaching mobile browsers a permanent rule.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /correction/`, `/correction/balance`, and
@@ -44,15 +45,16 @@
   preflight page that explains the browser's self-signed-cert warning.
   Its default OK button targets `/correction/proceed`, with optional
   `/room`, `/crossover`, or `/bass` proceed suffixes when a safe
-  `?next=/correction/...` target is present. Nginx owns the final
+  `?next=/correction/...` target is present. Nginx owns the final temporary
   `https://$host/...` redirect, so `jts3.local` and other configured
-  hostnames do not depend on client-side hostname rewriting. The landing
+  hostnames do not depend on client-side hostname rewriting or sticky 308
+  state in Safari. The landing
   page links to the HTTP preflight, and the HTTPS correction page's Home
   link points back to
   `http://jts.local/` so relative navigation does not inherit the
   HTTPS origin and hit the 443 catch-all. The 443 catch-all now
-  redirects non-correction paths back to HTTP instead of returning 404,
-  so accidental `https://jts.local/voice/` style navigation recovers.
+  temporarily redirects non-correction paths back to HTTP instead of returning
+  404, so accidental `https://jts.local/voice/` style navigation recovers.
 - ✅ **Phase 1 — single-position end-to-end PEQ.** PR #41 merged
   2026-05-09. Sweep generation (Novak 2015) → playback through
   CamillaDSP → AudioWorklet capture → deconvolution → 1/48-octave
@@ -691,14 +693,14 @@ loses the YouTube hook.
   historical `jts.local`, and `127.0.0.1`.
 - Port 80 serves `http://jts.local/correction/` as a static preflight
   page, `/correction/proceed[/room|/crossover|/bass]` as no-JS
-  `https://$host/...` redirects, and `http://jts.local/jts-root-ca.crt`
-  with `application/x-x509-ca-cert`. The preflight HTML is served
-  `Cache-Control: no-store` so a phone cannot keep an old hard-coded
-  proceed target after deploy.
+  `302` + `Cache-Control: no-store` redirects to `https://$host/...`, and
+  `http://jts.local/jts-root-ca.crt` with `application/x-x509-ca-cert`. The
+  preflight HTML and proceed redirects are non-cacheable so a phone cannot keep
+  an old hard-coded or wrong-scheme target after deploy.
 - Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
   `/assets/` statically. The measurement UI's canonical look links
   `/assets/app.css` + its ES module by absolute path; without an `/assets/`
-  location on 443 those subresources fall through to the catch-all, `308`
+  location on 443 those subresources fall through to the catch-all, redirect
   down to HTTP, and browsers block them as mixed content (unstyled page,
   dead JS). Rationale + caching live in
   [HANDOFF-management-ui.md](HANDOFF-management-ui.md) ("`/assets` is served
@@ -790,7 +792,7 @@ POST /crossover/driver-capture body = WAV (audio/wav); analyze + record
                              active-speaker per-driver acoustic evidence
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
-HTTPS fallback              non-/correction/ paths 308 back to HTTP
+HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 
 Browser polls `GET /status` every 500 ms; SSE was considered but never
@@ -808,9 +810,10 @@ a secure context. `$host` is important for non-default speakers such as
 client-side JavaScript for the hostname. The nginx port-80 landing page
 at `/usr/share/jasper-web/index.html` links to the preflight instead of
 directly to HTTPS. The 443 catch-all redirects non-correction paths back
-to HTTP — the one exception is `/assets/`, served statically so the
-measurement UI's CSS/JS aren't mixed-content-blocked; it
-does not proxy any extra wizard upstreams over HTTPS.
+to HTTP with a temporary, non-cacheable redirect — the one exception is
+`/assets/`, served statically so the measurement UI's CSS/JS aren't
+mixed-content-blocked; it does not proxy any extra wizard upstreams over
+HTTPS.
 
 **Why not `/room/` or `/measure/`?** User specified `/correction/`
 in feedback (2026-05-09).
@@ -1859,20 +1862,14 @@ Internal:
 
 ---
 
-Last verified: 2026-06-24 (topology-preserving correction start/apply/reset
-behavior rechecked against `jasper/web/correction_setup.py`,
-`jasper/correction/session.py`, `jasper/correction/runtime_safety.py`,
-`jasper.sound.graph_carrier`, and `jasper.active_speaker.runtime_contract`;
-`/correction/` hub routing, HTTP preflight `?next=/correction/...` +
-`/correction/proceed`, HTTPS asset serving, and correction-native
-active-crossover playback/capture routing rechecked against
-`jasper/web/correction_setup.py`,
-`jasper/web/correction_crossover_flow.py`,
-`jasper/web/correction_crossover_backend.py`,
-`jasper/active_speaker/web_commissioning.py`,
-`jasper/active_speaker/web_measurement.py`,
-`deploy/correction-preflight.html`, `deploy/nginx-jasper.conf`, and
-`deploy/lib/install/web-assets.sh`; prior 2026-06-18 pass covered
+Last verified: 2026-06-25 (`/correction/` hub routing, HTTP preflight
+`?next=/correction/...` + `/correction/proceed` temporary no-store redirects,
+and HTTPS asset serving rechecked against `deploy/correction-preflight.html`,
+`deploy/nginx-jasper.conf`, `deploy/nginx-jasper-streambox.conf`, and
+`tests/test_landing_page_html.py`; prior 2026-06-24 pass covered
+topology-preserving correction start/apply/reset behavior,
+correction-native active-crossover playback/capture routing, and the mapped
+runtime files listed in that verification pass; prior 2026-06-18 pass covered
 topology-safe correction reset/start behavior; prior 2026-06-17 pass covered
 auto-level controller ownership, state guards, and status/bundle payload
 ownership; prior 2026-06-15 pass covered bonded-follower delegation.)

@@ -35,6 +35,13 @@ from .audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
+from .chip_aec_policy import (
+    APPROVED_DAC_IDS,
+    HIFIBERRY_DAC8X_DAC_ID,
+    KNOWN_CALIBRATION_REQUIRED_DAC_IDS,
+    STATUS_APPROVED,
+    resolve_chip_aec_dac_gate,
+)
 from .control import client as control
 from .env_load import parse_env_file
 from .log_event import log_event
@@ -49,14 +56,9 @@ DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
 CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
-APPLE_USB_C_DONGLE_DAC_ID = "apple_usb_c_dongle"
-DAC8X_DAC_ID = "hifiberry_dac8x"
-CHIP_AEC_SUPPORTED_DAC_IDS = frozenset({APPLE_USB_C_DONGLE_DAC_ID})
-CHIP_AEC_CALIBRATION_REQUIRED_DAC_IDS = frozenset({
-    DAC8X_DAC_ID,
-    "hifiberry_dac8x_studio",
-    "dual_apple_usb_c_dac_4ch",
-})
+DAC8X_DAC_ID = HIFIBERRY_DAC8X_DAC_ID
+CHIP_AEC_SUPPORTED_DAC_IDS = APPROVED_DAC_IDS
+CHIP_AEC_CALIBRATION_REQUIRED_DAC_IDS = KNOWN_CALIBRATION_REQUIRED_DAC_IDS
 HARDWARE_VALIDATION_PROFILES = (
     CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
@@ -515,6 +517,7 @@ def _probe_xvf_mic() -> MicProbe:
             capture_channels=runtime_profile.capture_channels,
             recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
             display_name=runtime_profile.display_name,
+            alsa_card_name=runtime_profile.alsa_card_name,
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
@@ -535,6 +538,7 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
         "present": mic.xvf_present,
         "capture_channels": mic.capture_channels,
         "recommended_channels": mic.recommended_channels,
+        "alsa_card_name": mic.alsa_card_name,
         "variant_id": mic.variant_id,
         "geometry": mic.geometry,
         "chip_beam_plan": mic.chip_beam_plan,
@@ -880,40 +884,28 @@ def _normalize_dac_id(value: object) -> str:
 
 def _chip_aec_dac_support_check(dac: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     dac_id = _normalize_dac_id(dac.get("id"))
-    if dac_id in CHIP_AEC_SUPPORTED_DAC_IDS:
-        status = "supported"
-        summary = f"Output DAC {dac_id} is supported for chip-AEC."
-    elif dac_id == "unknown":
-        status = "needs_calibration"
-        summary = (
-            "Output DAC profile is unknown; run audio-hardware reconcile and "
-            "calibrate chip-AEC timing before validating chip-AEC."
-        )
-    elif dac_id in CHIP_AEC_CALIBRATION_REQUIRED_DAC_IDS:
-        status = "needs_calibration"
-        summary = (
-            f"Output DAC {dac_id} has a known profile but needs chip-AEC "
-            "calibration before validation."
-        )
-    else:
-        status = "needs_calibration"
-        summary = (
-            f"Output DAC {dac_id} has no codified chip-AEC calibration; "
-            "calibrate before validation."
-        )
+    gate = resolve_chip_aec_dac_gate(dac_id)
     observed = {
         "id": dac_id,
-        "status": status,
+        "status": gate.status,
+        "source": gate.source,
+        "permitted": gate.permitted,
+        "recommended_action": gate.recommended_action,
         "card": dac.get("card"),
         "pcm": dac.get("pcm"),
     }
     expected = {
-        "status": "supported",
+        "status": STATUS_APPROVED,
         "supported_dac_ids": sorted(CHIP_AEC_SUPPORTED_DAC_IDS),
     }
-    if status == "supported":
-        return _check("pass", summary=summary, observed=observed, expected=expected)
-    return _check("fail", summary=summary, observed=observed, expected=expected)
+    if gate.status == STATUS_APPROVED:
+        return _check(
+            "pass",
+            summary=f"Output DAC {dac_id} is approved for chip-AEC.",
+            observed=observed,
+            expected=expected,
+        )
+    return _check("fail", summary=gate.detail, observed=observed, expected=expected)
 
 
 def _runtime_profile_check(profile_status: Mapping[str, Any], profile: str) -> dict[str, JsonValue]:
@@ -936,6 +928,8 @@ def _runtime_profile_check(profile_status: Mapping[str, Any], profile: str) -> d
 
 def _runtime_env_check(runtime: Any) -> dict[str, JsonValue]:
     observed = {
+        "primary_device": getattr(runtime, "primary_device", ""),
+        "aec_device": getattr(runtime, "aec_device", ""),
         "chip_enabled": getattr(runtime, "chip_enabled", False),
         "chip_aec_150_device": getattr(runtime, "chip_aec_150_device", ""),
         "chip_aec_210_device": getattr(runtime, "chip_aec_210_device", ""),
@@ -1710,15 +1704,17 @@ def build_chip_aec_readiness_artifact(
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
     chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    dac = _dac_details(system_env, outputd_status)
+    chip_gate = resolve_chip_aec_dac_gate(dac.get("id"), outputd_status=outputd_status)
     profile_status = build_audio_profile_status(
         intent,
         runtime,
         mic_probe,
         bridge_active=service_states.get("jasper-aec-bridge.service") == "active",
         chip_available=chip_available,
+        chip_gate=chip_gate.to_dict(),
     )
     mic = _mic_details(mic_probe)
-    dac = _dac_details(system_env, outputd_status)
     checks = {
         "runtime_identity": _runtime_identity_check(system_env),
         "runtime_profile": _runtime_profile_check(profile_status, profile),

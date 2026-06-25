@@ -582,13 +582,57 @@ def test_metadata_records_audio_context_snapshot(
     assert details["chip_aec_150"]["kind"] == "hardware_aec"
     assert details["chip_aec_150"]["wake_input"] is True
     assert details["raw0"]["profile_role"] == "corpus_only"
-
     clip = data["clips"][0]
     assert clip["selected_legs"] == data["enabled_legs"]
     assert (
         clip["audio_context"]["production_audio_profile"]["active"]
         == "xvf_chip_aec"
     )
+
+
+def test_audio_context_snapshot_uses_chip_aec_dac_gate(
+    backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env=(
+            "JASPER_MIC_DEVICE=udp:9876\n"
+            "JASPER_AEC_MIC_DEVICE=Array\n"
+            "JASPER_AEC_CHIP_AEC_ENABLED=0\n"
+            "JASPER_XVF_VARIANT=xvf3800_legacy_square_6ch\n"
+            "JASPER_XVF_GEOMETRY=square\n"
+            "JASPER_XVF_CHIP_BEAM_PLAN=xvf_square_fixed_150_210\n"
+            "JASPER_XVF_CHIP_AEC_SUPPORTED=1\n"
+            "JASPER_AUDIO_DAC_ID=hifiberry_dac8x_studio\n"
+        ),
+    )
+    aec_mode_path = tmp_path / "aec_mode.env"
+    aec_mode_path.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=auto\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n",
+    )
+    monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
+    _stub_xvf_runtime(monkeypatch)
+
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+    context = json.loads(json_files[0].read_text())["audio_context"]
+    profile = context["production_audio_profile"]
+    assert profile["selection"] == "auto"
+    assert profile["requested"] == "xvf_software_aec3"
+    assert profile["active"] == "xvf_software_aec3"
+    assert profile["validation_profile"] == "xvf_software_aec3"
 
 
 def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
@@ -608,6 +652,7 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
             "JASPER_XVF_GEOMETRY=square\n"
             "JASPER_XVF_CHIP_BEAM_PLAN=xvf_square_fixed_150_210\n"
             "JASPER_XVF_CHIP_AEC_SUPPORTED=1\n"
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
         ),
     )
     aec_mode_path = tmp_path / "aec_mode.env"
@@ -1912,14 +1957,21 @@ def test_capture_plan_describes_chip_profile_layers(backend) -> None:
     assert by_token["ref"]["device_id"] == "speaker_reference"
 
 
-def test_capture_plan_describes_on_leg_runtime_overlay(backend) -> None:
+@pytest.mark.parametrize(
+    "active_profile",
+    ["xvf_chip_aec", "xvf_chip_aec_testing"],
+)
+def test_capture_plan_describes_on_leg_runtime_overlay(
+    backend,
+    active_profile: str,
+) -> None:
     plan = wake_corpus_setup.build_capture_plan(
         backend.ports(),
         include_dtln=False,
         include_bridge_readiness=False,
         active_audio_profile={
-            "requested": "xvf_chip_aec",
-            "active": "xvf_chip_aec",
+            "requested": active_profile,
+            "active": active_profile,
             "state": "active",
         },
         runtime_audio_env={"chip_primary_leg": "chip_aec_210"},

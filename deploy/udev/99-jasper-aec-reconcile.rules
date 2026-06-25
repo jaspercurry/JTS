@@ -5,7 +5,8 @@
 # JASPER_MIC_DEVICE values are left alone.
 #
 # This is deliberately keyed to sound control nodes rather than a
-# hard-coded XVF USB id so future supported microphones only need to be
-# added to JASPER_MIC_DEVICE_CANDIDATES; the policy stays in one place.
+# hard-coded XVF USB id. Supported mic identity lives in the mic profile
+# registry; JASPER_MIC_DEVICE_CANDIDATES remains only the direct-mic
+# fallback hint. The policy stays in the reconciler.
 
 ACTION=="add|remove", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-aec-reconcile.service"

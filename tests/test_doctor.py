@@ -4099,7 +4099,8 @@ def test_check_correction_https_assets_ok_on_200(monkeypatch, tmp_path):
 
 
 def test_check_correction_https_assets_warns_on_http_downgrade(monkeypatch, tmp_path):
-    # The bug signature: a 308 down to http:// → browsers mixed-content-block it.
+    # The bug signature: an HTTPS asset downgrade to http:// → browsers
+    # mixed-content-block it.
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
     monkeypatch.setattr(
         doctor.correction, "_probe_https_status",
@@ -4814,6 +4815,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
     status = doctor._audio_profile_status_for_doctor(
         bridge_active=True,
         env={
+            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
@@ -4837,6 +4839,35 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
     assert "Chip AEC 150 beam via :9876" in result.detail
 
 
+def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_audio_profile_status_for_doctor",
+        lambda *, bridge_active=None: {
+            "audio_profile": {"active": "xvf_chip_aec"},
+            "microphone": {"processing_mode": "Chip-AEC"},
+            "chip_aec_gate": {"status": "approved", "source": "static"},
+        },
+    )
+
+    result = doctor.aec.check_aec_bridge_running()
+
+    assert result.status == "ok"
+    assert "chip-AEC beam forwarding" in result.detail
+    assert "WebRTC AEC3 bypassed" in result.detail
+    assert "gate=approved/static" in result.detail
+    assert "software AEC enabled" not in result.detail
+
+
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {
@@ -4853,6 +4884,7 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     status = doctor._audio_profile_status_for_doctor(
         bridge_active=True,
         env={
+            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",
@@ -4873,6 +4905,44 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     assert result.status == "warn"
     assert "active=none" in result.detail
     assert "not applied" in result.detail
+
+
+def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    settings = {
+        "JASPER_WAKE_LEG_RAW": False,
+        "JASPER_WAKE_LEG_DTLN": False,
+        "JASPER_WAKE_LEG_CHIP_AEC": True,
+    }
+    monkeypatch.setattr(
+        doctor.aec,
+        "_wake_leg_setting",
+        lambda key, default: settings.get(key, default),
+    )
+
+    status = doctor._audio_profile_status_for_doctor(
+        bridge_active=False,
+        env={
+            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+        },
+        mic_probe=MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="Array",
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
+        ),
+    )
+    result = doctor._assess_audio_profile(status)
+
+    assert result.status == "warn"
+    assert "Configured AEC mic L16K6Ch" in result.detail
+    assert "detected XVF card Array" in result.detail
 
 
 def test_audio_validation_advisory_ok_when_chip_aec_not_requested():

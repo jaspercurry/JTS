@@ -746,6 +746,91 @@ def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
     assert step_tweeter["ramp"]["confirmed_roles"] == ["woofer"]
 
 
+def test_commission_ack_records_backend_acknowledged_step_when_ramp_races(
+    monkeypatch,
+    tmp_path,
+):
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+
+    stale_pending = {
+        "speaker_group_id": "mono",
+        "confirmed_roles": ["woofer"],
+        "pending": {
+            "role": "tweeter",
+            "playback_id": "old-playback",
+            "gain_db": -80.0,
+        },
+    }
+
+    async def _fake_ack(**kwargs):
+        return {
+            "status": "confirmed",
+            "outcome": "heard_correct_driver",
+            "acknowledged_step": {
+                "role": "tweeter",
+                "playback_id": "new-playback",
+                "gain_db": -70.0,
+            },
+            "issues": [],
+            "ramp": {
+                "speaker_group_id": "mono",
+                "confirmed_roles": ["woofer", "tweeter"],
+                "pending": None,
+            },
+            "safe_playback": {"floor_status": "floor_confirmed"},
+            "rollback": {"status": "rolled_back"},
+        }
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.load_ramp_state",
+        lambda *args, **kwargs: stale_pending,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
+        _fake_ack,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.safe_playback.load_safe_playback_state",
+        lambda *args, **kwargs: {
+            "status": "armed",
+            "quiet_start": {
+                "status": "floor_confirmed",
+                "floor_audio_confirmed": True,
+                "last_operator_result": {
+                    "accepted": True,
+                    "outcome": "heard_correct_driver",
+                    "playback_id": "new-playback",
+                    "target": {
+                        "speaker_group_id": "mono",
+                        "role": "tweeter",
+                        "output_index": 1,
+                    },
+                },
+            },
+        },
+    )
+
+    ack = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_ack_payload(
+            {"outcome": "heard_correct_driver"}, camilla_factory=lambda: controller
+        )
+    )
+
+    latest = ack["measurements"]["summary"]["latest_driver_measurements"][
+        "mono:tweeter"
+    ]
+    assert latest["captured"] is True
+    assert latest["playback_id"] == "new-playback"
+    assert latest["test_level_dbfs"] == -70.0
+    assert latest["playback_id"] != stale_pending["pending"]["playback_id"]
+
+
 def test_commission_wrong_driver_ack_records_negative_driver_evidence(
     monkeypatch,
     tmp_path,
@@ -868,23 +953,19 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
 
     wav_path = tmp_path / "summed.wav"
     wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
-    requested_wavs: list[dict[str, float]] = []
-
-    def _fake_wav_path(
-        *,
-        frequency_hz: float,
-        duration_s: float = sound_setup.COMMISSION_TONE_DURATION_S,
-    ) -> Path:
-        requested_wavs.append({
-            "frequency_hz": float(frequency_hz),
-            "duration_s": float(duration_s),
-        })
-        return wav_path
-
     monkeypatch.setattr(
         sound_setup,
-        "_commission_tone_wav_path",
-        _fake_wav_path,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+                "phrase_repetitions": 4,
+            },
+        ),
     )
     fanin_actions: list[str] = []
     monkeypatch.setattr(
@@ -908,30 +989,47 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
 
     def _fake_popen(args, *popen_args, **kwargs):
         if args and Path(str(args[0])).name == "aplay":
-            proc = _FakeToneProcess(list(args), exit_after_polls=2)
+            proc = _FakeToneProcess(list(args))
             processes.append(proc)
             return proc
         return real_popen(args, *popen_args, **kwargs)
 
     monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
 
-    payload = asyncio.run(
-        sound_setup._active_speaker_summed_test_payload(
-            {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
-            camilla_factory=lambda: controller,
+    async def _run_confirmed_test():
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+                camilla_factory=lambda: controller,
+            )
         )
-    )
+        for _ in range(50):
+            if processes:
+                break
+            await asyncio.sleep(0.01)
+        assert processes, "summed test should start aplay before confirmation"
+        stop_payload = sound_setup._active_speaker_stop_summed_test_tone(
+            reason="operator_confirmed"
+        )
+        return stop_payload, await task
+
+    stop, payload = asyncio.run(_run_confirmed_test())
 
     playback = payload["playback"]
     latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert stop["status"] == "stopped"
+    assert stop["reason"] == "operator_confirmed"
+    assert processes[0].terminated is True
     assert playback["status"] == "completed", json.dumps(
         playback,
         indent=2,
         sort_keys=True,
         default=str,
     )
-    assert playback["backend"] == sound_setup.SUMMED_COMMISSION_TONE_BACKEND
+    assert playback["backend"] == sound_setup.SUMMED_COMMISSION_SPEECH_BACKEND
     assert playback["audio_emitted"] is True
+    assert playback["confirmable"] is True
+    assert playback["stop_reason"] == "operator_confirmed"
     assert playback["tone"]["level_dbfs"] == -40.0
     assert payload["calibration_level"]["test_signal"][
         "requested_level_dbfs"
@@ -942,7 +1040,8 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert playback["rollback"]["rollback"]["status"] == "rolled_back"
     assert latest["captured"] is True
     assert latest["audio_emitted"] is True
-    assert latest["backend"] == sound_setup.SUMMED_COMMISSION_TONE_BACKEND
+    assert latest["backend"] == sound_setup.SUMMED_COMMISSION_SPEECH_BACKEND
+    assert latest["stimulus"]["text"] == "Like and subscribe to Jasper tech."
     assert latest["target_output_indices"] == [0, 1]
     assert len(controller.applied_texts) == 2
     assert "audible_outputs=[0, 1]" in controller.applied_texts[0]
@@ -957,7 +1056,93 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
         "-q",
         str(wav_path),
     ]]
-    assert requested_wavs and requested_wavs[0]["frequency_hz"] > 0
+    assert playback["stimulus"]["duration_ms"] == 12000
+
+
+def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_path):
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "resolve_commission_inputs",
+        lambda preset=None: (_tone_preset(), None),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
+    _record_driver_checks_for_summed_test()
+
+    wav_path = tmp_path / "summed.wav"
+    wav_path.write_bytes(b"fake wav; subprocess.Popen should not be reached")
+    monkeypatch.setattr(
+        sound_setup,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+            },
+        ),
+    )
+    processes: list[_FakeToneProcess] = []
+
+    def _fake_popen(args, *popen_args, **kwargs):
+        proc = _FakeToneProcess(list(args))
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+
+    async def _run_pre_audio_confirm_test():
+        load_started = asyncio.Event()
+        release_load = asyncio.Event()
+
+        async def _fake_load(**kwargs):
+            load_started.set()
+            await release_load.wait()
+            return {
+                "load": {
+                    "status": "loaded",
+                    "target": {"role": "summed"},
+                },
+            }
+
+        monkeypatch.setattr(
+            sound_setup,
+            "_active_speaker_load_summed_commissioning_config",
+            _fake_load,
+        )
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+                camilla_factory=lambda: controller,
+            )
+        )
+        await asyncio.wait_for(load_started.wait(), timeout=1.0)
+        stop_payload = sound_setup._active_speaker_stop_summed_test_tone(
+            reason="operator_confirmed"
+        )
+        release_load.set()
+        return stop_payload, await task
+
+    stop, payload = asyncio.run(_run_pre_audio_confirm_test())
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert stop["status"] == "stopping"
+    assert stop["reason"] == "operator_confirmed"
+    assert processes == []
+    assert playback["status"] == "stopped"
+    assert playback["audio_emitted"] is False
+    assert playback["confirmable"] is False
+    assert playback["stop_reason"] == "operator_stop_before_audio"
+    assert latest["captured"] is False
+    assert latest["audio_emitted"] is False
 
 
 def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path):
@@ -979,8 +1164,16 @@ def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path)
     wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
     monkeypatch.setattr(
         sound_setup,
-        "_commission_tone_wav_path",
-        lambda *, frequency_hz, duration_s=sound_setup.COMMISSION_TONE_DURATION_S: wav_path,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+            },
+        ),
     )
     fanin_actions: list[str] = []
     monkeypatch.setattr(
@@ -1049,6 +1242,257 @@ def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path)
         encoding="utf-8"
     )
     assert fanin_actions == ["select", "release:summed_test"]
+
+
+def test_summed_test_watchdog_stops_abandoned_loop(monkeypatch, tmp_path):
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    monkeypatch.setattr(sound_setup, "SUMMED_TEST_MAX_LOOP_SECONDS", 0.04)
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "resolve_commission_inputs",
+        lambda preset=None: (_tone_preset(), None),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
+    _record_driver_checks_for_summed_test()
+
+    wav_path = tmp_path / "summed.wav"
+    wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
+    monkeypatch.setattr(
+        sound_setup,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+            },
+        ),
+    )
+    fanin_actions: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: fanin_actions.append("select") or {
+            "active_source": "correction",
+            "test_source": "correction",
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: fanin_actions.append(f"release:{reason}") or {
+            "active_source": "airplay",
+            "test_source": None,
+        },
+    )
+    processes: list[_FakeToneProcess] = []
+    real_popen = sound_setup.subprocess.Popen
+
+    def _fake_popen(args, *popen_args, **kwargs):
+        if args and Path(str(args[0])).name == "aplay":
+            proc = _FakeToneProcess(list(args))
+            processes.append(proc)
+            return proc
+        return real_popen(args, *popen_args, **kwargs)
+
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_summed_test_payload(
+            {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert processes, "summed test should start aplay before watchdog timeout"
+    assert processes[0].terminated is True
+    assert playback["status"] == "stopped"
+    assert playback["audio_emitted"] is False
+    assert playback["confirmable"] is False
+    assert playback["stop_reason"] == "watchdog_timeout"
+    assert playback["rollback"]["rollback"]["status"] == "rolled_back"
+    assert latest["captured"] is False
+    assert latest["audio_emitted"] is False
+    assert "summed_test_playback_incomplete" in {
+        issue["code"] for issue in latest["issues"]
+    }
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert fanin_actions == ["select", "release:summed_test"]
+
+
+def test_summed_test_level_update_reloads_active_loop(monkeypatch, tmp_path):
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    monkeypatch.setattr(
+        sound_setup,
+        "resolve_commission_inputs",
+        lambda preset=None: (_tone_preset(), None),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
+    _record_driver_checks_for_summed_test()
+
+    wav_path = tmp_path / "summed.wav"
+    wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
+    monkeypatch.setattr(
+        sound_setup,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            wav_path,
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "text": "Like and subscribe to Jasper tech.",
+                "duration_s": 12.0,
+                "duration_ms": 12000,
+            },
+        ),
+    )
+    fanin_actions: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_select_fanin_lane",
+        lambda: fanin_actions.append("select") or {
+            "active_source": "correction",
+            "test_source": "correction",
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: fanin_actions.append(f"release:{reason}") or {
+            "active_source": "airplay",
+            "test_source": None,
+        },
+    )
+    processes: list[_FakeToneProcess] = []
+    real_popen = sound_setup.subprocess.Popen
+
+    def _fake_popen(args, *popen_args, **kwargs):
+        if args and Path(str(args[0])).name == "aplay":
+            proc = _FakeToneProcess(list(args))
+            processes.append(proc)
+            return proc
+        return real_popen(args, *popen_args, **kwargs)
+
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+
+    async def _run_level_update_test():
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+                camilla_factory=lambda: controller,
+            )
+        )
+        for _ in range(50):
+            if processes:
+                break
+            await asyncio.sleep(0.01)
+        assert processes, "summed test should be playing before level update"
+        level_payload = await sound_setup._active_speaker_summed_test_level_payload(
+            {"speaker_group_id": "mono", "level_dbfs": -25.0},
+            camilla_factory=lambda: controller,
+        )
+        stop_payload = sound_setup._active_speaker_stop_summed_test_tone(
+            reason="operator_confirmed"
+        )
+        return level_payload, stop_payload, await task
+
+    level_payload, stop, payload = asyncio.run(_run_level_update_test())
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert level_payload["status"] == "loaded"
+    assert level_payload["calibration_level"]["test_signal"][
+        "requested_level_dbfs"
+    ] == -25.0
+    assert level_payload["commissioning_load"]["load"]["output_reconcile"] == {
+        "status": "skipped",
+        "reason": "same_active_output_lane",
+        "unit": startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,
+    }
+    assert stop["status"] == "stopped"
+    assert playback["status"] == "completed"
+    assert playback["tone"]["level_dbfs"] == -25.0
+    assert payload["calibration_level"]["test_signal"][
+        "requested_level_dbfs"
+    ] == -25.0
+    assert latest["captured"] is True
+    assert latest["tone"]["level_dbfs"] == -25.0
+    assert len(controller.applied_texts) == 3
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert fanin_actions == ["select", "release:summed_test"]
+
+
+def test_summed_test_failed_level_update_keeps_active_session_metadata(
+    monkeypatch,
+):
+    initial_load = {"load": {"status": "loaded", "marker": "initial"}}
+    session = {
+        "speaker_group_id": "mono",
+        "playback_id": "play-1",
+        "level_dbfs": -40.0,
+        "load_payload": initial_load,
+    }
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", session)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda path=None: _topology())
+    monkeypatch.setattr(
+        sound_setup,
+        "resolve_commission_inputs",
+        lambda preset=None: (_tone_preset(), None),
+    )
+    load_kwargs: dict[str, object] = {}
+
+    async def _fake_failed_load(**kwargs):
+        load_kwargs.update(kwargs)
+        return {
+            "load": {
+                "status": "failed",
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "test_reload_failed",
+                    "message": "reload failed",
+                }],
+            },
+        }
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_load_summed_commissioning_config",
+        _fake_failed_load,
+    )
+    try:
+        payload = asyncio.run(
+            sound_setup._active_speaker_summed_test_level_payload(
+                {"speaker_group_id": "mono", "level_dbfs": -25.0},
+                camilla_factory=lambda: _FakeController("placeholder"),
+            )
+        )
+    finally:
+        monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+
+    assert payload["status"] == "failed"
+    assert payload["calibration_level"]["test_signal"][
+        "requested_level_dbfs"
+    ] == -25.0
+    assert load_kwargs["level_dbfs"] == -25.0
+    assert session["level_dbfs"] == -40.0
+    assert session["load_payload"] is initial_load
 
 
 def test_summed_test_stop_marks_preparing_session(monkeypatch):

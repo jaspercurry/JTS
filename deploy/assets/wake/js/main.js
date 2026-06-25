@@ -29,7 +29,13 @@
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
-const PROFILES = ["auto", "xvf_chip_aec", "xvf_software_aec3", "direct_mic"];
+const PROFILES = [
+  "auto",
+  "xvf_chip_aec",
+  "xvf_chip_aec_testing",
+  "xvf_software_aec3",
+  "direct_mic",
+];
 const LAYERS = ["aec", "raw", "dtln", "chip_aec"];
 const POLL_MS = 3000;
 
@@ -57,6 +63,8 @@ function profileLabel(id) {
       return "Automatic";
     case "xvf_chip_aec":
       return "XVF chip-AEC";
+    case "xvf_chip_aec_testing":
+      return "XVF chip-AEC testing";
     case "xvf_software_aec3":
       return "XVF software AEC3";
     case "direct_mic":
@@ -71,7 +79,9 @@ function profileLabel(id) {
 function applyProfileStatus(s) {
   const profile = s.audio_profile || {};
   const legs = s.legs || {};
-  const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
+  const gate = s.chip_aec_gate || {};
+  const chipProductionAvailable = !!gate.production_available;
+  const chipTestingAvailable = !!gate.testing_available;
   const selection = profile.selection || s.profile || profile.requested || "custom";
   const requested = profile.requested || profile.resolved || selection;
   const active = profile.active || "pending";
@@ -84,6 +94,9 @@ function applyProfileStatus(s) {
     if (active && active !== "pending" && active !== requested) {
       bits.push("running " + profileLabel(active));
     }
+    if ((selection === "xvf_chip_aec" || selection === "xvf_chip_aec_testing") && gate.status) {
+      bits.push("gate " + String(gate.status).replace(/_/g, " "));
+    }
     status.textContent = bits.join(" · ");
   }
 
@@ -93,7 +106,9 @@ function applyProfileStatus(s) {
     if (!input || !row) return;
     if (!dirty.profile) {
       input.checked = selection === id;
-      input.disabled = id === "xvf_chip_aec" && !chipAvailable && selection !== id;
+      input.disabled =
+        (id === "xvf_chip_aec" && !chipProductionAvailable && selection !== id) ||
+        (id === "xvf_chip_aec_testing" && !chipTestingAvailable && selection !== id);
     }
     row.classList.toggle("is-active", selection === id);
     row.classList.toggle("is-disabled", input.disabled);
@@ -145,28 +160,43 @@ function applyState(s) {
   const mode = s.mode;
   const bridgeOn = !!s.bridge_active;
   const legs = s.legs || {};
+  const gate = s.chip_aec_gate || {};
+  const software = s.software_aec3 || {};
   const aecOn = mode === "auto";
   const rawOn = !!(legs.raw && legs.raw.configured);
   const dtlnOn = !!(legs.dtln && legs.dtln.configured);
   const chipOn = !!(legs.chip_aec && legs.chip_aec.configured);
-  // Hardware gate: chip-AEC requires a detected mic profile with a
-  // validated geometry-specific beam plan.
-  const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
+  const chipProductionAvailable = !!gate.production_available;
+  const softwareBypassed = !!software.bypassed;
+  const softwareConfigured =
+    Object.prototype.hasOwnProperty.call(software, "configured")
+      ? !!software.configured
+      : aecOn && !chipOn;
+  const softwareActive =
+    Object.prototype.hasOwnProperty.call(software, "active")
+      ? !!software.active
+      : bridgeOn && softwareConfigured;
 
   applyProfileStatus(s);
   applyMicStatus(s);
 
-  // AEC master row.
+  // Software AEC3 row. Chip-AEC still uses jasper-aec-bridge as a UDP
+  // carrier, but WebRTC AEC3 itself is bypassed and should not be toggled.
   if (!dirty.aec) {
-    el("layer-aec").checked = aecOn;
-    el("layer-aec").disabled = false;
+    el("layer-aec").checked = softwareConfigured;
+    el("layer-aec").disabled = softwareBypassed;
   }
-  el("layer-status-aec").textContent = aecOn
-    ? bridgeOn
-      ? "✓ active"
-      : "⏳ starting (or chip not on 6-ch firmware)"
-    : "— disabled";
-  el("layer-row-aec").classList.toggle("is-disabled", !aecOn);
+  el("layer-status-aec").textContent = softwareBypassed
+    ? "— bypassed (chip-AEC active)"
+    : softwareConfigured
+      ? softwareActive
+        ? "✓ active"
+        : "⏳ starting…"
+      : "— disabled";
+  el("layer-row-aec").classList.toggle(
+    "is-disabled",
+    softwareBypassed || !softwareConfigured,
+  );
 
   // Raw + DTLN legs require AEC, AND are mutually exclusive with the
   // chip-AEC beams — one chip can't emit both, so when chip-AEC is on the
@@ -186,18 +216,17 @@ function applyState(s) {
     el("layer-row-" + name).classList.toggle("is-disabled", blocked);
   });
 
-  // Chip-AEC beams: require AEC + a validated mic beam plan. Disabled
-  // when AEC is off or the active mic profile has no production beam plan;
-  // enabling pauses raw + DTLN (mutual exclusion, handled above).
-  const chipBlocked = !aecOn || !chipAvailable;
+  // Chip-AEC beams: require AEC + production-approved mic/DAC gate. Testing
+  // unapproved DACs is an explicit input profile, not this expert layer.
+  const chipBlocked = !aecOn || !chipProductionAvailable;
   if (!dirty.chip_aec) {
     el("layer-chip_aec").checked = chipOn;
     el("layer-chip_aec").disabled = chipBlocked;
   }
   el("layer-status-chip_aec").textContent = !aecOn
     ? "— requires AEC on"
-    : !chipAvailable
-      ? "— unavailable for this mic profile"
+    : !chipProductionAvailable
+      ? "— use chip-AEC testing profile"
       : chipOn
         ? bridgeOn
           ? "✓ active"
@@ -319,6 +348,17 @@ PROFILES.forEach((profile) => {
       setTimeout(pollDetection, 0);
       return;
     }
+    if (
+      profile === "xvf_chip_aec_testing" &&
+      !(await jtsConfirm(
+        "Use XVF chip-AEC testing?\n\n" +
+          "This routes the live mic path through hardware AEC on an unapproved DAC so you can validate it. Use software AEC3 again if wake reliability drops.",
+        { danger: true },
+      ))
+    ) {
+      setTimeout(pollDetection, 0);
+      return;
+    }
     postProfile(profile);
   });
 });
@@ -332,9 +372,10 @@ LAYERS.forEach((name) => {
       name === "aec" &&
       !cb.checked &&
       !(await jtsConfirm(
-        "Disable AEC echo cancellation?\n\n" +
+        "Disable software AEC3?\n\n" +
           "jasper-voice will restart — wake unavailable ~15 s. Turning AEC " +
-          "off also pauses the raw + DTLN layers (they need the bridge running).",
+          "off also pauses the raw + DTLN layers (they need the bridge running). " +
+          "Chip-AEC profiles bypass software AEC3 automatically.",
         { danger: true },
       ))
     ) {

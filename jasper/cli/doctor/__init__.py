@@ -215,7 +215,7 @@ from .memory import (
 )
 from . import resilience as resilience
 from .resilience import (
-    _EXPECTED_START_LIMIT_ACTION,
+    _EXPECTED_START_LIMIT_POLICY,
     _classify_supervisor_snapshots,
     check_start_limit_action,
     check_service_runtime_state,
@@ -529,7 +529,7 @@ __all__ = [
     "_bounded_dir_size",
     "check_correction_storage",
     "check_wake_events_storage",
-    "_EXPECTED_START_LIMIT_ACTION",
+    "_EXPECTED_START_LIMIT_POLICY",
     "_classify_supervisor_snapshots",
     "check_start_limit_action",
     "check_service_runtime_state",

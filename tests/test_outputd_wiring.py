@@ -257,6 +257,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    runtime_contract = (REPO / "jasper" / "active_speaker" / "runtime_contract.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
@@ -286,14 +287,15 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     # the durable runtime contract, not transient startup-load state: a saved
     # active baseline must stay playable after setup completes.
     assert "active_graph_status()" in reconcile
-    assert "active_graph_width_out_of_range" in reconcile
+    assert "active_graph_width_out_of_range" in runtime_contract
     assert "action=park_until_active_graph" in reconcile
     assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
     assert "JASPER_CAMILLA_STATEFILE" in reconcile
+    assert "JASPER_CAMILLA2_STATEFILE" in reconcile
     assert "JASPER_OUTPUT_TOPOLOGY_PATH" in reconcile
-    assert "classify_camilla_graph" in reconcile
-    assert "outputd_active_content_playback" in reconcile
+    assert "outputd_active_lane_decision" in reconcile
+    assert "outputd_active_content_playback" in runtime_contract
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_rollback\")" in startup_load

@@ -1078,14 +1078,12 @@ EOF
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
-    # now a Python software AEC daemon (jasper-aec-bridge, see
-    # jasper/cli/aec_bridge.py). The chip's on-chip AEC turned out
-    # to be incompatible with our external-DAC topology, so we run
-    # WebRTC AEC3 on the host using the XVF chip's ASR beam
-    # (channel 1 of 6-ch firmware) + the dsnoop-tapped music
-    # reference. Old aec-bridge.yml is removed if present from a
-    # prior install.
+    # NOTE: aec-bridge is no longer a CamillaDSP instance. It is now a
+    # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
+    # that either runs WebRTC AEC3 for the software fallback profile or,
+    # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
+    # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
+    # removed if present from a prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
 }
 
@@ -1516,6 +1514,7 @@ reconcile_aec_state() {
     # input-profile / wake-detection cards:
     #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
     #                                 (auto, xvf_chip_aec,
+    #                                 xvf_chip_aec_testing,
     #                                 xvf_software_aec3, direct_mic,
     #                                 custom)
     #   - JASPER_AEC_MODE             master AEC bridge toggle
@@ -1529,11 +1528,12 @@ reconcile_aec_state() {
     #                                 MEASUREMENT ONLY so the Layer-0 SRO
     #                                 drift estimator gets fed (mic path
     #                                 stays software AEC3). Default off.
-    # Defaults: profile auto. On the recommended XVF3800 6-channel
-    # hardware that resolves to chip-AEC (no stacked software AEC/raw/DTLN).
-    # When chip-AEC is unavailable it falls back to the software-AEC3
-    # profile (AEC on, raw fallback on, DTLN off). DTLN remains an
-    # explicit custom/lab leg because it is heavy on a 1 GB Pi.
+    # Defaults: profile auto. On approved XVF3800 + output-DAC hardware that
+    # resolves to chip-AEC (no stacked software AEC/raw/DTLN). When chip-AEC
+    # is unavailable it falls back to the software-AEC3 profile (AEC on, raw
+    # fallback on, DTLN off). Unapproved DACs use the explicit
+    # xvf_chip_aec_testing profile; auto never selects testing. DTLN remains
+    # an explicit custom/lab leg because it is heavy on a 1 GB Pi.
     #
     # On upgrade, the reconciler's ensure_mode_file appends any
     # missing keys with these same defaults — preserving an

@@ -58,6 +58,16 @@ def _isolate_household_secret(monkeypatch, tmp_path):
     monkeypatch.setattr(
         household_credential, "SECRET_FILE", str(tmp_path / "household_secret"),
     )
+    monkeypatch.setattr(
+        rooms_setup,
+        "_get_member_active_speaker_setup",
+        lambda *a, **k: {
+            "active": False,
+            "configured": True,
+            "volume_allowed": True,
+            "grouping_allowed": True,
+        },
+    )
 
 
 # A representative grouping-state snapshot (the shape
@@ -1197,6 +1207,43 @@ def test_post_bond_omits_crossover_hz_when_absent(monkeypatch):
     assert all("crossover_hz" not in c[1] for c in calls)
     assert all(c[1]["subwoofer_present"] is False for c in calls)
     assert all(c[1]["mains_highpass_enabled"] is True for c in calls)
+
+
+def test_post_bond_preflights_active_speaker_setup_before_fanout(monkeypatch):
+    def fake_setup(addr, *_args, **_kwargs):
+        if addr == "192.168.1.9":
+            return {
+                "active": True,
+                "configured": False,
+                "volume_allowed": False,
+                "grouping_allowed": False,
+                "reason": "baseline_summed_validation_missing",
+                "detail": "validate the combined crossover before saving the active profile",
+            }
+        return {
+            "active": False,
+            "configured": True,
+            "volume_allowed": True,
+            "grouping_allowed": True,
+        }
+
+    monkeypatch.setattr(rooms_setup, "_get_member_active_speaker_setup", fake_setup)
+
+    h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
+
+    assert h.status == 409
+    assert calls == []
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is False
+    assert body["error"] == "one or more speakers are not ready to join a group"
+    assert body["results"] == [
+        {
+            "addr": "192.168.1.9",
+            "role": "follower",
+            "ok": False,
+            "detail": "validate the combined crossover before saving the active profile",
+        }
+    ]
 
 
 def test_post_bond_rejects_bad_csrf_without_fanning_out(monkeypatch):

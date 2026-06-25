@@ -132,7 +132,25 @@ class FakeCoordinator:
         return None
 
 
-def test_active_speaker_output_safety_snapshot_classifies_staged_config() -> None:
+def test_active_speaker_output_safety_snapshot_uses_setup_status(
+    monkeypatch,
+) -> None:
+    import jasper.control.server as srv_mod
+
+    def fake_setup(*, active_config_path=None, **_kwargs):
+        assert active_config_path.endswith("active_speaker_staged_startup.yml")
+        return {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "active_speaker_commissioning_config_loaded",
+            "active_config_path": active_config_path,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+
     payload = _active_speaker_output_safety_snapshot({
         "current": {
             "camilla": {
@@ -145,13 +163,30 @@ def test_active_speaker_output_safety_snapshot_classifies_staged_config() -> Non
     })
 
     assert payload["safety_muted"] is True
-    assert payload["reason"] == "active_speaker_staged_startup"
+    assert payload["reason"] == "active_speaker_commissioning_config_loaded"
     assert payload["active_config_path"].endswith(
         "active_speaker_staged_startup.yml"
     )
 
 
-def test_active_speaker_output_safety_snapshot_allows_baseline_config() -> None:
+def test_active_speaker_output_safety_snapshot_allows_setup_ready(
+    monkeypatch,
+) -> None:
+    import jasper.control.server as srv_mod
+
+    def fake_setup(*, active_config_path=None, **_kwargs):
+        return {
+            "active": True,
+            "configured": True,
+            "volume_allowed": True,
+            "grouping_allowed": True,
+            "reason": None,
+            "active_config_path": active_config_path,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+
     payload = _active_speaker_output_safety_snapshot({
         "current": {
             "camilla": {
@@ -873,6 +908,11 @@ def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coord
 
     monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {"software_aec3": {"bypassed": False}},
+    )
     monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
 
     status, body = _post(f"{base}/aec/toggle", None)
@@ -884,8 +924,46 @@ def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coord
     ]
 
 
+def test_aec_toggle_refuses_to_disable_chip_aec_carrier(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    popens: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, cmd):
+            popens.append(cmd)
+
+    monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {
+            "bridge_role": "chip_aec_carrier",
+            "software_aec3": {"bypassed": True},
+        },
+    )
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+
+    status, body = _post(f"{base}/aec/toggle", None)
+
+    assert status == 409
+    assert "already bypassed" in body["error"]
+    assert body["bridge_role"] == "chip_aec_carrier"
+    assert "JASPER_AEC_MODE=auto" in mode_file.read_text()
+    assert popens == []
+
+
 def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
-    """Leg changes use the same restart kick as the AEC master toggle."""
+    """Leg changes use the same restart kick as the software-AEC3 toggle."""
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
@@ -923,7 +1001,13 @@ def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
     assert body["error"] == "leg must be one of: chip_aec, dtln, raw"
 
 
-def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
+@pytest.mark.parametrize("profile", ["xvf_chip_aec", "xvf_chip_aec_testing"])
+def test_aec_profile_restarts_reconciler(
+    profile,
+    monkeypatch,
+    tmp_path,
+    server_with_coordinator,
+):
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
@@ -936,18 +1020,18 @@ def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coor
             popens.append(cmd)
 
     monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": "xvf_chip_aec"})
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": profile})
     monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
 
     status, body = _post(
         f"{base}/aec/profile",
-        {"profile": "xvf_chip_aec"},
+        {"profile": profile},
     )
 
     assert status == 200
-    assert body == {"profile": "xvf_chip_aec"}
+    assert body == {"profile": profile}
     text = mode_file.read_text()
-    assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in text
+    assert f"JASPER_AUDIO_INPUT_PROFILE={profile}" in text
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in text
     assert popens == [
         ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
@@ -1001,11 +1085,71 @@ def test_grouping_set_leader_writes_env_and_kicks_reconciler(
     assert _GROUPING_KICK in popens
 
 
+def test_grouping_set_enable_rejects_active_speaker_setup_block(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": True, "role": "leader", "channel": "left",
+        "bond_id": "living-room",
+    })
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["grouping_allowed"] is False
+    assert not env.exists()
+    assert popens == []
+
+
 def test_grouping_set_disabled_writes_off_and_kicks(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
     env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {"enabled": False})
+
+    assert status == 200
+    assert body["enabled"] is False
+    assert "JASPER_GROUPING=off" in env.read_text()
+    assert _GROUPING_KICK in popens
+
+
+def test_grouping_set_disabled_ignores_active_speaker_setup_block(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
 
     status, body = _post(f"{base}/grouping/set", {"enabled": False})
 
@@ -1698,6 +1842,33 @@ def test_volume_set_native_percent(server_with_coordinator):
     assert status == 200
     assert body["percent"] == 75
     assert ("set", 75) in fake.calls
+
+
+def test_volume_set_rejects_active_speaker_setup_block(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    base, fake = server_with_coordinator
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
+
+    status, body = _post(f"{base}/volume/set", {"percent": 75})
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert all(call[0] != "set" for call in fake.calls)
 
 
 def test_volume_set_clamps(server_with_coordinator):
@@ -2547,6 +2718,32 @@ def test_state_usbsink_section_populated_when_enabled(
     assert section["preempted"] is False
     assert section["host_connected"] is True
     assert section["rms_dbfs"] == -12.3
+
+
+def test_state_usbsink_section_scrubs_legacy_nonfinite_rms(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Old jasper-usbsink versions could write -Infinity. /state must still
+    return standards-compliant JSON values."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(
+        '{"playing":false,"preempted":false,"host_connected":true,'
+        '"rms_dbfs":-Infinity,"updated_at":"2026-05-16T00:00:00+00:00"}'
+    )
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["renderers"]["usbsink"]["rms_dbfs"] is None
+    json.dumps(body, allow_nan=False)
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
@@ -3811,6 +4008,19 @@ def test_follower_transport_toggle_forwards_to_leader(follower_server):
     assert body["pair_leader"] == "jts.local"
     req, _ = seen[0]
     assert req.full_url.endswith("/transport/toggle")
+
+
+def test_follower_source_select_forwards_to_leader(follower_server):
+    """A bonded follower's local mux is parked, so source selection targets
+    the pair leader instead of producing a local mux-unreachable error."""
+    base, fake, seen = follower_server
+    status, body = _post(f"{base}/source/select", {"source": "airplay"})
+    assert status == 200
+    assert body["pair_leader"] == "jts.local"
+    assert fake.calls == []
+    req, _ = seen[0]
+    assert req.full_url.endswith("/source/select")
+    assert json.loads(req.data) == {"source": "airplay"}
 
 
 def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):

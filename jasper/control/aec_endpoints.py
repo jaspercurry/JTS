@@ -12,6 +12,7 @@ from typing import Any
 from ..audio_profile_state import (
     AecIntent,
     MicProbe,
+    PROFILE_XVF_CHIP_AEC_TESTING,
     build_audio_profile_status,
     infer_audio_input_profile,
     normalize_audio_input_profile,
@@ -19,12 +20,14 @@ from ..audio_profile_state import (
     profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
+    validation_profile,
 )
 from ..audio_validation import (
     current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
+from ..chip_aec_policy import gate_from_runtime_env, resolve_chip_aec_dac_gate
 from ..wake_models import WAKE_MODEL_FILE
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
@@ -276,6 +279,7 @@ def _audio_profile_status(
     *,
     bridge_active: bool,
     chip_available: bool,
+    chip_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read-only mic/profile status for the /wake/ page.
 
@@ -293,6 +297,7 @@ def _audio_profile_status(
         capture_channels = runtime_profile.capture_channels
         recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
         display_name = runtime_profile.display_name
+        alsa_card_name = runtime_profile.alsa_card_name
         variant_id = runtime_profile.variant_id
         geometry = runtime_profile.geometry
         chip_beam_plan = runtime_profile.chip_beam_plan_id
@@ -302,6 +307,7 @@ def _audio_profile_status(
         capture_channels = None
         recommended_channels = 6
         display_name = "Seeed ReSpeaker XVF3800 (USB UA)"
+        alsa_card_name = ""
         variant_id = ""
         geometry = ""
         chip_beam_plan = ""
@@ -321,6 +327,7 @@ def _audio_profile_status(
             capture_channels=capture_channels,
             recommended_channels=recommended_channels,
             display_name=display_name,
+            alsa_card_name=alsa_card_name,
             variant_id=variant_id,
             geometry=geometry,
             chip_beam_plan=chip_beam_plan,
@@ -328,6 +335,7 @@ def _audio_profile_status(
         ),
         bridge_active=bridge_active,
         chip_available=chip_available,
+        chip_gate=chip_gate,
     )
 
 
@@ -338,6 +346,63 @@ def _chip_aec_available() -> bool:
         return xvf3800.detect_runtime_profile().chip_aec_supported
     except Exception:  # noqa: BLE001
         return False
+
+
+def _chip_aec_gate(
+    env: dict[str, str],
+    state: dict[str, Any],
+    *,
+    mic_available: bool,
+) -> dict[str, Any]:
+    """Resolve chip-AEC gate status for /aec without probing devices."""
+
+    selection = normalize_audio_input_profile(
+        str(state.get("profile") or ""),
+        default=infer_audio_input_profile(
+            AecIntent(
+                mode=str(state.get("mode") or "auto"),
+                raw_enabled=bool(state.get("leg_raw")),
+                dtln_enabled=bool(state.get("leg_dtln")),
+                chip_aec_enabled=bool(state.get("leg_chip_aec")),
+            ),
+        ),
+    )
+    testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
+    runtime_gate = (
+        gate_from_runtime_env(env)
+        if env.get("JASPER_AEC_CHIP_AEC_DAC_STATUS")
+        else None
+    )
+    if runtime_gate is not None and (
+        not testing_requested or runtime_gate.arm_allowed
+    ):
+        gate = runtime_gate
+    else:
+        gate = resolve_chip_aec_dac_gate(
+            env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+            testing_requested=testing_requested,
+        )
+    payload = gate.to_dict()
+    payload["mic_available"] = mic_available
+    payload["production_available"] = bool(mic_available and gate.production_allowed)
+    payload["testing_available"] = bool(mic_available and gate.testing_allowed)
+    payload["available"] = bool(
+        mic_available
+        and (
+            gate.production_allowed
+            or (testing_requested and gate.testing_allowed)
+        )
+    )
+    blockers: list[str] = []
+    if not mic_available:
+        blockers.append("mic_beam_plan")
+    dac_available_for_selection = gate.production_allowed or (
+        testing_requested and gate.testing_allowed
+    )
+    if not dac_available_for_selection:
+        blockers.append("dac_gate")
+    payload["blockers"] = blockers
+    return payload
 
 
 def _mic_status(
@@ -370,9 +435,11 @@ def _aec_full_status() -> dict:
     /wake/ toggle stays disabled when the connected geometry has no plan."""
     state = _read_aec_state()
     bridge_active = _aec_bridge_active()
+    env = _fresh_jasper_env()
     # Wrap defensively so a profile probe failure can never 500 a status
     # GET the /wake/ page polls every 3 s.
     chip_available = _chip_aec_available()
+    chip_gate = _chip_aec_gate(env, state, mic_available=chip_available)
     effective = resolve_audio_input_intent(
         AecIntent(
             mode=state["mode"],
@@ -381,17 +448,22 @@ def _aec_full_status() -> dict:
             chip_aec_enabled=bool(state["leg_chip_aec"]),
             profile_selection=str(state.get("profile") or ""),
         ),
-        chip_available=chip_available,
+        chip_available=bool(chip_gate.get("available")),
     )
+    software_aec3 = _software_aec3_status(effective, bridge_active=bridge_active)
     profile_status = _audio_profile_status(
         state,
         bridge_active=bridge_active,
         chip_available=chip_available,
+        chip_gate=chip_gate,
     )
-    requested_profile = profile_status["audio_profile"].get("requested")
+    requested_profile = (
+        profile_status["audio_profile"].get("validation_profile")
+        or validation_profile(profile_status["audio_profile"].get("requested"))
+    )
     validation_filters = _audio_validation_filter_kwargs(
         requested_profile=requested_profile,
-        system_env=_fresh_jasper_env(),
+        system_env=env,
     )
     return {
         "mode": effective.mode,
@@ -403,17 +475,71 @@ def _aec_full_status() -> dict:
             "leg_chip_aec": state["leg_chip_aec"],
         },
         "bridge_active": bridge_active,
+        "bridge_role": _bridge_role(effective),
+        "software_aec3": software_aec3,
         "legs": {
             "raw": {"configured": effective.raw_enabled},
             "dtln": {"configured": effective.dtln_enabled},
             "chip_aec": {
                 "configured": effective.chip_aec_enabled,
-                "available": chip_available,
+                "available": chip_gate["available"],
+                "production_available": chip_gate["production_available"],
+                "testing_available": chip_gate["testing_available"],
             },
         },
         "threshold": _read_wake_threshold(),
         "wake_word": _read_wake_word_status(),
+        "chip_aec_gate": chip_gate,
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
+    }
+
+
+def _bridge_role(intent: AecIntent) -> str:
+    if intent.mode != "auto":
+        return "off"
+    if intent.chip_aec_enabled:
+        return "chip_aec_carrier"
+    return "software_aec3"
+
+
+def _software_aec3_status(
+    intent: AecIntent,
+    *,
+    bridge_active: bool,
+) -> dict[str, Any]:
+    """Derived WebRTC/AEC3 status, separate from the shared bridge carrier.
+
+    Chip-AEC still needs ``jasper-aec-bridge`` as the UDP carrier into
+    jasper-voice, but that carrier does not instantiate the WebRTC AEC3 engine.
+    Keep that distinction explicit so operator surfaces never present "bridge
+    running" as "software AEC3 running."
+    """
+    if intent.mode != "auto":
+        return {
+            "configured": False,
+            "active": False,
+            "bypassed": False,
+            "reason": "AEC bridge is disabled by the direct-mic profile.",
+        }
+    if intent.chip_aec_enabled:
+        return {
+            "configured": False,
+            "active": False,
+            "bypassed": True,
+            "reason": (
+                "Chip-AEC profile selected; WebRTC AEC3 is bypassed while "
+                "the bridge carries the chip beam to voice."
+            ),
+        }
+    return {
+        "configured": True,
+        "active": bool(bridge_active),
+        "bypassed": False,
+        "reason": (
+            "Software AEC3 bridge is active."
+            if bridge_active
+            else "Software AEC3 is selected; waiting for the bridge."
+        ),
     }

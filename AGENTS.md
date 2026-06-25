@@ -1954,24 +1954,28 @@ JASPER_WAKE_LEG_CHIP_AEC=0
 ```
 
 `auto` resolves to the XVF3800 chip-AEC profile when the configured
-AEC mic is present with 6-channel firmware. In that profile the
-bridge forwards the chip-AEC beam to `:9876`, emits fixed
-150°/210° chip beams on `:9887`/`:9888`, and does **not** stack
-software raw/DTLN wake legs. When chip-AEC is unavailable, `auto`
-falls back to `xvf_software_aec3` (AEC3 on `:9876`, raw wake
-fallback on `:9877`, DTLN off). `direct_mic` disables the bridge.
-`custom` preserves the low-level leg booleans exactly for corpus
-tests and nonstandard hardware.
+AEC mic is present with 6-channel firmware and the active output DAC's
+chip-AEC gate is approved. In that profile the bridge forwards the
+chip-AEC beam to `:9876`, emits fixed 150°/210° chip beams on
+`:9887`/`:9888`, and does **not** stack software raw/DTLN wake legs.
+When chip-AEC is unavailable, `auto` falls back to `xvf_software_aec3`
+(AEC3 on `:9876`, raw wake fallback on `:9877`, DTLN off).
+`xvf_chip_aec_testing` is the explicit operator path for validating an
+unapproved DAC with chip-AEC; `auto` never selects testing. `direct_mic`
+disables the bridge. `custom` preserves the low-level leg booleans
+exactly for corpus tests and nonstandard hardware.
 
 ### Wake-detection legs — custom sub-toggles
 
 The `/wake/` page exposes profile choices first. Its advanced layer
-toggles (`raw`, `dtln`, `chip_aec`, and the AEC master) are custom
-controls: changing one stamps `JASPER_AUDIO_INPUT_PROFILE=custom`.
+toggles (`raw`, `dtln`, `chip_aec`, and the software-AEC3 toggle) are
+custom controls: changing one stamps `JASPER_AUDIO_INPUT_PROFILE=custom`.
 In custom software-AEC mode the bridge can fan out AEC3 (`:9876`),
 raw chip-direct (`:9877`), and DTLN neural AEC (`:9878`). In custom
 chip-AEC mode it emits the chip beams and clears raw/DTLN because the
-single chip cannot do both modes at once.
+single chip cannot do both modes at once. Chip-AEC profiles still run the
+bridge process as the chip-beam UDP carrier, but WebRTC AEC3 itself is
+bypassed; do not treat "bridge active" as "software AEC3 active."
 
 > **Corpus-only 4th UDP leg (`:9879`) since PR #323.** The bridge
 > also always emits chip channel 2 (truly raw — no chip OR software
@@ -2008,8 +2012,9 @@ picker, which preserves the threshold on model save). Edit point is
 - `GET /aec` → profile selection, resolved/active audio profile,
   bridge state, effective legs, raw legacy intent, threshold, mic
   status, and validation summary.
-- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
-- `POST /aec/toggle` → custom AEC master flip
+- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_chip_aec_testing"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
+- `POST /aec/toggle` → custom software-AEC3/direct-mic flip; rejected while
+  chip-AEC is using the bridge as its carrier
 - `POST /aec/leg` body `{leg: "raw"|"dtln"|"chip_aec", enabled: bool}` → flip one custom leg
 - `POST /aec/threshold` body `{threshold: float}` (0.0..1.0) → set sensitivity
 
@@ -2028,7 +2033,8 @@ file seeds `auto`.
 - Profile change → reconciler decides bridge + voice + outputd restart
   needs; chip-AEC profile changes can restart outputd for USB-IN
   reference fanout.
-- AEC master flip → custom bridge + voice restart
+- Software-AEC3 toggle → custom bridge + voice restart; rejected/no-op while
+  chip-AEC is using the bridge as its carrier
 - DTLN flip → bridge + voice restart (DTLN model loads at startup
   in the bridge; voice opens `:9878` socket at startup)
 - RAW flip → voice restart only (bridge already emits to `:9877`
@@ -2237,7 +2243,8 @@ Full design, schema, queries:
 ### Enable multi-leg wake OR-gate
 
 Normal operator path: use `http://jts.local/wake/`. Pick a profile
-(`auto`, `xvf_chip_aec`, `xvf_software_aec3`, `direct_mic`) first;
+(`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`,
+`xvf_software_aec3`, `direct_mic`) first;
 only use the advanced `raw`, `dtln`, and `chip_aec` layer switches for
 custom/corpus work. The page stamps `JASPER_AUDIO_INPUT_PROFILE=custom`
 when a layer switch changes, then calls jasper-control.

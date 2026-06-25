@@ -47,6 +47,7 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         "active": "xvf_chip_aec",
         "state": "active",
         "reason": "Chip-AEC runtime env is applied.",
+        "validation_profile": "xvf_chip_aec",
     }
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["wake_legs"] == [
@@ -71,6 +72,66 @@ def test_chip_aec_pending_when_runtime_env_not_applied():
     assert status["audio_profile"]["state"] == "pending"
     assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
     assert "not applied" in " ".join(status["microphone"]["warnings"])
+
+
+def test_profile_status_warns_when_saved_aec_card_is_stale():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            aec_device="L16K6Ch",
+            chip_enabled=False,
+        ),
+        MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="Array",
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
+        ),
+        bridge_active=False,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"]["state"] == "waiting_bridge"
+    assert "configured AEC mic L16K6Ch" in status["audio_profile"]["reason"]
+    assert "detected XVF card Array" in status["audio_profile"]["reason"]
+    warnings = " ".join(status["microphone"]["warnings"])
+    assert "Configured AEC mic L16K6Ch" in warnings
+    assert "detected XVF card Array" in warnings
+    assert "run the reconciler" in warnings
+
+
+def test_chip_aec_active_requires_detected_aec_card_match():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            aec_device="L16K6Ch",
+            chip_enabled=True,
+            chip_aec_150_device="udp:9887",
+            chip_aec_210_device="udp:9888",
+        ),
+        MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="Array",
+            variant_id="xvf3800_legacy_square_6ch",
+            geometry="square",
+            chip_beam_plan="xvf_square_fixed_150_210",
+        ),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "pending"
+    assert "Configured AEC mic L16K6Ch" in " ".join(
+        status["microphone"]["warnings"]
+    )
 
 
 def test_software_aec3_profile_reports_optional_legs():
@@ -138,3 +199,30 @@ def test_profile_env_updates_stamp_rollback_safe_legacy_keys():
         "JASPER_WAKE_LEG_CHIP_AEC": "1",
     }
     assert profile_env_updates("auto")["JASPER_WAKE_LEG_CHIP_AEC"] == "0"
+
+
+def test_testing_profile_uses_chip_aec_runtime_but_same_validation_profile():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec_testing"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+            chip_aec_150_device="udp:9887",
+            chip_aec_210_device="udp:9888",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+        chip_gate={
+            "status": "testing",
+            "permitted": True,
+            "auto_allowed": False,
+            "detail": "operator validation",
+        },
+    )
+
+    assert status["audio_profile"]["selection"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["active"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC testing"

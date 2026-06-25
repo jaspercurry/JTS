@@ -429,10 +429,12 @@ in principle; nail it empirically in the camilla#1/#2 emit work.*
 
 **camilla#1 program bake — verifier exemption (safe by construction).** camilla#1
 emits the program domain only (Layer B/C + headroom, **no** Layer A), `File` sink
-→ `SNAPFIFO`, `enable_rate_adjust: false`. It bypasses the graph carrier (as the
-follower arm does), and `classify_camilla_graph` gains one arm: **a flat program
-graph whose `devices.playback.type == File` is safe regardless of topology** — no
-DAC is attached, so no driver can be over-driven. Key it strictly on the playback
+→ `SNAPFIFO`, `enable_rate_adjust: false`. Its active-leader bake path emits and
+re-proves the graph directly, but once that bake is loaded, `/sound` and
+`/correction` route it through the graph carrier as a DAC-less program-domain
+host. `classify_camilla_graph` has one arm: **a flat program graph whose
+`devices.playback.type == File` is safe regardless of topology** — no DAC is
+attached, so no driver can be over-driven. Key it strictly on the playback
 *type* and reuse the existing `playback_is_pipe` parser
 ([leader_config.py](../jasper/multiroom/leader_config.py)) so the exemption and
 the leader-pipe liveness check cannot disagree. The dangerous direction (a flat
@@ -728,9 +730,12 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   `enable_rate_adjust: false`, **no** Layer A) by reusing
   `jasper.sound.camilla_yaml.emit_sound_config`'s program assembly verbatim and
   re-stamping a distinct DAC-less-bake `# Source:` marker
-  (`ACTIVE_PROGRAM_BAKE_SOURCE`). It bypasses the graph carrier exactly as the
-  follower arm does — the carrier fence `eq_on_active_bonded_member` (the
-  interactive `/sound` EQ path) is untouched. `classify_camilla_graph`
+  (`ACTIVE_PROGRAM_BAKE_SOURCE`). The leader bake itself does not ask the graph
+  carrier to build the initial bond graph; after the bake is loaded, the graph
+  carrier recognizes it as `active_leader_program_bake` and may re-emit
+  program-domain EQ/correction only while it still resolves to the Snapcast pipe
+  sink. The active graph fence `eq_on_active_bonded_member` remains for roleful
+  active graphs. `classify_camilla_graph`
   ([runtime_contract.py](../jasper/active_speaker/runtime_contract.py)) gains one
   arm: a flat program graph whose `devices.playback.type == File` is allowed
   regardless of topology (`GRAPH_PROGRAM_BAKE_PIPE`), keyed STRICTLY on the
@@ -939,11 +944,13 @@ tweeter TTS, inv-B-through-Layer-A).
 > + the grouping reconciler's active-leader branch
 > ([`reconcile.py`](../jasper/multiroom/reconcile.py)) now arm the two-instance
 > bring-up on bond: camilla#1 runs the program bake (File→`SNAPFIFO`,
-> `emit_active_speaker_program_bake_config`) and camilla#2 is armed (`systemctl
-> enable --now jasper-camilla-crossover.service`) on a `crossover-statefile.yml`
-> **RE-SEEDED with the re-proven driver-domain (Layer-A-intact) graph** — closing
-> the B1 seam (the install seed is flat; the crossover guard repairs a dead pipe,
-> not a flat statefile). snapclient writes the round-trip loopback (the leader is
+> `emit_active_speaker_program_bake_config`), `crossover-statefile.yml` is seeded
+> with the re-proven driver-domain (Layer-A-intact) graph, the audio-hardware
+> reconciler proves the paired statefiles and writes outputd's active-lane env,
+> and only then camilla#2 is armed (`systemctl enable --now
+> jasper-camilla-crossover.service`). This closes the B1 seam (the install seed
+> is flat; the crossover guard repairs a dead pipe, not a flat statefile).
+> snapclient writes the round-trip loopback (the leader is
 > its own receiver) and camilla#2 runs **`rate_adjust` ON — the already-validated
 > active-follower seam, no `outputd-summer`, no leader TTS yet**. Fail-closed: if
 > either graph can't be re-proven the box **refuses to bond and falls back to
@@ -975,8 +982,8 @@ tweeter TTS, inv-B-through-Layer-A).
 > box with **no Snapcast installed**) surfaced a reboot loop: the reconciler armed
 > camilla#2 onto the DAC **even though camilla#1's bake had failed** (no FIFO
 > reader without snapserver → camilla#1 stayed on its solo-active DAC baseline), so
-> both CamillaDSP fought for the DAC and camilla#1's `StartLimitAction=reboot`
-> escalated. The handoff is now fail-closed by three gates: (1) **precheck refuses
+> both CamillaDSP fought for the DAC and camilla#1 exhausted its recovery budget.
+> The handoff is now fail-closed by three gates: (1) **precheck refuses
 > the bond** if `snapserver`/`snapclient` are not installed
 > (`snapcast_unavailable`); (2) the reconciler **does not bake** unless
 > `snapserver` is actually active (never bakes camilla#1 onto a reader-less pipe);
@@ -993,7 +1000,8 @@ tweeter TTS, inv-B-through-Layer-A).
 > tighter race: camilla#1's websocket bake reload can return successfully before
 > snd-aloop has actually closed the exclusive `outputd_active_content_playback`
 > PCM (`hw:Loopback,0,5`). If camilla#2 arms inside that close-lag, its open gets
-> `EBUSY`; camilla#1 is the reboot-budget unit, so the box reboot-looped. The
+> `EBUSY`; camilla#1 is the recovery-budget unit, so the box repeatedly tried to
+> recover the core graph. The
 > reconciler now inserts a bounded positive probe between `seed_crossover_statefile`
 > and `systemctl enable --now jasper-camilla-crossover.service`: poll the
 > per-substream ALSA status path `/proc/asound/Loopback/pcm0p/sub5/status` and
@@ -1011,6 +1019,23 @@ tweeter TTS, inv-B-through-Layer-A).
 > real reconcile retried from that blocked state, read exact `closed` on attempt 1
 > (`timeout_sec=0.8`), armed camilla#2, and completed with `rc=0`. The box was
 > then restored to solo (camilla#2/snapcast inactive, no failed units, no reboot).
+
+> **Stage B Step 0 recovery hardened (2026-06-24) — outputd follows the paired
+> graph contract.** The same `jts3` deployment exposed a recovery-only gap:
+> `jasper-outputd-failure-reconcile` correctly re-entered the single
+> audio-hardware env writer, but that writer inspected only camilla#1's
+> `outputd-statefile.yml`. In active-leader mode camilla#1 is the safe
+> `program_bake_pipe` (`File`→`SNAPFIFO`, no DAC), while the actual endpoint graph
+> that proves `outputd_active_content_playback` lives in camilla#2's
+> `crossover-statefile.yml`. The runtime contract now owns that matrix:
+> `program_bake_pipe` is never accepted as an outputd endpoint by itself; it is a
+> sentinel that makes the reconciler prove camilla#2 is a legal
+> `driver_domain_baseline`, targets `outputd_active_content_playback`, and reports
+> `2 ≤ playback_channels ≤ active_lane_cap`. Initial active-leader arm seeds the
+> camilla#2 statefile before audio-hardware reconcile, and failure recovery reads
+> the same paired statefiles, so a deploy/restart no longer downgrades
+> `/var/lib/jasper/outputd.env` to `outputd_content_capture` while grouped active
+> lanes are already owned.
 
 **Stage C — matched pair (two identical active speakers, one as leader):
 BLOCKED.** Precondition is a **second commissioned active speaker with real
@@ -1269,12 +1294,19 @@ starvation, the loopback going silent, is the deferred prerequisite for
    local filter. The brainy/active-endpoint sub path remains separate because
    CamillaDSP Layer A, not outputd `dac_content`, owns driver protection there.
 
-Last verified: 2026-06-24 (active-leader positive handle barrier added and
-validated on `jts3`: `/proc/asound/Loopback/pcm0p/sub5/status` reported
-non-`closed` under camilla#1, forced-busy fail-closed restored solo-active
-without arming camilla#2, and the real retry read exact `closed` on attempt 1
-before arming camilla#2; HW-free tests cover released/busy/tool-missing
-branches. Prior 2026-06-23: dumb receiver-side wireless sub [gap 5] landed
+Last verified: 2026-06-25 (Camilla recovery-budget wording rechecked against
+`deploy/systemd/jasper-camilla.service` and
+`deploy/bin/jasper-camilla-recover`; 2026-06-24 active-leader outputd recovery
+now follows the
+paired statefile contract: camilla#1 `program_bake_pipe` plus camilla#2
+`driver_domain_baseline` on `outputd_active_content_playback`; initial arm
+seeds `crossover-statefile.yml` before audio-hardware reconcile. Active-leader
+positive handle barrier added and validated on `jts3`:
+`/proc/asound/Loopback/pcm0p/sub5/status` reported non-`closed` under
+camilla#1, forced-busy fail-closed restored solo-active without arming
+camilla#2, and the real retry read exact `closed` on attempt 1 before arming
+camilla#2; HW-free tests cover released/busy/tool-missing branches. Prior
+2026-06-23: dumb receiver-side wireless sub [gap 5] landed
 HW-free — `jasper-outputd` `ChannelPick::Sub` LR4 low-pass + passive-main
 outputd LR4 high-pass at the same bond `crossover_hz`
 [config/validate/`/grouping/set`/reconcile/state/`/rooms/`] + `/rooms/` sub

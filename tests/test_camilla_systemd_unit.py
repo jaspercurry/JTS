@@ -5,8 +5,8 @@
 """Pin the jasper-camilla.service systemd unit invariants.
 
 The unit owns the load-bearing CamillaDSP launch — anything that drifts
-here can silently break audio (Restart=always, the StartLimit ceiling)
-or silently wipe a user's room correction on reboot (--statefile).
+here can silently break audio (Restart=always, the StartLimit recovery
+policy) or silently wipe a user's room correction on reboot (--statefile).
 
 These tests are a defensive moat around regressions like:
   - "we tweaked ExecStart and accidentally dropped --statefile" →
@@ -26,9 +26,30 @@ UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla.service"
 )
+RECOVER_UNIT_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "systemd" / "jasper-camilla-recover.service"
+)
+RECOVER_SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "bin" / "jasper-camilla-recover"
+)
 INSTALL_SH = (
     Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
 )
+
+
+def _value_for(unit_text: str, key: str) -> str | None:
+    for line in unit_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("["):
+            continue
+        if "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        if k.strip() == key:
+            return v.strip()
+    return None
 
 
 def test_unit_passes_cutover_statefile_to_camilladsp():
@@ -89,6 +110,45 @@ def test_unit_restarts_always_not_on_failure():
         if ln.strip().startswith("Restart=")
     ]
     assert directive_lines == ["Restart=always"], directive_lines
+
+
+def test_unit_uses_recovery_handler_instead_of_raw_reboot():
+    """JTS5's ALSA-busy failure class needs holder forensics and a bounded
+    graph restart, not an immediate blind reboot."""
+    body = UNIT_PATH.read_text()
+    assert _value_for(body, "StartLimitAction") == "none"
+    assert _value_for(body, "OnFailure") == "jasper-camilla-recover.service"
+    assert "StartLimitIntervalSec=60" in body
+    assert "StartLimitBurst=5" in body
+
+
+def test_recovery_unit_points_at_installed_helper():
+    body = RECOVER_UNIT_PATH.read_text()
+    assert _value_for(body, "Type") == "oneshot"
+    assert _value_for(body, "ExecStart") == (
+        "/usr/local/sbin/jasper-camilla-recover --reason start-limit"
+    )
+    assert _value_for(body, "TimeoutStartSec") == "45"
+
+
+def test_recovery_helper_is_bounded_and_forensic():
+    body = RECOVER_SCRIPT_PATH.read_text()
+    assert "event=camilla.recover." in body
+    assert "capture_dev_snd_holders" in body
+    assert "capture_asound_status" in body
+    assert "JASPER_CAMILLA_RECOVER_COOLDOWN_SEC" in body
+    assert "action \"parked_no_reboot\"" in body
+    assert "systemctl reboot" not in body
+
+
+def test_install_sh_installs_recovery_unit_and_helper():
+    body = (
+        Path(__file__).resolve().parent.parent
+        / "deploy" / "lib" / "install" / "systemd-units.sh"
+    ).read_text()
+    assert "deploy/systemd/jasper-camilla-recover.service" in body
+    assert "deploy/bin/jasper-camilla-recover" in body
+    assert "/usr/local/sbin/jasper-camilla-recover" in body
 
 
 def test_install_sh_creates_camilladsp_state_dirs():

@@ -330,6 +330,11 @@ def _latest_current_summed_tests(
     return latest, stale_count
 
 
+def _record_playback_id(record: Mapping[str, Any]) -> str:
+    value = record.get("summed_test_id") or record.get("playback_id")
+    return str(value or "")
+
+
 def _expected_summed_output_indices(
     topology: OutputTopology,
     speaker_group_id: str,
@@ -470,14 +475,18 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         target for target in driver_targets
         if target["target_id"] not in captured_targets
     ]
-    validated_groups = [
-        target["speaker_group_id"]
-        for target in summed_targets
-        if latest_summed_by_group.get(
-            target["speaker_group_id"],
-            {},
-        ).get("validated") is True
-    ]
+    validated_groups: list[str] = []
+    for target in summed_targets:
+        group_id = target["speaker_group_id"]
+        latest_test = latest_summed_tests_by_group.get(group_id, {})
+        latest_validation = latest_summed_by_group.get(group_id, {})
+        if latest_validation.get("validated") is not True:
+            continue
+        if not latest_test:
+            continue
+        if _record_playback_id(latest_validation) != _record_playback_id(latest_test):
+            continue
+        validated_groups.append(group_id)
     missing_summed = [
         target for target in summed_targets
         if target["speaker_group_id"] not in validated_groups
@@ -748,8 +757,9 @@ def record_driver_measurement(
         record,
     ][-MAX_DRIVER_RECORDS:]
     persisted["updated_at"] = record["created_at"]
-    _write_state(path, persisted)
-    return _with_summary(topology, persisted)
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out
 
 
 def record_summed_test_artifact(
@@ -777,6 +787,11 @@ def record_summed_test_artifact(
     summed_target = _summed_lookup(topology).get(group_id)
     playback_id = _text(playback.get("playback_id"), max_chars=120)
     artifact = playback.get("artifact") if isinstance(playback.get("artifact"), Mapping) else {}
+    stimulus = (
+        playback.get("stimulus")
+        if isinstance(playback.get("stimulus"), Mapping)
+        else {}
+    )
     expected_indices = _expected_summed_output_indices(topology, group_id)
     observed_indices = _output_indices_from_playback(playback)
     issues: list[dict[str, str]] = []
@@ -833,6 +848,7 @@ def record_summed_test_artifact(
         "playback_id": playback_id,
         "backend": playback.get("backend"),
         "artifact": dict(artifact),
+        "stimulus": dict(stimulus),
         "target_output_indices": observed_indices,
         "expected_output_indices": expected_indices,
         "tone": dict(playback.get("tone") or {}),
@@ -844,8 +860,9 @@ def record_summed_test_artifact(
         record,
     ][-MAX_SUMMED_TEST_RECORDS:]
     persisted["updated_at"] = record["created_at"]
-    _write_state(path, persisted)
-    return _with_summary(topology, persisted)
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out
 
 
 def record_summed_validation(
@@ -976,5 +993,6 @@ def record_summed_validation(
         record,
     ][-MAX_SUMMED_RECORDS:]
     persisted["updated_at"] = record["created_at"]
-    _write_state(path, persisted)
-    return _with_summary(topology, persisted)
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out

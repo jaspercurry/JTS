@@ -141,7 +141,7 @@ is the obvious one; the **443 block needs its own copy** because
 `/correction/` — the one wizard served over HTTPS (getUserMedia needs a
 secure context) — links `/assets/app.css` and its ES module by absolute
 path. Without a 443 `/assets/` location those subresource requests fall
-through to the HTTP-downgrade catch-all, `308` to `http://`, and browsers
+through to the HTTP-downgrade catch-all, redirect to `http://`, and browsers
 block them as mixed content — leaving the measurement UI unstyled and its JS
 (mic capture, sweep) dead. Keep the two blocks' caching identical; the
 regression test
@@ -182,12 +182,12 @@ directly and `install.sh` stamps the build SHA into it exactly as it does for
 `deploy/index.html`. That's the static-page analog of the shell — same
 canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
 one `#icon-back` sprite symbol it needs. Its Proceed button targets
-`/correction/proceed`; nginx redirects that to `https://$host/correction/`
-so non-default hostnames such as `jts3.local` do not depend on client-side
-JavaScript to survive the HTTP → HTTPS hop. Safe `?next=/correction/...`
-subflows become `/correction/proceed/<subflow>`, and the preflight route sends
-`Cache-Control: no-store` so phones do not keep an obsolete navigation target
-across deploys.
+`/correction/proceed`; nginx temporarily redirects that to
+`https://$host/correction/` with `Cache-Control: no-store` so non-default
+hostnames such as `jts3.local` do not depend on client-side JavaScript to
+survive the HTTP → HTTPS hop, and mobile browsers do not cache stale local
+hostname or scheme rules. Safe `?next=/correction/...` subflows become
+`/correction/proceed/<subflow>`, with the same temporary no-store redirect.
 
 ### Archetype recipes
 
@@ -1406,7 +1406,11 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-21 (`/chat/` is a dedicated socket-activated
+Last verified: 2026-06-25 (correction preflight/proceed redirects and the
+HTTPS catch-all are temporary + no-store so iOS Safari does not cache stale
+local hostname or scheme rules; verified against `deploy/nginx-jasper.conf`,
+`deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`.
+Prior pass 2026-06-21: `/chat/` is a dedicated socket-activated
 read-only conversation-history shell on port 8787, with `/data.json`,
 `/state.chat`, a doctor check, and a static ES-module paired-turn renderer.
 The Prompt 5 renderer is verified by static/pytest coverage; it still needs the

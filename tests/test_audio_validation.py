@@ -386,6 +386,7 @@ def _active_chip_inputs() -> dict:
             xvf_present=True,
             capture_channels=6,
             recommended_channels=6,
+            alsa_card_name="Array",
             variant_id="xvf3800_legacy_square_6ch",
             geometry="square",
             chip_beam_plan="xvf_square_fixed_150_210",
@@ -524,6 +525,8 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert artifact.checks["runtime_identity"]["required"] is False
     assert "system_hostname" in artifact.checks["runtime_identity"]["observed"]
     assert artifact.checks["runtime_profile"]["status"] == "pass"
+    assert artifact.checks["runtime_env"]["observed"]["aec_device"] == "Array"
+    assert artifact.checks["mic_detected"]["observed"]["alsa_card_name"] == "Array"
     assert artifact.checks["dac_support"]["status"] == "pass"
     assert artifact.checks["dac_reference"]["status"] == "pass"
     assert artifact.checks["wake_legs"]["status"] == "pass"
@@ -536,18 +539,60 @@ def test_chip_aec_readiness_requires_calibrated_output_dac():
     inputs = _active_chip_inputs()
     inputs["system_env"] = {
         **inputs["system_env"],
-        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x_studio",
         "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
     }
 
     artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
 
     assert artifact.status == "fail"
-    assert artifact.dac_id == "hifiberry_dac8x"
+    assert artifact.dac_id == "hifiberry_dac8x_studio"
     assert artifact.checks["dac_support"]["status"] == "fail"
-    assert artifact.checks["dac_support"]["observed"]["status"] == "needs_calibration"
-    assert "needs chip-AEC calibration" in artifact.checks["dac_support"]["summary"]
+    assert (
+        artifact.checks["dac_support"]["observed"]["status"]
+        == "needs_calibration"
+    )
+    assert "needs per-profile chip-AEC" in artifact.checks["dac_support"]["summary"]
     assert artifact.recommendation == "calibrate_output_dac_before_chip_aec"
+
+
+def test_chip_aec_readiness_treats_dac8x_as_approved_gate():
+    inputs = _active_chip_inputs()
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+        "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
+    }
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.checks["dac_support"]["status"] == "pass"
+    assert artifact.checks["dac_support"]["observed"]["status"] == "approved"
+
+
+def test_chip_aec_readiness_names_stale_saved_aec_card():
+    inputs = _active_chip_inputs()
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
+        "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+        "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
+        "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
+    }
+    inputs["service_states"] = {
+        **inputs["service_states"],
+        "jasper-aec-bridge.service": "inactive",
+    }
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.status == "fail"
+    runtime_profile = artifact.checks["runtime_profile"]
+    assert runtime_profile["status"] == "fail"
+    assert "configured AEC mic L16K6Ch" in str(runtime_profile["observed"])
+    assert "detected XVF card Array" in str(runtime_profile["observed"])
+    assert artifact.checks["runtime_env"]["observed"]["aec_device"] == "L16K6Ch"
+    assert artifact.checks["mic_detected"]["observed"]["alsa_card_name"] == "Array"
 
 
 def test_chip_aec_readiness_requires_validated_mic_beam_plan():

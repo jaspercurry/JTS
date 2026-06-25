@@ -57,7 +57,9 @@ from typing import Any
 
 from ..control.restart_broker import manage_units
 from ..install_profile import install_profile_allows_local_sources, read_install_profile
+from ..local_sources import local_source_lifecycle
 from ..log_event import log_event
+from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ._common import (
     bonded_follower_active,
     begin_request,
@@ -74,18 +76,34 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-# (source-key, systemd-unit) pairs. The wizard refers to sources by key
-# (airplay / bluetooth / spotify_connect / usbsink) in its JSON; the
-# systemd units are an implementation detail kept here.
-AIRPLAY_UNIT = "shairport-sync.service"
-SPOTIFY_CONNECT_UNIT = "librespot.service"
+def _intent_unit(source: Source) -> str:
+    unit = local_source_lifecycle(source).intent_unit
+    if unit is None:
+        raise RuntimeError(f"{source.value} has no systemd intent unit")
+    return unit
+
+
+def _single_unit(units: tuple[str, ...], label: str) -> str:
+    if len(units) != 1:
+        raise RuntimeError(f"{label} expected one unit, got {units!r}")
+    return units[0]
+
+
+# The wizard refers to sources by key (airplay / bluetooth /
+# spotify_connect / usbsink) in its JSON. Systemd unit identity lives in
+# jasper.local_sources so /sources/ cannot drift from the reconciler.
+AIRPLAY_UNIT = _intent_unit(Source.AIRPLAY)
+SPOTIFY_CONNECT_UNIT = _intent_unit(Source.SPOTIFY)
 # jasper-usbsink.service is the persistent /sources intent unit; the
 # init unit is an implementation subresource that owns the host-visible
 # ConfigFS gadget.
-USBSINK_UNIT = "jasper-usbsink.service"
-USBSINK_INIT_UNIT = "jasper-usbsink-init.service"
+USBSINK_UNIT = _intent_unit(Source.USBSINK)
+USBSINK_INIT_UNIT = _single_unit(
+    local_source_lifecycle(Source.USBSINK).advertise_units,
+    "USB Audio Input advertise units",
+)
 
-VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
+VALID_SOURCES = tuple(spec.wizard_key for spec in MUSIC_SOURCE_SPECS)
 SOURCE_UNAVAILABLE = {
     "airplay": (
         "AirPlay is not installed on this speaker. Re-run install.sh to "

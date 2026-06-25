@@ -35,11 +35,17 @@ hits the exact same shape under CIFS I/O stall ([HAOS issue
 1. **T5.1 ✅** ([PR #286](https://github.com/jaspercurry/JTS/pull/286)):
    `StartLimitAction=reboot` (NOT `reboot-force` — clean shutdown
    required on a 1 GB Pi so zram dirty pages sync) on the critical
-   jasper-* units (outputd, camilla, aec-bridge, voice, control).
+   jasper-* units where a restart spiral should recover by clean reboot
+   (outputd, fanin, aec-bridge, voice, control).
    Per-unit `StartLimitBurst`/`StartLimitIntervalSec` preserve
    existing transient-tolerance patterns (e.g. jasper-voice keeps
-   20/300 for Apple-dongle de-enumeration). Pure systemd
-   composition, zero new code.
+   20/300 for Apple-dongle de-enumeration). 2026-06-25 Camilla nuance:
+   `jasper-camilla.service` still has `Restart=always` and a 5/60
+   start-limit, but uses `StartLimitAction=none` +
+   `OnFailure=jasper-camilla-recover.service` so ALSA-busy graph
+   ownership failures capture `/dev/snd` holders and stay reachable
+   instead of rebooting immediately. The rest of T5.1 remains pure
+   systemd composition.
 2. **T5.2 ✅** ([PR #287](https://github.com/jaspercurry/JTS/pull/287)):
    new [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
    `SystemSupervisor`. Mirrors the proven `ShairportSupervisor`
@@ -51,8 +57,10 @@ hits the exact same shape under CIFS I/O stall ([HAOS issue
    journal lines.
 
 The two layers compose cleanly. T5.1 catches "a specific critical
-daemon is broken;" T5.2 catches "the whole box is wedged." Tier 5
-hardware watchdog stays in place as the floor.
+daemon is broken" for direct-reboot units; Camilla's sibling recovery
+handler catches "the DSP graph hit a hardware-owner race"; T5.2 catches
+"the whole box is wedged." Tier 5 hardware watchdog stays in place as
+the floor.
 
 2026-06-12 output-DAC nuance: `jasper-outputd.service` owns the
 physical DAC in the outputd cutover topology; CamillaDSP writes to
@@ -443,4 +451,7 @@ risk, not worth being first.
 
 ---
 
-Last verified: 2026-06-12
+Last verified: 2026-06-25 (current T5.1 shipped-unit list and Camilla
+`OnFailure=jasper-camilla-recover.service` exception rechecked against
+systemd units and doctor policy; historical option matrix not fully
+re-reviewed)

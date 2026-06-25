@@ -39,7 +39,7 @@ def _icon_for(class_of_device: int, uuids: list[str], icon_hint: str) -> str:
     if icon_hint:
         return icon_hint
     uu = " ".join(uuids).lower()
-    if UUID_HID in uu:
+    if UUID_HID in uu or UUID_HOGP in uu:
         return "input-keyboard"
     if UUID_A2DP_SINK in uu or UUID_A2DP_SOURCE in uu or UUID_HFP_HF in uu:
         return "audio-headphones"

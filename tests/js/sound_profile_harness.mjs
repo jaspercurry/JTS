@@ -444,6 +444,11 @@ function setupHarness(fetchHandler, options = {}) {
     }
   };
   const dispatchChange = (target) => {
+    if (target && target.id) {
+      if (!elements.has(target.id)) elements.set(target.id, makeEl(target.id));
+      elements.get(target.id).value = target.value || "";
+      elements.get(target.id).checked = !!target.checked;
+    }
     for (const fn of viewBody._listeners.change || []) {
       fn({ target });
     }
@@ -462,10 +467,15 @@ function setupHarness(fetchHandler, options = {}) {
   };
   const dispatchInput = (attrs, value = "") => {
     const target = {
+      id: attrs.id || "",
       value,
       getAttribute(name) { return attrs[name] || ""; },
       hasAttribute(name) { return Object.prototype.hasOwnProperty.call(attrs, name); },
     };
+    if (target.id) {
+      if (!elements.has(target.id)) elements.set(target.id, makeEl(target.id));
+      elements.get(target.id).value = value;
+    }
     for (const fn of viewBody._listeners.input || []) {
       fn({ target });
     }
@@ -579,6 +589,86 @@ async function testLiveTabReplay() {
     liveDraftEpoch: liveDraftRequests[0].dsp_write_epoch,
     liveTabMarked: harness.elements.get("tab-draft").classList.contains("is-live"),
   };
+}
+
+async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
+  const settingsPosts = [];
+  const auditionPosts = [];
+  const statePayload = {
+    ...basePayload,
+    profile: { ...flatProfile, enabled: false },
+    filter_count: 0,
+    dsp_write_epoch: "state-0",
+    sound_settings: {
+      ...basePayload.sound_settings,
+      volume_floor_db: -50,
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./state": () => Promise.resolve(response(statePayload)),
+    "./apply": (_path, options = {}) => Promise.resolve(response({
+      ...statePayload,
+      profile: JSON.parse(options.body || "{}"),
+      dsp_write_epoch: "apply-1",
+    })),
+    "./settings": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      settingsPosts.push(body);
+      return Promise.resolve(response({
+        ...statePayload,
+        sound_settings: body,
+        dsp_write_epoch: "settings-1",
+      }));
+    },
+    "./volume-floor/audition": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      auditionPosts.push(body);
+      return Promise.resolve(response({
+        ok: true,
+        active: true,
+        continuous: true,
+        status: auditionPosts.length === 1 ? "started" : "updated",
+        volume_floor_db: body.volume_floor_db,
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush();
+  await harness.flush();
+
+  harness.elements.get("tab-saved").click();
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="save-volume-floor"') || !html.includes(">Saved</button>")) {
+    fail("volume floor should render an explicit saved/save button", { html });
+  }
+
+  harness.dispatchInput({ id: "set-volume-floor" }, "-42");
+  await harness.flush();
+  if (settingsPosts.length !== 0) {
+    fail("dragging the volume floor must not persist settings", { settingsPosts });
+  }
+
+  harness.dispatchClick({ "data-act": "toggle-volume-floor-tone" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (auditionPosts.length !== 1 || auditionPosts[0].volume_floor_db !== -42) {
+    fail("Start tone should audition the unsaved floor draft", { auditionPosts });
+  }
+  if (settingsPosts.length !== 0) {
+    fail("auditioning the volume floor must not persist settings", { settingsPosts });
+  }
+
+  harness.dispatchClick({ "data-act": "save-volume-floor" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (settingsPosts.length !== 1 || settingsPosts[0].volume_floor_db !== -42) {
+    fail("Save floor should persist the selected floor exactly once", { settingsPosts });
+  }
+  if (!harness.elements.get("status").textContent.includes("Volume floor saved.")) {
+    fail("saving the volume floor should provide visible confirmation", {
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  return { volumeFloorRequiresExplicitSaveButAuditionsDraft: true };
 }
 
 async function testQuietTestSurfaceSurvivesStartupActions() {
@@ -882,7 +972,7 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
             label: "Play combined test",
             enabled: true,
             endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, duration_ms: 500 },
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
           },
           record_combined_result: {
             id: "record_combined_result",
@@ -945,12 +1035,16 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
   if (posts[0].level_dbfs !== -40) {
     fail("Combined test should POST the selected level inside the envelope", { posts });
   }
+  if (posts[0].stimulus !== "speech" || posts[0].duration_ms !== 12000) {
+    fail("Combined test should request the looped speech stimulus", { posts });
+  }
   return { combinedTestLevelPostsSelectedBoundedLevel: true };
 }
 
 async function testCombinedTestButtonStopsActiveRequest() {
   const start = deferred();
   const stopPosts = [];
+  const levelPosts = [];
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/measurements": () => Promise.resolve(response({
@@ -989,7 +1083,132 @@ async function testCombinedTestButtonStopsActiveRequest() {
             label: "Play combined test",
             enabled: true,
             endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, duration_ms: 500 },
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+        },
+      }],
+    })),
+    "./active-speaker/summed-test": () => start.promise,
+    "./active-speaker/summed-test/level": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      levelPosts.push(body);
+      return Promise.resolve(response({
+        status: "loaded",
+        speaker_group_id: body.speaker_group_id,
+        playback_id: "summed-playback-1",
+        calibration_level: levelPayload(body.level_dbfs),
+        commissioning_load: { load: { status: "loaded" } },
+      }));
+    },
+    "./active-speaker/summed-test/stop": (_path, options = {}) => {
+      stopPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({ status: "stopped", reason: "operator_stop" }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const originalSetTimeout = globalThis.window.setTimeout;
+  globalThis.window.setTimeout = (fn, ms) => {
+    if (ms === 250 || ms === 120) {
+      queueMicrotask(fn);
+      return 1;
+    }
+    return originalSetTimeout(fn, ms);
+  };
+  try {
+    harness.dispatchClick({
+      "data-act": "prepare-summed-test",
+      "data-group-id": "main",
+      "data-label": "Main speaker",
+    });
+    await harness.flush(); await harness.flush(); await harness.flush();
+    let html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
+      fail("combined test should turn into a fixed red Stop action while active", { html });
+    }
+    const slider = html.match(/<input type="range" data-summed-test-level="main"[^>]*>/);
+    if (!slider || slider[0].includes("disabled") ||
+        html.includes("Stop and replay the test audio to use a different level.") ||
+        !html.includes("Changes apply while the test audio is playing.")) {
+      fail("combined level slider should stay live while test audio is playing", { html, slider });
+    }
+    const soundsRight = html.match(/<button type="button" class="btn btn--primary" [^>]*data-act="record-summed-validation"[^>]*>Sounds right<\/button>/);
+    if (!soundsRight || soundsRight[0].includes("disabled")) {
+      fail("Sounds right should stay available while test audio is playing", { html, soundsRight });
+    }
+    harness.dispatchInput({ "data-summed-test-level": "main" }, "-35");
+    await harness.flush(); await harness.flush(); await harness.flush();
+    if (levelPosts.length !== 1 || levelPosts[0].level_dbfs !== -35) {
+      fail("dragging the combined slider while playing should update the active test level", { levelPosts });
+    }
+    harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
+    await harness.flush(); await harness.flush(); await harness.flush();
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+  }
+  if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_stop") {
+    fail("Stop should post to the combined-test stop endpoint once", { stopPosts });
+  }
+  start.resolve(response({
+    playback: { status: "stopped", audio_emitted: false, confirmable: false },
+    calibration_level: levelPayload(-40),
+    measurements: { status: "needs_summed_validation", summary: {} },
+  }));
+  await harness.flush(); await harness.flush();
+  return { combinedTestButtonStopsActiveRequest: true };
+}
+
+async function testCombinedSoundsRightStopsAndSavesActiveLoop() {
+  const start = deferred();
+  const stopPosts = [];
+  const validationPosts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "needs_summed_validation",
+      summary: {
+        driver_measurements_complete: true,
+        validated_summed_group_count: 0,
+        summed_validation_complete: false,
+        latest_driver_measurements: {
+          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+        },
+        latest_summed_tests: {},
+        latest_summed_validations: {},
+      },
+      permissions: {},
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "needs_combined_check",
+      test_level: {
+        requested_level_dbfs: -72,
+        min_level_dbfs: -80,
+        max_level_dbfs: 0,
+        step_db: 1,
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_test",
+        status_label: "next",
+        message: "Run the combined speaker test.",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: false,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "" },
           },
         },
       }],
@@ -997,7 +1216,35 @@ async function testCombinedTestButtonStopsActiveRequest() {
     "./active-speaker/summed-test": () => start.promise,
     "./active-speaker/summed-test/stop": (_path, options = {}) => {
       stopPosts.push(JSON.parse(options.body || "{}"));
-      return Promise.resolve(response({ status: "stopped", reason: "operator_stop" }));
+      return Promise.resolve(response({
+        status: "stopped",
+        reason: "operator_confirmed",
+        playback_id: "summed-playback-1",
+      }));
+    },
+    "./active-speaker/summed-validation": (_path, options = {}) => {
+      validationPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        status: "complete",
+        summary: {
+          driver_measurements_complete: true,
+          summed_validation_complete: true,
+          latest_summed_tests: {
+            main: {
+              captured: true,
+              audio_emitted: true,
+              summed_test_id: "summed-playback-1",
+            },
+          },
+          latest_summed_validations: {
+            main: {
+              captured: true,
+              validated: true,
+              summed_test_id: "summed-playback-1",
+            },
+          },
+        },
+      }));
     },
   });
   const harness = setupHarness(fetchHandler);
@@ -1018,25 +1265,127 @@ async function testCombinedTestButtonStopsActiveRequest() {
       "data-label": "Main speaker",
     });
     await harness.flush(); await harness.flush(); await harness.flush();
-    let html = harness.elements.get("view-body").innerHTML;
-    if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
-      fail("combined test should turn into a fixed red Stop action while active", { html });
+    harness.dispatchClick({
+      "data-act": "record-summed-validation",
+      "data-group-id": "main",
+      "data-summed-test-id": "",
+      "data-outcome": "blend_ok",
+    });
+    await harness.flush(); await harness.flush();
+    if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_confirmed") {
+      fail("Sounds right while playing should stop with a confirmation reason", { stopPosts });
     }
-    harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
-    await harness.flush(); await harness.flush(); await harness.flush();
+    start.resolve(response({
+      playback: {
+        status: "completed",
+        audio_emitted: true,
+        confirmable: true,
+        playback_id: "summed-playback-1",
+        tone: { level_dbfs: -72 },
+      },
+      calibration_level: levelPayload(-72),
+      measurements: {
+        status: "needs_summed_validation",
+        summary: {
+          driver_measurements_complete: true,
+          summed_validation_complete: false,
+          latest_summed_tests: {
+            main: {
+              captured: true,
+              audio_emitted: true,
+              summed_test_id: "summed-playback-1",
+              playback_id: "summed-playback-1",
+              issues: [],
+            },
+          },
+          latest_summed_validations: {},
+        },
+      },
+    }));
+    for (let i = 0; i < 10; i += 1) await harness.flush();
   } finally {
     globalThis.window.setTimeout = originalSetTimeout;
   }
-  if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_stop") {
-    fail("Stop should post to the combined-test stop endpoint once", { stopPosts });
+  if (validationPosts.length !== 1 ||
+      validationPosts[0].summed_test_id !== "summed-playback-1" ||
+      validationPosts[0].operator_listening_check !== true) {
+    fail("Sounds right should save the confirmed active summed test", { validationPosts });
   }
-  start.resolve(response({
-    playback: { status: "stopped", audio_emitted: false, confirmable: false },
-    calibration_level: levelPayload(-40),
-    measurements: { status: "needs_summed_validation", summary: {} },
-  }));
-  await harness.flush(); await harness.flush();
-  return { combinedTestButtonStopsActiveRequest: true };
+  return { combinedSoundsRightStopsAndSavesActiveLoop: true };
+}
+
+async function testStaleSummedValidationDoesNotRenderValidatedGroup() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  const measurements = {
+    status: "needs_summed_validation",
+    summary: {
+      ...summedSummary({
+        main: {
+          captured: true,
+          audio_emitted: true,
+          summed_test_id: "sum-2",
+          playback_id: "sum-2",
+        },
+      }),
+      latest_summed_validations: {
+        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
+      },
+    },
+    permissions: {},
+    issues: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "needs_combined_check",
+      test_level: {
+        requested_level_dbfs: -72,
+        min_level_dbfs: -80,
+        max_level_dbfs: 0,
+        step_db: 1,
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_record",
+        status_label: "ready to record",
+        message: "Combined speaker test played. Record what you heard.",
+        latest_test_id: "sum-2",
+        has_audible_test: true,
+        validated: false,
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: true,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "sum-2", operator_listening_check: true },
+          },
+        },
+      }],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes(">validated</span>")) {
+    fail("stale summed validation should not render as current validated state", { html });
+  }
+  if (!html.includes(">ready to record</span>") ||
+      !html.includes('data-summed-test-id="sum-2"') ||
+      html.includes('data-summed-test-id="sum-1"')) {
+    fail("combined result should point at the latest audible test", { html });
+  }
+  return { staleSummedValidationDoesNotRenderValidatedGroup: true };
 }
 
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
@@ -1253,15 +1602,15 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
 
   const html = harness.elements.get("view-body").innerHTML;
   for (const expected of [
-    "saved for review",
+    "blocked",
+    "cannot be made active from this page yet",
     "cannot switch normal playback to it from here yet",
-    "Save profile",
   ]) {
     if (!html.includes(expected)) {
       fail("Apply-blocked profiles should explain the limitation in user terms", { expected, html });
     }
   }
-  for (const forbidden of ["outputd owns", "handoff"]) {
+  for (const forbidden of ["outputd owns", "handoff", "Save profile"]) {
     if (html.includes(forbidden)) {
       fail("Apply-blocked profiles should not leak backend ownership vocabulary", { forbidden, html });
     }
@@ -2081,6 +2430,107 @@ async function testSummedValidationRefreshesBaselineProfileState() {
   return { summedValidationRefreshesBaselineProfileState: true };
 }
 
+async function testSaveAndApplyUsesSingleFinishEndpoint() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  const measurements = {
+    status: "ready_for_baseline",
+    summary: {
+      ...summedSummary({
+        main: {
+          captured: true,
+          audio_emitted: true,
+          summed_test_id: "sum-1",
+          playback_id: "sum-1",
+        },
+      }),
+      validated_summed_group_count: 1,
+      summed_validation_complete: true,
+      latest_summed_validations: {
+        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
+      },
+    },
+    permissions: { may_compile_baseline: true },
+    issues: [],
+  };
+  const baselineReady = {
+    status: "ready_to_compile",
+    permissions: { may_compile: true, may_apply: false },
+    config: { basename: "active_speaker_baseline.yml" },
+    issues: [],
+  };
+  const baselineApplied = {
+    status: "applied",
+    permissions: { may_compile: false, may_apply: false },
+    config: { basename: "active_speaker_baseline.yml" },
+    issues: [],
+  };
+  const finishPosts = [];
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/baseline-profile": (_path, options = {}) => {
+      if (options.method === "POST") {
+        fail("final active profile CTA must not post the compile-only endpoint");
+      }
+      return Promise.resolve(response(baselineReady));
+    },
+    "./active-speaker/baseline-profile/apply": () => {
+      fail("final active profile CTA must not call the old apply endpoint");
+    },
+    "./active-speaker/baseline-profile/save-and-apply": (_path, options = {}) => {
+      finishPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        status: "applied",
+        profile: baselineApplied,
+        apply: { result: "success" },
+        output_safety: {
+          safety_muted: false,
+          active_config_path: "/var/lib/camilladsp/configs/active_speaker_baseline.yml",
+        },
+        issues: [],
+      }));
+    },
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "ready_to_save_profile",
+      test_level: levelPayload(-72).test_signal,
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "validated",
+        status_label: "ready",
+        has_audible_test: true,
+        validated: true,
+        actions: {
+          record_combined_result: {
+            id: "record_combined_result",
+            enabled: false,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "sum-1" },
+          },
+        },
+      }],
+    })),
+  }));
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({ "data-act": "save-apply-baseline-profile" });
+  for (let i = 0; i < 8; i += 1) await harness.flush();
+
+  if (finishPosts.length !== 1) {
+    fail("save/apply should be a single backend-owned mutation", { finishPosts });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("This is now your active speaker profile")) {
+    fail("successful finish should render the applied active profile", { html });
+  }
+  if (!harness.elements.get("status").textContent.includes("saved and applied")) {
+    fail("successful finish should provide one clear success message", {
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  return { saveAndApplyUsesSingleFinishEndpoint: true };
+}
+
 async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   const commissionState = {
     commission_load: {
@@ -2300,7 +2750,7 @@ async function testCommissionToneFailureStopsAutoRamp() {
   return { commissionToneFailureStopsAutoRamp: true };
 }
 
-async function testCommissionRampLimitStopsAutoRamp() {
+async function testCommissionRampLimitKeepsConfirmationOpen() {
   let commissionState = {
     commission_load: {
       status: "loaded",
@@ -2320,6 +2770,18 @@ async function testCommissionRampLimitStopsAutoRamp() {
       if (body.role === "tweeter") {
         fail("safe-limit stop must not advance into the tweeter", { posts });
       }
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: "woofer", audible_gain_db: 0 },
+          rollback_available: true,
+        },
+        ramp: {
+          confirmed_roles: [],
+          pending: { role: "woofer", gain_db: 0, frequency_hz: 80 },
+        },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
       return Promise.resolve(response({
         status: "blocked",
         role: "woofer",
@@ -2336,12 +2798,7 @@ async function testCommissionRampLimitStopsAutoRamp() {
     },
     "./active-speaker/commission-ramp-abort": (p, o) => {
       posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      commissionState = {
-        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "aborted" }));
+      fail("safe-limit response must not abort the pending confirmation", { posts });
     },
   });
   const harness = setupHarness(fetchHandler);
@@ -2355,14 +2812,17 @@ async function testCommissionRampLimitStopsAutoRamp() {
   if (rampSteps.length !== 1) {
     fail("safe-limit response must stop the automatic ramp after one blocked step", { posts });
   }
-  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
-    fail("safe-limit response should hard Stop the continuous tone", { posts });
+  if (posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
+    fail("safe-limit response must leave the pending tone confirmable", { posts });
   }
   const html = harness.elements.get("view-body").innerHTML;
   if (!html.includes("Reached the safe test limit")) {
     fail("safe-limit response should surface the room-facing action", { html });
   }
-  return { commissionRampLimitStopsAutoRamp: true };
+  if (!html.includes("I hear the woofer")) {
+    fail("safe-limit response should keep the heard-confirmation CTA visible", { html });
+  }
+  return { commissionRampLimitKeepsConfirmationOpen: true };
 }
 
 async function testResetPartialCleanupSurfacesWarning() {
@@ -2539,6 +2999,7 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
 
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
+results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsRenderNoActiveDriverTestCard());
 results.push(await testActiveCrossoverFirstStepRender());
@@ -2546,6 +3007,8 @@ results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCombinedTestButtonStopsActiveRequest());
+results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
+results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
@@ -2562,12 +3025,13 @@ results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
 results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());
 results.push(await testSummedByEarValidationExcludesMicCapture());
 results.push(await testSummedValidationRefreshesBaselineProfileState());
+results.push(await testSaveAndApplyUsesSingleFinishEndpoint());
 results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
 results.push(await testCommissionArmBlockedSurfacesReason());
 results.push(await testCommissionActiveGraphBlockSurfacesReason());
 results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
-results.push(await testCommissionRampLimitStopsAutoRamp());
+results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());

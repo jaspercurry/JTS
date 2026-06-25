@@ -40,11 +40,13 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/driver-measurement record one measured driver result
   POST /active-speaker/driver-capture analyze + record one phone-mic driver WAV
   POST /active-speaker/summed-test run combined-driver test artifact/playback
+  POST /active-speaker/summed-test/level update active combined-test level
   POST /active-speaker/summed-test/stop stop active combined-driver playback
   POST /active-speaker/summed-validation record summed crossover validation
   POST /active-speaker/summed-capture analyze + record one phone-mic summed WAV
   POST /active-speaker/baseline-profile compile active baseline YAML
   POST /active-speaker/baseline-profile/apply explicitly apply active baseline
+  POST /active-speaker/baseline-profile/save-and-apply finish commissioning
   POST /active-speaker/channel-identity mark/clear physical identity evidence
   POST /active-speaker/channel-protection mark/clear tweeter protection evidence
   POST /output-topology save a complete speaker/DAC topology draft
@@ -178,9 +180,10 @@ DEFAULT_ACTIVE_SPEAKER_CAPTURE_DIR = Path("/var/lib/jasper/active_speaker_captur
 ACTIVE_SPEAKER_CAPTURE_DIR_ENV = "JASPER_ACTIVE_SPEAKER_CAPTURE_DIR"
 LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
 VOLUME_FLOOR_TONE_ALSA_DEVICE = "correction_substream"
-VOLUME_FLOOR_TONE_FREQ_HZ = 1000.0
+VOLUME_FLOOR_TONE_FREQS_HZ = (125.0, 500.0, 2000.0)
 VOLUME_FLOOR_TONE_SOURCE_DBFS = -12.0
 VOLUME_FLOOR_TONE_CHUNK_DURATION_S = 8.0
+VOLUME_FLOOR_TONE_SEGMENT_DURATION_S = 0.75
 VOLUME_FLOOR_TONE_MAX_DURATION_S = 10 * 60.0
 VOLUME_FLOOR_TONE_SAMPLE_RATE = 48000
 VOLUME_FLOOR_TONE_STARTUP_CHECK_S = 0.08
@@ -653,20 +656,70 @@ async def _reconcile_volume_curve_after_settings(
 
 
 def _volume_floor_tone_wav_path() -> Path:
-    from jasper.correction.playback import _ensure_tone_wav
+    """Generate and cache the volume-floor reference WAV.
 
-    return _ensure_tone_wav(
-        freq_hz=VOLUME_FLOOR_TONE_FREQ_HZ,
-        duration_s=VOLUME_FLOOR_TONE_CHUNK_DURATION_S,
-        dbfs=VOLUME_FLOOR_TONE_SOURCE_DBFS,
-        sample_rate=VOLUME_FLOOR_TONE_SAMPLE_RATE,
-        cache_dir=Path(
-            os.environ.get(
-                "JASPER_VOLUME_FLOOR_TONE_DIR",
-                "/var/lib/jasper/correction/tones",
-            )
-        ),
+    This is a short repeating low/mid/high sequence, not a single steady sine.
+    The goal is to let a household judge whether 1% is useful across the speaker
+    instead of accidentally tuning the floor around one narrow frequency.
+    """
+
+    cache_dir = Path(
+        os.environ.get(
+            "JASPER_VOLUME_FLOOR_TONE_DIR",
+            "/var/lib/jasper/correction/tones",
+        )
     )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    freq_key = "-".join(str(int(freq)) for freq in VOLUME_FLOOR_TONE_FREQS_HZ)
+    wav_path = cache_dir / (
+        f"volume_floor_reference_{freq_key}Hz_"
+        f"{int(VOLUME_FLOOR_TONE_CHUNK_DURATION_S * 1000)}ms_"
+        f"{int(abs(VOLUME_FLOOR_TONE_SOURCE_DBFS) * 10)}dbm_"
+        f"{VOLUME_FLOOR_TONE_SAMPLE_RATE}Hz.wav"
+    )
+    if wav_path.exists():
+        return wav_path
+
+    import numpy as np
+    from scipy.io import wavfile
+
+    sample_rate = VOLUME_FLOOR_TONE_SAMPLE_RATE
+    total_n = int(round(VOLUME_FLOOR_TONE_CHUNK_DURATION_S * sample_rate))
+    segment_n = max(1, int(round(VOLUME_FLOOR_TONE_SEGMENT_DURATION_S * sample_rate)))
+    amp = 10 ** (VOLUME_FLOOR_TONE_SOURCE_DBFS / 20.0)
+    fade = max(8, int(0.005 * sample_rate))
+    parts: list[Any] = []
+    samples_written = 0
+    while samples_written < total_n:
+        for freq_hz in VOLUME_FLOOR_TONE_FREQS_HZ:
+            t = np.arange(segment_n, dtype=np.float64) / sample_rate
+            sig = amp * np.sin(2 * math.pi * freq_hz * t)
+            if fade * 2 < segment_n:
+                sig[:fade] *= np.linspace(0.0, 1.0, fade) ** 2
+                sig[-fade:] *= np.linspace(1.0, 0.0, fade) ** 2
+            parts.append(sig)
+            samples_written += len(sig)
+            if samples_written >= total_n:
+                break
+    out = np.concatenate(parts)[:total_n]
+    int16 = (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16)
+    tmp_path = wav_path.with_name(f".{wav_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        wavfile.write(str(tmp_path), sample_rate, int16)
+        os.replace(tmp_path, wav_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+    logger.info(
+        "volume floor reference tone cached: %s (%s Hz, %.1f s, %.1f dBFS)",
+        wav_path,
+        ",".join(str(int(freq)) for freq in VOLUME_FLOOR_TONE_FREQS_HZ),
+        VOLUME_FLOOR_TONE_CHUNK_DURATION_S,
+        VOLUME_FLOOR_TONE_SOURCE_DBFS,
+    )
+    return wav_path
 
 
 class _LoopingVolumeFloorTone:
@@ -2035,6 +2088,9 @@ COMMISSION_TONE_SAMPLE_RATE = 48000
 COMMISSION_TONE_SOURCE_DBFS = 0.0
 COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
 SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
+SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
+SUMMED_TEST_CONFIRM_STOP_REASONS = {"operator_confirmed"}
+SUMMED_TEST_MAX_LOOP_SECONDS = 10 * 60.0
 COMMISSION_TONE_MUX_SOCKET = os.environ.get(
     "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
 )
@@ -2085,6 +2141,12 @@ def _commission_tone_wav_path(
         dbfs=COMMISSION_TONE_SOURCE_DBFS,
         sample_rate=COMMISSION_TONE_SAMPLE_RATE,
     )
+
+
+def _combined_speech_stimulus_wav_path() -> tuple[Path, dict[str, Any]]:
+    from jasper.active_speaker.speech_stimulus import ensure_combined_speech_stimulus
+
+    return ensure_combined_speech_stimulus()
 
 
 def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
@@ -2369,6 +2431,27 @@ def _summed_test_session_stop_reason(session: dict[str, Any]) -> str | None:
     return None
 
 
+def _summed_test_playback_at_session_level(
+    playback: dict[str, Any],
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    out = dict(playback)
+    with _SUMMED_TEST_TONE_LOCK:
+        level = session.get("level_dbfs")
+        load_payload = session.get("load_payload")
+    try:
+        level_dbfs = float(level)
+    except (TypeError, ValueError):
+        level_dbfs = None
+    if level_dbfs is not None and math.isfinite(level_dbfs):
+        tone = dict(out.get("tone") if isinstance(out.get("tone"), dict) else {})
+        tone["level_dbfs"] = level_dbfs
+        out["tone"] = tone
+    if isinstance(load_payload, dict):
+        out["commissioning_load"] = load_payload
+    return out
+
+
 def _summed_test_stopped_playback(
     playback: dict[str, Any],
     *,
@@ -2376,12 +2459,13 @@ def _summed_test_stopped_playback(
     fanin_gate: dict[str, Any] | None = None,
     reason: str = "operator_stop",
 ) -> dict[str, Any]:
+    confirmed = reason in SUMMED_TEST_CONFIRM_STOP_REASONS
     out = dict(playback)
     out.update({
-        "status": "stopped",
-        "backend": SUMMED_COMMISSION_TONE_BACKEND,
-        "audio_emitted": False,
-        "confirmable": False,
+        "status": "completed" if confirmed else "stopped",
+        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
+        "audio_emitted": bool(confirmed),
+        "confirmable": bool(confirmed),
         "stop_reason": reason,
         "issues": [
             issue for issue in playback.get("issues", [])
@@ -2438,6 +2522,87 @@ def _active_speaker_stop_summed_test_tone(*, reason: str) -> dict[str, Any]:
         payload.get("status"),
     )
     return payload
+
+
+async def _active_speaker_summed_test_level_payload(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Apply a level change to the currently playing summed commissioning loop."""
+
+    from jasper.active_speaker.calibration_level import calibration_level_payload
+
+    if not isinstance(raw, dict):
+        raise ValueError("summed test level request must be an object")
+    requested_group_id = str(raw.get("speaker_group_id") or "").strip()
+    requested_level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
+    calibration_level = calibration_level_payload(
+        requested_level_dbfs=requested_level,
+    )
+    level_dbfs = float(
+        calibration_level.get("test_signal", {}).get("requested_level_dbfs", -80.0)
+    )
+    with _SUMMED_TEST_TONE_LOCK:
+        session = _SUMMED_TEST_TONE_SESSION
+        if not session:
+            return {
+                "status": "idle",
+                "reason": "no_active_summed_test",
+                "calibration_level": calibration_level,
+            }
+        session_group_id = str(session.get("speaker_group_id") or "").strip()
+        if requested_group_id and requested_group_id != session_group_id:
+            return {
+                "status": "blocked",
+                "reason": "different_active_summed_test",
+                "speaker_group_id": session_group_id,
+                "requested_speaker_group_id": requested_group_id,
+                "playback_id": session.get("playback_id"),
+                "calibration_level": calibration_level,
+            }
+        speaker_group_id = session_group_id or requested_group_id
+        playback_id = session.get("playback_id")
+
+    topology = load_output_topology()
+    preset, resolved_preview = resolve_commission_inputs()
+    load_payload = await _active_speaker_load_summed_commissioning_config(
+        topology=topology,
+        speaker_group_id=speaker_group_id,
+        level_dbfs=level_dbfs,
+        startup_gate_calibration_level=calibration_level_payload(),
+        preset=preset,
+        crossover_preview=resolved_preview,
+        camilla_factory=camilla_factory,
+        reconcile_output_hardware=False,
+    )
+    load_state = (
+        load_payload.get("load")
+        if isinstance(load_payload.get("load"), dict)
+        else {}
+    )
+    loaded = load_state.get("status") == "loaded"
+    status = "loaded" if loaded else "failed"
+    if loaded:
+        with _SUMMED_TEST_TONE_LOCK:
+            if _SUMMED_TEST_TONE_SESSION is session:
+                session["level_dbfs"] = level_dbfs
+                session["load_payload"] = load_payload
+    logger.info(
+        "event=sound.active_speaker_summed_test action=level status=%s "
+        "group_id=%s playback_id=%s level_dbfs=%s",
+        status,
+        speaker_group_id,
+        playback_id,
+        level_dbfs,
+    )
+    return {
+        "status": status,
+        "speaker_group_id": speaker_group_id,
+        "playback_id": playback_id,
+        "calibration_level": calibration_level,
+        "commissioning_load": load_payload,
+    }
 
 
 async def _active_speaker_play_commission_tone(
@@ -2670,6 +2835,7 @@ async def _active_speaker_load_summed_commissioning_config(
     preset: Any,
     crossover_preview: dict[str, Any] | None,
     camilla_factory: Callable[[], Any],
+    reconcile_output_hardware: bool = True,
 ) -> dict[str, Any]:
     """Load the transient all-drivers-live commissioning graph for one check."""
 
@@ -2710,6 +2876,7 @@ async def _active_speaker_load_summed_commissioning_config(
         staged_config=staged,
         audible_gain_db=level_dbfs,
         path_safety_evidence_path=evidence_path,
+        reconcile_output_hardware=reconcile_output_hardware,
     )
     payload["startup_setup"] = startup_setup
     return payload
@@ -2738,7 +2905,7 @@ def _summed_playback_with_issue(
     out = dict(playback)
     out.update({
         "status": status,
-        "backend": SUMMED_COMMISSION_TONE_BACKEND,
+        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
         "audio_emitted": False,
         "confirmable": False,
         "issues": [
@@ -2753,6 +2920,13 @@ def _summed_playback_with_issue(
     if fanin_gate is not None:
         out["fanin_gate"] = fanin_gate
     return out
+
+
+def _commission_summed_stimulus_issue(exc: BaseException) -> dict[str, str]:
+    return _commission_setup_issue(
+        "tone_backend_failed",
+        f"could not prepare the combined test speech: {exc}",
+    )
 
 
 async def _active_speaker_play_summed_commission_tone(
@@ -2796,6 +2970,8 @@ async def _active_speaker_play_summed_commission_tone(
         session: dict[str, Any] = {
             "playback_id": playback_id,
             "process": None,
+            "speaker_group_id": speaker_group_id,
+            "level_dbfs": None,
             "started_monotonic": time.monotonic(),
             "stop_reason": None,
         }
@@ -2807,19 +2983,15 @@ async def _active_speaker_play_summed_commission_tone(
     except (TypeError, ValueError):
         level_dbfs = -80.0
     try:
-        frequency_hz = float(tone.get("frequency_hz"))
-        duration_s = max(0.05, float(tone.get("duration_ms")) / 1000.0)
-        wav_path = _commission_tone_wav_path(
-            frequency_hz=frequency_hz,
-            duration_s=duration_s,
-        )
-    except (OSError, TypeError, ValueError) as exc:
+        wav_path, stimulus = _combined_speech_stimulus_wav_path()
+        duration_s = max(0.05, float(stimulus.get("duration_s") or 0.0))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         with _SUMMED_TEST_TONE_LOCK:
             if _SUMMED_TEST_TONE_SESSION is session:
                 _SUMMED_TEST_TONE_SESSION = None
         return _summed_playback_with_issue(
             artifact_playback,
-            issue=_commission_tone_issue(exc),
+            issue=_commission_summed_stimulus_issue(exc),
         )
 
     load_payload = await _active_speaker_load_summed_commissioning_config(
@@ -2865,55 +3037,156 @@ async def _active_speaker_play_summed_commission_tone(
             playback_result = _summed_test_stopped_playback(
                 artifact_playback,
                 commissioning_load=load_payload,
-                reason=stop_reason,
+                reason=(
+                    "operator_stop_before_audio"
+                    if stop_reason in SUMMED_TEST_CONFIRM_STOP_REASONS
+                    else stop_reason
+                ),
             )
         else:
             fanin_gate = _commission_tone_select_fanin_lane()
-            started_proc = subprocess.Popen(
-                ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
             with _SUMMED_TEST_TONE_LOCK:
                 if _SUMMED_TEST_TONE_SESSION is session:
-                    session["process"] = started_proc
-            deadline = time.monotonic() + duration_s + 1.0
-            while started_proc.poll() is None:
-                if time.monotonic() >= deadline:
-                    try:
-                        started_proc.terminate()
-                        started_proc.wait(timeout=0.75)
-                    except subprocess.TimeoutExpired:
-                        started_proc.kill()
-                        started_proc.wait(timeout=0.75)
-                    raise TimeoutError("aplay timed out during combined speaker test")
-                await asyncio.sleep(0.03)
-            stop_reason = _summed_test_session_stop_reason(session)
-            if stop_reason:
-                playback_result = _summed_test_stopped_playback(
-                    artifact_playback,
-                    commissioning_load=load_payload,
-                    fanin_gate=fanin_gate,
-                    reason=stop_reason,
+                    session["level_dbfs"] = level_dbfs
+                    session["load_payload"] = load_payload
+            heard_audio = False
+            loop_count = 0
+            watchdog_deadline = time.monotonic() + SUMMED_TEST_MAX_LOOP_SECONDS
+            while True:
+                stop_reason = _summed_test_session_stop_reason(session)
+                if stop_reason:
+                    current_playback = _summed_test_playback_at_session_level(
+                        artifact_playback,
+                        session,
+                    )
+                    current_playback.update({
+                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                        "stimulus": stimulus,
+                    })
+                    playback_result = _summed_test_stopped_playback(
+                        current_playback,
+                        commissioning_load=current_playback.get(
+                            "commissioning_load", load_payload
+                        ),
+                        fanin_gate=fanin_gate,
+                        reason=(
+                            stop_reason
+                            if heard_audio
+                            else (
+                                "operator_stop_before_audio"
+                                if stop_reason in SUMMED_TEST_CONFIRM_STOP_REASONS
+                                else "operator_stop"
+                            )
+                        ),
+                    )
+                    break
+                if time.monotonic() >= watchdog_deadline:
+                    current_playback = _summed_test_playback_at_session_level(
+                        artifact_playback,
+                        session,
+                    )
+                    current_playback.update({
+                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                        "stimulus": stimulus,
+                    })
+                    playback_result = _summed_test_stopped_playback(
+                        current_playback,
+                        commissioning_load=current_playback.get(
+                            "commissioning_load", load_payload
+                        ),
+                        fanin_gate=fanin_gate,
+                        reason="watchdog_timeout",
+                    )
+                    break
+                started_proc = subprocess.Popen(
+                    ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-            elif started_proc.returncode != 0:
-                raise RuntimeError(f"aplay exited {started_proc.returncode}")
-            else:
-                playback_result = dict(artifact_playback)
-                playback_result.update({
-                    "status": "completed",
-                    "backend": SUMMED_COMMISSION_TONE_BACKEND,
-                    "audio_emitted": True,
-                    "confirmable": True,
-                    "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-                    "commissioning_load": load_payload,
-                    "fanin_gate": fanin_gate,
-                    "issues": [],
-                })
+                heard_audio = True
+                with _SUMMED_TEST_TONE_LOCK:
+                    if _SUMMED_TEST_TONE_SESSION is session:
+                        session["process"] = started_proc
+                        session["loop_count"] = loop_count + 1
+                deadline = time.monotonic() + duration_s + 1.0
+                watchdog_expired = False
+                while started_proc.poll() is None:
+                    now = time.monotonic()
+                    if now >= watchdog_deadline:
+                        watchdog_expired = True
+                        try:
+                            started_proc.terminate()
+                            started_proc.wait(timeout=0.75)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                started_proc.kill()
+                                started_proc.wait(timeout=0.75)
+                            except (OSError, ProcessLookupError):
+                                pass
+                        except (OSError, ProcessLookupError):
+                            pass
+                        break
+                    if now >= deadline:
+                        try:
+                            started_proc.terminate()
+                            started_proc.wait(timeout=0.75)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                started_proc.kill()
+                                started_proc.wait(timeout=0.75)
+                            except (OSError, ProcessLookupError):
+                                pass
+                        except (OSError, ProcessLookupError):
+                            pass
+                        raise TimeoutError("aplay timed out during combined speaker test")
+                    await asyncio.sleep(0.03)
+                if watchdog_expired:
+                    current_playback = _summed_test_playback_at_session_level(
+                        artifact_playback,
+                        session,
+                    )
+                    current_playback.update({
+                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                        "stimulus": stimulus,
+                    })
+                    playback_result = _summed_test_stopped_playback(
+                        current_playback,
+                        commissioning_load=current_playback.get(
+                            "commissioning_load", load_payload
+                        ),
+                        fanin_gate=fanin_gate,
+                        reason="watchdog_timeout",
+                    )
+                    break
+                stop_reason = _summed_test_session_stop_reason(session)
+                if stop_reason:
+                    current_playback = _summed_test_playback_at_session_level(
+                        artifact_playback,
+                        session,
+                    )
+                    current_playback.update({
+                        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                        "stimulus": stimulus,
+                    })
+                    playback_result = _summed_test_stopped_playback(
+                        current_playback,
+                        commissioning_load=current_playback.get(
+                            "commissioning_load", load_payload
+                        ),
+                        fanin_gate=fanin_gate,
+                        reason=stop_reason,
+                    )
+                    break
+                if started_proc.returncode != 0:
+                    raise RuntimeError(f"aplay exited {started_proc.returncode}")
+                loop_count += 1
+                with _SUMMED_TEST_TONE_LOCK:
+                    if _SUMMED_TEST_TONE_SESSION is session:
+                        session["process"] = None
     except Exception as exc:  # noqa: BLE001 - always re-mute below.
         playback_result = _summed_playback_with_issue(
             artifact_playback,
-            issue=_commission_tone_issue(exc),
+            issue=_commission_summed_stimulus_issue(exc),
             commissioning_load=load_payload,
             rollback=rollback,
             fanin_gate=fanin_gate,
@@ -2932,7 +3205,7 @@ async def _active_speaker_play_summed_commission_tone(
                     started_proc.wait(timeout=0.75)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-            except ProcessLookupError:
+            except (OSError, ProcessLookupError):
                 pass
         if fanin_gate is not None:
             _commission_tone_release_fanin_lane(reason="summed_test")
@@ -3082,15 +3355,7 @@ def _active_speaker_confirmed_driver_roles(
 
     if not group:
         return []
-    try:
-        return confirmed_driver_roles(topology, speaker_group_id=group)
-    except Exception:  # noqa: BLE001 - status paths must not crash the wizard.
-        logger.exception(
-            "event=sound.active_speaker_commission action=confirmed_roles "
-            "status=error group=%s",
-            group,
-        )
-        return []
+    return confirmed_driver_roles(topology, speaker_group_id=group)
 
 
 async def _active_speaker_commission_load_payload(
@@ -3362,20 +3627,25 @@ async def _active_speaker_commission_ramp_ack_payload(
     # load_config lets any terminal by-ear outcome re-mute the transient graph.
     load_config, _, _ = commission_seams(cam)
     payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
+    acknowledged_step = (
+        payload.get("acknowledged_step")
+        if isinstance(payload.get("acknowledged_step"), dict)
+        else pending
+    )
     should_record_driver_evidence = (
         outcome == "heard_correct_driver"
         and payload.get("status") == "confirmed"
         and not payload.get("issues")
     ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
-    if should_record_driver_evidence and isinstance(pending, dict):
+    if should_record_driver_evidence and isinstance(acknowledged_step, dict):
         measurements = record_driver_measurement(
             topology,
             {
                 "speaker_group_id": ramp_state.get("speaker_group_id"),
-                "role": pending.get("role"),
+                "role": acknowledged_step.get("role"),
                 "outcome": outcome,
-                "playback_id": pending.get("playback_id"),
-                "test_level_dbfs": pending.get("gain_db"),
+                "playback_id": acknowledged_step.get("playback_id"),
+                "test_level_dbfs": acknowledged_step.get("gain_db"),
                 "notes": "Recorded from active-speaker guarded ramp confirmation.",
             },
             calibration_level=load_calibration_level_state(),
@@ -3454,19 +3724,11 @@ async def _active_speaker_commission_state_payload(
     ).strip()
     durable_confirmed: list[str] = []
     if group:
-        try:
-            topology = load_output_topology()
-        except Exception:  # noqa: BLE001 - status must stay read-only and available.
-            logger.exception(
-                "event=sound.active_speaker_commission action=state_topology "
-                "status=error group=%s",
-                group,
-            )
-        else:
-            durable_confirmed = _active_speaker_confirmed_driver_roles(
-                topology,
-                group=group,
-            )
+        topology = load_output_topology()
+        durable_confirmed = _active_speaker_confirmed_driver_roles(
+            topology,
+            group=group,
+        )
     quiet = load_safe_playback_state().get("quiet_start") or {}
     stale = commission.get("status") == "stale"
     pending = None if stale else ramp.get("pending")
@@ -4130,6 +4392,12 @@ async def _active_speaker_summed_test_payload(
             backend=None,
             allow_audio=False,
         )
+    playback_tone = playback.get("tone") if isinstance(playback.get("tone"), dict) else {}
+    playback_level = playback_tone.get("level_dbfs")
+    if playback_level is not None:
+        calibration_level = calibration_level_payload(
+            requested_level_dbfs=playback_level,
+        )
     session = record_safe_playback_result(playback)
     measurement_payload = record_summed_test_artifact(
         topology,
@@ -4428,6 +4696,72 @@ async def _active_speaker_baseline_profile_apply_payload(
     return payload
 
 
+def _active_speaker_output_safety_from_config_path(
+    config_path: str | os.PathLike[str] | None,
+) -> dict[str, Any]:
+    """Classify whether an applied config is still the safety-muted startup graph."""
+
+    from jasper.active_speaker.staging import DEFAULT_STAGED_CONFIG_NAME
+
+    path = str(config_path or "")
+    safety_muted = os.path.basename(path) == DEFAULT_STAGED_CONFIG_NAME
+    return {
+        "safety_muted": safety_muted,
+        "reason": "active_speaker_staged_startup" if safety_muted else None,
+        "active_config_path": path or None,
+    }
+
+
+async def _active_speaker_finish_commissioning_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Backend-owned final handoff from commissioning to the active profile.
+
+    The browser expresses one user intent: make the checked crossover the normal
+    active speaker profile. The backend owns the compile/validate/load/confirm
+    sequence, so the UI cannot wedge itself between "saved" and "applied".
+    """
+
+    payload = await _active_speaker_baseline_profile_apply_payload(
+        camilla_factory=camilla_factory,
+    )
+    profile = (
+        payload.get("profile")
+        if isinstance(payload.get("profile"), dict)
+        else {}
+    )
+    apply_state = (
+        payload.get("apply")
+        if isinstance(payload.get("apply"), dict)
+        else {}
+    )
+    config = (
+        profile.get("config")
+        if isinstance(profile.get("config"), dict)
+        else {}
+    )
+    active_config_path = apply_state.get("active_config_path") or config.get("path")
+    payload["output_safety"] = _active_speaker_output_safety_from_config_path(
+        active_config_path
+        if isinstance(active_config_path, (str, os.PathLike))
+        else None
+    )
+    logger.info(
+        "event=sound.active_speaker_finish_commissioning status=%s "
+        "apply_result=%s safety_muted=%s issue_count=%d",
+        payload.get("status"),
+        (
+            (payload.get("apply") or {}).get("result")
+            if isinstance(payload.get("apply"), dict)
+            else None
+        ),
+        (payload.get("output_safety") or {}).get("safety_muted"),
+        len(payload.get("issues") or []),
+    )
+    return payload
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -4682,11 +5016,13 @@ def _make_handler(
                 "/active-speaker/driver-measurement",
                 "/active-speaker/driver-capture",
                 "/active-speaker/summed-test",
+                "/active-speaker/summed-test/level",
                 "/active-speaker/summed-test/stop",
                 "/active-speaker/summed-validation",
                 "/active-speaker/summed-capture",
                 "/active-speaker/baseline-profile",
                 "/active-speaker/baseline-profile/apply",
+                "/active-speaker/baseline-profile/save-and-apply",
                 "/output-topology",
                 "/output-topology/reset",
                 "/profiles/save",
@@ -4821,6 +5157,24 @@ def _make_handler(
                         )
                         self._send_json({"error": str(e)}, status=502)
                     return
+                if path == "/active-speaker/summed-test/level":
+                    try:
+                        self._send_json(
+                            asyncio.run(
+                                _active_speaker_summed_test_level_payload(
+                                    raw,
+                                    camilla_factory=camilla_factory,
+                                )
+                            )
+                        )
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_summed_test_level "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
                 if path == "/active-speaker/summed-test/stop":
                     reason = str(raw.get("reason") or "operator_stop")
                     self._send_json(_active_speaker_stop_summed_test_tone(reason=reason))
@@ -4864,6 +5218,15 @@ def _make_handler(
                     self._send_json(
                         asyncio.run(
                             _active_speaker_baseline_profile_apply_payload(
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/baseline-profile/save-and-apply":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_finish_commissioning_payload(
                                 camilla_factory=camilla_factory,
                             )
                         )

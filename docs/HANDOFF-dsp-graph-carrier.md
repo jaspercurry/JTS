@@ -79,7 +79,7 @@ existing layering):
   `{"status": "blocked", "reason_code": ..., "message": ...}`.
 - `carrier_for_loaded_config(current_path, *, config_dir) -> Carrier` —
   resolves by path **and** config *content* (never guesses), keyed on the same
-  signals the safety classifier uses. The four carriers are **private**; the
+  signals the safety classifier uses. The five carriers are **private**; the
   module's public surface is `carrier_for_loaded_config`, `CarrierCannotHostEq`,
   and `ReemitResult`. Resolution order is safety-critical — **content beats
   name**:
@@ -109,6 +109,16 @@ existing layering):
     All four are 200-with-body blocked outcomes, never a 5xx, and the durable
     apply's pre-check dry-runs the active carrier so a refusal records no
     `prepare_failed` state (SF-2).
+  - active-leader program bake
+    (`environment.CAMILLA_CLASS_PROGRAM_BAKE`) → **program-bake carrier**.
+    This is a flat 2-channel program graph, but it is not DAC-bound: camilla#1
+    writes `File` → Snapcast FIFO and camilla#2 owns Layer A driver protection.
+    The carrier therefore bypasses the DAC-bound protected-tweeter flat-graph
+    refusal only after grouping state resolves back to a pipe sink with
+    `enable_rate_adjust=false`; otherwise it refuses
+    `program_bake_pipe_unavailable`. This is the JTS5 class where
+    `/correction/start` must strip Layer B/C for measurement without calling the
+    graph "custom".
   - `is_jts_generated_config` (name) → **sound/correction carrier**
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
     relocated **verbatim**, including the `member_camilla_kwargs()` splat
@@ -120,34 +130,40 @@ existing layering):
   "preserve whatever the current graph carries"; an explicit list means
   "replace Layer B with exactly this set" (`[]` clears room correction for
   measurement/reset). Each carrier owns its own preservation strategy and its
-  grouping kwargs: base/sound default to `member_camilla_kwargs()` (a disk
-  read); the bonded-leader bake is the one caller that passes
-  `member_kwargs=member_camilla_kwargs(cfg)` explicitly (its pipe sink +
-  rate_adjust off). The active/unknown carriers ignore it and refuse — see
-  grouping boundary below.
+  grouping kwargs: base/sound/program-bake default to
+  `member_camilla_kwargs()` (a disk read); the bonded-leader bake is the one
+  caller that passes `member_kwargs=member_camilla_kwargs(cfg)` explicitly (its
+  pipe sink + rate_adjust off). The program-bake carrier requires those kwargs
+  to describe the pipe sink; active/unknown carriers ignore them and refuse —
+  see grouping boundary below.
 
-**Stereo hosts refuse a protected-tweeter topology (L0).** Both stereo-host
-carriers (base-flat + sound/correction) emit a 2-channel program graph with no
-per-driver crossover/protection, so a flat graph must never go live when the
-saved output topology assigns a protected **tweeter** role — full-range program
-would reach a compression driver (shrill + driver-damage risk; see
-[HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md) L0). The
-judgement is
+**Stereo hosts refuse a protected-tweeter topology (L0).** The DAC-bound
+stereo-host carriers (base-flat + sound/correction) emit a 2-channel program
+graph with no per-driver crossover/protection, so a flat graph must never go
+live when the saved output topology assigns a protected **tweeter** role —
+full-range program would reach a compression driver (shrill + driver-damage
+risk; see [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
+L0). The judgement is
 [`runtime_contract.flat_program_graph_blocked_reason()`](../jasper/active_speaker/runtime_contract.py)
 — a *topology* predicate, since the program lane is structurally flat — and
 `_StereoHostCarrier` reads it at construction, so `can_host_eq` is `False` (the
 durable pre-check refuses early, no spurious `prepare_failed`) AND `reemit`
 re-asserts before emitting, so the pre-check-less **live-draft** SetConfig path
 is covered too — a flat graph can never reach the DAC under a protected-tweeter
-topology. Refusal is `CarrierCannotHostEq("flat_graph_protected_tweeter", …)`
-(a 200-with-body blocked outcome like the others); fail-closed on a corrupt /
-unreadable topology. The refusal lives at the carrier (and, for the direct
-correction caller, at `correction.runtime_safety.assert_flat_apply_safe`),
-**never** on the shared `emit_sound_config` leaf — the multiroom solo-restore
-emit must stay lenient (un-bonding must always succeed).
+topology. The active-leader program-bake carrier is the deliberate exception:
+it is flat, but it writes to the Snap FIFO rather than a DAC and must prove that
+pipe-sink condition before emitting. Refusal is
+`CarrierCannotHostEq("flat_graph_protected_tweeter", …)` for DAC-bound flat
+hosts, or `CarrierCannotHostEq("program_bake_pipe_unavailable", …)` for a
+program bake whose grouping pipe-sink predicate no longer holds. Both are
+handled blocked outcomes; fail-closed on a corrupt / unreadable topology. The
+refusal lives at the carrier (and, for the direct correction caller, at
+`correction.runtime_safety.assert_flat_apply_safe`), **never** on the shared
+`emit_sound_config` leaf — the multiroom solo-restore emit must stay lenient
+(un-bonding must always succeed).
 
-**Concrete dispatcher, not a `Protocol`/registry.** This is a 4-member
-set and only the active carrier needs new behavior; per AGENTS.md
+**Concrete dispatcher, not a `Protocol`/registry.** This is a 5-member
+set and only the active/program-bake carriers need special behavior; per AGENTS.md
 (avoid single-use abstractions) the dispatcher + recognizer is the
 durable shape. Defer a `Protocol` to a "when a 3rd host kind exists"
 appendix.
@@ -438,4 +454,4 @@ boundary:
   `tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_baseline_profile.py`
 
-Last verified: 2026-06-24
+Last verified: 2026-06-25

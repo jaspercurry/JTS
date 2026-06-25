@@ -102,7 +102,7 @@ def test_render_has_no_legacy_chrome():
 
 def test_render_uses_canonical_toggle_for_each_layer():
     html = _render()
-    for key in ("aec", "raw", "dtln"):
+    for key in ("aec", "raw", "dtln", "chip_aec"):
         assert f'id="layer-{key}"' in html
     # toggle_html renders the shared checkbox toggle.
     assert 'class="toggle"' in html
@@ -111,8 +111,15 @@ def test_render_uses_canonical_toggle_for_each_layer():
 def test_render_has_input_profile_choices():
     html = _render()
     assert "Input profile" in html
-    for profile in ("auto", "xvf_chip_aec", "xvf_software_aec3", "direct_mic"):
+    for profile in (
+        "auto",
+        "xvf_chip_aec",
+        "xvf_chip_aec_testing",
+        "xvf_software_aec3",
+        "direct_mic",
+    ):
         assert f'id="profile-{profile}"' in html
+    assert "unapproved DAC" in html
 
 
 def test_render_form_posts_to_save_with_primary_button():
@@ -346,6 +353,32 @@ def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
     h.do_POST()
     assert captured == {"layer": "raw", "enabled": True}
     assert cap["status"] == 200
+
+
+def test_apply_aec_layer_off_is_noop_when_software_aec3_bypassed(monkeypatch):
+    calls: list[str] = []
+
+    def fake_proxy_get(path, *, control_base, timeout):
+        calls.append(f"GET {path}")
+        return 200, (
+            b'{"mode":"auto","bridge_role":"chip_aec_carrier",'
+            b'"software_aec3":{"bypassed":true}}'
+        )
+
+    def fake_proxy_post(path, *, control_base, timeout, body=b""):
+        calls.append(f"POST {path}")
+        return 200, b'{"ok":true}'
+
+    monkeypatch.setattr(wake_setup, "proxy_get", fake_proxy_get)
+    monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
+
+    status, body = wake_setup._apply_layer(
+        "aec", False, control_base="http://control",
+    )
+
+    assert status == 200
+    assert b"chip_aec_carrier" in body
+    assert calls == ["GET /aec"]
 
 
 def test_post_layer_unknown_layer_400(tmp_path, monkeypatch):

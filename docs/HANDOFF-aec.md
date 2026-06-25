@@ -42,14 +42,18 @@ pick up the work without re-doing the investigation.
 **Input selection is profile-first.** `install.sh` seeds
 `/var/lib/jasper/aec_mode.env` with `JASPER_AUDIO_INPUT_PROFILE=auto`,
 enables `jasper-aec-reconcile.service`, and runs the reconciler once.
-On the recommended 6-channel XVF3800 shape plus a supported/calibrated
-output DAC profile, `auto` resolves to `xvf_chip_aec`: `jasper-outputd`
+On the recommended 6-channel XVF3800 shape plus an approved output-DAC
+gate, `auto` resolves to `xvf_chip_aec`: `jasper-outputd`
 fans out the final speaker buffer to the XVF USB-IN reference,
 `jasper-aec-init` applies the volatile 150°/210° ASR beam profile, and
 `jasper-aec-bridge` forwards the chip beam to `:9876` while exposing
 `:9887`/`:9888` scoring legs. Software AEC3 remains the fallback profile
 (`xvf_software_aec3`) when chip-AEC is unavailable, the output DAC still
-needs calibration, or software AEC3 is explicitly selected.
+needs calibration, or software AEC3 is explicitly selected. To validate a
+new output DAC without promoting it to production, select
+`xvf_chip_aec_testing`; it runs the same physical chip-AEC path as
+`xvf_chip_aec`, surfaces the DAC gate as `testing`, and never makes
+`auto` choose that DAC.
 
 The current `xvf_chip_aec` baseline is **not** the older
 `SHF_BYPASS=1` software-AEC profile. With chip-AEC armed,
@@ -63,14 +67,16 @@ non-silent raw-ish XVF channel.
 
 **Hardware adaptability contract:** chip-AEC support is a property of
 the resolved input/output hardware profile, not of one known DAC. The
-final architecture must support Apple USB-C dongles, HiFiBerry/DAC hats,
-DAC8x-style active profiles, multiple Apple dongles, and future USB DACs
-through the same ownership lines: reconcile/config owns profile defaults
-and fallback/degraded states; outputd owns final-output reference
-publication and timing health; audio validation reports `dac_support`
-readiness today and doctor should surface the same supported,
-needs-calibration, or degraded state for the active DAC. Prefer live
-timing/level measurement and outputd `/state` evidence over profile folklore.
+central policy in `jasper/chip_aec_policy.py` owns the DAC gate vocabulary
+(`approved`, `testing`, `needs_calibration`) and every status surface
+consumes that same decision. The architecture must support Apple USB-C
+dongles, HiFiBerry/DAC hats, DAC8x-style active profiles, multiple Apple
+dongles, and future USB DACs through the same ownership lines:
+reconcile/config owns profile defaults and fallback/degraded states;
+outputd owns final-output reference publication and timing health; audio
+validation reports DAC-gate readiness and doctor surfaces the same state
+for the active DAC. Prefer live timing/level measurement and outputd
+`/state` evidence over profile folklore.
 Only carry per-profile residual
 `AUDIO_MGR_SYS_DELAY` trim after dynamic timing is exhausted and the
 calibration artifact is codified with that hardware profile. Old taps such
@@ -84,8 +90,17 @@ additionally gets the downsampled XVF USB-IN reference PCM. Explicit
 pre-DSP `pcm.jasper_ref` path. Do not add another ad-hoc ALSA tap to solve
 reference alignment.
 
-To turn the bridge OFF (or back to chip-direct mic for A/B testing),
-set the state file to disabled and run the reconciler:
+The `jasper-aec-bridge` service is therefore a shared mic-to-voice carrier,
+not synonymous with the WebRTC AEC3 engine. Under `xvf_chip_aec` /
+`xvf_chip_aec_testing`, the bridge process stays active so it can forward the
+selected hardware-AEC chip beam to `:9876`, but the WebRTC AEC3 engine is not
+instantiated. Operator surfaces expose this as `software_aec3.bypassed=true`;
+turning off the software-AEC3 layer must not stop the chip-AEC carrier. To
+stop the carrier entirely, choose the `direct_mic` profile.
+
+To turn the bridge OFF entirely (or back to direct mic for A/B testing),
+choose the `direct_mic` profile or set the state file to disabled and run the
+reconciler:
 
 ```sh
 printf 'JASPER_AUDIO_INPUT_PROFILE=direct_mic\nJASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
@@ -2223,16 +2238,15 @@ If RAM becomes a constraint, the highest-impact savings are:
 3. Rewrite as Rust or C (~80–100 MB, ~1–2 days work). Bridge
    becomes a 10–20 MB process.
 
-### The chip-side AEC infrastructure is still installed
+### Chip-side control infrastructure
 
-`jasper-aec-init.service` still runs at boot (now just resets
-chip state and sets UAC2 PCM to unity volume). `jasper-aec-tune`
-is still installed but no longer relevant — the chip's AEC isn't
-in the audio path. Both could be removed but kept for now
-because (a) the chip control path remains useful for diagnostic
-work, (b) re-introducing chip-side AEC if a topology change
-makes it viable would be easier, (c) the doctor checks that
-verify the chip is responsive depend on this code.
+`jasper-aec-init.service` still runs when the bridge is enabled. In the
+software fallback it applies the raw-ish XVF profile (`SHF_BYPASS=1`) for
+host-side WebRTC AEC3. In chip-AEC profiles it applies the volatile fixed-beam
+hardware-AEC profile and prepares the chip USB-IN reference path. The older
+`jasper-aec-tune` calibrator is still installed for diagnostics / future
+manual delay work, but the supported production path is profile-managed
+through the reconciler and `jasper-aec-init`.
 
 ### We haven't run the wake-word reliability test
 
@@ -2249,8 +2263,8 @@ better than no AEC" is reasoning, not measurement.
 
 Files involved in the AEC subsystem:
 
-- `jasper/cli/aec_bridge.py` — the software AEC daemon (WebRTC
-  AEC3 via the `jasper_aec3` pybind11 binding)
+- `jasper/cli/aec_bridge.py` — the AEC bridge daemon: WebRTC AEC3 in the
+  software fallback, chip-beam carrier in chip-AEC profiles
 - `jasper_aec3/` — sibling package, pybind11 binding for WebRTC AEC3
   (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt)
 - `jasper/cli/aec_init.py` — boot-time chip init (resets chip,
@@ -2281,8 +2295,9 @@ Files involved in the AEC subsystem:
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
   `pyusb`, `libusb_package`, `pyalsaaudio` deps
 - `.env.example` — mic/AEC env knobs:
-  `JASPER_AEC_MIC_DEVICE`, `JASPER_MIC_DEVICE_CANDIDATES`, UDP
-  transport settings, and tuning gains
+  profile-managed `JASPER_AEC_MIC_DEVICE` derived by the reconciler,
+  `JASPER_MIC_DEVICE_CANDIDATES` direct-fallback hints, UDP transport
+  settings, and tuning gains
 - `scripts/aec-probe-timing.py` — current multi-source diagnostic timing
   probe for outputd's final speaker-reference UDP stream, outputd's
   chip-ref writer tee, the legacy `jasper_capture` tap, and selected
@@ -2639,6 +2654,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-19 (chip-AEC availability rechecked against the
-geometry-aware XVF profile resolver; Flex LINEAR-4 uses software AEC3
-until a linear beam plan is validated).
+Last verified: 2026-06-25 (central chip-AEC DAC gate,
+`xvf_chip_aec_testing`, profile-managed XVF mic-card derivation, and the
+chip-AEC bridge-carrier / software-AEC3-bypass distinction rechecked against
+the reconciler, `/aec`, doctor, and validation paths).

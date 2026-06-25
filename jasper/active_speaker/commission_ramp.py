@@ -1011,7 +1011,7 @@ async def record_ramp_operator_ack(
             playback_id=pending.get("playback_id"),
             state_path=safe_playback_state_path,
         )
-    safe_issues = safe.get("issues") or []
+    safe_issues = list(safe.get("issues") or [])
     confirmed_roles = set(ramp_state.get("confirmed_roles") or [])
     aborted: dict[str, Any] | None = None
 
@@ -1026,6 +1026,28 @@ async def record_ramp_operator_ack(
     # advance the ordering memory.
     floor_status = (safe.get("quiet_start") or {}).get("status")
     floor_confirmed_ok = not safe_issues and floor_status == "floor_confirmed"
+    safe_issue_codes = {
+        str(issue.get("code"))
+        for issue in safe_issues
+        if isinstance(issue, dict) and issue.get("code")
+    }
+    ack_reopen_required = (
+        outcome == "heard_correct_driver"
+        and (
+            safe.get("status") in {"expired", "idle", "stopped"}
+            or (
+                bool(safe_issues)
+                and bool(
+                    safe_issue_codes
+                    & {
+                        "safe_session_not_armed",
+                        "floor_playback_missing",
+                        "floor_confirmation_not_pending",
+                    }
+                )
+            )
+        )
+    )
 
     if outcome == "heard_correct_driver" and floor_confirmed_ok:
         # Heard correctly and the floor confirm was accepted — record it for the
@@ -1034,6 +1056,27 @@ async def record_ramp_operator_ack(
         confirmed_roles.add(str(pending.get("role")))
         new_pending = None
         status = "confirmed"
+        if load_config is not None:
+            aborted = await rollback_driver_commissioning_config(
+                load_config=load_config,
+                state_path=commission_load_state_path,
+                **({"validate": validate} if validate is not None else {}),
+            )
+    elif outcome == "heard_correct_driver" and ack_reopen_required:
+        # The UI can outlive the short continuous-tone lease. Once the safe
+        # session is expired/stopped/not-pending, the pending ramp step is no
+        # longer confirmable. Clear it and re-mute so Play can reopen the driver
+        # quietly instead of leaving a confirm button that will never succeed.
+        if "commission_ramp_ack_expired" not in safe_issue_codes:
+            safe_issues.append(
+                _issue(
+                    "blocker",
+                    "commission_ramp_ack_expired",
+                    "the driver tone expired before it could be confirmed",
+                )
+            )
+        new_pending = None
+        status = "expired"
         if load_config is not None:
             aborted = await rollback_driver_commissioning_config(
                 load_config=load_config,
@@ -1090,6 +1133,7 @@ async def record_ramp_operator_ack(
     return {
         "status": status,
         "outcome": outcome,
+        "acknowledged_step": pending,
         "safe_playback": _safe_summary(safe),
         "ramp": ramp_payload,
         "rollback": (aborted or {}).get("rollback") if aborted else None,

@@ -46,7 +46,7 @@ def summed_test_failure_message(issues: Any) -> str:
     codes = issue_codes(issues)
     if "tone_backend_failed" in codes:
         return (
-            "JTS could not prepare the combined test tone. Retry after the setup "
+            "JTS could not prepare the combined test audio. Retry after the setup "
             "finishes; if it fails again, open System status."
         )
     if "summed_commission_load_failed" in codes:
@@ -175,11 +175,23 @@ def _combined_group_view(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
-    validated = latest_validation.get("validated") is True
     has_audible_test = (
         latest_test.get("captured") is True
         and latest_test.get("audio_emitted") is True
         and not has_blocker(latest_test.get("issues"))
+    )
+    latest_test_id = str(
+        latest_test.get("summed_test_id") or latest_test.get("playback_id") or ""
+    )
+    latest_validation_test_id = str(
+        latest_validation.get("summed_test_id")
+        or latest_validation.get("playback_id")
+        or ""
+    )
+    validated = bool(
+        latest_validation.get("validated") is True
+        and latest_test_id
+        and latest_validation_test_id == latest_test_id
     )
     failure_message = (
         ""
@@ -207,9 +219,6 @@ def _combined_group_view(
         status_label = "after driver checks"
         message = "Test each driver first, then test the combined speaker."
 
-    latest_test_id = str(
-        latest_test.get("summed_test_id") or latest_test.get("playback_id") or ""
-    )
     actions = {
         "start_combined_test": _action(
             "start_combined_test",
@@ -219,14 +228,15 @@ def _combined_group_view(
             body={
                 "speaker_group_id": group_id,
                 "audio": True,
-                "duration_ms": 500,
+                "stimulus": "speech",
+                "duration_ms": 12000,
                 "level_dbfs": test_level.get("requested_level_dbfs"),
             },
         ),
         "record_combined_result": _action(
             "record_combined_result",
             "Record combined check",
-            enabled=has_audible_test,
+            enabled=has_audible_test and not validated,
             endpoint="./active-speaker/summed-validation",
             body={
                 "speaker_group_id": group_id,
@@ -293,11 +303,27 @@ def build_commissioning_view(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
-    summed_complete = bool(summary.get("summed_validation_complete"))
     profile_status = str((baseline_profile or {}).get("status") or "")
     profile_applied = profile_status == "applied"
+    revalidation = (
+        (baseline_profile or {}).get("revalidation")
+        if isinstance((baseline_profile or {}).get("revalidation"), Mapping)
+        else {}
+    )
+    revalidation_required = revalidation.get("required") is True
     active_targets = active_summed_targets(topology)
     has_layout = bool(topology.speaker_groups)
+    combined_groups = [
+        _combined_group_view(
+            target,
+            summary=summary,
+            calibration_level=calibration_level,
+        )
+        for target in active_targets
+    ]
+    summed_complete = bool(active_targets) and all(
+        group.get("validated") is True for group in combined_groups
+    )
     steps = [
         _step(
             "layout",
@@ -334,6 +360,8 @@ def build_commissioning_view(
             (
                 "Combined crossover check is saved."
                 if summed_complete
+                else "Re-run the combined crossover check for the updated setup."
+                if revalidation_required
                 else "Run one quiet combined test and record what you heard."
             ),
         ),
@@ -344,19 +372,13 @@ def build_commissioning_view(
             (
                 "This is now the active speaker profile."
                 if profile_applied
+                else "Save and apply a fresh profile after revalidation."
+                if revalidation_required and summed_complete
                 else "Save the active speaker profile after the combined check."
             ),
         ),
     ]
-    combined_groups = [
-        _combined_group_view(
-            target,
-            summary=summary,
-            calibration_level=calibration_level,
-        )
-        for target in active_targets
-    ]
-    next_action = _first_enabled_action(combined_groups)
+    next_action = None if summed_complete else _first_enabled_action(combined_groups)
     if next_action is None and not output_identity_complete:
         next_action = _action(
             "confirm_outputs",
@@ -377,12 +399,13 @@ def build_commissioning_view(
             "save_profile",
             "Save active profile",
             enabled=True,
-            endpoint="./active-speaker/baseline-profile",
+            endpoint="./active-speaker/baseline-profile/save-and-apply",
         )
 
     status = (
         "applied" if profile_applied else
         "ready_to_save_profile" if summed_complete else
+        "needs_revalidation" if revalidation_required else
         "needs_combined_check" if driver_checks_complete else
         "needs_driver_checks" if output_identity_complete else
         "needs_output_confirmation" if has_layout else
@@ -418,6 +441,7 @@ def build_commissioning_view(
             "validated": int(summary.get("validated_summed_group_count") or 0),
             "required": int(summary.get("required_summed_group_count") or 0),
         },
+        "revalidation": dict(revalidation),
         "test_level": (
             dict(combined_groups[0]["test_level"])
             if combined_groups else _combined_test_level(calibration_level)

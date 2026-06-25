@@ -12,13 +12,18 @@ import pytest
 
 from jasper.accessories.registry import (
     KEY_MUTE,
+    KEY_NEXTSONG,
+    KEY_PLAYPAUSE,
+    KEY_PREVIOUSSONG,
     KEY_VOLUMEDOWN,
     KEY_VOLUMEUP,
     KNOWN_DEVICES,
     VK01,
+    WIIM_REMOTE_2,
     KeyAction,
     TapAction,
     lookup,
+    lookup_by_name,
 )
 
 
@@ -31,6 +36,11 @@ def test_vk01_in_registry():
 def test_lookup_finds_vk01_by_usb_ids():
     entry = lookup(0x514C, 0x8850)
     assert entry is VK01
+
+
+def test_lookup_finds_wiim_remote_2_by_bluetooth_hid_ids():
+    entry = lookup(0x2717, 0x32B9)
+    assert entry is WIIM_REMOTE_2
 
 
 def test_lookup_returns_none_for_unknown():
@@ -75,6 +85,29 @@ def test_vk01_click_is_tap_action_for_transport():
     # Sanity: window must be positive — a 0 ms window degenerates
     # to "every tap fires immediately" which defeats the gesture.
     assert click.window_ms > 0
+
+
+def test_wiim_remote_2_media_keymap_targets_control_routes():
+    keymap = WIIM_REMOTE_2.keymap
+    assert keymap[KEY_VOLUMEUP] == KeyAction(
+        "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
+    )
+    assert keymap[KEY_VOLUMEDOWN] == KeyAction(
+        "POST", "/volume/adjust", {"delta_percent": -2}, coalesce=True,
+    )
+    assert keymap[KEY_PLAYPAUSE] == KeyAction(
+        "POST", "/transport/toggle", {},
+    )
+    assert keymap[KEY_NEXTSONG] == KeyAction("POST", "/transport/next", {})
+    assert keymap[KEY_PREVIOUSSONG] == KeyAction(
+        "POST", "/transport/previous", {},
+    )
+    assert keymap[KEY_MUTE] == KeyAction("POST", "/volume/mute", {})
+
+
+def test_wiim_remote_2_name_fallback_matches_bluez_name():
+    assert lookup_by_name("WiiM Remote 2") is WIIM_REMOTE_2
+    assert lookup_by_name("wiim remote 2 consumer control") is WIIM_REMOTE_2
 
 
 @pytest.mark.parametrize("device", KNOWN_DEVICES)

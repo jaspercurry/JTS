@@ -188,8 +188,8 @@ async def precheck_active_leader(
     # (snapserver) AND plays its own channel through the round-trip (snapclient);
     # without those binaries there is no FIFO reader for camilla#1's bake, so the
     # bake cannot release the DAC — and arming camilla#2 onto the DAC would then
-    # fight camilla#1 (which carries StartLimitAction=reboot) and reboot-loop the
-    # box (the 2026-06-23 JTS5 incident, on a box with no Snapcast installed).
+    # fight camilla#1 and exhaust its recovery budget (the 2026-06-23 JTS5
+    # incident, on a box with no Snapcast installed).
     # Refuse the bond UP FRONT (the box stays solo-active) rather than commit to a
     # two-instance setup the hardware cannot support. The reconciler's step-5
     # gates (snapserver-actually-active + arm-only-if-bake-succeeded) are the
@@ -267,9 +267,11 @@ async def precheck_active_leader(
         )
 
     # 2. camilla#1 program bake (Layer B/C + headroom, File -> SNAPFIFO,
-    #    enable_rate_adjust=False). Bypasses the graph carrier exactly as the
-    #    follower driver-domain arm does — the carrier fence
-    #    eq_on_active_bonded_member (the interactive /sound EQ path) is untouched.
+    #    enable_rate_adjust=False). The initial bond bake is emitted and re-proved
+    #    here. Once this graph is loaded, /sound and /correction may re-emit its
+    #    program domain through the graph carrier, but only while grouping state
+    #    still resolves to the same pipe sink; roleful active graphs keep the
+    #    eq_on_active_bonded_member fence.
     #    Inputs mirror the passive leader's apply_bonded_leader_config: the saved
     #    SoundProfile (Layer C preference EQ + headroom) and the output trim.
     #    room_peqs is empty: an active speaker does NOT embed Layer B room

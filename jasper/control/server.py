@@ -82,6 +82,7 @@ from ..local_sources import (
     local_source_park_units,
 )
 from ..transit.state import read_state as read_transit_state
+from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..audio_profile_state import (
     normalize_audio_input_profile,
 )
@@ -111,7 +112,6 @@ _peering_loop: asyncio.AbstractEventLoop | None = None
 _peering_stop_requested = threading.Event()
 CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
-ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME = "active_speaker_staged_startup.yml"
 _DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
 _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
@@ -302,31 +302,37 @@ def _active_speaker_level_match_provisional() -> bool | None:
 def _active_speaker_output_safety_snapshot(
     airplay_health: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Return the landing-page speaker-output safety state.
-
-    `/system/snapshot` already carries the CamillaDSP config path via the
-    AirPlay health sampler. Keep the browser dumb: classify that path here and
-    let the page render a boolean instead of knowing commissioning filenames.
-    """
+    """Return the landing-page speaker-output safety state."""
 
     current = airplay_health.get("current") if isinstance(airplay_health, dict) else {}
     camilla = current.get("camilla") if isinstance(current, dict) else {}
     raw_path = camilla.get("config_path") if isinstance(camilla, dict) else None
     config_path = str(raw_path or "")
-    safety_muted = (
-        os.path.basename(config_path) == ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME
+    setup = read_active_speaker_setup_status(
+        active_config_path=config_path or None,
     )
     return {
-        "safety_muted": safety_muted,
-        "reason": "active_speaker_staged_startup" if safety_muted else None,
-        "active_config_path": config_path or None,
-        # None unless an active-speaker baseline is applied; True when its
-        # per-driver level match is still a datasheet estimate (run the guided
-        # phone level-match to measure it). The speaker is attenuation-only and
-        # safe either way — this is a quality signal, not a safety one.
+        **setup,
+        # Back-compat for the landing-page field name. This is now driven by the
+        # shared setup contract, not by a filename-only heuristic.
+        "safety_muted": not bool(setup.get("volume_allowed")),
         "level_match_provisional": _active_speaker_level_match_provisional(),
-        "source": "airplay_health.camilla_config_path",
+        "source": "active_speaker.setup_status",
     }
+
+
+def _active_speaker_volume_block() -> dict[str, Any] | None:
+    setup = read_active_speaker_setup_status()
+    if setup.get("active") and not setup.get("volume_allowed", False):
+        return setup
+    return None
+
+
+def _active_speaker_grouping_block() -> dict[str, Any] | None:
+    setup = read_active_speaker_setup_status()
+    if setup.get("active") and not setup.get("grouping_allowed", False):
+        return setup
+    return None
 
 # The high-impact mutations the control token gates (SECURITY.md).
 # The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
@@ -593,12 +599,14 @@ def _audio_profile_status(
     *,
     bridge_active: bool,
     chip_available: bool,
+    chip_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _sync_aec_module()
     return _aec_endpoints._audio_profile_status(
         state,
         bridge_active=bridge_active,
         chip_available=chip_available,
+        chip_gate=chip_gate,
     )
 
 
@@ -836,8 +844,8 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
         )
 
 
-# Forwarded pair-volume requests carry this header; its presence stops a
-# second hop (see _maybe_forward_volume_to_leader's loop breaker).
+# Forwarded pair action requests carry this header; its presence stops a
+# second hop (see _maybe_forward_pair_action_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
 _GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
 _GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
@@ -1502,13 +1510,14 @@ def _make_handler(
             # curve as the live audio path so diagnostics match what is heard.
             return {"db": round(_percent_to_db(percent), 3), "percent": percent}
 
-        def _maybe_forward_volume_to_leader(self) -> bool:
-            """Bonded-follower volume proxy. Returns True when the request
+        def _maybe_forward_pair_action_to_leader(self) -> bool:
+            """Bonded-follower pair-action proxy. Returns True when the request
             was handled (forwarded or rejected) and the caller must stop.
 
-            Used by the four /volume* handlers AND /transport/* — every
-            surface where a bonded follower's local action must target
-            the PAIR. While this speaker is an ACTIVE bonded follower,
+            Used by the four /volume* handlers, /transport/*, and
+            /source/select — every surface where a bonded follower's
+            local action must target the PAIR. While this speaker is an
+            ACTIVE bonded follower,
             its local volume knobs are INERT — bonded content bypasses the local
             CamillaDSP entirely (the leader's one Camilla bakes the
             program; HANDOFF-multiroom.md §2). Without this, the landing
@@ -1578,7 +1587,7 @@ def _make_handler(
                     relayed.setdefault("pair_leader", leader)
                 log_event(
                     logger,
-                    "volume.pair_forward_rejected",
+                    "pair.action_forward_rejected",
                     leader=leader,
                     path=self.path,
                     status=e.code,
@@ -1589,7 +1598,7 @@ def _make_handler(
             except Exception as e:  # noqa: BLE001 — transport failure: 502
                 log_event(
                     logger,
-                    "volume.pair_forward_failed",
+                    "pair.action_forward_failed",
                     leader=leader,
                     path=self.path,
                     error=str(e),
@@ -1639,7 +1648,7 @@ def _make_handler(
             self._send_json({"ok": True})
 
         def _get_volume(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             try:
                 percent = asyncio.run(_get_op())
@@ -1690,7 +1699,7 @@ def _make_handler(
             self._send_json(_augment_source_payload(result))
 
         def _get_aec(self) -> None:
-            # Software AEC bridge state + per-leg config + wake
+            # AEC bridge state + per-leg config + wake
             # threshold. Mode and leg booleans are the persisted
             # request (what the operator asked for, via the /wake/
             # page or aec_mode.env directly); bridge_active is the
@@ -1947,7 +1956,17 @@ def _make_handler(
             return False
 
         def _post_volume_adjust(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
+                return
+            blocked = _active_speaker_volume_block()
+            if blocked is not None:
+                self._send_json(
+                    {
+                        "error": blocked.get("detail") or "speaker output is not ready",
+                        "active_speaker_setup": blocked,
+                    },
+                    status=409,
+                )
                 return
             body = self._read_json()
             # Support both legacy delta_db (dial firmware compat,
@@ -1995,7 +2014,17 @@ def _make_handler(
             self._send_json(self._volume_payload(new_pct))
 
         def _post_volume_set(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
+                return
+            blocked = _active_speaker_volume_block()
+            if blocked is not None:
+                self._send_json(
+                    {
+                        "error": blocked.get("detail") or "speaker output is not ready",
+                        "active_speaker_setup": blocked,
+                    },
+                    status=409,
+                )
                 return
             body = self._read_json()
             # Support both legacy `db` (dial / older clients) and
@@ -2216,6 +2245,22 @@ def _make_handler(
                 if err:
                     self._send_json({"error": err}, status=400)
                     return
+                blocked = (
+                    _active_speaker_grouping_block()
+                    if body.get("enabled") else None
+                )
+                if blocked is not None:
+                    self._send_json(
+                        {
+                            "error": (
+                                blocked.get("detail")
+                                or "active speaker setup is not ready for grouping"
+                            ),
+                            "active_speaker_setup": blocked,
+                        },
+                        status=409,
+                    )
+                    return
                 crossover_hz = effective_crossover_hz
             before_grouping = load_grouping_config(GROUPING_ENV_FILE)
             live_apply_payload: dict[str, Any] | None = None
@@ -2311,7 +2356,17 @@ def _make_handler(
             return
 
         def _post_volume_mute(self) -> None:
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
+                return
+            blocked = _active_speaker_volume_block()
+            if blocked is not None:
+                self._send_json(
+                    {
+                        "error": blocked.get("detail") or "speaker output is not ready",
+                        "active_speaker_setup": blocked,
+                    },
+                    status=409,
+                )
                 return
             # Default is TOGGLE: muted → unmute (restore pre-mute
             # level), unmuted → mute. Used by HID accessory clicks
@@ -2351,7 +2406,7 @@ def _make_handler(
             # renderer stack parked (dumb-follower profile) the local
             # mux has nothing to toggle — the leader owns playback, so
             # the request forwards exactly like /volume*.
-            if self._maybe_forward_volume_to_leader():
+            if self._maybe_forward_pair_action_to_leader():
                 return
             action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
             try:
@@ -2376,6 +2431,8 @@ def _make_handler(
             # POST /source/select body: {"source": "airplay"} or
             # {"source": "auto"}. The mux validates policy and
             # forwards the low-level lane choice to fan-in.
+            if self._maybe_forward_pair_action_to_leader():
+                return
             body = self._read_json()
             source = str(body.get("source") or "").strip().lower()
             if source == "auto":
@@ -2525,16 +2582,16 @@ def _make_handler(
             return
 
         def _post_aec_toggle(self) -> None:
-            # Flip JASPER_AEC_MODE between auto and disabled, then
-            # kick the reconciler. The reconciler stops/starts
-            # jasper-aec-bridge.service and restarts jasper-voice
-            # with the new JASPER_MIC_DEVICE (udp:9876 vs chip
-            # direct). Called by the /wake/ page's AEC layer toggle
-            # (after a current-state read for idempotent set-state
-            # semantics). Non-blocking — the wizard polls /aec to
-            # see when the transition lands (~10-15 s). The kick
-            # uses systemctl restart so rapid toggles cannot be
-            # swallowed while the oneshot reconciler is already active.
+            # Flip the software-AEC3/direct-mic mode between auto and disabled,
+            # then kick the reconciler. Chip-AEC profiles bypass WebRTC AEC3
+            # but still need jasper-aec-bridge.service as the chip-beam UDP
+            # carrier, so attempts to disable "software AEC3" while chip-AEC is
+            # active are rejected below. Called by the /wake/ page's software
+            # AEC3 layer toggle (after a current-state read for idempotent
+            # set-state semantics). Non-blocking — the wizard polls /aec to
+            # see when the transition lands (~10-15 s). The kick uses systemctl
+            # restart so rapid toggles cannot be swallowed while the oneshot
+            # reconciler is already active.
             #
             # Risk model: LAN-local + browser-origin guard, same
             # as /system/restart/*. This is still not auth; it is
@@ -2543,6 +2600,23 @@ def _make_handler(
             # curl, local proxies, and accessories working.
             current = _read_aec_mode()
             new_mode = "disabled" if current == "auto" else "auto"
+            if new_mode == "disabled":
+                status = _aec_full_status()
+                if status.get("software_aec3", {}).get("bypassed"):
+                    self._send_json(
+                        {
+                            "error": (
+                                "Software AEC3 is already bypassed by the "
+                                "chip-AEC profile. Choose Direct mic to stop "
+                                "the chip-AEC bridge carrier, or choose XVF "
+                                "software AEC3 to use WebRTC AEC3."
+                            ),
+                            "mode": current,
+                            "bridge_role": status.get("bridge_role"),
+                        },
+                        status=409,
+                    )
+                    return
             try:
                 _write_aec_mode(new_mode)
             except (OSError, ValueError) as e:

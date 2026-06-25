@@ -105,13 +105,16 @@ async def load_profile_config(
     cam = camilla_factory()
 
     # Fast pre-check: refuse non-hostable graphs before recording an apply failure
-    # for handled active/custom graph refusals. The authoritative check repeats
-    # inside the writer lock below.
+    # for handled active/custom/dynamic-pipe graph refusals. The authoritative
+    # check repeats inside the writer lock below.
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
-    if not pre_carrier.can_host_eq or pre_carrier.kind == "active":
+    if (
+        not pre_carrier.can_host_eq
+        or pre_carrier.kind in {"active", "active_leader_program_bake"}
+    ):
         pre_carrier.reemit(profile, output_trim_db=output_trim_db)
 
     async def _prepare_config() -> dict[str, Any]:

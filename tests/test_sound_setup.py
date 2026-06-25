@@ -14,8 +14,10 @@ import subprocess
 import threading
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jasper.camilla_config_contract import PeqFilter
@@ -425,6 +427,28 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
         server.server_close()
 
 
+def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path):
+    """The live combined-test slider route must pass the route-before-CSRF gate."""
+
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/active-speaker/summed-test/level",
+            {"speaker_group_id": "main", "level_dbfs": -35},
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["status"] == "idle"
+        assert payload["reason"] == "no_active_summed_test"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_index_html_embeds_csrf_meta_for_json_posts():
     html = sound_setup._index_html("csrf-token").decode()
     # The token rides in the meta tag; the static module reads it and sends
@@ -476,17 +500,22 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
     assert "Start tone" in js
     assert "Stop tone" in js
+    assert "Save floor" in js
+    assert "save-volume-floor" in js
     assert "Back to configuration" in js
     assert "Back to adjust crossover" in js
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
-    assert "function setVolumeFloorResetButton" in js
+    assert "function saveVolumeFloor" in js
+    assert "function setVolumeFloorDraft" in js
     assert "return true;" in js
     assert "return false;" in js
-    assert "if (saved && volumeFloorTone.active)" in js
-    assert "if (saved) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});" in js
+    assert "else if (act === 'save-volume-floor')" in js
+    assert "setVolumeFloorDraft(floor);" in js
+    assert "await saveVolumeFloor();" in js
     assert "pagehide" in js
-    assert "scheduleVolumeFloorToneUpdate(floor);" in js
+    assert "scheduleVolumeFloorToneUpdate(volumeFloorValue());" in js
+    assert "if (volumeFloorTone.active) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});" in js
     assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
     assert "function defaultOutputStep()" in js
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
@@ -539,6 +568,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/crossover-preview'" in js
     assert "fetch('./active-speaker/measurements'" in js
     assert "fetch('./active-speaker/baseline-profile'" in js
+    assert "fetch('./active-speaker/baseline-profile/save-and-apply'" in js
+    assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
     assert "data-act=\"save-driver-design\"" in js
     assert "data-act=\"prepare-crossover-preview\"" in js
@@ -587,6 +618,10 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "body.level_dbfs = requestedLevel" in js
     assert "operator_listening_check: true" in js
     assert "Test each driver" in js
+    assert "function baselineProfileRevalidation()" in js
+    assert "Revalidate crossover blend" in js
+    assert "Revalidation is saved. Save and apply a fresh active profile." in js
+    assert "Your active speaker setup changed after the current profile was applied." in js
     assert "By-ear" not in js
     assert "Status" in js
     assert "auto_retry_pending" in js
@@ -770,9 +805,15 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
 
     # The new consumer copy is present and stable.
     assert "Updates the working setup, then builds a no-audio crossover preview." in js
-    assert "Save the checked crossover as your active speaker profile. No sound plays." in js
+    assert (
+        "Save the checked crossover as your active speaker profile. "
+        "JTS validates and applies it in one step; no sound plays."
+    ) in js
     assert "Your active speaker profile, built from the checked crossover and driver checks." in js
-    assert "Your active speaker profile is saved. Apply it to start using it." in js
+    assert (
+        "Your active speaker profile is saved. "
+        "Finish applying it to start using it."
+    ) in js
     assert "Sounds right" in js
     assert "Sounds hollow or thin" not in js
     assert "Needs adjustment" not in js
@@ -2995,6 +3036,83 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
     assert payload["source_selection_restore"]["state"]["mode"] == "auto"
 
 
+async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
+    monkeypatch,
+):
+    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+    apply_calls = 0
+
+    async def fake_apply_baseline_profile(_topology, **_kwargs):
+        nonlocal apply_calls
+        apply_calls += 1
+        return {
+            "status": "applied",
+            "profile": {
+                "status": "applied",
+                "config": {
+                    "path": baseline_path,
+                    "basename": "active_speaker_baseline.yml",
+                },
+                "permissions": {"may_apply": False},
+                "issues": [],
+            },
+            "apply": {
+                "result": "success",
+                "active_config_path": baseline_path,
+            },
+            "issues": [],
+        }
+
+    mux_commands: list[str] = []
+
+    def fake_mux_command(command: str) -> dict:
+        mux_commands.append(command)
+        return {
+            "mode": "auto",
+            "selected_source": None,
+            "active_source": "airplay",
+            "test_source": None,
+        }
+
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.load_measurement_state",
+        lambda topology: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
+        fake_apply_baseline_profile,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_mux_command",
+        fake_mux_command,
+    )
+
+    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
+    )
+
+    assert apply_calls == 1
+    assert mux_commands == ["AUTO"]
+    assert payload["status"] == "applied"
+    assert payload["profile"]["status"] == "applied"
+    assert payload["source_selection_restore"]["status"] == "ok"
+    assert payload["output_safety"] == {
+        "safety_muted": False,
+        "reason": None,
+        "active_config_path": baseline_path,
+    }
+
+
 def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
     monkeypatch,
     tmp_path: Path,
@@ -3632,6 +3750,38 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert not settings_path.exists()
 
 
+def _dominant_frequency_hz(samples: np.ndarray, sample_rate: int) -> float:
+    window = np.hanning(len(samples))
+    spectrum = np.fft.rfft(samples.astype(np.float64) * window)
+    bins = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
+    peak = int(np.argmax(np.abs(spectrum)))
+    return float(bins[peak])
+
+
+def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+
+    wav_path = sound_setup._volume_floor_tone_wav_path()
+
+    assert wav_path.name.startswith("volume_floor_reference_")
+    with wave.open(str(wav_path), "rb") as wav:
+        sample_rate = wav.getframerate()
+        assert wav.getnchannels() == 1
+        pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
+
+    segment_n = int(
+        round(sound_setup.VOLUME_FLOOR_TONE_SEGMENT_DURATION_S * sample_rate)
+    )
+    for index, expected in enumerate(sound_setup.VOLUME_FLOOR_TONE_FREQS_HZ):
+        segment = pcm[index * segment_n:(index + 1) * segment_n]
+        assert _dominant_frequency_hz(segment, sample_rate) == pytest.approx(
+            expected,
+            abs=3.0,
+        )
+
+
 async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
     tmp_path: Path, monkeypatch,
 ):
@@ -3907,6 +4057,41 @@ async def test_apply_profile_blocks_active_baseline_with_typed_reason(
     # Fail closed: the active config was never overwritten / re-loaded.
     assert fake.loaded_path is None
     # SF-2: the refusal raised before the apply transaction — no failure state.
+    assert last_dsp_apply_state() is None
+
+
+async def test_apply_profile_blocks_program_bake_without_dirtying_dsp_state(
+    tmp_path: Path, monkeypatch
+):
+    from jasper.dsp_apply import last_dsp_apply_state
+    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "grouping_active_leader_bake.yml"
+    current.write_text(_program_bake_yaml(), encoding="utf-8")
+    fake = FakeCamilla(str(current))
+    monkeypatch.setattr(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        lambda: {
+            "enable_rate_adjust": True,
+            "channel_split": None,
+            "playback_pipe_path": None,
+        },
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await sound_setup._apply_profile(
+            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+            camilla_factory=lambda: fake,
+        )
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "program_bake_pipe_unavailable"
+    assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
 
 

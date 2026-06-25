@@ -370,9 +370,9 @@ What exists:
   the first dongle. Runtime sink activation is intentionally stricter
   than hardware observation: `jasper-audio-hardware-reconcile` switches
   `/var/lib/jasper/outputd.env` to `JASPER_OUTPUTD_SINK=dual_apple` only
-  when the active-speaker startup-load state is `loaded`, CamillaDSP's
-  outputd statefile points at that active config, and the active config
-  is the expected four-channel `outputd_active_content_playback` graph.
+  when the active-speaker runtime contract proves the already-loaded endpoint
+  graph targets `outputd_active_content_playback` and its width fits the
+  profile cap.
   Until that graph evidence is present, the observed output-hardware
   profile remains dual Apple for UI/diagnostics, but the runtime DAC role
   is parked with `JASPER_OUTPUTD_BACKEND=fake` and logs
@@ -490,13 +490,15 @@ What exists:
   If outputd cannot stay up after its restart burst, systemd reboots
   cleanly via `StartLimitAction=reboot` rather than leaving the speaker
   without its final-output owner.
-  During install, `jasper-voice` is stopped before outputd is restarted
-  so an old PortAudio process cannot keep the legacy DAC path open; the
-  AEC reconciler then restarts or parks voice according to current mic
-  hardware. The installer treats outputd as mandatory:
-  missing source, missing binary, failed unit restart, or failed STATUS
-  probe fails the install instead of restarting voice into a silent
-  output path.
+  During install, likely audio clients (`jasper-voice`,
+  `jasper-aec-bridge`, outputd, camilla#2, Snapcast, AirPlay, Spotify,
+  Bluetooth aplay, and the mux) are parked before fan-in/Camilla/outputd
+  restart so old graph owners cannot keep legacy or current ALSA endpoints
+  open. The AEC, grouping, and renderer restart steps then restore the
+  appropriate runtime state. The installer treats missing outputd source or
+  binary as fatal; a transient outputd STATUS miss is logged loudly and
+  rechecked by the doctor summary so nginx, `/system/`, and recovery
+  surfaces still get installed.
 - Observability: `event=outputd.*` structured logs, `/state.outputd`
   via `jasper-control`, `/system` Outputd row, and
   `jasper-doctor` checks. The daemon reports negotiated ALSA
@@ -734,12 +736,15 @@ place to get it right and the most expensive to get wrong later.
 > emits the wide single env (item 3) — `JASPER_OUTPUTD_SINK=single_alsa`,
 > `JASPER_OUTPUTD_ACTIVE_CHANNELS=<active_outputd_lane_channels>`,
 > `JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture` — for a recognized
-> coherent single DAC **only when an active baseline of that width is the loaded
-> CamillaDSP config**, decided by the width-aware cutover gate (item 5, the old
-> `dual_apple_active_graph_status` renamed to `active_graph_status`, status
-> `active_graph_width_mismatch expected=N got=M`); otherwise it stays
-> byte-identical stereo. The gate **drives what we use**: it reads the loaded
-> config's actual playback width W, accepts `2 ≤ W ≤ cap`
+> coherent single DAC **only when the active-speaker runtime contract proves the
+> already-loaded endpoint graph**. For solo active that endpoint is the graph in
+> `outputd-statefile.yml`. For an active leader, `outputd-statefile.yml` may be
+> the safe `program_bake_pipe` (`File`→`SNAPFIFO`, not a DAC); in that case the
+> gate follows `crossover-statefile.yml` and requires the camilla#2 graph to be a
+> re-proven `driver_domain_baseline` targeting `outputd_active_content_playback`.
+> Any missing/unsafe/wrong-device/over-cap paired graph fails closed to the
+> byte-identical stereo path. The gate **drives what we use**: it reads the live
+> endpoint config's actual playback width W, accepts `2 ≤ W ≤ cap`
 > (`active_outputd_lane_channels`), and emits **that W** as
 > `JASPER_OUTPUTD_ACTIVE_CHANNELS` (a managed var cleared in every non-active
 > branch). A DAC8x running a 2-way drives 2 outputs, an 8-driver speaker drives
@@ -1405,17 +1410,20 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-24 (active-endpoint and wireless-sub TTS route
-exceptions rechecked against
+Last verified: 2026-06-25 (Camilla/outputd install choreography rechecked
+against `deploy/lib/install/systemd-units.sh` and
+`deploy/bin/jasper-camilla-recover`; 2026-06-24 active-endpoint and
+wireless-sub TTS route exceptions rechecked against
 `jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and
 `jasper.cli.doctor.grouping`; fan-in solo `FLUSH_SYNC` playout-ledger ack
 previously verified against rust/jasper-fanin/src/{playout,tts}.rs;
 active-speaker runtime graph boundary rechecked against
-`jasper.active_speaker.runtime_contract`, install outputd-statefile selection,
-doctor runtime graph check, `resolve_output_layout`, and the active-lane
-`DacProfile` declarations; Stage-7 outputd loop unification previously
+`jasper.active_speaker.runtime_contract`,
+`outputd_active_lane_decision`'s paired active-leader statefile proof, install
+outputd-statefile selection, doctor runtime graph check, `resolve_output_layout`,
+and the active-lane `DacProfile` declarations; Stage-7 outputd loop unification previously
 rechecked against rust/jasper-outputd; solo fan-in TTS ownership and
 passive bonded-member outputd TTS ownership previously rechecked against
 rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path

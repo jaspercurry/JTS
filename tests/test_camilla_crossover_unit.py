@@ -9,10 +9,10 @@ leader (docs/HANDOFF-distributed-active.md "Stage B"). It coexists with
 the always-on camilla#1 and ships INERT — installed but not enabled,
 not yet reconciler-gated. The load-bearing safety invariants this file
 moats against:
-  - **NO StartLimitAction=reboot.** camilla#1 escalates to reboot because
-    it is the always-on solo music daemon; camilla#2 is a secondary,
-    reconciler-gated instance whose crash must fail CLOSED to silence,
-    NEVER reboot the household speaker.
+  - **NO StartLimitAction=reboot.** camilla#1 owns the always-on
+    recovery/forensics path; camilla#2 is a secondary, reconciler-gated
+    instance whose crash must fail CLOSED to silence, NEVER reboot the
+    household speaker.
   - **A LIGHTER OOM posture than camilla#1.** Under RAM pressure the kernel
     must reclaim camilla#2 before the always-on camilla#1 (less-negative
     OOMScoreAdjust).
@@ -79,7 +79,7 @@ def test_unit_has_no_positional_configfile():
 def test_unit_never_reboots_the_box():
     """THE critical safety invariant: camilla#2 must NOT carry
     StartLimitAction=reboot. A crash fails closed to silence; only the
-    always-on camilla#1 escalates to a reboot."""
+    always-on camilla#1 owns a recovery handler."""
     body = UNIT_PATH.read_text()
     directive_lines = [
         ln.strip() for ln in body.splitlines()
@@ -89,9 +89,11 @@ def test_unit_never_reboots_the_box():
         f"camilla#2 must NOT set StartLimitAction (no reboot escalation); "
         f"found {directive_lines!r}"
     )
-    # Sanity: camilla#1 DOES reboot — confirm the two genuinely differ so
+    # Sanity: camilla#1 DOES recover — confirm the two genuinely differ so
     # this test is meaningful, not vacuously green.
-    assert "StartLimitAction=reboot" in CAMILLA1_UNIT.read_text()
+    camilla1 = CAMILLA1_UNIT.read_text()
+    assert "StartLimitAction=none" in camilla1
+    assert "OnFailure=jasper-camilla-recover.service" in camilla1
 
 
 def test_unit_keeps_a_startlimit_loop_bound():

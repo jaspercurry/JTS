@@ -108,6 +108,18 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(!/no longer open|expired/i.test(roleOrder));
 }
 
+// An expired pending ramp ack must invite a quiet restart, not imply the setup
+// path is incomplete.
+{
+  const expiredAck = commissionPayloadFailure({
+    status: "expired",
+    issues: [{ code: "commission_ramp_ack_expired" }],
+  });
+  assert.ok(/start it again/i.test(expiredAck));
+  assert.ok(/reopen it quietly/i.test(expiredAck));
+  assert.ok(!/earlier setup/i.test(expiredAck));
+}
+
 // Ramp-step load failures wrap the actual backend load payload one level deeper
 // than arm failures. The UI must still surface the specific output-path reason.
 {

@@ -44,6 +44,7 @@ TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
 Environment="JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream"
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
 Restart=on-failure
 RestartSec=2s
