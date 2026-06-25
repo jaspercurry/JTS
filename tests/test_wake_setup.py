@@ -745,7 +745,7 @@ def test_detection_json_proxies_aec(wired_server):
 
 
 def test_layer_aec_no_op_when_already_in_state(wired_server):
-    """AEC master uses set-state semantics: setting `enabled=true` when
+    """Software AEC3 uses set-state semantics: setting `enabled=true` when
     the upstream is already in mode=auto must NOT call /aec/toggle
     (which would flip to disabled). The handler reads /aec first and
     short-circuits if the state already matches."""

@@ -10,18 +10,20 @@ Three stacked sections, one page:
      same `/aec` JSON as the toggles. Shows detected mic, firmware,
      processing mode, session source, active wake legs, and wake phrase.
 
-  2. **Detection layers + sensitivity** — iOS-style toggles (AEC3 echo
-     cancellation, chip-direct mic, DTLN neural AEC, and the
+  2. **Detection layers + sensitivity** — iOS-style toggles (software AEC3,
+     chip-direct mic, DTLN neural AEC, and the
      hardware-conditional XVF3800 chip-AEC beams) and a sensitivity
      slider. Polls jasper-control for live state, posts state-set
-     requests back. The AEC master gates the bridge entirely; the raw +
-     DTLN legs are sub-features layered on top, and are disabled
-     (visually + interactively) when AEC is off because they consume the
-     bridge's UDP stream. The chip-AEC layer is additionally gated on the
-     detected mic profile and output DAC/reference gate, and is mutually
-     exclusive with raw + DTLN — enabling it greys those out (one chip
-     can't emit both the software legs and the chip beams). Unapproved
-     DACs use the explicit testing profile rather than this layer toggle.
+     requests back. The software-AEC3 toggle controls the fallback engine;
+     chip-AEC profiles keep the bridge running as a chip-beam carrier while
+     WebRTC AEC3 is bypassed. The raw + DTLN legs are sub-features layered
+     on top of software mode, and are disabled (visually + interactively)
+     when software AEC3 is off or chip-AEC is active. The chip-AEC layer is
+     additionally gated on the detected mic profile and output DAC/reference
+     gate, and is mutually exclusive with raw + DTLN — enabling it greys
+     those out (one chip can't emit both the software legs and the chip
+     beams). Unapproved DACs use the explicit testing profile rather than
+     this layer toggle.
 
   3. **Wake-word model picker** — radio over the curated registry in
      jasper/wake_models.py. Bundled openWakeWord names always show as
@@ -53,7 +55,7 @@ URL surface (after nginx strips the /wake/ prefix):
   GET  /detection.json  proxy jasper-control /aec — mode + bridge +
                         leg config + threshold
   POST /profile         body {profile: str} — set canonical input profile
-  POST /layer/aec       body {enabled: bool} — set AEC master
+  POST /layer/aec       body {enabled: bool} — set software AEC3
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
   POST /layer/chip_aec  body {enabled: bool} — set chip-AEC beam legs
@@ -211,9 +213,9 @@ def _bundled_asset_path(entry: wake_models.WakeModelEntry) -> Path | None:
 _LAYERS = (
     (
         "aec",
-        "AEC3 echo cancellation",
-        "Cancels the speaker's own music + TTS from the mic. "
-        "Required for waking while music plays.",
+        "Software AEC3",
+        "WebRTC echo cancellation for the software fallback path. "
+        "Bypassed automatically when a chip-AEC profile is active.",
         "~85 MB · ~22% core",
         False,
     ),
@@ -648,23 +650,36 @@ def _apply_layer(
     layer: str, enabled: bool, *, control_base: str,
 ) -> tuple[int, bytes]:
     """Translate a /layer/<name> POST into jasper-control's
-    /aec/toggle (master) or /aec/leg (raw/dtln) call.
+    /aec/toggle (software AEC3) or /aec/leg (raw/dtln/chip) call.
 
-    AEC master is flip-only on the control side. We read the current
+    The software-AEC3 toggle is flip-only on the control side. We read the current
     mode and only POST when it differs from the requested state, so
     a "set true while already on" returns the existing state instead
-    of toggling back to off. Returns (status, body) for proxying."""
+    of toggling back to off. Chip-AEC mode bypasses WebRTC AEC3 but still
+    needs the bridge as its chip-beam carrier; "software AEC3 off" is
+    therefore already true in that mode, and must not be translated into a
+    bridge-disable POST. Returns (status, body) for proxying."""
     if layer == "aec":
         status, body = proxy_get("/aec", control_base=control_base, timeout=5.0)
         if status != 200:
             return status, body
         try:
-            current_mode = json.loads(body.decode()).get("mode")
+            payload = json.loads(body.decode())
         except (UnicodeDecodeError, json.JSONDecodeError):
-            current_mode = None
+            payload = {}
+        current_mode = payload.get("mode")
+        software_aec3 = payload.get("software_aec3") or {}
+        software_bypassed = bool(software_aec3.get("bypassed"))
         already_in_state = (
-            (enabled and current_mode == "auto")
-            or (not enabled and current_mode == "disabled")
+            (
+                enabled
+                and current_mode == "auto"
+                and not software_bypassed
+            )
+            or (
+                not enabled
+                and (current_mode == "disabled" or software_bypassed)
+            )
         )
         if already_in_state:
             # No-op: return the latest state read above so the client

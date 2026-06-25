@@ -90,8 +90,17 @@ additionally gets the downsampled XVF USB-IN reference PCM. Explicit
 pre-DSP `pcm.jasper_ref` path. Do not add another ad-hoc ALSA tap to solve
 reference alignment.
 
-To turn the bridge OFF (or back to chip-direct mic for A/B testing),
-set the state file to disabled and run the reconciler:
+The `jasper-aec-bridge` service is therefore a shared mic-to-voice carrier,
+not synonymous with the WebRTC AEC3 engine. Under `xvf_chip_aec` /
+`xvf_chip_aec_testing`, the bridge process stays active so it can forward the
+selected hardware-AEC chip beam to `:9876`, but the WebRTC AEC3 engine is not
+instantiated. Operator surfaces expose this as `software_aec3.bypassed=true`;
+turning off the software-AEC3 layer must not stop the chip-AEC carrier. To
+stop the carrier entirely, choose the `direct_mic` profile.
+
+To turn the bridge OFF entirely (or back to direct mic for A/B testing),
+choose the `direct_mic` profile or set the state file to disabled and run the
+reconciler:
 
 ```sh
 printf 'JASPER_AUDIO_INPUT_PROFILE=direct_mic\nJASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
@@ -2229,16 +2238,15 @@ If RAM becomes a constraint, the highest-impact savings are:
 3. Rewrite as Rust or C (~80–100 MB, ~1–2 days work). Bridge
    becomes a 10–20 MB process.
 
-### The chip-side AEC infrastructure is still installed
+### Chip-side control infrastructure
 
-`jasper-aec-init.service` still runs at boot (now just resets
-chip state and sets UAC2 PCM to unity volume). `jasper-aec-tune`
-is still installed but no longer relevant — the chip's AEC isn't
-in the audio path. Both could be removed but kept for now
-because (a) the chip control path remains useful for diagnostic
-work, (b) re-introducing chip-side AEC if a topology change
-makes it viable would be easier, (c) the doctor checks that
-verify the chip is responsive depend on this code.
+`jasper-aec-init.service` still runs when the bridge is enabled. In the
+software fallback it applies the raw-ish XVF profile (`SHF_BYPASS=1`) for
+host-side WebRTC AEC3. In chip-AEC profiles it applies the volatile fixed-beam
+hardware-AEC profile and prepares the chip USB-IN reference path. The older
+`jasper-aec-tune` calibrator is still installed for diagnostics / future
+manual delay work, but the supported production path is profile-managed
+through the reconciler and `jasper-aec-init`.
 
 ### We haven't run the wake-word reliability test
 
@@ -2255,8 +2263,8 @@ better than no AEC" is reasoning, not measurement.
 
 Files involved in the AEC subsystem:
 
-- `jasper/cli/aec_bridge.py` — the software AEC daemon (WebRTC
-  AEC3 via the `jasper_aec3` pybind11 binding)
+- `jasper/cli/aec_bridge.py` — the AEC bridge daemon: WebRTC AEC3 in the
+  software fallback, chip-beam carrier in chip-AEC profiles
 - `jasper_aec3/` — sibling package, pybind11 binding for WebRTC AEC3
   (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt)
 - `jasper/cli/aec_init.py` — boot-time chip init (resets chip,
@@ -2647,5 +2655,6 @@ build, with reasoning so we don't keep re-litigating:
   (closest neighbor; same chip family)
 
 Last verified: 2026-06-25 (central chip-AEC DAC gate,
-`xvf_chip_aec_testing`, and profile-managed XVF mic-card derivation rechecked
-against the reconciler, `/aec`, doctor, and validation paths).
+`xvf_chip_aec_testing`, profile-managed XVF mic-card derivation, and the
+chip-AEC bridge-carrier / software-AEC3-bypass distinction rechecked against
+the reconciler, `/aec`, doctor, and validation paths).

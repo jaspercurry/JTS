@@ -1968,12 +1968,14 @@ exactly for corpus tests and nonstandard hardware.
 ### Wake-detection legs — custom sub-toggles
 
 The `/wake/` page exposes profile choices first. Its advanced layer
-toggles (`raw`, `dtln`, `chip_aec`, and the AEC master) are custom
-controls: changing one stamps `JASPER_AUDIO_INPUT_PROFILE=custom`.
+toggles (`raw`, `dtln`, `chip_aec`, and the software-AEC3 toggle) are
+custom controls: changing one stamps `JASPER_AUDIO_INPUT_PROFILE=custom`.
 In custom software-AEC mode the bridge can fan out AEC3 (`:9876`),
 raw chip-direct (`:9877`), and DTLN neural AEC (`:9878`). In custom
 chip-AEC mode it emits the chip beams and clears raw/DTLN because the
-single chip cannot do both modes at once.
+single chip cannot do both modes at once. Chip-AEC profiles still run the
+bridge process as the chip-beam UDP carrier, but WebRTC AEC3 itself is
+bypassed; do not treat "bridge active" as "software AEC3 active."
 
 > **Corpus-only 4th UDP leg (`:9879`) since PR #323.** The bridge
 > also always emits chip channel 2 (truly raw — no chip OR software
@@ -2011,7 +2013,8 @@ picker, which preserves the threshold on model save). Edit point is
   bridge state, effective legs, raw legacy intent, threshold, mic
   status, and validation summary.
 - `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_chip_aec_testing"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
-- `POST /aec/toggle` → custom AEC master flip
+- `POST /aec/toggle` → custom software-AEC3/direct-mic flip; rejected while
+  chip-AEC is using the bridge as its carrier
 - `POST /aec/leg` body `{leg: "raw"|"dtln"|"chip_aec", enabled: bool}` → flip one custom leg
 - `POST /aec/threshold` body `{threshold: float}` (0.0..1.0) → set sensitivity
 
@@ -2030,7 +2033,8 @@ file seeds `auto`.
 - Profile change → reconciler decides bridge + voice + outputd restart
   needs; chip-AEC profile changes can restart outputd for USB-IN
   reference fanout.
-- AEC master flip → custom bridge + voice restart
+- Software-AEC3 toggle → custom bridge + voice restart; rejected/no-op while
+  chip-AEC is using the bridge as its carrier
 - DTLN flip → bridge + voice restart (DTLN model loads at startup
   in the bridge; voice opens `:9878` socket at startup)
 - RAW flip → voice restart only (bridge already emits to `:9877`

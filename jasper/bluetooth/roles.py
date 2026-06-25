@@ -71,10 +71,11 @@ class RoleStore:
         # group-readable state tree under the WS1 non-root drop. Publish it
         # group-readable (NOT the hand-rolled NamedTemporaryFile/mkstemp default
         # 0600) so any non-root daemon in the jasper group can read it, matching
-        # the rest of /var/lib/jasper. atomic_write_text creates the parent dir +
-        # writes the right mode in one call; keep the write best-effort (a
-        # role-map write must not crash the bluetooth handler).
+        # the rest of /var/lib/jasper. Inherit the parent directory group so a
+        # root-run write does not publish root:root 0640 into the shared state
+        # tree. Keep the write best-effort (a role-map write must not crash the
+        # bluetooth handler).
         try:
-            atomic_write_text(self._path, body, mode=0o640)
+            atomic_write_text(self._path, body, mode=0o640, group_from_parent=True)
         except OSError as e:
             logger.warning("bt_roles: write failed (%s)", e)

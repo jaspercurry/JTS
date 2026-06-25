@@ -450,6 +450,7 @@ def _aec_full_status() -> dict:
         ),
         chip_available=bool(chip_gate.get("available")),
     )
+    software_aec3 = _software_aec3_status(effective, bridge_active=bridge_active)
     profile_status = _audio_profile_status(
         state,
         bridge_active=bridge_active,
@@ -474,6 +475,8 @@ def _aec_full_status() -> dict:
             "leg_chip_aec": state["leg_chip_aec"],
         },
         "bridge_active": bridge_active,
+        "bridge_role": _bridge_role(effective),
+        "software_aec3": software_aec3,
         "legs": {
             "raw": {"configured": effective.raw_enabled},
             "dtln": {"configured": effective.dtln_enabled},
@@ -490,4 +493,53 @@ def _aec_full_status() -> dict:
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
+    }
+
+
+def _bridge_role(intent: AecIntent) -> str:
+    if intent.mode != "auto":
+        return "off"
+    if intent.chip_aec_enabled:
+        return "chip_aec_carrier"
+    return "software_aec3"
+
+
+def _software_aec3_status(
+    intent: AecIntent,
+    *,
+    bridge_active: bool,
+) -> dict[str, Any]:
+    """Derived WebRTC/AEC3 status, separate from the shared bridge carrier.
+
+    Chip-AEC still needs ``jasper-aec-bridge`` as the UDP carrier into
+    jasper-voice, but that carrier does not instantiate the WebRTC AEC3 engine.
+    Keep that distinction explicit so operator surfaces never present "bridge
+    running" as "software AEC3 running."
+    """
+    if intent.mode != "auto":
+        return {
+            "configured": False,
+            "active": False,
+            "bypassed": False,
+            "reason": "AEC bridge is disabled by the direct-mic profile.",
+        }
+    if intent.chip_aec_enabled:
+        return {
+            "configured": False,
+            "active": False,
+            "bypassed": True,
+            "reason": (
+                "Chip-AEC profile selected; WebRTC AEC3 is bypassed while "
+                "the bridge carries the chip beam to voice."
+            ),
+        }
+    return {
+        "configured": True,
+        "active": bool(bridge_active),
+        "bypassed": False,
+        "reason": (
+            "Software AEC3 bridge is active."
+            if bridge_active
+            else "Software AEC3 is selected; waiting for the bridge."
+        ),
     }

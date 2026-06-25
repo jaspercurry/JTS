@@ -498,6 +498,13 @@ def test_aec_full_status_includes_legs_and_threshold(
     status = server._aec_full_status()
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
+    assert status["bridge_role"] == "software_aec3"
+    assert status["software_aec3"] == {
+        "configured": True,
+        "active": True,
+        "bypassed": False,
+        "reason": "Software AEC3 bridge is active.",
+    }
     assert status["legs"]["raw"]["configured"] is True
     assert status["legs"]["dtln"]["configured"] is True
     assert status["legs"]["chip_aec"]["configured"] is False
@@ -538,6 +545,13 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     assert status["mode"] == "disabled"
     assert status["profile"] == "direct_mic"
     assert status["bridge_active"] is False
+    assert status["bridge_role"] == "off"
+    assert status["software_aec3"] == {
+        "configured": False,
+        "active": False,
+        "bypassed": False,
+        "reason": "AEC bridge is disabled by the direct-mic profile.",
+    }
     assert status["legs"]["raw"] == {"configured": False}
     assert status["legs"]["dtln"] == {"configured": False}
     assert status["legs"]["chip_aec"]["configured"] is False
@@ -613,6 +627,16 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     status = server._aec_full_status()
 
     assert status["profile"] == "auto"
+    assert status["bridge_role"] == "chip_aec_carrier"
+    assert status["software_aec3"] == {
+        "configured": False,
+        "active": False,
+        "bypassed": True,
+        "reason": (
+            "Chip-AEC profile selected; WebRTC AEC3 is bypassed while "
+            "the bridge carries the chip beam to voice."
+        ),
+    }
     assert status["legs"]["raw"]["configured"] is False
     assert status["legs"]["chip_aec"]["configured"] is True
     assert status["raw_intent"]["leg_raw"] is True

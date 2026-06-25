@@ -1,5 +1,5 @@
 [Unit]
-Description=Reconcile microphone and software AEC state
+Description=Reconcile microphone and AEC input-profile state
 Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 After=sound.target jasper-camilla.service
 Wants=sound.target jasper-camilla.service
