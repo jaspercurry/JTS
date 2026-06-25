@@ -23,12 +23,49 @@ from typing import AsyncIterator, Callable
 
 from dbus_next import BusType  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
+from dbus_next.errors import DBusError  # type: ignore
 
-from .models import BluetoothDevice
+from .models import BluetoothDevice, UUID_BATTERY_LEVEL
 
 logger = logging.getLogger(__name__)
 
 BLUEZ_BUS = "org.bluez"
+BLUEZ_GATT_CHARACTERISTIC_IFACE = "org.bluez.GattCharacteristic1"
+
+
+def _variant_value(value):
+    return getattr(value, "value", value)
+
+
+def _battery_level_characteristic_path(
+    managed_objects: dict,
+    device_path: str,
+) -> str | None:
+    """Return the standard Battery Level characteristic path, if present."""
+    prefix = f"{device_path}/"
+    for path, ifaces in managed_objects.items():
+        if not str(path).startswith(prefix):
+            continue
+        char_props = ifaces.get(BLUEZ_GATT_CHARACTERISTIC_IFACE)
+        if char_props is None:
+            continue
+        uuid = str(_variant_value(char_props.get("UUID")) or "").lower()
+        if UUID_BATTERY_LEVEL in uuid:
+            return str(path)
+    return None
+
+
+def _battery_percent_from_read_value(value) -> int | None:
+    """Decode a BLE Battery Level characteristic ReadValue result."""
+    if not value:
+        return None
+    try:
+        pct = int(value[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if 0 <= pct <= 100:
+        return pct
+    return None
 
 
 class DeviceObserver:
@@ -54,6 +91,7 @@ class DeviceObserver:
         # device D-Bus path.
         self._device_props: dict[str, dict] = {}
         self._battery_props: dict[str, dict] = {}
+        self._battery_read_tasks: dict[str, asyncio.Task] = {}
         self._listeners: set[asyncio.Queue] = set()
         self._bus: MessageBus | None = None
         self._om = None
@@ -108,6 +146,7 @@ class DeviceObserver:
                 self._devices[path] = self._build(path)
                 self._broadcast("add", self._devices[path])
                 asyncio.create_task(self._watch_device_props(path))
+                self._schedule_battery_refresh(path)
                 if batt_props is not None:
                     asyncio.create_task(self._watch_battery_props(path))
             elif batt_props is not None and path in self._device_props:
@@ -118,6 +157,7 @@ class DeviceObserver:
                 self._devices[path] = self._build(path)
                 self._broadcast("update", self._devices[path])
                 asyncio.create_task(self._watch_battery_props(path))
+                self._schedule_battery_refresh(path)
 
         def _on_removed(path: str, interfaces: list[str]) -> None:
             if "org.bluez.Device1" in interfaces:
@@ -144,8 +184,12 @@ class DeviceObserver:
             asyncio.create_task(self._watch_device_props(path))
             if path in self._battery_props:
                 asyncio.create_task(self._watch_battery_props(path))
+            self._schedule_battery_refresh(path)
 
     async def stop(self) -> None:
+        for task in self._battery_read_tasks.values():
+            task.cancel()
+        self._battery_read_tasks.clear()
         for unsub in self._unsubscribes:
             try:
                 unsub()
@@ -192,6 +236,7 @@ class DeviceObserver:
             new = self._build(path)
             self._devices[path] = new
             self._broadcast("update", new)
+            self._schedule_battery_refresh(path)
 
         try:
             props.on_properties_changed(_on_changed)
@@ -226,11 +271,74 @@ class DeviceObserver:
                 new = self._build(path)
                 self._devices[path] = new
                 self._broadcast("update", new)
+                self._schedule_battery_refresh(path)
 
         try:
             props.on_properties_changed(_on_changed)
         except Exception:  # noqa: BLE001
             pass
+
+    def _schedule_battery_refresh(self, path: str) -> None:
+        if self._bus is None or self._om is None or path not in self._device_props:
+            return
+        device = self._build(path)
+        if not (
+            device.connected
+            and device.services_resolved
+            and device.battery_capable
+        ):
+            return
+        existing = self._battery_read_tasks.get(path)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(self._refresh_battery_from_gatt(path))
+        self._battery_read_tasks[path] = task
+        task.add_done_callback(
+            lambda _task, p=path: self._battery_read_tasks.pop(p, None),
+        )
+
+    async def _refresh_battery_from_gatt(self, path: str) -> None:
+        """Directly read BLE Battery Level.
+
+        BlueZ normally mirrors the standard Battery Service to
+        org.bluez.Battery1.Percentage, but some BLE HID devices leave
+        that convenience property stale while the characteristic itself
+        has the correct value. Reading 0x2a19 keeps the UI honest
+        without changing pairing/control semantics.
+        """
+        if self._bus is None or self._om is None:
+            return
+        try:
+            managed = await self._om.call_get_managed_objects()
+            char_path = _battery_level_characteristic_path(managed, path)
+            if char_path is None:
+                return
+            intro = await self._bus.introspect(BLUEZ_BUS, char_path)
+            char = self._bus.get_proxy_object(
+                BLUEZ_BUS, char_path, intro,
+            ).get_interface(BLUEZ_GATT_CHARACTERISTIC_IFACE)
+            pct = _battery_percent_from_read_value(
+                await char.call_read_value({}),
+            )
+        except (AttributeError, DBusError, KeyError, RuntimeError, TypeError) as exc:
+            logger.debug(
+                "bluetooth direct battery read failed for %s: %s",
+                path,
+                exc,
+            )
+            return
+        if pct is None:
+            return
+        cur = self._battery_props.setdefault(path, {})
+        old = _variant_value(cur.get("Percentage"))
+        cur["Percentage"] = pct
+        cur.setdefault("Source", "GATT Battery Service")
+        if path not in self._device_props:
+            return
+        new = self._build(path)
+        self._devices[path] = new
+        if old != pct:
+            self._broadcast("update", new)
 
     def _broadcast(self, action: str, device: BluetoothDevice) -> None:
         for q in list(self._listeners):
@@ -276,5 +384,3 @@ class _Subscription:
             except asyncio.CancelledError:
                 self.close()
                 raise
-
-
