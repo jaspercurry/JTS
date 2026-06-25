@@ -29,6 +29,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionCardState,
+  commissionPayloadHasIssue,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanMode,
@@ -2259,7 +2260,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return String(issue && issue.code || '');
     });
     if (codes.indexOf('tone_backend_failed') >= 0) {
-      return 'JTS could not prepare the combined test tone. Retry after the setup finishes; if it fails again, open System status.';
+      return 'JTS could not prepare the combined test audio. Retry after the setup finishes; if it fails again, open System status.';
     }
     if (codes.indexOf('summed_commission_load_failed') >= 0 ||
         codes.indexOf('safe_session_not_armed') >= 0) {
@@ -4073,6 +4074,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!result || !result.ok) {
         var stopMessage = result && result.error ?
           result.error : 'Stopped. JTS could not play the driver test.';
+        if (result && result.payload &&
+            commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
+          stopCommissionAutoRamp(stopMessage);
+          patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
+          status(stopMessage, true);
+          render();
+          return;
+        }
         await stopAndAbortCommissionAutoRamp(stopMessage);
         return;
       }
@@ -4850,7 +4859,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (!await jtsConfirm(
-      'Play a short combined test for "' + label +
+      'Play a looped spoken combined test for "' + label +
         '" at ' + fmtDb(combinedTestLevelDbfs()) +
         '? JTS uses the prepared crossover and keeps the test level bounded.',
       {danger: true}
@@ -4888,7 +4897,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var body = Object.assign({
         speaker_group_id: groupId,
         audio: true,
-        duration_ms: 500
+        stimulus: 'speech',
+        duration_ms: 12000
       }, action && action.body || {});
       body.level_dbfs = requestedLevel;
       var resp = await fetch(action && action.endpoint || './active-speaker/summed-test', {

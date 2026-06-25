@@ -93,6 +93,7 @@ COMMISSION_TONE_SAMPLE_RATE = 48000
 COMMISSION_TONE_SOURCE_DBFS = 0.0
 COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
 SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
+SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 DRIVER_CAPTURE_SWEEP_BACKEND = "correction_substream_driver_sweep"
 SUMMED_CAPTURE_SWEEP_BACKEND = "correction_substream_summed_sweep"
 DEFAULT_MEASUREMENT_SWEEP_DIR = Path("/var/lib/jasper/active_speaker_sweeps")
@@ -360,6 +361,12 @@ def _commission_tone_wav_path(
         dbfs=COMMISSION_TONE_SOURCE_DBFS,
         sample_rate=COMMISSION_TONE_SAMPLE_RATE,
     )
+
+
+def _combined_speech_stimulus_wav_path() -> tuple[Path, dict[str, Any]]:
+    from jasper.active_speaker.speech_stimulus import ensure_combined_speech_stimulus
+
+    return ensure_combined_speech_stimulus()
 
 
 def _measurement_sweep_wav_path() -> tuple[Path, dict[str, Any]]:
@@ -1223,7 +1230,7 @@ def _summed_playback_with_issue(
     out = dict(playback)
     out.update({
         "status": status,
-        "backend": SUMMED_COMMISSION_TONE_BACKEND,
+        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
         "audio_emitted": False,
         "confirmable": False,
         "issues": [*_dict_items(playback.get("issues")), issue],
@@ -1235,6 +1242,13 @@ def _summed_playback_with_issue(
     if fanin_gate is not None:
         out["fanin_gate"] = fanin_gate
     return out
+
+
+def _commission_summed_stimulus_issue(exc: BaseException) -> dict[str, str]:
+    return _issue(
+        "tone_backend_failed",
+        f"could not prepare the combined test speech: {exc}",
+    )
 
 
 def _capture_sweep_issue(exc: BaseException) -> dict[str, str]:
@@ -1654,20 +1668,13 @@ async def _play_summed_commission_tone(
     level_dbfs = _finite(tone.get("level_dbfs"))
     if level_dbfs is None:
         level_dbfs = -80.0
-    frequency_hz = _finite(tone.get("frequency_hz"))
-    duration_ms = _finite(tone.get("duration_ms"))
     try:
-        if frequency_hz is None or duration_ms is None:
-            raise ValueError("missing capture sweep tone metadata")
-        duration_s = max(0.05, duration_ms / 1000.0)
-        wav_path = _commission_tone_wav_path(
-            frequency_hz=frequency_hz,
-            duration_s=duration_s,
-        )
-    except (OSError, TypeError, ValueError) as exc:
+        wav_path, stimulus = _combined_speech_stimulus_wav_path()
+        duration_s = max(0.05, float(stimulus.get("duration_s") or 0.0))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _summed_playback_with_issue(
             artifact_playback,
-            issue=_commission_tone_issue(exc),
+            issue=_commission_summed_stimulus_issue(exc),
         )
 
     load_payload = await _load_summed_commissioning_config(
@@ -1713,10 +1720,11 @@ async def _play_summed_commission_tone(
         playback_result = dict(artifact_playback)
         playback_result.update({
             "status": "completed",
-            "backend": SUMMED_COMMISSION_TONE_BACKEND,
+            "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
             "audio_emitted": True,
             "confirmable": True,
             "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+            "stimulus": stimulus,
             "commissioning_load": load_payload,
             "fanin_gate": fanin_gate,
             "issues": [],
@@ -1724,7 +1732,7 @@ async def _play_summed_commission_tone(
     except _PLAYBACK_OPERATION_ERRORS as exc:
         playback_result = _summed_playback_with_issue(
             artifact_playback,
-            issue=_commission_tone_issue(exc),
+            issue=_commission_summed_stimulus_issue(exc),
             commissioning_load=load_payload,
             rollback=rollback,
             fanin_gate=fanin_gate,

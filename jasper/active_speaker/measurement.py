@@ -748,8 +748,9 @@ def record_driver_measurement(
         record,
     ][-MAX_DRIVER_RECORDS:]
     persisted["updated_at"] = record["created_at"]
-    _write_state(path, persisted)
-    return _with_summary(topology, persisted)
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out
 
 
 def record_summed_test_artifact(
@@ -777,6 +778,11 @@ def record_summed_test_artifact(
     summed_target = _summed_lookup(topology).get(group_id)
     playback_id = _text(playback.get("playback_id"), max_chars=120)
     artifact = playback.get("artifact") if isinstance(playback.get("artifact"), Mapping) else {}
+    stimulus = (
+        playback.get("stimulus")
+        if isinstance(playback.get("stimulus"), Mapping)
+        else {}
+    )
     expected_indices = _expected_summed_output_indices(topology, group_id)
     observed_indices = _output_indices_from_playback(playback)
     issues: list[dict[str, str]] = []
@@ -833,6 +839,7 @@ def record_summed_test_artifact(
         "playback_id": playback_id,
         "backend": playback.get("backend"),
         "artifact": dict(artifact),
+        "stimulus": dict(stimulus),
         "target_output_indices": observed_indices,
         "expected_output_indices": expected_indices,
         "tone": dict(playback.get("tone") or {}),
@@ -844,8 +851,9 @@ def record_summed_test_artifact(
         record,
     ][-MAX_SUMMED_TEST_RECORDS:]
     persisted["updated_at"] = record["created_at"]
-    _write_state(path, persisted)
-    return _with_summary(topology, persisted)
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out
 
 
 def record_summed_validation(
@@ -976,5 +984,6 @@ def record_summed_validation(
         record,
     ][-MAX_SUMMED_RECORDS:]
     persisted["updated_at"] = record["created_at"]
-    _write_state(path, persisted)
-    return _with_summary(topology, persisted)
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out

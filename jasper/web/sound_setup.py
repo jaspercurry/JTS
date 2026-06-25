@@ -2035,6 +2035,7 @@ COMMISSION_TONE_SAMPLE_RATE = 48000
 COMMISSION_TONE_SOURCE_DBFS = 0.0
 COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
 SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
+SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 COMMISSION_TONE_MUX_SOCKET = os.environ.get(
     "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
 )
@@ -2085,6 +2086,12 @@ def _commission_tone_wav_path(
         dbfs=COMMISSION_TONE_SOURCE_DBFS,
         sample_rate=COMMISSION_TONE_SAMPLE_RATE,
     )
+
+
+def _combined_speech_stimulus_wav_path() -> tuple[Path, dict[str, Any]]:
+    from jasper.active_speaker.speech_stimulus import ensure_combined_speech_stimulus
+
+    return ensure_combined_speech_stimulus()
 
 
 def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
@@ -2379,7 +2386,7 @@ def _summed_test_stopped_playback(
     out = dict(playback)
     out.update({
         "status": "stopped",
-        "backend": SUMMED_COMMISSION_TONE_BACKEND,
+        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
         "audio_emitted": False,
         "confirmable": False,
         "stop_reason": reason,
@@ -2738,7 +2745,7 @@ def _summed_playback_with_issue(
     out = dict(playback)
     out.update({
         "status": status,
-        "backend": SUMMED_COMMISSION_TONE_BACKEND,
+        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
         "audio_emitted": False,
         "confirmable": False,
         "issues": [
@@ -2753,6 +2760,13 @@ def _summed_playback_with_issue(
     if fanin_gate is not None:
         out["fanin_gate"] = fanin_gate
     return out
+
+
+def _commission_summed_stimulus_issue(exc: BaseException) -> dict[str, str]:
+    return _commission_setup_issue(
+        "tone_backend_failed",
+        f"could not prepare the combined test speech: {exc}",
+    )
 
 
 async def _active_speaker_play_summed_commission_tone(
@@ -2807,19 +2821,15 @@ async def _active_speaker_play_summed_commission_tone(
     except (TypeError, ValueError):
         level_dbfs = -80.0
     try:
-        frequency_hz = float(tone.get("frequency_hz"))
-        duration_s = max(0.05, float(tone.get("duration_ms")) / 1000.0)
-        wav_path = _commission_tone_wav_path(
-            frequency_hz=frequency_hz,
-            duration_s=duration_s,
-        )
-    except (OSError, TypeError, ValueError) as exc:
+        wav_path, stimulus = _combined_speech_stimulus_wav_path()
+        duration_s = max(0.05, float(stimulus.get("duration_s") or 0.0))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         with _SUMMED_TEST_TONE_LOCK:
             if _SUMMED_TEST_TONE_SESSION is session:
                 _SUMMED_TEST_TONE_SESSION = None
         return _summed_playback_with_issue(
             artifact_playback,
-            issue=_commission_tone_issue(exc),
+            issue=_commission_summed_stimulus_issue(exc),
         )
 
     load_payload = await _active_speaker_load_summed_commissioning_config(
@@ -2902,10 +2912,11 @@ async def _active_speaker_play_summed_commission_tone(
                 playback_result = dict(artifact_playback)
                 playback_result.update({
                     "status": "completed",
-                    "backend": SUMMED_COMMISSION_TONE_BACKEND,
+                    "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
                     "audio_emitted": True,
                     "confirmable": True,
                     "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
+                    "stimulus": stimulus,
                     "commissioning_load": load_payload,
                     "fanin_gate": fanin_gate,
                     "issues": [],
@@ -2913,7 +2924,7 @@ async def _active_speaker_play_summed_commission_tone(
     except Exception as exc:  # noqa: BLE001 - always re-mute below.
         playback_result = _summed_playback_with_issue(
             artifact_playback,
-            issue=_commission_tone_issue(exc),
+            issue=_commission_summed_stimulus_issue(exc),
             commissioning_load=load_payload,
             rollback=rollback,
             fanin_gate=fanin_gate,
@@ -3354,20 +3365,25 @@ async def _active_speaker_commission_ramp_ack_payload(
     # load_config lets any terminal by-ear outcome re-mute the transient graph.
     load_config, _, _ = commission_seams(cam)
     payload = await record_ramp_operator_ack(outcome=outcome, load_config=load_config)
+    acknowledged_step = (
+        payload.get("acknowledged_step")
+        if isinstance(payload.get("acknowledged_step"), dict)
+        else pending
+    )
     should_record_driver_evidence = (
         outcome == "heard_correct_driver"
         and payload.get("status") == "confirmed"
         and not payload.get("issues")
     ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
-    if should_record_driver_evidence and isinstance(pending, dict):
+    if should_record_driver_evidence and isinstance(acknowledged_step, dict):
         measurements = record_driver_measurement(
             topology,
             {
                 "speaker_group_id": ramp_state.get("speaker_group_id"),
-                "role": pending.get("role"),
+                "role": acknowledged_step.get("role"),
                 "outcome": outcome,
-                "playback_id": pending.get("playback_id"),
-                "test_level_dbfs": pending.get("gain_db"),
+                "playback_id": acknowledged_step.get("playback_id"),
+                "test_level_dbfs": acknowledged_step.get("gain_db"),
                 "notes": "Recorded from active-speaker guarded ramp confirmation.",
             },
             calibration_level=load_calibration_level_state(),

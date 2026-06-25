@@ -114,12 +114,29 @@ def _record_summed_test(
                     "channel_count": 2,
                 },
                 "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+                "stimulus": {
+                    "kind": "jts_active_speaker_speech_stimulus",
+                    "text": "Like and subscribe to Jasper tech.",
+                    "duration_ms": 12000,
+                },
                 "issues": playback_issues or [],
             },
         },
         state_path=state_path,
         now="2026-06-14T12:02:30Z",
     )
+
+
+def test_summed_test_records_spoken_stimulus_metadata(tmp_path: Path) -> None:
+    topology = _topology()
+    payload = _record_summed_test(topology, tmp_path / "measurements.json")
+
+    latest = payload["summary"]["latest_summed_tests"]["mono"]
+    assert latest["stimulus"] == {
+        "kind": "jts_active_speaker_speech_stimulus",
+        "text": "Like and subscribe to Jasper tech.",
+        "duration_ms": 12000,
+    }
 
 
 def test_failed_summed_test_without_artifact_does_not_claim_output_mismatch(
@@ -501,6 +518,13 @@ def test_summed_validation_waits_for_all_driver_measurements(
     assert ready["summary"]["driver_measurements_complete"] is True
     assert ready["summary"]["summed_validation_complete"] is True
     assert ready["permissions"]["may_compile_baseline"] is True
+
+    reloaded = load_measurement_state(topology, state_path=state_path)
+    assert reloaded["status"] == "ready_for_baseline"
+    assert reloaded["summary"]["summed_validation_complete"] is True
+    assert reloaded["summary"]["latest_summed_validations"]["mono"][
+        "validated"
+    ] is True
 
 
 def test_summed_validation_accepts_operator_check_after_audible_test_without_mic(

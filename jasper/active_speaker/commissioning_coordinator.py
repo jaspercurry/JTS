@@ -46,7 +46,7 @@ def summed_test_failure_message(issues: Any) -> str:
     codes = issue_codes(issues)
     if "tone_backend_failed" in codes:
         return (
-            "JTS could not prepare the combined test tone. Retry after the setup "
+            "JTS could not prepare the combined test audio. Retry after the setup "
             "finishes; if it fails again, open System status."
         )
     if "summed_commission_load_failed" in codes:
@@ -210,6 +210,16 @@ def _combined_group_view(
     latest_test_id = str(
         latest_test.get("summed_test_id") or latest_test.get("playback_id") or ""
     )
+    latest_validation_test_id = str(
+        latest_validation.get("summed_test_id")
+        or latest_validation.get("playback_id")
+        or ""
+    )
+    latest_test_validated = bool(
+        validated
+        and latest_test_id
+        and latest_validation_test_id == latest_test_id
+    )
     actions = {
         "start_combined_test": _action(
             "start_combined_test",
@@ -219,14 +229,15 @@ def _combined_group_view(
             body={
                 "speaker_group_id": group_id,
                 "audio": True,
-                "duration_ms": 500,
+                "stimulus": "speech",
+                "duration_ms": 12000,
                 "level_dbfs": test_level.get("requested_level_dbfs"),
             },
         ),
         "record_combined_result": _action(
             "record_combined_result",
             "Record combined check",
-            enabled=has_audible_test,
+            enabled=has_audible_test and not latest_test_validated,
             endpoint="./active-speaker/summed-validation",
             body={
                 "speaker_group_id": group_id,
@@ -356,7 +367,7 @@ def build_commissioning_view(
         )
         for target in active_targets
     ]
-    next_action = _first_enabled_action(combined_groups)
+    next_action = None if summed_complete else _first_enabled_action(combined_groups)
     if next_action is None and not output_identity_complete:
         next_action = _action(
             "confirm_outputs",
