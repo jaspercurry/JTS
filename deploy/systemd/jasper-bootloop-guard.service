@@ -18,8 +18,8 @@ Documentation=file:/opt/jasper/docs/HANDOFF-tier5-watchdog-liveness.md
 # here is belt-and-braces, not the correctness mechanism (a burst takes
 # tens of seconds to accumulate; the guard runs in milliseconds).
 After=local-fs.target
-Before=jasper-camilla.service jasper-fanin.service jasper-outputd.service
-Before=jasper-voice.service jasper-control.service jasper-aec-bridge.service
+Before=jasper-fanin.service jasper-outputd.service jasper-voice.service
+Before=jasper-control.service jasper-aec-bridge.service
 
 [Service]
 Type=oneshot

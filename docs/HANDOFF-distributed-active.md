@@ -982,8 +982,8 @@ tweeter TTS, inv-B-through-Layer-A).
 > box with **no Snapcast installed**) surfaced a reboot loop: the reconciler armed
 > camilla#2 onto the DAC **even though camilla#1's bake had failed** (no FIFO
 > reader without snapserver → camilla#1 stayed on its solo-active DAC baseline), so
-> both CamillaDSP fought for the DAC and camilla#1's `StartLimitAction=reboot`
-> escalated. The handoff is now fail-closed by three gates: (1) **precheck refuses
+> both CamillaDSP fought for the DAC and camilla#1 exhausted its recovery budget.
+> The handoff is now fail-closed by three gates: (1) **precheck refuses
 > the bond** if `snapserver`/`snapclient` are not installed
 > (`snapcast_unavailable`); (2) the reconciler **does not bake** unless
 > `snapserver` is actually active (never bakes camilla#1 onto a reader-less pipe);
@@ -1000,7 +1000,8 @@ tweeter TTS, inv-B-through-Layer-A).
 > tighter race: camilla#1's websocket bake reload can return successfully before
 > snd-aloop has actually closed the exclusive `outputd_active_content_playback`
 > PCM (`hw:Loopback,0,5`). If camilla#2 arms inside that close-lag, its open gets
-> `EBUSY`; camilla#1 is the reboot-budget unit, so the box reboot-looped. The
+> `EBUSY`; camilla#1 is the recovery-budget unit, so the box repeatedly tried to
+> recover the core graph. The
 > reconciler now inserts a bounded positive probe between `seed_crossover_statefile`
 > and `systemctl enable --now jasper-camilla-crossover.service`: poll the
 > per-substream ALSA status path `/proc/asound/Loopback/pcm0p/sub5/status` and
@@ -1293,7 +1294,10 @@ starvation, the loopback going silent, is the deferred prerequisite for
    local filter. The brainy/active-endpoint sub path remains separate because
    CamillaDSP Layer A, not outputd `dac_content`, owns driver protection there.
 
-Last verified: 2026-06-24 (active-leader outputd recovery now follows the
+Last verified: 2026-06-25 (Camilla recovery-budget wording rechecked against
+`deploy/systemd/jasper-camilla.service` and
+`deploy/bin/jasper-camilla-recover`; 2026-06-24 active-leader outputd recovery
+now follows the
 paired statefile contract: camilla#1 `program_bake_pipe` plus camilla#2
 `driver_domain_baseline` on `outputd_active_content_playback`; initial arm
 seeds `crossover-statefile.yml` before audio-hardware reconcile. Active-leader

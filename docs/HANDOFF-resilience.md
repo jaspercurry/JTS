@@ -361,22 +361,35 @@ thinks the system is healthy.
 (2026-05-24). Two-PR sequence:
 
 - **T5.1** ✅ **shipped**: `StartLimitAction=reboot` on the critical
-  jasper-* units (outputd, camilla, aec-bridge, voice, control). When any
+  jasper-* units where a restart spiral means the box needs a clean
+  reboot (outputd, fanin, aec-bridge, voice, control). When any
   one of them exceeds its `StartLimitBurst=` within `StartLimitIntervalSec=`,
   systemd itself cleanly reboots the box — filesystems unmount,
   journal flushes, dirty pages sync. Per-unit thresholds preserve
   existing transient-tolerance for audio-device dropouts
-  (jasper-voice keeps 20/300, jasper-camilla 5/60, aec-bridge and
-  control use proposal default 4/300). `reboot` not `reboot-force`
+  (jasper-voice keeps 20/300, aec-bridge and control use proposal
+  default 4/300). `reboot` not `reboot-force`
   — clean shutdown is essential on a 1 GB Pi to flush zram dirty
   pages. Catches the "one critical daemon is sick" shape, but NOT
   the "userspace is dead while jasper-* daemons happen to be alive"
   shape. Since 2026-06-02, `jasper-voice`'s first-time unconfigured
   provider exit is explicitly excluded from this budget via
   `SuccessExitStatus=78` + `RestartPreventExitStatus=78`; actual
-  voice crashes still flow through T5.1. `jasper-doctor`'s
-  `check_start_limit_action` surfaces
-  drift if a Debian/RPi-OS update removes the directive.
+  voice crashes still flow through T5.1. **Camilla exception
+  (2026-06-25, JTS5)**: `jasper-camilla.service` still uses
+  `Restart=always` + `StartLimitBurst=5/60`, but start-limit exhaustion
+  runs `OnFailure=jasper-camilla-recover.service` with
+  `StartLimitAction=none` instead of raw reboot. The observed failure was
+  camilladsp exiting cleanly with ALSA `Device or resource busy` while
+  deploy/renderers were churning; a reboot destroyed the `/dev/snd`
+  holder evidence and made an otherwise reachable Pi look "killed."
+  `deploy/bin/jasper-camilla-recover` captures `fuser`/`lsof` and
+  `/proc/asound/*/status`, parks likely graph owners, tries one bounded
+  fanin→Camilla→outputd restart, kicks AEC/grouping reconcilers, and then
+  leaves the unit parked (cooldown-gated, no reboot) if the graph still
+  cannot converge. `jasper-doctor`'s `check_start_limit_action` surfaces
+  drift if a Debian/RPi-OS update removes either the reboot directives or
+  Camilla's recovery handler.
   **T5.1 circuit breaker** (2026-06-10): `StartLimitAction=reboot`
   alone is unbounded across boots — a *permanent* daemon failure
   (corrupt config, dead binary) would reboot the Pi every ~2-5
@@ -396,11 +409,13 @@ thinks the system is healthy.
   reboot). Drop-ins live in `/run`, so a
   healthy boot self-re-arms the ladder with zero operator action.
   Guarded units are discovered dynamically by grepping
-  `StartLimitAction=reboot`; fail-open on every error path.
+  `StartLimitAction=reboot`; as of 2026-06-25 that deliberately excludes
+  Camilla because it uses the recovery/forensics handler above.
+  Fail-open on every error path.
   Observability: `event=bootloop_guard.ok|tripped|error` +
   `/state.resilience.bootloop_guard`.
   **Hardware-validated 2026-06-11** on the jts3 lab Pi: synthetic
-  2-boot history tripped the guard on the next boot (6/6 runtime
+  2-boot history tripped the guard on the next boot (then 6/6 runtime
   drop-ins, `event=bootloop_guard.tripped`, doctor WARN, control
   plane stayed up), and a clean history re-armed it on the boot
   after (0 drop-ins, `event=bootloop_guard.ok`, doctor green) —
@@ -1296,9 +1311,13 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-25 (AEC reconciler mic-profile ownership rechecked:
-`JASPER_AEC_MIC_DEVICE` is derived from detected XVF profile for selectable
-profiles; Wi-Fi scan-suppression root helper path verified on `jts3.local`
-2026-06-22; broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
+Last verified: 2026-06-25 (Camilla start-limit recovery contract rechecked
+against `deploy/systemd/jasper-camilla.service`,
+`deploy/systemd/jasper-camilla-recover.service`,
+`deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;
+AEC reconciler mic-profile ownership rechecked: `JASPER_AEC_MIC_DEVICE` is
+derived from detected XVF profile for selectable profiles; Wi-Fi
+scan-suppression root helper path verified on `jts3.local` 2026-06-22;
+broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
 `/state.resilience` supervisor doctor surface and multiroom cascade ring
 rechecked against current code)

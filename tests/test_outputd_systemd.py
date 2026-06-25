@@ -114,7 +114,7 @@ def test_install_builds_installs_and_enables_outputd():
     enable_block = install_sh.split(
         "systemctl enable jasper-camilla.service jasper-fanin.service",
         1,
-    )[1].split("systemctl stop jasper-voice.service", 1)[0]
+    )[1].split("park_audio_clients_for_core_graph_restart", 1)[0]
     assert "jasper-outputd.service" in enable_block
     assert "jasper-audio-hardware-reconcile.service" in enable_block
     assert "systemctl restart jasper-outputd.service" in install_sh
@@ -123,11 +123,16 @@ def test_install_builds_installs_and_enables_outputd():
     assert "timeout --kill-after=5s 30s" in install_sh
     assert "jasper-sound reconcile-current-dsp --fail-open" in install_sh
     assert "sound DSP reconcile timed out after 30s" in install_sh
-    assert "systemctl stop jasper-voice.service" in install_sh
-    restart_block = install_sh.split(
-        "systemctl stop jasper-voice.service",
+    assert "park_audio_clients_for_core_graph_restart" in install_sh
+    restart_block = install_sh.rsplit(
+        "systemctl enable jasper-camilla.service jasper-fanin.service",
         1,
     )[1].split("systemctl enable jasper-wifi-guardian.service", 1)[0]
+    assert restart_block.index(
+        "park_audio_clients_for_core_graph_restart"
+    ) < restart_block.index(
+        "jasper-audio-hardware-reconcile --reason install"
+    )
     assert restart_block.index(
         "jasper-audio-hardware-reconcile --reason install"
     ) < restart_block.index("require_outputd_ready")

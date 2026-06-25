@@ -769,7 +769,8 @@ def _unit_is_active(unit: str) -> bool:
     failed, NOT-FOUND, systemctl missing) reads as not-active — the safe
     direction for the active-leader bake gate: a bake against a reader-less /
     missing snapserver pipe must NOT proceed (it cannot release the DAC, so
-    arming camilla#2 would fight camilla#1 for it — the 2026-06-23 reboot loop)."""
+    arming camilla#2 would fight camilla#1 for it — the 2026-06-23 recovery
+    loop)."""
     try:
         return subprocess.run(
             ["systemctl", "is-active", "--quiet", unit],
@@ -1074,11 +1075,12 @@ def _reset_failed_unit(unit: str) -> None:
     legitimately re-derives the lane env many times in seconds, and each apply
     spends a slot of the target unit's StartLimitBurst. Once that burst is
     exhausted inside StartLimitIntervalSec, systemd escalates to
-    StartLimitAction=reboot for the reboot-budget units (outputd / camilla /
-    voice) and the Pi reboots from deliberate churn — the 2026-06-24 jts.local
-    follower reboot (six /grouping/set POSTs from the leader in 44 s tripped
-    outputd's start-limit). reset-failed clears any prior failed / start-limit
-    parking so a config-apply restart never consumes the crash-reboot budget.
+    StartLimitAction=reboot for direct reboot-budget units (outputd / voice) or
+    Camilla's recovery budget, turning deliberate churn into recovery
+    escalation — the 2026-06-24 jts.local follower reboot (six /grouping/set
+    POSTs from the leader in 44 s tripped outputd's start-limit). reset-failed
+    clears any prior failed / start-limit parking so a config-apply restart
+    never consumes the crash-recovery budget.
     Genuine crash loops still escalate: the daemon's own Restart= path does NOT
     call this, so only reconciler-initiated (deliberate) restarts are exempted.
 
@@ -1761,7 +1763,7 @@ def main(argv: list[str] | None = None) -> int:
         # catches a missing binary, this catches a failed start), bail here and
         # STAY SOLO-ACTIVE: camilla#1 keeps the DAC on its safe solo baseline,
         # camilla#2 stays un-armed. Otherwise the two instances fight for the DAC
-        # and camilla#1 (StartLimitAction=reboot) reboot-loops the box.
+        # and camilla#1 exhausts its recovery budget.
         if not _unit_is_active(SNAPSERVER_UNIT):
             log_event(
                 logger,
@@ -1833,7 +1835,7 @@ def main(argv: list[str] | None = None) -> int:
             # to the active lane, and the exclusive handle positively released.
             # A successful CamillaDSP config reload is not enough: snd-aloop can
             # lag the actual close, and arming camilla#2 into that window races
-            # EBUSY against camilla#1's reboot-budget unit.
+            # EBUSY against camilla#1's recovery-budget unit.
             if bake_ok:
                 if _unit_is_active(CROSSOVER_UNIT):
                     log_event(

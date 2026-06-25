@@ -772,13 +772,18 @@ def test_systemctl_show_property_handles_empty_values():
     assert len(result) == 3
 
 
-# --- check_start_limit_action (T5.1) ------------------------------------
+# --- check_start_limit_action (critical restart policy) ------------------
 
 
-def _make_start_limit_action_run(actions: dict[str, str], load_map=None):
-    """Build a `_run` mock for check_start_limit_action's two BATCHED
+def _make_start_limit_action_run(
+    actions: dict[str, str],
+    load_map=None,
+    on_failure: dict[str, str] | None = None,
+):
+    """Build a `_run` mock for check_start_limit_action's BATCHED
     systemctl calls — `-p LoadState` (the installed-unit filter) and
-    `-p StartLimitAction` — each over `u1 u2 ...`. Both go through
+    policy properties such as `-p StartLimitAction` / `-p OnFailure` —
+    each over `u1 u2 ...`. They all go through
     `_systemctl_show_property` (i.e. `_shared._run`), so tests patch that
     one namespace. `load_map` overrides LoadState per unit (default:
     every unit "loaded")."""
@@ -787,25 +792,31 @@ def _make_start_limit_action_run(actions: dict[str, str], load_map=None):
         units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
         if prop == "LoadState":
             values = [(load_map or {}).get(u, "loaded") for u in units]
-        else:  # StartLimitAction
+        elif prop == "StartLimitAction":
             values = [actions.get(u, "none") for u in units]
+        else:  # OnFailure
+            values = [(on_failure or {}).get(u, "") for u in units]
         result = MagicMock()
         result.stdout = "\n\n".join(values) + "\n" if values else "\n"
         return result
     return fake_run
 
 
-def test_start_limit_action_all_set_to_reboot():
-    """T5.1 happy path: all critical units have StartLimitAction=reboot."""
+def test_start_limit_action_policy_all_set():
+    """Happy path: reboot ladder units reboot; Camilla uses recovery."""
     actions = {
         "jasper-outputd": "reboot",
-        "jasper-camilla": "reboot",
+        "jasper-camilla": "none",
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot",
         "jasper-control": "reboot",
     }
+    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
     with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(actions)):
+                      side_effect=_make_start_limit_action_run(
+                          actions,
+                          on_failure=on_failure,
+                      )):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
     assert "5 installed critical daemons" in r.detail
@@ -816,16 +827,20 @@ def test_start_limit_action_drift_one_unit_lost_directive():
     the directive — should warn and name the unit."""
     actions = {
         "jasper-outputd": "reboot",
-        "jasper-camilla": "reboot",
+        "jasper-camilla": "none",
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot",
         "jasper-control": "none",   # drifted to default
     }
+    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
     with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(actions)):
+                      side_effect=_make_start_limit_action_run(
+                          actions,
+                          on_failure=on_failure,
+                      )):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
-    assert "T5.1" in r.detail
+    assert "critical restart policy drift" in r.detail
     assert "jasper-control" in r.detail
     assert "want reboot" in r.detail
 
@@ -835,16 +850,57 @@ def test_start_limit_action_drift_wrong_action():
     on a 1 GB Pi (dirty zram pages would skip sync)."""
     actions = {
         "jasper-outputd": "reboot",
-        "jasper-camilla": "reboot",
+        "jasper-camilla": "none",
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot-force",   # wrong shape
+        "jasper-control": "reboot",
+    }
+    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(
+                          actions,
+                          on_failure=on_failure,
+                      )):
+        r = doctor.check_start_limit_action()
+    assert r.status == "warn"
+    assert "jasper-voice=reboot-force" in r.detail
+
+
+def test_start_limit_action_warns_when_camilla_recovery_handler_drifts():
+    """Camilla must stay out of the raw reboot ladder AND keep OnFailure."""
+    actions = {
+        "jasper-outputd": "reboot",
+        "jasper-camilla": "none",
+        "jasper-aec-bridge": "reboot",
+        "jasper-voice": "reboot",
         "jasper-control": "reboot",
     }
     with patch.object(doctor._shared, "_run",
                       side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
-    assert "jasper-voice=reboot-force" in r.detail
+    assert "jasper-camilla OnFailure=none" in r.detail
+    assert "jasper-camilla-recover.service" in r.detail
+
+
+def test_start_limit_action_warns_when_camilla_reverts_to_raw_reboot():
+    """The JTS5 failure class needs forensics/recovery, not blind reboot."""
+    actions = {
+        "jasper-outputd": "reboot",
+        "jasper-camilla": "reboot",
+        "jasper-aec-bridge": "reboot",
+        "jasper-voice": "reboot",
+        "jasper-control": "reboot",
+    }
+    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(
+                          actions,
+                          on_failure=on_failure,
+                      )):
+        r = doctor.check_start_limit_action()
+    assert r.status == "warn"
+    assert "jasper-camilla=reboot (want none)" in r.detail
 
 
 def test_start_limit_action_skips_units_not_installed_on_streambox():
@@ -853,14 +909,19 @@ def test_start_limit_action_skips_units_not_installed_on_streambox():
     even though they report StartLimitAction=none."""
     actions = {
         "jasper-outputd": "reboot",
-        "jasper-camilla": "reboot",
+        "jasper-camilla": "none",
         "jasper-control": "reboot",
         "jasper-aec-bridge": "none",   # absent → must be ignored
         "jasper-voice": "none",        # absent → must be ignored
     }
     load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
+    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
     with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(actions, load_map)):
+                      side_effect=_make_start_limit_action_run(
+                          actions,
+                          load_map,
+                          on_failure=on_failure,
+                      )):
         r = doctor.check_start_limit_action()
     assert r.status == "ok", r.detail
     assert "jasper-voice" not in r.detail
@@ -874,14 +935,19 @@ def test_start_limit_action_warns_on_present_drift_with_others_absent():
     jasper-control → warn naming only the present unit."""
     actions = {
         "jasper-outputd": "reboot",
-        "jasper-camilla": "reboot",
+        "jasper-camilla": "none",
         "jasper-control": "none",      # present + drifted → must warn
         "jasper-aec-bridge": "none",   # absent → ignored
         "jasper-voice": "none",        # absent → ignored
     }
     load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
+    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
     with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(actions, load_map)):
+                      side_effect=_make_start_limit_action_run(
+                          actions,
+                          load_map,
+                          on_failure=on_failure,
+                      )):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
     assert "jasper-control=none" in r.detail
@@ -912,8 +978,13 @@ def test_start_limit_action_skips_when_directive_read_degrades():
         result = MagicMock()
         if cmd[3] == "LoadState":
             result.stdout = "\n\n".join("loaded" for _ in units) + "\n"
-        else:  # StartLimitAction: one fewer value → length mismatch → None
+        elif cmd[3] == "StartLimitAction":
+            # StartLimitAction: one fewer value → length mismatch → None
             result.stdout = "\n\n".join(["reboot"] * (len(units) - 1)) + "\n"
+        else:
+            result.stdout = "\n\n".join(
+                "jasper-camilla-recover.service" for _ in units
+            ) + "\n"
         return result
 
     with patch.object(doctor._shared, "_run", side_effect=fake_run):

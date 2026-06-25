@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Recovery handler for jasper-camilla.service start-limit exhaustion.
+#
+# CamillaDSP is the core DSP graph owner. It should restart on ordinary
+# exits, but the 2026-06-25 JTS5 incident showed that a deploy-time ALSA
+# ownership race can make camilladsp exit cleanly with "Device or resource
+# busy" until StartLimitBurst is exhausted. A raw StartLimitAction=reboot
+# recovers by power-cycling the Pi, but it destroys the most useful forensic
+# evidence: which process owned /dev/snd at the moment the graph wedged.
+#
+# This oneshot is triggered by OnFailure= after the burst is exhausted. It
+# captures ALSA holder state, parks likely audio owners, tries one controlled
+# Camilla/outputd restart, and leaves the unit parked if the graph still will
+# not converge. It never reboots the host; keeping SSH and /system/ reachable
+# is more useful than a blind reboot loop for this failure class.
+
+set -uo pipefail
+
+REASON="manual"
+SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+STATE_DIR="${JASPER_CAMILLA_RECOVER_STATE_DIR:-/var/lib/jasper}"
+RUN_DIR="${JASPER_CAMILLA_RECOVER_RUN_DIR:-/run}"
+ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
+DEV_SND_ROOT="${JASPER_DEV_SND_ROOT:-/dev/snd}"
+COOLDOWN_SEC="${JASPER_CAMILLA_RECOVER_COOLDOWN_SEC:-300}"
+STATE_FILE="${STATE_DIR}/camilla_recover_last_attempt"
+LOCK_DIR="${RUN_DIR}/jasper-camilla-recover.lock"
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-camilla-recover [--reason TEXT]
+
+Capture ALSA ownership evidence and perform one bounded recovery attempt after
+jasper-camilla.service exhausts its restart burst. Emits structured
+event=camilla.recover.* lines on stderr. Always exits 0 so the recovery
+handler itself never starts a systemd failure cascade.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+            REASON="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+quote_token() {
+    printf '%q' "$1"
+}
+
+emit() {
+    local name="$1"
+    shift
+    printf 'event=camilla.recover.%s' "$name" >&2
+    while [[ $# -gt 0 ]]; do
+        local key="$1"
+        local value="${2:-}"
+        shift 2
+        printf ' %s=%s' "$key" "$(quote_token "$value")" >&2
+    done
+    printf '\n' >&2
+}
+
+run_capture() {
+    local label="$1"
+    shift
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        emit capture_unavailable label "$label" command "$cmd"
+        return 0
+    fi
+
+    local tmp
+    tmp="$(mktemp "${RUN_DIR%/}/camilla-recover.${label}.XXXXXX" 2>/dev/null)" || {
+        emit capture_error label "$label" reason "mktemp_failed"
+        return 0
+    }
+    emit capture_begin label "$label" command "$*"
+    "$@" >"$tmp" 2>&1
+    local status=$?
+    while IFS= read -r line; do
+        emit capture_line label "$label" line "$line"
+    done <"$tmp"
+    rm -f "$tmp"
+    emit capture_end label "$label" status "$status"
+    return 0
+}
+
+capture_asound_status() {
+    if [[ ! -d "$ASOUND_ROOT" ]]; then
+        emit capture_absent label "asound_status" path "$ASOUND_ROOT"
+        return 0
+    fi
+
+    local found=0
+    while IFS= read -r -d '' status_file; do
+        found=1
+        emit asound_status_begin path "$status_file"
+        while IFS= read -r line; do
+            emit asound_status_line path "$status_file" line "$line"
+        done <"$status_file"
+        emit asound_status_end path "$status_file"
+    done < <(find "$ASOUND_ROOT" -path '*pcm*/sub*/status' -type f -print0 2>/dev/null)
+
+    if [[ "$found" -eq 0 ]]; then
+        emit capture_absent label "asound_status" path "$ASOUND_ROOT"
+    fi
+}
+
+capture_dev_snd_holders() {
+    if [[ ! -d "$DEV_SND_ROOT" ]]; then
+        emit capture_absent label "dev_snd" path "$DEV_SND_ROOT"
+        return 0
+    fi
+
+    local devices=()
+    local device
+    for device in "$DEV_SND_ROOT"/*; do
+        [[ -e "$device" ]] || continue
+        devices+=("$device")
+    done
+    if [[ "${#devices[@]}" -eq 0 ]]; then
+        emit capture_absent label "dev_snd" path "$DEV_SND_ROOT"
+        return 0
+    fi
+
+    run_capture fuser fuser -v "${devices[@]}"
+    run_capture lsof lsof "${devices[@]}"
+}
+
+unit_action() {
+    local action="$1"
+    local unit="$2"
+    "$SYSTEMCTL" "$action" "$unit" >/dev/null 2>&1
+    local status=$?
+    emit unit_action action "$action" unit "$unit" status "$status"
+    return 0
+}
+
+start_if_enabled() {
+    local unit="$1"
+    "$SYSTEMCTL" is-enabled --quiet "$unit" >/dev/null 2>&1
+    local enabled_status=$?
+    if [[ "$enabled_status" -ne 0 ]]; then
+        emit unit_action action "start-skipped" unit "$unit" status "$enabled_status" reason "disabled_or_absent"
+        return 0
+    fi
+    "$SYSTEMCTL" start "$unit" >/dev/null 2>&1
+    local status=$?
+    emit unit_action action "start" unit "$unit" status "$status"
+    return 0
+}
+
+now_epoch() {
+    date +%s
+}
+
+cooldown_active() {
+    local now="$1"
+    [[ "$COOLDOWN_SEC" =~ ^[0-9]+$ ]] || COOLDOWN_SEC=300
+    [[ -r "$STATE_FILE" ]] || return 1
+    local last
+    last="$(<"$STATE_FILE")"
+    [[ "$last" =~ ^[0-9]+$ ]] || return 1
+    (( now - last < COOLDOWN_SEC ))
+}
+
+write_attempt_stamp() {
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+    printf '%s\n' "$1" >"$STATE_FILE" 2>/dev/null || true
+}
+
+mkdir -p "$RUN_DIR" 2>/dev/null || true
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    emit suppressed reason "already_running" trigger "$REASON"
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+NOW="$(now_epoch 2>/dev/null || echo 0)"
+emit start reason "$REASON" service_result "${SERVICE_RESULT:-unknown}" exit_status "${EXIT_STATUS:-unknown}" invocation_id "${INVOCATION_ID:-unknown}"
+capture_dev_snd_holders
+capture_asound_status
+run_capture service_state "$SYSTEMCTL" --no-pager --plain --full status \
+    jasper-camilla.service jasper-outputd.service jasper-fanin.service \
+    jasper-aec-bridge.service jasper-voice.service shairport-sync.service \
+    librespot.service bluealsa-aplay.service jasper-mux.service
+
+if cooldown_active "$NOW"; then
+    emit suppressed reason "cooldown" cooldown_sec "$COOLDOWN_SEC" action "parked_no_reboot"
+    exit 0
+fi
+write_attempt_stamp "$NOW"
+
+# Stop likely holders before restarting the core graph. These are the units
+# that can own fan-in, Camilla, outputd, or renderer ALSA endpoints during
+# deploy/runtime churn. Missing units are harmless on streambox or partial
+# installs.
+for unit in \
+    jasper-voice.service \
+    jasper-aec-bridge.service \
+    jasper-outputd.service \
+    jasper-camilla-crossover.service \
+    jasper-snapclient.service \
+    jasper-snapserver.service \
+    shairport-sync.service \
+    nqptp.service \
+    librespot.service \
+    bluealsa-aplay.service \
+    jasper-mux.service; do
+    unit_action stop "$unit"
+done
+
+unit_action reset-failed jasper-camilla.service
+unit_action reset-failed jasper-outputd.service
+unit_action restart jasper-fanin.service
+
+"$SYSTEMCTL" start jasper-camilla.service >/dev/null 2>&1
+camilla_status=$?
+emit unit_action action "start" unit "jasper-camilla.service" status "$camilla_status"
+if [[ "$camilla_status" -ne 0 ]]; then
+    emit failed reason "camilla_start_failed" action "parked_no_reboot"
+    exit 0
+fi
+
+"$SYSTEMCTL" restart jasper-outputd.service >/dev/null 2>&1
+outputd_status=$?
+emit unit_action action "restart" unit "jasper-outputd.service" status "$outputd_status"
+if [[ "$outputd_status" -ne 0 ]]; then
+    emit failed reason "outputd_restart_failed" action "parked_no_reboot"
+    exit 0
+fi
+
+for unit in nqptp.service shairport-sync.service librespot.service bt-agent.service jasper-mux.service bluealsa-aplay.service; do
+    start_if_enabled "$unit"
+done
+unit_action start jasper-aec-reconcile.service
+unit_action start jasper-grouping-reconcile.service
+
+emit recovered action "core_graph_restarted"
+exit 0
