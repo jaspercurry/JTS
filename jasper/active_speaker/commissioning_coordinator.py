@@ -399,7 +399,7 @@ def build_commissioning_view(
             "save_profile",
             "Save active profile",
             enabled=True,
-            endpoint="./active-speaker/baseline-profile",
+            endpoint="./active-speaker/baseline-profile/save-and-apply",
         )
 
     status = (

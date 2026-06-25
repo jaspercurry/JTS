@@ -427,6 +427,28 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
         server.server_close()
 
 
+def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path):
+    """The live combined-test slider route must pass the route-before-CSRF gate."""
+
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/active-speaker/summed-test/level",
+            {"speaker_group_id": "main", "level_dbfs": -35},
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["status"] == "idle"
+        assert payload["reason"] == "no_active_summed_test"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_index_html_embeds_csrf_meta_for_json_posts():
     html = sound_setup._index_html("csrf-token").decode()
     # The token rides in the meta tag; the static module reads it and sends
@@ -546,6 +568,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/crossover-preview'" in js
     assert "fetch('./active-speaker/measurements'" in js
     assert "fetch('./active-speaker/baseline-profile'" in js
+    assert "fetch('./active-speaker/baseline-profile/save-and-apply'" in js
+    assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
     assert "data-act=\"save-driver-design\"" in js
     assert "data-act=\"prepare-crossover-preview\"" in js
@@ -781,9 +805,15 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
 
     # The new consumer copy is present and stable.
     assert "Updates the working setup, then builds a no-audio crossover preview." in js
-    assert "Save the checked crossover as your active speaker profile. No sound plays." in js
+    assert (
+        "Save the checked crossover as your active speaker profile. "
+        "JTS validates and applies it in one step; no sound plays."
+    ) in js
     assert "Your active speaker profile, built from the checked crossover and driver checks." in js
-    assert "Your active speaker profile is saved. Apply it to start using it." in js
+    assert (
+        "Your active speaker profile is saved. "
+        "Finish applying it to start using it."
+    ) in js
     assert "Sounds right" in js
     assert "Sounds hollow or thin" not in js
     assert "Needs adjustment" not in js
@@ -3004,6 +3034,83 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
     assert mux_commands == ["AUTO"]
     assert payload["source_selection_restore"]["status"] == "ok"
     assert payload["source_selection_restore"]["state"]["mode"] == "auto"
+
+
+async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
+    monkeypatch,
+):
+    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+    apply_calls = 0
+
+    async def fake_apply_baseline_profile(_topology, **_kwargs):
+        nonlocal apply_calls
+        apply_calls += 1
+        return {
+            "status": "applied",
+            "profile": {
+                "status": "applied",
+                "config": {
+                    "path": baseline_path,
+                    "basename": "active_speaker_baseline.yml",
+                },
+                "permissions": {"may_apply": False},
+                "issues": [],
+            },
+            "apply": {
+                "result": "success",
+                "active_config_path": baseline_path,
+            },
+            "issues": [],
+        }
+
+    mux_commands: list[str] = []
+
+    def fake_mux_command(command: str) -> dict:
+        mux_commands.append(command)
+        return {
+            "mode": "auto",
+            "selected_source": None,
+            "active_source": "airplay",
+            "test_source": None,
+        }
+
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.load_measurement_state",
+        lambda topology: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
+        fake_apply_baseline_profile,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_mux_command",
+        fake_mux_command,
+    )
+
+    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
+    )
+
+    assert apply_calls == 1
+    assert mux_commands == ["AUTO"]
+    assert payload["status"] == "applied"
+    assert payload["profile"]["status"] == "applied"
+    assert payload["source_selection_restore"]["status"] == "ok"
+    assert payload["output_safety"] == {
+        "safety_muted": False,
+        "reason": None,
+        "active_config_path": baseline_path,
+    }
 
 
 def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
