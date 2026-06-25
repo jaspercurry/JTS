@@ -2804,9 +2804,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var cfg = combinedTestLevelConfig();
     return clamp(value, cfg.min, cfg.max);
   }
-  function renderSummedLevelControl(groupId) {
+  function renderSummedLevelControl(groupId, options) {
+    options = options || {};
     var cfg = combinedTestLevelConfig();
     var value = combinedTestLevelDbfs();
+    var disabled = options.disabled === true;
+    var hint = disabled ?
+      'Stop and replay the test audio to use a different level.' :
+      'Choose the level before playing. Changes apply to the next test audio.';
     return '<label class="active-speaker-summed-level">' +
       '<span class="active-speaker-summed-level__head">' +
         '<span>Combined test level</span>' +
@@ -2819,8 +2824,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ' max="' + escapeHtml(String(cfg.max)) + '"' +
         ' step="' + escapeHtml(String(cfg.step)) + '"' +
         ' value="' + escapeHtml(String(value)) + '"' +
+        (disabled ? ' disabled' : '') +
         ' aria-label="Combined test level">' +
-      '<span class="setting-row__hint">Start low. Raise slowly, and stop immediately if anything sounds wrong.</span>' +
+      '<span class="setting-row__hint">' + escapeHtml(hint) + '</span>' +
     '</label>';
   }
   function renderSummedValidationCard(topology) {
@@ -2833,11 +2839,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var recordAction = commissioningGroupAction(groupView, 'record_combined_result');
       var latest = latestSummedValidation(group.id);
       var latestTest = latestSummedTest(group.id);
-      var ok = latest && latest.validated === true;
+      var ok = groupView ? groupView.validated === true :
+        (latest && latest.validated === true);
       var hasAudibleTest = latestTest && latestTest.captured === true &&
         latestTest.audio_emitted === true && !playbackHasBlocker(latestTest);
       if (groupView && groupView.has_audible_test === true) hasAudibleTest = true;
-      if (groupView && groupView.validated === true) ok = true;
       var statusText = groupView && groupView.status_label ? groupView.status_label :
         (ok ? 'validated' : (hasAudibleTest ? 'ready' : 'not tested'));
       var combinedStarting = activeSpeaker.action === 'Starting combined test';
@@ -2897,7 +2903,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<span class="status-pill' + (ok ? ' status-pill--ready' : '') + '">' +
             escapeHtml(statusText) + '</span>' +
         '</div>' +
-        renderSummedLevelControl(group.id) +
+        renderSummedLevelControl(group.id, {disabled: combinedBusy}) +
         '<div class="active-speaker-actions">' + testButton + blendOkButton +
           backButton + '</div>' +
       '</div>';

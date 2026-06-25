@@ -175,11 +175,23 @@ def _combined_group_view(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
-    validated = latest_validation.get("validated") is True
     has_audible_test = (
         latest_test.get("captured") is True
         and latest_test.get("audio_emitted") is True
         and not has_blocker(latest_test.get("issues"))
+    )
+    latest_test_id = str(
+        latest_test.get("summed_test_id") or latest_test.get("playback_id") or ""
+    )
+    latest_validation_test_id = str(
+        latest_validation.get("summed_test_id")
+        or latest_validation.get("playback_id")
+        or ""
+    )
+    validated = bool(
+        latest_validation.get("validated") is True
+        and latest_test_id
+        and latest_validation_test_id == latest_test_id
     )
     failure_message = (
         ""
@@ -207,19 +219,6 @@ def _combined_group_view(
         status_label = "after driver checks"
         message = "Test each driver first, then test the combined speaker."
 
-    latest_test_id = str(
-        latest_test.get("summed_test_id") or latest_test.get("playback_id") or ""
-    )
-    latest_validation_test_id = str(
-        latest_validation.get("summed_test_id")
-        or latest_validation.get("playback_id")
-        or ""
-    )
-    latest_test_validated = bool(
-        validated
-        and latest_test_id
-        and latest_validation_test_id == latest_test_id
-    )
     actions = {
         "start_combined_test": _action(
             "start_combined_test",
@@ -237,7 +236,7 @@ def _combined_group_view(
         "record_combined_result": _action(
             "record_combined_result",
             "Record combined check",
-            enabled=has_audible_test and not latest_test_validated,
+            enabled=has_audible_test and not validated,
             endpoint="./active-speaker/summed-validation",
             body={
                 "speaker_group_id": group_id,
@@ -304,11 +303,21 @@ def build_commissioning_view(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
-    summed_complete = bool(summary.get("summed_validation_complete"))
     profile_status = str((baseline_profile or {}).get("status") or "")
     profile_applied = profile_status == "applied"
     active_targets = active_summed_targets(topology)
     has_layout = bool(topology.speaker_groups)
+    combined_groups = [
+        _combined_group_view(
+            target,
+            summary=summary,
+            calibration_level=calibration_level,
+        )
+        for target in active_targets
+    ]
+    summed_complete = bool(active_targets) and all(
+        group.get("validated") is True for group in combined_groups
+    )
     steps = [
         _step(
             "layout",
@@ -358,14 +367,6 @@ def build_commissioning_view(
                 else "Save the active speaker profile after the combined check."
             ),
         ),
-    ]
-    combined_groups = [
-        _combined_group_view(
-            target,
-            summary=summary,
-            calibration_level=calibration_level,
-        )
-        for target in active_targets
     ]
     next_action = None if summed_complete else _first_enabled_action(combined_groups)
     if next_action is None and not output_identity_complete:

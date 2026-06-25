@@ -94,7 +94,7 @@ assert.equal(subCornerLabel(-50), "80 Hz low-pass");
 // for "sub"; everything else degrades to the unchanged stereo-pair copy.
 {
   const sub = createFaceCopy("sub");
-  assert.equal(sub.title, "Add a wireless subwoofer");
+  assert.equal(sub.title, "Optional wireless subwoofer");
   assert.equal(sub.button, "Add subwoofer");
   assert.ok(/main/.test(sub.label), sub.label); // not "Left"
   assert.ok(/low end/.test(sub.intro), sub.intro);
