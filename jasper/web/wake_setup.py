@@ -18,10 +18,10 @@ Three stacked sections, one page:
      DTLN legs are sub-features layered on top, and are disabled
      (visually + interactively) when AEC is off because they consume the
      bridge's UDP stream. The chip-AEC layer is additionally gated on the
-     detected mic profile having a validated chip beam plan (its
-     `available` flag) and is mutually exclusive with raw + DTLN —
-     enabling it greys those out (one chip can't emit both the software
-     legs and the chip beams).
+     detected mic profile and output DAC/reference gate, and is mutually
+     exclusive with raw + DTLN — enabling it greys those out (one chip
+     can't emit both the software legs and the chip beams). Unapproved
+     DACs use the explicit testing profile rather than this layer toggle.
 
   3. **Wake-word model picker** — radio over the curated registry in
      jasper/wake_models.py. Bundled openWakeWord names always show as
@@ -261,6 +261,12 @@ _PROFILES = (
         "XVF chip-AEC",
         "Use the mic array's validated hardware echo-cancelled beam plan.",
         "XVF3800",
+    ),
+    (
+        "xvf_chip_aec_testing",
+        "XVF chip-AEC testing",
+        "Run hardware AEC on an unapproved DAC for operator validation.",
+        "Testing",
     ),
     (
         "xvf_software_aec3",

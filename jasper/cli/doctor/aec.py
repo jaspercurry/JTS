@@ -18,19 +18,27 @@ from pathlib import Path
 from ...audio_profile_state import (
     AecIntent,
     MicProbe,
+    PROFILE_XVF_CHIP_AEC_TESTING,
     build_audio_profile_status,
+    normalize_audio_input_profile,
     runtime_env_from_mapping,
+    validation_profile as _audio_validation_profile,
 )
 from ...audio_validation import CHIP_AEC_PROFILE
 from ...audio_validation import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
 from ...audio_validation import latest_artifact_summary as _audio_validation_summary
+from ...chip_aec_policy import (
+    STATUS_APPROVED,
+    gate_from_runtime_env,
+    resolve_chip_aec_dac_gate,
+)
 from ...env_load import parse_env_file as _shared_parse_env_file
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _CHIP_AEC_PASSIVE_REQUIRED_CHECKS,
-    _parked_as_bonded_follower,
     _KNOWN_CHIP_AEC_PASSIVE_HARDWARE,
+    _parked_as_bonded_follower,
     _loopback_playback_active,
     _run,
     _sha256_file,
@@ -151,7 +159,16 @@ def _audio_profile_status_for_doctor(
         if mic_probe is not None
         else _chip_aec_available_for_doctor()
     )
-    return build_audio_profile_status(
+    profile_selection = _aec_profile_setting()
+    testing_requested = (
+        normalize_audio_input_profile(profile_selection, default="")
+        == PROFILE_XVF_CHIP_AEC_TESTING
+    )
+    gate = gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
+        env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+        testing_requested=testing_requested,
+    )
+    status = build_audio_profile_status(
         AecIntent(
             mode=_aec_mode_setting(),
             raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
@@ -159,13 +176,16 @@ def _audio_profile_status_for_doctor(
             chip_aec_enabled=_wake_leg_setting(
                 "JASPER_WAKE_LEG_CHIP_AEC", False,
             ),
-            profile_selection=_aec_profile_setting(),
+            profile_selection=profile_selection,
         ),
         runtime,
         mic_probe,
         bridge_active=bridge_active,
         chip_available=chip_available,
+        chip_gate=gate.to_dict(),
     )
+    status["chip_aec_gate"] = gate.to_dict()
+    return status
 
 def _assess_audio_profile(status: dict) -> CheckResult:
     profile = status.get("audio_profile") or {}
@@ -186,6 +206,12 @@ def _assess_audio_profile(status: dict) -> CheckResult:
         f"session={mic.get('session_source') or 'unknown'}, "
         f"legs={legs_text}"
     )
+    gate = status.get("chip_aec_gate")
+    if isinstance(gate, dict):
+        detail += (
+            f"; chip_aec_gate={gate.get('status') or 'unknown'}"
+            f"/{gate.get('source') or 'unknown'}"
+        )
     if warnings:
         detail += "; " + " ".join(str(w) for w in warnings)
 
@@ -272,6 +298,9 @@ def _known_supported_chip_aec_passive_ok(summary: dict[str, object]) -> bool:
     dac_id = str(hardware.get("dac_id") or "unknown")
     if (mic_id, dac_id) not in _KNOWN_CHIP_AEC_PASSIVE_HARDWARE:
         return False
+    gate = resolve_chip_aec_dac_gate(dac_id)
+    if gate.status != STATUS_APPROVED:
+        return False
     statuses = summary.get("check_statuses")
     if not isinstance(statuses, dict):
         return False
@@ -285,9 +314,10 @@ def check_audio_validation_readiness() -> CheckResult:
     """Report latest schema-v1 validation artifact as advisory readiness."""
 
     profile_status = _audio_profile_status_for_doctor().get("audio_profile") or {}
-    requested_profile = profile_status.get("requested")
-    if requested_profile is not None:
-        requested_profile = str(requested_profile)
+    requested_profile = (
+        profile_status.get("validation_profile")
+        or _audio_validation_profile(profile_status.get("requested"))
+    )
     validation_filters = _audio_validation_filter_kwargs(
         requested_profile=requested_profile,
         system_env=_shared_parse_env_file(

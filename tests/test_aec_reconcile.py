@@ -581,6 +581,32 @@ def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
 
 
+def test_testing_chip_profile_arms_uncalibrated_output_dac_as_testing(
+    tmp_path: Path,
+) -> None:
+    """Testing profile is an explicit operator opt-in, not auto approval."""
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n",
+    )
+    _write_profile_mode(tmp_path, "xvf_chip_aec_testing")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "status=testing source=explicit_testing" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED=1" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=testing" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_SOURCE=explicit_testing" in body
+
+
 def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     tmp_path: Path,
 ) -> None:
@@ -610,6 +636,36 @@ def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
+
+
+def test_custom_chip_leg_cannot_bypass_unapproved_dac_gate(
+    tmp_path: Path,
+) -> None:
+    """The low-level layer toggle is not a back door around profile policy."""
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n",
+    )
+    _write_mode_with_legs(
+        tmp_path,
+        mode="auto",
+        raw="0",
+        dtln="0",
+        chip_aec="1",
+    )
+    with (tmp_path / "aec_mode.env").open("a", encoding="utf-8") as f:
+        f.write("JASPER_AUDIO_INPUT_PROFILE=custom\n")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "custom chip-AEC leg requested" in result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=needs_calibration" in body
 
 
 def test_auto_profile_uses_outputd_coherent_verdict_for_uncodified_dac(

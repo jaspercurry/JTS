@@ -4815,6 +4815,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
     status = doctor._audio_profile_status_for_doctor(
         bridge_active=True,
         env={
+            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
@@ -4854,6 +4855,7 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     status = doctor._audio_profile_status_for_doctor(
         bridge_active=True,
         env={
+            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",

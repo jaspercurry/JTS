@@ -923,7 +923,13 @@ def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
     assert body["error"] == "leg must be one of: chip_aec, dtln, raw"
 
 
-def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
+@pytest.mark.parametrize("profile", ["xvf_chip_aec", "xvf_chip_aec_testing"])
+def test_aec_profile_restarts_reconciler(
+    profile,
+    monkeypatch,
+    tmp_path,
+    server_with_coordinator,
+):
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
@@ -936,18 +942,18 @@ def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coor
             popens.append(cmd)
 
     monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": "xvf_chip_aec"})
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": profile})
     monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
 
     status, body = _post(
         f"{base}/aec/profile",
-        {"profile": "xvf_chip_aec"},
+        {"profile": profile},
     )
 
     assert status == 200
-    assert body == {"profile": "xvf_chip_aec"}
+    assert body == {"profile": profile}
     text = mode_file.read_text()
-    assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in text
+    assert f"JASPER_AUDIO_INPUT_PROFILE={profile}" in text
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in text
     assert popens == [
         ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],

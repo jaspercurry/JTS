@@ -107,6 +107,12 @@ The foundation is partly built:
   hardware and best `observed` hardware shape. `/state`,
   `/sound/output-topology`, and `jasper-doctor` consume that artifact
   instead of each reconstructing DAC semantics from raw env/card names.
+- `jasper/chip_aec_policy.py` is the shared chip-AEC gate: static DAC
+  qualification from the DAC registry, optional live outputd
+  `aec_clock` evidence, and explicit testing-profile intent collapse into
+  one `approved` / `testing` / `needs_calibration` answer. The AEC
+  reconciler writes that answer into `/etc/jasper/jasper.env`; `/aec`,
+  `/state`, `jasper-doctor`, and audio-validation checks consume it.
 - `jasper/voice/input_policy.py` is the first provider-facing consumer
   of the audio-profile boundary. It converts the applied mic/AEC runtime
   config into an input-audio contract (`xvf_chip_aec`,
@@ -252,6 +258,7 @@ A declarative runtime profile:
 |---|---|
 | `auto` | Fresh-install default. Resolves to `xvf_chip_aec` when 6-channel XVF3800 chip-AEC is available; otherwise falls back to `xvf_software_aec3` / direct mic as the reconciler can support. |
 | `xvf_chip_aec` | Recommended XVF3800 hardware-AEC path: chip ASR beams, outputd USB-IN reference, no double-AEC/raw/DTLN stacking. |
+| `xvf_chip_aec_testing` | Explicit operator validation path for running chip-AEC on an unapproved DAC. Same physical mic/reference path as `xvf_chip_aec`, but surfaces gate status as `testing` and never affects `auto` approval. Validation artifacts still use the physical `xvf_chip_aec` profile key. |
 | `xvf_software_aec3` | XVF fallback path: raw-ish/ASR mic into WebRTC AEC3 with raw wake fallback, DTLN off by default. |
 | `direct_mic` | Basic custom-hardware path with the AEC bridge disabled. |
 | `custom` | Expert/corpus mode. Low-level `JASPER_WAKE_LEG_*` booleans own the leg set directly. |
@@ -408,6 +415,7 @@ that reports:
 - requested intent (`auto`, raw, DTLN, chip-AEC);
 - detected mic and firmware;
 - selected/applied profile (`xvf_software_aec3`, `xvf_chip_aec`,
+  `xvf_chip_aec_testing`,
   `direct_mic`, `degraded`, etc.);
 - active wake legs expected vs observed;
 - outputd reference outputs and health;
@@ -646,6 +654,5 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-22 (output hotplug wording rechecked against the
-audio-hardware reconciler udev/helper path; broader platform plan still
-matches 2026-06-09 scope).
+Last verified: 2026-06-25 (chip-AEC gate vocabulary rechecked against
+`jasper/chip_aec_policy.py`, `/aec`, and `jasper-aec-reconcile`).

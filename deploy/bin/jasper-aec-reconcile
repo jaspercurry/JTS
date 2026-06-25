@@ -288,6 +288,9 @@ normalize_audio_input_profile() {
         xvf_chip_aec|xvf_chip|chip_aec|chip|hardware_aec)
             echo "xvf_chip_aec"
             ;;
+        xvf_chip_aec_testing|xvf_chip_aec_trial|chip_aec_testing|chip_aec_trial|hardware_aec_testing)
+            echo "xvf_chip_aec_testing"
+            ;;
         xvf_software_aec3|xvf_software|software_aec3|aec3|software)
             echo "xvf_software_aec3"
             ;;
@@ -315,164 +318,76 @@ normalize_output_dac_id() {
     echo "$dac_id"
 }
 
-chip_aec_dac_status() {
-    local dac_id
-    dac_id="$(normalize_output_dac_id "${1:-unknown}")"
-    case "$dac_id" in
-        apple_usb_c_dongle|hifiberry_dac8x)
-            echo "supported"
-            ;;
-        hifiberry_dac8x_studio|dual_apple_usb_c_dac_4ch)
-            echo "needs_calibration"
-            ;;
-        *)
-            echo "needs_calibration"
-            ;;
-    esac
-}
-
-chip_aec_dac_static_detail() {
-    local dac_id status
-    dac_id="$(normalize_output_dac_id "${1:-unknown}")"
-    status="$(chip_aec_dac_status "$dac_id")"
-    case "$status:$dac_id" in
-        supported:apple_usb_c_dongle)
-            echo "Apple USB-C dongle is the measured known-good chip-AEC baseline"
-            ;;
-        supported:hifiberry_dac8x)
-            echo "HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile"
-            ;;
-        needs_calibration:unknown)
-            echo "output DAC profile is unknown; run audio-hardware reconcile and calibrate chip-AEC timing before arming chip AEC"
-            ;;
-        needs_calibration:hifiberry_dac8x_studio)
-            echo "HiFiBerry DAC8x Studio needs per-profile chip-AEC timing calibration before arming chip AEC"
-            ;;
-        needs_calibration:dual_apple_usb_c_dac_4ch)
-            echo "dual Apple dongle profile has a measured-sync contract and needs calibration before arming chip AEC"
-            ;;
-        *)
-            echo "output DAC profile has no codified chip-AEC calibration"
-            ;;
-    esac
-}
-
 CHIP_AEC_DAC_GATE_DAC=""
+CHIP_AEC_DAC_GATE_TESTING=""
 CHIP_AEC_DAC_GATE_OK=0
+CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
+CHIP_AEC_DAC_GATE_SOURCE="unresolved"
 CHIP_AEC_DAC_GATE_DETAIL=""
-CHIP_AEC_DAC_GATE_SOURCE=""
-
-outputd_aec_clock_gate_detail() {
-    if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
-        echo "outputd aec_clock unavailable: python not found at ${MIC_PROFILE_PYTHON}"
-        return 1
-    fi
-    local detail rc
-    set +e
-    detail="$("$MIC_PROFILE_PYTHON" - "$OUTPUTD_CONTROL_SOCKET" <<'PY'
-import json
-import socket
-import sys
-
-path = sys.argv[1]
-
-
-def finish(ok: bool, detail: str) -> None:
-    print(detail)
-    raise SystemExit(0 if ok else 1)
-
-
-try:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(1.0)
-        sock.connect(path)
-        sock.sendall(b"STATUS\n")
-        chunks = []
-        total = 0
-        while total < 65536:
-            chunk = sock.recv(8192)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-except OSError as exc:
-    finish(False, f"outputd aec_clock unavailable: STATUS socket {path}: {exc}")
-
-try:
-    payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-except json.JSONDecodeError as exc:
-    finish(False, f"outputd aec_clock unavailable: invalid STATUS JSON: {exc}")
-
-refs = payload.get("reference_outputs")
-if not isinstance(refs, dict):
-    finish(False, "outputd aec_clock unavailable: STATUS missing reference_outputs")
-clock = refs.get("aec_clock")
-if not isinstance(clock, dict):
-    finish(False, "outputd aec_clock unavailable: STATUS missing reference_outputs.aec_clock")
-writer = refs.get("chip_ref_writer")
-if not isinstance(writer, dict) or not writer.get("enabled"):
-    finish(False, "outputd aec_clock unavailable: chip-ref writer is not active")
-
-verdict = str(clock.get("verdict") or "")
-status = str(clock.get("sro_estimator_status") or "")
-observe = clock.get("observe")
-ppm = clock.get("chip_ref_sro_ppm")
-reason = str(clock.get("verdict_reason") or "").strip()
-detail = (
-    f"outputd aec_clock verdict={verdict or 'missing'} "
-    f"status={status or 'missing'} observe={observe} "
-    f"chip_ref_sro_ppm={ppm} reason={reason}"
-)
-finish(verdict == "coherent" and status == "locked", detail)
-PY
-)"
-    rc=$?
-    set -e
-    echo "$detail"
-    return "$rc"
-}
+CHIP_AEC_DAC_GATE_ACTION="use_software_aec3_or_enable_testing"
 
 refresh_chip_aec_dac_gate() {
-    local dac_id status detail
+    local dac_id testing payload args
     dac_id="$(normalize_output_dac_id "${1:-unknown}")"
-    if [[ "$CHIP_AEC_DAC_GATE_DAC" == "$dac_id" ]]; then
+    testing="${2:-0}"
+    if [[ "$CHIP_AEC_DAC_GATE_DAC" == "$dac_id" \
+        && "$CHIP_AEC_DAC_GATE_TESTING" == "$testing" ]]; then
         return
     fi
     CHIP_AEC_DAC_GATE_DAC="$dac_id"
+    CHIP_AEC_DAC_GATE_TESTING="$testing"
     CHIP_AEC_DAC_GATE_OK=0
-    CHIP_AEC_DAC_GATE_SOURCE=""
-    status="$(chip_aec_dac_status "$dac_id")"
-    if [[ "$status" == "supported" ]]; then
-        CHIP_AEC_DAC_GATE_OK=1
-        CHIP_AEC_DAC_GATE_SOURCE="static"
-        CHIP_AEC_DAC_GATE_DETAIL="$(chip_aec_dac_static_detail "$dac_id")"
+    CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
+    CHIP_AEC_DAC_GATE_SOURCE="policy_unavailable"
+    CHIP_AEC_DAC_GATE_DETAIL=""
+    CHIP_AEC_DAC_GATE_ACTION="use_software_aec3_or_enable_testing"
+    if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
+        CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy unavailable: python not found at ${MIC_PROFILE_PYTHON}"
         return
     fi
-    if detail="$(outputd_aec_clock_gate_detail)"; then
-        CHIP_AEC_DAC_GATE_OK=1
-        CHIP_AEC_DAC_GATE_SOURCE="outputd_aec_clock"
-        CHIP_AEC_DAC_GATE_DETAIL="$detail"
+    args=(-m jasper.cli.chip_aec_policy
+        --dac-id "$dac_id"
+        --outputd-socket "$OUTPUTD_CONTROL_SOCKET"
+        --shell-env)
+    if [[ "$testing" == "1" ]]; then
+        args+=(--testing-requested)
+    fi
+    if ! payload="$("$MIC_PROFILE_PYTHON" "${args[@]}")"; then
+        CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy resolver failed"
         return
     fi
-    CHIP_AEC_DAC_GATE_DETAIL="$(chip_aec_dac_static_detail "$dac_id"); ${detail}"
+    # Output is produced by jasper.cli.chip_aec_policy with shlex.quote.
+    eval "$payload"
+    CHIP_AEC_DAC_GATE_OK="${JASPER_CHIP_AEC_DAC_GATE_PERMITTED:-0}"
+    CHIP_AEC_DAC_GATE_STATUS="${JASPER_CHIP_AEC_DAC_GATE_STATUS:-needs_calibration}"
+    CHIP_AEC_DAC_GATE_SOURCE="${JASPER_CHIP_AEC_DAC_GATE_SOURCE:-unknown}"
+    CHIP_AEC_DAC_GATE_DETAIL="${JASPER_CHIP_AEC_DAC_GATE_DETAIL:-}"
+    CHIP_AEC_DAC_GATE_ACTION="${JASPER_CHIP_AEC_DAC_GATE_ACTION:-use_software_aec3_or_enable_testing}"
 }
 
 chip_aec_dac_supported() {
-    refresh_chip_aec_dac_gate "${1:-unknown}"
+    refresh_chip_aec_dac_gate "${1:-unknown}" "${2:-0}"
     [[ "$CHIP_AEC_DAC_GATE_OK" == "1" ]]
 }
 
 chip_aec_dac_detail() {
-    refresh_chip_aec_dac_gate "${1:-unknown}"
+    refresh_chip_aec_dac_gate "${1:-unknown}" "${2:-0}"
     echo "$CHIP_AEC_DAC_GATE_DETAIL"
 }
 
 log_chip_aec_dac_gate_if_dynamic() {
-    refresh_chip_aec_dac_gate "${1:-unknown}"
-    if [[ "$CHIP_AEC_DAC_GATE_OK" == "1" \
-        && "$CHIP_AEC_DAC_GATE_SOURCE" == "outputd_aec_clock" ]]; then
-        log "outputd aec_clock permits chip-AEC for output_dac=$(normalize_output_dac_id "${1:-unknown}"): ${CHIP_AEC_DAC_GATE_DETAIL}"
+    refresh_chip_aec_dac_gate "${1:-unknown}" "${2:-0}"
+    if [[ "$CHIP_AEC_DAC_GATE_OK" == "1" ]]; then
+        log "chip-AEC DAC gate permits output_dac=$(normalize_output_dac_id "${1:-unknown}") status=${CHIP_AEC_DAC_GATE_STATUS} source=${CHIP_AEC_DAC_GATE_SOURCE}: ${CHIP_AEC_DAC_GATE_DETAIL}"
     fi
+}
+
+write_chip_aec_gate_env() {
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_TESTING_REQUESTED "$CHIP_AEC_TESTING_REQUESTED"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_STATUS "$CHIP_AEC_DAC_GATE_STATUS"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_SOURCE "$CHIP_AEC_DAC_GATE_SOURCE"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_DETAIL "$CHIP_AEC_DAC_GATE_DETAIL"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_ACTION "$CHIP_AEC_DAC_GATE_ACTION"
 }
 
 chip_aec_mic_supported() {
@@ -534,8 +449,8 @@ apply_audio_input_profile() {
             AEC_MODE="auto"
             if aec_ready "$AEC_MIC_DEVICE" \
                 && chip_aec_mic_supported \
-                && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
-                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID"
+                && chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "0"
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
@@ -543,7 +458,7 @@ apply_audio_input_profile() {
                 if ! chip_aec_mic_supported; then
                     detail="$(chip_aec_mic_detail)"
                 else
-                    detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID")"
+                    detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID" "0")"
                 fi
                 log "chip-AEC unavailable for output_dac=${AUDIO_DAC_ID}: ${detail}; using software AEC3"
                 LEG_RAW="1"
@@ -557,8 +472,8 @@ apply_audio_input_profile() {
             ;;
         xvf_chip_aec)
             AEC_MODE="auto"
-            if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID"; then
-                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID"
+            if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "0"
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
@@ -566,9 +481,28 @@ apply_audio_input_profile() {
                 if ! chip_aec_mic_supported; then
                     detail="$(chip_aec_mic_detail)"
                 else
-                    detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID")"
+                    detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID" "0")"
                 fi
                 log "requested xvf_chip_aec but output_dac=${AUDIO_DAC_ID} is not calibrated for chip AEC: ${detail}; using software AEC3"
+                LEG_RAW="1"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="0"
+            fi
+            ;;
+        xvf_chip_aec_testing)
+            AEC_MODE="auto"
+            if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID" "1"; then
+                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "1"
+                LEG_RAW="0"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="1"
+            else
+                if ! chip_aec_mic_supported; then
+                    detail="$(chip_aec_mic_detail)"
+                else
+                    detail="$(chip_aec_dac_detail "$AUDIO_DAC_ID" "1")"
+                fi
+                log "requested xvf_chip_aec_testing but chip-AEC cannot be armed for output_dac=${AUDIO_DAC_ID}: ${detail}; using software AEC3"
                 LEG_RAW="1"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="0"
@@ -1037,7 +971,21 @@ LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
 CHIP_REF_OBSERVE="$(normalize_bool "$(mode_file_value JASPER_AEC_CHIP_REF_OBSERVE 0)")"
 AUDIO_DAC_ID="$(normalize_output_dac_id "${JASPER_AUDIO_DAC_ID:-unknown}")"
 AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
+CHIP_AEC_TESTING_REQUESTED=0
+if [[ "$AUDIO_INPUT_PROFILE" == "xvf_chip_aec_testing" ]]; then
+    CHIP_AEC_TESTING_REQUESTED=1
+fi
 apply_audio_input_profile
+if [[ "$AUDIO_INPUT_PROFILE" == "custom" && "$LEG_CHIP_AEC" == "1" ]]; then
+    if ! chip_aec_mic_supported; then
+        log "custom chip-AEC leg requested but mic cannot produce chip-AEC beams: $(chip_aec_mic_detail); clearing chip-AEC leg"
+        LEG_CHIP_AEC="0"
+    elif ! chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
+        log "custom chip-AEC leg requested but output_dac=${AUDIO_DAC_ID} is not approved for production chip-AEC: $(chip_aec_dac_detail "$AUDIO_DAC_ID" "0"); clearing chip-AEC leg"
+        LEG_CHIP_AEC="0"
+    fi
+fi
+refresh_chip_aec_dac_gate "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
 
 if [[ "$CHECK_ONLY" == "1" ]]; then
     if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
@@ -1056,6 +1004,7 @@ fi
 
 log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC}"
 write_mic_profile_env
+write_chip_aec_gate_env
 
 if grouping_voice_parked; then
     # Role park wins over every profile/mic shape below — including the
