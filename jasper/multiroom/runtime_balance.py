@@ -123,7 +123,7 @@ async def _outputd_command(
         try:
             writer.close()
             await writer.wait_closed()
-        except Exception:  # noqa: BLE001
+        except (ConnectionError, OSError, RuntimeError):
             pass
     if not line:
         raise RuntimeError("jasper-outputd returned no response")
@@ -156,7 +156,7 @@ async def apply_local_trim(
         camilla = camilla_factory(cfg) if camilla_factory else _active_endpoint_camilla(cfg)
         try:
             ok = bool(await camilla.patch_config(camilla_patch_for_trim(trim), best_effort=True))
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
             log_event(
                 logger,
                 "multiroom.balance.live_apply_failed",
@@ -183,7 +183,7 @@ async def apply_local_trim(
     command = f"SET_DAC_CONTENT_TRIM_DB {trim:.1f}"
     try:
         payload = await (outputd_command or _outputd_command)(command)
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         log_event(
             logger,
             "multiroom.balance.live_apply_failed",

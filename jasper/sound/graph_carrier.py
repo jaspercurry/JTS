@@ -38,6 +38,7 @@ from jasper.sound.camilla_yaml import (
 logger = logging.getLogger(__name__)
 
 _SOUND_SOURCE_LINE = "# Source: jasper.sound.camilla_yaml.emit_sound_config"
+_CURRENT_SOUND_CONFIG = "sound_current.yml"
 
 
 class CarrierCannotHostEq(RuntimeError):
@@ -486,6 +487,30 @@ def _loaded_config_is_program_bake_pipe(current_path: str | Path) -> bool:
     return playback_is_pipe(text, SNAPFIFO)
 
 
+def _loaded_config_is_stale_program_bake_pipe(current_path: str | Path) -> bool:
+    """True for the one-time recovery shape left by the old program-bake reemit.
+
+    PR #1009 briefly produced ``sound_current.yml`` with the generic sound
+    source marker even though the graph still wrote to the active leader's
+    SnapFIFO program lane. The fallback is intentionally narrower than
+    "any JTS pipe config": ordinary passive grouping leaders also write to
+    SnapFIFO and must not be reclassified or re-stamped as active program bakes.
+    """
+    if Path(current_path).name != _CURRENT_SOUND_CONFIG:
+        return False
+    from jasper.active_speaker.runtime_contract import flat_program_graph_blocked_reason
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        return False
+    return (
+        _loaded_config_is_program_bake_pipe(current_path)
+        and flat_program_graph_blocked_reason(topology) is not None
+    )
+
+
 def _restamp_program_bake_source(yaml: str) -> str:
     from jasper.active_speaker.camilla_yaml import ACTIVE_PROGRAM_BAKE_SOURCE
 
@@ -539,7 +564,7 @@ def carrier_for_loaded_config(current_path, *, config_dir):
             return _ProgramBakeCarrier(current_path)
         if (
             summary.get("classification") == "jts_generated_stereo"
-            and _loaded_config_is_program_bake_pipe(current_path)
+            and _loaded_config_is_stale_program_bake_pipe(current_path)
         ):
             return _ProgramBakeCarrier(current_path)
     if is_jts_generated_config(current_path, config_dir=config_dir):

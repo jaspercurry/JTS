@@ -89,10 +89,16 @@ def test_no_program_prefix(layout: str, way: int, channel: str) -> None:
     doc = _doc(layout, way, channel)
     # The leader baked Layer B/C: no program-domain headroom gain exists...
     assert "active_baseline_headroom" not in doc["filters"]
-    # ...and no Filter pipeline step targets the [0, 1] program bus (the
-    # channel-select + split are Mixer steps; per-driver Filters ride driver
-    # channels, never the program pair).
-    assert [0, 1] not in _filter_step_channels(doc)
+    # ...and no Filter pipeline step targets the [0, 1] program bus except the
+    # live pair-balance scalar between channel-select and the driver split.
+    program_filter_steps = [
+        step
+        for step in doc["pipeline"]
+        if step.get("type") == "Filter"
+        and step.get("channels") == [0, 1]
+        and step.get("names") != ["pair_balance_trim"]
+    ]
+    assert program_filter_steps == []
 
 
 @pytest.mark.parametrize("layout,way,channel", _CASES)
@@ -139,12 +145,16 @@ def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
         preset, playback_device=ACTIVE_PCM
     ))
     # Drop the program-domain headroom the baseline carries (and the follower
-    # must not): the remaining per-driver crossover/delay/gain/limiter chain is
-    # IDENTICAL, so relocating Layer A onto a follower cannot weaken protection.
+    # must not) plus the follower's inter-speaker balance trim: the remaining
+    # per-driver crossover/delay/gain/limiter chain is IDENTICAL, so relocating
+    # Layer A onto a follower cannot weaken protection.
     baseline_driver_filters = {
         k: v for k, v in baseline["filters"].items() if k != "active_baseline_headroom"
     }
-    assert follower["filters"] == baseline_driver_filters
+    follower_driver_filters = {
+        k: v for k, v in follower["filters"].items() if k != "pair_balance_trim"
+    }
+    assert follower_driver_filters == baseline_driver_filters
     assert follower["mixers"]["split_active_%dway" % way] == \
         baseline["mixers"]["split_active_%dway" % way]
 
