@@ -258,12 +258,20 @@ Increment 6 (per-follower calibration). What exists:
   inside the 60 s window write the remaining delay to `/run/jasper-control/`
   and start one on-demand `jasper-grouping-reconcile-trailing.service`, which
   sleeps for that delay and then starts the existing oneshot reconciler. Because
-  the reconciler re-reads `grouping.env`, a trim/delay/crossover sweep applies
-  the final value exactly once after the burst even if `jasper-control` exits
-  before the trailing kick.
+  the reconciler re-reads `grouping.env`, a delay/crossover sweep applies the
+  final value exactly once after the burst even if `jasper-control` exits before
+  the trailing kick. Pair-balance trim is the exception: trim-only
+  `/grouping/set` writes persist `grouping.env` but bypass the 60 s reconciler
+  cooldown through `jasper.multiroom.runtime_balance` (CamillaDSP
+  `pair_balance_trim` patch on active endpoints; `jasper-outputd`
+  `SET_DAC_CONTENT_TRIM_DB` on passive endpoints). If the live apply fails,
+  `/grouping/set` falls back to the trailing reconciler path and reports the
+  scheduled state in its response.
   Hardware-free coverage:
-  `test_grouping_set_burst_coalesces_kicks_and_applies_last_env`
-  (+ trailing-service scheduler tests) in `tests/test_control_server.py`.
+  `test_grouping_set_delay_burst_coalesces_kicks_and_applies_last_env`,
+  `test_grouping_set_trim_only_live_applies_without_reconciler`, and
+  `tests/test_multiroom_runtime_balance.py` (+ trailing-service scheduler tests)
+  in `tests/test_control_server.py`.
 - **`deploy/install.sh`** — `migrate_grouping` (seed/strip env) + unit
   install (not enabled) + `--dry-run` line.
 - **`jasper-doctor`** — `check_grouping` (ok off / ok on-valid / warn
@@ -2661,7 +2669,9 @@ rechecked against
 coalescing and the durable trailing service rechecked against
 `jasper.control.server`,
 `deploy/systemd/jasper-grouping-reconcile-trailing.service`, and the grouped
-outputd env/reconcile path; active-endpoint and wireless-sub TTS route
+outputd env/reconcile path; live pair-balance trim rechecked against
+`jasper.multiroom.runtime_balance`, `rust/jasper-outputd/src/state.rs`, and the
+active-speaker `pair_balance_trim` graph; active-endpoint and wireless-sub TTS route
 exceptions rechecked against
 `jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile`, and `jasper.cli.doctor.grouping`;

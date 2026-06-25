@@ -1159,10 +1159,10 @@ def test_grouping_set_disabled_ignores_active_speaker_setup_block(
     assert _GROUPING_KICK in popens
 
 
-def test_grouping_set_burst_coalesces_kicks_and_applies_last_env(
+def test_grouping_set_delay_burst_coalesces_kicks_and_applies_last_env(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
-    """A trim/delay/crossover sweep can POST /grouping/set every few seconds.
+    """A delay/crossover sweep can POST /grouping/set every few seconds.
 
     The first write still kicks promptly, but the rest of the cooldown window
     collapses to one trailing reconciler run. That trailing run re-reads the
@@ -1219,34 +1219,127 @@ def test_grouping_set_burst_coalesces_kicks_and_applies_last_env(
         "bond_id": "living-room",
         "leader_addr": "jts.local",
     }
-    offsets_and_trims = [
-        (0.0, -0.5),
-        (7.0, -1.0),
-        (16.0, -1.5),
-        (27.0, -2.0),
-        (35.0, -2.5),
-        (44.0, -3.0),
+    offsets_and_delays = [
+        (0.0, 0.5),
+        (7.0, 1.0),
+        (16.0, 1.5),
+        (27.0, 2.0),
+        (35.0, 2.5),
+        (44.0, 3.0),
     ]
 
-    for offset, trim_db in offsets_and_trims:
+    for offset, left_delay_ms in offsets_and_delays:
         now[0] = 1000.0 + offset
         status, body_resp = _post(
             f"{base}/grouping/set",
-            {**body, "trim_db": trim_db},
+            {**body, "left_delay_ms": left_delay_ms},
         )
         assert status == 200, body_resp
 
     assert [reason for reason, _text in applied] == ["leading"]
-    assert "JASPER_GROUPING_TRIM_DB=-0.5" in applied[0][1]
+    assert "JASPER_GROUPING_LEFT_DELAY_MS=0.500" in applied[0][1]
     assert len(timers) == 1
     assert timers[0].delay == pytest.approx(53.0)
-    assert "JASPER_GROUPING_TRIM_DB=-3.0" in env.read_text()
+    assert "JASPER_GROUPING_LEFT_DELAY_MS=3.000" in env.read_text()
 
     now[0] = 1060.0
     timers[0].fire()
 
     assert [reason for reason, _text in applied] == ["leading", "trailing"]
-    assert "JASPER_GROUPING_TRIM_DB=-3.0" in applied[-1][1]
+    assert "JASPER_GROUPING_LEFT_DELAY_MS=3.000" in applied[-1][1]
+
+
+def test_grouping_set_trim_only_live_applies_without_reconciler(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+    from jasper.multiroom.runtime_balance import LiveTrimApplyResult
+
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    env.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=right\n"
+        "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        "JASPER_GROUPING_TRIM_DB=0.0\n"
+    )
+    calls = []
+
+    async def fake_live_apply(trim_db, *, cfg):
+        calls.append((trim_db, cfg.role, cfg.channel))
+        return LiveTrimApplyResult(True, "outputd", trim_db)
+
+    monkeypatch.setattr(srv_mod, "apply_live_grouping_trim", fake_live_apply)
+
+    status, body = _post(
+        f"{base}/grouping/set",
+        {
+            "enabled": True,
+            "role": "follower",
+            "channel": "right",
+            "bond_id": "living-room",
+            "leader_addr": "jts.local",
+            "trim_db": -3.0,
+        },
+    )
+
+    assert status == 200
+    assert body["live_apply"] == {
+        "applied": True,
+        "mode": "outputd",
+        "trim_db": -3.0,
+    }
+    assert body["reconciler_kicked"] is False
+    assert calls == [(-3.0, "follower", "right")]
+    assert popens == []
+    assert "JASPER_GROUPING_TRIM_DB=-3.0" in env.read_text()
+
+
+def test_grouping_set_trim_only_falls_back_to_reconciler_on_live_apply_failure(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+    from jasper.multiroom.runtime_balance import LiveTrimApplyResult
+
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    env.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=right\n"
+        "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts.local\n"
+        "JASPER_GROUPING_TRIM_DB=0.0\n"
+    )
+
+    async def fake_live_apply(trim_db, *, cfg):
+        return LiveTrimApplyResult(False, "outputd", trim_db, "socket down")
+
+    monkeypatch.setattr(srv_mod, "apply_live_grouping_trim", fake_live_apply)
+
+    status, body = _post(
+        f"{base}/grouping/set",
+        {
+            "enabled": True,
+            "role": "follower",
+            "channel": "right",
+            "bond_id": "living-room",
+            "leader_addr": "jts.local",
+            "trim_db": -3.0,
+        },
+    )
+
+    assert status == 200
+    assert body["live_apply"] == {
+        "applied": False,
+        "mode": "outputd",
+        "trim_db": -3.0,
+        "detail": "socket down",
+    }
+    assert body["reconciler_kicked"] is True
+    assert _GROUPING_KICK in popens
 
 
 def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path):

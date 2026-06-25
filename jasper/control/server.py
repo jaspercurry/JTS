@@ -68,11 +68,13 @@ from ..multiroom.config import (
     DEFAULT_MAINS_HIGHPASS_ENABLED,
     GROUPING_ENV_FILE,
     BondMember,
+    GroupingConfig,
     format_roster,
     load_config as load_grouping_config,
     validate_grouping,
     validate_roster,
 )
+from ..multiroom.runtime_balance import apply_local_trim as apply_live_grouping_trim
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..local_sources import (
@@ -1120,6 +1122,32 @@ def _kick_grouping_reconciler() -> None:
     retry; the final grouping.env write is therefore applied.
     """
     _grouping_reconciler_kick_coalescer.kick()
+
+
+def _is_trim_only_grouping_change(before: GroupingConfig, after: GroupingConfig) -> bool:
+    """True when the persisted grouping diff is only pair-balance trim."""
+    return (
+        before.enabled
+        and after.enabled
+        and before.error is None
+        and after.error is None
+        and before.role == after.role
+        and before.channel == after.channel
+        and before.bond_id == after.bond_id
+        and before.leader_addr == after.leader_addr
+        and before.buffer_ms == after.buffer_ms
+        and before.codec == after.codec
+        and before.client_latency_ms == after.client_latency_ms
+        and math.isclose(before.left_delay_ms, after.left_delay_ms, abs_tol=0.0005)
+        and math.isclose(before.right_delay_ms, after.right_delay_ms, abs_tol=0.0005)
+        and math.isclose(before.crossover_hz, after.crossover_hz, abs_tol=0.0005)
+        and before.mains_highpass_enabled == after.mains_highpass_enabled
+        and before.subwoofer_present == after.subwoofer_present
+        and before.peer_addr == after.peer_addr
+        and before.peer_name == after.peer_name
+        and before.roster == after.roster
+        and not math.isclose(before.trim_db, after.trim_db, abs_tol=0.0005)
+    )
 
 
 def _resolve_grouping_crossover_hz_for_write(
@@ -2234,6 +2262,9 @@ def _make_handler(
                     )
                     return
                 crossover_hz = effective_crossover_hz
+            before_grouping = load_grouping_config(GROUPING_ENV_FILE)
+            live_apply_payload: dict[str, Any] | None = None
+            reconciler_kicked = False
             try:
                 _write_grouping(
                     enabled=enabled, role=role, channel=channel,
@@ -2248,7 +2279,34 @@ def _make_handler(
                     peer_addr=peer_addr, peer_name=peer_name,
                     roster=roster_str,
                 )
-                _kick_grouping_reconciler()
+                after_grouping = load_grouping_config(GROUPING_ENV_FILE)
+                if (
+                    enabled
+                    and trim_db is not None
+                    and before_grouping == after_grouping
+                ):
+                    live_apply_payload = {
+                        "applied": True,
+                        "mode": "noop",
+                        "trim_db": round(float(after_grouping.trim_db), 1),
+                    }
+                elif (
+                    trim_db is not None
+                    and _is_trim_only_grouping_change(before_grouping, after_grouping)
+                ):
+                    live_apply = asyncio.run(
+                        apply_live_grouping_trim(
+                            after_grouping.trim_db,
+                            cfg=after_grouping,
+                        )
+                    )
+                    live_apply_payload = live_apply.to_dict()
+                    if not live_apply.applied:
+                        _kick_grouping_reconciler()
+                        reconciler_kicked = True
+                else:
+                    _kick_grouping_reconciler()
+                    reconciler_kicked = True
             except Exception as e:  # noqa: BLE001
                 logger.exception("grouping set failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -2278,13 +2336,23 @@ def _make_handler(
                 role=role or "(none)",
                 channel=channel or "(none)",
                 bond=bond_id or "(none)",
+                live_applied=(
+                    None
+                    if live_apply_payload is None
+                    else live_apply_payload.get("applied")
+                ),
+                reconciler_kicked=reconciler_kicked,
                 client=self.address_string(),
             )
-            self._send_json({
+            response = {
                 "ok": True, "enabled": enabled, "role": role,
                 "channel": channel, "bond_id": bond_id,
                 "leader_addr": leader_addr,
-            })
+                "reconciler_kicked": reconciler_kicked,
+            }
+            if live_apply_payload is not None:
+                response["live_apply"] = live_apply_payload
+            self._send_json(response)
             return
 
         def _post_volume_mute(self) -> None:

@@ -2,17 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Local STATUS socket for outputd observability.
+//! Local control socket for outputd observability and cheap runtime knobs.
 //!
 //! The socket mirrors the fan-in daemon's shape: one command per
-//! connection, `STATUS\n` returns a compact JSON snapshot, malformed
+//! connection. `STATUS\n` returns a compact JSON snapshot, trim-only
+//! pair-balance updates use `SET_DAC_CONTENT_TRIM_DB <db>\n`, and malformed
 //! commands return a JSON error. `jasper-control /state`,
 //! `jasper-doctor`, and an operator can all consume the same surface.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,8 @@ const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const NEVER_MS: u64 = u64::MAX;
 const OPTIONAL_U64_NONE: u64 = u64::MAX;
+const DAC_CONTENT_TRIM_DB_MIN_TENTHS: i32 = -240;
+const DAC_CONTENT_TRIM_DB_MAX_TENTHS: i32 = 0;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ChipRefWrite {
@@ -84,7 +87,8 @@ pub struct OutputdState {
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
-    dac_content_trim_db: f32,
+    dac_content_trim_db_tenths: AtomicI32,
+    dac_content_trim_gain_bits: AtomicU32,
     dac_content_serving_fifo: AtomicBool,
     dac_content_fifo_periods: AtomicU64,
     dac_content_fallback_periods: AtomicU64,
@@ -153,6 +157,35 @@ pub struct OutputdState {
     tts: OnceLock<(String, TtsMetrics)>,
 }
 
+fn trim_db_tenths(trim_db: f32) -> i32 {
+    (trim_db * 10.0).round() as i32
+}
+
+fn validate_trim_db_tenths(trim_db: f32) -> Result<i32> {
+    if !trim_db.is_finite() {
+        anyhow::bail!("trim_db must be finite");
+    }
+    let tenths = trim_db_tenths(trim_db);
+    if !(DAC_CONTENT_TRIM_DB_MIN_TENTHS..=DAC_CONTENT_TRIM_DB_MAX_TENTHS).contains(&tenths) {
+        anyhow::bail!(
+            "trim_db must be between {:.1} and {:.1} dB",
+            DAC_CONTENT_TRIM_DB_MIN_TENTHS as f32 / 10.0,
+            DAC_CONTENT_TRIM_DB_MAX_TENTHS as f32 / 10.0,
+        );
+    }
+    Ok(tenths)
+}
+
+fn trim_gain_bits(trim_db_tenths: i32) -> u32 {
+    let trim_db = trim_db_tenths as f32 / 10.0;
+    let gain = if trim_db < 0.0 {
+        10f32.powf(trim_db / 20.0)
+    } else {
+        1.0
+    };
+    gain.to_bits()
+}
+
 impl OutputdState {
     pub fn new(config: &Config) -> Self {
         Self {
@@ -199,7 +232,10 @@ impl OutputdState {
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
-            dac_content_trim_db: config.dac_content_trim_db,
+            dac_content_trim_db_tenths: AtomicI32::new(trim_db_tenths(config.dac_content_trim_db)),
+            dac_content_trim_gain_bits: AtomicU32::new(trim_gain_bits(trim_db_tenths(
+                config.dac_content_trim_db,
+            ))),
             dac_content_serving_fifo: AtomicBool::new(false),
             dac_content_fifo_periods: AtomicU64::new(0),
             dac_content_fallback_periods: AtomicU64::new(0),
@@ -254,6 +290,26 @@ impl OutputdState {
 
     pub fn set_tts(&self, socket: String, metrics: TtsMetrics) {
         let _ = self.tts.set((socket, metrics));
+    }
+
+    pub fn dac_content_trim_gain(&self) -> f32 {
+        f32::from_bits(self.dac_content_trim_gain_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn dac_content_trim_db(&self) -> f32 {
+        self.dac_content_trim_db_tenths.load(Ordering::Relaxed) as f32 / 10.0
+    }
+
+    pub fn set_dac_content_trim_db(&self, trim_db: f32) -> Result<f32> {
+        if self.dac_content_fifo.is_none() {
+            anyhow::bail!("dac_content lane is not enabled");
+        }
+        let tenths = validate_trim_db_tenths(trim_db)?;
+        self.dac_content_trim_db_tenths
+            .store(tenths, Ordering::Relaxed);
+        self.dac_content_trim_gain_bits
+            .store(trim_gain_bits(tenths), Ordering::Relaxed);
+        Ok(tenths as f32 / 10.0)
     }
 
     pub fn set_negotiated(&self, content: NegotiatedPcm, dac: NegotiatedPcm) {
@@ -725,7 +781,7 @@ impl OutputdState {
                     None => buf.push_str("\"main_highpass_hz\":null"),
                 }
                 buf.push(',');
-                buf.push_str(&format!("\"trim_db\":{:.1}", self.dac_content_trim_db));
+                buf.push_str(&format!("\"trim_db\":{:.1}", self.dac_content_trim_db()));
                 buf.push(',');
                 push_kv_bool(
                     &mut buf,
@@ -1290,12 +1346,24 @@ impl StateServer {
             .read_line(&mut command)
             .context("reading outputd state command")?;
         let command = command.trim();
-        let response = match command {
-            "STATUS" => self.state.snapshot_json(),
-            other => format!(
+        let response = if command == "STATUS" {
+            self.state.snapshot_json()
+        } else if let Some(raw) = command.strip_prefix("SET_DAC_CONTENT_TRIM_DB ") {
+            match raw.trim().parse::<f32>() {
+                Ok(trim_db) => match self.state.set_dac_content_trim_db(trim_db) {
+                    Ok(applied) => format!(r#"{{"ok":true,"trim_db":{applied:.1}}}"#),
+                    Err(e) => format!(r#"{{"error":"{}"}}"#, escape_json(&e.to_string())),
+                },
+                Err(_) => format!(
+                    r#"{{"error":"trim_db must be a number","received":"{}"}}"#,
+                    escape_json(raw.trim())
+                ),
+            }
+        } else {
+            format!(
                 r#"{{"error":"unknown command","received":"{}"}}"#,
-                escape_json(other)
-            ),
+                escape_json(command)
+            )
         };
         stream
             .write_all(response.as_bytes())
@@ -1665,6 +1733,44 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+    }
+
+    #[test]
+    fn dac_content_trim_can_update_live_without_restarting_outputd() {
+        let cfg = Config {
+            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_channel: crate::dac_content::ChannelPick::Right,
+            dac_content_trim_db: 0.0,
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+
+        assert_eq!(state.dac_content_trim_db(), 0.0);
+        assert_eq!(state.dac_content_trim_gain(), 1.0);
+
+        assert_eq!(state.set_dac_content_trim_db(-3.54).unwrap(), -3.5);
+
+        let expected_gain = 10f32.powf(-3.5 / 20.0);
+        assert_eq!(state.dac_content_trim_db(), -3.5);
+        assert!((state.dac_content_trim_gain() - expected_gain).abs() < 0.000_001);
+        assert!(state.snapshot_json().contains(r#""trim_db":-3.5"#));
+    }
+
+    #[test]
+    fn dac_content_trim_live_update_rejects_disabled_or_boosting_lane() {
+        let state = OutputdState::new(&test_config());
+        assert!(state.set_dac_content_trim_db(-1.0).is_err());
+
+        let cfg = Config {
+            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_channel: crate::dac_content::ChannelPick::Left,
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        assert!(state.set_dac_content_trim_db(0.1).is_err());
+        assert!(state.set_dac_content_trim_db(-24.1).is_err());
+        assert!(state.set_dac_content_trim_db(f32::NAN).is_err());
+        assert_eq!(state.dac_content_trim_db(), 0.0);
     }
 
     #[test]
