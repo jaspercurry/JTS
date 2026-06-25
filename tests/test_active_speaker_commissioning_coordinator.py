@@ -139,6 +139,10 @@ def test_commissioning_view_does_not_reoffer_record_for_validated_combined_test(
     assert group["status"] == "validated"
     assert group["actions"]["record_combined_result"]["enabled"] is False
     assert view["next_action"]["id"] == "save_profile"
+    assert (
+        view["next_action"]["endpoint"]
+        == "./active-speaker/baseline-profile/save-and-apply"
+    )
 
 
 def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():

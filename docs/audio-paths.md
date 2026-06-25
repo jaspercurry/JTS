@@ -504,16 +504,25 @@ playback authority.
 they do not apply the normal active profile. `/sound/active-speaker/summed-test`
 is the audible exception: it temporarily loads the protected all-drivers-live
 commissioning graph through the active-speaker runtime lane, plays the bounded
-combined test on `correction_substream`, records the result, and rolls back.
+looped combined speech test on `correction_substream`, accepts live level
+changes through `/sound/active-speaker/summed-test/level`, records only the
+audible operator-confirmed result, and rolls back. Stopped-before-audio,
+watchdog-expired, artifact-only, or stale summed-test records remain evidence of
+an incomplete check, not unlock tokens for the baseline compiler.
 Driver evidence is accepted only for the current saved physical target and
 matching safe-session floor result, so changing the speaker layout or DAC output
 assignment invalidates old evidence for readiness. Summed validation must
 reference the latest current audible combined-driver test for that speaker
 group; the product flow can use an explicit operator listening check when no
 phone-mic reading is present, while artifact-only or stale tests cannot satisfy
-the baseline compiler. `/sound/active-speaker/baseline-profile/apply` is the
-active-speaker handoff into normal playback, but it is enabled only for an
-outputd-owned active playback lane. Today that product handoff is
+the baseline compiler.
+`/sound/active-speaker/baseline-profile/save-and-apply` is the product
+active-speaker handoff into normal playback: the backend compiles, validates
+apply support, applies, and reports one result. The lower
+`/sound/active-speaker/baseline-profile/apply` endpoint remains the apply
+primitive, but the product UI does not ask the browser to stitch save and apply
+together. Apply is enabled only for an outputd-owned active playback lane. Today
+that product handoff is
 profile-declared for a single Apple USB-C dongle at width 2, DAC8x/DAC8x Studio
 at width 8, and the dual-Apple USB-C composite at width 4. Protected startup
 staging follows the durable-outputd boundary: supported DACs resolve to the
@@ -584,8 +593,12 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-24 (active-endpoint and wireless-sub TTS route
-exceptions rechecked against
+Last verified: 2026-06-25 (active-crossover summed-test live level,
+audible-only validation evidence, backend watchdog, and backend-owned
+save/apply product handoff rechecked against `sound_setup.py`,
+`deploy/assets/sound-profile/js/main.js`, and the focused sound setup tests.
+Prior 2026-06-24 recheck covered active-endpoint and wireless-sub TTS route
+exceptions against
 `jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and
