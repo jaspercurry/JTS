@@ -45,6 +45,43 @@ from tests.test_active_speaker_runtime_contract import (
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 
 
+def _program_bake_yaml() -> str:
+    from jasper.active_speaker.camilla_yaml import ACTIVE_PROGRAM_BAKE_SOURCE
+
+    return f"""---
+# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 2048
+  volume_limit: 0.0
+  enable_rate_adjust: false
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+    format: S16_LE
+
+filters:
+  flat:
+    type: Gain
+    parameters: {{ gain: 0.0000, inverted: false, mute: false }}
+
+mixers:
+  master_gain:
+    channels: {{ in: 2, out: 2 }}
+    mapping: []
+
+pipeline: []
+"""
+
+
 # --- resolution / recognizer mutual-exclusivity -------------------------
 
 def test_base_config_resolves_to_base_flat(tmp_path):
@@ -264,6 +301,71 @@ def test_stereo_host_hosts_eq_under_full_range_topology(tmp_path, monkeypatch):
     assert carrier.can_host_eq is True
     result = carrier.reemit(SoundProfile(enabled=False), member_kwargs={})
     assert isinstance(result, ReemitResult)
+
+
+def test_program_bake_carrier_hosts_eq_via_pipe_under_active_topology(
+    tmp_path,
+    monkeypatch,
+):
+    # JTS5 regression: an active leader runs camilla#1 as a program-domain bake
+    # into Snapcast's FIFO. It is flat, but not DAC-bound; re-emission is safe
+    # only when grouping policy keeps the File -> pipe sink and rate_adjust off.
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_active_topology("stereo", "active_2_way"), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "grouping_active_leader_bake.yml"
+    path.write_text(_program_bake_yaml(), encoding="utf-8")
+
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml-text"
+    ) as emit, mock.patch(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        return_value={
+            "enable_rate_adjust": False,
+            "channel_split": None,
+            "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
+        },
+    ):
+        carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+        assert carrier.kind == "active_leader_program_bake"
+        assert carrier.can_host_eq is True
+        result = carrier.reemit(SoundProfile(enabled=False), room_peqs=[])
+
+    assert isinstance(result, ReemitResult)
+    assert result.room_peq_count == 0
+    assert emit.call_args.kwargs["room_peqs"] == []
+    assert emit.call_args.kwargs["playback_pipe_path"] == (
+        "/run/jasper-snapserver/snapfifo"
+    )
+    assert emit.call_args.kwargs["enable_rate_adjust"] is False
+
+
+def test_program_bake_carrier_requires_pipe_sink(tmp_path):
+    from jasper.sound.profile import SoundProfile
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "grouping_active_leader_bake.yml"
+    path.write_text(_program_bake_yaml(), encoding="utf-8")
+
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config"
+    ) as emit, mock.patch(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        return_value={
+            "enable_rate_adjust": True,
+            "channel_split": None,
+            "playback_pipe_path": None,
+        },
+    ):
+        carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+        with pytest.raises(CarrierCannotHostEq) as exc:
+            carrier.reemit(SoundProfile(enabled=False), room_peqs=[])
+
+    assert exc.value.reason_code == "program_bake_pipe_unavailable"
+    emit.assert_not_called()
 
 
 def test_reemit_defaults_to_disk_read_member_kwargs(tmp_path):

@@ -494,14 +494,20 @@ room PEQs from the configs it can host:
   room PEQs.
 - `/var/lib/camilladsp/configs/sound_current.yml` → extract room PEQs.
 - `/var/lib/camilladsp/configs/sound_audition.yml` → extract room PEQs.
+- `/var/lib/camilladsp/configs/grouping_active_leader_bake.yml` → active-leader
+  program bake; extract room PEQs, but only while grouping state still resolves
+  to `File` → Snapcast FIFO with `enable_rate_adjust=false`.
 
 Anything the carrier cannot host fails **closed** with a typed reason rather
 than being silently overwritten. An active-speaker crossover graph is
 recognized (by the same structural signal the runtime safety classifier
 uses — re-emitting it through the stereo template would drop the
 crossover/limiter/protective-HP) and refused with
-`reason_code="eq_on_active_not_wired"`; any other unrecognized config refuses
-with `unknown_config`. The refusal returns as an HTTP 200
+`reason_code="eq_on_active_not_wired"` unless it is a solo active baseline that
+can be recomposed through the active emitter. A program bake whose grouping
+state no longer resolves to the pipe sink refuses with
+`program_bake_pipe_unavailable`; any other unrecognized config refuses with
+`unknown_config`. The refusal returns as an HTTP 200
 `{status:"blocked", reason_code, message}` body so the wizard renders an
 honest hint instead of a 502. See the design-of-record for the dispatcher and
 the program/driver-domain boundary.
@@ -794,9 +800,11 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-24 (deploy/startup sound-DSP reconciliation checked
-against `jasper.sound.runtime`, `jasper.cli.sound`, `deploy/install.sh`, and
-the focused reconcile/CLI/install tests; active-crossover `/sound/` flow
+Last verified: 2026-06-25 (active-leader program-bake carrier support checked
+for `/sound` and `/correction/start` on JTS5. Prior 2026-06-24
+deploy/startup sound-DSP reconciliation checked against `jasper.sound.runtime`,
+`jasper.cli.sound`, `deploy/install.sh`, and the focused reconcile/CLI/install
+tests; active-crossover `/sound/` flow
 checked against `deploy/assets/sound-profile/js/main.js`,
 `jasper.web.sound_setup`, and the focused sound setup tests for channel
 selectors, simplified driver/combined CTAs, cancellable combined-test Stop,

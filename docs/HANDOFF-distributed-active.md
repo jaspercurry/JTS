@@ -429,10 +429,12 @@ in principle; nail it empirically in the camilla#1/#2 emit work.*
 
 **camilla#1 program bake — verifier exemption (safe by construction).** camilla#1
 emits the program domain only (Layer B/C + headroom, **no** Layer A), `File` sink
-→ `SNAPFIFO`, `enable_rate_adjust: false`. It bypasses the graph carrier (as the
-follower arm does), and `classify_camilla_graph` gains one arm: **a flat program
-graph whose `devices.playback.type == File` is safe regardless of topology** — no
-DAC is attached, so no driver can be over-driven. Key it strictly on the playback
+→ `SNAPFIFO`, `enable_rate_adjust: false`. Its active-leader bake path emits and
+re-proves the graph directly, but once that bake is loaded, `/sound` and
+`/correction` route it through the graph carrier as a DAC-less program-domain
+host. `classify_camilla_graph` has one arm: **a flat program graph whose
+`devices.playback.type == File` is safe regardless of topology** — no DAC is
+attached, so no driver can be over-driven. Key it strictly on the playback
 *type* and reuse the existing `playback_is_pipe` parser
 ([leader_config.py](../jasper/multiroom/leader_config.py)) so the exemption and
 the leader-pipe liveness check cannot disagree. The dangerous direction (a flat
@@ -728,9 +730,12 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   `enable_rate_adjust: false`, **no** Layer A) by reusing
   `jasper.sound.camilla_yaml.emit_sound_config`'s program assembly verbatim and
   re-stamping a distinct DAC-less-bake `# Source:` marker
-  (`ACTIVE_PROGRAM_BAKE_SOURCE`). It bypasses the graph carrier exactly as the
-  follower arm does — the carrier fence `eq_on_active_bonded_member` (the
-  interactive `/sound` EQ path) is untouched. `classify_camilla_graph`
+  (`ACTIVE_PROGRAM_BAKE_SOURCE`). The leader bake itself does not ask the graph
+  carrier to build the initial bond graph; after the bake is loaded, the graph
+  carrier recognizes it as `active_leader_program_bake` and may re-emit
+  program-domain EQ/correction only while it still resolves to the Snapcast pipe
+  sink. The active graph fence `eq_on_active_bonded_member` remains for roleful
+  active graphs. `classify_camilla_graph`
   ([runtime_contract.py](../jasper/active_speaker/runtime_contract.py)) gains one
   arm: a flat program graph whose `devices.playback.type == File` is allowed
   regardless of topology (`GRAPH_PROGRAM_BAKE_PIPE`), keyed STRICTLY on the
