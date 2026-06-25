@@ -78,6 +78,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     match_loudness: false,
     volume_floor_db: -50
   };  // global output settings
+  var volumeFloorDraftDb = null;
+  var volumeFloorSaving = false;
   var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
@@ -135,7 +137,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     timer: null,
     inFlight: false,
     pending: null,
-    generation: 0
+    generation: 0,
+    savedNotice: false
   };
   var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
 
@@ -592,33 +595,64 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!isFinite(v)) v = -50;
     return v.toFixed(1) + ' dB';
   }
-  function setVolumeFloorReadout(v) {
-    var node = el('set-volume-floor-readout');
-    if (node) node.textContent = fmtVolumeFloor(v);
-    setVolumeFloorResetButton(v);
+  function volumeFloorLimits() {
+    var floorMin = Number(limits.volume_floor_min_db);
+    var floorMax = Number(limits.volume_floor_max_db);
+    if (!isFinite(floorMin)) floorMin = -60;
+    if (!isFinite(floorMax)) floorMax = -10;
+    return {min: floorMin, max: floorMax};
   }
-  function setVolumeFloorResetButton(v) {
-    var button = el('view-body').querySelector('[data-act="reset-volume-floor"]');
-    if (!button) return;
-    var value = Number(v);
-    if (!isFinite(value)) value = -50;
-    button.disabled = Math.abs(value - (-50)) < 0.05;
+  function savedVolumeFloorDb() {
+    var bounds = volumeFloorLimits();
+    var floor = Number(soundSettings.volume_floor_db);
+    if (!isFinite(floor)) floor = -50;
+    return clamp(floor, bounds.min, bounds.max);
+  }
+  function coerceVolumeFloorDb(value) {
+    var bounds = volumeFloorLimits();
+    var floor = Number(value);
+    if (!isFinite(floor)) floor = savedVolumeFloorDb();
+    return clamp(floor, bounds.min, bounds.max);
+  }
+  function volumeFloorValue() {
+    return volumeFloorDraftDb === null || volumeFloorDraftDb === undefined ?
+      savedVolumeFloorDb() : coerceVolumeFloorDb(volumeFloorDraftDb);
+  }
+  function volumeFloorDirty(v) {
+    return Math.abs(coerceVolumeFloorDb(v) - savedVolumeFloorDb()) >= 0.05;
+  }
+  function syncVolumeFloorControls(v) {
+    var value = coerceVolumeFloorDb(v);
+    var node = el('set-volume-floor-readout');
+    if (node) node.textContent = fmtVolumeFloor(value);
+    var resetButton = el('view-body').querySelector('[data-act="reset-volume-floor"]');
+    if (resetButton) resetButton.disabled = Math.abs(value - (-50)) < 0.05;
+    var saveButton = el('volume-floor-save-button');
+    if (saveButton) {
+      var dirty = volumeFloorDirty(value);
+      saveButton.disabled = volumeFloorSaving || !dirty;
+      saveButton.textContent = volumeFloorSaving ? 'Saving' : (dirty ? 'Save floor' : 'Saved');
+    }
+  }
+  function setVolumeFloorDraft(v) {
+    volumeFloorDraftDb = coerceVolumeFloorDb(v);
+    syncVolumeFloorControls(volumeFloorDraftDb);
   }
   function renderSoundSettings() {
     var ml = soundSettings.match_loudness ? ' checked' : '';
     var trim = Number(soundSettings.headroom_trim_db) || 0;
     var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
-    var floorMin = Number(limits.volume_floor_min_db);
-    var floorMax = Number(limits.volume_floor_max_db);
-    if (!isFinite(floorMin)) floorMin = -60;
-    if (!isFinite(floorMax)) floorMax = -10;
+    var floorBounds = volumeFloorLimits();
+    var floorMin = floorBounds.min;
+    var floorMax = floorBounds.max;
     var defaultFloor = -50;
-    var floor = Number(soundSettings.volume_floor_db);
-    if (!isFinite(floor)) floor = defaultFloor;
-    floor = clamp(floor, floorMin, floorMax);
+    var floor = volumeFloorValue();
     var advancedOpen = trim > 0 || Math.abs(floor - defaultFloor) >= 0.05;
     var toneLabel = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
     var resetDisabled = Math.abs(floor - defaultFloor) < 0.05 ? ' disabled' : '';
+    var saveDisabled = (volumeFloorSaving || !volumeFloorDirty(floor)) ? ' disabled' : '';
+    var saveLabel = volumeFloorSaving ? 'Saving' :
+      (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
     return '<section class="sound-settings">' +
       '<div class="setting-row">' +
         '<div class="setting-row__text">' +
@@ -640,6 +674,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               '" max="' + floorMax + '" step="1" value="' + floor + '" aria-label="Volume floor in dB">' +
             '<button type="button" class="btn btn--ghost btn--compact" id="volume-floor-tone-button" ' +
               'data-act="toggle-volume-floor-tone">' + toneLabel + '</button>' +
+            '<button type="button" class="btn btn--primary btn--compact" id="volume-floor-save-button" ' +
+              'data-act="save-volume-floor"' + saveDisabled + '>' + saveLabel + '</button>' +
             '<button type="button" class="btn btn--ghost btn--compact" data-act="reset-volume-floor"' +
               resetDisabled + '>Reset floor</button>' +
             '<span class="headroom-readout" id="set-volume-floor-readout">' + fmtVolumeFloor(floor) + '</span>' +
@@ -3325,12 +3361,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   }
 
-  function volumeFloorValue() {
-    var floorInput = el('set-volume-floor');
-    var value = Number(floorInput ? floorInput.value : soundSettings.volume_floor_db);
-    return isFinite(value) ? value : -50;
-  }
-
   function setVolumeFloorToneButton() {
     var button = el('volume-floor-tone-button');
     if (!button) return;
@@ -3371,7 +3401,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       volumeFloorTone.active = true;
       setVolumeFloorToneButton();
-      status('1% calibration tone at ' + fmtVolumeFloor(payload.volume_floor_db || value) + '.');
+      var toneStatus = '1% calibration tone at ' +
+        fmtVolumeFloor(payload.volume_floor_db || value) + '.';
+      if (volumeFloorTone.savedNotice) {
+        toneStatus = 'Volume floor saved. ' + toneStatus;
+        volumeFloorTone.savedNotice = false;
+      }
+      status(toneStatus);
     } catch (e) {
       volumeFloorTone.active = false;
       setVolumeFloorToneButton();
@@ -3387,6 +3423,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function startVolumeFloorTone() {
     volumeFloorTone.active = true;
     volumeFloorTone.generation += 1;
+    volumeFloorTone.savedNotice = false;
     setVolumeFloorToneButton();
     scheduleVolumeFloorToneUpdate(volumeFloorValue(), {force: true, immediate: true});
   }
@@ -3395,10 +3432,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var floor = -50;
     var floorInput = el('set-volume-floor');
     if (floorInput) floorInput.value = floor;
-    setVolumeFloorReadout(floor);
+    setVolumeFloorDraft(floor);
+    await saveVolumeFloor();
+  }
+
+  async function saveVolumeFloor() {
+    var floor = volumeFloorValue();
+    volumeFloorSaving = true;
+    syncVolumeFloorControls(floor);
     var saved = await saveSettings({volume_floor_db: floor});
-    if (saved && volumeFloorTone.active) {
-      scheduleVolumeFloorToneUpdate(floor, {immediate: true});
+    volumeFloorSaving = false;
+    if (saved) {
+      volumeFloorDraftDb = null;
+      syncVolumeFloorControls(savedVolumeFloorDb());
+      if (volumeFloorTone.active) {
+        volumeFloorTone.savedNotice = true;
+        scheduleVolumeFloorToneUpdate(savedVolumeFloorDb(), {immediate: true});
+      } else {
+        status('Volume floor saved.');
+      }
+    } else {
+      syncVolumeFloorControls(volumeFloorValue());
     }
   }
 
@@ -3406,6 +3460,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     options = options || {};
     volumeFloorTone.active = false;
     volumeFloorTone.generation += 1;
+    volumeFloorTone.savedNotice = false;
     volumeFloorTone.pending = null;
     if (volumeFloorTone.timer) {
       clearTimeout(volumeFloorTone.timer);
@@ -3567,6 +3622,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (volumeFloorTone.active) stopVolumeFloorTone();
       else startVolumeFloorTone();
     }
+    else if (act === 'save-volume-floor') { saveVolumeFloor(); }
     else if (act === 'reset-volume-floor') { resetVolumeFloor(); }
   });
   // Mode + band-type segmented buttons (delegated).
@@ -3677,8 +3733,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'set-volume-floor') {
       var floor = Number(ev.target.value);
-      setVolumeFloorReadout(floor);
-      scheduleVolumeFloorToneUpdate(floor);
+      setVolumeFloorDraft(floor);
+      scheduleVolumeFloorToneUpdate(volumeFloorValue());
     }
   });
   el('view-body').addEventListener('change', function(ev) {
@@ -3721,11 +3777,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
     else if (ev.target.id === 'set-volume-floor') {
       var floor = Number(ev.target.value);
-      setVolumeFloorReadout(floor);
-      (async function() {
-        var saved = await saveSettings({volume_floor_db: floor});
-        if (saved) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
-      })();
+      setVolumeFloorDraft(floor);
+      if (volumeFloorTone.active) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
     }
   });
   el('view-body').addEventListener('toggle', function(ev) {

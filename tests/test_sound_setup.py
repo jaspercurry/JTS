@@ -14,8 +14,10 @@ import subprocess
 import threading
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jasper.camilla_config_contract import PeqFilter
@@ -476,17 +478,22 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
     assert "Start tone" in js
     assert "Stop tone" in js
+    assert "Save floor" in js
+    assert "save-volume-floor" in js
     assert "Back to configuration" in js
     assert "Back to adjust crossover" in js
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
-    assert "function setVolumeFloorResetButton" in js
+    assert "function saveVolumeFloor" in js
+    assert "function setVolumeFloorDraft" in js
     assert "return true;" in js
     assert "return false;" in js
-    assert "if (saved && volumeFloorTone.active)" in js
-    assert "if (saved) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});" in js
+    assert "else if (act === 'save-volume-floor')" in js
+    assert "setVolumeFloorDraft(floor);" in js
+    assert "await saveVolumeFloor();" in js
     assert "pagehide" in js
-    assert "scheduleVolumeFloorToneUpdate(floor);" in js
+    assert "scheduleVolumeFloorToneUpdate(volumeFloorValue());" in js
+    assert "if (volumeFloorTone.active) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});" in js
     assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
     assert "function defaultOutputStep()" in js
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
@@ -3630,6 +3637,38 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert fake.db == pytest.approx(-18.0)
     assert fake.muted is True
     assert not settings_path.exists()
+
+
+def _dominant_frequency_hz(samples: np.ndarray, sample_rate: int) -> float:
+    window = np.hanning(len(samples))
+    spectrum = np.fft.rfft(samples.astype(np.float64) * window)
+    bins = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
+    peak = int(np.argmax(np.abs(spectrum)))
+    return float(bins[peak])
+
+
+def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+
+    wav_path = sound_setup._volume_floor_tone_wav_path()
+
+    assert wav_path.name.startswith("volume_floor_reference_")
+    with wave.open(str(wav_path), "rb") as wav:
+        sample_rate = wav.getframerate()
+        assert wav.getnchannels() == 1
+        pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
+
+    segment_n = int(
+        round(sound_setup.VOLUME_FLOOR_TONE_SEGMENT_DURATION_S * sample_rate)
+    )
+    for index, expected in enumerate(sound_setup.VOLUME_FLOOR_TONE_FREQS_HZ):
+        segment = pcm[index * segment_n:(index + 1) * segment_n]
+        assert _dominant_frequency_hz(segment, sample_rate) == pytest.approx(
+            expected,
+            abs=3.0,
+        )
 
 
 async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
