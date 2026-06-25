@@ -69,11 +69,10 @@ export function subCornerLabel(hz) {
 export function createFaceCopy(role) {
   if (role === "sub") {
     return {
-      title: "Add a wireless subwoofer",
+      title: "Optional wireless subwoofer",
       intro:
-        "This speaker keeps playing the full range; the speaker you pick " +
-        "plays only the low end (low-passed locally on that box). Both are " +
-        "configured automatically — no settings files, no per-speaker setup.",
+        "Optional: keep this speaker playing the full range and make the " +
+        "speaker you pick play only the low end, low-passed locally on that box.",
       label: "This speaker is the main — add",
       button: "Add subwoofer",
     };
