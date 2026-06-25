@@ -1021,7 +1021,14 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     """
     from jasper.multiroom.reconcile import SNAPFIFO
     from jasper.web import correction_setup
+    from tests.test_active_speaker_runtime_contract import _active_topology
 
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(
+        json.dumps(_active_topology("stereo", "active_2_way").to_dict()),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
