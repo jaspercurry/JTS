@@ -4023,6 +4023,33 @@ def test_follower_source_select_forwards_to_leader(follower_server):
     assert json.loads(req.data) == {"source": "airplay"}
 
 
+def test_follower_get_mic_reports_pair_parked_state(follower_server):
+    """A bonded follower has no local voice socket by design. GET /mic
+    must surface the intentional parked state, not generic offline."""
+    base, _fake, _seen = follower_server
+    status, body = _get(f"{base}/mic")
+    assert status == 200
+    assert body["status"] == "parked"
+    assert body["reason"] == "bonded_follower"
+    assert body["available"] is False
+    assert body["muted"] is True
+    assert body["pair_leader"] == "jts.local"
+    assert "pair leader" in body["message"]
+
+
+def test_follower_mic_mute_refuses_with_pair_parked_state(follower_server):
+    """The UI disables this, but direct clients should still get the same
+    pair story instead of a misleading voice_daemon-not-running error."""
+    base, _fake, _seen = follower_server
+    status, body = _post(f"{base}/mic/mute", {"muted": True})
+    assert status == 409
+    assert body["status"] == "parked"
+    assert body["reason"] == "bonded_follower"
+    assert body["available"] is False
+    assert body["pair_leader"] == "jts.local"
+    assert "pair leader" in body["error"]
+
+
 def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):
     """The dashboard's restart-voice button must not boot the parked
     daemon on a bonded follower — refuse with the pair story."""

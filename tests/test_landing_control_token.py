@@ -80,6 +80,18 @@ def test_mic_mute_failure_is_not_silent():
     assert "Mute blocked" in html, "the 403 branch must show a user-facing message"
 
 
+def test_mic_status_handles_bonded_follower_parked_state():
+    html = _landing()
+    # A bonded follower intentionally parks local voice. The mic poller must
+    # render that first-class state from /mic instead of racing the grouping
+    # banner and falling back to the generic offline label.
+    assert "status === 'parked'" in html
+    assert "reason === 'bonded_follower'" in html
+    assert "data.available !== false" in html
+    assert "'Parked'" in html
+    assert "Microphone parked while paired" in html
+
+
 def test_install_bakes_control_token_fail_loud():
     sh = INSTALL_SH.read_text()
     assert TOKEN_PLACEHOLDER in sh, "install.sh must reference the token placeholder"
