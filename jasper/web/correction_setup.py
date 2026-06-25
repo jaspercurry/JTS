@@ -1849,6 +1849,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 elif path == "/balance/ramp":
                     payload, status = balance_flow.handle_ramp(
                         self, _run_async, _schedule)
+                elif path == "/balance/meter":
+                    payload, status = balance_flow.handle_meter(self)
                 elif path == "/balance/lock":
                     payload, status = balance_flow.handle_lock(self)
                 elif path == "/balance/stop":
@@ -2163,6 +2165,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/crossover/summed-capture",
                 "/balance/start",
                 "/balance/ramp",
+                "/balance/meter",
                 "/balance/lock",
                 "/balance/stop",
                 "/balance/apply",

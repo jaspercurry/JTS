@@ -21,25 +21,24 @@ The walkthrough:
    reachable same-bond peer, channels {left,right}), then opens ONE
    measurement window held for the whole session (renderers stay
    quiet BETWEEN speakers — music doesn't blare back mid-walkthrough).
-   A session watchdog (``SESSION_MAX_S``) guarantees the window is
+   A session watchdog (``IDLE_TIMEOUT_S``) guarantees the window is
    released even if the phone tab dies.
-2. ``POST /balance/ramp {channel}`` — plays that channel's noise ramp
-   (near-silent → -12 dBFS ceiling, see jasper/multiroom/balance.py)
-   through the normal bonded chain. Returns immediately; a watcher
-   marks the channel ``not_heard`` if the WAV ends with no lock — the
-   actionable per-speaker error ("couldn't hear the left speaker").
-   Re-POSTing the same channel retries it.
-3. ``POST /balance/lock {channel}`` — the phone's meter crossed its
-   target. The DRIVE level is derived server-side from
-   ``monotonic() - t0`` via the pure ramp-emission function; locks
-   that arrive before the ramp meaningfully started (noise transient)
-   get ``keep_listening`` and playback continues. Both channels
-   locked → trims recommended (drive delta composed with current
-   member trims) and the window is released.
-4. ``POST /balance/apply`` — one absolute ``/grouping/set`` per
+2. ``POST /balance/meter {db}`` — the browser streams band-limited mic
+   RMS frames. The backend owns floor, target, liveness, and lock
+   decisions; the phone is only a measurement peripheral.
+3. ``POST /balance/ramp {channel}`` — computes the recent backend floor,
+   starts that channel's noise ramp (near-silent → -12 dBFS ceiling,
+   see jasper/multiroom/balance.py), and stores the detection target.
+   A watcher marks the channel ``not_heard`` if the WAV ends with no
+   backend lock. Re-POSTing the same channel retries it.
+4. ``POST /balance/lock {channel}`` — compatibility/manual seam. The
+   production page no longer decides locks client-side, but this route
+   still derives the DRIVE level from ``monotonic() - t0`` via the pure
+   ramp-emission function.
+5. ``POST /balance/apply`` — one absolute ``/grouping/set`` per
    member, peer first (a failed cross-LAN hop changes nothing
    locally; partial failure reported per-member; idempotent retry).
-5. ``POST /balance/stop`` — the big red button: kill playback,
+6. ``POST /balance/stop`` — the big red button: kill playback,
    release the window, reset. ``/balance/reset`` is the same from
    terminal phases.
 """
@@ -57,6 +56,7 @@ from http import HTTPStatus
 from typing import Any, Callable
 
 from jasper.log_event import log_event
+from jasper.measurement.level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 logger = logging.getLogger("jasper.web.balance")
 
@@ -78,6 +78,11 @@ IDLE_TIMEOUT_S = 90.0
 # (renderer stops + voice pause) before reporting failure.
 WINDOW_OPEN_TIMEOUT_S = 20.0
 
+# How long a ramp request waits for enough recent browser-mic evidence
+# before failing visibly instead of leaving the phone in an ambiguous loop.
+FLOOR_WAIT_TIMEOUT_S = 6.0
+FLOOR_RETRY_WAIT_MS = 300
+
 PLAYBACK_DEVICE = "correction_substream"
 
 # Phases that must block a new correction session (and a new /start).
@@ -90,13 +95,19 @@ _state: dict[str, Any] = {
     "error": "",
     "members": None,
     "locks": {},            # channel -> {drive_dbfs, offset_s} | {not_heard}
-    "ramp": None,           # {channel, t0, proc, token} while playing
+    "ramp": None,           # {channel, t0, proc, token, target_dbfs} while playing
     "ramp_token": 0,
+    "session_token": 0,      # increments on reset; guards async ramp spawn races
     "release_window": None,  # thread-safe callable set by the holder
     "idle_deadline": 0.0,    # monotonic; bumped by each session activity
     "recommendation": None,
     "applied": None,
     "wav_paths": {},         # channel -> cached ramp WAV path
+    "meter": MicLevelTracker(),
+    "meter_floor": None,
+    "meter_target": None,
+    "floor_wait_started_at": None,
+    "volume_guard": None,
 }
 
 
@@ -109,20 +120,35 @@ def _bump_activity_locked() -> None:
 
 
 def _reset_locked(error: str = "") -> None:
+    next_session_token = int(_state.get("session_token", 0)) + 1
     ramp = _state.get("ramp")
     if ramp and ramp.get("proc") is not None:
-        try:
-            ramp["proc"].terminate()
-        except ProcessLookupError:
-            pass
+        _terminate_proc(ramp["proc"])
     release = _state.get("release_window")
     _state.update({
         "phase": "idle", "error": error, "members": None,
-        "locks": {}, "ramp": None, "release_window": None,
+        "locks": {}, "ramp": None, "session_token": next_session_token,
+        "release_window": None,
         "recommendation": None, "applied": None,
+        "meter": MicLevelTracker(), "meter_floor": None,
+        "meter_target": None, "floor_wait_started_at": None,
+        "volume_guard": None,
     })
     if release is not None:
         release()
+
+
+def _terminate_proc(proc: Any) -> None:
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+
+
+def _volume_guard_context(hostname: str, members: dict):
+    from jasper.measurement.volume_guard import normalized_pair_volumes
+
+    return normalized_pair_volumes(hostname=hostname, members=members)
 
 
 def active_phase() -> str | None:
@@ -191,6 +217,69 @@ def _public_locks(locks: dict) -> dict:
     return out
 
 
+def _public_meter_locked(*, now: float | None = None) -> dict:
+    live = _state["meter"].liveness(now=now)
+    return {
+        "live": live.live,
+        "frames": live.frame_count,
+        "latest_dbfs": (
+            round(live.latest_dbfs, 1)
+            if live.latest_dbfs is not None else None
+        ),
+        "age_s": round(live.age_s, 2) if live.age_s is not None else None,
+        "floor_dbfs": (
+            round(_state["meter_floor"], 1)
+            if _state["meter_floor"] is not None else None
+        ),
+        "target_dbfs": (
+            round(_state["meter_target"], 1)
+            if _state["meter_target"] is not None else None
+        ),
+    }
+
+
+def _floor_wait_message(meter: dict, *, final: bool) -> str:
+    frames = int(meter.get("frames") or 0)
+    if frames <= 0:
+        if final:
+            return (
+                "phone microphone did not send level frames; allow "
+                "microphone access and retry"
+            )
+        return "waiting for microphone level frames from this phone"
+    if not meter.get("live"):
+        if final:
+            return (
+                "phone microphone level frames stopped; keep this page "
+                "open and retry"
+            )
+        return "waiting for fresh microphone level frames from this phone"
+    if final:
+        return (
+            "could not establish a stable background noise floor; hold "
+            "the phone still and retry"
+        )
+    return "collecting a stable background noise floor"
+
+
+def _floor_wait_response_locked(now: float) -> tuple[dict, int]:
+    started = _state.get("floor_wait_started_at")
+    if started is None:
+        started = now
+        _state["floor_wait_started_at"] = started
+    meter = _public_meter_locked(now=now)
+    final = (now - float(started)) >= FLOOR_WAIT_TIMEOUT_S
+    if final:
+        _state["floor_wait_started_at"] = None
+    return {
+        "ok": False,
+        "need_floor": not final,
+        "error": _floor_wait_message(meter, final=final),
+        "wait_ms": FLOOR_RETRY_WAIT_MS,
+        "meter": meter,
+    }, (HTTPStatus.CONFLICT if final else HTTPStatus.OK)
+
+
 def handle_status() -> dict:
     """GET /balance/status — phase + everything the page renders."""
     from jasper.multiroom.balance import ramp_duration_s
@@ -207,13 +296,17 @@ def handle_status() -> dict:
             "ramp_duration_s": round(ramp_duration_s(), 1),
             "recommendation": _state["recommendation"],
             "applied": _state["applied"],
+            "meter": _public_meter_locked(),
+            "volume_guard": _state["volume_guard"],
         }
         if _state["members"]:
             out["members"] = _public_members(_state["members"])
         return out
 
 
-async def _session_window(entered: threading.Event) -> None:
+async def _session_window(
+    hostname: str, members: dict, entered: threading.Event,
+) -> None:
     """Hold ONE measurement window for the whole walkthrough, releasing
     it on explicit release OR IDLE_TIMEOUT_S of inactivity. Installs a
     thread-safe release callable into state. The deadline is re-checked
@@ -230,24 +323,32 @@ async def _session_window(entered: threading.Event) -> None:
         _bump_activity_locked()
     try:
         async with measurement_window():
-            entered.set()
-            while True:
+            async with _volume_guard_context(hostname, members) as guard:
                 with _lock:
-                    remaining = _state["idle_deadline"] - time.monotonic()
-                if remaining <= 0:
+                    _state["volume_guard"] = guard.public_dict()
+                entered.set()
+                while True:
                     with _lock:
-                        if _state["phase"] == "measuring":
-                            _state["release_window"] = None  # we ARE exiting
-                            _reset_locked("balance timed out after "
-                                          "inactivity — renderers restored")
-                    log_event(logger, "balance.idle_timeout", level=logging.WARNING)
-                    break
-                try:
-                    await asyncio.wait_for(release.wait(), remaining)
-                    break  # explicit release (lock-complete / stop)
-                except asyncio.TimeoutError:
-                    continue  # deadline may have been bumped — re-check
-    except Exception as e:  # noqa: BLE001 — window entry/exit failure
+                        remaining = _state["idle_deadline"] - time.monotonic()
+                    if remaining <= 0:
+                        with _lock:
+                            if _state["phase"] == "measuring":
+                                # We ARE exiting.
+                                _state["release_window"] = None
+                                _reset_locked("balance timed out after "
+                                              "inactivity — renderers restored")
+                        log_event(
+                            logger,
+                            "balance.idle_timeout",
+                            level=logging.WARNING,
+                        )
+                        break
+                    try:
+                        await asyncio.wait_for(release.wait(), remaining)
+                        break  # explicit release (lock-complete / stop)
+                    except asyncio.TimeoutError:
+                        continue  # deadline may have been bumped — re-check
+    except (OSError, RuntimeError, TimeoutError, ValueError) as e:
         log_event(logger, "balance.window_failed", level=logging.ERROR, exc_info=True)
         with _lock:
             _state["release_window"] = None
@@ -291,7 +392,7 @@ def handle_start(
         _state["members"] = members
 
     entered = threading.Event()
-    schedule(_session_window(entered))
+    schedule(_session_window(hostname, members, entered))
     if not entered.wait(WINDOW_OPEN_TIMEOUT_S):
         with _lock:
             _reset_locked("measurement window did not open")
@@ -321,7 +422,7 @@ async def _start_playback(wav_path: str):
 
 async def _watch_ramp(proc, channel: str, token: int) -> None:
     """When a ramp's WAV ends naturally with no lock, the speaker was
-    never heard at any test level — record the per-speaker error."""
+    not heard during the normalized ramp — record the per-speaker error."""
     await proc.wait()
     with _lock:
         ramp = _state["ramp"]
@@ -330,6 +431,148 @@ async def _watch_ramp(proc, channel: str, token: int) -> None:
             _state["locks"][channel] = {"not_heard": True}
             _bump_activity_locked()  # the user now reads + decides to retry
             log_event(logger, "balance.ramp_unheard", channel=channel)
+
+
+def _complete_lock_locked(
+    channel: str, now: float,
+) -> tuple[dict, int, Callable | None, dict[str, Any] | None]:
+    """Complete a lock while _lock is held.
+
+    Returns (payload, HTTP status, release callable, log fields). The caller
+    invokes the release callable after dropping _lock.
+    """
+    from jasper.multiroom.balance import (
+        MIN_LOCK_OFFSET_S,
+        drive_delta_db,
+        ramp_emission_dbfs,
+        recommend_trims,
+    )
+
+    ramp = _state["ramp"]
+    if (_state["phase"] != "measuring" or ramp is None
+            or ramp["channel"] != channel):
+        return (
+            {"ok": False, "error": "no matching ramp playing"},
+            HTTPStatus.CONFLICT,
+            None,
+            None,
+        )
+    offset = now - ramp["t0"]
+    drive = ramp_emission_dbfs(offset)
+    if drive is None or offset < MIN_LOCK_OFFSET_S:
+        ramp["hits"] = 0
+        ramp["locking"] = False
+        return (
+            {"ok": False, "keep_listening": True,
+             "offset_s": round(offset, 2)},
+            HTTPStatus.OK,
+            None,
+            None,
+        )
+    _terminate_proc(ramp["proc"])
+    _state["ramp"] = None
+    _state["locks"][channel] = {
+        "offset_s": offset, "drive_dbfs": drive}
+    _bump_activity_locked()  # first-channel lock; window held for the 2nd
+    locks = _state["locks"]
+    members = _state["members"]
+    both = all(
+        ch in locks and "drive_dbfs" in locks[ch]
+        for ch in ("left", "right")
+    )
+    release = None
+    if both:
+        delta = drive_delta_db(
+            locks["left"]["drive_dbfs"],
+            locks["right"]["drive_dbfs"],
+        )
+        rec = recommend_trims(
+            delta,
+            current_left_trim_db=members["left"]["trim_db"],
+            current_right_trim_db=members["right"]["trim_db"],
+        )
+        _state["recommendation"] = dict(
+            rec.to_dict(), delta_db=round(delta, 2))
+        _state["phase"] = "analyzed"
+        release = _state.get("release_window")
+        _state["release_window"] = None
+    payload = {
+        "ok": True, "locked": True, "channel": channel,
+        "drive_dbfs": round(drive, 1),
+        "phase": _state["phase"],
+        "locks": _public_locks(locks),
+        "recommendation": _state["recommendation"],
+        "members": _public_members(members),
+        "meter": _public_meter_locked(),
+    }
+    return (
+        payload,
+        HTTPStatus.OK,
+        release,
+        {"offset_s": offset, "drive_dbfs": drive},
+    )
+
+
+def handle_meter(handler) -> tuple[dict, int]:
+    """POST /balance/meter {db} — browser mic-frame ingest.
+
+    The browser reports band-limited dBFS frames; the backend owns floor,
+    target, and lock decisions.
+    """
+    body = _read_json(handler)
+    try:
+        db = float(body.get("db"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "db must be numeric"}, HTTPStatus.BAD_REQUEST
+    now = time.monotonic()
+    release: Callable | None = None
+    log_fields: dict[str, Any] | None = None
+    with _lock:
+        accepted = _state["meter"].add(db, now=now)
+        if not accepted:
+            return (
+                {"ok": False, "error": "db must be finite"},
+                HTTPStatus.BAD_REQUEST,
+            )
+        ramp = _state["ramp"]
+        if (
+            _state["phase"] == "measuring"
+            and ramp is not None
+            and ramp.get("target_dbfs") is not None
+        ):
+            target = float(ramp["target_dbfs"])
+            ramp["hits"] = ramp.get("hits", 0) + 1 if db >= target else 0
+            if ramp["hits"] >= DEFAULT_LOCK_FRAMES and not ramp.get("locking"):
+                ramp["locking"] = True
+                payload, status, release, log_fields = _complete_lock_locked(
+                    str(ramp["channel"]), now,
+                )
+            else:
+                payload, status = {
+                    "ok": True,
+                    "locked": False,
+                    "phase": _state["phase"],
+                    "meter": _public_meter_locked(),
+                }, HTTPStatus.OK
+        else:
+            payload, status = {
+                "ok": True,
+                "locked": False,
+                "phase": _state["phase"],
+                "meter": _public_meter_locked(),
+            }, HTTPStatus.OK
+    if release is not None:
+        release()
+    if log_fields is not None:
+        log_event(
+            logger,
+            "balance.locked",
+            channel=payload.get("channel", ""),
+            offset_s=f"{log_fields['offset_s']:.2f}",
+            drive_dbfs=f"{log_fields['drive_dbfs']:.1f}",
+            source="meter",
+        )
+    return payload, status
 
 
 def handle_ramp(
@@ -352,102 +595,85 @@ def handle_ramp(
         if _state["ramp"] is not None:
             return ({"ok": False, "error": "a ramp is already playing"},
                     HTTPStatus.CONFLICT)
+        session_token = int(_state["session_token"])
+        floor = _state["meter"].floor_estimate()
+        if floor is None:
+            return _floor_wait_response_locked(time.monotonic())
         _state["locks"].pop(channel, None)  # retry clears the old answer
+        _state["floor_wait_started_at"] = None
+        _state["meter_floor"] = floor.floor_dbfs
+        _state["meter_target"] = floor.target_dbfs
 
     wav_path = _ramp_wav_path(channel)
     try:
         proc = run_async(_start_playback(wav_path), timeout=10.0)
-    except Exception as e:  # noqa: BLE001
+    except (OSError, RuntimeError, TimeoutError, asyncio.SubprocessError) as e:
         log_event(logger, "balance.ramp_spawn_failed", level=logging.ERROR, exc_info=True)
         return ({"ok": False, "error": f"playback failed: {e}"},
                 HTTPStatus.INTERNAL_SERVER_ERROR)
     t0 = time.monotonic()
     with _lock:
+        abort_error = ""
+        if _state["phase"] != "measuring":
+            abort_error = f"no session (phase {_state['phase']})"
+        elif int(_state["session_token"]) != session_token:
+            abort_error = "balance session changed before playback started"
+        elif _state["ramp"] is not None:
+            abort_error = "a ramp is already playing"
+        if abort_error:
+            _terminate_proc(proc)
+            log_event(
+                logger,
+                "balance.ramp_start_aborted",
+                channel=channel,
+                reason=abort_error,
+                level=logging.WARNING,
+            )
+            return {"ok": False, "error": abort_error}, HTTPStatus.CONFLICT
         _state["ramp_token"] += 1
         token = _state["ramp_token"]
         _state["ramp"] = {"channel": channel, "t0": t0,
-                          "proc": proc, "token": token}
+                          "proc": proc, "token": token,
+                          "floor_dbfs": floor.floor_dbfs,
+                          "target_dbfs": floor.target_dbfs,
+                          "hits": 0, "locking": False}
         _bump_activity_locked()  # ramp underway — the next bump is lock/unheard
     schedule(_watch_ramp(proc, channel, token))
-    log_event(logger, "balance.ramp_started", channel=channel)
+    log_event(
+        logger,
+        "balance.ramp_started",
+        channel=channel,
+        floor_dbfs=f"{floor.floor_dbfs:.1f}",
+        target_dbfs=f"{floor.target_dbfs:.1f}",
+    )
     return {"ok": True, "channel": channel,
-            "duration_s": round(ramp_duration_s(), 1)}, HTTPStatus.OK
+            "duration_s": round(ramp_duration_s(), 1),
+            "floor_dbfs": round(floor.floor_dbfs, 1),
+            "target_dbfs": round(floor.target_dbfs, 1),
+            "meter": _public_meter_locked()}, HTTPStatus.OK
 
 
 def handle_lock(handler) -> tuple[dict, int]:
-    """POST /balance/lock {channel} — the phone's meter crossed its
-    target. Drive level is derived from the server-side clock against
-    the pure ramp-emission function; spawn/buffer/LAN latencies are
-    identical for both speakers and cancel in the delta."""
-    from jasper.multiroom.balance import (
-        MIN_LOCK_OFFSET_S,
-        drive_delta_db,
-        ramp_emission_dbfs,
-        recommend_trims,
-    )
+    """POST /balance/lock {channel} — compatibility/manual lock seam."""
 
     channel = str(_read_json(handler).get("channel") or "").strip()
     now = time.monotonic()
     with _lock:
-        ramp = _state["ramp"]
-        if (_state["phase"] != "measuring" or ramp is None
-                or ramp["channel"] != channel):
-            return ({"ok": False, "error": "no matching ramp playing"},
-                    HTTPStatus.CONFLICT)
-        offset = now - ramp["t0"]
-        drive = ramp_emission_dbfs(offset)
-        if drive is None or offset < MIN_LOCK_OFFSET_S:
-            # Noise transient before the speaker was meaningfully
-            # audible — keep playing, phone keeps listening.
-            return {"ok": False, "keep_listening": True,
-                    "offset_s": round(offset, 2)}, HTTPStatus.OK
-        try:
-            ramp["proc"].terminate()
-        except ProcessLookupError:
-            pass
-        _state["ramp"] = None
-        _state["locks"][channel] = {
-            "offset_s": offset, "drive_dbfs": drive}
-        _bump_activity_locked()  # first-channel lock; window held for the 2nd
-        locks = _state["locks"]
-        members = _state["members"]
-        both = all(
-            ch in locks and "drive_dbfs" in locks[ch]
-            for ch in ("left", "right")
+        payload, status, release, log_fields = _complete_lock_locked(
+            channel, now,
         )
-        if both:
-            delta = drive_delta_db(
-                locks["left"]["drive_dbfs"],
-                locks["right"]["drive_dbfs"],
-            )
-            rec = recommend_trims(
-                delta,
-                current_left_trim_db=members["left"]["trim_db"],
-                current_right_trim_db=members["right"]["trim_db"],
-            )
-            _state["recommendation"] = dict(
-                rec.to_dict(), delta_db=round(delta, 2))
-            _state["phase"] = "analyzed"
-            release = _state.get("release_window")
-            _state["release_window"] = None
-        payload = {
-            "ok": True, "channel": channel,
-            "drive_dbfs": round(drive, 1),
-            "phase": _state["phase"],
-            "locks": _public_locks(locks),
-            "recommendation": _state["recommendation"],
-            "members": _public_members(members),
-        }
-    if both and release is not None:
+    if release is not None:
         release()  # renderers come back while the user reads the result
-    log_event(
-        logger,
-        "balance.locked",
-        channel=channel,
-        offset_s=f"{offset:.2f}",
-        drive_dbfs=f"{drive:.1f}",
-    )
-    return payload, HTTPStatus.OK
+    if log_fields is not None:
+        log_event(
+            logger,
+            "balance.locked",
+            channel=channel,
+            offset_s=f"{log_fields['offset_s']:.2f}",
+            drive_dbfs=f"{log_fields['drive_dbfs']:.1f}",
+            source="manual",
+        )
+    return payload, status
 
 
 def handle_stop() -> tuple[dict, int]:

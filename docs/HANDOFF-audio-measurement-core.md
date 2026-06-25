@@ -72,6 +72,13 @@ The product is three tiers:
   (lines ~196, ~232–233) — it reuses the room-correction DSP verbatim.
 - `web/balance_flow.py` + `web/sync_flow.py` **import** `measurement_window`
   and gate on `_reserve_start_slot` mutual exclusion.
+- `jasper/measurement/` now holds the first small shared primitives outside
+  correction: `level.py` retains browser-mic dBFS frames and derives backend
+  floor/target/liveness, while `volume_guard.py` snapshots, normalizes, and
+  restores owned output-volume controls for guarded calibration sessions
+  (first consumer: pair balance, including Snapcast client volume/mute). The
+  flow owner, not the browser, decides how long missing/stale mic evidence may
+  block a measurement before failing visibly.
 - `commissioning_capture.py` accepts a calibration flag and routes to the
   same analysis. Formalizing a "core" mostly *names* a dependency that's
   already there — that's why the refactor is low-risk.
@@ -562,4 +569,4 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-06-23
+Last verified: 2026-06-25

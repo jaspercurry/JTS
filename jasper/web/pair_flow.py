@@ -16,9 +16,9 @@ from __future__ import annotations
 def resolve_pair() -> tuple[dict | None, dict | None, str]:
     """Return ``(self_grouping, peer, error)`` for the bonded leader.
 
-    ``peer`` is ``{addr, label, grouping}``. Resolution is roster-first
-    through the same rooms helper used by bond/swap/trim so a foreign
-    bond claimant cannot poison pair measurement.
+    ``peer`` is ``{addr, label, hostname, grouping}``. Resolution is
+    roster-first through the same rooms helper used by bond/swap/trim so a
+    foreign bond claimant cannot poison pair measurement.
     """
     from .rooms_setup import (
         _discover_speakers_cached,
@@ -38,18 +38,23 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     addr, pg, perr = _resolve_bond_peer(own, known)
     if perr:
         return None, None, f"pair {perr}"
+    directory_row = next(
+        (
+            r for r in _discover_speakers_cached()
+            if str(r.get("address") or "").strip() == addr
+        ),
+        {},
+    )
+    peer_hostname = str(directory_row.get("hostname") or "").strip()
     label = str(own.get("peer_name") or "").strip()
     if not label:
-        label = next(
-            (
-                str(r.get("name") or "").strip()
-                for r in _discover_speakers_cached()
-                if str(r.get("address") or "").strip() == addr
-                and str(r.get("name") or "").strip()
-            ),
-            addr,
-        )
-    return own, {"addr": addr, "label": label, "grouping": pg}, ""
+        label = str(directory_row.get("name") or "").strip() or addr
+    return own, {
+        "addr": addr,
+        "label": label,
+        "hostname": peer_hostname,
+        "grouping": pg,
+    }, ""
 
 
 def members_by_channel(own: dict, peer: dict, hostname: str) -> dict | None:
@@ -62,6 +67,7 @@ def members_by_channel(own: dict, peer: dict, hostname: str) -> dict | None:
         "addr": "",
         "is_self": True,
         "label": f"this speaker ({hostname})",
+        "snapcast_name": hostname.split(".")[0],
         "trim_db": float(own.get("trim_db") or 0.0),
         "grouping": own,
     }
@@ -69,6 +75,7 @@ def members_by_channel(own: dict, peer: dict, hostname: str) -> dict | None:
         "addr": peer["addr"],
         "is_self": False,
         "label": peer["label"],
+        "snapcast_name": str(peer.get("hostname") or "").split(".")[0],
         "trim_db": float(peer["grouping"].get("trim_db") or 0.0),
         "grouping": peer["grouping"],
     }
