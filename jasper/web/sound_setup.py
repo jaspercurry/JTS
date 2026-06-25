@@ -3082,15 +3082,7 @@ def _active_speaker_confirmed_driver_roles(
 
     if not group:
         return []
-    try:
-        return confirmed_driver_roles(topology, speaker_group_id=group)
-    except Exception:  # noqa: BLE001 - status paths must not crash the wizard.
-        logger.exception(
-            "event=sound.active_speaker_commission action=confirmed_roles "
-            "status=error group=%s",
-            group,
-        )
-        return []
+    return confirmed_driver_roles(topology, speaker_group_id=group)
 
 
 async def _active_speaker_commission_load_payload(
@@ -3454,19 +3446,11 @@ async def _active_speaker_commission_state_payload(
     ).strip()
     durable_confirmed: list[str] = []
     if group:
-        try:
-            topology = load_output_topology()
-        except Exception:  # noqa: BLE001 - status must stay read-only and available.
-            logger.exception(
-                "event=sound.active_speaker_commission action=state_topology "
-                "status=error group=%s",
-                group,
-            )
-        else:
-            durable_confirmed = _active_speaker_confirmed_driver_roles(
-                topology,
-                group=group,
-            )
+        topology = load_output_topology()
+        durable_confirmed = _active_speaker_confirmed_driver_roles(
+            topology,
+            group=group,
+        )
     quiet = load_safe_playback_state().get("quiet_start") or {}
     stale = commission.get("status") == "stale"
     pending = None if stale else ramp.get("pending")

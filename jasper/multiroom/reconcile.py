@@ -1486,7 +1486,7 @@ def main(argv: list[str] | None = None) -> int:
                 from .follower_config import precheck_active_follower_sync
 
                 precheck_active_follower_sync(cfg)
-        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+state
+        except RuntimeError as e:
             endpoint_block_reason = getattr(
                 e, "reason", "active_endpoint_precheck_error",
             )
