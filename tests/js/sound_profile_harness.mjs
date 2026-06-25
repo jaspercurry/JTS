@@ -444,6 +444,11 @@ function setupHarness(fetchHandler, options = {}) {
     }
   };
   const dispatchChange = (target) => {
+    if (target && target.id) {
+      if (!elements.has(target.id)) elements.set(target.id, makeEl(target.id));
+      elements.get(target.id).value = target.value || "";
+      elements.get(target.id).checked = !!target.checked;
+    }
     for (const fn of viewBody._listeners.change || []) {
       fn({ target });
     }
@@ -462,10 +467,15 @@ function setupHarness(fetchHandler, options = {}) {
   };
   const dispatchInput = (attrs, value = "") => {
     const target = {
+      id: attrs.id || "",
       value,
       getAttribute(name) { return attrs[name] || ""; },
       hasAttribute(name) { return Object.prototype.hasOwnProperty.call(attrs, name); },
     };
+    if (target.id) {
+      if (!elements.has(target.id)) elements.set(target.id, makeEl(target.id));
+      elements.get(target.id).value = value;
+    }
     for (const fn of viewBody._listeners.input || []) {
       fn({ target });
     }
@@ -579,6 +589,86 @@ async function testLiveTabReplay() {
     liveDraftEpoch: liveDraftRequests[0].dsp_write_epoch,
     liveTabMarked: harness.elements.get("tab-draft").classList.contains("is-live"),
   };
+}
+
+async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
+  const settingsPosts = [];
+  const auditionPosts = [];
+  const statePayload = {
+    ...basePayload,
+    profile: { ...flatProfile, enabled: false },
+    filter_count: 0,
+    dsp_write_epoch: "state-0",
+    sound_settings: {
+      ...basePayload.sound_settings,
+      volume_floor_db: -50,
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./state": () => Promise.resolve(response(statePayload)),
+    "./apply": (_path, options = {}) => Promise.resolve(response({
+      ...statePayload,
+      profile: JSON.parse(options.body || "{}"),
+      dsp_write_epoch: "apply-1",
+    })),
+    "./settings": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      settingsPosts.push(body);
+      return Promise.resolve(response({
+        ...statePayload,
+        sound_settings: body,
+        dsp_write_epoch: "settings-1",
+      }));
+    },
+    "./volume-floor/audition": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      auditionPosts.push(body);
+      return Promise.resolve(response({
+        ok: true,
+        active: true,
+        continuous: true,
+        status: auditionPosts.length === 1 ? "started" : "updated",
+        volume_floor_db: body.volume_floor_db,
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush();
+  await harness.flush();
+
+  harness.elements.get("tab-saved").click();
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="save-volume-floor"') || !html.includes(">Saved</button>")) {
+    fail("volume floor should render an explicit saved/save button", { html });
+  }
+
+  harness.dispatchInput({ id: "set-volume-floor" }, "-42");
+  await harness.flush();
+  if (settingsPosts.length !== 0) {
+    fail("dragging the volume floor must not persist settings", { settingsPosts });
+  }
+
+  harness.dispatchClick({ "data-act": "toggle-volume-floor-tone" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (auditionPosts.length !== 1 || auditionPosts[0].volume_floor_db !== -42) {
+    fail("Start tone should audition the unsaved floor draft", { auditionPosts });
+  }
+  if (settingsPosts.length !== 0) {
+    fail("auditioning the volume floor must not persist settings", { settingsPosts });
+  }
+
+  harness.dispatchClick({ "data-act": "save-volume-floor" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (settingsPosts.length !== 1 || settingsPosts[0].volume_floor_db !== -42) {
+    fail("Save floor should persist the selected floor exactly once", { settingsPosts });
+  }
+  if (!harness.elements.get("status").textContent.includes("Volume floor saved.")) {
+    fail("saving the volume floor should provide visible confirmation", {
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  return { volumeFloorRequiresExplicitSaveButAuditionsDraft: true };
 }
 
 async function testQuietTestSurfaceSurvivesStartupActions() {
@@ -2631,6 +2721,7 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
 
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
+results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsRenderNoActiveDriverTestCard());
 results.push(await testActiveCrossoverFirstStepRender());

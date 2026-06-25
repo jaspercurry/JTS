@@ -178,9 +178,10 @@ DEFAULT_ACTIVE_SPEAKER_CAPTURE_DIR = Path("/var/lib/jasper/active_speaker_captur
 ACTIVE_SPEAKER_CAPTURE_DIR_ENV = "JASPER_ACTIVE_SPEAKER_CAPTURE_DIR"
 LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
 VOLUME_FLOOR_TONE_ALSA_DEVICE = "correction_substream"
-VOLUME_FLOOR_TONE_FREQ_HZ = 1000.0
+VOLUME_FLOOR_TONE_FREQS_HZ = (125.0, 500.0, 2000.0)
 VOLUME_FLOOR_TONE_SOURCE_DBFS = -12.0
 VOLUME_FLOOR_TONE_CHUNK_DURATION_S = 8.0
+VOLUME_FLOOR_TONE_SEGMENT_DURATION_S = 0.75
 VOLUME_FLOOR_TONE_MAX_DURATION_S = 10 * 60.0
 VOLUME_FLOOR_TONE_SAMPLE_RATE = 48000
 VOLUME_FLOOR_TONE_STARTUP_CHECK_S = 0.08
@@ -653,20 +654,70 @@ async def _reconcile_volume_curve_after_settings(
 
 
 def _volume_floor_tone_wav_path() -> Path:
-    from jasper.correction.playback import _ensure_tone_wav
+    """Generate and cache the volume-floor reference WAV.
 
-    return _ensure_tone_wav(
-        freq_hz=VOLUME_FLOOR_TONE_FREQ_HZ,
-        duration_s=VOLUME_FLOOR_TONE_CHUNK_DURATION_S,
-        dbfs=VOLUME_FLOOR_TONE_SOURCE_DBFS,
-        sample_rate=VOLUME_FLOOR_TONE_SAMPLE_RATE,
-        cache_dir=Path(
-            os.environ.get(
-                "JASPER_VOLUME_FLOOR_TONE_DIR",
-                "/var/lib/jasper/correction/tones",
-            )
-        ),
+    This is a short repeating low/mid/high sequence, not a single steady sine.
+    The goal is to let a household judge whether 1% is useful across the speaker
+    instead of accidentally tuning the floor around one narrow frequency.
+    """
+
+    cache_dir = Path(
+        os.environ.get(
+            "JASPER_VOLUME_FLOOR_TONE_DIR",
+            "/var/lib/jasper/correction/tones",
+        )
     )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    freq_key = "-".join(str(int(freq)) for freq in VOLUME_FLOOR_TONE_FREQS_HZ)
+    wav_path = cache_dir / (
+        f"volume_floor_reference_{freq_key}Hz_"
+        f"{int(VOLUME_FLOOR_TONE_CHUNK_DURATION_S * 1000)}ms_"
+        f"{int(abs(VOLUME_FLOOR_TONE_SOURCE_DBFS) * 10)}dbm_"
+        f"{VOLUME_FLOOR_TONE_SAMPLE_RATE}Hz.wav"
+    )
+    if wav_path.exists():
+        return wav_path
+
+    import numpy as np
+    from scipy.io import wavfile
+
+    sample_rate = VOLUME_FLOOR_TONE_SAMPLE_RATE
+    total_n = int(round(VOLUME_FLOOR_TONE_CHUNK_DURATION_S * sample_rate))
+    segment_n = max(1, int(round(VOLUME_FLOOR_TONE_SEGMENT_DURATION_S * sample_rate)))
+    amp = 10 ** (VOLUME_FLOOR_TONE_SOURCE_DBFS / 20.0)
+    fade = max(8, int(0.005 * sample_rate))
+    parts: list[Any] = []
+    samples_written = 0
+    while samples_written < total_n:
+        for freq_hz in VOLUME_FLOOR_TONE_FREQS_HZ:
+            t = np.arange(segment_n, dtype=np.float64) / sample_rate
+            sig = amp * np.sin(2 * math.pi * freq_hz * t)
+            if fade * 2 < segment_n:
+                sig[:fade] *= np.linspace(0.0, 1.0, fade) ** 2
+                sig[-fade:] *= np.linspace(1.0, 0.0, fade) ** 2
+            parts.append(sig)
+            samples_written += len(sig)
+            if samples_written >= total_n:
+                break
+    out = np.concatenate(parts)[:total_n]
+    int16 = (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16)
+    tmp_path = wav_path.with_name(f".{wav_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        wavfile.write(str(tmp_path), sample_rate, int16)
+        os.replace(tmp_path, wav_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+    logger.info(
+        "volume floor reference tone cached: %s (%s Hz, %.1f s, %.1f dBFS)",
+        wav_path,
+        ",".join(str(int(freq)) for freq in VOLUME_FLOOR_TONE_FREQS_HZ),
+        VOLUME_FLOOR_TONE_CHUNK_DURATION_S,
+        VOLUME_FLOOR_TONE_SOURCE_DBFS,
+    )
+    return wav_path
 
 
 class _LoopingVolumeFloorTone:
