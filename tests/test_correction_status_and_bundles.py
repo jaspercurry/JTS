@@ -1019,9 +1019,16 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     """JTS5 regression: /start must treat the active-leader program bake as
     hostable when it still resolves to the Snapcast pipe sink.
     """
+    from jasper.multiroom.reconcile import SNAPFIFO
     from jasper.web import correction_setup
-    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
+    from tests.test_active_speaker_runtime_contract import _active_topology
 
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(
+        json.dumps(_active_topology("stereo", "active_2_way").to_dict()),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
@@ -1035,8 +1042,15 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
         },
     )
     sess = _make_session(tmp_path)
-    current = sess.cfg.config_dir / "grouping_active_leader_bake.yml"
-    current.write_text(_program_bake_yaml(), encoding="utf-8")
+    current = sess.cfg.config_dir / "sound_current.yml"
+    current.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        ),
+        encoding="utf-8",
+    )
     fake_cam = _FakeCamilla(current_path=str(current))
 
     payload = await correction_setup._load_measurement_baseline(sess, fake_cam)
@@ -1045,6 +1059,10 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     measurement_path = Path(fake_cam.set_calls[0])
     assert measurement_path.name.startswith("correction_measurement_")
     generated = measurement_path.read_text(encoding="utf-8")
+    assert (
+        "# Source: jasper.active_speaker.camilla_yaml."
+        "emit_active_speaker_program_bake_config"
+    ) in generated
     assert "/run/jasper-snapserver/snapfifo" in generated
     assert "enable_rate_adjust: false" in generated
     assert "room_peq_" not in generated

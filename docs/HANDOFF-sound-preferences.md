@@ -502,6 +502,11 @@ room PEQs from the configs it can host:
 - `/var/lib/camilladsp/configs/grouping_active_leader_bake.yml` → active-leader
   program bake; extract room PEQs, but only while grouping state still resolves
   to `File` → Snapcast FIFO with `enable_rate_adjust=false`.
+- A JTS-generated `sound_current.yml` whose content still proves `File` →
+  Snapcast FIFO is also routed through the program-bake carrier, but only as a
+  stale-marker recovery under a readable protected-tweeter topology. Generic
+  pipe configs such as passive `grouping_leader.yml` remain ordinary
+  sound/correction configs and are not re-stamped as active program bakes.
 
 Anything the carrier cannot host fails **closed** with a typed reason rather
 than being silently overwritten. An active-speaker crossover graph is

@@ -36,7 +36,13 @@ from jasper.log_event import log_event
 # jasper/control/server.py's _dispatch_transport.
 
 from .registry import (
-    KNOWN_DEVICES, Device, KeyAction, TapAction, lookup, lookup_by_name,
+    KNOWN_DEVICES,
+    Device,
+    HoldAction,
+    KeyAction,
+    TapAction,
+    lookup,
+    lookup_by_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -263,8 +269,9 @@ def _key_name(code: int) -> str:
     from evdev import ecodes  # type: ignore
 
     name = ecodes.keys.get(code, code)
-    if isinstance(name, list):  # multiple aliases — pick the first
-        name = name[0]
+    if isinstance(name, (list, tuple)):  # multiple aliases — pick a stable key name
+        key_names = [n for n in name if isinstance(n, str) and n.startswith("KEY_")]
+        name = key_names[0] if key_names else name[0]
     return str(name)
 
 
@@ -314,16 +321,30 @@ async def _read_device(
         async for ev in dev.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 continue
-            if ev.value != 1:  # press only; ignore release + autorepeat
-                continue
             action = device.keymap.get(ev.code)
             if action is None:
+                continue
+            key_name = _key_name(ev.code)
+            if isinstance(action, HoldAction):
+                if ev.value == 1:
+                    target = action.on_press
+                elif ev.value == 0:
+                    target = action.on_release
+                else:
+                    continue
+                t = asyncio.create_task(_post_once(
+                    post, target, device.name, key_name,
+                ))
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+                continue
+            if ev.value != 1:  # press only; ignore release + autorepeat
                 continue
             if isinstance(action, TapAction):
                 tc = tap_counters.get(ev.code)
                 if tc is None:
                     tc = _TapCounter(
-                        post, action, device.name, _key_name(ev.code),
+                        post, action, device.name, key_name,
                     )
                     tap_counters[ev.code] = tc
                 tc.hit()
@@ -335,7 +356,7 @@ async def _read_device(
                 cz.hit()
             else:
                 t = asyncio.create_task(_post_once(
-                    post, action, device.name, _key_name(ev.code),
+                    post, action, device.name, key_name,
                 ))
                 tasks.add(t)
                 t.add_done_callback(tasks.discard)

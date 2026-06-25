@@ -26,6 +26,7 @@ KEY_VOLUMEUP = 115
 KEY_PREVIOUSSONG = 165
 KEY_NEXTSONG = 163
 KEY_PLAYPAUSE = 164
+KEY_SEARCH = 217
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,19 @@ class TapAction:
     window_ms: int = 400
 
 
-Action = Union[KeyAction, TapAction]
+@dataclass(frozen=True)
+class HoldAction:
+    """One HID keycode press/release pair → two HTTP calls.
+
+    Use for deliberate "hold while active" controls such as the WiiM
+    voice button: press starts the manual session, release ends it.
+    """
+
+    on_press: KeyAction
+    on_release: KeyAction
+
+
+Action = Union[KeyAction, TapAction, HoldAction]
 
 
 @dataclass(frozen=True)
@@ -131,9 +144,9 @@ VK01 = Device(
 #   - Keyboard: input/source as KEY_BACK
 #   - Consumer Control: voice as KEY_SEARCH
 #
-# Input/source needs a JTS source-selection semantic, and voice needs
-# press/release support before we can safely make it push-to-talk, so
-# the first integration maps only the direct media-control buttons.
+# Input/source needs a JTS source-selection semantic. Voice is mapped
+# as hold-to-talk against the normal JTS mic pipeline; the WiiM Remote
+# 2's MEMS mic does not expose as a standard Linux audio capture device.
 WIIM_REMOTE_2 = Device(
     name="WiiM Remote 2",
     vendor_id=0x2717,
@@ -149,6 +162,10 @@ WIIM_REMOTE_2 = Device(
         KEY_NEXTSONG: KeyAction("POST", "/transport/next", {}),
         KEY_PREVIOUSSONG: KeyAction("POST", "/transport/previous", {}),
         KEY_MUTE: KeyAction("POST", "/volume/mute", {}),
+        KEY_SEARCH: HoldAction(
+            on_press=KeyAction("POST", "/session/start", {}),
+            on_release=KeyAction("POST", "/session/end", {}),
+        ),
     },
     bt_name_regex=r"(?i)\bwiim remote 2\b",
 )

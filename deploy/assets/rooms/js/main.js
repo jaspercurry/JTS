@@ -58,6 +58,7 @@ import {
 } from "./grouping-view.js";
 
 const POLL_MS = 7000;
+const BALANCE_LIVE_COMMIT_MS = 150;
 const root = document.getElementById("app");
 
 // ---------------------------------------------------------------------------
@@ -604,6 +605,8 @@ function makeBondCard() {
   // one side remains at 0 dB, the other side is <= 0 dB.
   let balanceSaving = false;
   let balanceDirty = false;
+  let balanceQueued = false;
+  let balanceTimer = null;
   const balanceRange = h("input.balance-slider", {
     type: "range",
     min: String(BALANCE_MIN_DB),
@@ -646,34 +649,61 @@ function makeBondCard() {
     return "Applied.";
   }
 
+  function clearBalanceTimer() {
+    if (balanceTimer !== null) {
+      clearTimeout(balanceTimer);
+      balanceTimer = null;
+    }
+  }
+
+  function scheduleBalanceCommit(delayMs = BALANCE_LIVE_COMMIT_MS) {
+    balanceDirty = true;
+    balanceQueued = true;
+    if (balanceSaving) return;
+    clearBalanceTimer();
+    balanceTimer = setTimeout(() => {
+      balanceTimer = null;
+      commitBalance();
+    }, delayMs);
+  }
+
   async function commitBalance() {
+    clearBalanceTimer();
+    balanceQueued = true;
     if (balanceSaving) return;
     const request = balanceTrimRequest(balanceRange.value);
-    const db = request.balance_db;
-    balanceDirty = false;
+    balanceQueued = false;
+    balanceDirty = true;
     balanceSaving = true;
-    setBalanceEnabled(false);
     balanceStatus.textContent = "Applying…";
     try {
       const data = await postJSON("trim", request);
       const b = data && data.balance;
-      if (b && typeof b.balance_db === "number") {
+      if (!balanceQueued && b && typeof b.balance_db === "number") {
         reflectBalance(b.balance_db);
       }
-      balanceStatus.textContent = balanceApplyMessage(data, b);
+      if (!balanceQueued) {
+        balanceDirty = false;
+        balanceStatus.textContent = balanceApplyMessage(data, b);
+      }
     } catch (e) {
       console.error("rooms: balance failed", e);
-      balanceStatus.textContent = "Couldn't apply balance — " + describeBondFailure(e);
+      if (!balanceQueued) {
+        balanceDirty = false;
+        balanceStatus.textContent = "Couldn't apply balance — " + describeBondFailure(e);
+      }
     } finally {
       balanceSaving = false;
-      setBalanceEnabled(true);
+      if (balanceQueued) {
+        commitBalance();
+      }
     }
   }
 
   balanceRange.addEventListener("input", () => {
-    balanceDirty = true;
     reflectBalance(balanceRange.value);
     balanceStatus.textContent = "";
+    scheduleBalanceCommit();
   });
   balanceRange.addEventListener("change", commitBalance);
   balanceReset.addEventListener("click", () => {
@@ -805,7 +835,7 @@ function makeBondCard() {
       balanceStatus.textContent = "Balance unavailable — " + (b.error || "pair not ready");
       return;
     }
-    setBalanceEnabled(!balanceSaving);
+    setBalanceEnabled(true);
     if (!balanceSaving && !balanceDirty && typeof b.balance_db === "number") {
       reflectBalance(b.balance_db);
       balanceStatus.textContent = "";

@@ -450,7 +450,7 @@ def test_room_correction_card_uses_http_preflight() -> None:
 def test_room_correction_preflight_switches_to_https() -> None:
     html = _preflight_html()
 
-    assert 'id="proceed" href="/correction/proceed"' in html
+    assert 'id="proceed" href="/correction/proceed?jts_cb=__APP_CSS_VERSION__"' in html
     assert "OK, proceed" in html
     assert "Your connection is not private" in html
     assert "Show Details" in html
@@ -459,7 +459,9 @@ def test_room_correction_preflight_switches_to_https() -> None:
     assert "new URL(requested, window.location.origin)" in html
     assert "'/correction/crossover/': '/crossover'" in html
     assert "Object.prototype.hasOwnProperty.call(allowed, path)" in html
-    assert "proceed.href = proceedPath" in html
+    assert "Date.now().toString(36)" in html
+    assert "'jts_cb='" in html
+    assert "proceed.href = withCacheBust(proceedPath)" in html
     assert "window.location.hostname" not in html
     assert "https://jts.local/correction/" not in html
 
@@ -505,10 +507,13 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "try_files /correction-preflight.html =404;" in preflight_block
     assert 'add_header Cache-Control "no-store";' in preflight_block
     assert "safe ?next=/correction/..." in nginx
-    assert "return 302 https://$host/correction/;" in proceed_block
-    assert "return 302 https://$host/correction/room/;" in room_block
-    assert "return 302 https://$host/correction/crossover/;" in crossover_block
-    assert "return 302 https://$host/correction/bass/;" in bass_block
+    assert "return 302 https://$host/correction/$is_args$args;" in proceed_block
+    assert "return 302 https://$host/correction/room/$is_args$args;" in room_block
+    assert (
+        "return 302 https://$host/correction/crossover/$is_args$args;"
+        in crossover_block
+    )
+    assert "return 302 https://$host/correction/bass/$is_args$args;" in bass_block
     for block in (proceed_block, room_block, crossover_block, bass_block):
         assert 'add_header Cache-Control "no-store";' in block
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
@@ -532,8 +537,11 @@ def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
 
     assert "try_files /correction-preflight.html =404;" in preflight_block
     assert 'add_header Cache-Control "no-store";' in preflight_block
-    assert "return 302 https://$host/correction/;" in proceed_block
-    assert "return 302 https://$host/correction/crossover/;" in crossover_block
+    assert "return 302 https://$host/correction/$is_args$args;" in proceed_block
+    assert (
+        "return 302 https://$host/correction/crossover/$is_args$args;"
+        in crossover_block
+    )
     assert 'add_header Cache-Control "no-store";' in proceed_block
     assert 'add_header Cache-Control "no-store";' in crossover_block
     assert (

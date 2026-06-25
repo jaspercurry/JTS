@@ -63,7 +63,7 @@
     </p>
 
     <div class="form-actions">
-      <a class="btn btn--primary" id="proceed" href="/correction/proceed">OK, proceed</a>
+      <a class="btn btn--primary" id="proceed" href="/correction/proceed?jts_cb=__APP_CSS_VERSION__">OK, proceed</a>
       <a class="btn btn--ghost" href="/">Cancel</a>
     </div>
   </main>
@@ -80,6 +80,11 @@
         '/correction/crossover/': '/crossover',
         '/correction/bass/': '/bass'
       };
+      var cacheToken = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      function withCacheBust(path) {
+        var separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'jts_cb=' + encodeURIComponent(cacheToken);
+      }
       var proceedPath = '/correction/proceed';
       try {
         var parsed = new URL(requested, window.location.origin);
@@ -93,7 +98,7 @@
       } catch (_) {
         proceedPath = '/correction/proceed';
       }
-      proceed.href = proceedPath;
+      proceed.href = withCacheBust(proceedPath);
     }());
   </script>
 </body>

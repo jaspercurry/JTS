@@ -235,6 +235,22 @@ def test_rooms_module_keeps_pair_hosts_local_not_raw_ip():
     assert 'h("code.bond-current__addr", null, g.leader_addr)' not in js
 
 
+def test_rooms_balance_slider_saves_on_input_not_only_release():
+    js = (_REPO / "deploy" / "assets" / "rooms" / "js" / "main.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const BALANCE_LIVE_COMMIT_MS = 150;" in js
+    assert "function scheduleBalanceCommit(" in js
+    assert 'balanceRange.addEventListener("input", () => {' in js
+    input_handler = js.split('balanceRange.addEventListener("input", () => {', 1)[1]
+    input_handler = input_handler.split("});", 1)[0]
+    assert "reflectBalance(balanceRange.value);" in input_handler
+    assert "scheduleBalanceCommit();" in input_handler
+    assert 'balanceRange.addEventListener("change", commitBalance);' in js
+    assert "if (!balanceQueued && b && typeof b.balance_db" in js
+
+
 def test_get_root_shell_interpolates_no_discovered_data(monkeypatch):
     """The server-rendered HTML carries NO peer/grouping data — every untrusted
     field is delivered over /rooms.json for the module to render with DOM/text

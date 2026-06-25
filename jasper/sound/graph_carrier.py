@@ -27,6 +27,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from jasper.atomic_io import atomic_write_text
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config,
@@ -35,6 +36,9 @@ from jasper.sound.camilla_yaml import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SOUND_SOURCE_LINE = "# Source: jasper.sound.camilla_yaml.emit_sound_config"
+_CURRENT_SOUND_CONFIG = "sound_current.yml"
 
 
 class CarrierCannotHostEq(RuntimeError):
@@ -226,6 +230,36 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
             "JTS cannot safely rewrite this grouped graph until the speaker is "
             "reconciled or ungrouped.",
         )
+
+    def reemit(
+        self,
+        profile,
+        *,
+        out_path: str | Path | None = None,
+        profile_id: str | None = None,
+        output_trim_db: float = 0.0,
+        member_kwargs: dict | None = None,
+        room_peqs: list | None = None,
+    ) -> ReemitResult:
+        member_kwargs = self._resolve_member_kwargs(member_kwargs)
+        self._validate_member_kwargs(member_kwargs)
+        room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
+        yaml = emit_sound_config(
+            profile,
+            room_peqs=room_peqs,
+            profile_id=profile_id,
+            output_trim_db=output_trim_db,
+            **member_kwargs,
+        )
+        yaml = _restamp_program_bake_source(yaml)
+        if out_path is not None:
+            out_path = Path(out_path)
+            if not out_path.parent.exists():
+                raise FileNotFoundError(
+                    f"parent directory does not exist: {out_path.parent}"
+                )
+            atomic_write_text(out_path, yaml, mode=0o640)
+        return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
 
 class _ActiveGraphCarrier:
@@ -442,6 +476,57 @@ def _classify_loaded_config(current_path: str | Path) -> dict | None:
     return classify_camilla_config_text(text)
 
 
+def _loaded_config_is_program_bake_pipe(current_path: str | Path) -> bool:
+    from jasper.multiroom.leader_config import playback_is_pipe
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    try:
+        text = Path(current_path).read_text()
+    except OSError:
+        return False
+    return playback_is_pipe(text, SNAPFIFO)
+
+
+def _loaded_config_is_stale_program_bake_pipe(current_path: str | Path) -> bool:
+    """True for the one-time recovery shape left by the old program-bake reemit.
+
+    PR #1009 briefly produced ``sound_current.yml`` with the generic sound
+    source marker even though the graph still wrote to the active leader's
+    SnapFIFO program lane. The fallback is intentionally narrower than
+    "any JTS pipe config": ordinary passive grouping leaders also write to
+    SnapFIFO and must not be reclassified or re-stamped as active program bakes.
+    """
+    if Path(current_path).name != _CURRENT_SOUND_CONFIG:
+        return False
+    from jasper.active_speaker.runtime_contract import flat_program_graph_blocked_reason
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        return False
+    return (
+        _loaded_config_is_program_bake_pipe(current_path)
+        and flat_program_graph_blocked_reason(topology) is not None
+    )
+
+
+def _restamp_program_bake_source(yaml: str) -> str:
+    from jasper.active_speaker.camilla_yaml import ACTIVE_PROGRAM_BAKE_SOURCE
+
+    program_source_line = f"# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}"
+    if program_source_line in yaml:
+        return yaml
+    if _SOUND_SOURCE_LINE not in yaml:
+        raise CarrierCannotHostEq(
+            "program_bake_source_marker_missing",
+            "JTS rebuilt the active-leader program bake, but could not preserve "
+            "its source marker. The graph was not loaded; your driver protection "
+            "is unchanged.",
+        )
+    return yaml.replace(_SOUND_SOURCE_LINE, program_source_line, 1)
+
+
 def carrier_for_loaded_config(current_path, *, config_dir):
     """Resolve the loaded CamillaDSP config to the carrier that can re-emit it.
 
@@ -476,6 +561,11 @@ def carrier_for_loaded_config(current_path, *, config_dir):
         from jasper.active_speaker.environment import CAMILLA_CLASS_PROGRAM_BAKE
 
         if summary.get("classification") == CAMILLA_CLASS_PROGRAM_BAKE:
+            return _ProgramBakeCarrier(current_path)
+        if (
+            summary.get("classification") == "jts_generated_stereo"
+            and _loaded_config_is_stale_program_bake_pipe(current_path)
+        ):
             return _ProgramBakeCarrier(current_path)
     if is_jts_generated_config(current_path, config_dir=config_dir):
         return _SoundOrCorrectionCarrier(current_path)

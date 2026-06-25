@@ -182,12 +182,14 @@ directly and `install.sh` stamps the build SHA into it exactly as it does for
 `deploy/index.html`. That's the static-page analog of the shell — same
 canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
 one `#icon-back` sprite symbol it needs. Its Proceed button targets
-`/correction/proceed`; nginx temporarily redirects that to
-`https://$host/correction/` with `Cache-Control: no-store` so non-default
-hostnames such as `jts3.local` do not depend on client-side JavaScript to
-survive the HTTP → HTTPS hop, and mobile browsers do not cache stale local
-hostname or scheme rules. Safe `?next=/correction/...` subflows become
-`/correction/proceed/<subflow>`, with the same temporary no-store redirect.
+`/correction/proceed` with a build-token fallback query string; JavaScript
+replaces that with a fresh `jts_cb` token on each page load. Nginx temporarily
+redirects that to `https://$host/correction/` with `Cache-Control: no-store`
+and preserves query args, so non-default hostnames such as `jts3.local` do not
+depend on client-side JavaScript to survive the HTTP → HTTPS hop, and mobile
+browsers do not cache stale local hostname or scheme rules. Safe
+`?next=/correction/...` subflows become `/correction/proceed/<subflow>`, with
+the same temporary no-store redirect and query preservation.
 
 ### Archetype recipes
 
@@ -1406,9 +1408,10 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-25 (correction preflight/proceed redirects and the
-HTTPS catch-all are temporary + no-store so iOS Safari does not cache stale
-local hostname or scheme rules; verified against `deploy/nginx-jasper.conf`,
+Last verified: 2026-06-25 (correction preflight/proceed redirects are
+temporary + no-store and preserve fresh `jts_cb` query tokens so iOS Safari is
+less likely to reuse stale local hostname or scheme rules; HTTPS catch-all
+verified against `deploy/nginx-jasper.conf`,
 `deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`.
 Prior pass 2026-06-21: `/chat/` is a dedicated socket-activated
 read-only conversation-history shell on port 8787, with `/data.json`,

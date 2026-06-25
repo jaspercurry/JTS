@@ -210,6 +210,9 @@ def _harden_wifi_profile(profile_name: str) -> None:
     `connection.autoconnect-retries 0` is NetworkManager's "retry forever"
     value. Without this, `-1` falls back to NM's global default and a long
     household/router flap can exhaust retries before the AP is healthy again.
+    `ipv6.method link-local` keeps mDNS fast for `.local` hostnames without
+    enabling routed IPv6; iOS/macOS clients otherwise wait on IPv6 mDNS before
+    falling back to IPv4 when the profile is set to `ignore`.
 
     Best-effort by contract: a hardening failure (nmcli non-zero, timeout,
     or even a missing/unrunnable nmcli binary) MUST NOT turn a successful
@@ -227,6 +230,7 @@ def _harden_wifi_profile(profile_name: str) -> None:
                 "connection.autoconnect", "yes",
                 "connection.autoconnect-retries", _NM_AUTOCONNECT_RETRIES_FOREVER,
                 "802-11-wireless.powersave", "2",
+                "ipv6.method", "link-local",
             ],
             timeout=10,
         )

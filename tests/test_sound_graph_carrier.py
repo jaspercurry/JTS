@@ -29,7 +29,7 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_FLAT_FULL_RANGE,
     classify_camilla_graph,
 )
-from jasper.sound.camilla_yaml import BASE_CONFIG_PATH
+from jasper.sound.camilla_yaml import BASE_CONFIG_PATH, emit_sound_config
 from jasper.sound.graph_carrier import (
     CarrierCannotHostEq,
     ReemitResult,
@@ -270,7 +270,11 @@ def test_stereo_host_refuses_eq_under_protected_tweeter_topology(tmp_path, monke
     # CarrierCannotHostEq to an honest blocked-200 (inv 6).
     from jasper.sound.profile import SoundProfile
 
-    _persist_topology(_active_topology("stereo", "active_2_way"), tmp_path, monkeypatch)
+    _persist_topology(
+        _active_topology("stereo", "active_2_way"),
+        tmp_path,
+        monkeypatch,
+    )
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "sound_current.yml"
@@ -312,15 +316,18 @@ def test_program_bake_carrier_hosts_eq_via_pipe_under_active_topology(
     # only when grouping policy keeps the File -> pipe sink and rate_adjust off.
     from jasper.sound.profile import SoundProfile
 
-    _persist_topology(_active_topology("stereo", "active_2_way"), tmp_path, monkeypatch)
+    _persist_topology(
+        _active_topology("stereo", "active_2_way"),
+        tmp_path,
+        monkeypatch,
+    )
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "grouping_active_leader_bake.yml"
     path.write_text(_program_bake_yaml(), encoding="utf-8")
+    out_path = config_dir / "sound_current.yml"
 
     with mock.patch(
-        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml-text"
-    ) as emit, mock.patch(
         "jasper.multiroom.member_config.member_camilla_kwargs",
         return_value={
             "enable_rate_adjust": False,
@@ -331,15 +338,82 @@ def test_program_bake_carrier_hosts_eq_via_pipe_under_active_topology(
         carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
         assert carrier.kind == "active_leader_program_bake"
         assert carrier.can_host_eq is True
-        result = carrier.reemit(SoundProfile(enabled=False), room_peqs=[])
+        result = carrier.reemit(
+            SoundProfile(enabled=False),
+            room_peqs=[],
+            out_path=out_path,
+        )
 
     assert isinstance(result, ReemitResult)
     assert result.room_peq_count == 0
-    assert emit.call_args.kwargs["room_peqs"] == []
-    assert emit.call_args.kwargs["playback_pipe_path"] == (
-        "/run/jasper-snapserver/snapfifo"
+    assert (
+        "# Source: jasper.active_speaker.camilla_yaml."
+        "emit_active_speaker_program_bake_config"
+    ) in result.yaml
+    assert "# Source: jasper.sound.camilla_yaml.emit_sound_config" not in result.yaml
+    assert "/run/jasper-snapserver/snapfifo" in result.yaml
+    assert "enable_rate_adjust: false" in result.yaml
+    assert out_path.read_text(encoding="utf-8") == result.yaml
+
+
+def test_generic_jts_pipe_sound_config_resolves_to_program_bake(tmp_path, monkeypatch):
+    # JTS5 regression after the first program-bake re-emit: the running graph can
+    # be `sound_current.yml` with the generic sound source marker, but still be a
+    # DAC-less Snapcast pipe sink. Content proves pipe-safety; do not route it to
+    # the DAC-bound flat-graph guard.
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(
+        _active_topology("stereo", "active_2_way"),
+        tmp_path,
+        monkeypatch,
     )
-    assert emit.call_args.kwargs["enable_rate_adjust"] is False
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        ),
+        encoding="utf-8",
+    )
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == "active_leader_program_bake"
+
+
+def test_grouping_leader_pipe_config_does_not_resolve_to_program_bake(
+    tmp_path,
+    monkeypatch,
+):
+    # Passive multiroom leaders also write generic JTS stereo YAML to SnapFIFO.
+    # The stale-marker recovery is only for `sound_current.yml`; grouping files
+    # must not be reclassified or re-stamped as active program-bake configs.
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(
+        _active_topology("stereo", "active_2_way"),
+        tmp_path,
+        monkeypatch,
+    )
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "grouping_leader.yml"
+    path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        ),
+        encoding="utf-8",
+    )
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == "sound_or_correction"
 
 
 def test_program_bake_carrier_requires_pipe_sink(tmp_path):
