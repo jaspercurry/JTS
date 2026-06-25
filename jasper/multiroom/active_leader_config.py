@@ -188,8 +188,8 @@ async def precheck_active_leader(
     # (snapserver) AND plays its own channel through the round-trip (snapclient);
     # without those binaries there is no FIFO reader for camilla#1's bake, so the
     # bake cannot release the DAC — and arming camilla#2 onto the DAC would then
-    # fight camilla#1 (which carries StartLimitAction=reboot) and reboot-loop the
-    # box (the 2026-06-23 JTS5 incident, on a box with no Snapcast installed).
+    # fight camilla#1 and exhaust its recovery budget (the 2026-06-23 JTS5
+    # incident, on a box with no Snapcast installed).
     # Refuse the bond UP FRONT (the box stays solo-active) rather than commit to a
     # two-instance setup the hardware cannot support. The reconciler's step-5
     # gates (snapserver-actually-active + arm-only-if-bake-succeeded) are the

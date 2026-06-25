@@ -275,8 +275,8 @@ def test_precheck_fails_closed_when_snapcast_missing(monkeypatch, tmp_path) -> N
     """JTS5 incident (2026-06-23): an active leader hosts the wire (snapserver) +
     plays its own channel (snapclient). With EITHER binary absent there is no FIFO
     reader for camilla#1's bake, so the bake can't release the DAC and arming
-    camilla#2 onto the DAC would fight camilla#1 (StartLimitAction=reboot) and
-    reboot-loop the box. Refuse the bond UP FRONT (stay solo-active)."""
+    camilla#2 onto the DAC would fight camilla#1 and exhaust its recovery
+    budget. Refuse the bond UP FRONT (stay solo-active)."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")

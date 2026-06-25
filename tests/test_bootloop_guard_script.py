@@ -345,7 +345,6 @@ def test_repo_reboot_units_carry_the_exact_grep_literal():
     )
     assert guarded == [
         "jasper-aec-bridge.service",
-        "jasper-camilla.service",
         "jasper-control.service",
         "jasper-fanin.service",
         "jasper-outputd.service",
@@ -356,9 +355,9 @@ def test_repo_reboot_units_carry_the_exact_grep_literal():
 def test_guard_unit_is_ordered_before_every_guarded_unit():
     unit = (ROOT / "deploy" / "systemd" / "jasper-bootloop-guard.service").read_text()
     for name in (
-        "jasper-aec-bridge.service", "jasper-camilla.service",
-        "jasper-control.service", "jasper-fanin.service",
-        "jasper-outputd.service", "jasper-voice.service",
+        "jasper-aec-bridge.service", "jasper-control.service",
+        "jasper-fanin.service", "jasper-outputd.service",
+        "jasper-voice.service",
     ):
         assert name in unit, f"{name} missing from Before= ordering"
     assert "Type=oneshot" in unit

@@ -15,16 +15,18 @@ Wants=sound.target jasper-fanin.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
-# Tier 4.5 — escalate to system reboot if the per-service restart
-# spiral exceeds the burst limit. systemd cleanly reboots the box
-# (filesystems unmount, journal flushes, dirty pages sync) — far
-# better than the kernel hardware watchdog at Tier 5 which slams
-# the box without warning. Triggers iff Camilla fails to start 5
-# times in 60s; in normal operation this should never fire. See
-# docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)" for
-# the rationale. `reboot` (not `reboot-force`): we want clean
-# shutdown — on a 1 GB Pi the dirty pages in zram MUST sync.
-StartLimitAction=reboot
+# Camilla's observed start-limit failure class is often an ALSA ownership
+# race during deploy/renderer churn, where camilladsp exits cleanly with
+# "Device or resource busy" until the burst is exhausted. A raw reboot
+# destroys the `/dev/snd` holder evidence we need and can reboot-loop an
+# otherwise reachable Pi. Route the exhausted-burst case through a bounded
+# recovery/forensics oneshot instead: capture ALSA holders, park likely
+# audio owners, try one controlled graph restart, and leave the unit parked
+# if the graph still cannot converge. Other critical daemons still use the
+# direct T5.1 StartLimitAction=reboot ladder; Camilla owns this narrower
+# hardware-topology recovery contract.
+StartLimitAction=none
+OnFailure=jasper-camilla-recover.service
 
 [Service]
 # Stage 2 audio-protection: assign to jts-audio.slice with
@@ -63,11 +65,11 @@ Type=simple
 # Pipe guard (multi-room, HANDOFF-multiroom.md §2): if the statefile
 # points at a BONDED pipe config but the snapserver FIFO is dead,
 # camilladsp 4.1.3 exits CLEAN (measured) — which Restart=always +
-# StartLimitAction=reboot below would turn into a reboot loop. The
-# guard repairs the statefile to the base config BEFORE launch so the
-# failing starts never happen (an OnFailure rescue would RACE the
-# reboot). `-` prefix: the guard is fail-open by design, and even a
-# missing script must never block the music chain.
+# the start-limit recovery handler would otherwise turn into a repeated
+# parked/recovery cycle. The guard repairs the statefile to the base
+# config BEFORE launch so the failing starts never happen. `-` prefix:
+# the guard is fail-open by design, and even a missing script must never
+# block the music chain.
 ExecStartPre=-/usr/local/sbin/jasper-camilla-pipe-guard
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \

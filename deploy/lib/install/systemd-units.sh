@@ -39,6 +39,9 @@ install_local_audio_graph_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
         "${SYSTEMD_DIR}/jasper-camilla.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-camilla-recover.service" \
+        "${SYSTEMD_DIR}/jasper-camilla-recover.service"
     # camilla#2 — endpoint-crossover instance (:1235). INERT: installed but
     # NOT enabled; a later reconciler PR arms it only on an active leader.
     # docs/HANDOFF-distributed-active.md "Stage B".
@@ -75,6 +78,9 @@ install_local_audio_graph_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
         /usr/local/sbin/jasper-camilla-pipe-guard
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-camilla-recover" \
+        /usr/local/sbin/jasper-camilla-recover
     # camilla#2's crossover guard. Like the pipe-guard it breaks a dead-pipe
     # restart loop BEFORE launch, but repairs ONLY to the re-proven
     # driver-domain (Layer-A-intact) graph — never flat (a flat crossover
@@ -138,6 +144,7 @@ validate_streambox_systemd_units() {
         local -a verify_units=(
             "${SYSTEMD_DIR}/jasper-control.service"
             "${SYSTEMD_DIR}/jasper-camilla.service"
+            "${SYSTEMD_DIR}/jasper-camilla-recover.service"
             "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
             "${SYSTEMD_DIR}/jasper-fanin.service"
             "${SYSTEMD_DIR}/jasper-outputd.service"
@@ -341,6 +348,30 @@ install_streambox_audio_slices() {
         "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
 }
 
+park_audio_clients_for_core_graph_restart() {
+    # Deploy updates can rewrite asound/Camilla/outputd state while local
+    # renderers are actively playing. Park the units that can hold fan-in,
+    # Camilla, or outputd endpoints before restarting the core graph, then
+    # let the existing restart/reconcile steps below restore the profile-
+    # appropriate runtime state.
+    local unit
+    for unit in \
+        jasper-voice.service \
+        jasper-aec-bridge.service \
+        jasper-outputd.service \
+        jasper-camilla-crossover.service \
+        jasper-snapclient.service \
+        jasper-snapserver.service \
+        shairport-sync.service \
+        nqptp.service \
+        librespot.service \
+        bluealsa-aplay.service \
+        jasper-mux.service; do
+        systemctl stop "${unit}" 2>/dev/null || true
+        systemctl reset-failed "${unit}" 2>/dev/null || true
+    done
+}
+
 park_streambox_brain_units() {
     # Converting from a full speaker to streambox must park local brain
     # surfaces while keeping renderer/DSP/source surfaces alive.
@@ -371,6 +402,7 @@ start_streambox_runtime_units() {
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
         jasper-control.service
+    park_audio_clients_for_core_graph_restart
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
     systemctl restart jasper-fanin.service 2>/dev/null || true
@@ -423,6 +455,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
         "${SYSTEMD_DIR}/jasper-camilla.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-camilla-recover.service" \
+        "${SYSTEMD_DIR}/jasper-camilla-recover.service"
     # camilla#2 — endpoint-crossover instance (:1235). INERT: installed but
     # NOT enabled; a later reconciler PR arms it only on an active leader.
     # docs/HANDOFF-distributed-active.md "Stage B".
@@ -588,12 +623,15 @@ install_systemd_units() {
     # statefile points at a bonded multi-room pipe config but the
     # snapserver FIFO is dead, repair to the base config BEFORE camilla
     # launches — camilladsp exits clean on a dead File sink (measured),
-    # and Restart=always + StartLimitAction=reboot would otherwise turn
-    # that into a reboot loop. Fail-open by design. See
+    # and Restart=always + the start-limit recovery handler would otherwise
+    # turn that into a repeated parked/recovery cycle. Fail-open by design. See
     # docs/HANDOFF-multiroom.md §2.
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
         /usr/local/sbin/jasper-camilla-pipe-guard
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-camilla-recover" \
+        /usr/local/sbin/jasper-camilla-recover
     # Camilla #2 crossover guard. ExecStartPre= on
     # jasper-camilla-crossover: same dead-pipe loop break as the pipe
     # guard, but its safe-repair target is the re-proven DRIVER-DOMAIN
@@ -925,14 +963,13 @@ install_systemd_units() {
         jasper-control.service \
         jasper-input.service
 
-    # Stop the currently-running voice daemon before outputd claims the
-    # direct DAC. On outputd deploys, the old voice process may still
-    # hold a PortAudio stream to the legacy jasper_out path; if outputd
-    # starts first, DAC ownership can fail with "device busy". The AEC
-    # reconciler below restarts or parks voice once the output path is
-    # coherent.
-    systemctl stop jasper-voice.service 2>/dev/null || true
-    systemctl reset-failed jasper-voice.service 2>/dev/null || true
+    # Stop currently-running audio clients before outputd/Camilla claim the
+    # direct DAC and fan-in graph. On outputd deploys, old voice/renderers may
+    # still hold legacy or current graph endpoints; if the core graph starts
+    # first, DAC or Camilla ownership can fail with "device busy". The AEC,
+    # grouping, and renderer restart steps below restore the appropriate
+    # runtime state once the graph is coherent.
+    park_audio_clients_for_core_graph_restart
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
 

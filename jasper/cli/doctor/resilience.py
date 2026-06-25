@@ -31,31 +31,36 @@ from ._shared import (
     _systemctl_show_property,
 )
 
-# Expected StartLimitAction= per critical daemon. T5.1 of the
-# watchdog-liveness plan: a restart spiral on any of these critical
-# escalates to a clean system reboot rather than waiting for the
-# Tier 5 kernel hardware watchdog (which has the "PID 1 alive but
-# userspace dead" blind spot documented in HANDOFF-resilience.md).
-# Doctor reports drift so a Debian/RPi-OS update that removes our
-# unit-file directives surfaces in the next install. See
-# docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)".
-_EXPECTED_START_LIMIT_ACTION = {
-    "jasper-outputd": "reboot",
-    "jasper-camilla": "reboot",
-    "jasper-aec-bridge": "reboot",
-    "jasper-voice": "reboot",
-    "jasper-control": "reboot",
+# Expected recovery policy per critical daemon. Most critical daemons keep
+# the T5.1 direct clean-reboot ladder. Camilla owns a narrower recovery
+# contract after the 2026-06-25 JTS5 incident: restart-limit exhaustion runs
+# a forensics/recovery oneshot instead of rebooting immediately, because its
+# observed failure class is often ALSA ownership churn where holder evidence
+# matters and the Pi should remain reachable if the graph cannot converge.
+_EXPECTED_START_LIMIT_POLICY = {
+    "jasper-outputd": {"action": "reboot"},
+    "jasper-camilla": {
+        "action": "none",
+        "on_failure": "jasper-camilla-recover.service",
+    },
+    "jasper-aec-bridge": {"action": "reboot"},
+    "jasper-voice": {"action": "reboot"},
+    "jasper-control": {"action": "reboot"},
 }
 
 @doctor_check(order=39, group="resilience")
 def check_start_limit_action() -> CheckResult:
-    """Verify the T5.1 `StartLimitAction=reboot` directive is in effect on
-    every critical daemon this profile installs. Drift here means a Debian /
-    RPi-OS update edited the unit, or someone manually disabled the
-    escalation. Doctor surfaces this — without StartLimitAction=reboot we're
-    back to Tier 5's "PID 1 alive but userspace dead" gap. See
+    """Verify the restart-burst recovery policy for critical daemons.
+
+    Most units use the T5.1 ``StartLimitAction=reboot`` directive. Camilla
+    uses ``StartLimitAction=none`` plus ``OnFailure=jasper-camilla-recover``
+    so ALSA-busy graph failures preserve forensics and keep the Pi reachable.
+    Drift here means a Debian/RPi-OS update edited the unit, or someone
+    manually disabled the escalation/recovery path. Doctor surfaces this —
+    without these policies we're back to Tier 5's "PID 1 alive but userspace
+    dead" gap, or to a Camilla reboot loop with no holder evidence. See
     docs/HANDOFF-tier5-watchdog-liveness.md."""
-    expected = _EXPECTED_START_LIMIT_ACTION
+    expected = _EXPECTED_START_LIMIT_POLICY
     # Verify only the daemons this profile installs (a streambox omits the
     # voice/AEC stack), then read the directive for those in one batched
     # systemctl call — same shape as check_oom_score_adj.
@@ -76,20 +81,41 @@ def check_start_limit_action() -> CheckResult:
             "StartLimitAction", "ok",
             "systemctl unavailable — skipped (not Linux?)",
         )
+    on_failure_units = [
+        unit for unit in units if expected[unit].get("on_failure")
+    ]
+    on_failure: dict[str, str] = {}
+    if on_failure_units:
+        values = _systemctl_show_property("OnFailure", on_failure_units)
+        if values is None:
+            return CheckResult(
+                "StartLimitAction", "ok",
+                "systemctl unavailable — skipped (not Linux?)",
+            )
+        on_failure = dict(zip(on_failure_units, values))
     drift = []
     for unit, raw in zip(units, actions):
         got = (raw or "").strip().lower() or "none"
-        if got != expected[unit]:
-            drift.append(f"{unit}={got} (want {expected[unit]})")
+        want = expected[unit]["action"]
+        if got != want:
+            drift.append(f"{unit}={got} (want {want})")
+        want_on_failure = expected[unit].get("on_failure")
+        if want_on_failure:
+            got_on_failure = on_failure.get(unit, "").strip() or "none"
+            if want_on_failure not in got_on_failure.split():
+                drift.append(
+                    f"{unit} OnFailure={got_on_failure} "
+                    f"(want {want_on_failure})"
+                )
     if drift:
         return CheckResult(
             "StartLimitAction", "warn",
-            "T5.1 escalation drift: " + ", ".join(drift) +
+            "critical restart policy drift: " + ", ".join(drift) +
             ". Re-run install.sh to restore .service files.",
         )
     return CheckResult(
         "StartLimitAction", "ok",
-        f"T5.1 reboot escalation active on all {len(units)} "
+        f"critical restart policy active on all {len(units)} "
         "installed critical daemons",
     )
 

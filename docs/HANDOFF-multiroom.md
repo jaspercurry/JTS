@@ -793,9 +793,9 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   announcements). **Reboot-loop chain-breaker (post-merge review,
   MEASURED):** camilladsp 4.1.3 exits CLEAN (0) when its File sink path is
   absent, and blocks un-SIGTERM-ably in open(2) when the FIFO has no
-  reader — with jasper-camilla's `Restart=always` + `StartLimitBurst=5/60s`
-  + `StartLimitAction=reboot`, a snapserver hard-death while bonded was a
-  Pi REBOOT LOOP in under a minute. `jasper-camilla-pipe-guard`
+  reader — with jasper-camilla's `Restart=always` + `StartLimitBurst=5/60s`,
+  a snapserver hard-death while bonded would exhaust Camilla's recovery
+  budget in under a minute. `jasper-camilla-pipe-guard`
   (`ExecStartPre=-`, pure bash, fail-open) repairs the statefile to the
   base config BEFORE camilla launches when the bonded pipe is dead
   (absent FIFO, or no reader via a write-open probe) — prevention, not
@@ -2653,7 +2653,10 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-24 (pair-lock runtime surface rechecked against
+Last verified: 2026-06-25 (Camilla pipe-guard/recovery-budget wording
+rechecked against `deploy/systemd/jasper-camilla.service` and
+`deploy/bin/jasper-camilla-recover`; 2026-06-24 pair-lock runtime surface
+rechecked against
 `state.py`, `snapcast_rpc.py`, and doctor wiring; control-side grouping kick
 coalescing and the durable trailing service rechecked against
 `jasper.control.server`,

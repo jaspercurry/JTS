@@ -1,0 +1,13 @@
+[Unit]
+Description=Capture and recover CamillaDSP after restart-limit exhaustion
+Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
+After=local-fs.target systemd-journald.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jasper-camilla-recover --reason start-limit
+# This is a recovery path, so fail open and keep boot/control reachable even
+# if evidence capture or the bounded restart attempt itself has a bug.
+TimeoutStartSec=45
+StandardOutput=journal
+StandardError=journal

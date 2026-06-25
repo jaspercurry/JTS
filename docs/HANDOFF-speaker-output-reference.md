@@ -490,13 +490,15 @@ What exists:
   If outputd cannot stay up after its restart burst, systemd reboots
   cleanly via `StartLimitAction=reboot` rather than leaving the speaker
   without its final-output owner.
-  During install, `jasper-voice` is stopped before outputd is restarted
-  so an old PortAudio process cannot keep the legacy DAC path open; the
-  AEC reconciler then restarts or parks voice according to current mic
-  hardware. The installer treats outputd as mandatory:
-  missing source, missing binary, failed unit restart, or failed STATUS
-  probe fails the install instead of restarting voice into a silent
-  output path.
+  During install, likely audio clients (`jasper-voice`,
+  `jasper-aec-bridge`, outputd, camilla#2, Snapcast, AirPlay, Spotify,
+  Bluetooth aplay, and the mux) are parked before fan-in/Camilla/outputd
+  restart so old graph owners cannot keep legacy or current ALSA endpoints
+  open. The AEC, grouping, and renderer restart steps then restore the
+  appropriate runtime state. The installer treats missing outputd source or
+  binary as fatal; a transient outputd STATUS miss is logged loudly and
+  rechecked by the doctor summary so nginx, `/system/`, and recovery
+  surfaces still get installed.
 - Observability: `event=outputd.*` structured logs, `/state.outputd`
   via `jasper-control`, `/system` Outputd row, and
   `jasper-doctor` checks. The daemon reports negotiated ALSA
@@ -1408,8 +1410,10 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-06-24 (active-endpoint and wireless-sub TTS route
-exceptions rechecked against
+Last verified: 2026-06-25 (Camilla/outputd install choreography rechecked
+against `deploy/lib/install/systemd-units.sh` and
+`deploy/bin/jasper-camilla-recover`; 2026-06-24 active-endpoint and
+wireless-sub TTS route exceptions rechecked against
 `jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile.outputd_grouping_env`,
 `jasper.multiroom.reconcile.voice_grouping_env`, and

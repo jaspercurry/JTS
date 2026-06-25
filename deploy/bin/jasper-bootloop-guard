@@ -6,8 +6,8 @@
 
 # Cross-boot circuit breaker for the T5.1 StartLimitAction=reboot ladder.
 #
-# The gap (audit C1): jasper-camilla / -outputd / -fanin / -voice /
-# -control / -aec-bridge escalate a per-service restart spiral to a
+# The gap (audit C1): jasper-outputd / -fanin / -voice / -control /
+# -aec-bridge escalate a per-service restart spiral to a
 # system reboot (Tier 4.5). That escalation is correct for a *transient*
 # wedge — but it has no cross-boot memory, so a PERMANENT daemon failure
 # (corrupt config, dead binary, half-finished deploy) reboots the Pi
@@ -48,8 +48,10 @@
 # guard must never block or fail the boot. Worst case on guard failure
 # is exactly today's behaviour (escalation stays armed).
 #
-# Mirrors deploy/bin/jasper-wifi-guardian's shape and test seams; tested
-# hardware-free in tests/test_bootloop_guard_script.py.
+# Camilla now owns a narrower OnFailure= recovery/forensics contract for
+# ALSA-busy graph ownership failures, so it is intentionally outside this
+# raw reboot ladder. Mirrors deploy/bin/jasper-wifi-guardian's shape and
+# test seams; tested hardware-free in tests/test_bootloop_guard_script.py.
 #
 # JASPER_BOOTLOOP_WINDOW_SEC / JASPER_BOOTLOOP_THRESHOLD are TEST SEAMS
 # only, not production knobs: jasper-bootloop-guard.service sets no
