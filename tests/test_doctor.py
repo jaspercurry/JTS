@@ -4099,7 +4099,8 @@ def test_check_correction_https_assets_ok_on_200(monkeypatch, tmp_path):
 
 
 def test_check_correction_https_assets_warns_on_http_downgrade(monkeypatch, tmp_path):
-    # The bug signature: a 308 down to http:// → browsers mixed-content-block it.
+    # The bug signature: an HTTPS asset downgrade to http:// → browsers
+    # mixed-content-block it.
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
     monkeypatch.setattr(
         doctor.correction, "_probe_https_status",

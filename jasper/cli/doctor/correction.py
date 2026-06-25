@@ -60,10 +60,11 @@ def _probe_https_status(
     ``(status, location_header)``.
 
     Certificate verification is intentionally disabled: the speaker's cert is
-    issued by a private CA and this probe checks nginx *routing* (a 200 vs a
-    308 down to ``http://``), not certificate validity. ``http.client`` is used
+    issued by a private CA and this probe checks nginx *routing* (a 200 vs an
+    HTTP downgrade redirect), not certificate validity. ``http.client`` is used
     rather than ``urllib`` precisely because it does not follow redirects — the
-    308 is the signal we are looking for. Factored out so tests can stub it."""
+    redirect target is the signal we are looking for. Factored out so tests can
+    stub it."""
     import http.client
     import ssl
 
@@ -86,8 +87,8 @@ def check_correction_https_assets() -> CheckResult:
     secure context). Its measurement UI links ``/assets/app.css`` and its ES
     module by absolute path; if the 443 server block does not serve
     ``/assets/`` itself, those subresources fall through to the HTTP-downgrade
-    catch-all, ``308`` to ``http://``, and browsers block them as mixed content
-    — the page renders unstyled and its JS (mic capture, sweep) never runs.
+    catch-all and browsers block them as mixed content — the page renders
+    unstyled and its JS (mic capture, sweep) never runs.
 
     ``check_web_design_assets`` covers the files existing on disk; this covers
     them being *reachable over HTTPS*. Skips on a dev checkout (no web root) and

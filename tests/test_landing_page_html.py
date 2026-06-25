@@ -501,16 +501,22 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     https_block = _nginx_location_block(nginx, "location /correction/")
 
     assert "location = /correction" in nginx
-    assert "return 308 /correction/;" in nginx
+    assert "return 302 /correction/;" in nginx
     assert "try_files /correction-preflight.html =404;" in preflight_block
     assert 'add_header Cache-Control "no-store";' in preflight_block
     assert "safe ?next=/correction/..." in nginx
-    assert "return 308 https://$host/correction/;" in proceed_block
-    assert "return 308 https://$host/correction/room/;" in room_block
-    assert "return 308 https://$host/correction/crossover/;" in crossover_block
-    assert "return 308 https://$host/correction/bass/;" in bass_block
+    assert "return 302 https://$host/correction/;" in proceed_block
+    assert "return 302 https://$host/correction/room/;" in room_block
+    assert "return 302 https://$host/correction/crossover/;" in crossover_block
+    assert "return 302 https://$host/correction/bass/;" in bass_block
+    for block in (proceed_block, room_block, crossover_block, bass_block):
+        assert 'add_header Cache-Control "no-store";' in block
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
-    assert "return 308 http://$host$request_uri;" in nginx
+    assert "return 302 http://$host$request_uri;" in nginx
+    assert (
+        'add_header Cache-Control "no-store";\n'
+        "        return 302 http://$host$request_uri;"
+    ) in nginx
     assert "Do not add HSTS here" in nginx
     assert "Strict-Transport-Security" not in nginx
 
@@ -526,8 +532,14 @@ def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
 
     assert "try_files /correction-preflight.html =404;" in preflight_block
     assert 'add_header Cache-Control "no-store";' in preflight_block
-    assert "return 308 https://$host/correction/;" in proceed_block
-    assert "return 308 https://$host/correction/crossover/;" in crossover_block
+    assert "return 302 https://$host/correction/;" in proceed_block
+    assert "return 302 https://$host/correction/crossover/;" in crossover_block
+    assert 'add_header Cache-Control "no-store";' in proceed_block
+    assert 'add_header Cache-Control "no-store";' in crossover_block
+    assert (
+        'add_header Cache-Control "no-store";\n'
+        "        return 302 http://$host$request_uri;"
+    ) in nginx
 
 
 def test_nginx_serves_static_management_assets() -> None:
@@ -544,7 +556,7 @@ def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
     # (getUserMedia needs a secure context) and links /assets/app.css + its
     # ES module by absolute path. The 443 server block must serve /assets/
     # itself; otherwise those subresources fall through to the downgrade
-    # catch-all, 308 to HTTP, and browsers block them as mixed content —
+    # catch-all, 302 to HTTP, and browsers block them as mixed content —
     # leaving the page unstyled and its JS (mic capture, sweep) dead.
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
     https_block = nginx[nginx.index("listen 443") :]
@@ -554,7 +566,7 @@ def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
     # Must precede the HTTP-downgrade catch-all so assets are served, not
     # redirected.
     assert https_block.index("location /assets/") < https_block.index(
-        "return 308 http://$host$request_uri;"
+        "return 302 http://$host$request_uri;"
     )
 
 
@@ -573,7 +585,7 @@ def test_nginx_serves_sync_measurement_over_https() -> None:
     assert "proxy_buffering off;" in sync_block
     assert "proxy_read_timeout 600s;" in sync_block
     assert https_block.index("location /sync/") < https_block.index(
-        "return 308 http://$host$request_uri;"
+        "return 302 http://$host$request_uri;"
     )
 
 
