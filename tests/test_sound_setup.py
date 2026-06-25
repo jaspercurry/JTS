@@ -4060,6 +4060,41 @@ async def test_apply_profile_blocks_active_baseline_with_typed_reason(
     assert last_dsp_apply_state() is None
 
 
+async def test_apply_profile_blocks_program_bake_without_dirtying_dsp_state(
+    tmp_path: Path, monkeypatch
+):
+    from jasper.dsp_apply import last_dsp_apply_state
+    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "grouping_active_leader_bake.yml"
+    current.write_text(_program_bake_yaml(), encoding="utf-8")
+    fake = FakeCamilla(str(current))
+    monkeypatch.setattr(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        lambda: {
+            "enable_rate_adjust": True,
+            "channel_split": None,
+            "playback_pipe_path": None,
+        },
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await sound_setup._apply_profile(
+            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=config_dir,
+            camilla_factory=lambda: fake,
+        )
+    refusal = sound_setup._carrier_refusal(excinfo.value)
+    assert refusal is not None
+    assert refusal.reason_code == "program_bake_pipe_unavailable"
+    assert fake.loaded_path is None
+    assert last_dsp_apply_state() is None
+
+
 def test_carrier_refusal_unwraps_raw_and_wrapped():
     from jasper.sound.graph_carrier import CarrierCannotHostEq
 
