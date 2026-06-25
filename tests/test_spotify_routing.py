@@ -4,7 +4,12 @@
 
 from __future__ import annotations
 
-from jasper.spotify_routing import _match_track, _normalise, _find_librespot_id
+from jasper.spotify_routing import (
+    _find_librespot_id,
+    _match_track,
+    _normalise,
+    stop_renderers,
+)
 
 
 def _spotify(title: str, artist: str, is_playing: bool = True) -> dict:
@@ -216,3 +221,21 @@ async def test_resolve_no_librespot_visible_returns_none_id():
     r = await resolve_target(sp, renderer, "JTS")
     assert r.device_id is None
     assert r.stop_renderers == []
+
+
+@pytest.mark.asyncio
+async def test_stop_renderers_pauses_bluetooth_with_avrcp(monkeypatch):
+    calls: list[str] = []
+
+    async def fake_avrcp(method: str) -> None:
+        calls.append(method)
+
+    class _Renderer:
+        async def pause_airplay(self) -> None:
+            raise AssertionError("airplay should not be touched")
+
+    monkeypatch.setattr("jasper.spotify_routing.bluetooth_avrcp_call", fake_avrcp)
+
+    await stop_renderers(_Renderer(), ["bluetooth"])
+
+    assert calls == ["Pause"]

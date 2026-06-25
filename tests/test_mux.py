@@ -12,6 +12,7 @@ return values per tick.
 """
 from __future__ import annotations
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -790,6 +791,36 @@ async def test_airplay_preempt_falls_back_to_pause_when_stop_fails(
     await mux._pause(Source.AIRPLAY)
 
     assert [call[-1] for call in calls] == ["Stop", "Pause"]
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_preempt_uses_avrcp_pause(mux, monkeypatch):
+    calls: list[str] = []
+
+    async def fake_avrcp(method: str) -> None:
+        calls.append(method)
+
+    monkeypatch.setattr("jasper.mux.bluetooth_avrcp_call", fake_avrcp)
+
+    await mux._pause(Source.BLUETOOTH)
+
+    assert calls == ["Pause"]
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_preempt_avrcp_failure_is_best_effort(
+    mux, monkeypatch, caplog,
+):
+    async def fake_avrcp(method: str) -> None:
+        raise RuntimeError("no player")
+
+    monkeypatch.setattr("jasper.mux.bluetooth_avrcp_call", fake_avrcp)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.mux"):
+        await mux._pause(Source.BLUETOOTH)
+
+    assert "event=bluetooth.preempt_pause_failed" in caplog.records[-1].message
+    assert "phone_side_pause_required" in caplog.records[-1].message
 
 
 @pytest.mark.asyncio

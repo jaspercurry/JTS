@@ -35,6 +35,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from .bluetooth.avrcp import bluetooth_avrcp_call
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,21 +160,17 @@ async def resolve_target(
 async def stop_renderers(renderer, names: list[str]) -> None:
     """Stop the renderers named in `names`. Names match
     Resolution.stop_renderers values: airplay → pause_airplay()
-    (MPRIS Pause on shairport-sync); bluetooth → no-op (bluez-alsa
-    A2DP sink has no graceful pause API). After pausing AirPlay the
-    service takes a beat to release the audio device — a small sleep
-    avoids a race where librespot starts while shairport-sync is still
-    draining."""
+    (MPRIS Pause on shairport-sync); bluetooth → BlueZ AVRCP Pause
+    when the source phone/player exposes a MediaPlayer1 object. After
+    pausing AirPlay the service takes a beat to release the audio device
+    — a small sleep avoids a race where librespot starts while
+    shairport-sync is still draining."""
     for name in names:
         try:
             if name == "airplay":
                 await renderer.pause_airplay()
             elif name == "bluetooth":
-                # No graceful pause on bluez-alsa A2DP sink — phone
-                # keeps streaming until the user pauses on phone.
-                logger.debug(
-                    "stop_renderers: bluetooth — no graceful pause API",
-                )
+                await bluetooth_avrcp_call("Pause")
             else:
                 logger.warning("unknown renderer to stop: %s", name)
         except Exception as e:  # noqa: BLE001

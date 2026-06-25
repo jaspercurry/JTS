@@ -232,10 +232,10 @@ Implemented in the current workstream:
 
 - Spotify/BT degraded push guards clear after a later successful push
   dispatch or confirmed same-level active-source observation.
-- Bluetooth transport dispatch now uses BlueZ AVRCP
-  `org.bluez.MediaPlayer1` when the active A2DP source exposes a player
-  object. Extraction into a source capability adapter is still future
-  work.
+- Bluetooth transport and source preemption now use the shared BlueZ
+  AVRCP helper (`org.bluez.MediaPlayer1`) when the active A2DP source
+  exposes a player object. Extraction into a source capability adapter
+  is still future work.
 - `jasper-mux` loads the wizard-owned Spotify credential env file so
   guarded Spotify handoff has the same Web API inputs as voice/control.
 - Spotify credential/account/default changes restart `jasper-voice`,
