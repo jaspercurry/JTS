@@ -85,7 +85,13 @@ class _StereoHostCarrier:
     arms of the former ``/sound`` 3-arm branch.
     """
 
-    def __init__(self, kind: str, current_path: str | Path | None) -> None:
+    def __init__(
+        self,
+        kind: str,
+        current_path: str | Path | None,
+        *,
+        guard_flat_topology: bool = True,
+    ) -> None:
         self.kind = kind
         self._current_path = current_path
         # L0 safety (docs/HANDOFF-audio-measurement-core.md): a stereo-host graph
@@ -101,11 +107,30 @@ class _StereoHostCarrier:
             flat_program_graph_blocked_reason,
         )
 
-        self._eq_block_reason = flat_program_graph_blocked_reason()
+        self._eq_block_reason = (
+            flat_program_graph_blocked_reason()
+            if guard_flat_topology
+            else None
+        )
         self.can_host_eq = self._eq_block_reason is None
 
     def _compute_room_peqs(self) -> list:
         raise NotImplementedError
+
+    def _resolve_member_kwargs(self, member_kwargs: dict | None) -> dict:
+        # Grouping member-config policy is owned by member_config and applied
+        # identically on every config path (see its module docstring). The
+        # wizard paths let the carrier read it from grouping state
+        # (member_kwargs=None -> member_camilla_kwargs() disk read); the
+        # bonded-leader bake passes its already-resolved cfg kwargs explicitly.
+        if member_kwargs is None:
+            from jasper.multiroom.member_config import member_camilla_kwargs
+
+            member_kwargs = member_camilla_kwargs()
+        return member_kwargs
+
+    def _validate_member_kwargs(self, member_kwargs: dict) -> None:
+        """Carrier-specific guard after grouping policy is resolved."""
 
     def reemit(
         self,
@@ -133,16 +158,8 @@ class _StereoHostCarrier:
                 "crossover is applied (or the speaker layout is cleared). Your "
                 "driver protection is unchanged.",
             )
-        # Grouping member-config policy is owned by member_config and applied
-        # identically on every config path (see its module docstring). The
-        # wizard paths let the carrier read it from grouping state
-        # (member_kwargs=None → member_camilla_kwargs() disk read); the
-        # bonded-leader bake passes its already-resolved cfg kwargs explicitly.
-        # The lazy import keeps the socket-activated wizard process light.
-        if member_kwargs is None:
-            from jasper.multiroom.member_config import member_camilla_kwargs
-
-            member_kwargs = member_camilla_kwargs()
+        member_kwargs = self._resolve_member_kwargs(member_kwargs)
+        self._validate_member_kwargs(member_kwargs)
 
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
         yaml = emit_sound_config(
@@ -174,6 +191,41 @@ class _SoundOrCorrectionCarrier(_StereoHostCarrier):
 
     def _compute_room_peqs(self) -> list:
         return extract_room_peqs_from_config(self._current_path)
+
+
+class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
+    """Active-leader camilla#1 program bake, safe only as a pipe sink.
+
+    The active leader's first CamillaDSP instance owns only the 2-channel program
+    domain and writes it to Snapcast's FIFO; the second instance owns Layer A
+    driver protection. It is therefore a valid host for program-domain room /
+    preference EQ, but only while re-emission keeps the File -> Snap FIFO sink
+    and rate-adjust remains off.
+    """
+
+    def __init__(self, current_path: str | Path | None) -> None:
+        # A program bake is a flat program graph, but not a DAC-bound flat graph.
+        # The protected-tweeter guard remains correct for base/sound/correction
+        # ALSA hosts; this carrier proves the safer predicate below instead.
+        _StereoHostCarrier.__init__(
+            self,
+            "active_leader_program_bake",
+            current_path,
+            guard_flat_topology=False,
+        )
+
+    def _validate_member_kwargs(self, member_kwargs: dict) -> None:
+        pipe = member_kwargs.get("playback_pipe_path")
+        rate_adjust = member_kwargs.get("enable_rate_adjust")
+        if pipe and rate_adjust is False:
+            return
+        raise CarrierCannotHostEq(
+            "program_bake_pipe_unavailable",
+            "CamillaDSP is running the active-leader program bake, but the "
+            "current grouping state does not resolve to the Snapcast pipe sink. "
+            "JTS cannot safely rewrite this grouped graph until the speaker is "
+            "reconciled or ungrouped.",
+        )
 
 
 class _ActiveGraphCarrier:
@@ -420,6 +472,11 @@ def carrier_for_loaded_config(current_path, *, config_dir):
 
         is_baseline = summary.get("source") == ACTIVE_BASELINE_SOURCE
         return _ActiveGraphCarrier(current_path, is_baseline=is_baseline)
+    if summary:
+        from jasper.active_speaker.environment import CAMILLA_CLASS_PROGRAM_BAKE
+
+        if summary.get("classification") == CAMILLA_CLASS_PROGRAM_BAKE:
+            return _ProgramBakeCarrier(current_path)
     if is_jts_generated_config(current_path, config_dir=config_dir):
         return _SoundOrCorrectionCarrier(current_path)
     return _UnknownCarrier(current_path)

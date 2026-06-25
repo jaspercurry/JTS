@@ -1011,6 +1011,49 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     ] == "new"
 
 
+@pytest.mark.asyncio
+async def test_measurement_baseline_hosts_program_bake_pipe(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """JTS5 regression: /start must treat the active-leader program bake as
+    hostable when it still resolves to the Snapcast pipe sink.
+    """
+    from jasper.web import correction_setup
+    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        lambda: {
+            "enable_rate_adjust": False,
+            "channel_split": None,
+            "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
+        },
+    )
+    sess = _make_session(tmp_path)
+    current = sess.cfg.config_dir / "grouping_active_leader_bake.yml"
+    current.write_text(_program_bake_yaml(), encoding="utf-8")
+    fake_cam = _FakeCamilla(current_path=str(current))
+
+    payload = await correction_setup._load_measurement_baseline(sess, fake_cam)
+
+    assert len(fake_cam.set_calls) == 1
+    measurement_path = Path(fake_cam.set_calls[0])
+    assert measurement_path.name.startswith("correction_measurement_")
+    generated = measurement_path.read_text(encoding="utf-8")
+    assert "/run/jasper-snapserver/snapfifo" in generated
+    assert "enable_rate_adjust: false" in generated
+    assert "room_peq_" not in generated
+    assert "sound_curve_" not in generated
+    assert payload["measurement_config_path"] == str(measurement_path)
+    assert payload["prior_config_path"] == str(current)
+    assert sess.pre_measurement_config_path == current
+
+
 def test_start_handler_aborts_if_measurement_baseline_load_fails(
     tmp_path: Path, monkeypatch,
 ):

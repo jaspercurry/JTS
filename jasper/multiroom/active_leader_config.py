@@ -267,9 +267,11 @@ async def precheck_active_leader(
         )
 
     # 2. camilla#1 program bake (Layer B/C + headroom, File -> SNAPFIFO,
-    #    enable_rate_adjust=False). Bypasses the graph carrier exactly as the
-    #    follower driver-domain arm does — the carrier fence
-    #    eq_on_active_bonded_member (the interactive /sound EQ path) is untouched.
+    #    enable_rate_adjust=False). The initial bond bake is emitted and re-proved
+    #    here. Once this graph is loaded, /sound and /correction may re-emit its
+    #    program domain through the graph carrier, but only while grouping state
+    #    still resolves to the same pipe sink; roleful active graphs keep the
+    #    eq_on_active_bonded_member fence.
     #    Inputs mirror the passive leader's apply_bonded_leader_config: the saved
     #    SoundProfile (Layer C preference EQ + headroom) and the output trim.
     #    room_peqs is empty: an active speaker does NOT embed Layer B room
