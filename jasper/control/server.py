@@ -872,6 +872,17 @@ def _pair_follower_leader_addr() -> str | None:
     return follower_leader_addr(load_config())
 
 
+def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
+    return {
+        "status": "parked",
+        "reason": "bonded_follower",
+        "available": False,
+        "muted": True,
+        "pair_leader": leader,
+        "message": "Paired — the assistant listens on the pair leader",
+    }
+
+
 def _launch_grouping_reconciler_kick(reason: str) -> None:
     log_event(
         logger,
@@ -1660,9 +1671,13 @@ def _make_handler(
 
         def _get_mic(self) -> None:
             # Read mic mute state from the voice daemon's STATUS
-            # response. If the daemon isn't reachable, surface that
-            # explicitly so the UI can grey out the toggle instead
-            # of pretending we know the state.
+            # response. A bonded follower intentionally parks local
+            # voice, so report that as a first-class state instead of
+            # making every client reinterpret a missing UDS as failure.
+            leader = _pair_follower_leader_addr()
+            if leader:
+                self._send_json(_bonded_follower_mic_payload(leader))
+                return
             st = self._voice_cmd_or_error(
                 "STATUS",
                 timeout=2.0,
@@ -2547,6 +2562,12 @@ def _make_handler(
             # daemon's control socket, which drops mic frames at
             # the wake-loop gate (mute) or resumes (unmute) and
             # plays a short click on either edge for feedback.
+            leader = _pair_follower_leader_addr()
+            if leader:
+                payload = _bonded_follower_mic_payload(leader)
+                self._send_json({**payload, "error": payload["message"]},
+                                status=409)
+                return
             body = self._read_json()
             if "muted" not in body:
                 self._send_json(

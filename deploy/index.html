@@ -1433,14 +1433,27 @@
         ignorePollUntil = Date.now() + 5000;
       }
 
-      function renderMic(wantMuted, isAvailable) {
+      function renderMic(wantMuted, isAvailable, info) {
+        var parkedByPair = !!(
+          info && info.status === 'parked' &&
+          info.reason === 'bonded_follower'
+        );
         muted = !!wantMuted;
-        available = isAvailable !== false;
+        available = !parkedByPair && isAvailable !== false;
         button.disabled = !available;
-        button.textContent = muted ? 'Enable' : 'Mute';
+        button.textContent = parkedByPair ? 'Parked' : (muted ? 'Enable' : 'Mute');
         button.setAttribute('aria-pressed', String(!muted && available));
-        button.setAttribute('aria-label', muted ? 'Enable microphone' : 'Mute microphone');
+        button.setAttribute('aria-label', parkedByPair ?
+          'Microphone parked while paired' :
+          (muted ? 'Enable microphone' : 'Mute microphone'));
         dot.classList.toggle('on', !muted && available);
+        if (parkedByPair) {
+          title.textContent = 'Paired';
+          sub.textContent = info.message ||
+            'Paired — the assistant listens on the pair leader';
+          setMicState('Paired');
+          return;
+        }
         title.textContent = available ? (muted ? 'Muted' : 'Listening') : 'Unavailable';
         sub.textContent = available ?
           (muted ? 'Microphone muted' : 'Say "Jarvis" to wake') :
@@ -1448,9 +1461,17 @@
         setMicState(available ? (muted ? 'Muted' : 'Listening') : 'Unavailable');
       }
 
-      function applyMuted(nextMuted, isAvailable) {
+      function applyMuted(nextMuted, isAvailable, info) {
         if (dirty) return;
-        renderMic(nextMuted, isAvailable);
+        renderMic(nextMuted, isAvailable, info);
+      }
+
+      async function responseJson(resp) {
+        try {
+          return await resp.json();
+        } catch (_) {
+          return {};
+        }
       }
 
       async function fetchState() {
@@ -1458,11 +1479,11 @@
         if (Date.now() < ignorePollUntil) return;
         try {
           var resp = await fetch('/mic', {cache: 'no-store'});
+          var data = await responseJson(resp);
           if (resp.ok) {
-            var data = await resp.json();
-            applyMuted(!!data.muted, true);
+            applyMuted(!!data.muted, data.available !== false, data);
           } else if (resp.status === 503) {
-            applyMuted(false, false);
+            applyMuted(false, false, data);
           }
         } catch (_) {}
       }
