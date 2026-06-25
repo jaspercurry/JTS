@@ -1100,17 +1100,14 @@ to known-good values for the newly-exposed ch2-5 (which can
 otherwise persist a stale mute from before the firmware change —
 see "The reconciler step matters" below).
 
-On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` and
-`JASPER_AEC_MIC_DEVICE` from the detected card. On an existing Pi that
-was first installed with the legacy square board, update the frozen
-env seed before reconciling:
-
-```sh
-sudo sed -i \
-  -e 's/^JASPER_AEC_MIC_DEVICE=.*/JASPER_AEC_MIC_DEVICE=L16K6Ch/' \
-  -e 's/^JASPER_MIC_DEVICE_CANDIDATES=.*/JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch/' \
-  /etc/jasper/jasper.env
-```
+On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from
+the detected card. On existing Pis, do not hand-pin
+`JASPER_AEC_MIC_DEVICE` when swapping between legacy square/circular
+(`Array`) and Flex LINEAR-4 (`L16K6Ch`) firmware. The reconciler derives
+that bridge mic from the detected XVF profile for selectable input
+profiles and writes the current card back to `/etc/jasper/jasper.env`.
+`JASPER_AUDIO_INPUT_PROFILE=custom` remains the escape hatch for a
+deliberately hand-pinned mic.
 
 ```sh
 sudo systemctl start jasper-aec-reconcile

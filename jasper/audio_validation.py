@@ -517,6 +517,7 @@ def _probe_xvf_mic() -> MicProbe:
             capture_channels=runtime_profile.capture_channels,
             recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
             display_name=runtime_profile.display_name,
+            alsa_card_name=runtime_profile.alsa_card_name,
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
@@ -537,6 +538,7 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
         "present": mic.xvf_present,
         "capture_channels": mic.capture_channels,
         "recommended_channels": mic.recommended_channels,
+        "alsa_card_name": mic.alsa_card_name,
         "variant_id": mic.variant_id,
         "geometry": mic.geometry,
         "chip_beam_plan": mic.chip_beam_plan,
@@ -926,6 +928,8 @@ def _runtime_profile_check(profile_status: Mapping[str, Any], profile: str) -> d
 
 def _runtime_env_check(runtime: Any) -> dict[str, JsonValue]:
     observed = {
+        "primary_device": getattr(runtime, "primary_device", ""),
+        "aec_device": getattr(runtime, "aec_device", ""),
         "chip_enabled": getattr(runtime, "chip_enabled", False),
         "chip_aec_150_device": getattr(runtime, "chip_aec_150_device", ""),
         "chip_aec_210_device": getattr(runtime, "chip_aec_210_device", ""),
