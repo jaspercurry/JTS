@@ -118,7 +118,10 @@ existing layering):
     `enable_rate_adjust=false`; otherwise it refuses
     `program_bake_pipe_unavailable`. This is the JTS5 class where
     `/correction/start` must strip Layer B/C for measurement without calling the
-    graph "custom".
+    graph "custom". The resolver also treats a JTS-generated `sound_current.yml`
+    / `correction_*` graph as this carrier when its content still proves
+    `File` → Snapcast FIFO; the first program-bake re-emit may have the generic
+    `emit_sound_config` source marker, but content still proves it is DAC-less.
   - `is_jts_generated_config` (name) → **sound/correction carrier**
     (`extract_room_peqs_from_config` → `emit_sound_config`) — today's two arms
     relocated **verbatim**, including the `member_camilla_kwargs()` splat
