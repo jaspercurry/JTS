@@ -90,6 +90,7 @@ def test_compensable_outputd_clock_does_not_auto_arm():
 def test_runtime_env_gate_round_trips_reconciler_written_status():
     gate = gate_from_runtime_env({
         "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
+        "JASPER_AEC_CHIP_AEC_DAC_ID": "mystery_usb_audio",
         "JASPER_AEC_CHIP_AEC_DAC_STATUS": "testing",
         "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "explicit_testing",
         "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "operator validation",
@@ -100,3 +101,26 @@ def test_runtime_env_gate_round_trips_reconciler_written_status():
     assert gate.permitted is True
     assert gate.auto_allowed is False
     assert gate.detail == "operator validation"
+
+
+def test_runtime_env_gate_rejects_stale_dac_identity():
+    gate = gate_from_runtime_env({
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x_studio",
+        "JASPER_AEC_CHIP_AEC_DAC_ID": "hifiberry_dac8x",
+        "JASPER_AEC_CHIP_AEC_DAC_STATUS": "approved",
+        "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "static",
+        "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "old approved gate",
+    })
+
+    assert gate is None
+
+
+def test_runtime_env_gate_rejects_missing_persisted_dac_identity():
+    gate = gate_from_runtime_env({
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+        "JASPER_AEC_CHIP_AEC_DAC_STATUS": "approved",
+        "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "static",
+        "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "old approved gate",
+    })
+
+    assert gate is None

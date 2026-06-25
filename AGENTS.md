@@ -1954,14 +1954,16 @@ JASPER_WAKE_LEG_CHIP_AEC=0
 ```
 
 `auto` resolves to the XVF3800 chip-AEC profile when the configured
-AEC mic is present with 6-channel firmware. In that profile the
-bridge forwards the chip-AEC beam to `:9876`, emits fixed
-150°/210° chip beams on `:9887`/`:9888`, and does **not** stack
-software raw/DTLN wake legs. When chip-AEC is unavailable, `auto`
-falls back to `xvf_software_aec3` (AEC3 on `:9876`, raw wake
-fallback on `:9877`, DTLN off). `direct_mic` disables the bridge.
-`custom` preserves the low-level leg booleans exactly for corpus
-tests and nonstandard hardware.
+AEC mic is present with 6-channel firmware and the active output DAC's
+chip-AEC gate is approved. In that profile the bridge forwards the
+chip-AEC beam to `:9876`, emits fixed 150°/210° chip beams on
+`:9887`/`:9888`, and does **not** stack software raw/DTLN wake legs.
+When chip-AEC is unavailable, `auto` falls back to `xvf_software_aec3`
+(AEC3 on `:9876`, raw wake fallback on `:9877`, DTLN off).
+`xvf_chip_aec_testing` is the explicit operator path for validating an
+unapproved DAC with chip-AEC; `auto` never selects testing. `direct_mic`
+disables the bridge. `custom` preserves the low-level leg booleans
+exactly for corpus tests and nonstandard hardware.
 
 ### Wake-detection legs — custom sub-toggles
 
@@ -2008,7 +2010,7 @@ picker, which preserves the threshold on model save). Edit point is
 - `GET /aec` → profile selection, resolved/active audio profile,
   bridge state, effective legs, raw legacy intent, threshold, mic
   status, and validation summary.
-- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
+- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_chip_aec_testing"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
 - `POST /aec/toggle` → custom AEC master flip
 - `POST /aec/leg` body `{leg: "raw"|"dtln"|"chip_aec", enabled: bool}` → flip one custom leg
 - `POST /aec/threshold` body `{threshold: float}` (0.0..1.0) → set sensitivity
@@ -2237,7 +2239,8 @@ Full design, schema, queries:
 ### Enable multi-leg wake OR-gate
 
 Normal operator path: use `http://jts.local/wake/`. Pick a profile
-(`auto`, `xvf_chip_aec`, `xvf_software_aec3`, `direct_mic`) first;
+(`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`,
+`xvf_software_aec3`, `direct_mic`) first;
 only use the advanced `raw`, `dtln`, and `chip_aec` layer switches for
 custom/corpus work. The page stamps `JASPER_AUDIO_INPUT_PROFILE=custom`
 when a layer switch changes, then calls jasper-control.

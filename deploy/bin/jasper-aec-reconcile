@@ -358,6 +358,7 @@ refresh_chip_aec_dac_gate() {
     fi
     # Output is produced by jasper.cli.chip_aec_policy with shlex.quote.
     eval "$payload"
+    CHIP_AEC_DAC_GATE_DAC="${JASPER_CHIP_AEC_DAC_GATE_DAC:-$dac_id}"
     CHIP_AEC_DAC_GATE_OK="${JASPER_CHIP_AEC_DAC_GATE_PERMITTED:-0}"
     CHIP_AEC_DAC_GATE_STATUS="${JASPER_CHIP_AEC_DAC_GATE_STATUS:-needs_calibration}"
     CHIP_AEC_DAC_GATE_SOURCE="${JASPER_CHIP_AEC_DAC_GATE_SOURCE:-unknown}"
@@ -384,6 +385,7 @@ log_chip_aec_dac_gate_if_dynamic() {
 
 write_chip_aec_gate_env() {
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_TESTING_REQUESTED "$CHIP_AEC_TESTING_REQUESTED"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_ID "$CHIP_AEC_DAC_GATE_DAC"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_STATUS "$CHIP_AEC_DAC_GATE_STATUS"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_SOURCE "$CHIP_AEC_DAC_GATE_SOURCE"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_DETAIL "$CHIP_AEC_DAC_GATE_DETAIL"

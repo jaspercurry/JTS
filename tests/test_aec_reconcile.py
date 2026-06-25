@@ -603,6 +603,7 @@ def test_testing_chip_profile_arms_uncalibrated_output_dac_as_testing(
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED=1" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_ID=mystery_usb_audio" in body
     assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=testing" in body
     assert "JASPER_AEC_CHIP_AEC_DAC_SOURCE=explicit_testing" in body
 
