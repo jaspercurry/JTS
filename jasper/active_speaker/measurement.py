@@ -330,6 +330,11 @@ def _latest_current_summed_tests(
     return latest, stale_count
 
 
+def _record_playback_id(record: Mapping[str, Any]) -> str:
+    value = record.get("summed_test_id") or record.get("playback_id")
+    return str(value or "")
+
+
 def _expected_summed_output_indices(
     topology: OutputTopology,
     speaker_group_id: str,
@@ -470,14 +475,18 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         target for target in driver_targets
         if target["target_id"] not in captured_targets
     ]
-    validated_groups = [
-        target["speaker_group_id"]
-        for target in summed_targets
-        if latest_summed_by_group.get(
-            target["speaker_group_id"],
-            {},
-        ).get("validated") is True
-    ]
+    validated_groups: list[str] = []
+    for target in summed_targets:
+        group_id = target["speaker_group_id"]
+        latest_test = latest_summed_tests_by_group.get(group_id, {})
+        latest_validation = latest_summed_by_group.get(group_id, {})
+        if latest_validation.get("validated") is not True:
+            continue
+        if not latest_test:
+            continue
+        if _record_playback_id(latest_validation) != _record_playback_id(latest_test):
+            continue
+        validated_groups.append(group_id)
     missing_summed = [
         target for target in summed_targets
         if target["speaker_group_id"] not in validated_groups

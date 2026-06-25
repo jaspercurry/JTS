@@ -526,6 +526,25 @@ def test_summed_validation_waits_for_all_driver_measurements(
         "validated"
     ] is True
 
+    superseded = _record_summed_test(
+        topology,
+        state_path,
+        playback_id="summed-playback-newer",
+    )
+
+    assert superseded["status"] == "needs_summed_validation"
+    assert superseded["summary"]["summed_validation_complete"] is False
+    assert superseded["summary"]["validated_summed_group_count"] == 0
+    assert superseded["permissions"]["may_compile_baseline"] is False
+    assert (
+        superseded["summary"]["latest_summed_tests"]["mono"]["summed_test_id"]
+        == "summed-playback-newer"
+    )
+    assert (
+        superseded["summary"]["latest_summed_validations"]["mono"]["summed_test_id"]
+        == "summed-playback-audible"
+    )
+
 
 def test_summed_validation_accepts_operator_check_after_audible_test_without_mic(
     tmp_path: Path,

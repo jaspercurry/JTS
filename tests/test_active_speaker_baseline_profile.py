@@ -640,6 +640,53 @@ def test_baseline_profile_blocks_until_summed_validation_exists(
     }
 
 
+def test_baseline_profile_blocks_when_summed_validation_is_superseded(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    state_path = tmp_path / "measurements.json"
+    _measurements(topology, tmp_path)
+    measurements = record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-newer",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed-playback-newer.wav",
+                    "metadata_basename": "tone_summed-playback-newer.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-14T12:04:00Z",
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        state_path=tmp_path / "baseline_profile.json",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert measurements["summary"]["summed_validation_complete"] is False
+    assert "baseline_summed_validation_missing" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
 def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
     tmp_path: Path,
 ) -> None:

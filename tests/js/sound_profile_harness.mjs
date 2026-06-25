@@ -1025,6 +1025,11 @@ async function testCombinedTestButtonStopsActiveRequest() {
     if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
       fail("combined test should turn into a fixed red Stop action while active", { html });
     }
+    if (!html.includes('data-summed-test-level="main"') ||
+        !html.includes("disabled") ||
+        !html.includes("Stop and replay the test audio to use a different level.")) {
+      fail("combined level slider should not look live while test audio is playing", { html });
+    }
     harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
     await harness.flush(); await harness.flush(); await harness.flush();
   } finally {
@@ -1040,6 +1045,80 @@ async function testCombinedTestButtonStopsActiveRequest() {
   }));
   await harness.flush(); await harness.flush();
   return { combinedTestButtonStopsActiveRequest: true };
+}
+
+async function testStaleSummedValidationDoesNotRenderValidatedGroup() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  const measurements = {
+    status: "needs_summed_validation",
+    summary: {
+      ...summedSummary({
+        main: {
+          captured: true,
+          audio_emitted: true,
+          summed_test_id: "sum-2",
+          playback_id: "sum-2",
+        },
+      }),
+      latest_summed_validations: {
+        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
+      },
+    },
+    permissions: {},
+    issues: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "needs_combined_check",
+      test_level: {
+        requested_level_dbfs: -72,
+        min_level_dbfs: -80,
+        max_level_dbfs: 0,
+        step_db: 1,
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_record",
+        status_label: "ready to record",
+        message: "Combined speaker test played. Record what you heard.",
+        latest_test_id: "sum-2",
+        has_audible_test: true,
+        validated: false,
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: true,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "sum-2", operator_listening_check: true },
+          },
+        },
+      }],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes(">validated</span>")) {
+    fail("stale summed validation should not render as current validated state", { html });
+  }
+  if (!html.includes(">ready to record</span>") ||
+      !html.includes('data-summed-test-id="sum-2"') ||
+      html.includes('data-summed-test-id="sum-1"')) {
+    fail("combined result should point at the latest audible test", { html });
+  }
+  return { staleSummedValidationDoesNotRenderValidatedGroup: true };
 }
 
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
@@ -2559,6 +2638,7 @@ results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCombinedTestButtonStopsActiveRequest());
+results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
