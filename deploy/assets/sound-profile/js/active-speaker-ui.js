@@ -52,7 +52,8 @@ export function activeSpeakerStepState(step, ctx) {
     (hasLayout && !dirty ? 'active' : 'todo');
   if (step === 'safety') return driverChecksComplete ? 'done' :
     (ctx.outputIdentityComplete ? 'active' : 'todo');
-  if (step === 'profile') return ctx.baselineProfileApplied ? 'done' :
+  if (step === 'profile') return ctx.baselineProfileApplied &&
+    !ctx.baselineProfileNeedsRevalidation ? 'done' :
     (driverChecksComplete ? 'active' : 'todo');
   return 'todo';
 }

@@ -80,6 +80,7 @@ from ..local_sources import (
     local_source_park_units,
 )
 from ..transit.state import read_state as read_transit_state
+from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..audio_profile_state import (
     normalize_audio_input_profile,
 )
@@ -109,7 +110,6 @@ _peering_loop: asyncio.AbstractEventLoop | None = None
 _peering_stop_requested = threading.Event()
 CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
-ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME = "active_speaker_staged_startup.yml"
 _DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
 _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
@@ -300,31 +300,37 @@ def _active_speaker_level_match_provisional() -> bool | None:
 def _active_speaker_output_safety_snapshot(
     airplay_health: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Return the landing-page speaker-output safety state.
-
-    `/system/snapshot` already carries the CamillaDSP config path via the
-    AirPlay health sampler. Keep the browser dumb: classify that path here and
-    let the page render a boolean instead of knowing commissioning filenames.
-    """
+    """Return the landing-page speaker-output safety state."""
 
     current = airplay_health.get("current") if isinstance(airplay_health, dict) else {}
     camilla = current.get("camilla") if isinstance(current, dict) else {}
     raw_path = camilla.get("config_path") if isinstance(camilla, dict) else None
     config_path = str(raw_path or "")
-    safety_muted = (
-        os.path.basename(config_path) == ACTIVE_SPEAKER_STAGED_STARTUP_BASENAME
+    setup = read_active_speaker_setup_status(
+        active_config_path=config_path or None,
     )
     return {
-        "safety_muted": safety_muted,
-        "reason": "active_speaker_staged_startup" if safety_muted else None,
-        "active_config_path": config_path or None,
-        # None unless an active-speaker baseline is applied; True when its
-        # per-driver level match is still a datasheet estimate (run the guided
-        # phone level-match to measure it). The speaker is attenuation-only and
-        # safe either way — this is a quality signal, not a safety one.
+        **setup,
+        # Back-compat for the landing-page field name. This is now driven by the
+        # shared setup contract, not by a filename-only heuristic.
+        "safety_muted": not bool(setup.get("volume_allowed")),
         "level_match_provisional": _active_speaker_level_match_provisional(),
-        "source": "airplay_health.camilla_config_path",
+        "source": "active_speaker.setup_status",
     }
+
+
+def _active_speaker_volume_block() -> dict[str, Any] | None:
+    setup = read_active_speaker_setup_status()
+    if setup.get("active") and not setup.get("volume_allowed", False):
+        return setup
+    return None
+
+
+def _active_speaker_grouping_block() -> dict[str, Any] | None:
+    setup = read_active_speaker_setup_status()
+    if setup.get("active") and not setup.get("grouping_allowed", False):
+        return setup
+    return None
 
 # The high-impact mutations the control token gates (SECURITY.md).
 # The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
@@ -1924,6 +1930,16 @@ def _make_handler(
         def _post_volume_adjust(self) -> None:
             if self._maybe_forward_pair_action_to_leader():
                 return
+            blocked = _active_speaker_volume_block()
+            if blocked is not None:
+                self._send_json(
+                    {
+                        "error": blocked.get("detail") or "speaker output is not ready",
+                        "active_speaker_setup": blocked,
+                    },
+                    status=409,
+                )
+                return
             body = self._read_json()
             # Support both legacy delta_db (dial firmware compat,
             # interpreted on the 50 dB camilla scale) and the
@@ -1971,6 +1987,16 @@ def _make_handler(
 
         def _post_volume_set(self) -> None:
             if self._maybe_forward_pair_action_to_leader():
+                return
+            blocked = _active_speaker_volume_block()
+            if blocked is not None:
+                self._send_json(
+                    {
+                        "error": blocked.get("detail") or "speaker output is not ready",
+                        "active_speaker_setup": blocked,
+                    },
+                    status=409,
+                )
                 return
             body = self._read_json()
             # Support both legacy `db` (dial / older clients) and
@@ -2191,6 +2217,22 @@ def _make_handler(
                 if err:
                     self._send_json({"error": err}, status=400)
                     return
+                blocked = (
+                    _active_speaker_grouping_block()
+                    if body.get("enabled") else None
+                )
+                if blocked is not None:
+                    self._send_json(
+                        {
+                            "error": (
+                                blocked.get("detail")
+                                or "active speaker setup is not ready for grouping"
+                            ),
+                            "active_speaker_setup": blocked,
+                        },
+                        status=409,
+                    )
+                    return
                 crossover_hz = effective_crossover_hz
             try:
                 _write_grouping(
@@ -2247,6 +2289,16 @@ def _make_handler(
 
         def _post_volume_mute(self) -> None:
             if self._maybe_forward_pair_action_to_leader():
+                return
+            blocked = _active_speaker_volume_block()
+            if blocked is not None:
+                self._send_json(
+                    {
+                        "error": blocked.get("detail") or "speaker output is not ready",
+                        "active_speaker_setup": blocked,
+                    },
+                    status=409,
+                )
                 return
             # Default is TOGGLE: muted → unmute (restore pre-mute
             # level), unmuted → mute. Used by HID accessory clicks

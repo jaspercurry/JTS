@@ -1770,6 +1770,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function baselineProfileApplied() {
     return activeSpeaker.baselineProfile && activeSpeaker.baselineProfile.status === 'applied';
   }
+  function baselineProfileRevalidation() {
+    var profile = activeSpeaker.baselineProfile || {};
+    return profile.revalidation && typeof profile.revalidation === 'object' ?
+      profile.revalidation : {};
+  }
+  function baselineProfileNeedsRevalidation() {
+    return baselineProfileRevalidation().required === true;
+  }
   function outputStepContext(topology) {
     return {
       hasLayout: outputGroups(topology).length > 0,
@@ -1778,7 +1786,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearchSatisfied: driverResearchStepSatisfied(),
       outputIdentityComplete: outputIdentityComplete(),
       driverChecksComplete: driverChecksComplete(),
-      baselineProfileApplied: baselineProfileApplied()
+      baselineProfileApplied: baselineProfileApplied(),
+      baselineProfileNeedsRevalidation: baselineProfileNeedsRevalidation()
     };
   }
   function outputStepState(step, topology) {
@@ -2869,6 +2878,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var groups = activeOutputGroups(topology);
     if (!groups.length) return '';
     var canRecord = driverChecksComplete();
+    var revalidation = baselineProfileRevalidation();
+    var revalidating = revalidation.required === true;
+    var revalidationNeedsCombined = revalidating &&
+      (revalidation.next_step || '') === 'combined_check';
     var rows = groups.map(function(group) {
       var groupView = commissioningGroupView(group.id);
       var startAction = commissioningGroupAction(groupView, 'start_combined_test');
@@ -2919,7 +2932,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var backButton = '<button type="button" class="btn btn--ghost" ' +
         'data-act="back-to-crossover-config"' +
         (combinedBusy ? ' disabled' : '') + '>Back to adjust crossover</button>';
-      var hint = groupView && groupView.message ? groupView.message : (hasAudibleTest ?
+      var hint = revalidationNeedsCombined ?
+        (hasAudibleTest ?
+          'Revalidation test played. Save the result if the speaker sounds coherent.' :
+          'Your active speaker setup changed after the current profile was applied. Play the combined check again, then save the result.') :
+        groupView && groupView.message ? groupView.message : (hasAudibleTest ?
         'After the combined test, save the result if the speaker sounds coherent.' :
         (canRecord ?
           'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
@@ -2945,12 +2962,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }).join('');
     return '<div class="output-card output-card--summed-validation">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Combined crossover check</p>' +
+      '<div class="output-card__head"><div><p class="output-card__title">' +
+        escapeHtml(revalidationNeedsCombined ? 'Revalidate crossover blend' : 'Combined crossover check') + '</p>' +
         '<p class="setting-row__hint">' + escapeHtml(canRecord ?
-          'Choose a careful level, play the combined speaker, then save the check if it sounds right.' :
+          (revalidationNeedsCombined ?
+            'Play the combined speaker again, then save the check if it still sounds right.' :
+            'Choose a careful level, play the combined speaker, then save the check if it sounds right.') :
           'Test each driver first, then validate the combined crossover.') + '</p></div>' +
         '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(summedValidationComplete() ? 'ready' : (canRecord ? 'next' : 'after driver checks')) + '</span></div>' +
+          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after driver checks'))) + '</span></div>' +
       '<div class="active-speaker-validation">' + rows + '</div>' +
     '</div>';
   }
@@ -3001,6 +3021,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var readyToApply = permissions.may_apply === true;
     var mayCompile = summedValidationComplete();
     var applyBlocked = baselineProfileApplyBlocked(profile);
+    var revalidating = baselineProfileNeedsRevalidation();
     var busy = activeSpeaker.action === 'Saving active profile' ||
       activeSpeaker.action === 'Applying active profile';
     var issues = Array.isArray(profile.issues) ? profile.issues : [];
@@ -3016,9 +3037,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">The active profile was saved for review, but this hardware path cannot be applied from this page yet.</p>' :
       (readyToApply ?
         '<p class="setting-row__hint">Your active speaker profile is saved. Apply it to start using it.</p>' :
+      (revalidating ?
+        '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
+          'Revalidation is saved. Save and apply a fresh active profile.' :
+          'Your active speaker setup changed after the current profile was applied. Revalidate the combined crossover, then save and apply a fresh profile.') + '</p>' :
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
           'Save the checked crossover as your active speaker profile. No sound plays.' :
-          'Finish the combined crossover check before saving the active profile.') + '</p>'));
+          'Finish the combined crossover check before saving the active profile.') + '</p>')));
     var actionLabel = busy ?
       (activeSpeaker.action === 'Applying active profile' ? 'Applying profile' : 'Saving profile') :
       (readyToApply ? 'Apply profile' : (applyBlocked ? 'Save profile' : 'Save and apply'));
@@ -3033,7 +3058,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and driver checks.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
+          escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (revalidating ? 'recheck' : (applyBlocked ? 'saved for review' : 'not saved')))) + '</span></div>' +
       body +
       renderLevelMatchSummary(profile) +
       (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +

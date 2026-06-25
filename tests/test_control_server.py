@@ -132,7 +132,25 @@ class FakeCoordinator:
         return None
 
 
-def test_active_speaker_output_safety_snapshot_classifies_staged_config() -> None:
+def test_active_speaker_output_safety_snapshot_uses_setup_status(
+    monkeypatch,
+) -> None:
+    import jasper.control.server as srv_mod
+
+    def fake_setup(*, active_config_path=None, **_kwargs):
+        assert active_config_path.endswith("active_speaker_staged_startup.yml")
+        return {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "active_speaker_commissioning_config_loaded",
+            "active_config_path": active_config_path,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+
     payload = _active_speaker_output_safety_snapshot({
         "current": {
             "camilla": {
@@ -145,13 +163,30 @@ def test_active_speaker_output_safety_snapshot_classifies_staged_config() -> Non
     })
 
     assert payload["safety_muted"] is True
-    assert payload["reason"] == "active_speaker_staged_startup"
+    assert payload["reason"] == "active_speaker_commissioning_config_loaded"
     assert payload["active_config_path"].endswith(
         "active_speaker_staged_startup.yml"
     )
 
 
-def test_active_speaker_output_safety_snapshot_allows_baseline_config() -> None:
+def test_active_speaker_output_safety_snapshot_allows_setup_ready(
+    monkeypatch,
+) -> None:
+    import jasper.control.server as srv_mod
+
+    def fake_setup(*, active_config_path=None, **_kwargs):
+        return {
+            "active": True,
+            "configured": True,
+            "volume_allowed": True,
+            "grouping_allowed": True,
+            "reason": None,
+            "active_config_path": active_config_path,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+
     payload = _active_speaker_output_safety_snapshot({
         "current": {
             "camilla": {
@@ -1007,11 +1042,71 @@ def test_grouping_set_leader_writes_env_and_kicks_reconciler(
     assert _GROUPING_KICK in popens
 
 
+def test_grouping_set_enable_rejects_active_speaker_setup_block(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": True, "role": "leader", "channel": "left",
+        "bond_id": "living-room",
+    })
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["grouping_allowed"] is False
+    assert not env.exists()
+    assert popens == []
+
+
 def test_grouping_set_disabled_writes_off_and_kicks(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
     env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {"enabled": False})
+
+    assert status == 200
+    assert body["enabled"] is False
+    assert "JASPER_GROUPING=off" in env.read_text()
+    assert _GROUPING_KICK in popens
+
+
+def test_grouping_set_disabled_ignores_active_speaker_setup_block(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
 
     status, body = _post(f"{base}/grouping/set", {"enabled": False})
 
@@ -1611,6 +1706,33 @@ def test_volume_set_native_percent(server_with_coordinator):
     assert status == 200
     assert body["percent"] == 75
     assert ("set", 75) in fake.calls
+
+
+def test_volume_set_rejects_active_speaker_setup_block(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    base, fake = server_with_coordinator
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
+
+    status, body = _post(f"{base}/volume/set", {"percent": 75})
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert all(call[0] != "set" for call in fake.calls)
 
 
 def test_volume_set_clamps(server_with_coordinator):

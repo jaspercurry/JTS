@@ -110,15 +110,20 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
     script = _volume_slider_script(html)
 
     assert 'id="volume-safety-note" hidden' in html
-    assert "Speaker output is safety-muted during active crossover setup." in html
+    assert "Speaker output is locked until active crossover setup is complete." in html
     assert 'href="/sound/"' in html
     assert ".volume-wrap.safety-muted" in style
+    assert "cursor: not-allowed;" in style
     assert "fetch('/system/data.json', {cache: 'no-store'})" in script
     assert "active_speaker_output_safety" in script
     assert "typeof safety.safety_muted === 'boolean'" in script
+    assert "typeof safety.volume_allowed === 'boolean'" in script
     assert "camilla.config_path" in script
     assert "active_speaker_staged_startup\\.yml" in script
-    assert "hit.classList.toggle('safety-muted', !!muted)" in script
+    assert "var safetyMuted = false" in script
+    assert "if (safetyMuted) return;" in script
+    assert "aria-disabled" in script
+    assert "hit.classList.toggle('safety-muted', safetyMuted)" in script
     assert "volume-safety-note" in script
     assert "fetch('/state'" not in script
     assert "disabled = true" not in script
