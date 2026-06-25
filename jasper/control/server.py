@@ -591,12 +591,14 @@ def _audio_profile_status(
     *,
     bridge_active: bool,
     chip_available: bool,
+    chip_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _sync_aec_module()
     return _aec_endpoints._audio_profile_status(
         state,
         bridge_active=bridge_active,
         chip_available=chip_available,
+        chip_gate=chip_gate,
     )
 
 

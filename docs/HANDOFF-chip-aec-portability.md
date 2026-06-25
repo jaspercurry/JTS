@@ -24,7 +24,9 @@
 > dongle baseline; other DACs can still be promoted by live outputd evidence
 > when `reference_outputs.aec_clock.verdict=coherent` and locked.
 > `compensable` / `fallback` / `observing` still degrade visibly to software
-> AEC3 for unapproved DACs. **Chip-AEC is the
+> AEC3 for unapproved DACs unless the operator explicitly selects
+> `xvf_chip_aec_testing`, which runs chip-AEC as a labeled validation mode
+> without promoting the DAC to approved. **Chip-AEC is the
 > preferred echo canceller** (a dedicated on-chip DSP doing fixed-beam + AEC,
 > materially better than software AEC3), so the objective is to get *any*
 > suitable DAC onto chip-AEC, not just one.
@@ -169,13 +171,17 @@ observe mode give us the DAC-agnostic *measurement*; these three increments
 turn that into a self-driving production capability. None is foundational
 rework — each builds on what is already merged.
 
-**1. Verdict-driven gate (shipped 2026-06-22).** `jasper-aec-reconcile`
-keeps the Apple USB-C dongle and HiFiBerry DAC8x as static known-good profiles,
-but other DACs can still be promoted by live outputd evidence: locked
+**1. Verdict-driven gate (shipped 2026-06-22; centralized 2026-06-24).**
+`jasper-aec-reconcile` keeps the Apple USB-C dongle and HiFiBerry DAC8x as
+static known-good profiles, but other DACs can still be promoted by live
+outputd evidence: locked
 `/state.outputd.reference_outputs.aec_clock.verdict=coherent` arms production
 chip-AEC. `compensable`, `fallback`, `observing`, missing outputd STATUS, or an
-inactive chip-ref writer all remain on software AEC3, visibly. This closes the
-loop from "measured" → "running in production" for newly coherent DACs without
+inactive chip-ref writer all remain on software AEC3 in `auto`, visibly. The
+explicit `xvf_chip_aec_testing` profile can arm chip-AEC on an unapproved DAC
+for operator validation; `/aec`, `/state`, `jasper-doctor`, and validation
+artifacts report that gate as `testing`, not `approved`. This closes the loop
+from "measured" → "running in production" for newly coherent DACs without
 making them edit-only forever. `compensable` still awaits Layer 2 before it can
 arm production chip-AEC.
 
@@ -338,4 +344,4 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 - Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md)
 - DAC registry: [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
 
-Last verified: 2026-06-24
+Last verified: 2026-06-25

@@ -47,6 +47,7 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         "active": "xvf_chip_aec",
         "state": "active",
         "reason": "Chip-AEC runtime env is applied.",
+        "validation_profile": "xvf_chip_aec",
     }
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["wake_legs"] == [
@@ -138,3 +139,30 @@ def test_profile_env_updates_stamp_rollback_safe_legacy_keys():
         "JASPER_WAKE_LEG_CHIP_AEC": "1",
     }
     assert profile_env_updates("auto")["JASPER_WAKE_LEG_CHIP_AEC"] == "0"
+
+
+def test_testing_profile_uses_chip_aec_runtime_but_same_validation_profile():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec_testing"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+            chip_aec_150_device="udp:9887",
+            chip_aec_210_device="udp:9888",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+        chip_gate={
+            "status": "testing",
+            "permitted": True,
+            "auto_allowed": False,
+            "detail": "operator validation",
+        },
+    )
+
+    assert status["audio_profile"]["selection"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["active"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC testing"

@@ -287,7 +287,7 @@ the measured Apple USB-C dongle baseline, and for any future output DAC profile
 only after its chip-AEC timing/reference calibration is codified:
 
 ```text
-JASPER_AUDIO_INPUT_PROFILE=auto       # xvf_chip_aec on 6-ch XVF + supported/calibrated DAC
+JASPER_AUDIO_INPUT_PROFILE=auto       # xvf_chip_aec on 6-ch XVF + approved DAC gate
 JASPER_AEC_CHIP_AEC_ENABLED=1
 JASPER_AEC_REF_SOURCE=outputd_udp
 JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0
@@ -315,8 +315,8 @@ Do not hard-code Apple-dongle assumptions into the architecture. Keep outputd
 as the production owner of final speaker output and reference publication.
 For every DAC/output profile, the safe decision procedure is:
 
-1. Reconcile/config owns hardware-profile defaults and whether chip-AEC is
-   supported, degraded, or requires calibration.
+1. Reconcile/config owns hardware-profile defaults and the central chip-AEC
+   DAC gate (`approved`, `testing`, or `needs_calibration`).
 2. Outputd reports the final-output reference and timing health for the active
    sink shape.
 3. A calibration/probe measures live reference-to-air-to-mic delay and drift
@@ -330,12 +330,11 @@ This supports Apple USB-C dongle, HiFiBerry/DAC hats, DAC8x-style active
 profiles, multiple Apple dongles, and future USB DACs without making chip-AEC
 success depend on one DAC's folklore.
 
-The current executable policy is intentionally conservative: Apple USB-C dongle
-is the measured static baseline, and non-Apple DAC IDs fall back to software
-AEC3 unless outputd's live verdict gate reports locked `coherent`. JTS3's
-HiFiBerry DAC8x can arm through that shipped gate; the follow-up is to promote
-Jasper's validation evidence into a persistent known-good profile fact so
-matching DAC8x systems do not need to re-prove coherence at every boot.
+The current executable policy is intentionally conservative: Apple USB-C
+dongle and HiFiBerry DAC8x are approved static baselines, future DAC IDs fall
+back to software AEC3 in `auto` unless outputd's live verdict gate reports
+locked `coherent`, and the explicit `xvf_chip_aec_testing` profile can run
+chip-AEC as operator validation without promoting the DAC to approved.
 
 ## 6. Tests To Guard This
 
@@ -363,9 +362,10 @@ Recommended additional guard coverage:
    `AEC_FAR_EXTGAIN`, and `AUDIO_MGR_REF_GAIN` read/write handling if that
    becomes init-owned.
 2. `tests/test_aec_reconcile.py`: keep the DAC-profile matrix expectations
-   for chip-AEC supported and calibration-required/fallback states, with
-   outputd chip-ref env written only for supported/calibrated profiles; expand
-   it when a degraded-but-still-supported state or a new calibrated DAC ships.
+   for chip-AEC `approved`, `testing`, and `needs_calibration` states, with
+   outputd chip-ref env written only when the central gate permits the selected
+   profile; expand it when a degraded-but-still-supported state or a new
+   calibrated DAC ships.
 3. Outputd Rust tests: keep the existing exact-ratio downsampler test and add
    a fixture that asserts chip-ref output is stereo dual-mono for unequal
    input L/R and cannot clip when outputd's folded reference is within range.

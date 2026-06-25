@@ -42,14 +42,18 @@ pick up the work without re-doing the investigation.
 **Input selection is profile-first.** `install.sh` seeds
 `/var/lib/jasper/aec_mode.env` with `JASPER_AUDIO_INPUT_PROFILE=auto`,
 enables `jasper-aec-reconcile.service`, and runs the reconciler once.
-On the recommended 6-channel XVF3800 shape plus a supported/calibrated
-output DAC profile, `auto` resolves to `xvf_chip_aec`: `jasper-outputd`
+On the recommended 6-channel XVF3800 shape plus an approved output-DAC
+gate, `auto` resolves to `xvf_chip_aec`: `jasper-outputd`
 fans out the final speaker buffer to the XVF USB-IN reference,
 `jasper-aec-init` applies the volatile 150°/210° ASR beam profile, and
 `jasper-aec-bridge` forwards the chip beam to `:9876` while exposing
 `:9887`/`:9888` scoring legs. Software AEC3 remains the fallback profile
 (`xvf_software_aec3`) when chip-AEC is unavailable, the output DAC still
-needs calibration, or software AEC3 is explicitly selected.
+needs calibration, or software AEC3 is explicitly selected. To validate a
+new output DAC without promoting it to production, select
+`xvf_chip_aec_testing`; it runs the same physical chip-AEC path as
+`xvf_chip_aec`, surfaces the DAC gate as `testing`, and never makes
+`auto` choose that DAC.
 
 The current `xvf_chip_aec` baseline is **not** the older
 `SHF_BYPASS=1` software-AEC profile. With chip-AEC armed,
@@ -63,14 +67,16 @@ non-silent raw-ish XVF channel.
 
 **Hardware adaptability contract:** chip-AEC support is a property of
 the resolved input/output hardware profile, not of one known DAC. The
-final architecture must support Apple USB-C dongles, HiFiBerry/DAC hats,
-DAC8x-style active profiles, multiple Apple dongles, and future USB DACs
-through the same ownership lines: reconcile/config owns profile defaults
-and fallback/degraded states; outputd owns final-output reference
-publication and timing health; audio validation reports `dac_support`
-readiness today and doctor should surface the same supported,
-needs-calibration, or degraded state for the active DAC. Prefer live
-timing/level measurement and outputd `/state` evidence over profile folklore.
+central policy in `jasper/chip_aec_policy.py` owns the DAC gate vocabulary
+(`approved`, `testing`, `needs_calibration`) and every status surface
+consumes that same decision. The architecture must support Apple USB-C
+dongles, HiFiBerry/DAC hats, DAC8x-style active profiles, multiple Apple
+dongles, and future USB DACs through the same ownership lines:
+reconcile/config owns profile defaults and fallback/degraded states;
+outputd owns final-output reference publication and timing health; audio
+validation reports DAC-gate readiness and doctor surfaces the same state
+for the active DAC. Prefer live timing/level measurement and outputd
+`/state` evidence over profile folklore.
 Only carry per-profile residual
 `AUDIO_MGR_SYS_DELAY` trim after dynamic timing is exhausted and the
 calibration artifact is codified with that hardware profile. Old taps such
@@ -2639,6 +2645,6 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-19 (chip-AEC availability rechecked against the
-geometry-aware XVF profile resolver; Flex LINEAR-4 uses software AEC3
-until a linear beam plan is validated).
+Last verified: 2026-06-25 (central chip-AEC DAC gate and
+`xvf_chip_aec_testing` profile rechecked against the reconciler, `/aec`,
+doctor, and validation paths).
