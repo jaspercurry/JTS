@@ -785,8 +785,13 @@ fine, surface the exact fix when not):
 - **Audio profile** — read-only intent-vs-runtime truth from the same
   classifier as `/aec` and `/state.aec`: requested profile, active
   profile, session source, wake legs, and any pending/unavailable warning.
-- **AEC bridge service** — software AEC is the *desired* state, so:
-  - `ok (running)` — bridge active, AEC on
+- **AEC bridge service** — the bridge should be active whenever a mic
+  profile needs its UDP outputs. In software profiles it runs WebRTC
+  AEC3; in chip-AEC profiles it forwards the selected chip beam and
+  bypasses WebRTC AEC3.
+  - `ok (running (software AEC3 enabled))` — software profile active
+  - `ok (running (chip-AEC beam forwarding; WebRTC AEC3 bypassed; ...))`
+    — chip-AEC profile active
   - `ok (disabled JASPER_AEC_MODE=disabled)` — explicit operator opt-out
   - `warn (off — XVF on 2-channel firmware)` — gentle nudge to DFU-flash
   - `warn (off — Array chip not present)` — XVF needs to be plugged in
@@ -1113,7 +1118,7 @@ sudo systemctl start jasper-aec-reconcile
 # Confirm everything's healthy:
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(Audio profile|AEC bridge|XVF)'
 # Expect four "✓" lines:
-#   AEC bridge service       running (software AEC enabled)
+#   AEC bridge service       running (software AEC3 enabled)
 #   Audio profile            requested=xvf_software_aec3, active=xvf_software_aec3, ...
 #   XVF firmware 6-ch        capture is 6-channel
 #   XVF mixer state          all 6 capture channels open

@@ -18,6 +18,7 @@ from pathlib import Path
 from ...audio_profile_state import (
     AecIntent,
     MicProbe,
+    PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     build_audio_profile_status,
     normalize_audio_input_profile,
@@ -329,6 +330,36 @@ def check_audio_validation_readiness() -> CheckResult:
         requested_profile=requested_profile,
     )
 
+def _running_aec_bridge_detail() -> str:
+    try:
+        status = _audio_profile_status_for_doctor(bridge_active=True)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return "running (audio profile unavailable)"
+
+    profile = status.get("audio_profile") or {}
+    mic = status.get("microphone") or {}
+    active_profile = normalize_audio_input_profile(
+        str(profile.get("active") or ""),
+        default="",
+    )
+    processing_mode = str(mic.get("processing_mode") or "")
+    if (
+        active_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
+        or "Chip-AEC" in processing_mode
+    ):
+        gate = status.get("chip_aec_gate")
+        gate_detail = ""
+        if isinstance(gate, dict):
+            gate_status = str(gate.get("status") or "unknown")
+            gate_source = str(gate.get("source") or "unknown")
+            gate_detail = f"; gate={gate_status}/{gate_source}"
+        return (
+            "running (chip-AEC beam forwarding; WebRTC AEC3 bypassed"
+            f"{gate_detail})"
+        )
+
+    return "running (software AEC3 enabled)"
+
 @doctor_check(order=45, group="aec")
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
@@ -355,7 +386,7 @@ def check_aec_bridge_running() -> CheckResult:
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
 
     if is_active == "active":
-        return CheckResult("AEC bridge service", "ok", "running (software AEC enabled)")
+        return CheckResult("AEC bridge service", "ok", _running_aec_bridge_detail())
 
     aec_mode = _aec_mode_setting()
     capture_ch = xvf3800.capture_channels()
