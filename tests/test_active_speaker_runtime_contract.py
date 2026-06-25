@@ -859,6 +859,18 @@ def test_driver_domain_pair_trim_is_allowed_and_non_positive() -> None:
     assert "active_baseline_headroom" not in text
 
 
+def test_driver_domain_pair_trim_zero_gain_stage_is_still_emitted() -> None:
+    """The live balance path patches this stable filter, including at center."""
+    text = _driver_domain_yaml("mono", 2, pair_trim_db=0.0)
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=text,
+    )
+
+    assert graph.allowed, graph.issues
+    assert "pair_balance_trim" in text
+    assert "parameters: { gain: -0.0000" in text
+
+
 def test_driver_domain_pair_trim_positive_gain_is_rejected() -> None:
     text = _driver_domain_yaml("mono", 2, pair_trim_db=3.5)
     tampered = text.replace("gain: -3.5000", "gain: 3.5000")
@@ -965,12 +977,18 @@ def test_driver_domain_rejects_arbitrary_program_domain_filter_step() -> None:
 
 def test_driver_domain_rejects_channel_select_after_split() -> None:
     text = _driver_domain_yaml("mono", 2)
-    swapped = text.replace(
+    valid_prefix = (
         "  - type: Mixer\n    name: channel_select\n"
-        "  - type: Mixer\n    name: split_active_2way\n",
+        "  - type: Filter\n    channels: [0, 1]\n    names: [pair_balance_trim]\n"
         "  - type: Mixer\n    name: split_active_2way\n"
-        "  - type: Mixer\n    name: channel_select\n",
     )
+    swapped = text.replace(
+        valid_prefix,
+        "  - type: Mixer\n    name: split_active_2way\n"
+        "  - type: Mixer\n    name: channel_select\n"
+        "  - type: Filter\n    channels: [0, 1]\n    names: [pair_balance_trim]\n",
+    )
+    assert swapped != text
     graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=swapped)
     assert not graph.allowed
     assert "active_driver_domain_channel_select_after_split" in {i["code"] for i in graph.issues}

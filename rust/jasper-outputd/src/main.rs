@@ -311,16 +311,10 @@ fn run_alsa(
     } else {
         None
     };
-    // Pair-balance trim: a fixed linear gain on the round-trip content
-    // path (FIFO and inv-B fallback periods alike — no level jump on a
-    // starvation transition). Precomputed once; <= 0 dB enforced at
-    // config parse, so this can only attenuate.
-    let dac_content_trim: Option<f32> = if dac_content.is_some() && config.dac_content_trim_db < 0.0
-    {
-        Some(10f32.powf(config.dac_content_trim_db / 20.0))
-    } else {
-        None
-    };
+    // Pair-balance trim: a runtime-adjustable linear gain on the round-trip
+    // content path (FIFO and inv-B fallback periods alike — no level jump on a
+    // starvation transition). <= 0 dB is enforced at config/control parse, so
+    // this can only attenuate.
     let zero_period = vec![0i16; content_period_samples];
     let dac_negotiated = sink.dac_negotiated();
     let prime_periods = prime_periods(dac_negotiated.buffer_frames, dac_negotiated.period_frames);
@@ -405,7 +399,12 @@ fn run_alsa(
                 src.apply_pick_to_fallback_period(&mut content_buf);
             }
         }
-        if let Some(trim) = dac_content_trim {
+        let trim = if dac_content.is_some() {
+            state.dac_content_trim_gain()
+        } else {
+            1.0
+        };
+        if trim < 1.0 {
             // Before duck/mix/publish so the AEC reference carries the
             // trimmed program too (inv-A: reference == final DAC content).
             apply_linear_gain(&mut content_buf, trim);

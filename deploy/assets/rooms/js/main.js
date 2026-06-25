@@ -633,6 +633,19 @@ function makeBondCard() {
     balanceReset.disabled = !on;
   }
 
+  function balanceApplyMessage(data, balance) {
+    const details = Array.isArray(data && data.results)
+      ? data.results.map((r) => String(r && r.detail || ""))
+      : [];
+    if (details.some((d) => d.includes("audio update scheduled"))) {
+      return "Saved; audio update scheduled.";
+    }
+    if (balance && balance.clamped) {
+      return "Applied at the trim limit.";
+    }
+    return "Applied.";
+  }
+
   async function commitBalance() {
     if (balanceSaving) return;
     const request = balanceTrimRequest(balanceRange.value);
@@ -647,9 +660,7 @@ function makeBondCard() {
       if (b && typeof b.balance_db === "number") {
         reflectBalance(b.balance_db);
       }
-      balanceStatus.textContent = b && b.clamped
-        ? "Applied at the trim limit."
-        : "Applied.";
+      balanceStatus.textContent = balanceApplyMessage(data, b);
     } catch (e) {
       console.error("rooms: balance failed", e);
       balanceStatus.textContent = "Couldn't apply balance — " + describeBondFailure(e);
