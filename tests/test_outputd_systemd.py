@@ -144,6 +144,17 @@ def test_install_builds_installs_and_enables_outputd():
     )
 
 
+def test_install_reloads_audio_udev_rules_without_synthetic_hotplug():
+    install_sh = installer_text()
+
+    assert "reload_audio_recovery_udev_rules_for_install" in install_sh
+    assert "pin_attached_apple_dongle_power_control" in install_sh
+    assert "udevadm control --reload-rules" in install_sh
+    assert 'printf \'on\\n\' 2>/dev/null > "${control}"' in install_sh
+    assert "udevadm trigger --action=add --subsystem-match=sound" not in install_sh
+    assert "udevadm trigger --action=add --subsystem-match=usb" not in install_sh
+
+
 def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     unit = VOICE_UNIT_PATH.read_text()
     assert (

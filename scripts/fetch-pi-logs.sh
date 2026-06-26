@@ -52,6 +52,58 @@ fetch_remote_bash() {
     fi
 }
 
+write_log_noise_summary() {
+    local out="$OUT/log-noise-summary-${TS}.txt"
+    local inputs=()
+    local f
+    for f in "$OUT"/*-"$TS".log \
+        "$OUT"/systemctl-"$TS".txt \
+        "$OUT"/reboot-summary-"$TS".txt; do
+        [[ -f "$f" ]] && inputs+=("$f")
+    done
+
+    {
+        echo "== line counts =="
+        if ((${#inputs[@]})); then
+            for f in "${inputs[@]}"; do
+                printf "%8d %s\n" "$(wc -l < "$f")" "$(basename "$f")"
+            done | sort -nr | head -50
+        fi
+        echo
+        echo "== top repeated message fingerprints =="
+        if ((${#inputs[@]})); then
+            awk '
+                function fingerprint(line) {
+                    sub(/^[0-9-]+T[0-9:.+-]+[[:space:]]+[^[:space:]]+[[:space:]]+/, "", line)
+                    gsub(/\[[0-9]+\]/, "[#]", line)
+                    gsub(/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.+-]+/, "<ts>", line)
+                    gsub(/[0-9]+/, "#", line)
+                    gsub(/[[:space:]]+/, " ", line)
+                    return line
+                }
+                {
+                    key = fingerprint($0)
+                    if (key != "") {
+                        count[key]++
+                    }
+                }
+                END {
+                    for (key in count) {
+                        if (count[key] > 1) {
+                            printf "%d\t%s\n", count[key], key
+                        }
+                    }
+                }
+            ' "${inputs[@]}" \
+                | sort -nr \
+                | head -50 \
+                | awk -F '\t' '{ printf "%8d %s\n", $1, $2 }'
+        fi
+    } > "$out"
+    ln -sf "$(basename "$out")" "$OUT/log-noise-summary-latest.txt"
+    echo "  log-noise-summary: $(wc -l < "$out") lines" >&2
+}
+
 # All units the install script installs, plus the renderers + their
 # dependencies. Each is fetched independently and gets its own
 # *-latest.log symlink. A unit not installed on this Pi just produces
@@ -255,6 +307,8 @@ ln -sf "systemctl-${TS}.txt" "$OUT/systemctl-latest.txt" 2>/dev/null || true
 remote "sqlite3 /var/lib/jasper/usage.db 'SELECT id, started_at, ended_at, input_tokens, output_tokens, cost_usd FROM sessions ORDER BY id DESC LIMIT 20' 2>/dev/null" \
     > "$OUT/sessions-${TS}.txt" 2>/dev/null || true
 ln -sf "sessions-${TS}.txt" "$OUT/sessions-latest.txt" 2>/dev/null || true
+
+write_log_noise_summary
 
 echo "Done. Latest snapshot:" >&2
 ls -1 "$OUT"/*-latest.* 2>/dev/null | sed 's|^|  |' >&2
