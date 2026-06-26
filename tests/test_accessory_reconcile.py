@@ -97,7 +97,7 @@ def test_apply_adapter_services_starts_only_active_profile_service():
     )
 
     assert ("enable", "jasper-wiim-remote-mic.service") in calls
-    assert ("restart", "jasper-wiim-remote-mic.service") in calls
+    assert ("--no-block", "restart", "jasper-wiim-remote-mic.service") in calls
     assert ("disable", "--now", "jasper-wiim-remote-mic.service") not in calls
 
 
@@ -110,7 +110,9 @@ def test_apply_adapter_services_disables_inactive_profile_service():
 
     reconcile.apply_adapter_services((), systemctl=fake_systemctl)
 
-    assert ("disable", "--now", "jasper-wiim-remote-mic.service") in calls
+    assert (
+        "--no-block", "disable", "--now", "jasper-wiim-remote-mic.service",
+    ) in calls
     assert ("reset-failed", "jasper-wiim-remote-mic.service") in calls
 
 
@@ -124,7 +126,7 @@ def test_restart_voice_if_active_restarts_only_active_voice():
     assert reconcile.restart_voice_if_active(systemctl=fake_systemctl) is True
     assert calls == [
         ("is-active", "--quiet", "jasper-voice.service"),
-        ("restart", "jasper-voice.service"),
+        ("--no-block", "restart", "jasper-voice.service"),
     ]
 
     calls.clear()
@@ -165,3 +167,24 @@ def test_installer_enables_reconciler_not_profile_adapter_by_default():
     assert "jasper-accessory-reconcile.service" in enable_block
     assert "jasper-wiim-remote-mic.service" not in enable_block
     assert "jasper-accessory-reconcile --reason install" in units_sh
+
+
+def test_reconciler_does_not_order_before_adapter_it_restarts():
+    unit = (ROOT / "deploy/systemd/jasper-accessory-reconcile.service").read_text(
+        encoding="utf-8",
+    )
+
+    before_line = next(
+        line for line in unit.splitlines() if line.startswith("Before=")
+    )
+    assert "jasper-voice.service" in before_line
+    assert "jasper-wiim-remote-mic.service" not in before_line
+
+
+def test_wiim_adapter_skips_cleanly_until_console_script_exists():
+    unit = (ROOT / "deploy/systemd/jasper-wiim-remote-mic.service").read_text(
+        encoding="utf-8",
+    )
+
+    assert "ConditionPathExists=/opt/jasper/.venv/bin/jasper-wiim-remote-mic" in unit
+    assert "StartLimitBurst=20" in unit

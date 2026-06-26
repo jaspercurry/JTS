@@ -44,7 +44,7 @@ For every hot-pluggable component, all four must hold:
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park | udev → reconcile restart | **Fixed 2026-06-21.** Was the original gap: crash-loop → reboot |
 | **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
-| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | reconciler removes the manual source and disables the adapter; voice keeps normal mic path | paired BlueZ profile → reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
+| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
 
 The original Workstream C gap was the **microphone**. A later JTS5
 dual-Apple unplug incident found one output-side edge too: when one Apple
@@ -241,7 +241,12 @@ When BlueZ has no paired WiiM Remote 2, the reconciler removes
 is no resident BLE decoder and no UDP listener in `jasper-voice`. When
 the profile is paired, the reconciler writes `wiim_remote_2=udp:9892`,
 enables/restarts the adapter, and restarts `jasper-voice` only if voice
-is already active. A paired-but-sleeping remote still self-heals:
+is already active. Reconcile runs at boot/deploy and after successful
+Bluetooth pair/connect/forget operations, so the UI pairing flow converges
+without a second deploy. Adapter service changes are queued with
+`systemctl --no-block` and the boot reconciler orders only before
+`jasper-voice`, not before the adapter it may start, so optional accessory
+state cannot wedge voice startup. A paired-but-sleeping remote still self-heals:
 missing GATT report logs `event=wiim_remote_mic.not_ready` (throttled
 after the first visible event) and retries; `jasper-voice` keeps the
 normal primary mic path alive and only routes the manual source when

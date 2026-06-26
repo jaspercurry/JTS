@@ -33,6 +33,7 @@ BLUEZ_BUS = "org.bluez"
 DEVICE_IFACE = "org.bluez.Device1"
 DEFAULT_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 VOICE_UNIT = "jasper-voice.service"
+SYSTEMCTL_TIMEOUT_SEC = 10.0
 
 
 @dataclass(frozen=True)
@@ -158,7 +159,11 @@ Systemctl = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
 
 def _systemctl(args: Sequence[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["systemctl", *args], check=False)
+    return subprocess.run(
+        ["systemctl", *args],
+        check=False,
+        timeout=SYSTEMCTL_TIMEOUT_SEC,
+    )
 
 
 def _invoke_systemctl(
@@ -187,9 +192,12 @@ def apply_adapter_services(
     for service in adapter_mic_services():
         if service in active:
             _invoke_systemctl(("enable", service), systemctl=systemctl)
-            _invoke_systemctl(("restart", service), systemctl=systemctl)
+            _invoke_systemctl(("--no-block", "restart", service), systemctl=systemctl)
         else:
-            _invoke_systemctl(("disable", "--now", service), systemctl=systemctl)
+            _invoke_systemctl(
+                ("--no-block", "disable", "--now", service),
+                systemctl=systemctl,
+            )
             _invoke_systemctl(("reset-failed", service), systemctl=systemctl)
 
 
@@ -197,7 +205,10 @@ def restart_voice_if_active(*, systemctl: Systemctl = _systemctl) -> bool:
     state = systemctl(("is-active", "--quiet", VOICE_UNIT))
     if state.returncode != 0:
         return False
-    restarted = _invoke_systemctl(("restart", VOICE_UNIT), systemctl=systemctl)
+    restarted = _invoke_systemctl(
+        ("--no-block", "restart", VOICE_UNIT),
+        systemctl=systemctl,
+    )
     return restarted.returncode == 0
 
 
