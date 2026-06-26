@@ -73,7 +73,7 @@ export function defaultActiveSpeakerStep(ctx) {
 export function outputStepTitle(step) {
   return {
     layout: 'Choose speaker layout',
-    research: 'Add driver and crossover info',
+    research: 'Add driver and crossover values',
     map: 'Confirm outputs',
     safety: 'Test each driver',
     profile: 'Validate and apply'

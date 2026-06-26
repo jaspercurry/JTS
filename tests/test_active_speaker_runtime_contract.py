@@ -635,6 +635,32 @@ def test_safe_graph_decision_selects_staged_active_startup(tmp_path: Path) -> No
     assert decision.selected_config_path == str(staged_path)
 
 
+def test_safe_graph_preserves_staged_startup_after_identity_confirmation(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+    staged = _staged_metadata(topology, staged_path)
+    for target in staged["targets"]:
+        if target["role"] == "woofer":
+            target["identity_verified"] = False
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=staged_path,
+        staged_config=staged,
+    )
+
+    assert decision.status == "preserve_current"
+    assert decision.current_graph is not None
+    assert decision.current_graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    assert decision.current_graph.details["staged_metadata_matches_topology"] is True
+    assert "active_staged_metadata_mismatch" not in {
+        issue.id for issue in decision.issues
+    }
+
+
 def test_safe_graph_decision_does_not_persist_guarded_commissioning(
     tmp_path: Path,
 ) -> None:

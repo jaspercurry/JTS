@@ -211,14 +211,14 @@ fixtures). This remains reversible: no profile persistence, no volume
 authority, and the action result reports the generated config basename
 rather than exposing raw filesystem paths.
 
-### Advanced speaker setup entry point
+### Speaker setup entry point
 
-As of 2026-06-02, `/sound/` also shows a collapsed **Advanced speaker
-setup** entry point for active crossover commissioning. Opening it shows one
-primary **Active crossover setup** walkthrough, not a separate environment
-card. The walkthrough keeps one task card open at a time: choose speaker
-layout, add crossover settings, confirm outputs, test each driver, validate
-the summed crossover, then save the active profile. Layout and
+As of 2026-06-26, `/sound/` also shows a collapsed **Speaker setup** entry
+point for active crossover commissioning. Opening it shows one primary
+**Active crossover setup** walkthrough, not a separate environment card. The
+walkthrough keeps one task card open at a time: choose speaker layout, add
+driver and crossover values, confirm outputs, test each driver, validate the
+summed crossover, then save/apply the active profile. Layout and
 crossover-settings steps do not play sound, load CamillaDSP, or touch live
 audio; detected hardware is supporting context and the hardware refresh control
 is a small utility inside the layout step.
@@ -268,7 +268,7 @@ tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
 The same `/sound/` card renders a lightweight **Active crossover setup**
 surface over that endpoint as collapsible task cards: **Choose speaker
-layout**, **Add driver and crossover info**, **Confirm outputs**, **Test each
+layout**, **Add driver and crossover values**, **Confirm outputs**, **Test each
 driver**, and **Validate and apply**.
 The layout card opens by default on page load. Explicit Next/manual-open
 actions use transient browser intent only; no persisted wizard-progress state
@@ -293,16 +293,20 @@ replacement and only runs backend validation; it does not play sound or change
 the live DSP graph. The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
 is explicitly not enabled for product active-crossover playback yet. The
-confirm-outputs card shows a top-down speaker sketch plus flat **DAC output
-assignments**. Each driver row has a channel selector; if there are exactly two
-physical outputs and two drivers in the group, choosing one output auto-fills
-the peer driver with the remaining output. Larger output sets require explicit
-unique choices. Saving the draft reruns backend validation, and the backend
-still rejects duplicate or missing physical-channel assignments. Users can then
-mark or clear an assigned output as physically verified only after external
-wiring inspection, dummy-load/DMM checks, or a future low-level channel test
-confirms the driver. Identity evidence is stored in the topology contract, but
-it is not playback permission and it does not satisfy tweeter protection or
+confirm-outputs card shows a top-down speaker stack visual plus flat **DAC
+output assignments**. Each driver row has a channel selector; if there are
+exactly two physical outputs and two drivers in the group, choosing one output
+auto-fills the peer driver with the remaining output. Larger output sets
+require explicit unique choices. Saving the draft reruns backend validation,
+and the backend still rejects duplicate or missing physical-channel
+assignments. Each assigned driver row can also run a guarded quiet **Play**
+audition through the normal commissioning ramp in identity-audition mode. That
+mode lets the operator hear the physical driver before channel identity is
+confirmed, but it still requires the saved topology, staged protected config,
+software guards, path-safety evidence, calibration floor, Stop/session control,
+and CamillaDSP rollback gates. Marking or clearing identity evidence stores
+operator-confirmed physical channel identity in the topology contract; it is
+not playback permission and it does not satisfy tweeter protection or later
 path-safety blockers by itself.
 The bottom **Reset speaker setup** action is a recovery control. It stops any
 active-speaker tone/session, resets `/var/lib/jasper/output_topology.json` to a
@@ -314,9 +318,12 @@ The crossover-settings card stores the product-visible starting values for
 active-crossover planning: driver names, sensitivity, safe low test limits,
 per-driver level trim, crossover point, filter family, slope, and build notes.
 It also offers an optional **Use AI to fill these settings** helper. That
-helper derives the expected driver-role fields from the current output map,
-generates a precise prompt for an external assistant, and accepts a bounded
-JSON response with kind `jts_active_crossover_driver_research`. Importing
+helper derives the expected active-crossover driver-role fields from the saved
+output map, generates a precise prompt for an external assistant, and accepts a
+bounded JSON response with kind `jts_active_crossover_driver_research`. A routed
+local subwoofer remains configured by the subwoofer card's bass-management
+corner; it is listed in the topology but is not required driver research for
+the active-main crossover preview. Importing
 that JSON fills the visible fields for operator review; saving persists the
 visible manual settings as first-class draft input and may also preserve the
 bounded research JSON as evidence. Per-driver notes are capped at 2048

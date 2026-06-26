@@ -40,7 +40,8 @@ function float32ToWavBlob() {
 
 const rawSource = readFileSync(modulePath, "utf8");
 const source = rawSource
-  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n")
+  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
+    "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
@@ -65,10 +66,22 @@ function makeEl(id) {
     id, innerHTML: "", textContent: "", className: "", value: "", checked: false,
     attrs: {}, style: {}, _listeners: {}, classList: classList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
-    getAttribute(k) { return this.attrs[k]; },
+    getAttribute(k) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
+    },
     hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+    removeAttribute(k) { delete this.attrs[k]; },
     addEventListener(ev, fn) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+    },
+    focus() { globalThis.document.activeElement = this; },
+    select() {
+      this.selectionStart = 0;
+      this.selectionEnd = String(this.value || "").length;
+    },
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
     },
     click() {
       for (const fn of this._listeners.click || []) {
@@ -176,6 +189,29 @@ function activeTwoWayTopologyPayload() {
       ],
     }],
   };
+}
+
+function activeTwoWayWithSubwooferTopologyPayload() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.hardware.physical_output_count = 3;
+  topology.hardware.outputs.push({ index: 2, human_label: "DAC output 3" });
+  topology.routing.subwoofer_group_ids = ["sub"];
+  topology.speaker_groups.push({
+    id: "sub",
+    label: "Subwoofer",
+    kind: "subwoofer",
+    mode: "subwoofer",
+    position: { x: 0, y: -0.72, rotation_degrees: 0 },
+    channels: [{
+      role: "subwoofer",
+      physical_output_index: 2,
+      identity_verified: true,
+      startup_muted: true,
+      protection_required: false,
+      protection_status: "not_required",
+    }],
+  });
+  return topology;
 }
 
 function activeThreeWayTopologyPayload() {
@@ -376,6 +412,68 @@ function levelPayload(value) {
   };
 }
 
+function commissioningSteps(currentStep, statuses = {}) {
+  const labels = {
+    layout: "Choose speaker layout",
+    research: "Add driver and crossover values",
+    map: "Confirm outputs",
+    safety: "Test each driver",
+    profile: "Validate and apply",
+  };
+  return ["layout", "research", "map", "safety", "profile"].map((id) => ({
+    id,
+    label: labels[id],
+    status: statuses[id] || (id === currentStep ? "active" : "todo"),
+    message: "",
+  }));
+}
+
+function commissioningViewPayload(overrides = {}) {
+  const currentStep = overrides.current_step || "layout";
+  const stepStatuses = overrides.stepStatuses || {};
+  const steps = overrides.steps || commissioningSteps(currentStep, stepStatuses);
+  const payload = {
+    artifact_schema_version: 1,
+    kind: "jts_active_speaker_commissioning_view",
+    status: overrides.status || "needs_layout",
+    current_step: currentStep,
+    steps,
+    driver_values: {
+      status: "ready",
+      complete: true,
+      design_ready: true,
+      preview_ready: true,
+      missing_driver_info_roles: [],
+      missing_crossover_candidate_pairs: [],
+      message: "Driver and crossover values are saved.",
+    },
+    output_identity: { assigned_channel_count: 2, unverified_channel_count: 0, complete: true },
+    driver_checks: { complete: true, captured: 2, required: 2 },
+    summed_validation: { complete: false, validated: 0, required: 1 },
+    revalidation: {},
+    test_level: levelPayload(-72).test_signal,
+    combined_groups: [],
+    next_action: {},
+  };
+  delete overrides.stepStatuses;
+  return { ...payload, ...overrides, steps };
+}
+
+function profileCommissioningView(overrides = {}) {
+  return commissioningViewPayload({
+    current_step: "profile",
+    stepStatuses: {
+      layout: "done",
+      research: "done",
+      map: "done",
+      safety: "done",
+      profile: "active",
+    },
+    status: "needs_combined_check",
+    ...overrides,
+  });
+}
+
 function setupHarness(fetchHandler, options = {}) {
   const elements = new Map();
   const absent = new Set();
@@ -403,6 +501,24 @@ function setupHarness(fetchHandler, options = {}) {
   }
 
   globalThis.document = {
+    _listeners: {},
+    activeElement: null,
+    body: {
+      children: [],
+      appendChild(node) {
+        this.children.push(node);
+        return node;
+      },
+      removeChild(node) {
+        this.children = this.children.filter((child) => child !== node);
+        return node;
+      },
+    },
+    createElement(tagName) {
+      const node = makeEl(String(tagName || "").toLowerCase());
+      node.tagName = String(tagName || "").toUpperCase();
+      return node;
+    },
     getElementById(id) {
       if (absent.has(id)) return null;
       if (!elements.has(id)) elements.set(id, makeEl(id));
@@ -410,6 +526,12 @@ function setupHarness(fetchHandler, options = {}) {
     },
     querySelector(sel) {
       return sel === "meta[name=jts-csrf]" ? { content: "csrf-token" } : null;
+    },
+    addEventListener(ev, fn) {
+      (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+    },
+    removeEventListener(ev, fn) {
+      this._listeners[ev] = (this._listeners[ev] || []).filter((listener) => listener !== fn);
     },
   };
   globalThis.window = {
@@ -425,6 +547,7 @@ function setupHarness(fetchHandler, options = {}) {
     value: { clipboard: { async writeText() {} } },
     configurable: true,
   });
+  delete globalThis.__jtsConfirm;
   globalThis.btoa = (binary) => Buffer.from(binary, "binary").toString("base64");
   globalThis.fetch = fetchHandler;
 
@@ -502,6 +625,24 @@ function baseFetch(overrides = {}) {
     }
     if (path === "./active-speaker/crossover-preview") {
       return Promise.resolve(response({ status: "not_prepared", issues: [] }));
+    }
+    if (path === "./active-speaker/commissioning-view") {
+      return Promise.resolve(response(commissioningViewPayload({
+        status: "needs_layout",
+        current_step: "layout",
+        stepStatuses: { layout: "active", research: "todo", map: "todo", safety: "todo", profile: "todo" },
+        driver_values: {
+          status: "not_saved",
+          complete: false,
+          design_ready: false,
+          preview_ready: false,
+          missing_driver_info_roles: [],
+          missing_crossover_candidate_pairs: [],
+          message: "Save driver and crossover values.",
+        },
+        output_identity: { assigned_channel_count: 0, unverified_channel_count: 0, complete: false },
+        driver_checks: { complete: false, captured: 0, required: 0 },
+      })));
     }
     if (path === "./preview") return Promise.resolve(response({ preview: [] }));
     if (active[path] && !options.method) return Promise.resolve(response(active[path]));
@@ -755,9 +896,9 @@ async function testActiveCrossoverFirstStepRender() {
   };
   includes("Active crossover setup");
   includes("Choose speaker layout");
-  includes("Add driver and crossover info");
+  includes("Add driver and crossover values");
   includes("Working setup");
-  includes("Use AI to fill these settings");
+  includes("AI helper");
   includes("2048 characters or fewer");
   includes("do not paste a full research report");
   includes("DAC output assignments");
@@ -889,6 +1030,45 @@ async function testMeasuredDriversOpenProfileStep() {
       permissions: { may_compile_baseline: false },
       issues: [],
     })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(profileCommissioningView({
+      status: "needs_combined_check",
+      test_level: levelPayload(-80).test_signal,
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "test_failed",
+        status_label: "not tested",
+        message: "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
+        failure_message: "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: false,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "" },
+          },
+        },
+      }],
+    }))),
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -1390,6 +1570,11 @@ async function testStaleSummedValidationDoesNotRenderValidatedGroup() {
 
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   const topology = activeTwoWayTopologyPayload();
+  topology.hardware.physical_output_count = 8;
+  topology.hardware.outputs = Array.from({ length: 8 }, (_unused, index) => ({
+    index,
+    human_label: `DAC output ${index + 1}`,
+  }));
   topology.speaker_groups[0].channels[0].human_output_label = "Old woofer label";
   topology.speaker_groups[0].channels[1].human_output_label = "Old tweeter label";
   const saves = [];
@@ -1447,6 +1632,30 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
     "./output-topology": () => Promise.resolve(response({
       output_topology: topology,
     })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
+      status: "needs_output_confirmation",
+      current_step: "map",
+      stepStatuses: {
+        layout: "done",
+        research: "done",
+        map: "active",
+        safety: "todo",
+        profile: "todo",
+      },
+      output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
+      driver_checks: { complete: false, captured: 0, required: 2 },
+    }))),
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -1469,7 +1678,7 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   if (!dirtyHtml.includes('data-output-step="map" open')) {
     fail("changing a DAC assignment should keep Confirm outputs open for saving", { dirtyHtml });
   }
-  if (!dirtyHtml.includes("Save channel assignments")) {
+  if (!dirtyHtml.includes('data-act="save-output-topology"') || !dirtyHtml.includes(">Save</button>")) {
     fail("dirty channel assignment should expose the save action in Confirm outputs", { dirtyHtml });
   }
   if (dirtyHtml.includes('data-output-step="layout" open')) {
@@ -1483,6 +1692,240 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
     fail("dirty Confirm outputs should remain reopenable until the draft is saved", { dirtyHtml });
   }
   return { channelSelectorKeepsConfirmOutputsOpenWhenDraftDirty: true };
+}
+
+async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels.forEach((channel) => {
+    channel.identity_verified = false;
+  });
+  let commissionState = {
+    commission_load: { status: "idle", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+    })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
+      status: "needs_output_confirmation",
+      current_step: "map",
+      stepStatuses: {
+        layout: "done",
+        research: "done",
+        map: "active",
+        safety: "todo",
+        profile: "todo",
+      },
+      output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
+      driver_checks: { complete: false, captured: 0, required: 2 },
+    }))),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-load": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: body.role, audible_gain_db: -120 },
+          rollback_available: true,
+        },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({
+        status: "loaded",
+        load: { status: "loaded", target: { role: body.role } },
+      }));
+    },
+    "./active-speaker/commission-ramp-step": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: body.role, audible_gain_db: -80 },
+          rollback_available: true,
+        },
+        ramp: {
+          confirmed_roles: [],
+          pending: { role: body.role, gain_db: -80, frequency_hz: 120 },
+        },
+        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
+    },
+    "./active-speaker/commission-ramp-abort": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "rolled_back" }));
+    },
+    "./active-speaker/channel-identity": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      topology.speaker_groups[0].channels.forEach((channel) => {
+        if (channel.role === body.role) {
+          channel.identity_verified = !!body.identity_verified;
+        }
+      });
+      return Promise.resolve(response({ output_topology: topology }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-output-step="map" open')) {
+    fail("unconfirmed active outputs should start on Confirm outputs", { html });
+  }
+  if (!html.includes('data-identity-audition="true"')) {
+    fail("Confirm outputs Play button should be explicitly marked as identity audition", { html });
+  }
+
+  harness.dispatchClick({
+    "data-act": "commission-step",
+    "data-role": "woofer",
+    "data-identity-audition": "true",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const load = posts.find((x) => x.path === "./active-speaker/commission-load");
+  const step = posts.find((x) => x.path === "./active-speaker/commission-ramp-step");
+  if (!load || load.body.identity_audition !== true) {
+    fail("Confirm outputs Play should arm using identity-audition mode", { posts });
+  }
+  if (!step || step.body.identity_audition !== true) {
+    fail("Confirm outputs Play should ramp using identity-audition mode", { posts });
+  }
+  globalThis.__jtsConfirm = async () => {
+    posts.push({ path: "dialog-confirm" });
+    return true;
+  };
+  harness.dispatchClick({
+    "data-act": "mark-output-identity",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-label": "Main speaker Woofer on DAC output 1",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+  const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
+  const confirmIndex = posts.findIndex((x) => x.path === "dialog-confirm");
+  const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
+  if (abortIndex < 0 || confirmIndex < 0 || identityIndex < 0 ||
+      abortIndex > confirmIndex || confirmIndex > identityIndex) {
+    fail("Confirming output during audition should remute before dialog and identity save", { posts });
+  }
+  const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
+  if (afterConfirmHtml.includes('data-role="tweeter" disabled')) {
+    fail("Confirming one output should not leave sibling audition controls disabled", { afterConfirmHtml });
+  }
+  return { confirmOutputsPlayUsesIdentityAuditionMode: true };
+}
+
+async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels.forEach((channel) => {
+    channel.identity_verified = false;
+  });
+  let commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { speaker_group_id: "main", role: "tweeter", audible_gain_db: -80 },
+      rollback_available: true,
+    },
+    ramp: {
+      confirmed_roles: [],
+      pending: { role: "tweeter", gain_db: -80, frequency_hz: 120 },
+    },
+    floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+    })),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-ramp-abort": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "rolled_back",
+          target: {},
+          rollback_available: false,
+        },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "rolled_back" }));
+    },
+    "./active-speaker/channel-identity": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      topology.speaker_groups[0].channels.forEach((channel) => {
+        if (channel.role === body.role) {
+          channel.identity_verified = !!body.identity_verified;
+        }
+      });
+      return Promise.resolve(response({ output_topology: topology }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes(">Stop</button>") || !html.includes('data-role="woofer" disabled')) {
+    fail("Fixture should start with tweeter audition pending and woofer play disabled", { html });
+  }
+  globalThis.__jtsConfirm = async () => {
+    posts.push({ path: "dialog-confirm" });
+    return true;
+  };
+
+  harness.dispatchClick({
+    "data-act": "mark-output-identity",
+    "data-group-id": "main",
+    "data-role": "tweeter",
+    "data-label": "Main speaker Tweeter on DAC output 2",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
+  const confirmIndex = posts.findIndex((x) => x.path === "dialog-confirm");
+  const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
+  if (abortIndex < 0 || confirmIndex < 0 || identityIndex < 0 ||
+      abortIndex > confirmIndex || confirmIndex > identityIndex) {
+    fail("Confirming output with a pending audition should remute before dialog and identity save", { posts });
+  }
+  const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
+  if (afterConfirmHtml.includes(">Stop</button>") ||
+      afterConfirmHtml.includes('data-role="woofer" disabled')) {
+    fail("Confirming output should clear the pending audition and re-enable siblings", {
+      afterConfirmHtml,
+    });
+  }
+  return { confirmOutputAbortsPendingAuditionWithoutAutoRamp: true };
 }
 
 async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
@@ -1686,6 +2129,138 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
   return { visibleCrossoverSettingsWinOverImportedJson: true };
 }
 
+async function testDriverResearchPromptCopyUsesHttpFallback() {
+  let copiedText = "";
+  let asyncClipboardCalled = false;
+  const draft = {
+    status: "ready_for_review",
+    operator_inputs: {
+      woofer: "Manual Woofer",
+      tweeter: "Manual Tweeter",
+    },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Manual Woofer" },
+        { role: "tweeter", model: "Manual Tweeter" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 1800,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+        confidence: "medium",
+      }],
+    },
+    summary: {},
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  Object.defineProperty(globalThis, "navigator", {
+    value: {
+      clipboard: {
+        async writeText() {
+          asyncClipboardCalled = true;
+          throw new Error("not allowed on local HTTP");
+        },
+      },
+    },
+    configurable: true,
+  });
+  const promptEl = harness.elements.get("driver-research-prompt");
+  promptEl.style.opacity = "0";
+  promptEl.style.pointerEvents = "none";
+  globalThis.document.execCommand = (command) => {
+    if (command !== "copy") return false;
+    const active = globalThis.document.activeElement;
+    if (!active || active.style.opacity === "0" || active.style.pointerEvents === "none") {
+      return false;
+    }
+    copiedText = active ? String(active.value || "") : "";
+    return Boolean(copiedText);
+  };
+
+  harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
+  await harness.flush();
+
+  if (!copiedText.includes("Manual Woofer") || !copiedText.includes("Manual Tweeter")) {
+    fail("driver research prompt should copy through the HTTP fallback", { copiedText });
+  }
+  if (asyncClipboardCalled) {
+    fail("local HTTP fallback should not await async clipboard before selection copy", {
+      asyncClipboardCalled,
+    });
+  }
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Copied driver research prompt.")) {
+    fail("successful fallback copy should report success", { statusText });
+  }
+  return { driverResearchPromptCopyUsesHttpFallback: true };
+}
+
+async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
+  const draft = {
+    artifact_schema_version: 1,
+    kind: "jts_active_speaker_design_draft",
+    status: "ready_for_review",
+    topology_id: "default",
+    driver_research: {
+      drivers: [
+        { role: "woofer", model: "Manual Woofer" },
+        { role: "tweeter", model: "Manual Tweeter" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 1800,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+        confidence: "medium",
+      }],
+    },
+    summary: {},
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  Object.defineProperty(globalThis, "navigator", {
+    value: {
+      clipboard: {
+        async writeText() {
+          throw new Error("not allowed on local HTTP");
+        },
+      },
+    },
+    configurable: true,
+  });
+  globalThis.document.execCommand = (command) => command === "copy" ? false : false;
+
+  harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
+  await harness.flush();
+
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Prompt text is selected")) {
+    fail("blocked copy should leave the user with selected prompt text", { statusText });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes(">Selected</button>")) {
+    fail("blocked copy should update the CTA to Selected", { html });
+  }
+  if (!html.includes('id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--compact"')) {
+    fail("blocked copy should render the prompt visibly instead of keeping it hidden", { html });
+  }
+  return { driverResearchPromptCopyBlockedSelectsPrompt: true };
+}
+
 async function testDriverResearchNotesCapExplainsBeforePost() {
   const designSaves = [];
   const importedResearch = {
@@ -1862,6 +2437,72 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
     });
   }
   return { preparePreviewUpdatesWorkingSetupFirst: true };
+}
+
+async function testPreparePreviewIgnoresOptionalSubwooferDriverInfo() {
+  const designSaves = [];
+  const previewSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayWithSubwooferTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
+          manual_settings: body.manual_settings,
+          driver_research: body.driver_research,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") {
+        previewSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({
+          status: "ready_for_protected_staging",
+          summary: { ready_crossover_count: 1, blocker_count: 0 },
+          groups: [],
+          issues: [],
+          permissions: { may_prepare_protected_startup_config: true },
+        }));
+      }
+      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2100");
+  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
+  for (let i = 0; i < 8; i += 1) await harness.flush();
+
+  if (designSaves.length !== 1 || previewSaves.length !== 1) {
+    fail("Optional local subwoofer should not block active-main crossover preview", {
+      designSaves,
+      previewSaves,
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  const roles = (designSaves[0].manual_settings.drivers || []).map((driver) => driver.role);
+  if (roles.includes("subwoofer")) {
+    fail("Active-main driver research payload should not require the optional subwoofer", {
+      roles,
+      saved: designSaves[0],
+    });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes("- subwoofer:")) {
+    fail("AI helper prompt should not ask for optional subwoofer model details", { html });
+  }
+  return { preparePreviewIgnoresOptionalSubwooferDriverInfo: true };
 }
 
 async function testPreparePreviewWaitsForInFlightWorkingSetupUpdate() {
@@ -2049,12 +2690,20 @@ async function testCommissionCardArmsAndSteps() {
   if (loadPosts.length !== 1) {
     fail("rapid Start clicks should open the quiet driver test once", { posts });
   }
+  if (loadPosts[0].body.identity_audition) {
+    fail("normal driver-test arm must not use identity-audition mode", { posts });
+  }
   if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
     fail("commission-ramp-step not posted on step", { posts });
   }
+  if (posts.some((x) =>
+      x.path === "./active-speaker/commission-ramp-step" &&
+      x.body.identity_audition)) {
+    fail("normal driver-test ramp must not use identity-audition mode", { posts });
+  }
   html = harness.elements.get("view-body").innerHTML;
   let cardHtml = commissionCardHtml(html);
-  for (const expected of ["Stop", "I hear the woofer", "Back to configuration"]) {
+  for (const expected of ["Stop", "I hear the woofer", "Back to outputs"]) {
     if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
   }
   for (const expected of ["Status", "Tone playing", "250 Hz"]) {
@@ -2556,14 +3205,14 @@ async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   if (!html.includes('data-act="commission-ack"')) {
     fail("pending ramp step must expose acknowledgement buttons even with a stale floor flag", { html });
   }
-  for (const expected of ["Stop", "I hear the woofer", "Back to configuration"]) {
+  for (const expected of ["Stop", "I hear the woofer", "Back to outputs"]) {
     if (!cardHtml.includes(expected)) fail("pending ramp step should reuse the stable playing row", { expected, cardHtml });
   }
   for (const hidden of ["Too quiet", "Too loud"]) {
     if (cardHtml.includes(hidden)) fail("pending ramp step should not expose legacy manual loudness buttons", { hidden, cardHtml });
   }
-  if (html.includes('data-act="commission-step"')) {
-    fail("pending ramp step must block another step until it is acknowledged", { html });
+  if (cardHtml.includes('data-act="commission-step"')) {
+    fail("pending ramp step must block another step until it is acknowledged", { cardHtml });
   }
   return { commissionPendingStepShowsAckWithoutFloorFlag: true };
 }
@@ -2796,6 +3445,30 @@ async function testCommissionRampLimitKeepsConfirmationOpen() {
         }],
       }));
     },
+    "./active-speaker/commission-ramp-ack": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "rolled_back",
+          target: { role: "woofer", audible_gain_db: 0 },
+          rollback_available: false,
+        },
+        ramp: { confirmed_roles: ["woofer"], pending: null },
+        floor: { status: "floor_confirmed", floor_audio_confirmed: true },
+      };
+      return Promise.resolve(response({
+        status: "confirmed",
+        outcome: body.outcome,
+        measurements: {
+          status: "needs_driver_measurements",
+          summary: {
+            driver_checks_complete: false,
+            driver_measurements_complete: false,
+          },
+        },
+      }));
+    },
     "./active-speaker/commission-ramp-abort": (p, o) => {
       posts.push({ path: p, body: JSON.parse(o.body || "{}") });
       fail("safe-limit response must not abort the pending confirmation", { posts });
@@ -2821,6 +3494,15 @@ async function testCommissionRampLimitKeepsConfirmationOpen() {
   }
   if (!html.includes("I hear the woofer")) {
     fail("safe-limit response should keep the heard-confirmation CTA visible", { html });
+  }
+  harness.dispatchClick({ "data-act": "commission-ack", "data-outcome": "heard_correct_driver" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  const statusText = harness.elements.get("status").textContent;
+  if (statusText.includes("Reached the safe test limit")) {
+    fail("successful driver confirmation should clear stale ramp-limit status", { statusText });
+  }
+  if (!statusText.includes("Driver check saved. Continue with the next driver.")) {
+    fail("partial driver confirmation should give the next-step status", { statusText });
   }
   return { commissionRampLimitKeepsConfirmationOpen: true };
 }
@@ -2965,15 +3647,16 @@ async function testSubwooferDeadEndOffersWirelessCta() {
   if (!html.includes("No unused physical output is available for a subwoofer")) {
     fail("dongle layout should still explain why a local sub cannot be added", { html });
   }
-  // The existing disabled add affordance stays — the CTA is additive guidance.
+  // The existing disabled add affordance stays, with wireless-sub guidance
+  // demoted to a secondary option.
   if (!html.includes('data-act="toggle-output-subwoofer"')) {
     fail("the local-subwoofer add affordance must remain in the dead-end branch", { html });
   }
   if (!html.includes('href="/rooms/"')) {
     fail("dead-end subwoofer card should link to the Speakers page", { html });
   }
-  if (!html.includes("add a wireless subwoofer on the Speakers page")) {
-    fail("dead-end subwoofer card should offer the wireless-sub CTA copy", { html });
+  if (!html.includes("Wireless sub options")) {
+    fail("dead-end subwoofer card should offer secondary wireless-sub guidance", { html });
   }
   return { subwooferDeadEndOffersWirelessCta: true };
 }
@@ -2991,7 +3674,7 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
   if (!html.includes("Subwoofer add-on")) {
     fail("default layout should render the subwoofer add-on card", { html });
   }
-  if (html.includes('href="/rooms/"') || html.includes("add a wireless subwoofer on the Speakers page")) {
+  if (html.includes('href="/rooms/"') || html.includes("Wireless sub options")) {
     fail("a layout with a spare output must not show the wireless-sub CTA", { html });
   }
   return { subwooferWithSpareOutputHidesWirelessCta: true };
@@ -3011,12 +3694,17 @@ results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
 results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
+results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
+results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
+results.push(await testDriverResearchPromptCopyUsesHttpFallback());
+results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
 results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
+results.push(await testPreparePreviewIgnoresOptionalSubwooferDriverInfo());
 results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testCommissionCardArmsAndSteps());

@@ -56,7 +56,7 @@ def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
     return calls
 
 
-def _topology() -> OutputTopology:
+def _topology(*, identity_verified: bool = True) -> OutputTopology:
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -79,12 +79,12 @@ def _topology() -> OutputTopology:
                     {
                         "role": "woofer",
                         "physical_output_index": 0,
-                        "identity_verified": True,
+                        "identity_verified": identity_verified,
                     },
                     {
                         "role": "tweeter",
                         "physical_output_index": 1,
-                        "identity_verified": True,
+                        "identity_verified": identity_verified,
                         "startup_muted": True,
                         "protection_required": True,
                         "protection_status": "software_guard_requested",
@@ -143,12 +143,14 @@ def _write_path_safety(
     topology: OutputTopology | None = None,
     staged: dict,
     current_config_path: str | Path | None = None,
+    require_physical_identity: bool = True,
 ) -> Path:
     evidence = build_startup_load_path_safety_evidence(
         topology or _topology(),
         staged_config=staged,
         calibration_level=calibration_level_payload(),
         current_config_path=current_config_path or staged["config"]["path"],
+        require_physical_identity=require_physical_identity,
     )
     return write_path_safety_evidence(evidence, path=path)
 
@@ -215,6 +217,56 @@ def test_startup_load_preflight_blocks_stale_staged_topology(
     assert "staged_targets_mismatch" in {
         issue["code"] for issue in report["issues"]
     }
+
+
+def test_startup_load_preflight_allows_identity_audition_mode(
+    tmp_path: Path,
+) -> None:
+    topology = _topology(identity_verified=False)
+    staged = stage_protected_startup_config(
+        topology,
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-04T12:00:00Z",
+    )
+
+    strict = build_startup_load_preflight(
+        topology,
+        staged_config=staged,
+        path_safety_evidence_path=_write_path_safety(
+            tmp_path / "strict_path_safety.json",
+            topology=topology,
+            staged=staged,
+        ),
+        validate=_valid_config,
+    )
+    audition = build_startup_load_preflight(
+        topology,
+        staged_config=staged,
+        path_safety_evidence_path=_write_path_safety(
+            tmp_path / "audition_path_safety.json",
+            topology=topology,
+            staged=staged,
+            require_physical_identity=False,
+        ),
+        require_physical_identity=False,
+        validate=_valid_config,
+    )
+    strict_gates = {gate["id"]: gate["passed"] for gate in strict["required_gates"]}
+    audition_gates = {
+        gate["id"]: gate["passed"] for gate in audition["required_gates"]
+    }
+
+    assert strict["status"] == "blocked"
+    assert strict_gates["physical_identity_verified"] is False
+    assert audition["status"] == "ready"
+    assert audition["load_allowed"] is True
+    assert audition["identity"]["physical_identity_required"] is False
+    assert audition_gates["physical_identity_verified"] is True
+    assert audition["path_safety"]["binding"]["checks"][
+        "target_assignment_signature"
+    ] is True
 
 
 def test_startup_load_preflight_blocks_stale_path_safety_rollback_binding(

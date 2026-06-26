@@ -101,6 +101,70 @@ def _action(
     }
 
 
+def _preview_ready(crossover_preview: Mapping[str, Any] | None) -> bool:
+    if not isinstance(crossover_preview, Mapping):
+        return False
+    permissions = (
+        crossover_preview.get("permissions")
+        if isinstance(crossover_preview.get("permissions"), Mapping)
+        else {}
+    )
+    return (
+        crossover_preview.get("kind") == "jts_active_speaker_crossover_preview"
+        and crossover_preview.get("status") == "ready_for_protected_staging"
+        and permissions.get("may_prepare_protected_startup_config") is True
+    )
+
+
+def _driver_values_view(
+    *,
+    active_setup: bool,
+    design_draft: Mapping[str, Any] | None,
+    crossover_preview: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the saved driver/crossover readiness contract for setup flow."""
+
+    if not active_setup:
+        return {
+            "status": "not_needed",
+            "complete": True,
+            "design_ready": True,
+            "preview_ready": True,
+            "missing_driver_info_roles": [],
+            "missing_crossover_candidate_pairs": [],
+            "message": "No active crossover values are needed for this layout.",
+        }
+
+    draft = design_draft if isinstance(design_draft, Mapping) else {}
+    summary = draft.get("summary") if isinstance(draft.get("summary"), Mapping) else {}
+    design_status = str(draft.get("status") or "not_saved")
+    design_ready = design_status == "ready_for_review"
+    preview_ready = _preview_ready(crossover_preview)
+    missing_roles = list(summary.get("missing_driver_info_roles") or [])
+    missing_pairs = list(summary.get("missing_crossover_candidate_pairs") or [])
+    if design_ready and preview_ready:
+        status = "ready"
+        message = "Driver and crossover values are saved."
+    elif design_ready:
+        status = "needs_preview"
+        message = "Preview the crossover before confirming outputs."
+    elif missing_roles or missing_pairs:
+        status = "needs_values"
+        message = "Save driver names and crossover points before continuing."
+    else:
+        status = design_status
+        message = "Save the driver and crossover values before continuing."
+    return {
+        "status": status,
+        "complete": design_ready and preview_ready,
+        "design_ready": design_ready,
+        "preview_ready": preview_ready,
+        "missing_driver_info_roles": missing_roles,
+        "missing_crossover_candidate_pairs": missing_pairs,
+        "message": message,
+    }
+
+
 def _latest(mapping: Any, key: str) -> Mapping[str, Any]:
     if isinstance(mapping, Mapping):
         value = mapping.get(key)
@@ -281,6 +345,8 @@ def _first_enabled_action(groups: list[Mapping[str, Any]]) -> Mapping[str, Any] 
 def build_commissioning_view(
     topology: OutputTopology,
     *,
+    design_draft: Mapping[str, Any] | None = None,
+    crossover_preview: Mapping[str, Any] | None = None,
     measurements: Mapping[str, Any] | None = None,
     commission: Mapping[str, Any] | None = None,
     startup_load: Mapping[str, Any] | None = None,
@@ -313,6 +379,13 @@ def build_commissioning_view(
     revalidation_required = revalidation.get("required") is True
     active_targets = active_summed_targets(topology)
     has_layout = bool(topology.speaker_groups)
+    active_setup = bool(active_targets)
+    driver_values = _driver_values_view(
+        active_setup=active_setup,
+        design_draft=design_draft,
+        crossover_preview=crossover_preview,
+    )
+    driver_values_complete = bool(driver_values.get("complete"))
     combined_groups = [
         _combined_group_view(
             target,
@@ -332,9 +405,19 @@ def build_commissioning_view(
             "Speaker layout is saved." if has_layout else "Choose what is wired.",
         ),
         _step(
-            "outputs",
+            "research",
+            "Add driver and crossover values",
+            "done"
+            if driver_values_complete
+            else ("active" if has_layout else "todo"),
+            str(driver_values.get("message") or "Save driver and crossover values."),
+        ),
+        _step(
+            "map",
             "Confirm outputs",
-            "done" if output_identity_complete else ("active" if has_layout else "todo"),
+            "done"
+            if driver_values_complete and output_identity_complete
+            else ("active" if driver_values_complete else "todo"),
             (
                 "All assigned outputs are confirmed."
                 if output_identity_complete
@@ -342,10 +425,10 @@ def build_commissioning_view(
             ),
         ),
         _step(
-            "drivers",
+            "safety",
             "Test each driver",
             "done" if driver_checks_complete else (
-                "active" if output_identity_complete else "todo"
+                "active" if output_identity_complete and driver_values_complete else "todo"
             ),
             (
                 "Driver checks are saved."
@@ -354,36 +437,45 @@ def build_commissioning_view(
             ),
         ),
         _step(
-            "combined",
-            "Check the crossover blend",
-            "done" if summed_complete else ("active" if driver_checks_complete else "todo"),
-            (
-                "Combined crossover check is saved."
-                if summed_complete
-                else "Re-run the combined crossover check for the updated setup."
-                if revalidation_required
-                else "Run one quiet combined test and record what you heard."
-            ),
-        ),
-        _step(
             "profile",
-            "Save and apply",
-            "done" if profile_applied else ("active" if summed_complete else "todo"),
+            "Validate and apply",
+            "done" if profile_applied else (
+                "active" if driver_checks_complete else "todo"
+            ),
             (
                 "This is now the active speaker profile."
                 if profile_applied
                 else "Save and apply a fresh profile after revalidation."
-                if revalidation_required and summed_complete
+                if revalidation_required
                 else "Save the active speaker profile after the combined check."
             ),
         ),
     ]
-    next_action = None if summed_complete else _first_enabled_action(combined_groups)
+    current_step = next(
+        (step["id"] for step in steps if step.get("status") == "active"),
+        steps[-1]["id"] if steps else "",
+    )
+    next_action = None
+    if has_layout and not driver_values_complete:
+        if driver_values.get("design_ready") and not driver_values.get("preview_ready"):
+            next_action = _action(
+                "preview_crossover",
+                "Preview crossover",
+                enabled=True,
+                endpoint="./active-speaker/crossover-preview",
+            )
+        else:
+            next_action = _action(
+                "save_driver_values",
+                "Save values",
+                enabled=True,
+                endpoint="./active-speaker/design-draft",
+            )
     if next_action is None and not output_identity_complete:
         next_action = _action(
             "confirm_outputs",
             "Confirm outputs",
-            enabled=has_layout,
+            enabled=driver_values_complete,
             method="GET",
             message="Confirm each assigned output before testing drivers.",
         )
@@ -394,6 +486,8 @@ def build_commissioning_view(
             enabled=output_identity_complete,
             message="Choose the first unchecked driver.",
         )
+    elif next_action is None and not summed_complete:
+        next_action = _first_enabled_action(combined_groups)
     elif next_action is None and summed_complete and not profile_applied:
         next_action = _action(
             "save_profile",
@@ -405,10 +499,11 @@ def build_commissioning_view(
     status = (
         "applied" if profile_applied else
         "ready_to_save_profile" if summed_complete else
+        "needs_driver_values" if has_layout and not driver_values_complete else
         "needs_revalidation" if revalidation_required else
         "needs_combined_check" if driver_checks_complete else
         "needs_driver_checks" if output_identity_complete else
-        "needs_output_confirmation" if has_layout else
+        "needs_output_confirmation" if driver_values_complete else
         "needs_layout"
     )
     return {
@@ -416,8 +511,10 @@ def build_commissioning_view(
         "kind": COORDINATOR_KIND,
         "status": status,
         "steps": steps,
+        "current_step": current_step,
         "combined_groups": combined_groups,
         "next_action": dict(next_action or {}),
+        "driver_values": driver_values,
         "output_identity": {
             "assigned_channel_count": assigned_count,
             "unverified_channel_count": unverified_count,

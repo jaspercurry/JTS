@@ -77,6 +77,7 @@ from .environment import (
 from .path_safety import (
     software_guard_ready_for_startup,
     staged_target_signature,
+    target_assignment_signature,
     topology_target_signature,
 )
 from .staging import load_staged_startup_config
@@ -1332,7 +1333,8 @@ def _staged_matches_topology(
         staged_hardware.get("physical_output_count")
         == topology.hardware.physical_output_count,
         staged_hardware.get("clock_domain_id") == topology.hardware.clock_domain_id,
-        staged_target_signature(staged_config) == topology_target_signature(topology),
+        target_assignment_signature(staged_target_signature(staged_config))
+        == target_assignment_signature(topology_target_signature(topology)),
     ))
 
 
