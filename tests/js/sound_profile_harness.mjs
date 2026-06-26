@@ -2366,7 +2366,36 @@ async function testWorkingSetupSummaryAvoidsStorageCounts() {
 async function testPreparePreviewUpdatesWorkingSetupFirst() {
   const designSaves = [];
   const previewSaves = [];
+  let commissioningViewFetches = 0;
   const fetchHandler = baseFetch({
+    "./active-speaker/commissioning-view": () => {
+      commissioningViewFetches += 1;
+      return Promise.resolve(response(commissioningViewPayload(
+        commissioningViewFetches > 1
+          ? {
+              status: "needs_output_confirmation",
+              current_step: "map",
+              stepStatuses: {
+                layout: "done",
+                research: "done",
+                map: "active",
+                safety: "todo",
+                profile: "todo",
+              },
+            }
+          : {
+              status: "needs_driver_values",
+              current_step: "research",
+              stepStatuses: {
+                layout: "done",
+                research: "active",
+                map: "todo",
+                safety: "todo",
+                profile: "todo",
+              },
+            }
+      )));
+    },
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": (_path, options = {}) => {
       if (options.method === "POST") {
@@ -2430,10 +2459,21 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
     fail("Preview auto-update should persist the visible crossover point", { saved });
   }
   if (!harness.elements.get("status").textContent.includes(
-    "Crossover preview ready. No filters are active and no sound was played."
+    "Crossover preview ready. No sound was played. Confirm the outputs next."
   )) {
-    fail("Preview completion should keep the no-audio safety copy", {
+    fail("Preview completion should point to the next setup step", {
       status: harness.elements.get("status").textContent,
+    });
+  }
+  if (commissioningViewFetches < 2) {
+    fail("Preview completion should refresh the backend-owned commissioning step", {
+      commissioningViewFetches,
+    });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!/data-output-step="map"[^>]* open/.test(html)) {
+    fail("Preview completion should open Confirm outputs without a page reload", {
+      html,
     });
   }
   return { preparePreviewUpdatesWorkingSetupFirst: true };

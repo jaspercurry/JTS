@@ -3117,6 +3117,92 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     }
 
 
+async def test_active_speaker_finish_commissioning_clears_pending_ramp(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from jasper.active_speaker.commission_ramp import (
+        _ramp_base_state,
+        _record_ramp_state,
+        load_ramp_state,
+        ramp_state_path,
+    )
+
+    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
+        str(tmp_path / "ramp.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
+        str(tmp_path / "commission-load.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    _record_ramp_state(
+        {
+            **_ramp_base_state(ramp_state_path()),
+            "speaker_group_id": "main",
+            "confirmed_roles": ["woofer"],
+            "pending": {
+                "role": "tweeter",
+                "gain_db": -20.0,
+                "playback_id": "late-auto-ramp-step",
+            },
+            "last_action": "late_step",
+        }
+    )
+
+    async def fake_apply_baseline_profile(_topology, **_kwargs):
+        return {
+            "status": "applied",
+            "profile": {
+                "status": "applied",
+                "config": {
+                    "path": baseline_path,
+                    "basename": "active_speaker_baseline.yml",
+                },
+                "permissions": {"may_apply": False},
+                "issues": [],
+            },
+            "apply": {"result": "success", "active_config_path": baseline_path},
+            "issues": [],
+        }
+
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.load_measurement_state",
+        lambda topology: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
+        fake_apply_baseline_profile,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_mux_command",
+        lambda command: {"mode": "auto", "command": command},
+    )
+
+    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
+    )
+
+    assert payload["status"] == "applied"
+    assert payload["commissioning_cleanup"]["ramp"]["status"] == "aborted"
+    assert load_ramp_state()["pending"] is None
+
+
 def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
     monkeypatch,
     tmp_path: Path,

@@ -4941,7 +4941,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
       ingestCrossoverPreview(payload);
-      status('Crossover preview ready. No filters are active and no sound was played.');
+      await refreshCommissioningView();
+      outputStepOverride = 'map';
+      status('Crossover preview ready. No sound was played. Confirm the outputs next.');
       render();
       return true;
     } catch (e) {
