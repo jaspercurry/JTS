@@ -4810,9 +4810,36 @@ async def _active_speaker_finish_commissioning_payload(
     sequence, so the UI cannot wedge itself between "saved" and "applied".
     """
 
+    summed_stop = _active_speaker_stop_summed_test_tone(reason="finish_commissioning")
+    try:
+        from jasper.active_speaker.commission_ramp import load_ramp_state
+        from jasper.active_speaker.startup_load import load_commission_load_state
+
+        ramp_state = load_ramp_state()
+        commission_load = load_commission_load_state()
+        cleanup_needed = isinstance(ramp_state.get("pending"), dict) or (
+            commission_load.get("status") == "loaded"
+        )
+        if cleanup_needed:
+            commissioning_cleanup = await _active_speaker_commission_ramp_abort_payload(
+                camilla_factory=camilla_factory,
+            )
+        else:
+            commissioning_cleanup = {
+                "status": "idle",
+                "ramp": ramp_state,
+                "commission_load": commission_load,
+            }
+    except (OSError, RuntimeError, ValueError) as exc:
+        commissioning_cleanup = {"status": "error", "error": str(exc)}
+
     payload = await _active_speaker_baseline_profile_apply_payload(
         camilla_factory=camilla_factory,
     )
+    payload["commissioning_cleanup"] = {
+        "summed_test": summed_stop,
+        "ramp": commissioning_cleanup,
+    }
     profile = (
         payload.get("profile")
         if isinstance(payload.get("profile"), dict)
