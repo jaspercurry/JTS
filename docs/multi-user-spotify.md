@@ -261,9 +261,11 @@ rebuild covers any path that doesn't go through the wizard.
 
 When you say "next song" / "previous" / "pause" / "resume":
 
-1. `_detect_source` reads the renderer's per-source flags and figures
-   out the active source: `airplay`, `spotify` (Connect), `bluetooth`,
-   or `none` (nothing playing).
+1. `_detect_source` asks mux for `RendererClient.selected_source()` and
+   uses the effective audible source chosen by manual source selection
+   or auto handoff policy. If mux is unavailable, it falls back to raw
+   renderer flags. The result is `airplay`, `spotify` (Connect),
+   `bluetooth`, `usbsink`, or `none` (nothing playing).
 2. For **AirPlay**: read shairport's MPRIS `xesam:title` and the
    AirPlay `ClientName`. Then call
    `Router.resolve_for_transport(client_name, mpris_title)`:

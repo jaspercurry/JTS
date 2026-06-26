@@ -148,15 +148,23 @@ def test_wiim_remote_2_name_fallback_matches_bluez_name():
     assert lookup_by_name("wiim remote 2 consumer control") is WIIM_REMOTE_2
 
 
-@pytest.mark.parametrize("device", KNOWN_PROFILES)
-def test_every_registered_device_has_unique_usb_ids(device):
-    """Sanity guard for future additions — two devices on the same
-    (vid, pid) would cause lookup to silently shadow one."""
-    matches = [
-        d for d in KNOWN_PROFILES
-        if d.vendor_id == device.vendor_id
-        and d.product_id == device.product_id
-    ]
-    assert matches == [device], (
-        f"VID/PID collision: {[d.name for d in matches]}"
-    )
+def test_every_registered_profile_has_unique_usb_ids():
+    """Sanity guard for future additions — two profiles sharing any
+    (vid, pid), including alternate transport IDs, would make lookup()
+    silently shadow one."""
+    seen: dict[tuple[int, int], RemoteProfile] = {}
+    for profile in KNOWN_PROFILES:
+        assert profile.identity.usb_ids, f"{profile.id} must declare a USB ID"
+        for usb_id in profile.identity.usb_ids:
+            assert usb_id not in seen, (
+                f"VID/PID collision {usb_id!r}: "
+                f"{seen[usb_id].name} and {profile.name}"
+            )
+            seen[usb_id] = profile
+
+
+@pytest.mark.parametrize("profile", KNOWN_PROFILES)
+def test_every_registered_profile_has_known_mic_status(profile):
+    assert profile.mic.status in {
+        "none", "not_exposed", "reserved", "linux_audio",
+    }

@@ -22,11 +22,12 @@ Three real-world cases:
 
 3. Nothing is playing on the Pi: start librespot. Plain case.
 
-The matcher in `_match_track` is conservative — title AND artist must
-both align after normalisation. A Spotify session paused on the user's
-laptop (with the same song that's shown by AirPlay coincidentally)
-can't fool it as long as Spotify reports `is_playing=False` for that
-laptop session.
+The matcher in `_match_track` is conservative but title-only: Spotify
+and AirPlay often disagree on artist strings for collaborations,
+remasters, or "Various Artists" compilations. A Spotify session paused
+on the user's laptop (with the same song that's shown by AirPlay
+coincidentally) can't fool it as long as Spotify reports
+`is_playing=False` for that laptop session.
 """
 from __future__ import annotations
 

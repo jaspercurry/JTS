@@ -16,7 +16,7 @@ metadata first, then add the narrow runtime adapter it needs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Union
+from typing import Literal, Mapping, Union
 
 
 # Subset of evdev keycodes we care about for HID consumer-control
@@ -35,6 +35,8 @@ CAP_TRANSPORT = "transport"
 CAP_MUTE = "mute"
 CAP_TAP_GESTURES = "tap-gestures"
 CAP_VOICE_HOLD = "voice-hold"
+
+RemoteMicStatus = Literal["none", "not_exposed", "reserved", "linux_audio"]
 
 
 @dataclass(frozen=True)
@@ -126,7 +128,7 @@ class RemoteMicSupport:
     whether a future vendor/profile-specific adapter is reserved.
     """
 
-    status: str = "none"  # none | not_exposed | reserved | linux_audio
+    status: RemoteMicStatus = "none"
     detail: str = "No remote microphone integration."
     capture_profile_id: str | None = None
 
