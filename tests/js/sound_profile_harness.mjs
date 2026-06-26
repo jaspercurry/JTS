@@ -40,7 +40,8 @@ function float32ToWavBlob() {
 
 const rawSource = readFileSync(modulePath, "utf8");
 const source = rawSource
-  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n")
+  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
+    "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
@@ -65,8 +66,11 @@ function makeEl(id) {
     id, innerHTML: "", textContent: "", className: "", value: "", checked: false,
     attrs: {}, style: {}, _listeners: {}, classList: classList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
-    getAttribute(k) { return this.attrs[k]; },
+    getAttribute(k) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
+    },
     hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+    removeAttribute(k) { delete this.attrs[k]; },
     addEventListener(ev, fn) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
     },
@@ -474,6 +478,7 @@ function setupHarness(fetchHandler, options = {}) {
   }
 
   globalThis.document = {
+    _listeners: {},
     activeElement: null,
     body: {
       children: [],
@@ -499,6 +504,12 @@ function setupHarness(fetchHandler, options = {}) {
     querySelector(sel) {
       return sel === "meta[name=jts-csrf]" ? { content: "csrf-token" } : null;
     },
+    addEventListener(ev, fn) {
+      (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+    },
+    removeEventListener(ev, fn) {
+      this._listeners[ev] = (this._listeners[ev] || []).filter((listener) => listener !== fn);
+    },
   };
   globalThis.window = {
     _listeners: {},
@@ -513,6 +524,7 @@ function setupHarness(fetchHandler, options = {}) {
     value: { clipboard: { async writeText() {} } },
     configurable: true,
   });
+  delete globalThis.__jtsConfirm;
   globalThis.btoa = (binary) => Buffer.from(binary, "binary").toString("base64");
   globalThis.fetch = fetchHandler;
 
@@ -1535,6 +1547,11 @@ async function testStaleSummedValidationDoesNotRenderValidatedGroup() {
 
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   const topology = activeTwoWayTopologyPayload();
+  topology.hardware.physical_output_count = 8;
+  topology.hardware.outputs = Array.from({ length: 8 }, (_unused, index) => ({
+    index,
+    human_label: `DAC output ${index + 1}`,
+  }));
   topology.speaker_groups[0].channels[0].human_output_label = "Old woofer label";
   topology.speaker_groups[0].channels[1].human_output_label = "Old tweeter label";
   const saves = [];
@@ -1776,6 +1793,10 @@ async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
   if (!step || step.body.identity_audition !== true) {
     fail("Confirm outputs Play should ramp using identity-audition mode", { posts });
   }
+  globalThis.__jtsConfirm = async () => {
+    posts.push({ path: "dialog-confirm" });
+    return true;
+  };
   harness.dispatchClick({
     "data-act": "mark-output-identity",
     "data-group-id": "main",
@@ -1785,9 +1806,11 @@ async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
   await harness.flush(); await harness.flush(); await harness.flush();
   await harness.flush(); await harness.flush(); await harness.flush();
   const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
+  const confirmIndex = posts.findIndex((x) => x.path === "dialog-confirm");
   const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
-  if (abortIndex < 0 || identityIndex < 0 || abortIndex > identityIndex) {
-    fail("Confirming output during audition should remute before saving identity", { posts });
+  if (abortIndex < 0 || confirmIndex < 0 || identityIndex < 0 ||
+      abortIndex > confirmIndex || confirmIndex > identityIndex) {
+    fail("Confirming output during audition should remute before dialog and identity save", { posts });
   }
   const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
   if (afterConfirmHtml.includes('data-role="tweeter" disabled')) {
@@ -1851,6 +1874,10 @@ async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
   if (!html.includes(">Stop</button>") || !html.includes('data-role="woofer" disabled')) {
     fail("Fixture should start with tweeter audition pending and woofer play disabled", { html });
   }
+  globalThis.__jtsConfirm = async () => {
+    posts.push({ path: "dialog-confirm" });
+    return true;
+  };
 
   harness.dispatchClick({
     "data-act": "mark-output-identity",
@@ -1862,9 +1889,11 @@ async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
   await harness.flush(); await harness.flush(); await harness.flush();
 
   const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
+  const confirmIndex = posts.findIndex((x) => x.path === "dialog-confirm");
   const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
-  if (abortIndex < 0 || identityIndex < 0 || abortIndex > identityIndex) {
-    fail("Confirming output with a pending audition should remute before saving identity", { posts });
+  if (abortIndex < 0 || confirmIndex < 0 || identityIndex < 0 ||
+      abortIndex > confirmIndex || confirmIndex > identityIndex) {
+    fail("Confirming output with a pending audition should remute before dialog and identity save", { posts });
   }
   const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
   if (afterConfirmHtml.includes(">Stop</button>") ||
@@ -2079,6 +2108,7 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
 
 async function testDriverResearchPromptCopyUsesHttpFallback() {
   let copiedText = "";
+  let asyncClipboardCalled = false;
   const draft = {
     status: "ready_for_review",
     operator_inputs: {
@@ -2109,14 +2139,27 @@ async function testDriverResearchPromptCopyUsesHttpFallback() {
   harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
   harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
   Object.defineProperty(globalThis, "navigator", {
-    value: {},
+    value: {
+      clipboard: {
+        async writeText() {
+          asyncClipboardCalled = true;
+          throw new Error("not allowed on local HTTP");
+        },
+      },
+    },
     configurable: true,
   });
+  const promptEl = harness.elements.get("driver-research-prompt");
+  promptEl.style.opacity = "0";
+  promptEl.style.pointerEvents = "none";
   globalThis.document.execCommand = (command) => {
     if (command !== "copy") return false;
     const active = globalThis.document.activeElement;
+    if (!active || active.style.opacity === "0" || active.style.pointerEvents === "none") {
+      return false;
+    }
     copiedText = active ? String(active.value || "") : "";
-    return true;
+    return Boolean(copiedText);
   };
 
   harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
@@ -2125,11 +2168,74 @@ async function testDriverResearchPromptCopyUsesHttpFallback() {
   if (!copiedText.includes("Manual Woofer") || !copiedText.includes("Manual Tweeter")) {
     fail("driver research prompt should copy through the HTTP fallback", { copiedText });
   }
+  if (asyncClipboardCalled) {
+    fail("local HTTP fallback should not await async clipboard before selection copy", {
+      asyncClipboardCalled,
+    });
+  }
   const statusText = harness.elements.get("status").textContent;
   if (!statusText.includes("Copied driver research prompt.")) {
     fail("successful fallback copy should report success", { statusText });
   }
   return { driverResearchPromptCopyUsesHttpFallback: true };
+}
+
+async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
+  const draft = {
+    artifact_schema_version: 1,
+    kind: "jts_active_speaker_design_draft",
+    status: "ready_for_review",
+    topology_id: "default",
+    driver_research: {
+      drivers: [
+        { role: "woofer", model: "Manual Woofer" },
+        { role: "tweeter", model: "Manual Tweeter" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 1800,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+        confidence: "medium",
+      }],
+    },
+    summary: {},
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  Object.defineProperty(globalThis, "navigator", {
+    value: {
+      clipboard: {
+        async writeText() {
+          throw new Error("not allowed on local HTTP");
+        },
+      },
+    },
+    configurable: true,
+  });
+  globalThis.document.execCommand = (command) => command === "copy" ? false : false;
+
+  harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
+  await harness.flush();
+
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Prompt text is selected")) {
+    fail("blocked copy should leave the user with selected prompt text", { statusText });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes(">Selected</button>")) {
+    fail("blocked copy should update the CTA to Selected", { html });
+  }
+  if (!html.includes('id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--compact"')) {
+    fail("blocked copy should render the prompt visibly instead of keeping it hidden", { html });
+  }
+  return { driverResearchPromptCopyBlockedSelectsPrompt: true };
 }
 
 async function testDriverResearchNotesCapExplainsBeforePost() {
@@ -3505,6 +3611,7 @@ results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testDriverResearchPromptCopyUsesHttpFallback());
+results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
 results.push(await testPreparePreviewUpdatesWorkingSetupFirst());

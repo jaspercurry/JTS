@@ -130,7 +130,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     error: '',
     dirty: false,
     saving: false,
-    promptCopied: false
+    promptCopied: false,
+    promptSelected: false
   };
   var crossoverPreview = {payload: null, preparing: false, error: ''};
   var ZERO_DETENT_DB = 0.1;
@@ -1655,6 +1656,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     driverResearch.dirty = false;
     driverResearch.promptCopied = false;
+    driverResearch.promptSelected = false;
   }
   async function fetchDesignDraft() {
     var resp = await fetch('./active-speaker/design-draft', {cache: 'no-store'});
@@ -2251,6 +2253,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderDriverResearchAiHelper(topology) {
     var promptReady = driverResearchPromptReady(topology);
+    var promptSelected = driverResearch.promptSelected && !driverResearch.promptCopied;
+    var promptClass = 'driver-research__textarea' +
+      (promptSelected ? ' driver-research__textarea--compact' : ' driver-research__textarea--hidden');
+    var promptButtonLabel = driverResearch.promptCopied ? 'Copied' :
+      (promptSelected ? 'Selected' : 'Copy prompt');
     return '<details class="driver-research__ai" open>' +
       '<summary>AI helper</summary>' +
       '<div class="driver-research__grid driver-research__grid--ai">' +
@@ -2260,9 +2267,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               '<p class="setting-row__hint">Enter driver models first, then copy the prompt.</p></div>' +
             '<button type="button" class="btn btn--ghost" data-act="copy-driver-research-prompt"' +
               (promptReady ? '' : ' disabled') + '>' +
-              escapeHtml(driverResearch.promptCopied ? 'Copied' : 'Copy prompt') + '</button>' +
+              escapeHtml(promptButtonLabel) + '</button>' +
           '</div>' +
-          '<textarea id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--hidden" readonly ' +
+          '<textarea id="driver-research-prompt" class="' + promptClass + '" readonly ' +
+            (promptSelected ? 'rows="6" ' : '') +
             'aria-label="Driver research prompt">' +
             escapeHtml(driverResearchPrompt(topology)) + '</textarea>' +
         '</div>' +
@@ -2688,8 +2696,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         var disabled = outputTopology.dirty || busy ||
           channel.physical_output_index == null;
         var otherAssigned = outputAssignedToOtherMap(topology, group.id || '', channel.role || '');
-        var allowPeerSwap = outputs.length === 2 &&
-          Array.isArray(group.channels) && group.channels.length === 2;
+        var allowPeerSwap = Array.isArray(group.channels) && group.channels.length === 2;
         var peerOutputIndexes = {};
         if (allowPeerSwap) {
           group.channels.forEach(function(peer) {
@@ -3768,6 +3775,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.error = '';
       driverResearch.dirty = true;
       driverResearch.promptCopied = false;
+      driverResearch.promptSelected = false;
       updateDriverResearchPromptPreview();
       updateDriverResearchPromptButton();
       return;
@@ -4398,18 +4406,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       channel.identity_verified = false;
       delete channel.human_output_label;
     }
-    applyChannel(targetChannel, selected);
-    if (selected !== null && outputs.length === 2 &&
-        Array.isArray(targetGroup.channels) && targetGroup.channels.length === 2) {
-      var otherIndex = outputIndexes.filter(function(index) {
-        return index !== selected;
-      })[0];
+    var previousSelected = targetChannel.physical_output_index == null ?
+      null : Number(targetChannel.physical_output_index);
+    var swapPeer = null;
+    if (selected !== null && Array.isArray(targetGroup.channels) &&
+        targetGroup.channels.length === 2) {
       targetGroup.channels.forEach(function(channel) {
-        if (channel !== targetChannel && otherIndex !== undefined) {
-          applyChannel(channel, otherIndex);
+        if (channel !== targetChannel &&
+            Number(channel.physical_output_index) === selected) {
+          swapPeer = channel;
         }
       });
     }
+    applyChannel(targetChannel, selected);
+    if (swapPeer) applyChannel(swapPeer, previousSelected);
     outputStepOverride = 'map';
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
@@ -4674,44 +4684,102 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!button) return;
     var ready = driverResearchPromptReady(currentOutputTopology());
     button.disabled = !ready;
-    button.textContent = driverResearch.promptCopied ? 'Copied' : 'Copy prompt';
+    button.textContent = driverResearch.promptCopied ? 'Copied' :
+      (driverResearch.promptSelected ? 'Selected' : 'Copy prompt');
   }
   function updateDriverResearchImportSummary() {
     var summary = el('driver-research-import-summary');
     if (summary) summary.innerHTML = renderDriverResearchSummary();
   }
-  async function copyTextToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+  async function copyTextToClipboard(text, sourceElement) {
+    var secureContext = typeof window !== 'undefined' && window.isSecureContext;
+    if (document.execCommand && !secureContext) {
+      return copyTextViaCopyEvent(text) || copyTextViaSelection(text, sourceElement);
+    }
+    var clipboard = typeof navigator !== 'undefined' && navigator.clipboard &&
+      navigator.clipboard.writeText ? navigator.clipboard : null;
+    if (clipboard) {
       try {
-        await navigator.clipboard.writeText(text);
+        await clipboard.writeText(text);
         return true;
       } catch (e) {
         // Fall back for local HTTP management pages where the async clipboard
         // API is unavailable or denied outside a secure context.
       }
     }
+    return copyTextViaCopyEvent(text) || copyTextViaSelection(text, sourceElement);
+  }
+  function copyTextViaCopyEvent(text) {
+    if (!document.execCommand || !document.addEventListener) return false;
+    var copied = false;
+    var handler = function(event) {
+      if (!event.clipboardData) return;
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', text);
+      copied = true;
+    };
+    document.addEventListener('copy', handler);
+    try {
+      document.execCommand('copy');
+    } catch (eventCopyError) {
+      copied = false;
+    } finally {
+      document.removeEventListener('copy', handler);
+    }
+    return copied;
+  }
+  function copyTextViaSelection(text, sourceElement) {
     if (!document.execCommand) return false;
-    var temporary = document.createElement('textarea');
-    temporary.value = text;
-    temporary.setAttribute('readonly', '');
-    temporary.style.position = 'fixed';
-    temporary.style.top = '0';
-    temporary.style.left = '0';
-    temporary.style.width = '1px';
-    temporary.style.height = '1px';
-    temporary.style.opacity = '0.01';
-    temporary.style.pointerEvents = 'none';
-    document.body.appendChild(temporary);
-    temporary.focus();
-    temporary.select();
-    temporary.setSelectionRange(0, temporary.value.length);
+    var temporary = null;
+    var target = sourceElement;
+    var previousStyle = null;
+    if (!target) {
+      temporary = document.createElement('textarea');
+      temporary.value = text;
+      temporary.setAttribute('readonly', '');
+      temporary.style.position = 'fixed';
+      temporary.style.top = '0';
+      temporary.style.left = '0';
+      temporary.style.width = '2px';
+      temporary.style.height = '2px';
+      temporary.style.opacity = '1';
+      temporary.style.color = 'transparent';
+      temporary.style.background = 'transparent';
+      temporary.style.border = '0';
+      temporary.style.padding = '0';
+      document.body.appendChild(temporary);
+      target = temporary;
+    } else if (target.style) {
+      previousStyle = target.getAttribute ? target.getAttribute('style') : null;
+      target.style.position = 'fixed';
+      target.style.top = '0';
+      target.style.left = '0';
+      target.style.width = '2px';
+      target.style.height = '2px';
+      target.style.minHeight = '0';
+      target.style.opacity = '1';
+      target.style.pointerEvents = 'auto';
+      target.style.color = 'transparent';
+      target.style.background = 'transparent';
+      target.style.border = '0';
+      target.style.padding = '0';
+      target.style.zIndex = '2147483647';
+    }
+    target.focus();
+    target.select();
+    target.setSelectionRange(0, target.value.length);
     var copied = false;
     try {
       copied = document.execCommand('copy');
     } catch (fallbackError) {
       copied = false;
     }
-    document.body.removeChild(temporary);
+    if (previousStyle !== null && target.setAttribute) {
+      target.setAttribute('style', previousStyle);
+    } else if (sourceElement && target.removeAttribute) {
+      target.removeAttribute('style');
+    }
+    if (temporary) document.body.removeChild(temporary);
     return copied;
   }
   async function copyDriverResearchPrompt(button) {
@@ -4721,16 +4789,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Add driver models before copying the research prompt.', true);
       return;
     }
-    var copied = await copyTextToClipboard(prompt.value);
+    var copied = await copyTextToClipboard(prompt.value, prompt);
     driverResearch.promptCopied = copied;
-    if (button && copied) {
-      button.textContent = 'Copied';
-      button.disabled = false;
-    }
+    driverResearch.promptSelected = !copied;
     render();
     updateDriverResearchPromptButton();
+    if (!copied) {
+      var fallbackPrompt = el('driver-research-prompt');
+      if (fallbackPrompt) {
+        fallbackPrompt.focus();
+        fallbackPrompt.select();
+        fallbackPrompt.setSelectionRange(0, fallbackPrompt.value.length);
+      }
+    }
     status(copied ? 'Copied driver research prompt.' :
-      'Could not copy automatically. Select the prompt text and copy it manually.', !copied);
+      'Copy was blocked by the browser. Prompt text is selected.', !copied);
   }
   function parseDriverResearchImport() {
     try {
@@ -4740,6 +4813,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.error = '';
       driverResearch.dirty = true;
       driverResearch.promptCopied = false;
+      driverResearch.promptSelected = false;
       status('Imported driver research. Review the visible values before updating the working setup.');
     } catch (e) {
       driverResearch.parsed = null;
@@ -4963,6 +5037,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         throw new Error(payload.error || 'speaker layout save failed');
       }
       ingestOutputTopology(payload);
+      try {
+        await fetchDesignDraft();
+      } catch (draftError) {
+        driverResearch.designDraft = {
+          status: 'unreadable',
+          summary: {},
+          issues: [{message: draftError.message}]
+        };
+      }
+      try {
+        await fetchCrossoverPreview();
+      } catch (previewError) {
+        crossoverPreview.payload = null;
+        crossoverPreview.error = previewError.message;
+      }
+      await refreshCommissioningView();
       if (options.nextStep) outputStepOverride = options.nextStep;
       status('Saved speaker layout. No sound was played.');
     } catch (e) {
@@ -5045,11 +5135,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var message = verified
       ? 'Confirm that "' + label + '" is wired to the driver shown here?'
       : 'Mark "' + label + '" as not confirmed?';
-    if (!await jtsConfirm(message, {danger: false})) return;
-
     if (commissionAutoRamp.running || commissionPendingStep()) {
       stopCommissionAutoRamp('');
-      await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
+      var abortResult = await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
+      if (!abortResult || !abortResult.ok) return;
+    }
+    if (!await jtsConfirm(message, {danger: false})) {
+      status('Stopped the test tone. Output confirmation was not changed.');
+      return;
     }
     outputTopology.identitySaving = groupId + ':' + role;
     outputTopology.error = '';
