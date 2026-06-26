@@ -4081,13 +4081,14 @@ def test_check_wifi_link_local_ipv6_ok(monkeypatch):
 
 def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch):
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless:wlan0\n",
+        "Home Speaker:802-11-wireless:wlan0\n",
         "ignore\n",
     ])
     r = doctor.check_wifi_link_local_ipv6()
     assert r.status == "warn"
     assert "ipv6.method=ignore" in r.detail
     assert "Apple clients" in r.detail
+    assert "nmcli connection modify 'Home Speaker' ipv6.method link-local" in r.detail
 
 
 def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
