@@ -39,6 +39,7 @@ _EXPECTED_MANIFEST_UNITS = frozenset(
         "jasper-mux",
         "jasper-voice",
         "jasper-input",
+        "jasper-wiim-remote-mic",
     }
 )
 

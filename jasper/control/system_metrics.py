@@ -80,6 +80,8 @@ JASPER_SERVICE_GROUPS = {
     "jasper-web.service": "Control",
     "jasper-system-web.service": "Control",
     "jasper-input.service": "Hardware",
+    "jasper-accessory-reconcile.service": "Hardware",
+    "jasper-wiim-remote-mic.service": "Hardware",
     "jasper-headphone-monitor.service": "Hardware",
 }
 

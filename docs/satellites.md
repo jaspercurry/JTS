@@ -113,14 +113,28 @@ that follows.
 
 Third-party HID remotes can reuse the same push-to-talk endpoints
 (`/session/start` on press, `/session/end` on release). Unless they
-also expose a standard Linux audio capture device and JTS explicitly
-adds a mic source for them, they are control surfaces only: the active
-session still uses the speaker's configured mic/AEC path and does not
-enter multi-mic arbitration. Their code-level profiles live in
-`jasper/accessories/registry.py`; a profile may reserve future
-hold-to-talk or remote-mic integration metadata, but that metadata is
-not a runtime audio path until a real capture source is wired into the
-voice pipeline.
+also expose a standard Linux audio capture device or ship with a
+narrow adapter that forwards decoded PCM into a manual mic source,
+they are control surfaces only: the active session still uses the
+speaker's configured mic/AEC path and does not enter multi-mic
+arbitration. The WiiM Remote 2 is the first adapter-backed exception:
+[`jasper-wiim-remote-mic`](../jasper/accessories/wiim_remote_mic.py)
+subscribes to its BLE HID-over-GATT voice report, decodes 16 kHz mono
+PCM, and forwards it to the `wiim_remote_2=udp:9892` manual mic source.
+That source is **not** a global default: the profile metadata declares
+the adapter, and
+[`jasper-accessory-reconcile`](../jasper/accessories/reconcile.py)
+writes `/var/lib/jasper/accessory-mics.env` only when BlueZ has a paired
+WiiM Remote 2. Speakers without that paired profile keep both the UDP
+voice source and BLE decoder stopped. Its HID profile sends
+`POST /session/start` with `{"source":"wiim_remote_2"}` on voice-button
+press, and `POST /session/end` on release, so the voice turn bypasses
+wake detection and routes only that source while held; the normal
+always-on mic path remains active outside that manual turn. Code-level
+profiles live in [`jasper/accessories/registry.py`](../jasper/accessories/registry.py);
+a profile may reserve future hold-to-talk or remote-mic metadata, but
+that metadata is not a runtime audio path until a capture source is
+wired into the voice pipeline.
 
 ### Jasper AMOLED Satellite — Waveshare ESP32-S3-Touch-AMOLED-1.8
 
@@ -509,15 +523,18 @@ Satellites POST control actions to `jasper-control` on the Pi
   `{"delta_db": float}` (50 dB scale)
 - `POST /volume/set` — body `{"percent": int}` or legacy `{"db": float}`
 - `POST /transport/toggle` — auto play↔pause based on backend state
-- `POST /session/start` — manual wake bypass (long-press / push-to-talk)
+- `POST /session/start` — manual wake bypass (long-press / push-to-talk);
+  optional body `{"source": "<manual-mic-source>"}` selects a configured
+  push-to-talk mic instead of the speaker's primary mic
 - `POST /session/end` — finalize input
 - `POST /cue/play` — body `{"slug": "<cue-slug>"}` — play a registered
   audio cue through the daemon's gain-tracked TtsPlayout
 - `GET  /dial/status` — heartbeat snapshot for `jasper-doctor`
 
 `session/*` and `cue/play` proxy through to the voice daemon's UDS at
-`/run/jasper/voice.sock` ([voice_daemon.py:1167](../jasper/voice_daemon.py:1167))
-so that satellites don't need to know the daemon's internal IPC.
+`/run/jasper/voice.sock` ([`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py)
+`_start_control_socket`) so that satellites don't need to know the
+daemon's internal IPC.
 **Unauthenticated** — home LAN trust posture, same as the dial.
 
 ### Diagnostics — UDP `:5514`

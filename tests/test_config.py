@@ -50,7 +50,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_DUCK_DB", "JASPER_DUCK_TRANSPORT",
         "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
         "JASPER_DAILY_SPEND_CAP_USD",
-        "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
+        "JASPER_MIC_DEVICE", "JASPER_MANUAL_MIC_SOURCES", "JASPER_TTS_DEVICE",
         "JASPER_SPEAKER_NAME",
         "JASPER_DEFAULT_LOCATION", "JASPER_WEATHER_LAT",
         "JASPER_WEATHER_LON", "JASPER_WEATHER_DISPLAY_NAME",
@@ -95,6 +95,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     # ALSA defaults must match the templates in /etc/asound.conf and the
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
     assert cfg.mic_device == "Array"
+    assert dict(cfg.manual_mic_sources) == {}
     assert cfg.mic_capture_rate == 16000
     assert cfg.mic_capture_channels == 1
     assert cfg.aec_chip_aec_enabled is False
@@ -136,6 +137,29 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     # Transit config is no longer on Config (each jasper.transit provider
     # parses its own env keys); see tests/test_transit_citypacks.py.
     assert cfg.spotify_enabled is False
+
+
+def test_manual_mic_sources_parse_comma_separated(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "JASPER_MANUAL_MIC_SOURCES",
+        "wiim_remote_2=udp:9892,desk_button=udp://127.0.0.1:9893",
+    )
+
+    cfg = Config.from_env()
+
+    assert dict(cfg.manual_mic_sources) == {
+        "wiim_remote_2": "udp:9892",
+        "desk_button": "udp://127.0.0.1:9893",
+    }
+
+
+def test_manual_mic_sources_reject_malformed_entry(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_MANUAL_MIC_SOURCES", "wiim_remote_2")
+
+    with pytest.raises(RuntimeError, match="source_id=device"):
+        Config.from_env()
 
 
 def test_openai_noise_reduction_env(monkeypatch):

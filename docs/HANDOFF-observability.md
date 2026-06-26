@@ -46,8 +46,9 @@ steady state: production gets truth, not lab equipment.
 
 **Logging is plain `logging.basicConfig(level=INFO)` per daemon.**
 Each long-running daemon (`jasper-voice`, `jasper-control`,
-`jasper-aec-bridge`, `mux`, the renderers) calls `basicConfig`
-once at startup with a hardcoded `INFO` level and the format
+`jasper-aec-bridge`, `jasper-mux`, the renderers, and profile-gated
+adapters such as `jasper-wiim-remote-mic`) calls `basicConfig` once at
+startup with a hardcoded `INFO` level and the format
 `%(asctime)s %(levelname)s %(name)s: %(message)s`. There is no
 shared logging module and no `dictConfig`. Beyond the
 per-subsystem **Debug card** (Tier B below) there is **no general
@@ -438,5 +439,7 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 Last verified: 2026-06-26 (Camilla/snapclient per-unit journal rate limits and
 `fetch-pi-logs.sh` noise-summary + monotonic timeline artifacts rechecked against current code;
-resilience `/state`, supervisor doctor surface, and multiroom cascade timeline
-last rechecked 2026-06-24)
+`jasper-accessory-reconcile` and `jasper-wiim-remote-mic` added to the
+accessory logging inventory; reconciler success/failure/systemctl events
+now use stable `event=` logs; resilience `/state`, supervisor doctor
+surface, and multiroom cascade timeline last rechecked 2026-06-24)

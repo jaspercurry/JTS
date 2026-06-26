@@ -3067,6 +3067,40 @@ def test_session_start_proxies_to_voice_socket(server_with_voice_socket):
     assert received == ["START"]
 
 
+def test_session_start_source_proxies_to_voice_socket(server_with_voice_socket):
+    base, voice_responses, received = server_with_voice_socket
+    voice_responses.append({"result": "OK"})
+    status, body = _post(
+        f"{base}/session/start",
+        {"source": "wiim_remote_2"},
+    )
+    assert status == 200
+    assert body["result"] == "OK"
+    assert received == ["START wiim_remote_2"]
+
+
+def test_session_start_rejects_invalid_source_token(server_with_voice_socket):
+    base, _voice_responses, received = server_with_voice_socket
+    status, body = _post(
+        f"{base}/session/start",
+        {"source": "wiim remote 2"},
+    )
+    assert status == 400
+    assert "source" in body["error"]
+    assert received == []
+
+
+def test_session_start_unknown_source_400(server_with_voice_socket):
+    base, voice_responses, _received = server_with_voice_socket
+    voice_responses.append({"result": "UNKNOWN_SOURCE"})
+    status, body = _post(
+        f"{base}/session/start",
+        {"source": "missing_remote"},
+    )
+    assert status == 400
+    assert body["result"] == "UNKNOWN_SOURCE"
+
+
 def test_session_end_proxies_to_voice_socket(server_with_voice_socket):
     base, voice_responses, received = server_with_voice_socket
     voice_responses.append({"result": "OK"})

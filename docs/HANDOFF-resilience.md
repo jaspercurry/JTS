@@ -497,7 +497,7 @@ JTS ladder, descending priority:
 | `jasper-aec-bridge` | -700 | Real-time mic processing |
 | `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
 | `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
-| `jasper-mux`, `jasper-input` | -300 | Restartable control-plane daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane |
+| `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic` | -300 | Restartable control/accessory daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane; WiiM mic is profile-gated and loss falls back to the normal voice mic path |
 | `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
 
 Critical: **nothing operator-launched through SSH should inherit
@@ -778,8 +778,9 @@ across the K3s / Docker / Home Assistant Supervised communities; no
 known stability regressions on JTS-relevant workloads.
 
 **Once on, the `MemoryHigh=` / `MemoryMax=` directives that already
-exist in 6 unit files** (`jasper-mux.service`, `jasper-input.service`,
-`jasper-usbsink.service`, `jasper-system-web.service`,
+exist in 7 unit files** (`jasper-mux.service`, `jasper-input.service`,
+`jasper-wiim-remote-mic.service`, `jasper-usbsink.service`,
+`jasper-system-web.service`,
 `jasper-bluetooth-web.service`, `librespot.service`) **start
 enforcing**. Today they're silent no-ops — systemd accepts them,
 kernel ignores them because there's no memory cgroup. This is a
@@ -797,7 +798,7 @@ jts-audio.slice    ← jasper-fanin, jasper-camilla, shairport-sync, librespot, 
 jts-mic.slice      ← jasper-aec-bridge
                      MemorySwapMax=0          # realtime mic, same logic
 
-jts-control.slice  ← jasper-control, jasper-mux, jasper-input
+jts-control.slice  ← jasper-control, jasper-mux, jasper-input, jasper-wiim-remote-mic (profile-gated)
                      MemoryHigh=120M MemoryMax=180M
 
 jts-voice.slice    ← jasper-voice
@@ -1316,7 +1317,8 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-25 (Camilla start-limit recovery contract rechecked
+Last verified: 2026-06-26 (WiiM Remote 2 BLE mic adapter added to the
+restartable accessory/OOM/memory-limit inventory; Camilla start-limit recovery contract rechecked
 against `deploy/systemd/jasper-camilla.service`,
 `deploy/systemd/jasper-camilla-recover.service`,
 `deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;

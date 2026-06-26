@@ -59,7 +59,10 @@ The 40 privileged-restart sites and 8 self-healing reconcilers split cleanly:
 
 - **Tier A — always-on, network-facing daemons** (`jasper-voice`,
   `jasper-control`, `jasper-web`, `jasper-mux`, `jasper-input`): the RCE attack
-  surface. These get hardened (Phase 1) and dropped (Phase 3).
+  surface. These get hardened (Phase 1) and dropped (Phase 3). Narrow accessory
+  adapters such as `jasper-wiim-remote-mic` follow the same hardening/drop shape
+  but are not privileged restart brokers or LAN HTTP surfaces; root-owned
+  accessory reconcilers stay as short oneshots with tightly scoped write paths.
 - **Tier B — udev/boot-triggered one-shots + operator sudo-CLIs**
   (`jasper-aec-reconcile`, `jasper-aec-init`, `jasper-dac-init`,
   `jasper-dongle-recover`, `jasper-wifi-guardian`,
@@ -120,6 +123,7 @@ Per-unit nuances (the reason a uniform block would break things):
 | jasper-web | 8.7 EXPOSED | **6.5 MEDIUM** |
 | jasper-mux | 9.6 UNSAFE | **6.2 MEDIUM** |
 | jasper-input | 8.7 EXPOSED | **6.2 MEDIUM** |
+| jasper-wiim-remote-mic | n/a (new 2026-06-26) | **1.4 OK** |
 
 Validation: all daemons `NRestarts=0` (no watchdog loop), voice mic capture +
 multi-leg wake alive under the sandbox, `jasper-doctor` unchanged (1
@@ -234,6 +238,8 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-voice | `jasper-voice` | `audio`, `jasper-secrets`, `jasper-intsecrets` | **3b-1 + 4a/4b (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection; 4a/4b groups grant only the secret compartments it must read/write |
 | jasper-mux | `jasper-mux` | `jasper-intsecrets` | **3b-1 + 4b (LANDED)** | broker client (librespot recovery); shared broad file is `speaker_volume.json`; Spotify token refresh writes the 4b compartment |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
+| jasper-accessory-reconcile | root (oneshot) | `jasper` primary group | **accessory reconciler (LANDED 2026-06-26)** | reads BlueZ paired-device state, writes `/var/lib/jasper/accessory-mics.env`, and owns adapter unit enable/disable; `Group=jasper` gives access to the group-owned state dir while `CapabilityBoundingSet=` stays empty; kept as a narrow root oneshot rather than granting systemctl privilege to `jasper-input` or a wizard |
+| jasper-wiim-remote-mic | `jasper-input` | `bluetooth` | **accessory adapter (LANDED 2026-06-26)** | BlueZ D-Bus GATT client for WiiM Remote 2 voice reports; sends decoded PCM to localhost UDP; no filesystem writes |
 | jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
 | jasper-web | `jasper-web` | `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` withheld and scan repair routed through a start-only root helper — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
 
@@ -987,8 +993,10 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-06-24 (`jasper-control` polkit allowlist rechecked for the
-fixed grouping trailing service: named unit only, no broad transient-unit grant;
+Last verified: 2026-06-26 (`jasper-wiim-remote-mic` accessory adapter hardening
+shape added and measured on jts5.local at 1.4 OK. `jasper-control`
+polkit allowlist rechecked 2026-06-24 for the fixed grouping trailing service:
+named unit only, no broad transient-unit grant;
 Spotify token cache write contract last rechecked 2026-06-22 against
 `jasper.accounts.build_cache_handler` and live `jts3.local`
 `/var/lib/jasper-intsecrets/spotify/caches` permissions; Wi-Fi scan-suppression

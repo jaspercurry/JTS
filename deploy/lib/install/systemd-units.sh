@@ -557,6 +557,20 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-input.service" \
         "${SYSTEMD_DIR}/jasper-input.service"
+    # Optional accessory mic profiles are activated by this root oneshot:
+    # it reads BlueZ's paired-device state, writes
+    # /var/lib/jasper/accessory-mics.env for jasper-voice, and owns the
+    # matching adapter unit state. This keeps rare remotes from imposing
+    # resident cost on every speaker.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
+    # WiiM Remote 2 BLE microphone adapter. Button events still flow through
+    # jasper-input; this companion daemon only decodes the remote's GATT voice
+    # report into the wiim_remote_2 manual mic UDP source.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
+        "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
     # AEC bridge + boot-time chip init + reconciler. The reconciler is
     # the policy layer that keeps JASPER_MIC_DEVICE, AEC services, and
     # the currently attached mic hardware in sync.
@@ -974,6 +988,7 @@ install_systemd_units() {
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service \
         jasper-audio-hardware-reconcile.service \
+        jasper-accessory-reconcile.service \
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
@@ -1025,6 +1040,11 @@ install_systemd_units() {
     # jasper-input is always-on (HID accessory bridge) — restart so any
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true
+    # Optional adapter-backed mic sources are profile-gated. Reconcile after
+    # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
+    # without one keep the BLE decoder stopped/disabled.
+    /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 
     # Reconcile software AEC against whatever mic hardware is actually
     # present right now. This replaces the old one-way "enable if
