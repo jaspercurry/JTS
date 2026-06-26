@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Mapping, Union
 
+from .constants import WIIM_REMOTE_2_MIC_DEVICE
+
 
 # Subset of evdev keycodes we care about for HID consumer-control
 # devices. Full list is in /usr/include/linux/input-event-codes.h
@@ -36,7 +38,9 @@ CAP_MUTE = "mute"
 CAP_TAP_GESTURES = "tap-gestures"
 CAP_VOICE_HOLD = "voice-hold"
 
-RemoteMicStatus = Literal["none", "not_exposed", "reserved", "linux_audio"]
+RemoteMicStatus = Literal[
+    "none", "not_exposed", "reserved", "linux_audio", "adapter",
+]
 
 
 @dataclass(frozen=True)
@@ -125,12 +129,15 @@ class RemoteMicSupport:
 
     The HID bridge does not consume audio. This metadata records whether
     a remote is known to expose a standard Linux capture device, or
-    whether a future vendor/profile-specific adapter is reserved.
+    whether a vendor/profile-specific adapter can publish a manual mic
+    source for jasper-voice.
     """
 
     status: RemoteMicStatus = "none"
     detail: str = "No remote microphone integration."
     capture_profile_id: str | None = None
+    device: str | None = None
+    adapter_service: str | None = None
 
 
 @dataclass(frozen=True)
@@ -248,8 +255,7 @@ VK01 = RemoteProfile(
 #   - Consumer Control: voice as KEY_SEARCH
 #
 # Input/source needs a JTS source-selection semantic. Voice is mapped
-# as hold-to-talk against the normal JTS mic pipeline; the WiiM Remote
-# 2's MEMS mic does not expose as a standard Linux audio capture device.
+# as hold-to-talk against the WiiM BLE voice-report adapter.
 WIIM_REMOTE_2 = RemoteProfile(
     id="wiim_remote_2",
     name="WiiM Remote 2",
@@ -269,18 +275,23 @@ WIIM_REMOTE_2 = RemoteProfile(
         KEY_PREVIOUSSONG: KeyAction("POST", "/transport/previous", {}),
         KEY_MUTE: KeyAction("POST", "/volume/mute", {}),
         KEY_SEARCH: HoldAction(
-            on_press=KeyAction("POST", "/session/start", {}),
+            on_press=KeyAction(
+                "POST", "/session/start", {"source": "wiim_remote_2"},
+            ),
             on_release=KeyAction("POST", "/session/end", {}),
         ),
     },
     capabilities=frozenset({CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD}),
     mic=RemoteMicSupport(
-        status="reserved",
+        status="adapter",
+        capture_profile_id="wiim_remote_2",
+        device=WIIM_REMOTE_2_MIC_DEVICE,
+        adapter_service="jasper-wiim-remote-mic.service",
         detail=(
-            "The remote has a built-in MEMS mic, but the tested pairing "
-            "does not expose a standard Linux audio capture device. A "
-            "future adapter can fill capture_profile_id when the audio "
-            "transport is understood."
+            "The remote has a built-in MEMS mic exposed as a HID-over-GATT "
+            "voice report, not a standard Linux capture device. "
+            "jasper-wiim-remote-mic decodes that stream and forwards it to "
+            "the wiim_remote_2 manual mic source."
         ),
     ),
     reserved_features=(
@@ -289,13 +300,6 @@ WIIM_REMOTE_2 = RemoteProfile(
             detail=(
                 "KEY_BACK/input-source is captured but not mapped to a "
                 "JTS source semantic yet."
-            ),
-        ),
-        ReservedFeature(
-            id="remote_mic",
-            detail=(
-                "Wire only after the remote mic exposes a real audio "
-                "source; until then HoldAction starts the normal JTS mic path."
             ),
         ),
     ),

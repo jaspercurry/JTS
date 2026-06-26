@@ -214,6 +214,17 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         supplementary_groups=("input",),
         paths=(),
     ),
+    # jasper-wiim-remote-mic reads NO on-disk config/state at runtime. It listens
+    # to BlueZ over system D-Bus ('bluetooth' supplementary group) and forwards
+    # decoded PCM to the localhost manual-mic UDP source.
+    DaemonReadSpec(
+        unit="jasper-wiim-remote-mic",
+        unit_file="deploy/systemd/jasper-wiim-remote-mic.service",
+        user="jasper-input",
+        group="jasper",
+        supplementary_groups=("bluetooth",),
+        paths=(),
+    ),
 )
 
 _SPEC_BY_UNIT: dict[str, DaemonReadSpec] = {s.unit: s for s in MANIFEST}

@@ -1,12 +1,12 @@
 [Unit]
 Description=Jasper voice daemon (wake word + real-time LLM + tools)
-After=jasper-fanin.service jasper-camilla.service jasper-outputd.service network-online.target
+After=jasper-fanin.service jasper-camilla.service jasper-outputd.service network-online.target jasper-accessory-reconcile.service
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
 # playback working through a 2 s camilla outage (camilla calls go
 # through best_effort=True paths in jasper/camilla.py). After= still
 # orders us behind camilla on cold boot.
-Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service
+Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service
 
 # Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
 # accumulated silently because the daemon kept hitting transient
@@ -138,6 +138,10 @@ EnvironmentFile=-/var/lib/jasper/conversation_history.env
 # wizard values win; optional via leading `-` (absent => solo). MUST match
 # jasper-control.service, which also sources it — both daemons read it.
 EnvironmentFile=-/var/lib/jasper/peering.env
+# Optional accessory-backed push-to-talk mic sources. Single writer:
+# jasper-accessory-reconcile, which activates entries only when the matching
+# hardware profile is paired (for example WiiM Remote 2 → wiim_remote_2=udp:9892).
+EnvironmentFile=-/var/lib/jasper/accessory-mics.env
 # Assistant audio routes to fan-in's outputd-compatible local socket so
 # TTS/cues enter before CamillaDSP, then get the same crossover,
 # correction, and protection path as renderer audio. The transport name

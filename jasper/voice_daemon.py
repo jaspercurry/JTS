@@ -636,6 +636,23 @@ class _LegRuntime:
         self.recent_score_at = 0.0
 
 
+class _ManualMicRuntime:
+    """Live state for one push-to-talk mic source.
+
+    Manual mic sources are opened by the daemon from
+    ``Config.manual_mic_sources`` and selected per turn by source id. They are
+    session-audio-only: no wake detector, no wake-event capture ring, and no
+    pre-roll from the room mic.
+    """
+
+    __slots__ = ("source_id", "mic", "device")
+
+    def __init__(self, source_id: str, mic: MicCapture, device: str):
+        self.source_id = source_id
+        self.mic = mic
+        self.device = device
+
+
 # Per-leg wake_events column mapping. The peak_score column is irregular
 # for back-compat with the historical corpus (aec_on/aec_off vs
 # dtln_aec), so the columns are listed explicitly rather than derived
@@ -748,6 +765,7 @@ class WakeLoop:
         wake_event_store: WakeEventStore | None = None,
         tool_packs: list[dict] | None = None,
         conversation_store: ConversationStore | None = None,
+        manual_mics: "list[_ManualMicRuntime] | None" = None,
     ) -> None:
         self._cfg = cfg
         self._tts = tts
@@ -768,6 +786,10 @@ class WakeLoop:
         self._legs: dict[str, _LegRuntime] = {
             leg.spec.token: leg for leg in legs
         }
+        self._manual_mics: dict[str, _ManualMicRuntime] = {
+            runtime.source_id: runtime for runtime in (manual_mics or [])
+        }
+        self._active_manual_source: str | None = None
         # Fail loud at construction if a configured leg lacks a _LEG_DB
         # telemetry mapping — otherwise it would raise an uncaught
         # KeyError in the wake hot path (telemetry must be fail-soft,
@@ -1199,6 +1221,8 @@ class WakeLoop:
                 on_ring,
             ),
         }
+        self._manual_mics = {}
+        self._active_manual_source = None
         self._mic = mic
         self._detector = detector
         self._capture_ring_on = on_ring
@@ -1904,9 +1928,21 @@ class WakeLoop:
                 self._wake_leg_loop(_leg_name),
                 name=f"wake-leg-{_leg_name}",
             ))
+        manual_tasks: list[asyncio.Task] = []
+        for _source_id in self._manual_mics:
+            manual_tasks.append(asyncio.create_task(
+                self._manual_mic_loop(_source_id),
+                name=f"manual-mic-{_source_id}",
+            ))
         if leg_tasks:
             logger.info(
                 "multi-leg wake enabled: %s", " + ".join(self._legs.keys()),
+            )
+        if manual_tasks:
+            log_event(
+                logger,
+                "manual_mic.sources_enabled",
+                sources=",".join(sorted(self._manual_mics)),
             )
         try:
             async for frame in self._mic.frames():
@@ -1955,12 +1991,15 @@ class WakeLoop:
                 # here so a multi-second context reset doesn't truncate
                 # the user's command. See ACQUIRE_BUFFER_MAX_FRAMES.
                 if self._acquiring:
-                    self._acquire_buffer.append(frame)
+                    if self._active_manual_source is None:
+                        self._acquire_buffer.append(frame)
                     continue
 
                 if self._state is State.WAKE:
                     await self._handle_wake_frame(frame, leg="on")
                 else:
+                    if self._active_manual_source is not None:
+                        continue
                     if self._research_window_active:
                         await self._handle_wake_frame(frame, leg="on")
                         if self._acquiring or self._state is State.WAKE:
@@ -1972,14 +2011,30 @@ class WakeLoop:
             # frame can still enqueue acquire/finalize tasks into
             # _fire_and_forget. Stop producers first so the cancellation sweep
             # below observes every task created during shutdown.
-            for _t in leg_tasks:
+            for _t in (*leg_tasks, *manual_tasks):
                 _t.cancel()
-            for _t in leg_tasks:
+            for _t in (*leg_tasks, *manual_tasks):
                 try:
                     await _t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
             await self._cancel_fire_and_forget_tasks()
+
+    async def _manual_mic_loop(self, source_id: str) -> None:
+        """Session-audio consumer for one push-to-talk mic source."""
+        rt = self._manual_mics[source_id]
+        async for frame in rt.mic.frames():
+            if self._stop_event.is_set():
+                return
+            if self._measurement_active.is_set() or self._mic_muted:
+                continue
+            if self._active_manual_source != source_id:
+                continue
+            if self._acquiring:
+                self._acquire_buffer.append(frame)
+                continue
+            if self._state is State.SESSION:
+                await self._handle_session_frame(frame)
 
     async def _wake_leg_loop(self, leg_name: str) -> None:
         """Parallel wake-only consumer for a non-primary leg.
@@ -3285,15 +3340,23 @@ class WakeLoop:
             logger.warning("send_audio failed (will end turn): %s", e)
             await self._end_turn()
 
-    async def manual_session_start(self) -> str:
+    async def manual_session_start(self, source: str | None = None) -> str:
         """Trigger a voice session from external IPC (dial hold-to-talk).
         Bypasses the openWakeWord trigger but honors the same gates
         wake does: the user-deliberate stop-listening signals
         (mic-mute, room-correction measurement window), spend cap, and
         connection-paused. Returns one of
-        OK / BUSY / MUTED / MEASURING / CAP / PAUSED / ERROR for the
-        caller's logging.
+        OK / BUSY / MUTED / MEASURING / CAP / PAUSED / UNKNOWN_SOURCE /
+        ERROR for the caller's logging.
         """
+        if source and source not in self._manual_mics:
+            log_event(
+                logger,
+                "session.manual_refused",
+                reason="unknown_source",
+                source=source,
+            )
+            return "UNKNOWN_SOURCE"
         if self._state is State.SESSION:
             return "BUSY"
         # User-deliberate "stop listening" gates — mirror the wake
@@ -3325,13 +3388,45 @@ class WakeLoop:
             self._play_listening_chirp(going_on=True),
             name="listening-chirp-on",
         )
+        if source:
+            self._active_manual_source = source
+            self._acquiring = True
+            self._acquire_buffer.clear()
         try:
-            await self._begin_turn()
+            if source:
+                await self._begin_turn(pre_roll=False)
+            else:
+                await self._begin_turn()
+            if source:
+                drained, speech_in_acquire = await drain_acquire_buffer(
+                    self._acquire_buffer, self._turn,  # type: ignore[arg-type]
+                    vad_predict=self._vad.predict,
+                    speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
+                    peak_min=SPEECH_RUN_PEAK_MIN,
+                )
+                if drained:
+                    log_event(
+                        logger,
+                        "manual_mic.acquire_drained",
+                        source=source,
+                        frames=drained,
+                    )
+                if speech_in_acquire:
+                    self._user_speech_seen = True
+                    self._silence_started_at = 0.0
+            log_event(
+                logger,
+                "session.manual_started",
+                source=source or "primary",
+            )
             return "OK"
         except Exception as e:  # noqa: BLE001
             logger.exception("manual session start failed: %s", e)
             await self._cleanup_after_failed_begin()
             return "ERROR"
+        finally:
+            if source:
+                self._acquiring = False
 
     async def manual_session_end(self) -> str:
         """Finalize the input side of an in-progress session (dial
@@ -3376,6 +3471,8 @@ class WakeLoop:
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
             "duck_active": self._ducker.is_ducked,
+            "manual_mic_sources": sorted(self._manual_mics),
+            "active_manual_mic_source": self._active_manual_source,
             "music_dbfs": (
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
@@ -3603,6 +3700,8 @@ class WakeLoop:
         self._turn = None
         self._session_id = None
         self._bg_tasks = set()
+        self._active_manual_source = None
+        self._acquiring = False
         self._state = State.WAKE
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
@@ -3839,6 +3938,7 @@ class WakeLoop:
         await self._tts.resume_content_meter()
         self._turn = None
         self._session_id = None
+        self._active_manual_source = None
         self._state = State.WAKE
         if research_window_job is not None:
             self._research_window_active = False

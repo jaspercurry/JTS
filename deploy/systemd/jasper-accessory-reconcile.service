@@ -1,0 +1,42 @@
+[Unit]
+Description=Jasper accessory profile reconciler
+After=bluetooth.service
+Wants=bluetooth.service
+Before=jasper-voice.service jasper-wiim-remote-mic.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/jasper/.venv/bin/jasper-accessory-reconcile --reason boot
+Group=jasper
+
+# Root-owned reconciler: reads BlueZ state, writes /var/lib/jasper/accessory-mics.env,
+# and owns adapter unit enable/start state. Keep it as a short oneshot rather
+# than granting jasper-web or jasper-input new systemctl privilege.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jasper /etc/systemd/system
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+ProtectHome=true
+PrivateDevices=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+RemoveIPC=true
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

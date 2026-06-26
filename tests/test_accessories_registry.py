@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories.registry import (
     CAP_MUTE,
     CAP_TAP_GESTURES,
@@ -34,6 +35,7 @@ from jasper.accessories.registry import (
     lookup,
     lookup_by_name,
 )
+from jasper.audio_io import parse_udp_device
 
 
 def test_vk01_in_registry():
@@ -120,7 +122,8 @@ def test_wiim_remote_2_media_keymap_targets_control_routes():
     assert WIIM_REMOTE_2.capabilities == frozenset({
         CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD,
     })
-    assert WIIM_REMOTE_2.mic.status == "reserved"
+    assert WIIM_REMOTE_2.mic.status == "adapter"
+    assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
     assert "MEMS mic" in WIIM_REMOTE_2.mic.detail
     keymap = WIIM_REMOTE_2.keymap
     assert keymap[KEY_VOLUMEUP] == KeyAction(
@@ -138,7 +141,9 @@ def test_wiim_remote_2_media_keymap_targets_control_routes():
     )
     assert keymap[KEY_MUTE] == KeyAction("POST", "/volume/mute", {})
     assert keymap[KEY_SEARCH] == HoldAction(
-        on_press=KeyAction("POST", "/session/start", {}),
+        on_press=KeyAction(
+            "POST", "/session/start", {"source": "wiim_remote_2"},
+        ),
         on_release=KeyAction("POST", "/session/end", {}),
     )
 
@@ -146,6 +151,27 @@ def test_wiim_remote_2_media_keymap_targets_control_routes():
 def test_wiim_remote_2_name_fallback_matches_bluez_name():
     assert lookup_by_name("WiiM Remote 2") is WIIM_REMOTE_2
     assert lookup_by_name("wiim remote 2 consumer control") is WIIM_REMOTE_2
+
+
+def test_wiim_remote_2_declares_adapter_mic_source():
+    assert WIIM_REMOTE_2.mic.status == "adapter"
+    assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
+    assert WIIM_REMOTE_2.mic.device == WIIM_REMOTE_2_MIC_DEVICE
+    assert WIIM_REMOTE_2.mic.adapter_service == "jasper-wiim-remote-mic.service"
+
+
+def test_adapter_mic_sources_do_not_reuse_reserved_voice_udp_ports():
+    """Adapter mics must not collide with AEC/wake/output-reference UDP ports."""
+    reserved_ports = {9876, 9877, 9878, 9880, 9887, 9888, 9891}
+    for profile in KNOWN_PROFILES:
+        if profile.mic.status != "adapter":
+            continue
+        parsed = parse_udp_device(profile.mic.device or "")
+        assert parsed is not None, f"{profile.id} adapter mic must be UDP-backed"
+        assert parsed[1] not in reserved_ports, (
+            f"{profile.id} mic source {profile.mic.device} reuses a reserved "
+            "voice/wake/reference UDP port"
+        )
 
 
 def test_every_registered_profile_has_unique_usb_ids():
@@ -166,5 +192,9 @@ def test_every_registered_profile_has_unique_usb_ids():
 @pytest.mark.parametrize("profile", KNOWN_PROFILES)
 def test_every_registered_profile_has_known_mic_status(profile):
     assert profile.mic.status in {
-        "none", "not_exposed", "reserved", "linux_audio",
+        "none", "not_exposed", "reserved", "linux_audio", "adapter",
     }
+    if profile.mic.status == "adapter":
+        assert profile.mic.capture_profile_id
+        assert profile.mic.device
+        assert profile.mic.adapter_service

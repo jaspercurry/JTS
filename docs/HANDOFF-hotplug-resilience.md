@@ -44,6 +44,7 @@ For every hot-pluggable component, all four must hold:
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park | udev → reconcile restart | **Fixed 2026-06-21.** Was the original gap: crash-loop → reboot |
 | **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
+| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | reconciler removes the manual source and disables the adapter; voice keeps normal mic path | paired BlueZ profile → reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
 
 The original Workstream C gap was the **microphone**. A later JTS5
 dual-Apple unplug incident found one output-side edge too: when one Apple
@@ -229,10 +230,24 @@ absent satellite is reported "offline" by `jasper-control`'s TCP probe
 `_probe_dial_reachable`) — never a crash. The HID accessory bridge
 [`jasper-input`](../deploy/systemd/jasper-input.service) runs a pyudev
 hot-plug monitor in-process and opens evdev fds as devices appear, so it
-already converges both directions without per-device units. Adding a
-satellite-presence concern would only matter if a future satellite is a
-wired device whose daemon opens it directly; that daemon should adopt
-the same `ConditionPathExists`/`ExecCondition` gate.
+already converges both directions without per-device units. The WiiM
+Remote 2 microphone is different from ordinary HID buttons because its
+audio arrives over a BLE GATT notification stream; its adapter
+[`jasper-wiim-remote-mic`](../deploy/systemd/jasper-wiim-remote-mic.service)
+is profile-gated by
+[`jasper-accessory-reconcile`](../deploy/systemd/jasper-accessory-reconcile.service).
+When BlueZ has no paired WiiM Remote 2, the reconciler removes
+`/var/lib/jasper/accessory-mics.env` and disables the adapter, so there
+is no resident BLE decoder and no UDP listener in `jasper-voice`. When
+the profile is paired, the reconciler writes `wiim_remote_2=udp:9892`,
+enables/restarts the adapter, and restarts `jasper-voice` only if voice
+is already active. A paired-but-sleeping remote still self-heals:
+missing GATT report logs `event=wiim_remote_mic.not_ready` (throttled
+after the first visible event) and retries; `jasper-voice` keeps the
+normal primary mic path alive and only routes the manual source when
+`/session/start` names it. Adding a satellite-presence concern would
+only matter if a future satellite is a wired device whose daemon opens
+it directly; that daemon should adopt the same profile/reconciler gate.
 
 ## Verified vs needs-hardware
 
@@ -302,5 +317,7 @@ session):**
 - [`deploy/bin/jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug) — Apple USB remove reconciler request
 - [`deploy/bin/jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile) — outputd retry-time env refresh
 - [`deploy/systemd/jasper-outputd.service`](../deploy/systemd/jasper-outputd.service) — output device gate + failure-time reconcile hook
+- [`deploy/systemd/jasper-accessory-reconcile.service`](../deploy/systemd/jasper-accessory-reconcile.service) — optional accessory mic profile gate
+- [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 
-Last verified: 2026-06-25
+Last verified: 2026-06-26

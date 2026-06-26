@@ -1,0 +1,52 @@
+[Unit]
+Description=Jasper WiiM Remote 2 microphone adapter (BLE GATT → UDP PCM)
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/opt/jasper/.venv/bin/jasper-wiim-remote-mic
+Restart=on-failure
+RestartSec=2
+
+# Narrow accessory adapter: talks to BlueZ over the system bus and emits
+# decoded 16 kHz mono PCM frames to jasper-voice's local UDP manual mic source.
+User=jasper-input
+Group=jasper
+SupplementaryGroups=bluetooth
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+RemoveIPC=true
+UMask=0077
+
+# Idle process plus one D-Bus connection and one UDP socket; packet decode is
+# human push-to-talk rate only.
+MemoryHigh=60M
+MemoryMax=100M
+OOMScoreAdjust=-300
+
+[Install]
+WantedBy=multi-user.target

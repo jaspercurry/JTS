@@ -2496,6 +2496,29 @@ def _make_handler(
 
         def _post_session(self) -> None:
             cmd = "START" if self.path.endswith("start") else "END"
+            if cmd == "START":
+                payload = self._read_json()
+                source = payload.get("source")
+                if source is not None:
+                    if (
+                        not isinstance(source, str)
+                        or not source.strip()
+                        or any(ch.isspace() for ch in source)
+                    ):
+                        self._send_json(
+                            {"error": "source must be a non-empty token"},
+                            status=400,
+                        )
+                        return
+                    try:
+                        source.encode("ascii")
+                    except UnicodeEncodeError:
+                        self._send_json(
+                            {"error": "source must be ASCII"},
+                            status=400,
+                        )
+                        return
+                    cmd = f"START {source.strip()}"
             result = self._voice_cmd_or_error(
                 cmd,
                 missing_error="voice_daemon not running (socket not found)",
@@ -2505,7 +2528,7 @@ def _make_handler(
                 return
             # Result codes from voice_daemon's manual_session_*:
             #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
-            #   NO_SESSION / ALREADY_ENDED / ERROR
+            #   NO_SESSION / ALREADY_ENDED / UNKNOWN_SOURCE / ERROR
             # Map non-OK outcomes to non-2xx so the dial's HTTP
             # error path can show the right LED color.
             http_status = 200
@@ -2514,6 +2537,8 @@ def _make_handler(
                     http_status = 503
                 elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
                     http_status = 409
+                elif result.get("result") == "UNKNOWN_SOURCE":
+                    http_status = 400
                 else:
                     http_status = 502
             self._send_json(result, status=http_status)

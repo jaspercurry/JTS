@@ -71,6 +71,7 @@ def _parse_env_example() -> dict[str, str]:
 #   float: float(literal)  — every float field reads via _env_float.
 #   int:   int(literal)    — every int field reads via _env_int.
 #   bool:  literal.strip().lower() in _TRUTHY — Config._env_bool's parse.
+#   mapping: comma/newline separated source_id=device pairs.
 _CASES: tuple[tuple[str, str, str], ...] = (
     # Active-provider model / voice / tuning selectors (safe shipped
     # defaults; the wizard overrides per provider).
@@ -88,6 +89,7 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES", "wake_events_max_audio_bytes", "int"),
     # Mic capture.
     ("JASPER_MIC_DEVICE", "mic_device", "str"),
+    ("JASPER_MANUAL_MIC_SOURCES", "manual_mic_sources", "mapping"),
     ("JASPER_MIC_CAPTURE_RATE", "mic_capture_rate", "int"),
     ("JASPER_MIC_CAPTURE_CHANNELS", "mic_capture_channels", "int"),
     # TTS / output path.
@@ -186,6 +188,16 @@ def test_env_example_literal_matches_config_default(
         expected = int(literal)
     elif kind == "bool":
         expected = literal.strip().lower() in _TRUTHY
+    elif kind == "mapping":
+        expected = {}
+        if literal.strip():
+            for part in literal.replace("\n", ",").split(","):
+                item = part.strip()
+                if not item:
+                    continue
+                key, _, value = item.partition("=")
+                expected[key.strip()] = value.strip()
+        actual = dict(actual)
     else:  # pragma: no cover - guards the table against a bad kind string
         raise AssertionError(f"unknown coercion kind {kind!r} for {env_name}")
 
