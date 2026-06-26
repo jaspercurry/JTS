@@ -1629,6 +1629,86 @@ async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
   return { confirmOutputsPlayUsesIdentityAuditionMode: true };
 }
 
+async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels.forEach((channel) => {
+    channel.identity_verified = false;
+  });
+  let commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { speaker_group_id: "main", role: "tweeter", audible_gain_db: -80 },
+      rollback_available: true,
+    },
+    ramp: {
+      confirmed_roles: [],
+      pending: { role: "tweeter", gain_db: -80, frequency_hz: 120 },
+    },
+    floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+    })),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-ramp-abort": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "rolled_back",
+          target: {},
+          rollback_available: false,
+        },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "rolled_back" }));
+    },
+    "./active-speaker/channel-identity": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      topology.speaker_groups[0].channels.forEach((channel) => {
+        if (channel.role === body.role) {
+          channel.identity_verified = !!body.identity_verified;
+        }
+      });
+      return Promise.resolve(response({ output_topology: topology }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes(">Stop</button>") || !html.includes('data-role="woofer" disabled')) {
+    fail("Fixture should start with tweeter audition pending and woofer play disabled", { html });
+  }
+
+  harness.dispatchClick({
+    "data-act": "mark-output-identity",
+    "data-group-id": "main",
+    "data-role": "tweeter",
+    "data-label": "Main speaker Tweeter on DAC output 2",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
+  const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
+  if (abortIndex < 0 || identityIndex < 0 || abortIndex > identityIndex) {
+    fail("Confirming output with a pending audition should remute before saving identity", { posts });
+  }
+  const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
+  if (afterConfirmHtml.includes(">Stop</button>") ||
+      afterConfirmHtml.includes('data-role="woofer" disabled')) {
+    fail("Confirming output should clear the pending audition and re-enable siblings", {
+      afterConfirmHtml,
+    });
+  }
+  return { confirmOutputAbortsPendingAuditionWithoutAutoRamp: true };
+}
+
 async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
   const topology = activeThreeWayTopologyPayload();
   topology.speaker_groups[0].channels[0].physical_output_index = null;
@@ -3220,6 +3300,7 @@ results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
+results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());

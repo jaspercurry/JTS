@@ -4973,7 +4973,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       : 'Mark "' + label + '" as not confirmed?';
     if (!await jtsConfirm(message, {danger: false})) return;
 
-    if (commissionAutoRamp.running) {
+    if (commissionAutoRamp.running || commissionPendingStep()) {
       stopCommissionAutoRamp('');
       await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
     }
