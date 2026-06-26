@@ -57,7 +57,7 @@ below.
    │   └─ peering daemon ◀──┐   │        │   └─ peering daemon ◀──┐   │
    │       (NEW)            │   │        │       (NEW)            │   │
    └────────────────────────┼───┘        └────────────────────────┼───┘
-                            │ UDS /run/jasper/peering.sock        │
+                            │ UDS /run/jasper-control/peering.sock│
                             ─────────────────────────────────────
                               voice ↔ peering RPC (per-Pi local)
 
@@ -321,6 +321,7 @@ doesn't interrupt the active conversation.
 | `/var/lib/jasper/peer_id` | UUID generated at install | stable per-Pi identity, persists across reboots and re-installs. **Never user-edited.** |
 | `/etc/jasper/avahi-templates/jasper-peer.service` | installed by `install.sh` | template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders. |
 | `/etc/avahi/services/jasper-peer.service` | (absent until mode=on) | rendered file. **Its presence is what makes this Pi visible to siblings.** Written by `jasper-control` when peering starts; the unit's `ReadWritePaths` must include `/etc/avahi/services`. |
+| `/run/jasper-control/peering.sock` | runtime socket | `jasper-control` owns the server side. Keep this under `RuntimeDirectory=jasper-control`; the non-root service user cannot bind sockets under `/run/jasper`. |
 
 Env vars (all `JASPER_PEER*` namespace):
 
@@ -365,7 +366,7 @@ sudo /opt/jasper/.venv/bin/jasper-doctor | grep peering
 sudo journalctl -u jasper-control -f | grep -E "event=peering"
 
 # Active sessions / current state
-curl -s --unix-socket /run/jasper/peering.sock - <<< "STATUS"
+curl -s --unix-socket /run/jasper-control/peering.sock - <<< "STATUS"
 ```
 
 The doctor's two checks:
@@ -591,9 +592,10 @@ If you are a fresh Claude or LLM landing here:
    the multi-mic-around-one-Pi case. This doc is the multi-Pi
    variant.
 
-Last verified: 2026-06-14 (JTS4 streambox peering enable re-verified:
+Last verified: 2026-06-26 (JTS4 streambox peering enable re-verified:
 `/rooms/peering` writes `JASPER_PEERING=on`, `jasper-control` starts the
-peering daemon, and `jasper-control.service` now explicitly allows
-`/etc/avahi/services` writes for the peer advert under `ProtectSystem=full`.
-The retired `/peers/` page, redirect, port 8776 socket, and page CSS are
-deleted; `/rooms/` is the only user-facing peering surface.)
+peering daemon, the peering UDS lives under `/run/jasper-control` so the
+non-root control service can bind it, and `jasper-control.service` explicitly
+allows `/etc/avahi/services` writes for the peer advert under
+`ProtectSystem=full`. The retired `/peers/` page, redirect, port 8776 socket,
+and page CSS are deleted; `/rooms/` is the only user-facing peering surface.)

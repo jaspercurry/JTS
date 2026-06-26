@@ -1216,8 +1216,9 @@ def _write_grouping(
     }
     if trim_db is not None:
         # Settable like the role fields, preserved like codec when the
-        # caller omits it (bond/unbond/swap fan-outs never send trim, so
-        # a calibrated balance survives role/channel changes).
+        # caller omits it. Existing-bond structural edits omit trim so a
+        # calibrated balance survives role/channel changes; fresh bond and
+        # unbond flows send trim=0 to clear stale balance state.
         updates["JASPER_GROUPING_TRIM_DB"] = f"{trim_db:.1f}"
     if client_latency_ms is not None:
         updates["JASPER_GROUPING_CLIENT_LATENCY_MS"] = str(int(client_latency_ms))

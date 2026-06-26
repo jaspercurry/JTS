@@ -23,7 +23,7 @@ section for the design rationale that pre-dates this module):
 
   jasper-control hosts the peering daemon. It listens on multicast
   239.192.0.1:5354 (TTL=1, RFC 2365 admin-local scope) and serves a
-  Unix socket at /run/jasper/peering.sock that jasper-voice queries
+  Unix socket at /run/jasper-control/peering.sock that jasper-voice queries
   on every wake event ("did I win? — WIN | LOSE"). Arbitration is
   P2P: every peer applies the same pure ranking function to the
   same set of WAKE messages and reaches the same conclusion.

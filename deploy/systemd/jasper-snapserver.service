@@ -59,10 +59,10 @@ EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
 ExecStart=/usr/bin/snapserver $JASPER_SNAPSERVER_ARGS
 Restart=on-failure
 RestartSec=2s
-# Per-unit runtime dir — NOT the shared /run/jasper (jasper-voice owns
-# that for voice.sock + peering.sock). A RuntimeDirectory is reaped
-# when its unit stops; sharing /run/jasper would let snapserver
-# stopping destroy the voice/peering sockets. Hosts the snapfifo.
+# Per-unit runtime dir — never share a daemon-owned RuntimeDirectory with
+# another service. A RuntimeDirectory is reaped when its unit stops; sharing
+# would let snapserver teardown remove another daemon's sockets. Hosts the
+# snapfifo.
 RuntimeDirectory=jasper-snapserver
 RuntimeDirectoryMode=0755
 

@@ -18,20 +18,19 @@ import {
   balanceTrimRequest,
   formatBalanceDb,
   trimsForBalance,
-  createFaceCopy,
   snapcastProvisionRow,
   subCornerLabel,
 } from "../../deploy/assets/rooms/js/grouping-view.js";
 
-assert.equal(BALANCE_MIN_DB, -24);
-assert.equal(BALANCE_MAX_DB, 24);
+assert.equal(BALANCE_MIN_DB, -6);
+assert.equal(BALANCE_MAX_DB, 6);
 assert.equal(formatBalanceDb(-2), "-2.0 dB");
 assert.equal(balanceText(0), "Centered");
 assert.equal(balanceText(3), "Right louder by 3.0 dB");
 assert.equal(balanceText(-4.5), "Left louder by 4.5 dB");
 assert.deepEqual(trimsForBalance(3), { left: -3, right: 0 });
 assert.deepEqual(trimsForBalance(-2.5), { left: 0, right: -2.5 });
-assert.deepEqual(balanceTrimRequest(99), { target: "pair", balance_db: 24 });
+assert.deepEqual(balanceTrimRequest(99), { target: "pair", balance_db: 6 });
 assert.deepEqual(balanceTrimRequest("nope"), { target: "pair", balance_db: 0 });
 
 // No row unless this speaker is an active bonded leader: read error (null),
@@ -88,28 +87,6 @@ assert.equal(subCornerLabel(null), "80 Hz low-pass");
 assert.equal(subCornerLabel("x"), "80 Hz low-pass"); // non-numeric
 assert.equal(subCornerLabel(0), "80 Hz low-pass"); // non-positive
 assert.equal(subCornerLabel(-50), "80 Hz low-pass");
-
-// createFaceCopy: the title/intro/label/BUTTON must match the picked role, so a
-// button reading "Create stereo pair" is never how you add a sub. Sub-specific
-// for "sub"; everything else degrades to the unchanged stereo-pair copy.
-{
-  const sub = createFaceCopy("sub");
-  assert.equal(sub.title, "Optional wireless subwoofer");
-  assert.equal(sub.button, "Add subwoofer");
-  assert.ok(/main/.test(sub.label), sub.label); // not "Left"
-  assert.ok(/low end/.test(sub.intro), sub.intro);
-  assert.ok(!/stereo pair/i.test(sub.button), sub.button);
-
-  const pair = createFaceCopy("right");
-  assert.equal(pair.title, "Create a stereo pair");
-  assert.equal(pair.button, "Create stereo pair");
-  assert.ok(/Left/.test(pair.label), pair.label);
-
-  // Unknown / future role → safe stereo-pair default (never the sub copy).
-  const unknown = createFaceCopy("zzz");
-  assert.equal(unknown.button, "Create stereo pair");
-  assert.deepEqual(unknown, pair);
-}
 
 // addSubPlan: decide whether to offer "add a subwoofer" on a bonded leader,
 // and (when shown) the existing-members list to re-post as the SAME bond.

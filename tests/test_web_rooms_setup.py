@@ -319,7 +319,7 @@ def test_rooms_json_shape(monkeypatch):
         grouping=dict(_OFF_GROUPING),
     )
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
-    assert sorted(data.keys()) == ["peers", "self"]
+    assert sorted(data.keys()) == ["peers", "self", "view"]
 
     # self: name / hostname / room / address / grouping (the read_grouping_state
     # dict) / peering (the wake-response {enabled, primary} block).
@@ -347,6 +347,40 @@ def test_rooms_json_shape(monkeypatch):
     assert p["address"] == "192.168.1.9"
     assert p["home_url"] == "http://jts-bedroom.local/"
     assert p["system_url"] == "http://jts-bedroom.local/system/"
+    assert data["view"] == {
+        "state": "solo",
+        "bonded": False,
+        "can_create_pair": True,
+        "can_balance_pair": False,
+        "show_subwoofer_controls": False,
+    }
+
+
+def test_rooms_json_logs_slow_snapshot_timing(monkeypatch):
+    _patch_discovery(monkeypatch, speakers=[], grouping=dict(_OFF_GROUPING))
+    events = []
+
+    def fake_log_event(logger, event, **fields):
+        events.append((logger, event, fields))
+
+    monkeypatch.setattr(rooms_setup, "ROOMS_SNAPSHOT_SLOW_MS", 0)
+    monkeypatch.setattr(rooms_setup, "log_event", fake_log_event)
+
+    h = _get("/rooms.json")
+    assert h.status == 200
+    assert events
+    _logger, event, fields = events[-1]
+    assert event == "rooms.snapshot"
+    assert fields["peer_count"] == 0
+    assert {
+        "identity_ms",
+        "self_addr_ms",
+        "grouping_ms",
+        "balance_ms",
+        "peering_ms",
+        "discovery_ms",
+        "total_ms",
+    } <= set(fields)
 
 
 def test_rooms_json_carries_tight_airplay_fit_for_a_bonded_leader(monkeypatch):
@@ -411,6 +445,10 @@ def test_rooms_json_carries_live_pair_balance_snapshot(monkeypatch):
     assert balance["right_trim_db"] == 0.0
     assert balance["balance_db"] == 3.0
     assert balance["peer_addr"] == "192.168.1.9"
+    assert data["view"]["state"] == "paired"
+    assert data["view"]["bonded"] is True
+    assert data["view"]["can_balance_pair"] is True
+    assert data["view"]["show_subwoofer_controls"] is False
 
 
 def test_rooms_json_balance_snapshot_uses_short_peer_read(monkeypatch):
@@ -653,6 +691,8 @@ def test_rooms_json_fail_loud_grouping_error_passes_through(monkeypatch):
     assert data["self"]["grouping"]["error"] == (
         "JASPER_GROUPING_LEADER_ADDR is empty for role=follower"
     )
+    assert data["view"]["state"] == "degraded"
+    assert data["view"]["bonded"] is True
 
 
 def test_rooms_json_empty_when_no_siblings(monkeypatch):
@@ -661,6 +701,7 @@ def test_rooms_json_empty_when_no_siblings(monkeypatch):
     assert data["peers"] == []
     # self still renders (the page is useful with zero peers).
     assert data["self"]["hostname"] == "jts-living.local"
+    assert data["view"]["can_create_pair"] is False
 
 
 def _raise_run(*a, **k):
@@ -1054,10 +1095,11 @@ def test_discovery_cache_empty_result_does_not_poison(monkeypatch):
 # ----------------------------------------------------------------------
 # POST /bond — the bond-forming one-flow.
 #
-# The browser sends the member list; rooms_setup fans the config out
-# SERVER-side to each member's /grouping/set. These pin the orchestration
-# (leader_addr wiring, per-member results, partial failure, CSRF, the SSRF
-# guard) with the cross-speaker HTTP call stubbed.
+# The primary browser flow sends only peer_addr; rooms_setup owns the stereo
+# topology and fans the config out SERVER-side to each member's /grouping/set.
+# Advanced same-bond edits may still send the member list explicitly. These
+# tests pin the orchestration (leader_addr wiring, per-member results, partial
+# failure, CSRF, the SSRF guard) with the cross-speaker HTTP call stubbed.
 # ----------------------------------------------------------------------
 
 
@@ -1154,6 +1196,27 @@ def _stereo_pair_members():
     ]
 
 
+def test_post_bond_peer_addr_intent_builds_stereo_pair(monkeypatch):
+    monkeypatch.setattr(
+        rooms_setup,
+        "_discover_speakers_cached",
+        lambda: [{"address": "192.168.1.9", "name": "Right Box"}],
+    )
+    h, calls = _post_bond({"peer_addr": "192.168.1.9"}, monkeypatch=monkeypatch)
+    assert h.status == 200
+
+    bodies = {addr: body for addr, body in calls}
+    assert bodies[""]["role"] == "leader"
+    assert bodies[""]["channel"] == "left"
+    assert bodies[""]["peer_addr"] == "192.168.1.9"
+    assert bodies[""]["peer_name"] == "Right Box"
+    assert bodies[""]["trim_db"] == 0.0
+    assert bodies["192.168.1.9"]["role"] == "follower"
+    assert bodies["192.168.1.9"]["channel"] == "right"
+    assert bodies["192.168.1.9"]["leader_addr"] == "jts-living.local"
+    assert bodies["192.168.1.9"]["trim_db"] == 0.0
+
+
 def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):
     h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
     assert h.status == 200
@@ -1169,8 +1232,26 @@ def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):
     assert by_role["follower"]["leader_addr"] == "jts-living.local"
     assert by_role["follower"]["channel"] == "right"
     assert all(c[1]["enabled"] is True for c in calls)
+    assert all(c[1]["trim_db"] == 0.0 for c in calls)
     # one shared bond_id across both members
     assert {c[1]["bond_id"] for c in calls} == {body["bond_id"]}
+
+
+def test_post_bond_existing_bond_omits_trim_to_preserve_balance(monkeypatch):
+    """Re-posting an existing bond, e.g. add-subwoofer, must not reset an
+    already-calibrated left/right balance."""
+    members = [
+        {"addr": "192.168.1.5", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right"},
+        {"addr": "192.168.1.8", "role": "follower", "channel": "sub",
+         "crossover_hz": 90},
+    ]
+    h, calls = _post_bond(
+        {"bond_id": "bond-existing", "members": members},
+        monkeypatch=monkeypatch,
+    )
+    assert h.status == 200
+    assert all("trim_db" not in body for _addr, body in calls)
 
 
 def _sub_bond_members():
@@ -1740,8 +1821,8 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
 
 
 def test_post_unbond_disables_self_and_matching_peer_only(monkeypatch):
-    """Happy path: self + the peer sharing our bond_id get {enabled:false}; a
-    peer in a DIFFERENT bond is NOT touched."""
+    """Happy path: self + the peer sharing our bond_id get disabled and
+    trim-reset; a peer in a DIFFERENT bond is NOT touched."""
     h, posts = _post_unbond(
         monkeypatch=monkeypatch,
         self_grouping={"enabled": True, "role": "leader", "bond_id": "bond-1"},
@@ -1761,7 +1842,7 @@ def test_post_unbond_disables_self_and_matching_peer_only(monkeypatch):
     # Self ("") + the matching peer were disabled; the other-bond peer was not.
     disabled_addrs = [a for a, _b in posts]
     assert disabled_addrs == ["", "192.168.1.9"]
-    assert all(b == {"enabled": False} for _a, b in posts)
+    assert all(b == {"enabled": False, "trim_db": 0.0} for _a, b in posts)
     assert "192.168.1.20" not in disabled_addrs
     assert set(body["dissolved"]) == {"", "192.168.1.9"}
 
@@ -2553,7 +2634,7 @@ def test_unbond_with_full_roster_disables_self_and_all_members(monkeypatch):
     # not a sequence (an exact-order assert flaked py3.12-vs-py3.13).
     assert {a for a, _ in posts} == {"", "192.168.1.9", "192.168.1.8"}
     assert len(posts) == 3
-    assert all(b == {"enabled": False} for _a, b in posts)
+    assert all(b == {"enabled": False, "trim_db": 0.0} for _a, b in posts)
 
 
 def test_mains_highpass_toggle_fans_out_to_full_roster(monkeypatch):

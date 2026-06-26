@@ -50,7 +50,6 @@ import {
   balanceText,
   balanceTrimRequest,
   clampBalanceDb,
-  createFaceCopy,
   formatBalanceDb,
   snapcastProvisionRow,
   subCornerLabel,
@@ -514,10 +513,6 @@ function describeBondFailure(e) {
 function makeBondCard() {
   let saving = false;
   let selfAddr = "";
-  // Latest reachable peer rows from the poll — kept so the bond submit
-  // can carry the picked peer's directory NAME (the leader records it
-  // as the bond roster for DHCP re-resolution).
-  let lastReachable = [];
   // The add-sub picker's reachable peers + the existing-members plan from the
   // last poll, so the addSub handler re-posts the SAME bond with the new sub.
   let lastSubReachable = [];
@@ -525,64 +520,26 @@ function makeBondCard() {
   // Current bond_id from the poll — passed back on the add-sub re-post so it
   // ADDS to the existing bond rather than minting a fresh one.
   let lastBondId = "";
+  let lastBonded = null;
+  let advancedSubOpen = false;
 
-  // --- Create face: pick a sibling for the right channel ------------------
+  // --- Create face: pick one sibling; the backend owns the pair topology. ---
   const select = h("select.bond-select", {
-    "attr:aria-label": "Speaker for the right channel",
+    "attr:aria-label": "Speaker to pair with",
   });
   const createBtn = h("button.btn.btn--primary",
     { type: "button" }, "Create stereo pair");
 
-  // Role of the picked follower: a stereo-pair right channel (default,
-  // unchanged behaviour) or a subwoofer that low-passes a mono sum locally.
-  const roleSelect = h("select.bond-select", {
-    "attr:aria-label": "Role for the picked speaker",
-  },
-    h("option", { value: "right" }, "Right channel (stereo pair)"),
-    h("option", { value: "sub" }, "Subwoofer"));
-
-  // Corner for the subwoofer's local low-pass. 40..200 Hz, default 80; only
-  // sent (and only shown) when the picked speaker is a subwoofer.
-  const crossoverInput = h("input.bond-crossover", {
-    type: "number", min: "40", max: "200", step: "1", value: "80",
-    "attr:aria-label": "Subwoofer low-pass corner (Hz)",
-  });
-  const crossoverRow = h("div.bond-row", null,
-    h("span.bond-row__label", null, "Low-pass (Hz)"),
-    crossoverInput);
-
   const createIntro = h("p.info-card__note", null,
-    "Create a stereo pair: this speaker plays the left channel and the one " +
-    "you pick plays the right. Both are configured automatically — no " +
-    "settings files, no per-speaker setup.");
+    "Create a stereo pair with one other speaker. This speaker becomes the " +
+    "left channel and the paired speaker becomes the right channel.");
   const pickerLabel = h("span.bond-row__label", null,
-    "This speaker is Left — pair with");
+    "Pair with");
   const picker = h("div.bond-row", null,
     pickerLabel,
     select,
-    roleSelect,
     createBtn,
   );
-
-  // Retitle the create face to match the picked role: a button reading "Create
-  // stereo pair" must never be how you add a subwoofer. The corner input is
-  // shown only for the sub role; the picker keeps its shape otherwise (no
-  // surprise field). title is owned by showFace (bonded vs create) and re-read
-  // there from the same helper, so a poll can't revert the create-face title.
-  // NB: the initial call is deferred until after `title` is defined (below) to
-  // stay out of its const temporal-dead-zone.
-  function syncRoleControls() {
-    const copy = createFaceCopy(roleSelect.value);
-    const subRole = roleSelect.value === "sub";
-    crossoverRow.style.display = roleSelect.value === "sub" ? "" : "none";
-    title.textContent = copy.title;
-    createIntro.textContent = copy.intro;
-    pickerLabel.textContent = copy.label;
-    createBtn.textContent = copy.button;
-    createBtn.classList.toggle("btn--primary", !subRole);
-    createBtn.classList.toggle("btn--ghost", subRole);
-  }
-  roleSelect.addEventListener("change", syncRoleControls);
 
   // --- Dissolve face: a legible summary + the danger button ---------------
   // The summary line is filled per-sync (it depends on role/channel); kept as
@@ -755,6 +712,8 @@ function makeBondCard() {
   });
   const addSubBtn = h("button.btn.btn--ghost",
     { type: "button" }, "Add subwoofer");
+  const advancedSubBtn = h("button.btn.btn--ghost",
+    { type: "button" }, "Advanced");
   const addSubIntro = h("p.info-card__note", null,
     "Optional: add a subwoofer to this pair. The speaker you pick plays only the low " +
     "end (low-passed locally on that box). The pair keeps playing as-is.");
@@ -771,15 +730,17 @@ function makeBondCard() {
 
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
+  const loadingNote = h("p.info-card__note", null, "Loading speaker grouping…");
 
   const body = h("div.info-card", null,
+    loadingNote,
     createIntro,
     picker,
-    crossoverRow,
     dissolveIntro,
     currentSummary,
     mainsHpRow,
     balanceBlock,
+    advancedSubBtn,
     addSubPanel,
     dissolveRow,
     status,
@@ -789,38 +750,40 @@ function makeBondCard() {
     h("div.section__head", null, title),
     body,
   );
-  // Initial create-face copy (deferred to here — out of `title`'s TDZ above).
-  syncRoleControls();
 
   function setEnabled(on) {
     select.disabled = !on;
-    roleSelect.disabled = !on;
-    crossoverInput.disabled = !on;
     createBtn.disabled = !on;
+  }
+
+  function showLoading() {
+    loadingNote.style.display = "";
+    createIntro.style.display = "none";
+    picker.style.display = "none";
+    dissolveIntro.style.display = "none";
+    currentSummary.style.display = "none";
+    dissolveRow.style.display = "none";
+    mainsHpRow.style.display = "none";
+    balanceBlock.style.display = "none";
+    advancedSubBtn.style.display = "none";
+    addSubPanel.style.display = "none";
+    title.textContent = "Speaker grouping";
+    setEnabled(false);
   }
 
   // Show exactly one face (create vs. dissolve). Bonded → dissolve; else create.
   function showFace(bonded) {
+    loadingNote.style.display = "none";
     createIntro.style.display = bonded ? "none" : "";
     picker.style.display = bonded ? "none" : "";
-    // The corner input rides the create face AND the subwoofer role; hide it
-    // on the dissolve face regardless, then let syncRoleControls own it back.
-    crossoverRow.style.display =
-      bonded ? "none" : (roleSelect.value === "sub" ? "" : "none");
     dissolveIntro.style.display = bonded ? "" : "none";
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
     mainsHpRow.style.display = "none";
     balanceBlock.style.display = bonded ? "" : "none";
-    // The add-sub panel rides the dissolve face but is further gated by
-    // addSubPlan in sync(); hide it on the create face here, let sync own it
-    // back on the dissolve face.
-    if (!bonded) addSubPanel.style.display = "none";
-    // Bonded → a neutral dissolve-face title; create → the role-aware title
-    // (so a 7 s poll re-asserts the selected role copy, not "stereo pair").
-    title.textContent = bonded
-      ? "Speaker grouping"
-      : createFaceCopy(roleSelect.value).title;
+    advancedSubBtn.style.display = "none";
+    addSubPanel.style.display = "none";
+    title.textContent = bonded ? "Speaker grouping" : "Create a stereo pair";
   }
 
   function syncBalance(g) {
@@ -890,10 +853,17 @@ function makeBondCard() {
     const self = (snap && snap.self) || {};
     selfAddr = self.address || "";
     const g = (self.grouping && typeof self.grouping === "object") ? self.grouping : {};
-    const bonded = !!(g.enabled && g.bond_id && !g.error);
+    const view = (snap && snap.view && typeof snap.view === "object") ? snap.view : {};
+    const bonded = typeof view.bonded === "boolean"
+      ? view.bonded
+      : !!(g.enabled && g.bond_id && !g.error);
     const peers = Array.isArray(snap && snap.peers) ? snap.peers : [];
 
     showFace(bonded);
+    if (lastBonded !== null && bonded !== lastBonded) {
+      status.textContent = "";
+    }
+    lastBonded = bonded;
 
     if (bonded) {
       // Dissolve face: rebuild the summary text from the current grouping.
@@ -916,8 +886,10 @@ function makeBondCard() {
       // the handler re-posts the SAME bond with the new sub appended.
       lastAddSubPlan = addSubPlan({ ...g, self_addr: selfAddr });
       lastBondId = g.bond_id || "";
-      if (lastAddSubPlan.show) {
-        addSubPanel.style.display = "";
+      if (lastAddSubPlan.show && view.show_subwoofer_controls === true) {
+        advancedSubBtn.style.display = "";
+        advancedSubBtn.textContent = advancedSubOpen ? "Hide advanced" : "Advanced";
+        addSubPanel.style.display = advancedSubOpen ? "" : "none";
         // Exclude self + every existing bond member from the sub picker.
         const inBond = new Set(
           lastAddSubPlan.members
@@ -948,6 +920,8 @@ function makeBondCard() {
           addSubBtn.disabled = false;
         }
       } else {
+        advancedSubOpen = false;
+        advancedSubBtn.style.display = "none";
         addSubPanel.style.display = "none";
       }
       return;
@@ -965,57 +939,34 @@ function makeBondCard() {
       setEnabled(false);
       return;
     }
-    lastReachable = reachable;
     for (const p of reachable) {
       const label = (p.name || p.address) + " (" + p.address + ")";
       select.appendChild(h("option", { value: p.address }, label));
     }
     if (reachable.some((p) => p.address === prev)) select.value = prev;  // keep selection
-    setEnabled(true);
+    setEnabled(view.can_create_pair !== false);
   }
 
   async function create() {
     const rightAddr = select.value;
     if (!selfAddr || !rightAddr) return;
-    const sub = roleSelect.value === "sub";
+    let created = false;
     saving = true;
     setEnabled(false);
-    status.textContent = sub ? "Adding the subwoofer…" : "Creating the pair…";
+    status.textContent = "Creating the pair…";
     try {
-      const picked = lastReachable.find((p) => p.address === rightAddr);
-      const pickedName = (picked && picked.name) || "";
-      // Subwoofer bond: the picked speaker plays only the low end (a clip-safe
-      // mono sum, low-passed locally in jasper-outputd). The shared stream stays
-      // full-range; each main's own outputd path high-passes at the same corner
-      // by default, with the toggle below available for augmentation mode.
-      // crossover_hz is range-validated server-side — an out-of-range corner is
-      // rejected 400 (validate_grouping), not clamped.
-      const members = sub
-        ? [
-            { addr: selfAddr, role: "leader", channel: "stereo" },
-            { addr: rightAddr, role: "follower", channel: "sub",
-              crossover_hz: Number(crossoverInput.value),
-              name: pickedName },
-          ]
-        : [
-            { addr: selfAddr, role: "leader", channel: "left" },
-            { addr: rightAddr, role: "follower", channel: "right",
-              name: pickedName },
-          ];
-      const data = await postJSON("bond", { members });
+      const data = await postJSON("bond", { peer_addr: rightAddr });
       if (data && data.ok) {
-        status.textContent = sub
-          ? "Subwoofer added — both speakers are configuring (~10s)."
-          : "Stereo pair created — both speakers are configuring (~10s).";
+        created = true;
+        status.textContent = "Stereo pair created — both speakers are configuring (~10s).";
+        setTimeout(poll, 1200);
       }
     } catch (e) {
       console.error("rooms: bond create failed", e);
-      status.textContent =
-        (sub ? "Couldn't add the subwoofer — " : "Couldn't pair — ") +
-        describeBondFailure(e);
+      status.textContent = "Couldn't pair — " + describeBondFailure(e);
     } finally {
       saving = false;
-      setEnabled(true);
+      if (!created) setEnabled(true);
     }
   }
 
@@ -1034,6 +985,7 @@ function makeBondCard() {
       const data = await postJSON("unbond", {});
       if (data && data.ok) {
         status.textContent = "Pair dissolved.";
+        setTimeout(poll, 1200);
       }
     } catch (e) {
       console.error("rooms: bond dissolve failed", e);
@@ -1131,11 +1083,17 @@ function makeBondCard() {
   createBtn.addEventListener("click", create);
   swapBtn.addEventListener("click", swap);
   addSubBtn.addEventListener("click", addSub);
+  advancedSubBtn.addEventListener("click", () => {
+    advancedSubOpen = !advancedSubOpen;
+    advancedSubBtn.textContent = advancedSubOpen ? "Hide advanced" : "Advanced";
+    addSubPanel.style.display =
+      advancedSubOpen && lastAddSubPlan.show ? "" : "none";
+  });
   mainsHpCb.addEventListener("change", setMainsHighpass);
   dissolveBtn.addEventListener("click", dissolve);
-  // Default to the create face until the first sync() proves we're bonded, so
-  // both faces are never visible at once during the initial paint.
-  showFace(false);
+  // Default to a neutral loading face; the first /rooms.json decides whether
+  // create or paired controls are valid. This avoids initial layout/state lies.
+  showLoading();
   return { el: card, sync };
 }
 
