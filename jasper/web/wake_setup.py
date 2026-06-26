@@ -2,34 +2,31 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wake-word page at /wake/.
+"""Microphone + wake page at /wake/.
 
-Three stacked sections, one page:
+The page is backend-driven. `jasper-control` owns the microphone/AEC
+truth, including the user-facing `mic_settings` view model layered over
+the storage/runtime profile ids. Browser JavaScript renders that model
+and posts intent back through the existing proxy routes; it does not
+decide what hardware can safely run.
 
-  1. **Microphone status** — compact read-only card hydrated from the
-     same `/aec` JSON as the toggles. Shows detected mic, firmware,
-     processing mode, session source, active wake legs, and wake phrase.
+Four stacked sections, one page:
 
-  2. **Detection layers + sensitivity** — iOS-style toggles (software AEC3,
-     chip-direct mic, DTLN neural AEC, and the
-     hardware-conditional XVF3800 chip-AEC beams) and a sensitivity
-     slider. Polls jasper-control for live state, posts state-set
-     requests back. The software-AEC3 toggle controls the fallback engine;
-     chip-AEC profiles keep the bridge running as a chip-beam carrier while
-     WebRTC AEC3 is bypassed. The raw + DTLN legs are sub-features layered
-     on top of software mode, and are disabled (visually + interactively)
-     when software AEC3 is off or chip-AEC is active. The chip-AEC layer is
-     additionally gated on the detected mic profile and output DAC/reference
-     gate, and is mutually exclusive with raw + DTLN — enabling it greys
-     those out (one chip can't emit both the software legs and the chip
-     beams). Unapproved DACs use the explicit testing profile rather than
-     this layer toggle.
+  1. **Microphone** — compact read-only hardware/capability summary
+     hydrated from `/aec.mic_settings.mic`.
 
-  3. **Wake-word model picker** — radio over the curated registry in
-     jasper/wake_models.py. Bundled openWakeWord names always show as
-     available; non-bundled models surface a "not downloaded" hint when
-     their `.onnx` file is missing on disk (install.sh fetches them on
-     every deploy, so this state is usually transient).
+  2. **Echo cancellation** — task-oriented profile choices:
+     best available, hardware echo cancellation, software echo
+     cancellation, or direct mic. These still write the canonical
+     `JASPER_AUDIO_INPUT_PROFILE` ids behind the scenes.
+
+  3. **Wake word** — wake model picker + sensitivity. This is separate
+     from echo processing; changing the wake word should not require the
+     household to reason about AEC engines.
+
+  4. **Advanced wake fusion** — collapsed diagnostics/corpus controls
+     for raw, DTLN, chip beam scoring, and DAC validation mode. These are
+     intentionally not first-run controls.
 
 Both sections write the same /var/lib/jasper/wake_model.env so a
 model save preserves any JASPER_WAKE_THRESHOLD the slider wrote, and
@@ -52,10 +49,11 @@ deploy/assets/wake/wake.css. There is no inline ``<script>``.
 
 URL surface (after nginx strips the /wake/ prefix):
   GET  /                page render
-  GET  /detection.json  proxy jasper-control /aec — mode + bridge +
-                        leg config + threshold
+  GET  /detection.json  proxy jasper-control /aec — includes the
+                        backend-owned mic_settings view model
   POST /profile         body {profile: str} — set canonical input profile
-  POST /layer/aec       body {enabled: bool} — set software AEC3
+  POST /layer/aec       body {enabled: bool} — legacy compatibility shim
+                        for the old software-AEC3 toggle; not rendered
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
   POST /layer/chip_aec  body {enabled: bool} — set chip-AEC beam legs
@@ -82,6 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from ..audio_input_view import profile_choice_specs, valid_profile_ids
 from ..atomic_io import locked_update_env_file
 from ..log_event import log_event
 from .. import wake_models
@@ -205,119 +204,75 @@ def _bundled_asset_path(entry: wake_models.WakeModelEntry) -> Path | None:
 
 
 # Layer rows render with `disabled` initially — the /detection.json poll
-# fires on page load and hydrates real state. Browsers don't fire
-# change events while disabled, so the user can't toggle into a bad
-# state during the ~50 ms first-paint window. Each tuple is
-# (key sent over the wire, displayed label, short description, cost
-# string, "requires AEC" gating). AEC itself ungated.
-_LAYERS = (
-    (
-        "aec",
-        "Software AEC3",
-        "WebRTC echo cancellation for the software fallback path. "
-        "Bypassed automatically when a chip-AEC profile is active.",
-        "~85 MB · ~22% core",
-        False,
-    ),
+# fires on page load and hydrates real state. Browsers don't fire change
+# events while disabled, so the user can't toggle into a bad first-paint
+# state. Each tuple is (key sent over the wire, displayed label, short
+# description, cost string).
+_FUSION_LAYERS = (
     (
         "raw",
-        "Chip-direct mic (raw)",
-        "Pre-AEC chip mic as a parallel wake layer. Catches wakes "
-        "when AEC over-suppresses. Default on.",
+        "Direct/raw wake stream",
+        "Parallel raw mic wake scoring for software-AEC experiments.",
         "~5 MB · negligible",
-        True,
     ),
     (
         "dtln",
         "DTLN neural AEC",
-        "Neural echo cancellation as a third wake layer. Best "
-        "wake-rate boost; heaviest cost. Recommended only on 2 GB Pi.",
+        "Neural cleanup as an optional wake stream. Recommended only on 2 GB Pi.",
         "~75 MB · ~25% core",
-        True,
     ),
     (
         "chip_aec",
-        "Chip-AEC beams (XVF3800)",
-        "Uses a validated geometry-specific mic-array hardware AEC beam "
-        "plan as the wake layers. Mutually exclusive with the raw + DTLN "
-        "layers — turning this on pauses them (the chip can't do both "
-        "at once). Needs a supported mic profile, firmware, and beam plan.",
-        # Two openWakeWord detectors (one per beam), no neural engine.
-        # Estimate pending on-device measurement; matches the format of
-        # the rows above (<RAM> · <CPU>).
+        "Hardware beam scoring",
+        "XVF3800 chip-AEC beam streams used for wake scoring.",
         "~10 MB · light",
-        True,
     ),
 )
 
 
-_PROFILES = (
-    (
-        "auto",
-        "Automatic",
-        "Use the best supported path for the hardware detected on this speaker.",
-        "Recommended",
-    ),
-    (
-        "xvf_chip_aec",
-        "XVF chip-AEC",
-        "Use the mic array's validated hardware echo-cancelled beam plan.",
-        "XVF3800",
-    ),
-    (
-        "xvf_chip_aec_testing",
-        "XVF chip-AEC testing",
-        "Run hardware AEC on an unapproved DAC for operator validation.",
-        "Testing",
-    ),
-    (
-        "xvf_software_aec3",
-        "XVF software AEC3",
-        "Use WebRTC AEC3 with a raw wake fallback.",
-        "Fallback",
-    ),
-    (
-        "direct_mic",
-        "Direct mic",
-        "Use the selected microphone without an AEC bridge.",
-        "Basic",
-    ),
-)
+_ECHO_PROFILES = profile_choice_specs(section="echo")
+_ADVANCED_PROFILES = profile_choice_specs(section="advanced")
 
 
-def _profile_card_html() -> str:
+def _profile_rows_html(rowspec: tuple[Any, ...]) -> str:
     rows: list[str] = []
-    for key, name, desc, meta in _PROFILES:
+    for spec in rowspec:
+        key = spec.profile
         rows.append(f"""
-    <label class="profile-row" id="profile-row-{key}">
+    <label class="profile-row is-disabled" id="profile-row-{key}" data-profile="{key}">
       <input type="radio" name="profile-choice" id="profile-{key}"
              value="{key}" disabled>
       <span class="profile-copy">
-        <span class="profile-name">{html.escape(name)}</span>
-        <span class="profile-desc">{html.escape(desc)}</span>
+        <span class="profile-name" id="profile-name-{key}">{html.escape(spec.label)}</span>
+        <span class="profile-desc" id="profile-desc-{key}">{html.escape(spec.description)}</span>
       </span>
-      <span class="badge badge--muted">{html.escape(meta)}</span>
+      <span class="badge badge--muted" id="profile-badge-{key}">{html.escape(spec.badge)}</span>
+      <span class="profile-choice-status" id="profile-status-{key}">—</span>
     </label>""")
+    return "".join(rows)
+
+
+def _echo_card_html() -> str:
     return f"""
-<section class="section profile-card">
+<section class="section echo-card">
   <div class="section__head">
-    <h2 class="section__title">Input profile</h2>
+    <h2 class="section__title">Echo cancellation</h2>
   </div>
   <div class="info-card">
-    <div class="profile-status" id="profile-status">checking…</div>
-    {''.join(rows)}
-    <div class="mic-status-warning" id="profile-custom-warning" hidden></div>
+    <div class="echo-status">
+      <div class="echo-status__title" id="echo-status-title">checking…</div>
+      <div class="echo-status__detail" id="echo-status-detail">—</div>
+    </div>
+    {_profile_rows_html(_ECHO_PROFILES)}
+    <div class="mic-status-warning" id="echo-status-warning" hidden></div>
   </div>
 </section>"""
 
 
-def _layers_card_html() -> str:
-    """Render the detection-layers + sensitivity card. State is
-    hydrated by the /detection.json poll (deploy/assets/wake/js/main.js);
-    first paint shows disabled toggles with em-dash status so a slow
-    upstream doesn't cause UI flicker."""
+def _advanced_fusion_html() -> str:
+    """Render collapsed expert fusion/validation controls."""
     rows: list[str] = []
-    for key, name, desc, meta, _gated in _LAYERS:
+    for key, name, desc, meta in _FUSION_LAYERS:
         rows.append(f"""
   <div class="layer-row" id="layer-row-{key}">
     <div class="layer-body">
@@ -329,34 +284,22 @@ def _layers_card_html() -> str:
     {toggle_html(f"layer-{key}", disabled=True)}
   </div>""")
     return f"""
-<section class="section layers-card">
-  <div class="section__head">
-    <h2 class="section__title">Wake detection</h2>
-  </div>
+<section class="section advanced-fusion-card">
+  <details class="disclosure">
+    <summary>Advanced wake fusion</summary>
+    <div class="disclosure-body">
   <div class="info-card">
     <p class="info-card__note">
-      Advanced custom controls for corpus tests and nonstandard
-      hardware. Changing a layer switches the input profile to custom.
-      The sensitivity slider applies to every active layer.
+      Expert controls for corpus tests, nonstandard hardware, and DAC
+      validation. Changing a wake stream switches the input profile to
+      custom.
     </p>
+    <div class="fusion-summary" id="fusion-summary">checking…</div>
+    {_profile_rows_html(_ADVANCED_PROFILES)}
     {''.join(rows)}
-    <div class="layer-row sensitivity-row">
-      <div class="layer-body">
-        <div class="layer-name">Sensitivity</div>
-        <div class="layer-desc">
-          Lower = wake fires more easily (more false positives);
-          higher = needs a more confident match (more missed wakes).
-        </div>
-        <div class="sensitivity-control">
-          <input type="range" id="sensitivity-input"
-                 min="0.05" max="0.95" step="0.05" value="0.5" disabled>
-          <span class="sensitivity-value" id="sensitivity-value">—</span>
-          <button class="btn btn--ghost" id="sensitivity-save"
-                  type="button" disabled>Save</button>
-        </div>
-      </div>
-    </div>
   </div>
+    </div>
+  </details>
 </section>"""
 
 
@@ -365,7 +308,7 @@ def _mic_status_card_html() -> str:
 
     Values are placeholders until deploy/assets/wake/js/main.js hydrates
     them from /detection.json. Keep this card non-controlling: the
-    detection layer rows below are the action surface.
+    echo/fusion rows below are the action surface.
     """
     return """
 <section class="section mic-status-card">
@@ -402,6 +345,25 @@ def _mic_status_card_html() -> str:
     <div class="mic-status-warning" id="mic-status-warning" hidden></div>
   </div>
 </section>"""
+
+
+def _sensitivity_html() -> str:
+    return """
+<div class="sensitivity-panel">
+  <div class="sensitivity-copy">
+    <div class="sensitivity-title">Sensitivity</div>
+    <div class="sensitivity-desc">
+      Lower fires more easily; higher needs a more confident wake match.
+    </div>
+  </div>
+  <div class="sensitivity-control">
+    <input type="range" id="sensitivity-input"
+           min="0.05" max="0.95" step="0.05" value="0.5" disabled>
+    <span class="sensitivity-value" id="sensitivity-value">—</span>
+    <button class="btn btn--ghost" id="sensitivity-save"
+            type="button" disabled>Save</button>
+  </div>
+</div>"""
 
 
 def _row_html(
@@ -533,9 +495,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 <main class="page">
   {_mic_status_card_html()}
 
-  {_profile_card_html()}
-
-  {_layers_card_html()}
+  {_echo_card_html()}
 
   <section class="section">
     <div class="section__head">
@@ -548,6 +508,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
       Saving restarts the voice daemon; it's listening again in about
       4 seconds.
     </p>
+    {_sensitivity_html()}
 
     <form method="post" action="save" id="wake-form">
       {csrf_field_html(csrf_token) if csrf_token else ''}
@@ -559,6 +520,8 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 
     {_privacy_disclosure_html()}
   </section>
+
+  {_advanced_fusion_html()}
 </main>
 <script type="module" src="/assets/wake/js/main.js"></script>
 """
@@ -729,7 +692,7 @@ def _apply_profile(profile: str, *, control_base: str) -> tuple[int, bytes]:
 
 
 _VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec")
-_VALID_PROFILES = {key for key, _name, _desc, _meta in _PROFILES}
+_VALID_PROFILES = valid_profile_ids()
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:

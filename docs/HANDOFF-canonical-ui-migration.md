@@ -92,7 +92,7 @@ All now render via `canonical_page()`:
 | weather | `/weather/` | form + geocode probe |
 | sources | `/sources/` | toggles (USB dtoverlay gating preserved) |
 | airplay | `/airplay/` | toggle + status |
-| wake | `/wake/` | model picker + sensitivity slider + AEC leg toggles |
+| wake | `/wake/` | model picker + sensitivity slider + microphone/echo view + advanced fusion controls |
 | voice | `/voice/` | provider radio + per-provider key/model/voice |
 | spotify | `/spotify/` | 3-state OAuth + multi-account |
 | google | `/google/` | OAuth (sibling of spotify) |
@@ -255,6 +255,6 @@ plus `deploy/assets/shared/js/http.js`.
 
 ---
 
-Last verified: 2026-06-07 (historical snapshot only; current
-operational truth lives in `docs/HANDOFF-management-ui.md`; wake-corpus
-smoke wording rechecked after canonical toggle cleanup).
+Last verified: 2026-06-26 (historical snapshot only; current
+operational truth lives in `docs/HANDOFF-management-ui.md`; `/wake/` row
+wording rechecked after the microphone/echo settings split).
