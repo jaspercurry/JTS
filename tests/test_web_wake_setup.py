@@ -102,24 +102,26 @@ def test_render_has_no_legacy_chrome():
 
 def test_render_uses_canonical_toggle_for_each_layer():
     html = _render()
-    for key in ("aec", "raw", "dtln", "chip_aec"):
+    for key in ("raw", "dtln", "chip_aec"):
         assert f'id="layer-{key}"' in html
+    assert 'id="layer-aec"' not in html
     # toggle_html renders the shared checkbox toggle.
     assert 'class="toggle"' in html
 
 
-def test_render_has_input_profile_choices():
+def test_render_has_echo_choices_and_advanced_validation():
     html = _render()
-    assert "Input profile" in html
+    assert "Echo cancellation" in html
     for profile in (
         "auto",
         "xvf_chip_aec",
-        "xvf_chip_aec_testing",
         "xvf_software_aec3",
         "direct_mic",
     ):
         assert f'id="profile-{profile}"' in html
-    assert "unapproved DAC" in html
+    assert "Advanced wake fusion" in html
+    assert 'id="profile-xvf_chip_aec_testing"' in html
+    assert "not approved for automatic use" in html
 
 
 def test_render_form_posts_to_save_with_primary_button():
