@@ -88,14 +88,12 @@ export function commissionCardState(commission, group, checkedRoles) {
   commission = commission || {};
   var load = commission.commission_load || {};
   var ramp = commission.ramp || {};
-  var floor = commission.floor || {};
   var target = load.target || {};
   var pending = ramp.pending && typeof ramp.pending === 'object' ? ramp.pending : null;
   var roles = activeCommissionRolesForGroup(group);
   var armed = load.status === 'loaded';
   var stale = load.status === 'stale' ||
     (load.runtime_status && load.runtime_status.status === 'stale');
-  var floorStatus = floor.status || 'floor_required';
   var awaitingAck = armed && !!pending;
   var confirmed = Array.isArray(checkedRoles) ?
     checkedRoles :
@@ -116,7 +114,6 @@ export function commissionCardState(commission, group, checkedRoles) {
     armedRole: armed ? (target.role || null) : null,
     armedGainDb: armed ? target.audible_gain_db : null,
     startRole: nextRole,
-    floorStatus: floorStatus,
     awaitingAck: awaitingAck,
     pendingRole: pending ? pending.role : null,
     pendingGainDb: pending ? pending.gain_db : null,
@@ -386,6 +383,27 @@ export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
 export function nearfieldCaptureHint(roleLabel) {
   return 'Optional — hold the phone 2–5 cm from the ' + (roleLabel || 'driver') +
     ', centred, to capture its tone for a measured level match.';
+}
+
+// Single generic fallback for the combined-test failure line when the backend
+// commissioning view is unavailable (e.g. its fetch failed). The per-failure-code
+// copy is OWNED by the backend coordinator (commissioning_coordinator.summed_test_
+// failure_message, surfaced as combined_groups[].failure_message); the browser must
+// not re-derive a parallel per-code ladder — that drifted ("to retry" vs "to try
+// again"). When the view is present, render its failure_message; otherwise this.
+export const SUMMED_TEST_GENERIC_RETRY_HINT =
+  'The last combined test did not play. Press Play combined test to try again.';
+
+// Resolve the failure hint shown under a combined-test group. The backend
+// groupView.failure_message is authoritative when present (and may be ''); the
+// generic string is only the degraded-view fallback. `suppress` is true once an
+// audible test exists (no failure to report).
+export function summedGroupFailureHint(groupView, { suppress = false } = {}) {
+  if (suppress) return '';
+  if (groupView && typeof groupView === 'object') {
+    return String(groupView.failure_message || '');
+  }
+  return SUMMED_TEST_GENERIC_RETRY_HINT;
 }
 
 function levelMatchSourceLabel(source) {

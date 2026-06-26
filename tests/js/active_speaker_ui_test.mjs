@@ -24,6 +24,8 @@ import {
   nearfieldCaptureHint,
   subwooferCrossoverBand,
   subwooferCrossoverFcHz,
+  SUMMED_TEST_GENERIC_RETRY_HINT,
+  summedGroupFailureHint,
 } from "../../deploy/assets/sound-profile/js/active-speaker-ui.js";
 
 // A saved topology whose current observed hardware no longer matches must stay
@@ -286,6 +288,33 @@ const STEREO_WITH_SUB_UNSET_FC = {
     ],
   });
   assert.equal(hot.freq_hz, SUB_CROSSOVER_HZ_HI);
+}
+
+// --- C3a-1: backend owns the combined-test failure copy ---------------------
+//
+// summedGroupFailureHint renders the backend groupView.failure_message verbatim
+// (the per-failure-code ladder lives in the Python coordinator, not the browser).
+// The single generic string is ONLY the degraded fallback when the view is
+// unavailable. This pins that the browser never re-derives a parallel per-code
+// ladder again (the "to retry"/"to try again" drift this replaced).
+{
+  // Backend view present -> its failure_message is authoritative (verbatim).
+  assert.equal(
+    summedGroupFailureHint({ failure_message: "Re-check Confirm outputs before retrying." }),
+    "Re-check Confirm outputs before retrying.",
+  );
+  // Backend view present with no failure -> empty (nothing to report).
+  assert.equal(summedGroupFailureHint({ failure_message: "" }), "");
+  assert.equal(summedGroupFailureHint({}), "");
+  // Audible test exists -> suppressed regardless of any stale message.
+  assert.equal(
+    summedGroupFailureHint({ failure_message: "stale" }, { suppress: true }),
+    "",
+  );
+  // Degraded: no backend view -> the ONE generic fallback line, not a ladder.
+  assert.equal(summedGroupFailureHint(null), SUMMED_TEST_GENERIC_RETRY_HINT);
+  assert.equal(summedGroupFailureHint(undefined), SUMMED_TEST_GENERIC_RETRY_HINT);
+  assert.equal(summedGroupFailureHint(null, { suppress: true }), "");
 }
 
 console.log(JSON.stringify({ ok: true }));

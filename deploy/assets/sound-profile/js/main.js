@@ -39,7 +39,8 @@ import {
   outputStepTitle,
   playbackResultMessage,
   subwooferCrossoverBand,
-  subwooferCrossoverFcHz
+  subwooferCrossoverFcHz,
+  summedGroupFailureHint
 } from "/assets/sound-profile/js/active-speaker-ui.js";
 import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
 (function() {
@@ -2378,28 +2379,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderPreviewIssues(issues) {
     return renderIssueList(issues, 5);
   }
-  function summedTestRetryHint(issues) {
-    issues = Array.isArray(issues) ? issues : [];
-    if (!issues.length) return '';
-    var codes = issues.map(function(issue) {
-      return String(issue && issue.code || '');
-    });
-    if (codes.indexOf('tone_backend_failed') >= 0) {
-      return 'JTS could not prepare the combined test audio. Retry after the setup finishes; if it fails again, open System status.';
-    }
-    if (codes.indexOf('summed_commission_load_failed') >= 0 ||
-        codes.indexOf('safe_session_not_armed') >= 0) {
-      return 'JTS could not open the quiet combined-test path. Press Play combined test to retry.';
-    }
-    if (codes.indexOf('summed_test_artifact_missing') >= 0 ||
-        codes.indexOf('summed_test_playback_incomplete') >= 0) {
-      return 'The combined test did not finish. Press Play combined test to retry.';
-    }
-    if (codes.indexOf('summed_test_output_mismatch') >= 0) {
-      return 'The last combined test did not match the saved speaker outputs. Press Play combined test to retry; if it fails again, re-check Confirm outputs.';
-    }
-    return 'The last combined test did not play. Press Play combined test to try again.';
-  }
   function renderCrossoverPreviewRows(payload) {
     var groups = Array.isArray(payload.groups) ? payload.groups : [];
     var rows = [];
@@ -3036,11 +3015,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (canRecord ?
           'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
           'Test each driver first, then test the combined speaker.'));
-      var latestTestIssues = latestTest && Array.isArray(latestTest.issues)
-        ? latestTest.issues : [];
-      var retryHint = !hasAudibleTest ?
-        (groupView && groupView.failure_message || summedTestRetryHint(latestTestIssues)) :
-        '';
+      // Backend owns the per-failure-code copy (groupView.failure_message); the
+      // helper falls back to ONE generic line only when the view is unavailable.
+      var retryHint = summedGroupFailureHint(groupView, { suppress: hasAudibleTest });
       return '<div class="active-speaker-validation__group">' +
         '<div class="row-between">' +
           '<div><p class="setting-row__title">' + escapeHtml(group.label || group.id || 'Speaker') + '</p>' +
