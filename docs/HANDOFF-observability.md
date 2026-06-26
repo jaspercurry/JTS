@@ -89,13 +89,15 @@ its allowlist holds only active-zone files deferred to in-flight work.
 forensics (see [HANDOFF-resilience.md](HANDOFF-resilience.md)).
 Cost per that doc: ~30 MB/hr → ~270 GB/yr against ~100 TBW SD
 endurance — **not a flash-wear emergency.** Global journald
-`RateLimit*` settings stay at systemd defaults. `jasper-camilla.service`
-has a narrow per-unit `LogRateLimitIntervalSec=60s` /
-`LogRateLimitBurst=120` override because CamillaDSP can emit an
-external, unstructured ALSA short-read WARN line many times per second
-when the capture graph is degraded; journald still records the first
-burst and its native suppression summary, but a sustained Camilla flood
-no longer consumes the persistent journal.
+`RateLimit*` settings stay at systemd defaults. Two external-log
+exceptions have narrow per-unit overrides: `jasper-camilla.service`
+(`LogRateLimitBurst=120` per 60 s) because CamillaDSP can emit an
+unstructured ALSA short-read WARN line many times per second when the capture
+graph is degraded, and `jasper-snapclient.service` (`LogRateLimitBurst=30`
+per 60 s) because an optional bonded follower logs a connection-refused loop
+while its leader is offline. In both cases journald still records the first
+burst and its native suppression summary, but a sustained external flood no
+longer consumes the persistent journal.
 
 **The 200 MB cap is also the retention window — forensics have a
 volume-dependent shelf life.** journald vacuums oldest-first at the
@@ -434,7 +436,7 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-26 (Camilla per-unit journal rate limit and
-`fetch-pi-logs.sh` noise-summary artifact rechecked against current code;
+Last verified: 2026-06-26 (Camilla/snapclient per-unit journal rate limits and
+`fetch-pi-logs.sh` noise-summary + monotonic timeline artifacts rechecked against current code;
 resilience `/state`, supervisor doctor surface, and multiroom cascade timeline
 last rechecked 2026-06-24)

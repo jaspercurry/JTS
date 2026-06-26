@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from .uds import _voice_socket_command
@@ -26,6 +28,17 @@ logger = logging.getLogger(__name__)
 VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
 VOLUME_MAX_DB = VOLUME_CEILING_DB
 SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
+_SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC = 30.0
+
+
+@dataclass
+class _SpotifyEmptyRouterCache:
+    fingerprint: tuple
+    expires_at: float
+    reason: str
+
+
+_spotify_empty_router_cache: _SpotifyEmptyRouterCache | None = None
 
 
 def _clamp_db(db: float) -> float:
@@ -54,6 +67,19 @@ def _spotify_redirect_uri() -> str:
     return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
 
 
+def _spotify_account_cache_fingerprint(registry) -> tuple:
+    entries = []
+    for account in registry.accounts:
+        cache_path = account.cache_path or ""
+        try:
+            st = os.stat(cache_path)
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = (-1, -1)
+        entries.append((account.name, cache_path, stamp))
+    return tuple(entries)
+
+
 def _build_spotify_router_or_none():
     """Build a multi-account Spotify router for dial-driven volume.
     Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
@@ -65,17 +91,43 @@ def _build_spotify_router_or_none():
     try:
         from ..accounts import Registry, maybe_migrate_legacy
         from ..spotify_router import Router, build_clients
-        registry = Registry.load(os.environ.get(
+        accounts_path = os.environ.get(
             "JASPER_SPOTIFY_ACCOUNTS_PATH",
             "/var/lib/jasper-intsecrets/spotify/accounts.json",
-        ))
+        )
+        legacy_cache_path = os.environ.get(
+            "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache",
+        )
+        redirect_uri = _spotify_redirect_uri()
+        registry = Registry.load(accounts_path)
         maybe_migrate_legacy(
             registry,
-            os.environ.get(
-                "SPOTIFY_CACHE_PATH", "/var/lib/jasper-intsecrets/.spotify-cache",
-            ),
+            legacy_cache_path,
             default_name="default",
         )
+        fingerprint = (
+            client_id,
+            redirect_uri,
+            accounts_path,
+            legacy_cache_path,
+            registry.default_name,
+            _spotify_account_cache_fingerprint(registry),
+        )
+        global _spotify_empty_router_cache
+        now = time.monotonic()
+        cached = _spotify_empty_router_cache
+        if (
+            cached is not None
+            and cached.fingerprint == fingerprint
+            and now < cached.expires_at
+        ):
+            logger.debug(
+                "control daemon spotify router empty build suppressed for %.1fs "
+                "(%s)",
+                cached.expires_at - now,
+                cached.reason,
+            )
+            return None
         # build_clients returns BuildResult. The control daemon doesn't
         # surface revoked-vs-needs-oauth status to the user, so we use
         # the clients dict only — but still pass statuses through to the
@@ -84,10 +136,18 @@ def _build_spotify_router_or_none():
         result = build_clients(
             registry,
             client_id=client_id,
-            redirect_uri=_spotify_redirect_uri(),
+            redirect_uri=redirect_uri,
         )
         if not result.clients:
+            reason = ",".join(sorted({s.state for s in result.statuses}))
+            reason = reason or "no_accounts"
+            _spotify_empty_router_cache = _SpotifyEmptyRouterCache(
+                fingerprint=fingerprint,
+                expires_at=now + _SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC,
+                reason=reason,
+            )
             return None
+        _spotify_empty_router_cache = None
         return Router(
             clients=result.clients,
             default_name=registry.default_name,

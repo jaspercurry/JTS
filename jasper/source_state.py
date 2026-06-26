@@ -24,6 +24,7 @@ import logging
 import os
 import re
 
+from . import bluealsa_probe
 from . import librespot_state
 
 logger = logging.getLogger(__name__)
@@ -179,14 +180,7 @@ async def bluetooth_playing() -> bool:
     distinguish "phone connected, not playing" from "connected and
     streaming" without AVRCP, which bluez-alsa doesn't expose
     reliably."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "bluealsa-cli", "list-pcms",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("bluealsa-cli list-pcms probe failed: %s", e)
+    stdout = await bluealsa_probe.list_pcms(logger)
+    if stdout is None:
         return False
     return b"a2dpsnk/source" in stdout

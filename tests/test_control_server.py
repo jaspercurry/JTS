@@ -3534,6 +3534,52 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
     assert router.statuses[0].state == ACCOUNT_OK
 
 
+def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
+    tmp_path, monkeypatch,
+):
+    """Control builds a per-request coordinator for `/volume` and transport
+    requests. If every Spotify account is revoked, repeated dashboard polls
+    should not re-hit Spotify's token endpoint until either the short cooldown
+    expires or the wizard rewrites an account cache."""
+    from unittest.mock import patch
+    from jasper.control import volume_ops
+    from jasper.control.server import _build_spotify_router_or_none
+    from jasper.spotify_router import (
+        ACCOUNT_REVOKED, AccountStatus, BuildResult,
+    )
+
+    cache_path = tmp_path / "jasper-cache.json"
+    cache_path.write_text("revoked-v1")
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
+    monkeypatch.setenv(
+        "JASPER_SPOTIFY_ACCOUNTS_PATH", str(tmp_path / "accounts.json"),
+    )
+    monkeypatch.setenv("SPOTIFY_CACHE_PATH", str(tmp_path / "legacy.json"))
+    monkeypatch.setattr(volume_ops, "_spotify_empty_router_cache", None)
+    (tmp_path / "accounts.json").write_text(
+        '{"accounts": [{"name": "jasper", "cache_path": "'
+        + str(cache_path)
+        + '"}], "default": "jasper"}'
+    )
+    calls = {"n": 0}
+
+    def fake_build_clients(_registry, *, client_id, redirect_uri):
+        calls["n"] += 1
+        return BuildResult(
+            clients={},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_REVOKED)],
+            default_name="jasper",
+        )
+
+    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+        assert _build_spotify_router_or_none() is None
+        assert _build_spotify_router_or_none() is None
+        cache_path.write_text("revoked-v2-but-file-changed")
+        assert _build_spotify_router_or_none() is None
+
+    assert calls["n"] == 2
+
+
 @pytest.mark.asyncio
 async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
     import jasper.control.server as srv_mod

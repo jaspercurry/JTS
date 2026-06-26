@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .accounts import Account, Registry, build_cache_handler
+from .log_event import log_event
 from .spotify_routing import _normalise as _normalise_title
 
 logger = logging.getLogger(__name__)
@@ -81,12 +82,60 @@ _RETRY_BACKOFF_SEC = (0.20, 0.40)  # 2 retries, ~600ms total worst case
 # timing.
 _REFRESH_MIN_INTERVAL_SEC = 30.0
 
+# build_clients is called from several long-lived daemons. A revoked token is a
+# persistent account state, not a new incident every dashboard poll, so WARN once
+# per account/state/detail window and demote repeats to DEBUG. That keeps the
+# flight recorder and persistent journal focused on state transitions while the
+# wizard remains the recovery surface.
+_ACCOUNT_FAILURE_LOG_INTERVAL_SEC = 600.0
+_ACCOUNT_FAILURE_LOG_CACHE: dict[tuple[str, str, str, str], float] = {}
+
 
 def _now() -> float:
     """Wrapped `time.monotonic` so tests can mock the refresh-cooldown
     clock without affecting asyncio's event-loop clock (which also calls
     `time.monotonic`)."""
     return time.monotonic()
+
+
+def _log_account_unavailable(
+    account: Account,
+    state: str,
+    detail: str,
+    *,
+    cache_path: str = "",
+) -> None:
+    key = (account.name, state, detail, cache_path)
+    now = _now()
+    last = _ACCOUNT_FAILURE_LOG_CACHE.get(key)
+    fields = {
+        "account": account.name,
+        "state": state,
+        "reason": detail,
+    }
+    if cache_path:
+        fields["cache_path"] = cache_path
+    remaining = 0.0 if last is None else _ACCOUNT_FAILURE_LOG_INTERVAL_SEC - (
+        now - last
+    )
+    if last is None or remaining <= 0:
+        _ACCOUNT_FAILURE_LOG_CACHE[key] = now
+        log_event(
+            logger,
+            "spotify.account_unavailable",
+            level=logging.WARNING,
+            fields={
+                **fields,
+                "repeat_suppression_sec": int(_ACCOUNT_FAILURE_LOG_INTERVAL_SEC),
+            },
+        )
+        return
+    log_event(
+        logger,
+        "spotify.account_unavailable_suppressed",
+        level=logging.DEBUG,
+        fields={**fields, "remaining_sec": round(max(0.0, remaining), 1)},
+    )
 
 
 @dataclass
@@ -170,14 +219,14 @@ def build_clients(
     for account in registry.accounts:
         cache_path = account.cache_path
         if cache_path and not os.path.exists(cache_path):
-            logger.warning(
-                "account %s has no cached token at %s — skipping (needs web setup)",
-                account.name, cache_path,
+            detail = "no cached token — not yet OAuthed"
+            _log_account_unavailable(
+                account, ACCOUNT_NEEDS_OAUTH, detail, cache_path=cache_path,
             )
             statuses.append(AccountStatus(
                 name=account.name,
                 state=ACCOUNT_NEEDS_OAUTH,
-                detail="no cached token — not yet OAuthed",
+                detail=detail,
             ))
             continue
         try:
@@ -197,14 +246,12 @@ def build_clients(
             # refresh_token raises SpotifyOauthError(invalid_grant).
             token = auth.get_cached_token()
             if not token:
-                logger.warning(
-                    "account %s cache present but token unusable — needs re-link",
-                    account.name,
-                )
+                detail = "cache unreadable or empty"
+                _log_account_unavailable(account, ACCOUNT_NEEDS_OAUTH, detail)
                 statuses.append(AccountStatus(
                     name=account.name,
                     state=ACCOUNT_NEEDS_OAUTH,
-                    detail="cache unreadable or empty",
+                    detail=detail,
                 ))
                 continue
             sp = spotipy.Spotify(
@@ -215,10 +262,7 @@ def build_clients(
             statuses.append(AccountStatus(name=account.name, state=ACCOUNT_OK))
         except Exception as e:  # noqa: BLE001
             state, detail = _classify_oauth_error(e)
-            logger.warning(
-                "account %s: build failed (%s); marking %s",
-                account.name, e, state,
-            )
+            _log_account_unavailable(account, state, detail)
             statuses.append(AccountStatus(
                 name=account.name, state=state, detail=detail,
             ))

@@ -168,6 +168,11 @@ echo
 echo "== uptime =="
 uptime -s 2>&1
 uptime -p 2>&1
+echo "/proc/uptime: $(cat /proc/uptime 2>&1)"
+awk '/^btime / { print "btime_epoch: " $2 }' /proc/stat 2>&1
+echo
+echo "== clock =="
+timedatectl status 2>&1
 echo
 echo "== last reboot/shutdown records =="
 last -x reboot shutdown 2>/dev/null | head -20
@@ -241,6 +246,20 @@ journalctl -b -1 --no-pager --output=short-iso 2>/dev/null \
     | grep -Ei 'sshd|COMMAND=(/opt/jasper/\.venv/bin/python -|/usr/bin/python3? -|python3? -|(/usr/bin/)?systemd-run .*--unit=jts-diagnostic-|bash /home/pi/jts/deploy/install\.sh|/usr/bin/cat /var/lib/jasper/build\.txt)' \
     | sed -E 's#(COMMAND=(/usr/bin/)?systemd-run .*-- /usr/bin/bash -lc ).*#\1<diagnostic-command-redacted>#' \
     | tail -200
+true
+REMOTE
+
+fetch_remote_bash "previous-boot-timeline" "log" <<'REMOTE'
+set +e
+echo "== previous boot tail (monotonic) =="
+journalctl -b -1 -n 500 --no-pager --output=short-monotonic 2>/dev/null
+true
+REMOTE
+
+fetch_remote_bash "current-boot-timeline" "log" <<'REMOTE'
+set +e
+echo "== current boot head (monotonic) =="
+journalctl -b 0 -n 250 --no-pager --output=short-monotonic 2>/dev/null
 true
 REMOTE
 

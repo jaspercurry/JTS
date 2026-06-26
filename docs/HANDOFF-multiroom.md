@@ -237,7 +237,10 @@ Increment 6 (per-follower calibration). What exists:
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
-  anti-storm `Restart`/`StartLimit`.
+  anti-storm `Restart`/`StartLimit`. `jasper-snapclient.service` also carries
+  a narrow `LogRateLimitBurst=30` per 60 s so a follower whose leader is
+  powered off remains visible as degraded without filling the persistent
+  journal with one refused-connection line per second.
 - **Reconciler `reset-failed`s before every deliberate restart
   (config-apply ≠ crash).** `_restart_unit` runs `systemctl reset-failed
   <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`→voice
@@ -2712,4 +2715,5 @@ exceptions rechecked against
 `jasper.multiroom.reconcile`, and `jasper.cli.doctor.grouping`;
 local-source follower parking rechecked against `jasper/local_sources/registry.py`
 and `jasper.multiroom.reconcile`; wireless-sub 2.1 path from 2026-06-23
-unchanged)
+unchanged; snapclient journal rate limit rechecked against
+`deploy/systemd/jasper-snapclient.service`)
