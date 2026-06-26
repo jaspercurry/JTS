@@ -77,11 +77,9 @@ SHAIRPORT_UNIT = "shairport-sync.service"
 # The FIFO the fan-in chain writes the mixed stereo program into and
 # snapserver reads from as its pipe source. Lives in snapserver's OWN
 # per-unit runtime dir (/run/jasper-snapserver/, RuntimeDirectory=
-# jasper-snapserver) — NOT the shared /run/jasper, which jasper-voice
-# owns for voice.sock + peering.sock. A unit's RuntimeDirectory is
-# reaped when it stops; sharing /run/jasper would let snapserver
-# stopping destroy the voice/peering sockets. tmpfs-backed, recreated
-# each boot.
+# jasper-snapserver). A unit's RuntimeDirectory is reaped when it stops;
+# sharing runtime directories would let snapserver stopping destroy another
+# daemon's sockets. tmpfs-backed, recreated each boot.
 SNAPFIFO = "/run/jasper-snapserver/snapfifo"
 
 # Reconciler-owned runtime env file holding the DERIVED snapcast args

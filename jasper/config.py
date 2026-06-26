@@ -925,9 +925,11 @@ class Config:
             # The UDS where jasper-control's peering daemon listens.
             # Matches PEERING_UDS_PATH in jasper.peering.config —
             # duplicated here so voice_daemon doesn't have to import
-            # the peering package just to know where to connect.
+            # the peering package just to know where to connect. The
+            # path lives under jasper-control's RuntimeDirectory because
+            # jasper-control owns the server side of this socket.
             peering_uds_socket=_env(
-                "JASPER_PEERING_UDS", "/run/jasper/peering.sock",
+                "JASPER_PEERING_UDS", "/run/jasper-control/peering.sock",
             ),
         ))
 

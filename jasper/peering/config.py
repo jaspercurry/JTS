@@ -92,9 +92,10 @@ PEERING_ENV_FILE = "/var/lib/jasper/peering.env"
 PEER_ID_FILE = "/var/lib/jasper/peer_id"
 
 # UDS where jasper-control's peering daemon listens for voice→peering
-# arbitration requests. /run is tmpfs and cleaned at boot, matching
-# the existing /run/jasper/voice.sock pattern.
-PEERING_UDS_PATH = "/run/jasper/peering.sock"
+# arbitration requests. jasper-control runs non-root and owns
+# RuntimeDirectory=jasper-control, so the server socket must live under
+# /run/jasper-control rather than the voice-owned /run/jasper directory.
+PEERING_UDS_PATH = "/run/jasper-control/peering.sock"
 
 
 class PeeringMode(str, Enum):

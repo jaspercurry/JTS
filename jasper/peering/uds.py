@@ -135,9 +135,10 @@ async def serve(
                 pass
 
     server = await asyncio.start_unix_server(handle, path)
-    # Tighten permissions — root:root, group/other read+write so the
-    # voice daemon (also root, same group) can talk to us. Matches the
-    # mode used at voice_daemon.py:2019 for symmetry.
+    # Tighten permissions. The socket is created by jasper-control:jasper
+    # inside RuntimeDirectory=jasper-control; 0660 lets jasper-voice connect
+    # through the shared `jasper` group without exposing the RPC socket to
+    # other local users.
     try:
         os.chmod(path, 0o660)
     except OSError as e:
