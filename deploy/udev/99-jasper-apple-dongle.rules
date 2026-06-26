@@ -19,7 +19,9 @@
 # 2. **Disable USB autosuspend on the dongle.** The Pi is wall-powered;
 #    the few mW saved by suspending the dongle isn't worth the risk
 #    of a failed resume re-enumerating the device and resetting its
-#    mixer state.
+#    mixer state. Match only the usb_device node: interface children
+#    inherit the vendor/product via ATTRS{} but do not own power/control,
+#    and udev logs a noisy failure if we try to write it there.
 #
 # 3. **Trigger jasper-dongle-recover.service** to reset-failed and
 #    start jasper-camilla, then delegate mic/AEC/voice policy to
@@ -37,6 +39,6 @@
 
 ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ENV{JASPER_DONGLE_CARDNUM}="$attr{device/number}", RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} sset Headphone 100%% unmute"
 
-ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", ATTR{power/control}="on"
 
 ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-dongle-recover.service"

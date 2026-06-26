@@ -333,9 +333,30 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    reload_audio_recovery_udev_rules_for_install
+}
+
+pin_attached_apple_dongle_power_control() {
+    # Preserve the udev rule's autosuspend-off side effect for already-attached
+    # Apple dongles without synthesizing a full USB/sound hotplug event during
+    # deploy. The explicit output-hardware reconciler run below owns mixer
+    # pinning and service restarts after the live graph has been parked.
+    local device vendor product control
+    for device in /sys/bus/usb/devices/*; do
+        [[ -d "${device}" ]] || continue
+        [[ -r "${device}/idVendor" && -r "${device}/idProduct" ]] || continue
+        read -r vendor < "${device}/idVendor" || continue
+        read -r product < "${device}/idProduct" || continue
+        [[ "${vendor}" == "05ac" && "${product}" == "110a" ]] || continue
+        control="${device}/power/control"
+        [[ -w "${control}" ]] || continue
+        printf 'on\n' 2>/dev/null > "${control}" || true
+    done
+}
+
+reload_audio_recovery_udev_rules_for_install() {
     udevadm control --reload-rules
-    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
-    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
+    pin_attached_apple_dongle_power_control
 }
 
 install_streambox_audio_slices() {
@@ -829,13 +850,7 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
-    udevadm control --reload-rules
-    # Trigger the rule once for the currently-attached dongle so we
-    # don't have to wait for the next replug. ATTR{} match is
-    # idempotent: amixer setting Headphone=100% on an already-pinned
-    # control is a no-op.
-    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
-    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
+    reload_audio_recovery_udev_rules_for_install
 
     # We own the full systemd units for each renderer + nqptp + the
     # no-code Bluetooth pairing agent.
