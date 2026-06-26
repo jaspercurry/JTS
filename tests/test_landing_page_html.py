@@ -53,6 +53,15 @@ def _nginx_location_block(nginx: str, location: str) -> str:
     return match.group(0)
 
 
+def _assert_strong_no_cache(block: str) -> None:
+    assert (
+        'add_header Cache-Control "no-store, no-cache, max-age=0, must-revalidate" always;'
+        in block
+    )
+    assert 'add_header Pragma "no-cache" always;' in block
+    assert 'add_header Expires "0" always;' in block
+
+
 def _volume_slider_script(html: str) -> str:
     start = html.index("    // Volume slider.")
     end = html.index("    // Source selector.", start)
@@ -457,11 +466,13 @@ def test_room_correction_preflight_switches_to_https() -> None:
     assert "Other JTS pages remain" not in html
     assert "new URLSearchParams(window.location.search" in html
     assert "new URL(requested, window.location.origin)" in html
-    assert "'/correction/crossover/': '/crossover'" in html
+    assert "'/correction/crossover/': '/correction/crossover/'" in html
     assert "Object.prototype.hasOwnProperty.call(allowed, path)" in html
     assert "Date.now().toString(36)" in html
-    assert "'jts_cb='" in html
-    assert "proceed.href = withCacheBust(proceedPath)" in html
+    assert "url.searchParams.set('jts_cb', cacheToken)" in html
+    assert "current.protocol = 'https:'" in html
+    assert "if (current.port === '80') current.port = ''" in html
+    assert "proceed.href = withCacheBust(new URL(targetPath, httpsOrigin()))" in html
     assert "window.location.hostname" not in html
     assert "https://jts.local/correction/" not in html
 
@@ -505,7 +516,7 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "location = /correction" in nginx
     assert "return 302 /correction/;" in nginx
     assert "try_files /correction-preflight.html =404;" in preflight_block
-    assert 'add_header Cache-Control "no-store";' in preflight_block
+    _assert_strong_no_cache(preflight_block)
     assert "safe ?next=/correction/..." in nginx
     assert "return 302 https://$host/correction/$is_args$args;" in proceed_block
     assert "return 302 https://$host/correction/room/$is_args$args;" in room_block
@@ -515,13 +526,13 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     )
     assert "return 302 https://$host/correction/bass/$is_args$args;" in bass_block
     for block in (proceed_block, room_block, crossover_block, bass_block):
-        assert 'add_header Cache-Control "no-store";' in block
+        _assert_strong_no_cache(block)
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
     assert "return 302 http://$host$request_uri;" in nginx
-    assert (
-        'add_header Cache-Control "no-store";\n'
-        "        return 302 http://$host$request_uri;"
-    ) in nginx
+    https_nginx = nginx[nginx.index("listen 443") :]
+    catchall_block = _nginx_location_block(https_nginx, "location /")
+    _assert_strong_no_cache(catchall_block)
+    assert "return 302 http://$host$request_uri;" in catchall_block
     assert "Do not add HSTS here" in nginx
     assert "Strict-Transport-Security" not in nginx
 
@@ -536,18 +547,18 @@ def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
     )
 
     assert "try_files /correction-preflight.html =404;" in preflight_block
-    assert 'add_header Cache-Control "no-store";' in preflight_block
+    _assert_strong_no_cache(preflight_block)
     assert "return 302 https://$host/correction/$is_args$args;" in proceed_block
     assert (
         "return 302 https://$host/correction/crossover/$is_args$args;"
         in crossover_block
     )
-    assert 'add_header Cache-Control "no-store";' in proceed_block
-    assert 'add_header Cache-Control "no-store";' in crossover_block
-    assert (
-        'add_header Cache-Control "no-store";\n'
-        "        return 302 http://$host$request_uri;"
-    ) in nginx
+    _assert_strong_no_cache(proceed_block)
+    _assert_strong_no_cache(crossover_block)
+    https_nginx = nginx[nginx.index("listen 443") :]
+    catchall_block = _nginx_location_block(https_nginx, "location /")
+    _assert_strong_no_cache(catchall_block)
+    assert "return 302 http://$host$request_uri;" in catchall_block
 
 
 def test_nginx_serves_static_management_assets() -> None:

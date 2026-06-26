@@ -11,6 +11,7 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
@@ -268,21 +269,24 @@ def check_wifi_link_local_ipv6() -> CheckResult:
             f"could not read ipv6.method for active WiFi profile {profile!r}",
         )
     if method in {"ignore", "disabled"}:
+        quoted_profile = shlex.quote(profile)
+        quoted_device = shlex.quote(device)
         return CheckResult(
             label, "warn",
             f"active WiFi profile {profile!r} has ipv6.method={method}; "
             "Apple clients may stall resolving `<hostname>.local`. Fix: "
-            f"`sudo nmcli connection modify {profile!r} ipv6.method link-local` "
-            f"then `sudo nmcli dev reapply {device}`.",
+            f"`sudo nmcli connection modify {quoted_profile} ipv6.method link-local` "
+            f"then `sudo nmcli dev reapply {quoted_device}`.",
         )
 
     addr_proc = _run(["ip", "-6", "addr", "show", "dev", device, "scope", "link"], timeout=5)
     if "inet6 fe80:" not in addr_proc.stdout:
+        quoted_device = shlex.quote(device)
         return CheckResult(
             label, "warn",
             f"active WiFi profile {profile!r} uses ipv6.method={method}, but "
             f"{device} has no link-local IPv6 address; `.local` may resolve "
-            f"slowly. Try `sudo nmcli dev reapply {device}`.",
+            f"slowly. Try `sudo nmcli dev reapply {quoted_device}`.",
         )
     return CheckResult(
         label, "ok",
