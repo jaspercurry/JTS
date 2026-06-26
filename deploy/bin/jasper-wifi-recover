@@ -8,10 +8,11 @@
 #
 # This is deliberately NOT a resident daemon. It is run by
 # jasper-wifi-recover.timer. In steady state it performs one cheap
-# NetworkManager read and exits; only when no WiFi is active does it
-# inspect recent kernel logs, optionally run the Pi 5 brcmfmac scan
-# suppression repair, and delegate profile activation/recreation to
-# jasper-wifi-guardian.
+# NetworkManager read plus a narrow recent-kernel-log check and exits;
+# when the Pi 5 brcmfmac scan-suppression signature is present it runs
+# the bounded scan repair even if NetworkManager still reports an active
+# WiFi profile. If no WiFi is active, it then delegates profile
+# activation/recreation to jasper-wifi-guardian.
 #
 # The small arg-parse / emit() / stash-gate boilerplate here intentionally
 # mirrors jasper-wifi-guardian rather than sourcing a shared library: both
@@ -37,7 +38,8 @@ Usage: jasper-wifi-recover [--reason TEXT]
 
 Cheap periodic WiFi recovery check:
 
-  - if any WiFi connection is active, exit immediately
+  - if WiFi is active and recent kernel logs show brcmfmac scan suppression,
+    run the bounded non-disruptive scan repair and exit
   - if WiFi is down and recent kernel logs show brcmfmac scan suppression,
     run the bounded non-disruptive scan repair
   - delegate profile activation/recreation to jasper-wifi-guardian
@@ -105,25 +107,11 @@ recent_scan_suppression() {
         | grep -qiE 'brcmf_cfg80211_scan: Scanning suppressed|Scanning suppressed: status \(4\)'
 }
 
-if [[ ! -f "$STASH_FILE" ]]; then
-    [[ "$REASON" == "manual" ]] && emit absent "reason=no_stash"
-    exit 0
-fi
-
-active="$(active_wifi_profile || true)"
-if [[ -n "$active" ]]; then
-    [[ "$REASON" == "manual" ]] && emit steady "active=$active"
-    exit 0
-fi
-
-emit no_active "iface=$IFACE"
-
-if recent_scan_suppression; then
-    emit scan_suppressed "iface=$IFACE"
+run_scan_repair() {
     # No system-python fallback: jasper.wifi_scan_repair is only importable
     # from the /opt/jasper venv, so a bare `python3` would just ImportError.
     # If the venv python is missing, skip the repair honestly (observable
-    # event) and let the guardian run.
+    # event) and let the caller continue.
     if [[ -x "$PYTHON" ]]; then
         if "$PYTHON" -m jasper.wifi_scan_repair --iface "$IFACE" --json; then
             emit scan_repair_ok "iface=$IFACE"
@@ -134,6 +122,29 @@ if recent_scan_suppression; then
     else
         emit scan_repair_skip "iface=$IFACE reason=no_venv_python python=$PYTHON"
     fi
+}
+
+if [[ ! -f "$STASH_FILE" ]]; then
+    [[ "$REASON" == "manual" ]] && emit absent "reason=no_stash"
+    exit 0
+fi
+
+active="$(active_wifi_profile || true)"
+if [[ -n "$active" ]]; then
+    if recent_scan_suppression; then
+        emit scan_suppressed "iface=$IFACE active=$active"
+        run_scan_repair
+        exit 0
+    fi
+    [[ "$REASON" == "manual" ]] && emit steady "active=$active"
+    exit 0
+fi
+
+emit no_active "iface=$IFACE"
+
+if recent_scan_suppression; then
+    emit scan_suppressed "iface=$IFACE"
+    run_scan_repair
 fi
 
 emit guardian_start
