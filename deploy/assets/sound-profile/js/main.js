@@ -4614,6 +4614,40 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var summary = el('driver-research-import-summary');
     if (summary) summary.innerHTML = renderDriverResearchSummary();
   }
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (e) {
+        // Fall back for local HTTP management pages where the async clipboard
+        // API is unavailable or denied outside a secure context.
+      }
+    }
+    if (!document.execCommand) return false;
+    var temporary = document.createElement('textarea');
+    temporary.value = text;
+    temporary.setAttribute('readonly', '');
+    temporary.style.position = 'fixed';
+    temporary.style.top = '0';
+    temporary.style.left = '0';
+    temporary.style.width = '1px';
+    temporary.style.height = '1px';
+    temporary.style.opacity = '0.01';
+    temporary.style.pointerEvents = 'none';
+    document.body.appendChild(temporary);
+    temporary.focus();
+    temporary.select();
+    temporary.setSelectionRange(0, temporary.value.length);
+    var copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (fallbackError) {
+      copied = false;
+    }
+    document.body.removeChild(temporary);
+    return copied;
+  }
   async function copyDriverResearchPrompt(button) {
     var prompt = el('driver-research-prompt');
     if (!prompt) return;
@@ -4621,18 +4655,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Add driver models before copying the research prompt.', true);
       return;
     }
-    var copied = false;
-    try {
-      await navigator.clipboard.writeText(prompt.value);
-      copied = true;
-    } catch (e) {
-      try {
-        prompt.select();
-        copied = document.execCommand('copy');
-      } catch (fallbackError) {
-        copied = false;
-      }
-    }
+    var copied = await copyTextToClipboard(prompt.value);
     driverResearch.promptCopied = copied;
     if (button && copied) {
       button.textContent = 'Copied';

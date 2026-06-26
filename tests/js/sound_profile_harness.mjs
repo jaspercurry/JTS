@@ -70,6 +70,15 @@ function makeEl(id) {
     addEventListener(ev, fn) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
     },
+    focus() { globalThis.document.activeElement = this; },
+    select() {
+      this.selectionStart = 0;
+      this.selectionEnd = String(this.value || "").length;
+    },
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
     click() {
       for (const fn of this._listeners.click || []) {
         fn({ preventDefault() {}, target: this });
@@ -403,6 +412,23 @@ function setupHarness(fetchHandler, options = {}) {
   }
 
   globalThis.document = {
+    activeElement: null,
+    body: {
+      children: [],
+      appendChild(node) {
+        this.children.push(node);
+        return node;
+      },
+      removeChild(node) {
+        this.children = this.children.filter((child) => child !== node);
+        return node;
+      },
+    },
+    createElement(tagName) {
+      const node = makeEl(String(tagName || "").toLowerCase());
+      node.tagName = String(tagName || "").toUpperCase();
+      return node;
+    },
     getElementById(id) {
       if (absent.has(id)) return null;
       if (!elements.has(id)) elements.set(id, makeEl(id));
@@ -1767,6 +1793,61 @@ async function testVisibleCrossoverSettingsWinOverImportedJson() {
   return { visibleCrossoverSettingsWinOverImportedJson: true };
 }
 
+async function testDriverResearchPromptCopyUsesHttpFallback() {
+  let copiedText = "";
+  const draft = {
+    status: "ready_for_review",
+    operator_inputs: {
+      woofer: "Manual Woofer",
+      tweeter: "Manual Tweeter",
+    },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Manual Woofer" },
+        { role: "tweeter", model: "Manual Tweeter" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 1800,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+        confidence: "medium",
+      }],
+    },
+    summary: {},
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  Object.defineProperty(globalThis, "navigator", {
+    value: {},
+    configurable: true,
+  });
+  globalThis.document.execCommand = (command) => {
+    if (command !== "copy") return false;
+    const active = globalThis.document.activeElement;
+    copiedText = active ? String(active.value || "") : "";
+    return true;
+  };
+
+  harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
+  await harness.flush();
+
+  if (!copiedText.includes("Manual Woofer") || !copiedText.includes("Manual Tweeter")) {
+    fail("driver research prompt should copy through the HTTP fallback", { copiedText });
+  }
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Copied driver research prompt.")) {
+    fail("successful fallback copy should report success", { statusText });
+  }
+  return { driverResearchPromptCopyUsesHttpFallback: true };
+}
+
 async function testDriverResearchNotesCapExplainsBeforePost() {
   const designSaves = [];
   const importedResearch = {
@@ -3105,6 +3186,7 @@ results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
+results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
 results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
