@@ -316,6 +316,21 @@ def _staged_topology_payload(
     }
 
 
+def staged_topology_match_status(
+    topology: OutputTopology,
+    staged_config: dict[str, Any],
+    *,
+    require_physical_identity: bool = True,
+) -> dict[str, Any]:
+    """Return whether staged startup metadata still matches saved topology."""
+
+    return _staged_topology_payload(
+        topology,
+        staged_config,
+        require_physical_identity=require_physical_identity,
+    )
+
+
 def _candidate_payload(
     path: Path | None,
     *,

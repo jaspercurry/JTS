@@ -3276,8 +3276,24 @@ async def _active_speaker_ensure_commission_startup_anchor(
     """Ensure commissioning has the silent startup graph as rollback anchor."""
 
     staged_path = (staged_config.get("config") or {}).get("path")
-    if _config_paths_match(current_config_path, staged_path):
+    topology = load_output_topology()
+    from jasper.active_speaker.startup_load import staged_topology_match_status
+
+    staged_topology = staged_topology_match_status(
+        topology,
+        staged_config,
+        require_physical_identity=require_physical_identity,
+    )
+    staged_matches = bool(staged_topology.get("matched"))
+    if _config_paths_match(current_config_path, staged_path) and staged_matches:
         return {"status": "already_loaded", "staged_config_path": staged_path}
+    if _config_paths_match(current_config_path, staged_path):
+        logger.info(
+            "event=sound.active_speaker_commission action=startup_anchor "
+            "group=%s role=%s status=refresh_required reason=staged_topology_mismatch",
+            group,
+            role,
+        )
 
     preview = _active_speaker_crossover_preview_save_payload()
     stage = _active_speaker_stage_config_payload({})

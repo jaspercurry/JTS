@@ -502,6 +502,58 @@ def test_commission_load_payload_loads_silent_startup_anchor(
     assert load_commission_load_state()["status"] == "loaded"
 
 
+def test_commission_load_refreshes_stale_anchor_after_identity_confirmation(
+    monkeypatch, tmp_path
+):
+    controller = _FakeWebController("placeholder", tmp_path / "outputd-statefile.yml")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    controller.statefile = env["statefile"]
+
+    fresh_staged = json.loads(json.dumps(env["staged"]))
+    stale_staged = json.loads(json.dumps(env["staged"]))
+    for target in stale_staged["targets"]:
+        target["identity_verified"] = False
+
+    staged_holder = {"payload": stale_staged}
+    monkeypatch.setattr(
+        "jasper.active_speaker.staging.load_staged_startup_config",
+        lambda: staged_holder["payload"],
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.startup_load.load_staged_startup_config",
+        lambda: staged_holder["payload"],
+    )
+
+    setup_order: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_crossover_preview_save_payload",
+        lambda: setup_order.append("preview") or {
+            "status": "ready_for_protected_staging",
+            "permissions": {"may_prepare_protected_startup_config": True},
+        },
+    )
+
+    def fake_stage(raw):
+        setup_order.append("stage")
+        staged_holder["payload"] = fresh_staged
+        return fresh_staged
+
+    monkeypatch.setattr(sound_setup, "_active_speaker_stage_config_payload", fake_stage)
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+
+    assert setup_order == ["preview", "stage"]
+    assert controller.path_loads == [env["staged_path"]]
+    assert payload["startup_setup"]["status"] == "loaded"
+    assert payload["load"]["status"] == "loaded"
+    assert load_commission_load_state()["status"] == "loaded"
+
+
 def test_commission_load_payload_clears_stale_pending_ramp(
     monkeypatch, tmp_path
 ):
