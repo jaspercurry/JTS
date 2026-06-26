@@ -255,13 +255,16 @@ When BlueZ has no paired WiiM Remote 2, the reconciler removes
 `/var/lib/jasper/accessory-mics.env` and disables the adapter, so there
 is no resident BLE decoder and no UDP listener in `jasper-voice`. When
 the profile is paired, the reconciler writes `wiim_remote_2=udp:9892`,
-enables/restarts the adapter, and restarts `jasper-voice` only if voice
-is already active. Reconcile runs at boot/deploy and after successful
-Bluetooth pair/connect/forget operations, so the UI pairing flow converges
-without a second deploy. Adapter service changes are queued with
-`systemctl --no-block` and the boot reconciler orders only before
-`jasper-voice`, not before the adapter it may start, so optional accessory
-state cannot wedge voice startup. The accessory reconciler also carries
+enables the adapter, and restarts `jasper-voice` only when the published
+manual-mic env changes and voice is already active. Install/env-change
+reconciles restart the adapter so code/config updates take effect; no-change
+boot/connect reconciles use `start`, which is a no-op for an already-running
+adapter and avoids interrupting a remote mic session. Reconcile runs at
+boot/deploy and after successful Bluetooth pair/connect/forget operations, so
+the UI pairing flow converges without a second deploy. Adapter service changes
+are queued with `systemctl --no-block` and the boot reconciler orders only
+before `jasper-voice`, not before the adapter it may start, so optional
+accessory state cannot wedge voice startup. The accessory reconciler also carries
 `TimeoutStartSec=60`, matching the AEC/grouping oneshots: future blocking
 mistakes fail visibly instead of holding voice startup forever. A
 paired-but-sleeping remote still self-heals:

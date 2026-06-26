@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -99,6 +100,58 @@ def test_apply_adapter_services_starts_only_active_profile_service():
     assert ("enable", "jasper-wiim-remote-mic.service") in calls
     assert ("--no-block", "restart", "jasper-wiim-remote-mic.service") in calls
     assert ("disable", "--now", "jasper-wiim-remote-mic.service") not in calls
+
+
+def test_apply_adapter_services_can_start_active_profile_without_bounce():
+    calls = []
+
+    def fake_systemctl(args):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=0)
+
+    reconcile.apply_adapter_services(
+        ("jasper-wiim-remote-mic.service",),
+        systemctl=fake_systemctl,
+        restart_active=False,
+    )
+
+    assert ("enable", "jasper-wiim-remote-mic.service") in calls
+    assert ("--no-block", "start", "jasper-wiim-remote-mic.service") in calls
+    assert ("--no-block", "restart", "jasper-wiim-remote-mic.service") not in calls
+
+
+def test_no_change_boot_reconcile_does_not_restart_active_adapter(
+    monkeypatch,
+    tmp_path: Path,
+):
+    env_file = tmp_path / "accessory-mics.env"
+    env_file.write_text(
+        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    async def fake_bluez():
+        return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
+
+    def fake_systemctl(args):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
+
+    asyncio.run(
+        reconcile.reconcile_once(
+            env_file=str(env_file),
+            systemctl=fake_systemctl,
+            reason="boot",
+        ),
+    )
+
+    assert ("enable", "jasper-wiim-remote-mic.service") in calls
+    assert ("--no-block", "start", "jasper-wiim-remote-mic.service") in calls
+    assert ("--no-block", "restart", "jasper-wiim-remote-mic.service") not in calls
+    assert ("is-active", "--quiet", "jasper-voice.service") not in calls
 
 
 def test_apply_adapter_services_disables_inactive_profile_service():
