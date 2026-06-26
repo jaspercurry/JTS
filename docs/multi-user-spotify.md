@@ -202,6 +202,11 @@ re-link via the wizard.
 - Daemon startup log (`journalctl -u jasper-voice`) includes
   `event=spotify.startup_empty statuses=[('jasper', 'revoked')] setup_url=...`
   if the token was already revoked when the daemon started.
+- Account-build failures emit `event=spotify.account_unavailable` at WARN
+  once per account/state/detail window, then
+  `event=spotify.account_unavailable_suppressed` at DEBUG for repeats. This
+  keeps a revoked token from dumping the flight recorder on every dashboard
+  poll while preserving the first transition.
 
 **How recovery works (no daemon restart needed):**
 
@@ -238,6 +243,11 @@ re-link via the wizard.
   health probe, calls `build_clients` and caches the result for 60s.
   Cache is busted on every mutation (OAuth callback, account remove,
   credentials reset, credentials change).
+- `jasper.control.volume_ops._build_spotify_router_or_none` — control-side
+  best-effort router for dial/web volume and transport. Empty builds are cached
+  for 30s, keyed by the account-cache file mtimes, so a persistently revoked
+  account does not hit Spotify's token endpoint on every `/state`/`/volume`
+  poll but an OAuth re-link takes effect as soon as the cache file changes.
 - `jasper.accounts.build_cache_handler` — spotipy cache adapter used by
   every Spotify OAuth client. It publishes refreshed token JSON via a
   tempfile + `os.replace` at mode `0640`, instead of spotipy's stock

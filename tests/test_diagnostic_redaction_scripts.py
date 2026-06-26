@@ -115,6 +115,16 @@ def test_fetch_logs_writes_noise_summary_artifact():
     assert "log-noise-summary-latest.txt" in text
 
 
+def test_fetch_logs_captures_monotonic_boot_timing_context():
+    text = (ROOT / "scripts" / "fetch-pi-logs.sh").read_text()
+    assert "previous-boot-timeline" in text
+    assert "current-boot-timeline" in text
+    assert "--output=short-monotonic" in text
+    assert "/proc/uptime" in text
+    assert "btime_epoch" in text
+    assert "timedatectl status" in text
+
+
 def test_diagnostic_scripts_parse_as_bash():
     for script in (
         ROOT / "scripts" / "_diagnostic_redaction.sh",

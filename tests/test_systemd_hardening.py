@@ -512,6 +512,15 @@ def test_camilla_unit_rate_limits_external_log_floods():
     assert "LogRateLimitBurst=120" in text
 
 
+def test_snapclient_unit_rate_limits_leader_offline_log_floods():
+    """Optional grouping must not let a refused-connection loop eat forensics."""
+    text = (ROOT / "deploy/systemd/jasper-snapclient.service").read_text(
+        encoding="utf-8"
+    )
+    assert "LogRateLimitIntervalSec=60s" in text
+    assert "LogRateLimitBurst=30" in text
+
+
 # The root audio daemons whose UDS the now-non-root voice/mux must connect to.
 # A UNIX socket needs WRITE permission to connect(), so these stay root but join
 # the `jasper` group with UMask=0007 — making their umask-derived sockets
