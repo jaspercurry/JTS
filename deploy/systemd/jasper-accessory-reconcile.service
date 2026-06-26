@@ -2,7 +2,7 @@
 Description=Jasper accessory profile reconciler
 After=bluetooth.service
 Wants=bluetooth.service
-Before=jasper-voice.service jasper-wiim-remote-mic.service
+Before=jasper-voice.service
 
 [Service]
 Type=oneshot

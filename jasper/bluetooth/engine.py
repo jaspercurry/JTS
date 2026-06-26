@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
+from collections.abc import Awaitable, Callable
 from typing import AsyncIterator
 
 from dbus_next import BusType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
+
+from jasper.log_event import log_event
 
 from .handlers import REGISTRY, pick
 from .models import BluetoothDevice
@@ -34,6 +38,19 @@ logger = logging.getLogger(__name__)
 
 BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
+AccessoryReconciler = Callable[[str], Awaitable[object]]
+ACCESSORY_RECONCILE_ERRORS = (
+    DBusError,
+    OSError,
+    RuntimeError,
+    subprocess.SubprocessError,
+)
+
+
+async def _default_accessory_reconcile(reason: str) -> object:
+    from jasper.accessories.reconcile import reconcile_once
+
+    return await reconcile_once(reason=reason)
 
 
 class BluetoothEngine:
@@ -41,11 +58,19 @@ class BluetoothEngine:
     daemon; exposes pair / connect / disconnect / forget as async
     generators yielding status events."""
 
-    def __init__(self, adapter: str = DEFAULT_ADAPTER) -> None:
+    def __init__(
+        self,
+        adapter: str = DEFAULT_ADAPTER,
+        *,
+        accessory_reconcile: AccessoryReconciler | None = None,
+    ) -> None:
         self._adapter = adapter
         self._bus: MessageBus | None = None
         self._observer = DeviceObserver()
         self._roles = RoleStore()
+        self._accessory_reconcile = (
+            accessory_reconcile or _default_accessory_reconcile
+        )
         # Active scan auto-stop task. bluez auto-stops discovery when
         # the initiating bus client disconnects, so the engine OWNS
         # discovery on its long-lived bus — `adapter.start_discovery()`
@@ -231,10 +256,30 @@ class BluetoothEngine:
         dev = await self._refresh_device(dev.path) or dev
         handler = pick(dev)
         self._roles.set(dev.address, handler.id)
+        reconciled = False
         async for evt in handler.post_pair(dev):
-            yield {**evt, "handler": handler.id}
             if "error" in evt:
+                yield {**evt, "handler": handler.id}
                 return
+            if evt.get("stage") == "ready" and not reconciled:
+                yield {
+                    "stage": "wiring",
+                    "detail": "Refreshing optional accessory profiles.",
+                    "handler": handler.id,
+                }
+                reconciled = True
+                if not await self._reconcile_accessories("bluetooth-pair"):
+                    yield {
+                        "stage": "wiring",
+                        "detail": (
+                            "Paired. Optional accessory features will retry "
+                            "at boot if they are not active yet."
+                        ),
+                        "handler": handler.id,
+                    }
+            yield {**evt, "handler": handler.id}
+        if not reconciled:
+            await self._reconcile_accessories("bluetooth-pair")
 
     async def connect(self, mac: str) -> tuple[bool, str]:
         """Reconnect a paired device. Returns (ok, message)."""
@@ -247,6 +292,8 @@ class BluetoothEngine:
                 BLUEZ_BUS, dev.path, intro,
             ).get_interface("org.bluez.Device1")
             await iface.call_connect()
+            if not await self._reconcile_accessories("bluetooth-connect"):
+                return True, "connected; optional accessory refresh will retry at boot"
             return True, "connected"
         except DBusError as e:
             return False, _format_dbus_error(e)
@@ -273,9 +320,25 @@ class BluetoothEngine:
         ok, msg = await remove_device(mac, self._adapter)
         if ok:
             self._roles.remove(mac)
+            if not await self._reconcile_accessories("bluetooth-forget"):
+                return True, f"{msg}; optional accessory refresh will retry at boot"
         return ok, msg
 
     # ---------- internals ----------
+
+    async def _reconcile_accessories(self, reason: str) -> bool:
+        try:
+            await self._accessory_reconcile(reason)
+            return True
+        except ACCESSORY_RECONCILE_ERRORS as exc:
+            log_event(
+                logger,
+                "bluetooth.accessory_reconcile_failed",
+                reason=reason,
+                err=str(exc),
+                level=logging.WARNING,
+            )
+            return False
 
     async def _call_pair_with_timeout(self, dev_iface, timeout_s: float):
         try:

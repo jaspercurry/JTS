@@ -126,7 +126,9 @@ the adapter, and
 [`jasper-accessory-reconcile`](../jasper/accessories/reconcile.py)
 writes `/var/lib/jasper/accessory-mics.env` only when BlueZ has a paired
 WiiM Remote 2. Speakers without that paired profile keep both the UDP
-voice source and BLE decoder stopped. Its HID profile sends
+voice source and BLE decoder stopped. The Bluetooth pair/connect/forget
+flows run the same reconciler, so the optional mic pipeline follows the
+actual BlueZ pair record rather than requiring a deploy. Its HID profile sends
 `POST /session/start` with `{"source":"wiim_remote_2"}` on voice-button
 press, and `POST /session/end` on release, so the voice turn bypasses
 wake detection and routes only that source while held; the normal
