@@ -690,6 +690,39 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     assert load_commission_load_state()["status"] == "rolled_back"
 
 
+def test_confirm_output_identity_audition_can_play_tweeter_before_driver_sequence(
+    monkeypatch,
+    tmp_path,
+):
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+
+    load = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "tweeter", "identity_audition": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+    assert load["load"]["status"] == "loaded"
+    assert load_ramp_state()["confirmed_roles"] == []
+
+    step = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "tweeter", "identity_audition": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    assert step["status"] == "stepped"
+    assert step["gate"]["predecessors_required"] == ["woofer"]
+    assert step["gate"]["checks"]["role_order_woofer_first"] is True
+    assert step["tone_playback"]["audio_emitted"] is True
+    assert env["tone_calls"][0]["role"] == "tweeter"
+    assert env["tone_calls"][0]["level_dbfs"] == -80.0
+    assert step["ramp"]["confirmed_roles"] == []
+    assert load_ramp_state()["confirmed_roles"] == []
+
+
 def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
     monkeypatch,
     tmp_path,

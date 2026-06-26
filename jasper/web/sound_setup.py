@@ -3366,6 +3366,40 @@ def _active_speaker_confirmed_driver_roles(
     return confirmed_driver_roles(topology, speaker_group_id=group)
 
 
+def _active_speaker_identity_audition_role_order_roles(
+    topology: OutputTopology,
+    *,
+    group: str,
+    role: str,
+    confirmed_roles: list[str],
+) -> list[str]:
+    """Gate-only lower-role evidence for confirm-output channel auditions."""
+
+    from jasper.active_speaker.commission_ramp import RAMP_ROLE_ORDER
+
+    group_id = str(group or "").strip()
+    role = str(role or "").strip().lower()
+    if not group_id or role not in RAMP_ROLE_ORDER:
+        return list(confirmed_roles)
+
+    lower_roles = set(RAMP_ROLE_ORDER[: RAMP_ROLE_ORDER.index(role)])
+    present_lower_roles: set[str] = set()
+    for speaker_group in topology.speaker_groups:
+        if speaker_group.id != group_id:
+            continue
+        present_lower_roles = {
+            channel.role
+            for channel in speaker_group.channels
+            if channel.role in lower_roles
+        }
+        break
+
+    roles = set(confirmed_roles) | present_lower_roles
+    ordered_roles = [candidate for candidate in RAMP_ROLE_ORDER if candidate in roles]
+    ordered_roles.extend(sorted(roles - set(RAMP_ROLE_ORDER)))
+    return ordered_roles
+
+
 async def _active_speaker_commission_load_payload(
     raw: dict[str, Any],
     *,
@@ -3594,6 +3628,20 @@ async def _active_speaker_commission_ramp_step_payload(
             crossover_preview=crossover_preview,
         )
 
+    confirmed_roles = _active_speaker_confirmed_driver_roles(
+        topology,
+        group=group,
+    )
+    role_order_confirmed_roles = (
+        _active_speaker_identity_audition_role_order_roles(
+            topology,
+            group=group,
+            role=role,
+            confirmed_roles=confirmed_roles,
+        )
+        if identity_audition
+        else confirmed_roles
+    )
     payload = await ramp_audible_step(
         topology,
         speaker_group_id=group,
@@ -3608,10 +3656,8 @@ async def _active_speaker_commission_ramp_step_payload(
         path_safety_evidence_path=evidence_path,
         play_tone=_play_commission_tone,
         require_physical_identity=require_physical_identity,
-        confirmed_roles=_active_speaker_confirmed_driver_roles(
-            topology,
-            group=group,
-        ),
+        confirmed_roles=confirmed_roles,
+        role_order_confirmed_roles=role_order_confirmed_roles,
     )
     logger.info(
         "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
