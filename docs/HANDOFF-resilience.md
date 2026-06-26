@@ -949,7 +949,7 @@ would never arrive. The reconciler closes that loop:
   derive `JASPER_AEC_MIC_DEVICE` from the detected mic profile, then
   set `JASPER_MIC_DEVICE=udp:<port>`, enable/start
   `jasper-aec-init` + `jasper-aec-bridge`, and queue a
-  `jasper-voice` restart with `systemctl restart --no-block`.
+  `jasper-voice` restart with `systemctl --no-block restart`.
 - A configured direct mic candidate is present but AEC is unavailable
   (2-channel firmware or AEC disabled): set `JASPER_MIC_DEVICE` to
   that candidate, keep the bridge off, and queue the same voice

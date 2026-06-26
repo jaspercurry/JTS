@@ -300,6 +300,8 @@ class _HoldController:
                 pass
             else:
                 return
+            if not self._pressed:
+                return
             resp = await _post_once(
                 self._post,
                 self._action.on_press,

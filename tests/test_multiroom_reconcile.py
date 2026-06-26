@@ -1924,7 +1924,7 @@ def test_restart_unit_can_queue_cross_owner_restart_no_block(monkeypatch):
         "systemctl", "reset-failed", reconcile_mod.AEC_RECONCILE_UNIT,
     ]
     assert calls[1] == [
-        "systemctl", "restart", "--no-block", reconcile_mod.AEC_RECONCILE_UNIT,
+        "systemctl", "--no-block", "restart", reconcile_mod.AEC_RECONCILE_UNIT,
     ]
 
 

@@ -105,7 +105,7 @@ voice). It now also expresses that verdict as the marker:
   (their device's openability is enforced by Layer 2 instead).
 
 `restart_voice` queues the `jasper-voice` restart with
-`systemctl restart --no-block`. This is load-bearing: `jasper-voice` is
+`systemctl --no-block restart`. This is load-bearing: `jasper-voice` is
 `Type=notify` and may itself be waiting on other startup dependencies, so
 the AEC oneshot must apply its single-writer verdict and exit rather than
 blocking inside PID 1's job graph. `jasper-aec-reconcile.service` also has

@@ -23,7 +23,7 @@ from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
-VOICE_RESTART_CMD = "restart --no-block jasper-voice.service"
+VOICE_RESTART_CMD = "--no-block restart jasper-voice.service"
 
 
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:

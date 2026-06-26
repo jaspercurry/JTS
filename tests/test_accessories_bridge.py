@@ -747,6 +747,47 @@ async def test_read_device_hold_action_skips_release_when_start_never_lands(
 
 
 @pytest.mark.asyncio
+async def test_hold_retry_rechecks_pressed_after_retry_timer(monkeypatch):
+    """If release lands just as the retry timer fires, don't start a
+    fresh manual session after the user has let go."""
+    calls: List[tuple[str, str, Optional[dict]]] = []
+    controller = bridge_mod._HoldController(
+        post=lambda method, path, body: _record_hold_call(
+            calls, method, path, body,
+        ),
+        action=HoldAction(
+            on_press=KeyAction("POST", "/session/start", {}),
+            on_release=KeyAction("POST", "/session/end", {}),
+        ),
+        device_name="WiiM Remote 2",
+        key_name="KEY_SEARCH",
+        profile_id="wiim_remote_2",
+    )
+
+    async def fake_wait_for(awaitable, timeout):
+        awaitable.close()
+        controller._pressed = False
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(bridge_mod.asyncio, "wait_for", fake_wait_for)
+    controller._pressed = True
+
+    await controller._retry_until_ready()
+
+    assert calls == []
+
+
+async def _record_hold_call(
+    calls: List[tuple[str, str, Optional[dict]]],
+    method: str,
+    path: str,
+    body: Optional[dict],
+) -> ControlResponse:
+    calls.append((method, path, body))
+    return ControlResponse(200, b'{"result":"OK"}')
+
+
+@pytest.mark.asyncio
 async def test_read_device_open_failure_emits_canonical_event(caplog, monkeypatch):
     """Pin the migrated knob.open.failed emit through the real
     _read_device path: when InputDevice() raises OSError, the device

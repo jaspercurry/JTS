@@ -863,7 +863,7 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   **The supervisor (jasper.control.grouping_supervisor, built with PR-2):**
   every bonded **dumb** member polls outputd's `dac_content.serving_fifo`
   every 30 s (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
-  `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min). An
+  `--no-block restart jasper-grouping-reconcile` (rate-limited 1/10 min). An
   ACTIVE endpoint (active follower or active-speaker leader) feeds the DAC via
   the camilla#2 active-content lane, not the `dac_content` round-trip, so the
   reconciler disables `dac_content` there and the supervisor **skips** the
@@ -2211,7 +2211,7 @@ drift (voice targeting a socket outputd never armed) and the stale-solo
 override. NEW jasper/control/grouping_supervisor.py (mirrors the shairport
 supervisor shape): every bonded member polls outputd's
 dac_content.serving_fifo each 30 s; 3 consecutive starved polls →
-reset-failed + restart --no-block jasper-grouping-reconcile, rate-limited
+reset-failed + --no-block restart jasper-grouping-reconcile, rate-limited
 1/10 min; the leader re-runs the ensure_groups_on_stream ownership pin
 every poll (continuous binding read-repair, ≤30 s self-heal for runtime
 rebinds); /state.resilience.grouping_supervisor;

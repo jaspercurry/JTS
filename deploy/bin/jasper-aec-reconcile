@@ -913,7 +913,7 @@ restart_voice() {
     # Type=notify and may wait on other reconcilers during boot; a blocking
     # restart from inside this reconciler can leave both jobs waiting on each
     # other after an unbond/provider/mic change.
-    run_systemctl restart --no-block jasper-voice.service
+    run_systemctl --no-block restart jasper-voice.service
 }
 
 # Dumb-follower profile (HANDOFF-multiroom Increment 5): an ACTIVE

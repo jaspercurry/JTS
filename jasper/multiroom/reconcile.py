@@ -1116,10 +1116,10 @@ def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
     apply step it owns does not land.
     """
     _reset_failed_unit(unit)
-    cmd = ["systemctl", "restart"]
+    cmd = ["systemctl"]
     if no_block:
         cmd.append("--no-block")
-    cmd.append(unit)
+    cmd.extend(("restart", unit))
     try:
         subprocess.run(
             cmd,
