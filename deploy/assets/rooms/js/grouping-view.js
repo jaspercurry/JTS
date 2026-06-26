@@ -8,8 +8,8 @@
 // consumes these and does the (DOM-only, untestable-without-a-browser)
 // assembly via its h() helper. Tested by tests/js/rooms_grouping_view_test.mjs.
 
-export const BALANCE_MIN_DB = -6;
-export const BALANCE_MAX_DB = 6;
+export const BALANCE_MIN_DB = -24;
+export const BALANCE_MAX_DB = 24;
 
 export function clampBalanceDb(value) {
   const n = Number(value);

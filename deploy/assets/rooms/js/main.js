@@ -42,13 +42,13 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
+import { createPairBalanceController } from "./pair-balance-controller.js";
 import {
   BALANCE_MAX_DB,
   BALANCE_MIN_DB,
   addSubPlan,
   airplayLipSyncRow,
   balanceText,
-  balanceTrimRequest,
   clampBalanceDb,
   formatBalanceDb,
   snapcastProvisionRow,
@@ -560,10 +560,6 @@ function makeBondCard() {
   // Pair balance: one signed slider, rendered as absolute left/right trims.
   // The server maps the value to the headroom-maximising attenuate-only pair:
   // one side remains at 0 dB, the other side is <= 0 dB.
-  let balanceSaving = false;
-  let balanceDirty = false;
-  let balanceQueued = false;
-  let balanceTimer = null;
   const balanceRange = h("input.balance-slider", {
     type: "range",
     min: String(BALANCE_MIN_DB),
@@ -606,66 +602,25 @@ function makeBondCard() {
     return "Applied.";
   }
 
-  function clearBalanceTimer() {
-    if (balanceTimer !== null) {
-      clearTimeout(balanceTimer);
-      balanceTimer = null;
-    }
-  }
-
-  function scheduleBalanceCommit(delayMs = BALANCE_LIVE_COMMIT_MS) {
-    balanceDirty = true;
-    balanceQueued = true;
-    if (balanceSaving) return;
-    clearBalanceTimer();
-    balanceTimer = setTimeout(() => {
-      balanceTimer = null;
-      commitBalance();
-    }, delayMs);
-  }
-
-  async function commitBalance() {
-    clearBalanceTimer();
-    balanceQueued = true;
-    if (balanceSaving) return;
-    const request = balanceTrimRequest(balanceRange.value);
-    balanceQueued = false;
-    balanceDirty = true;
-    balanceSaving = true;
-    balanceStatus.textContent = "Applying…";
-    try {
-      const data = await postJSON("trim", request);
-      const b = data && data.balance;
-      if (!balanceQueued && b && typeof b.balance_db === "number") {
-        reflectBalance(b.balance_db);
-      }
-      if (!balanceQueued) {
-        balanceDirty = false;
-        balanceStatus.textContent = balanceApplyMessage(data, b);
-      }
-    } catch (e) {
-      console.error("rooms: balance failed", e);
-      if (!balanceQueued) {
-        balanceDirty = false;
-        balanceStatus.textContent = "Couldn't apply balance — " + describeBondFailure(e);
-      }
-    } finally {
-      balanceSaving = false;
-      if (balanceQueued) {
-        commitBalance();
-      }
-    }
-  }
+  const balanceController = createPairBalanceController({
+    commitDelayMs: BALANCE_LIVE_COMMIT_MS,
+    readValue: () => balanceRange.value,
+    reflectBalance,
+    postTrim: (request) => postJSON("trim", request),
+    setStatus: (message) => { balanceStatus.textContent = message; },
+    applyMessage: balanceApplyMessage,
+    describeFailure: describeBondFailure,
+    logError: (error) => console.error("rooms: balance failed", error),
+  });
 
   balanceRange.addEventListener("input", () => {
-    reflectBalance(balanceRange.value);
-    balanceStatus.textContent = "";
-    scheduleBalanceCommit();
+    balanceController.input(balanceRange.value);
   });
-  balanceRange.addEventListener("change", commitBalance);
+  balanceRange.addEventListener("change", () => {
+    void balanceController.change();
+  });
   balanceReset.addEventListener("click", () => {
-    reflectBalance(0);
-    commitBalance();
+    void balanceController.reset();
   });
 
   const trimIntro = h("p.info-card__note", null,
@@ -799,9 +754,8 @@ function makeBondCard() {
       return;
     }
     setBalanceEnabled(true);
-    if (!balanceSaving && !balanceDirty && typeof b.balance_db === "number") {
-      reflectBalance(b.balance_db);
-      balanceStatus.textContent = "";
+    if (typeof b.balance_db === "number") {
+      balanceController.syncConfirmed(b.balance_db);
     }
   }
 

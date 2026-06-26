@@ -241,14 +241,15 @@ def test_rooms_balance_slider_saves_on_input_not_only_release():
     )
 
     assert "const BALANCE_LIVE_COMMIT_MS = 150;" in js
-    assert "function scheduleBalanceCommit(" in js
+    assert 'import { createPairBalanceController } from "./pair-balance-controller.js";' in js
+    assert "createPairBalanceController({" in js
+    assert 'postTrim: (request) => postJSON("trim", request),' in js
     assert 'balanceRange.addEventListener("input", () => {' in js
     input_handler = js.split('balanceRange.addEventListener("input", () => {', 1)[1]
     input_handler = input_handler.split("});", 1)[0]
-    assert "reflectBalance(balanceRange.value);" in input_handler
-    assert "scheduleBalanceCommit();" in input_handler
-    assert 'balanceRange.addEventListener("change", commitBalance);' in js
-    assert "if (!balanceQueued && b && typeof b.balance_db" in js
+    assert "balanceController.input(balanceRange.value);" in input_handler
+    assert 'balanceRange.addEventListener("change", () => {' in js
+    assert "void balanceController.change();" in js
 
 
 def test_get_root_shell_interpolates_no_discovered_data(monkeypatch):
@@ -2703,6 +2704,9 @@ def test_mains_highpass_toggle_fans_out_to_full_roster(monkeypatch):
 
 _NODE = shutil.which("node")
 _GROUPING_VIEW_TEST = _REPO / "tests" / "js" / "rooms_grouping_view_test.mjs"
+_PAIR_BALANCE_CONTROLLER_TEST = (
+    _REPO / "tests" / "js" / "rooms_pair_balance_controller_test.mjs"
+)
 
 
 def test_grouping_view_pure_helpers_via_node():
@@ -2715,6 +2719,26 @@ def test_grouping_view_pure_helpers_via_node():
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_GROUPING_VIEW_TEST)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["ok"] is True
+
+
+def test_pair_balance_controller_via_node():
+    """The pair-balance save state machine is dependency-free and executable.
+
+    This pins the user-visible contract main.js wires into the slider: live
+    saves while dragging, queued latest-value commits, failed-write rollback to
+    confirmed backend state, and poll reconciliation that does not snap a dirty
+    slider backward.
+    """
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_PAIR_BALANCE_CONTROLLER_TEST)],
         capture_output=True,
         text=True,
         timeout=30,
