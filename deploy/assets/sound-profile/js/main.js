@@ -4138,13 +4138,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     stopCommissionAutoRamp('');
     var result = await postCommission('./active-speaker/commission-ramp-ack',
       {outcome: outcome}, 'Recording');
+    var confirmed = !!(result && result.payload &&
+      result.payload.status === 'confirmed');
     var summary = result && result.payload && result.payload.measurements &&
       result.payload.measurements.summary || null;
-    if (outcome === 'heard_correct_driver' &&
-        summary && (summary.driver_checks_complete === true ||
-        summary.driver_measurements_complete === true)) {
-      outputStepOverride = 'profile';
-      status('Driver checks are saved. Continue with the combined crossover check.');
+    if (outcome === 'heard_correct_driver' && confirmed) {
+      if (summary && (summary.driver_checks_complete === true ||
+          summary.driver_measurements_complete === true)) {
+        outputStepOverride = 'profile';
+        status('Driver checks are saved. Continue with the combined crossover check.');
+      } else {
+        status('Driver check saved. Continue with the next driver.');
+      }
       render();
     }
     return result;

@@ -3083,6 +3083,30 @@ async function testCommissionRampLimitKeepsConfirmationOpen() {
         }],
       }));
     },
+    "./active-speaker/commission-ramp-ack": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "rolled_back",
+          target: { role: "woofer", audible_gain_db: 0 },
+          rollback_available: false,
+        },
+        ramp: { confirmed_roles: ["woofer"], pending: null },
+        floor: { status: "floor_confirmed", floor_audio_confirmed: true },
+      };
+      return Promise.resolve(response({
+        status: "confirmed",
+        outcome: body.outcome,
+        measurements: {
+          status: "needs_driver_measurements",
+          summary: {
+            driver_checks_complete: false,
+            driver_measurements_complete: false,
+          },
+        },
+      }));
+    },
     "./active-speaker/commission-ramp-abort": (p, o) => {
       posts.push({ path: p, body: JSON.parse(o.body || "{}") });
       fail("safe-limit response must not abort the pending confirmation", { posts });
@@ -3108,6 +3132,15 @@ async function testCommissionRampLimitKeepsConfirmationOpen() {
   }
   if (!html.includes("I hear the woofer")) {
     fail("safe-limit response should keep the heard-confirmation CTA visible", { html });
+  }
+  harness.dispatchClick({ "data-act": "commission-ack", "data-outcome": "heard_correct_driver" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  const statusText = harness.elements.get("status").textContent;
+  if (statusText.includes("Reached the safe test limit")) {
+    fail("successful driver confirmation should clear stale ramp-limit status", { statusText });
+  }
+  if (!statusText.includes("Driver check saved. Continue with the next driver.")) {
+    fail("partial driver confirmation should give the next-step status", { statusText });
   }
   return { commissionRampLimitKeepsConfirmationOpen: true };
 }
