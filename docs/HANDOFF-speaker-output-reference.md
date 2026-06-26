@@ -286,6 +286,13 @@ What exists:
   the inv-B fallback (`apply_pick_to_fallback_period`), or a missing filter
   (→ silence). See [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md)
   "Subwoofer — two different subs".
+  The complementary half of bass management rides
+  `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ`: a main pick
+  (`stereo`/`left`/`right`/`mono`) applies a 4th-order Linkwitz-Riley
+  **high-pass** at that same corner so the mains shed the low end the sub now
+  carries. The reconciler emits it only for a non-`sub` member in a bond that
+  has a sub (bass management on); it is fail-closed — an absent/out-of-range
+  corner plays the mains full-range, and a `sub` ignores it by construction.
   It falls back to the direct `outputd_content_capture` read whenever
   the FIFO starves, so the leader is never silenced (inv-B). Unset =
   byte-identical to the direct path above. The reference still equals
