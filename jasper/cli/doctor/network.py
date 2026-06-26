@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -439,7 +440,23 @@ def check_avahi_jasper_control() -> CheckResult:
             "verify the service is being advertised. Dial may still "
             "find us if avahi-daemon is publishing it.",
         )
-    proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
+    try:
+        proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if "_jasper-control._tcp" in stdout:
+            return CheckResult(
+                label, "ok",
+                "advertised — browse timed out resolving one or more stale "
+                "peer records, but a jasper-control service was visible",
+            )
+        return CheckResult(
+            label, "fail",
+            "avahi-browse timed out before any `_jasper-control._tcp` "
+            "service appeared. Check avahi-daemon and local service XML.",
+        )
     if proc.returncode != 0:
         return CheckResult(
             label, "fail",

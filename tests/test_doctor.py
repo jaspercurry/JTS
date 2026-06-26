@@ -4106,6 +4106,54 @@ def test_check_wifi_link_local_ipv6_registered_in_sync_checks():
     assert "check_wifi_link_local_ipv6" in _registered_check_names()
 
 
+def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
+    """Resolved avahi-browse can hang on stale sibling records after seeing
+    the local service. That is still evidence that jasper-control is
+    advertised; it should not crash the whole doctor run."""
+    monkeypatch.setattr(
+        doctor.network.shutil,
+        "which",
+        lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout,
+            output=(
+                "+ wlan0 IPv4 JTS jasper-control on jts5 "
+                "_jasper-control._tcp local\n"
+            ),
+        )
+
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+
+    r = doctor.check_avahi_jasper_control()
+
+    assert r.status == "ok"
+    assert "stale peer" in r.detail
+
+
+def test_check_avahi_jasper_control_fails_on_timeout_without_service(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        doctor.network.shutil,
+        "which",
+        lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        raise subprocess.TimeoutExpired(cmd, timeout, output="")
+
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+
+    r = doctor.check_avahi_jasper_control()
+
+    assert r.status == "fail"
+    assert "timed out" in r.detail
+
+
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     def fake_run(cmd, timeout=5.0):
         unit = cmd[-1]
