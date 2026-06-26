@@ -757,7 +757,7 @@ async function testActiveCrossoverFirstStepRender() {
   includes("Choose speaker layout");
   includes("Add driver and crossover info");
   includes("Working setup");
-  includes("Use AI to fill these settings");
+  includes("AI helper");
   includes("2048 characters or fewer");
   includes("do not paste a full research report");
   includes("DAC output assignments");
@@ -1469,7 +1469,7 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   if (!dirtyHtml.includes('data-output-step="map" open')) {
     fail("changing a DAC assignment should keep Confirm outputs open for saving", { dirtyHtml });
   }
-  if (!dirtyHtml.includes("Save channel assignments")) {
+  if (!dirtyHtml.includes('data-act="save-output-topology"') || !dirtyHtml.includes(">Save</button>")) {
     fail("dirty channel assignment should expose the save action in Confirm outputs", { dirtyHtml });
   }
   if (dirtyHtml.includes('data-output-step="layout" open')) {
@@ -2054,7 +2054,7 @@ async function testCommissionCardArmsAndSteps() {
   }
   html = harness.elements.get("view-body").innerHTML;
   let cardHtml = commissionCardHtml(html);
-  for (const expected of ["Stop", "I hear the woofer", "Back to configuration"]) {
+  for (const expected of ["Stop", "I hear the woofer", "Back to outputs"]) {
     if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
   }
   for (const expected of ["Status", "Tone playing", "250 Hz"]) {
@@ -2556,14 +2556,14 @@ async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   if (!html.includes('data-act="commission-ack"')) {
     fail("pending ramp step must expose acknowledgement buttons even with a stale floor flag", { html });
   }
-  for (const expected of ["Stop", "I hear the woofer", "Back to configuration"]) {
+  for (const expected of ["Stop", "I hear the woofer", "Back to outputs"]) {
     if (!cardHtml.includes(expected)) fail("pending ramp step should reuse the stable playing row", { expected, cardHtml });
   }
   for (const hidden of ["Too quiet", "Too loud"]) {
     if (cardHtml.includes(hidden)) fail("pending ramp step should not expose legacy manual loudness buttons", { hidden, cardHtml });
   }
-  if (html.includes('data-act="commission-step"')) {
-    fail("pending ramp step must block another step until it is acknowledged", { html });
+  if (cardHtml.includes('data-act="commission-step"')) {
+    fail("pending ramp step must block another step until it is acknowledged", { cardHtml });
   }
   return { commissionPendingStepShowsAckWithoutFloorFlag: true };
 }
@@ -2965,15 +2965,16 @@ async function testSubwooferDeadEndOffersWirelessCta() {
   if (!html.includes("No unused physical output is available for a subwoofer")) {
     fail("dongle layout should still explain why a local sub cannot be added", { html });
   }
-  // The existing disabled add affordance stays — the CTA is additive guidance.
+  // The existing disabled add affordance stays, with wireless-sub guidance
+  // demoted to a secondary option.
   if (!html.includes('data-act="toggle-output-subwoofer"')) {
     fail("the local-subwoofer add affordance must remain in the dead-end branch", { html });
   }
   if (!html.includes('href="/rooms/"')) {
     fail("dead-end subwoofer card should link to the Speakers page", { html });
   }
-  if (!html.includes("add a wireless subwoofer on the Speakers page")) {
-    fail("dead-end subwoofer card should offer the wireless-sub CTA copy", { html });
+  if (!html.includes("Wireless sub options")) {
+    fail("dead-end subwoofer card should offer secondary wireless-sub guidance", { html });
   }
   return { subwooferDeadEndOffersWirelessCta: true };
 }
@@ -2991,7 +2992,7 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
   if (!html.includes("Subwoofer add-on")) {
     fail("default layout should render the subwoofer add-on card", { html });
   }
-  if (html.includes('href="/rooms/"') || html.includes("add a wireless subwoofer on the Speakers page")) {
+  if (html.includes('href="/rooms/"') || html.includes("Wireless sub options")) {
     fail("a layout with a spare output must not show the wireless-sub CTA", { html });
   }
   return { subwooferWithSpareOutputHidesWirelessCta: true };
