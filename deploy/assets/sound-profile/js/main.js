@@ -4973,6 +4973,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       : 'Mark "' + label + '" as not confirmed?';
     if (!await jtsConfirm(message, {danger: false})) return;
 
+    if (commissionAutoRamp.running) {
+      stopCommissionAutoRamp('');
+      await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
+    }
     outputTopology.identitySaving = groupId + ':' + role;
     outputTopology.error = '';
     outputTopology.touched = true;

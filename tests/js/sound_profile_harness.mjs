@@ -1561,6 +1561,26 @@ async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
       };
       return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
     },
+    "./active-speaker/commission-ramp-abort": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "rolled_back" }));
+    },
+    "./active-speaker/channel-identity": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      topology.speaker_groups[0].channels.forEach((channel) => {
+        if (channel.role === body.role) {
+          channel.identity_verified = !!body.identity_verified;
+        }
+      });
+      return Promise.resolve(response({ output_topology: topology }));
+    },
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -1588,6 +1608,23 @@ async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
   }
   if (!step || step.body.identity_audition !== true) {
     fail("Confirm outputs Play should ramp using identity-audition mode", { posts });
+  }
+  harness.dispatchClick({
+    "data-act": "mark-output-identity",
+    "data-group-id": "main",
+    "data-role": "woofer",
+    "data-label": "Main speaker Woofer on DAC output 1",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+  const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
+  const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
+  if (abortIndex < 0 || identityIndex < 0 || abortIndex > identityIndex) {
+    fail("Confirming output during audition should remute before saving identity", { posts });
+  }
+  const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
+  if (afterConfirmHtml.includes('data-role="tweeter" disabled')) {
+    fail("Confirming one output should not leave sibling audition controls disabled", { afterConfirmHtml });
   }
   return { confirmOutputsPlayUsesIdentityAuditionMode: true };
 }
