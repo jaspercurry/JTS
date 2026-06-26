@@ -15,9 +15,10 @@ Consults each renderer daemon directly for its playback state:
 per renderer (`spotactive`, `aplactive`, `btactive`,
 `usbsinkactive`).
 
-For source-aware AirPlay/Spotify transport, callers should use
-`jasper.tools.transport.make_transport_dispatcher`, which delegates
-to MPRIS / Spotify Web API based on the active source.
+For source-aware AirPlay/Spotify/Bluetooth transport, callers should use
+`jasper.tools.transport.make_transport_dispatcher`, which asks mux for
+the effective audible source, then delegates to MPRIS / Spotify Web API
+/ Bluetooth AVRCP as appropriate.
 """
 from __future__ import annotations
 

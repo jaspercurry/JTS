@@ -58,7 +58,9 @@ in v1.yml is identity and not the ducker.
 ### 2. Transport (next / previous / pause / resume)
 
 `make_transport_dispatcher(renderer, router).dispatch(action)`
-queries `renderer.active_renderers()` and picks the right backend:
+asks mux for `renderer.selected_source()` first so manual source
+selection and guarded handoff policy decide the backend. If mux is
+unavailable, it falls back to `renderer.active_renderers()`:
 
 | Active source | Backend |
 |---|---|
@@ -78,19 +80,19 @@ Search-and-play. The non-obvious case:
 - The user's Spotify account is OAuth'd in our `spotify_router`.
 - User says "Hey Jarvis, play Kanye West."
 
-What happens: `resolve_target` notices that AirPlay metadata
-(title + artist) matches what Spotify Web API reports the user is
-currently playing. It targets the **iPhone's** Spotify Connect
-device (not the Pi's librespot), so `start_playback` rides the
-existing AirPlay stream — the iPhone changes track, the Pi just
-keeps receiving the same AirPlay session. Net effect: voice
-command works seamlessly without the Pi having direct AirPlay
-control.
+What happens: `resolve_target` notices that AirPlay title metadata
+matches what Spotify Web API reports the user is currently playing.
+It targets the **iPhone's** Spotify Connect device (not the Pi's
+librespot), so `start_playback` rides the existing AirPlay stream —
+the iPhone changes track, the Pi just keeps receiving the same AirPlay
+session. Net effect: voice command works seamlessly without the Pi
+having direct AirPlay control.
 
-The matcher in `_match_track` is conservative — title AND artist
-must align after normalisation. A paused Spotify session on the
-user's laptop with the same song title coincidentally won't fool
-it (we require `is_playing=True`).
+The matcher in `_match_track` is title-only after normalization because
+Spotify and AirPlay often disagree on artist strings for collaborations,
+remasters, and compilations. A paused Spotify session on the user's
+laptop with the same song title coincidentally won't fool it because
+we require `is_playing=True`.
 
 ## Multi-account Spotify routing
 
@@ -149,6 +151,7 @@ invite further conversation.
 
 ---
 
-Last verified: 2026-06-25 (transport dispatcher rechecked for
+Last verified: 2026-06-26 (transport dispatcher rechecked for
+mux-selected source priority, USB-sink host-owned errors,
 AirPlay+Spotify title-match, AirPlay DACP gating, Spotify Connect,
 Bluetooth AVRCP, no-source errors, and 0% content mute behavior)

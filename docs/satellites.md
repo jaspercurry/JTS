@@ -116,7 +116,11 @@ Third-party HID remotes can reuse the same push-to-talk endpoints
 also expose a standard Linux audio capture device and JTS explicitly
 adds a mic source for them, they are control surfaces only: the active
 session still uses the speaker's configured mic/AEC path and does not
-enter multi-mic arbitration.
+enter multi-mic arbitration. Their code-level profiles live in
+`jasper/accessories/registry.py`; a profile may reserve future
+hold-to-talk or remote-mic integration metadata, but that metadata is
+not a runtime audio path until a real capture source is wired into the
+voice pipeline.
 
 ### Jasper AMOLED Satellite — Waveshare ESP32-S3-Touch-AMOLED-1.8
 

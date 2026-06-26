@@ -174,9 +174,11 @@ mixer, a second output device, or a new volume model.
 4. **Expose fail-soft playing state.** Add one probe in
    `jasper/source_state.py`, surface it through
    `RendererClient.active_renderers()`, and keep transport failures as
-   `False` plus debug logging. This state feeds mux, volume, transport,
-   dashboards, and voice tools, so avoid duplicating probes in each
-   caller.
+   `False` plus debug logging. This state feeds mux, volume and
+   transport fallbacks, dashboards, and voice tools, so avoid
+   duplicating probes in each caller. Runtime callers that need the
+   effective audible source should prefer `RendererClient.selected_source()`
+   when mux is available.
 5. **Declare source metadata.** Add one `Source` enum member and one
    `MusicSourceSpec` in `jasper/music_sources.py`: public ID, fan-in
    label, renderer active key, `/sources/` wizard key, display name,

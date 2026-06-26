@@ -16,9 +16,14 @@ from jasper.tools.transport import (
 
 
 class FakeRenderer:
-    def __init__(self, renderers=None, currentsong=None) -> None:
+    def __init__(
+        self, renderers=None, currentsong=None, selected_source=None,
+        selected_source_error=None,
+    ) -> None:
         self._renderers = renderers or {}
         self._currentsong = currentsong or {}
+        self._selected_source = selected_source
+        self._selected_source_error = selected_source_error
         self.pause_airplay = AsyncMock()
 
     async def active_renderers(self) -> dict:
@@ -26,6 +31,11 @@ class FakeRenderer:
 
     async def get_currentsong(self) -> dict:
         return self._currentsong
+
+    async def selected_source(self):
+        if self._selected_source_error is not None:
+            raise self._selected_source_error
+        return self._selected_source
 
 
 class FakeSpotify:
@@ -126,8 +136,32 @@ def test_detect_source_returns_none_when_no_renderer_active():
 
 
 def test_detect_source_airplay_wins_over_others():
-    renderer = FakeRenderer(renderers={"aplactive": True, "spotactive": True})
+    renderer = FakeRenderer(
+        renderers={"aplactive": True, "spotactive": True},
+        selected_source=None,
+    )
     assert asyncio.run(_detect_source(renderer)) == "airplay"
+
+
+def test_detect_source_prefers_mux_selected_source():
+    renderer = FakeRenderer(
+        renderers={"aplactive": True, "spotactive": True},
+        selected_source="spotify",
+    )
+    assert asyncio.run(_detect_source(renderer)) == "spotify"
+
+
+def test_detect_source_supports_usbsink():
+    renderer = FakeRenderer(renderers={"usbsinkactive": True})
+    assert asyncio.run(_detect_source(renderer)) == "usbsink"
+
+
+def test_detect_source_falls_back_when_mux_unavailable():
+    renderer = FakeRenderer(
+        renderers={"btactive": True},
+        selected_source_error=OSError("mux socket unavailable"),
+    )
+    assert asyncio.run(_detect_source(renderer)) == "bluetooth"
 
 
 # --- AirPlay dispatch: title-match path ---
@@ -540,6 +574,14 @@ def test_dispatch_bluetooth_avrcp_failure_returns_error():
         result = asyncio.run(dispatch("pause"))
     assert "error" in result
     assert "no player" in result["error"]
+
+
+def test_dispatch_usbsink_returns_host_owned_error():
+    renderer = FakeRenderer(renderers={"usbsinkactive": True})
+    dispatch = make_transport_dispatcher(renderer, None)
+    result = asyncio.run(dispatch("pause"))
+    assert result["source"] == "usbsink"
+    assert "host computer" in result["error"]
 
 
 # --- get_now_playing ---
