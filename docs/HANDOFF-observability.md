@@ -88,8 +88,14 @@ its allowlist holds only active-zone files deferred to in-flight work.
 *previous-boot* logs survive — the whole point of Tier 5
 forensics (see [HANDOFF-resilience.md](HANDOFF-resilience.md)).
 Cost per that doc: ~30 MB/hr → ~270 GB/yr against ~100 TBW SD
-endurance — **not a flash-wear emergency.** No `RateLimit*`
-override today (systemd defaults apply).
+endurance — **not a flash-wear emergency.** Global journald
+`RateLimit*` settings stay at systemd defaults. `jasper-camilla.service`
+has a narrow per-unit `LogRateLimitIntervalSec=60s` /
+`LogRateLimitBurst=120` override because CamillaDSP can emit an
+external, unstructured ALSA short-read WARN line many times per second
+when the capture graph is degraded; journald still records the first
+burst and its native suppression summary, but a sustained Camilla flood
+no longer consumes the persistent journal.
 
 **The 200 MB cap is also the retention window — forensics have a
 volume-dependent shelf life.** journald vacuums oldest-first at the
@@ -291,8 +297,10 @@ class RingFlushHandler(logging.Handler):                   # level = DEBUG
   records into journald tagged `event=flightrec.dump`, right after
   the triggering WARNING — reuses the 200 MB journald cap (retention)
   + `fetch-pi-logs.sh`; DEBUG context lands in the same timeline as
-  the anomaly. (Target stays pluggable so dump-files can be added
-  later.)
+  the anomaly. `fetch-pi-logs.sh` also writes
+  `log-noise-summary-latest.txt` with line counts and repeated-message
+  fingerprints so a noisy bundle can be triaged without adding runtime
+  machinery. (Target stays pluggable so dump-files can be added later.)
 - **Triggers:** automatic on any WARNING/ERROR (built into
   `flushLevel`) — which already covers supervisor restart decisions
   (`event=shairport.wedge_detected`, `event=system_supervisor.userspace_wedge`),
@@ -426,5 +434,7 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-24 (resilience `/state`, supervisor doctor surface,
-and multiroom cascade timeline rechecked against current code)
+Last verified: 2026-06-26 (Camilla per-unit journal rate limit and
+`fetch-pi-logs.sh` noise-summary artifact rechecked against current code;
+resilience `/state`, supervisor doctor surface, and multiroom cascade timeline
+last rechecked 2026-06-24)

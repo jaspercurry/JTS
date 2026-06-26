@@ -495,7 +495,21 @@ def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
         'RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} '
         'sset Headphone 100%% unmute"'
     ) in text
-    assert 'ATTR{power/control}="on"' in text
+    assert (
+        'ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", '
+        'ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", '
+        'ATTR{power/control}="on"'
+    ) in text
+    assert 'SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac"' not in text
+
+
+def test_camilla_unit_rate_limits_external_log_floods():
+    """External Camilla WARN floods must not consume persistent journal history."""
+    text = (ROOT / "deploy/systemd/jasper-camilla.service").read_text(
+        encoding="utf-8"
+    )
+    assert "LogRateLimitIntervalSec=60s" in text
+    assert "LogRateLimitBurst=120" in text
 
 
 # The root audio daemons whose UDS the now-non-root voice/mux must connect to.

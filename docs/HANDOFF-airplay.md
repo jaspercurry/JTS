@@ -141,6 +141,12 @@ camilla underruns:      0
 ```
 
 Anything non-zero needs diagnosis.
+`jasper-camilla.service` has a per-unit journald rate limit
+(`LogRateLimitBurst=120` per 60 s) to preserve previous-boot forensics
+during a sustained CamillaDSP short-read flood. Treat any non-zero
+short-read count, or journald's native "messages suppressed" line for
+`jasper-camilla`, as evidence of Pattern A even if the raw count is
+capped below the true event rate.
 
 Decision rule:
 - shairport `Dropping out of date packet` events with tightly clustered lead times (~0.115-0.120 s) AND `Player: packets out of sequence` warnings at the same 1:1 cadence → **Pattern A3** first. Verify the deployed fan-in wiring: `/etc/asound.conf` should have `pcm.jasper_capture` on `hw:Loopback,1,7`, `shairport_substream` in `/etc/shairport-sync.conf`, and `jasper-fanin.service` active.
@@ -1731,4 +1737,6 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-06-22
+Last verified: 2026-06-26 (Camilla short-read diagnostic note rechecked
+against `deploy/systemd/jasper-camilla.service`; broader AirPlay patterns last
+fully rechecked 2026-06-22)
