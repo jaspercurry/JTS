@@ -16,6 +16,7 @@ Wants=sound.target jasper-camilla.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=60
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/grouping.env
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.multiroom.reconcile --reason systemd

@@ -43,6 +43,16 @@ ACCESSORY_RECONCILERS = {
     ),
 }
 
+RECONCILE_ONESHOTS = {
+    "jasper-aec-reconcile": ROOT / "deploy/systemd/jasper-aec-reconcile.service",
+    "jasper-accessory-reconcile": (
+        ROOT / "deploy/systemd/jasper-accessory-reconcile.service"
+    ),
+    "jasper-grouping-reconcile": (
+        ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
+    ),
+}
+
 # Directives every Tier-A unit must carry (key -> required value, or None = any value).
 REQUIRED_ALL = {
     "ProtectSystem": "strict",
@@ -162,6 +172,18 @@ def test_accessory_reconciler_unit_is_hardened_root_oneshot(unit, path):
     rwpaths = " ".join(v for k, v in pairs if k == "ReadWritePaths")
     assert "/var/lib/jasper" in rwpaths
     assert "/etc/systemd/system" in rwpaths
+
+
+@pytest.mark.parametrize("unit,path", sorted(RECONCILE_ONESHOTS.items()))
+def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
+    """Short-lived reconcilers must not remain `activating` forever if a future
+    blocking child sneaks in; timeout turns that into an observable failure."""
+    pairs = set(_directives(path))
+    assert ("Type", "oneshot") in pairs
+    assert ("TimeoutStartSec", "60") in pairs, (
+        f"{unit}: reconcile oneshots need a finite start timeout so startup "
+        "dependency mistakes fail visibly instead of wedging voice offline."
+    )
 
 
 @pytest.mark.parametrize("unit,path", sorted(TIER_A.items()))

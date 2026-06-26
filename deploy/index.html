@@ -1438,20 +1438,29 @@
           info && info.status === 'parked' &&
           info.reason === 'bonded_follower'
         );
+        var starting = !!(info && info.status === 'starting');
         muted = !!wantMuted;
-        available = !parkedByPair && isAvailable !== false;
+        available = !parkedByPair && !starting && isAvailable !== false;
         button.disabled = !available;
-        button.textContent = parkedByPair ? 'Parked' : (muted ? 'Enable' : 'Mute');
+        button.textContent = parkedByPair ? 'Parked' :
+          (starting ? 'Reloading' : (muted ? 'Enable' : 'Mute'));
         button.setAttribute('aria-pressed', String(!muted && available));
-        button.setAttribute('aria-label', parkedByPair ?
-          'Microphone parked while paired' :
-          (muted ? 'Enable microphone' : 'Mute microphone'));
+        button.setAttribute('aria-label',
+          parkedByPair ? 'Microphone parked while paired' :
+          (starting ? 'Voice control reloading' :
+            (muted ? 'Enable microphone' : 'Mute microphone')));
         dot.classList.toggle('on', !muted && available);
         if (parkedByPair) {
           title.textContent = 'Paired';
           sub.textContent = info.message ||
             'Paired — the assistant listens on the pair leader';
           setMicState('Paired');
+          return;
+        }
+        if (starting) {
+          title.textContent = 'Reloading';
+          sub.textContent = info.message || 'Voice control is restarting';
+          setMicState('Reloading');
           return;
         }
         title.textContent = available ? (muted ? 'Muted' : 'Listening') : 'Unavailable';

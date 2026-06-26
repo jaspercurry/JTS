@@ -4117,6 +4117,100 @@ def test_follower_get_mic_reports_pair_parked_state(follower_server):
     assert "pair leader" in body["message"]
 
 
+def test_get_mic_reports_voice_starting_when_socket_missing(
+    monkeypatch, server_with_coordinator,
+):
+    """A restart/provider switch can remove the UDS socket before voice is ready.
+    While systemd says jasper-voice is activating, /mic reports a temporary
+    starting state instead of the permanent-offline 503 shape."""
+    import jasper.control.server as srv_mod
+
+    async def missing_socket(socket_path, cmd, *, timeout=5.0):  # noqa: ARG001
+        raise FileNotFoundError(socket_path)
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", missing_socket)
+    monkeypatch.setattr(
+        srv_mod,
+        "_voice_starting_mic_payload",
+        lambda: {
+            "status": "starting",
+            "reason": "voice_daemon_starting",
+            "available": False,
+            "muted": True,
+            "message": "Voice control is restarting",
+        },
+    )
+
+    base, _fake = server_with_coordinator
+    status, body = _get(f"{base}/mic")
+
+    assert status == 200
+    assert body["status"] == "starting"
+    assert body["available"] is False
+    assert body["muted"] is True
+    assert "restarting" in body["message"]
+
+
+def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    async def missing_socket(socket_path, cmd, *, timeout=5.0):  # noqa: ARG001
+        raise FileNotFoundError(socket_path)
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", missing_socket)
+    monkeypatch.setattr(srv_mod, "_voice_starting_mic_payload", lambda: None)
+
+    base, _fake = server_with_coordinator
+    status, body = _get(f"{base}/mic")
+
+    assert status == 503
+    assert body["status"] == "offline"
+    assert body["available"] is False
+    assert body["reason"] == "voice_daemon_unreachable"
+
+
+def test_voice_starting_mic_payload_reads_transient_systemd_state():
+    import subprocess as sp
+    import jasper.control.server as srv_mod
+
+    def fake_run(argv, **kw):  # noqa: ARG001
+        return sp.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                "LoadState=loaded\n"
+                "ActiveState=activating\n"
+                "SubState=start-post\n"
+                "Result=success\n"
+            ),
+            stderr="",
+        )
+
+    payload = srv_mod._voice_starting_mic_payload(
+        read_unit=lambda unit: srv_mod._systemd_show_unit(unit, run=fake_run),
+    )
+
+    assert payload is not None
+    assert payload["status"] == "starting"
+    assert payload["available"] is False
+    assert payload["unit"]["active_state"] == "activating"
+    assert payload["unit"]["sub_state"] == "start-post"
+
+
+def test_voice_starting_mic_payload_ignores_failed_systemd_state():
+    import jasper.control.server as srv_mod
+
+    assert srv_mod._voice_starting_mic_payload(
+        read_unit=lambda unit: {
+            "LoadState": "loaded",
+            "ActiveState": "failed",
+            "SubState": "failed",
+        },
+    ) is None
+
+
 def test_follower_mic_mute_refuses_with_pair_parked_state(follower_server):
     """The UI disables this, but direct clients should still get the same
     pair story instead of a misleading voice_daemon-not-running error."""

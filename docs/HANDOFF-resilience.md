@@ -948,10 +948,12 @@ would never arrive. The reconciler closes that loop:
 - `JASPER_AEC_MODE=auto` + profile-managed 6-channel XVF present:
   derive `JASPER_AEC_MIC_DEVICE` from the detected mic profile, then
   set `JASPER_MIC_DEVICE=udp:<port>`, enable/start
-  `jasper-aec-init` + `jasper-aec-bridge`, restart voice.
+  `jasper-aec-init` + `jasper-aec-bridge`, and queue a
+  `jasper-voice` restart with `systemctl restart --no-block`.
 - A configured direct mic candidate is present but AEC is unavailable
   (2-channel firmware or AEC disabled): set `JASPER_MIC_DEVICE` to
-  that candidate, keep the bridge off, restart voice.
+  that candidate, keep the bridge off, and queue the same voice
+  restart.
 - No candidate mic is present and the current value is one JTS owns
   (`Array`, `udp:<port>`, or legacy `hw:N,1`): clear stale UDP back to
   the first candidate and stop voice so it does not watchdog-loop.
@@ -1162,7 +1164,9 @@ For anyone touching the resilience code:
   UDP when no owned mic candidate is present, and starts or parks
   `jasper-aec-*` + `jasper-voice` accordingly.
 - `deploy/systemd/jasper-aec-reconcile.service` — oneshot wrapper used
-  at install, boot, and udev-triggered hardware changes.
+  at install, boot, and udev-triggered hardware changes. It has
+  `TimeoutStartSec=60` so a future blocking child fails visibly instead
+  of holding voice startup in `activating` limbo.
 - `deploy/install.sh:reconcile_aec_state` — seeds
   `/var/lib/jasper/aec_mode.env` with `JASPER_AEC_MODE=auto`, enables
   the reconciler unit, and runs it once at install time.
@@ -1329,7 +1333,8 @@ against `deploy/systemd/jasper-camilla.service`,
 `deploy/systemd/jasper-camilla-recover.service`,
 `deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;
 AEC reconciler mic-profile ownership rechecked: `JASPER_AEC_MIC_DEVICE` is
-derived from detected XVF profile for selectable profiles; Wi-Fi
+derived from detected XVF profile for selectable profiles; AEC voice restart
+is queued with `--no-block` and the AEC oneshot timeout is bounded; Wi-Fi
 scan-suppression root helper path verified on `jts3.local` 2026-06-22 and
 active-profile scan-suppression recovery verified from `jts.local` incident
 logs 2026-06-26;

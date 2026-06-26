@@ -104,6 +104,15 @@ voice). It now also expresses that verdict as the marker:
   **removes** the marker, so a custom-mic operator is never gated by us
   (their device's openability is enforced by Layer 2 instead).
 
+`restart_voice` queues the `jasper-voice` restart with
+`systemctl restart --no-block`. This is load-bearing: `jasper-voice` is
+`Type=notify` and may itself be waiting on other startup dependencies, so
+the AEC oneshot must apply its single-writer verdict and exit rather than
+blocking inside PID 1's job graph. `jasper-aec-reconcile.service` also has
+`TimeoutStartSec=60`; if a future edit reintroduces a blocking child, the
+mistake becomes a visible failed unit instead of an indefinite
+`activating` state that leaves voice looking permanently offline.
+
 Why a reconciler-written marker instead of a direct `/proc/asound/$card`
 check like the output owner's `ExecCondition`: the mic is reached via
 `udp:PORT` (the AEC bridge) or a candidate list, and "is there a usable
@@ -170,6 +179,12 @@ second mic profile + `jasper/mics/base.py` land (see
   (present, reason, card, variant, channels, a ready-made `summary`); the
   voice block's `parked_no_mic` is derived from the **same** read so the
   boolean and the record can't drift.
+- **`/mic` / landing page.** The control endpoint returns first-class
+  `status` values: `parked` for a bonded follower, `starting` while
+  systemd reports `jasper-voice` as activating/reloading/deactivating, and
+  `offline` for a real unreachable daemon. The landing page is a dumb
+  renderer of that payload: `starting` reads as "Reloading", not permanent
+  failure.
 - **Open-failure log.** `_log_audio_open_failure`
   ([`jasper/audio_io.py`](../jasper/audio_io.py)) logs one line and skips its
   portaudio/`arecord`/`aplay`/`dmesg` dump when the mic is confirmed-absent —
@@ -246,7 +261,10 @@ Bluetooth pair/connect/forget operations, so the UI pairing flow converges
 without a second deploy. Adapter service changes are queued with
 `systemctl --no-block` and the boot reconciler orders only before
 `jasper-voice`, not before the adapter it may start, so optional accessory
-state cannot wedge voice startup. A paired-but-sleeping remote still self-heals:
+state cannot wedge voice startup. The accessory reconciler also carries
+`TimeoutStartSec=60`, matching the AEC/grouping oneshots: future blocking
+mistakes fail visibly instead of holding voice startup forever. A
+paired-but-sleeping remote still self-heals:
 missing GATT report logs `event=wiim_remote_mic.not_ready` (throttled
 after the first visible event) and retries; `jasper-voice` keeps the
 normal primary mic path alive and only routes the manual source when
@@ -312,11 +330,13 @@ session):**
 
 - [`deploy/systemd/jasper-voice.service`](../deploy/systemd/jasper-voice.service) — `ConditionPathExists` gate, exit-66 park
 - [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) — single writer of the marker
+- [`deploy/systemd/jasper-aec-reconcile.service`](../deploy/systemd/jasper-aec-reconcile.service) — bounded oneshot wrapper for mic/AEC/voice convergence
 - [`jasper/voice/input_presence.py`](../jasper/voice/input_presence.py) — marker path + `voice_parked_no_mic()`
 - [`jasper/mic_presence.py`](../jasper/mic_presence.py) — the mic-presence SSOT reader (mic-agnostic presence + XVF enrichment)
 - [`jasper/audio_io.py`](../jasper/audio_io.py) — `InputDeviceUnavailable`; absent-aware open-failure log
 - [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) — raise on primary mic-open failure, exit 66
 - [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — `check_microphone` headline + mic checks deferring to the reader
+- [`jasper/control/server.py`](../jasper/control/server.py) — `/mic` parked/starting/offline state surface
 - [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `microphone` block + `voice.parked_no_mic`
 - [`deploy/udev/99-jasper-audio-hardware-reconcile.rules`](../deploy/udev/99-jasper-audio-hardware-reconcile.rules) — output-DAC add/remove/change triggers
 - [`deploy/bin/jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug) — Apple USB remove reconciler request

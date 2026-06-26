@@ -92,6 +92,14 @@ def test_mic_status_handles_bonded_follower_parked_state():
     assert "Microphone parked while paired" in html
 
 
+def test_mic_status_handles_voice_reloading_state():
+    html = _landing()
+    assert "status === 'starting'" in html
+    assert "'Reloading'" in html
+    assert "Voice control is restarting" in html
+    assert "Voice control reloading" in html
+
+
 def test_install_bakes_control_token_fail_loud():
     sh = INSTALL_SH.read_text()
     assert TOKEN_PLACEHOLDER in sh, "install.sh must reference the token placeholder"

@@ -24,11 +24,11 @@
 > substrate.
 >
 > Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
-> code: 2026-06-24 (see §0 + the footer changelog).
+> code: 2026-06-26 (see §0 + the footer changelog).
 
 ---
 
-## 0. Implementation status (2026-06-24)
+## 0. Implementation status (2026-06-26)
 
 **"Endpoint behaviour" is the runtime FOLLOWER role, not a separate install
 tier.** There are exactly two install profiles — `full` and `streambox`. The
@@ -243,15 +243,23 @@ Increment 6 (per-follower calibration). What exists:
   journal with one refused-connection line per second.
 - **Reconciler `reset-failed`s before every deliberate restart
   (config-apply ≠ crash).** `_restart_unit` runs `systemctl reset-failed
-  <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`→voice
-  / shairport / snap units), so a rapid burst of `/grouping/set` applies — e.g.
+  <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`
+  kick / shairport / snap units), so a rapid burst of `/grouping/set` applies — e.g.
   an active-crossover calibration/trim/delay sweep on the leader re-fanned to a
   follower — can never spend a reboot-budget unit's `StartLimitBurst` and
   escalate to `StartLimitAction=reboot`. Genuine crash loops still escalate (the
   daemon's own `Restart=` path does not `reset-failed`, so only deliberate
   reconciler restarts are exempted). Generalizes the outputd-only guard and
   mirrors `grouping_supervisor.kick_reconciler` +
-  `shairport_supervisor.restart_shairport`. **Root incident:** 2026-06-24
+  `shairport_supervisor.restart_shairport`. Cross-owner kicks are queued:
+  grouping writes `grouping-voice.env`, then restarts
+  `jasper-aec-reconcile.service` with `--no-block` because AEC is the sole
+  owner of `jasper-voice` / `jasper-aec-bridge` and may start a `Type=notify`
+  daemon. Same-owner applies that need ordering (outputd lane env, shairport
+  offset, snap units) remain blocking. `jasper-grouping-reconcile.service`
+  carries `TimeoutStartSec=60`, so a future accidental blocking child fails
+  visibly instead of leaving grouping/voice startup in `activating` limbo.
+  **Root incident:** 2026-06-24
   jts.local (bonded follower) took six `/grouping/set` POSTs from the leader in
   44 s — each restarting `jasper-outputd` — and rebooted on outputd
   start-limit-hit. Pinned by `test_restart_unit_resets_failed_before_restart`
@@ -2714,6 +2722,8 @@ exceptions rechecked against
 `jasper.multiroom.tts_route.expected_grouping_tts_route`,
 `jasper.multiroom.reconcile`, and `jasper.cli.doctor.grouping`;
 local-source follower parking rechecked against `jasper/local_sources/registry.py`
-and `jasper.multiroom.reconcile`; wireless-sub 2.1 path from 2026-06-23
-unchanged; snapclient journal rate limit rechecked against
+and `jasper.multiroom.reconcile`; grouping→AEC cross-owner no-block kick and
+grouping oneshot timeout rechecked against `jasper.multiroom.reconcile` and
+`deploy/systemd/jasper-grouping-reconcile.service`; wireless-sub 2.1 path from
+2026-06-23 unchanged; snapclient journal rate limit rechecked against
 `deploy/systemd/jasper-snapclient.service`)
