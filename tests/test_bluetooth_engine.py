@@ -102,11 +102,15 @@ def _engine(reasons: list[str]) -> BluetoothEngine:
         return object()
 
     engine = BluetoothEngine(accessory_reconcile=reconcile)
-    engine._bus = _FakeBus(device)  # noqa: SLF001
-    engine._observer = _FakeObserver(device)  # noqa: SLF001
-    engine._roles = SimpleNamespace(  # noqa: SLF001
-        set=lambda *_args: None,
-        remove=lambda *_args: None,
+    setattr(engine, "_bus", _FakeBus(device))
+    setattr(engine, "_observer", _FakeObserver(device))
+    setattr(
+        engine,
+        "_roles",
+        SimpleNamespace(
+            set=lambda *_args: None,
+            remove=lambda *_args: None,
+        ),
     )
     return engine
 

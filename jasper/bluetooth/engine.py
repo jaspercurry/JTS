@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 from collections.abc import Awaitable, Callable
 from typing import AsyncIterator
 
@@ -38,6 +39,12 @@ logger = logging.getLogger(__name__)
 BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
 AccessoryReconciler = Callable[[str], Awaitable[object]]
+ACCESSORY_RECONCILE_ERRORS = (
+    DBusError,
+    OSError,
+    RuntimeError,
+    subprocess.SubprocessError,
+)
 
 
 async def _default_accessory_reconcile(reason: str) -> object:
@@ -323,7 +330,7 @@ class BluetoothEngine:
         try:
             await self._accessory_reconcile(reason)
             return True
-        except Exception as exc:  # noqa: BLE001
+        except ACCESSORY_RECONCILE_ERRORS as exc:
             log_event(
                 logger,
                 "bluetooth.accessory_reconcile_failed",
