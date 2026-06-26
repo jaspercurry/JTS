@@ -22,15 +22,16 @@ import {
   subCornerLabel,
 } from "../../deploy/assets/rooms/js/grouping-view.js";
 
-assert.equal(BALANCE_MIN_DB, -6);
-assert.equal(BALANCE_MAX_DB, 6);
+assert.equal(BALANCE_MIN_DB, -24);
+assert.equal(BALANCE_MAX_DB, 24);
 assert.equal(formatBalanceDb(-2), "-2.0 dB");
 assert.equal(balanceText(0), "Centered");
 assert.equal(balanceText(3), "Right louder by 3.0 dB");
 assert.equal(balanceText(-4.5), "Left louder by 4.5 dB");
 assert.deepEqual(trimsForBalance(3), { left: -3, right: 0 });
 assert.deepEqual(trimsForBalance(-2.5), { left: 0, right: -2.5 });
-assert.deepEqual(balanceTrimRequest(99), { target: "pair", balance_db: 6 });
+assert.deepEqual(balanceTrimRequest(99), { target: "pair", balance_db: 24 });
+assert.deepEqual(balanceTrimRequest(-99), { target: "pair", balance_db: -24 });
 assert.deepEqual(balanceTrimRequest("nope"), { target: "pair", balance_db: 0 });
 
 // No row unless this speaker is an active bonded leader: read error (null),
