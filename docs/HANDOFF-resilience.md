@@ -1000,11 +1000,14 @@ The 2026-06-19 JTS3 flap added a second class: the AP went up/down
 several times, the Pi 5 brcmfmac driver logged repeated
 `brcmf_cfg80211_scan: Scanning suppressed: status (4)`, and
 NetworkManager eventually stopped retrying the seeded netplan profile
-after a `no-secrets` failure. A power cycle brought it back. The fix
-for this class is not a resident watchdog; it is a tiny systemd timer
-that periodically asks whether WiFi is actually down, then runs the
-same bounded scan-suppression repair used by `/wifi/scan` before
-delegating profile activation to the guardian.
+after a `no-secrets` failure. A power cycle brought it back. The
+2026-06-26 JTS flap added the nastier sibling: NetworkManager still
+reported an active profile while the brcmfmac scan path was wedged and
+the box disappeared from `jts.local`. The fix for these classes is not a
+resident watchdog; it is a tiny systemd timer that periodically checks
+for the narrow brcmfmac scan-suppression signature, runs the same bounded
+scan-suppression repair used by `/wifi/scan` when warranted, and only
+delegates profile activation to the guardian when WiFi is actually down.
 
 Core guardian shape mirrors `jasper-aec-reconcile`; the flap recovery
 layer is a periodic nudge around that same policy:
@@ -1021,18 +1024,21 @@ layer is a periodic nudge around that same policy:
   is down.
 - **Low-footprint recovery timer**:
   `jasper-wifi-recover.timer` runs every ~3 min with no resident RAM.
-  The steady-state path is one `nmcli connection show --active` read and
-  **no script output** — the `event=wifi_recover.*` lines fire only on a
-  manual run or real down-path work. (systemd still logs ~2 activation
-  lines per tick regardless; that, plus the fact that NM's
+  The steady-state path is one `nmcli connection show --active` read plus
+  a narrow recent-kernel-log check for
+  `brcmf_cfg80211_scan: Scanning suppressed` and **no script output** —
+  the `event=wifi_recover.*` lines fire only on a manual run or real
+  recovery work. (systemd still logs ~2 activation lines per tick
+  regardless; that, plus the fact that NM's
   retry-forever autoconnect already covers ordinary flaps, is why the
   cadence is minutes rather than seconds — the timer's unique job is the
-  rare scan-suppression wedge, where a few-minutes window is fine.) Only
-  when no WiFi connection is active does `jasper-wifi-recover` inspect
-  recent kernel logs for brcmfmac scan suppression, run
-  `python -m jasper.wifi_scan_repair --iface wlan0` if warranted (skipped
-  with `event=wifi_recover.scan_repair_skip` if the venv python is
-  absent), then call the guardian. `jasper-doctor`'s
+  rare scan-suppression wedge, where a few-minutes window is fine.) When
+  recent brcmfmac scan suppression is present, `jasper-wifi-recover` runs
+  `python -m jasper.wifi_scan_repair --iface wlan0` even if NetworkManager
+  still reports an active profile (skipped with
+  `event=wifi_recover.scan_repair_skip` if the venv python is absent).
+  If no WiFi connection is active, it then calls the guardian.
+  `jasper-doctor`'s
   `check_wifi_recover_timer` warns if the timer is disabled.
 - **Scan-suppression helper for the web wizard**:
   `jasper-wifi-scan-repair.service` is a root-only oneshot that runs the
@@ -1324,7 +1330,9 @@ against `deploy/systemd/jasper-camilla.service`,
 `deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;
 AEC reconciler mic-profile ownership rechecked: `JASPER_AEC_MIC_DEVICE` is
 derived from detected XVF profile for selectable profiles; Wi-Fi
-scan-suppression root helper path verified on `jts3.local` 2026-06-22;
+scan-suppression root helper path verified on `jts3.local` 2026-06-22 and
+active-profile scan-suppression recovery verified from `jts.local` incident
+logs 2026-06-26;
 broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
 `/state.resilience` supervisor doctor surface and multiroom cascade ring
 rechecked against current code)

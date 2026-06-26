@@ -4,9 +4,9 @@
 
 """Tests for deploy/bin/jasper-wifi-recover.
 
-The recovery timer must be cheap when Wi-Fi is healthy, and useful only on
-the actual fault path: no active Wi-Fi, optional scan-suppression repair,
-then delegation to the PSK-owning guardian.
+The recovery timer must be cheap when Wi-Fi is healthy, repair the narrow
+brcmfmac scan-suppression wedge even when NetworkManager still reports an
+active profile, and delegate no-active recovery to the PSK-owning guardian.
 """
 from __future__ import annotations
 
@@ -164,6 +164,23 @@ def test_manual_active_wifi_reports_steady(tmp_path):
     assert "event=wifi_recover.steady active=Home" in proc.stderr
     assert _read(paths["guardian_log"]) == ""
     assert _read(paths["python_log"]) == ""
+
+
+def test_active_wifi_with_scan_suppression_runs_repair_without_guardian(tmp_path):
+    proc, paths = _run_recover(
+        tmp_path,
+        active="802-11-wireless:Home\n",
+        kernel="brcmf_cfg80211_scan: Scanning suppressed: status (4)\n",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_recover.scan_suppressed iface=wlan0 active=Home" in proc.stderr
+    assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
+    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+        paths["python_log"]
+    )
+    assert _read(paths["guardian_log"]) == ""
+    assert '"attempted":true' in proc.stdout
 
 
 def test_no_active_wifi_delegates_to_guardian_without_scan_evidence(tmp_path):
