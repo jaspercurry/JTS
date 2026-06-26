@@ -12,6 +12,25 @@ from jasper.active_speaker.commissioning_coordinator import (
 from tests.test_active_speaker_startup_load import _topology
 
 
+def _ready_design() -> dict:
+    return {
+        "kind": "jts_active_speaker_design_draft",
+        "status": "ready_for_review",
+        "summary": {
+            "missing_driver_info_roles": [],
+            "missing_crossover_candidate_pairs": [],
+        },
+    }
+
+
+def _ready_preview() -> dict:
+    return {
+        "kind": "jts_active_speaker_crossover_preview",
+        "status": "ready_for_protected_staging",
+        "permissions": {"may_prepare_protected_startup_config": True},
+    }
+
+
 def test_summed_test_failure_message_prioritizes_artifact_permission_failure():
     message = summed_test_failure_message([
         {
@@ -33,6 +52,8 @@ def test_summed_test_failure_message_prioritizes_artifact_permission_failure():
 def test_commissioning_view_exposes_combined_test_as_next_action():
     view = build_commissioning_view(
         _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
         measurements={
             "summary": {
                 "driver_checks_complete": True,
@@ -60,6 +81,8 @@ def test_commissioning_view_exposes_combined_test_as_next_action():
 def test_commissioning_view_records_result_after_audible_combined_test():
     view = build_commissioning_view(
         _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
         measurements={
             "summary": {
                 "driver_checks_complete": True,
@@ -109,6 +132,8 @@ def test_commissioning_view_records_result_after_audible_combined_test():
 def test_commissioning_view_does_not_reoffer_record_for_validated_combined_test():
     view = build_commissioning_view(
         _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
         measurements={
             "summary": {
                 "driver_checks_complete": True,
@@ -148,6 +173,8 @@ def test_commissioning_view_does_not_reoffer_record_for_validated_combined_test(
 def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():
     view = build_commissioning_view(
         _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
         measurements={
             "summary": {
                 "driver_checks_complete": True,
@@ -188,6 +215,8 @@ def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():
 def test_commissioning_view_surfaces_superseded_profile_revalidation():
     view = build_commissioning_view(
         _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
         measurements={
             "summary": {
                 "driver_checks_complete": True,
@@ -225,13 +254,15 @@ def test_commissioning_view_surfaces_superseded_profile_revalidation():
     assert view["status"] == "needs_revalidation"
     assert view["revalidation"]["required"] is True
     assert view["next_action"]["id"] == "record_combined_result"
-    combined_step = next(step for step in view["steps"] if step["id"] == "combined")
-    assert "Re-run the combined crossover check" in combined_step["message"]
+    profile_step = next(step for step in view["steps"] if step["id"] == "profile")
+    assert "Save and apply a fresh profile" in profile_step["message"]
 
 
 def test_commissioning_view_uses_backend_failure_copy_for_combined_group():
     view = build_commissioning_view(
         _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
         measurements={
             "summary": {
                 "driver_checks_complete": True,
@@ -265,3 +296,51 @@ def test_commissioning_view_uses_backend_failure_copy_for_combined_group():
     assert group["status"] == "test_failed"
     assert "could not prepare the combined test audio" in group["message"]
     assert "Confirm outputs" not in group["message"]
+
+
+def test_commissioning_view_blocks_output_confirmation_until_values_are_ready():
+    view = build_commissioning_view(
+        _topology(),
+        design_draft={
+            "kind": "jts_active_speaker_design_draft",
+            "status": "needs_research",
+            "summary": {
+                "missing_driver_info_roles": ["tweeter"],
+                "missing_crossover_candidate_pairs": [["woofer", "tweeter"]],
+            },
+        },
+        crossover_preview={"status": "not_prepared"},
+        measurements={
+            "summary": {
+                "driver_checks_complete": False,
+                "summed_validation_complete": False,
+            },
+        },
+    )
+
+    assert view["status"] == "needs_driver_values"
+    assert view["current_step"] == "research"
+    assert view["driver_values"]["complete"] is False
+    assert view["next_action"]["id"] == "save_driver_values"
+    map_step = next(step for step in view["steps"] if step["id"] == "map")
+    assert map_step["status"] == "todo"
+
+
+def test_commissioning_view_requires_crossover_preview_after_saved_values():
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview={"status": "not_prepared"},
+        measurements={
+            "summary": {
+                "driver_checks_complete": False,
+                "summed_validation_complete": False,
+            },
+        },
+    )
+
+    assert view["status"] == "needs_driver_values"
+    assert view["current_step"] == "research"
+    assert view["driver_values"]["design_ready"] is True
+    assert view["driver_values"]["preview_ready"] is False
+    assert view["next_action"]["id"] == "preview_crossover"

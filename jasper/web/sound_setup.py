@@ -3887,6 +3887,8 @@ async def _active_speaker_commissioning_view_payload(
     )
     view = build_commissioning_view(
         topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
         measurements=measurements,
         commission=commission,
         startup_load={"state": load_startup_load_state()},

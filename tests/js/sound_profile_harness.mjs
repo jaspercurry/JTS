@@ -385,6 +385,68 @@ function levelPayload(value) {
   };
 }
 
+function commissioningSteps(currentStep, statuses = {}) {
+  const labels = {
+    layout: "Choose speaker layout",
+    research: "Add driver and crossover values",
+    map: "Confirm outputs",
+    safety: "Test each driver",
+    profile: "Validate and apply",
+  };
+  return ["layout", "research", "map", "safety", "profile"].map((id) => ({
+    id,
+    label: labels[id],
+    status: statuses[id] || (id === currentStep ? "active" : "todo"),
+    message: "",
+  }));
+}
+
+function commissioningViewPayload(overrides = {}) {
+  const currentStep = overrides.current_step || "layout";
+  const stepStatuses = overrides.stepStatuses || {};
+  const steps = overrides.steps || commissioningSteps(currentStep, stepStatuses);
+  const payload = {
+    artifact_schema_version: 1,
+    kind: "jts_active_speaker_commissioning_view",
+    status: overrides.status || "needs_layout",
+    current_step: currentStep,
+    steps,
+    driver_values: {
+      status: "ready",
+      complete: true,
+      design_ready: true,
+      preview_ready: true,
+      missing_driver_info_roles: [],
+      missing_crossover_candidate_pairs: [],
+      message: "Driver and crossover values are saved.",
+    },
+    output_identity: { assigned_channel_count: 2, unverified_channel_count: 0, complete: true },
+    driver_checks: { complete: true, captured: 2, required: 2 },
+    summed_validation: { complete: false, validated: 0, required: 1 },
+    revalidation: {},
+    test_level: levelPayload(-72).test_signal,
+    combined_groups: [],
+    next_action: {},
+  };
+  delete overrides.stepStatuses;
+  return { ...payload, ...overrides, steps };
+}
+
+function profileCommissioningView(overrides = {}) {
+  return commissioningViewPayload({
+    current_step: "profile",
+    stepStatuses: {
+      layout: "done",
+      research: "done",
+      map: "done",
+      safety: "done",
+      profile: "active",
+    },
+    status: "needs_combined_check",
+    ...overrides,
+  });
+}
+
 function setupHarness(fetchHandler, options = {}) {
   const elements = new Map();
   const absent = new Set();
@@ -528,6 +590,24 @@ function baseFetch(overrides = {}) {
     }
     if (path === "./active-speaker/crossover-preview") {
       return Promise.resolve(response({ status: "not_prepared", issues: [] }));
+    }
+    if (path === "./active-speaker/commissioning-view") {
+      return Promise.resolve(response(commissioningViewPayload({
+        status: "needs_layout",
+        current_step: "layout",
+        stepStatuses: { layout: "active", research: "todo", map: "todo", safety: "todo", profile: "todo" },
+        driver_values: {
+          status: "not_saved",
+          complete: false,
+          design_ready: false,
+          preview_ready: false,
+          missing_driver_info_roles: [],
+          missing_crossover_candidate_pairs: [],
+          message: "Save driver and crossover values.",
+        },
+        output_identity: { assigned_channel_count: 0, unverified_channel_count: 0, complete: false },
+        driver_checks: { complete: false, captured: 0, required: 0 },
+      })));
     }
     if (path === "./preview") return Promise.resolve(response({ preview: [] }));
     if (active[path] && !options.method) return Promise.resolve(response(active[path]));
@@ -781,7 +861,7 @@ async function testActiveCrossoverFirstStepRender() {
   };
   includes("Active crossover setup");
   includes("Choose speaker layout");
-  includes("Add driver and crossover info");
+  includes("Add driver and crossover values");
   includes("Working setup");
   includes("AI helper");
   includes("2048 characters or fewer");
@@ -915,6 +995,45 @@ async function testMeasuredDriversOpenProfileStep() {
       permissions: { may_compile_baseline: false },
       issues: [],
     })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(profileCommissioningView({
+      status: "needs_combined_check",
+      test_level: levelPayload(-80).test_signal,
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "test_failed",
+        status_label: "not tested",
+        message: "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
+        failure_message: "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: false,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "" },
+          },
+        },
+      }],
+    }))),
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -1473,6 +1592,30 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
     "./output-topology": () => Promise.resolve(response({
       output_topology: topology,
     })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
+      status: "needs_output_confirmation",
+      current_step: "map",
+      stepStatuses: {
+        layout: "done",
+        research: "done",
+        map: "active",
+        safety: "todo",
+        profile: "todo",
+      },
+      output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
+      driver_checks: { complete: false, captured: 0, required: 2 },
+    }))),
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -1526,6 +1669,30 @@ async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
     "./output-topology": () => Promise.resolve(response({
       output_topology: topology,
     })),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
+      status: "needs_output_confirmation",
+      current_step: "map",
+      stepStatuses: {
+        layout: "done",
+        research: "done",
+        map: "active",
+        safety: "todo",
+        profile: "todo",
+      },
+      output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
+      driver_checks: { complete: false, captured: 0, required: 2 },
+    }))),
     "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
     "./active-speaker/commission-load": (p, o) => {
       const body = JSON.parse(o.body || "{}");

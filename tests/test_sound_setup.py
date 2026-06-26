@@ -578,11 +578,15 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "function driverResearchCanPreparePreview()" in js
     assert "function driverResearchStepSatisfied()" in js
-    assert "driverResearchSatisfied: driverResearchStepSatisfied()" in js
+    assert "function driverResearchFlowComplete(topology)" in js
+    assert "driverResearchSatisfied: driverResearchFlowComplete(topology)" in js
+    assert "function commissioningStepView(step)" in js
+    assert "function commissioningCurrentStep()" in js
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in (
         _ACTIVE_SPEAKER_UI_MODULE.read_text()
     )
-    assert "Driver details are optional for now. Continue with output mapping." in js
+    assert "Preview crossover before confirming outputs." in js
+    assert "Save driver names and crossover points before confirming outputs." in js
     assert "Working setup updated. No filters are active and no sound was played." in js
     assert "Updates the working setup, then builds a no-audio crossover preview." in js
     assert "data-act=\"arm-active-speaker\"" not in js

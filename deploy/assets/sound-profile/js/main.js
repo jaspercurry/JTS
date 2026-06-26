@@ -1584,6 +1584,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
       !driverResearch.dirty;
   }
+  function driverResearchFlowComplete(topology) {
+    if (!activeCommissionGroup(topology)) return driverResearchStepSatisfied();
+    return driverResearchStepSatisfied() &&
+      crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload);
+  }
   function driverResearchWorkingStatusLabel(status) {
     if (driverResearch.dirty) return 'editing';
     if (driverResearchHasPreviewInputs(currentOutputTopology())) return 'ready to preview';
@@ -1774,17 +1779,44 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       hasLayout: outputGroups(topology).length > 0,
       dirty: outputTopology.dirty,
       hardwareMatchesSaved: !outputHardwareMismatch(topology),
-      driverResearchSatisfied: driverResearchStepSatisfied(),
+      driverResearchSatisfied: driverResearchFlowComplete(topology),
       outputIdentityComplete: outputIdentityComplete(),
       driverChecksComplete: driverChecksComplete(),
       baselineProfileApplied: baselineProfileApplied(),
       baselineProfileNeedsRevalidation: baselineProfileNeedsRevalidation()
     };
   }
+  function commissioningStepView(step) {
+    var view = activeSpeaker.commissioningView || {};
+    var steps = Array.isArray(view.steps) ? view.steps : [];
+    for (var i = 0; i < steps.length; i += 1) {
+      if (String(steps[i].id || '') === String(step || '')) return steps[i];
+    }
+    return null;
+  }
+  function commissioningStepState(step) {
+    var item = commissioningStepView(step);
+    var state = item && String(item.status || '');
+    return state === 'done' || state === 'active' || state === 'todo' ? state : '';
+  }
+  function commissioningCurrentStep() {
+    var view = activeSpeaker.commissioningView || {};
+    var step = String(view.current_step || '');
+    return commissioningStepState(step) ? step : '';
+  }
   function outputStepState(step, topology) {
+    if (!outputTopology.dirty && !outputHardwareMismatch(topology) && !driverResearch.dirty) {
+      var backendState = commissioningStepState(step);
+      if (backendState) return backendState;
+    }
     return activeSpeakerStepState(step, outputStepContext(topology));
   }
   function defaultOutputStep() {
+    if (!outputTopology.dirty && !outputHardwareMismatch(currentOutputTopology()) &&
+        !driverResearch.dirty) {
+      var backendStep = commissioningCurrentStep();
+      if (backendStep) return backendStep;
+    }
     return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));
   }
   function outputStepIsOpen(step, topology) {
@@ -1798,6 +1830,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function openOutputStep(step) {
     outputStepOverride = step;
     render();
+  }
+  function outputStepHint(step, fallback) {
+    var item = commissioningStepView(step);
+    return String(item && item.message || fallback || '');
   }
   function renderOutputStepCard(step, title, hint, topology, bodyHtml, footerHtml) {
     var state = outputStepState(step, topology);
@@ -1817,10 +1853,38 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>' +
     '</details>';
   }
-  function renderOutputStepButton(step, label, primary) {
+  function renderOutputStepButton(step, label, primary, disabled) {
     return '<button type="button" class="btn ' + escapeHtml(primary ? 'btn--primary' : 'btn--ghost') +
-      '" data-act="output-step-next" data-step="' + escapeHtml(step) + '">' +
+      '" data-act="output-step-next" data-step="' + escapeHtml(step) + '"' +
+      (disabled ? ' disabled' : '') + '>' +
       escapeHtml(label) + '</button>';
+  }
+  function renderDriverResearchStepFooter(topology) {
+    if (outputTopology.dirty) {
+      return '<button type="button" class="btn btn--primary" disabled>Save layout first</button>';
+    }
+    if (driverResearch.saving) {
+      return '<button type="button" class="btn btn--primary" disabled>Saving</button>';
+    }
+    if (driverResearch.dirty || !driverResearchStepSatisfied()) {
+      return '<button type="button" class="btn btn--primary" data-act="save-driver-design">Save values</button>';
+    }
+    if (activeCommissionGroup(topology) &&
+        !crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) {
+      return '<button type="button" class="btn btn--primary" data-act="prepare-crossover-preview"' +
+        (driverResearchHasPreviewInputs(topology) ? '' : ' disabled') +
+        '>Preview crossover</button>';
+    }
+    return renderOutputStepButton('research', 'Continue', true);
+  }
+  function renderOutputMapStepFooter() {
+    if (outputTopology.dirty) {
+      return '<button type="button" class="btn btn--primary" data-act="save-output-topology">Save</button>';
+    }
+    if (!outputIdentityComplete()) {
+      return '<button type="button" class="btn btn--primary" disabled>Confirm outputs</button>';
+    }
+    return renderOutputStepButton('map', 'Continue', true);
   }
   function outputTemplateKindFromAxes(layout, speakerMode) {
     if (layout !== 'mono' && layout !== 'stereo') return '';
@@ -2238,7 +2302,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           escapeHtml(driverResearch.inputs.notes || '') + '</textarea>' +
       '</label>' +
       '<div class="driver-research__actions driver-research__actions--save">' +
-        '<button type="button" class="btn btn--primary" data-act="save-driver-design"' +
+        '<button type="button" class="btn btn--ghost" data-act="save-driver-design"' +
           (saveDisabled ? ' disabled' : '') + '>' +
           escapeHtml(driverResearch.saving ? 'Saving' : 'Save values') +
         '</button>' +
@@ -2369,7 +2433,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (laterSafetyCount ? ' JTS still checks the setup before any sound.' : '')
       ) + '</p>' +
       renderPreviewIssues(warningIssues) +
-      '<button type="button" class="btn btn--primary" data-act="prepare-crossover-preview"' +
+      '<button type="button" class="btn btn--ghost" data-act="prepare-crossover-preview"' +
         (disabled ? ' disabled' : '') + '>' +
         escapeHtml(crossoverPreview.preparing ? 'Preparing' : 'Preview crossover') +
       '</button>' +
@@ -2402,7 +2466,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       renderOutputStepCard(
         'layout',
         'Choose speaker layout',
-        'Choose speakers and active or passive wiring.',
+        outputStepHint('layout', 'Choose speakers and active or passive wiring.'),
         topology,
         renderOutputSetupTemplates(topology) +
           renderOutputSubwooferCard(topology) +
@@ -2414,32 +2478,29 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ) +
       renderOutputStepCard(
         'research',
-        'Add driver and crossover info',
-        'Set driver names, trims, and crossover points.',
+        'Add driver and crossover values',
+        outputStepHint('research', 'Set driver names, trims, and crossover points.'),
         topology,
         renderDriverResearchCard(topology) +
           renderCrossoverPreviewCard(),
-        renderOutputStepButton('research', 'Continue', true)
+        renderDriverResearchStepFooter(topology)
       ) +
       renderOutputStepCard(
         'map',
         'Confirm outputs',
-        'Assign DAC channels, then play each driver quietly to confirm wiring.',
+        outputStepHint('map', 'Assign DAC channels, then play each driver quietly.'),
         topology,
         renderOutputStageCard(topology) +
           renderOutputGroupsCard(topology) +
           renderOutputIdentityCard(),
-          outputTopology.dirty ?
-            '<button type="button" class="btn btn--primary" data-act="save-output-topology">Save</button>' :
-            renderOutputStepButton('map', 'Continue', true)
+        renderOutputMapStepFooter()
       ) +
       renderOutputStepCard(
         'safety',
         'Test each driver',
-        safetyActive
-          ? 'Start one driver at a time through the real crossover and limiter — ' +
-              'woofer first, then tweeter.'
-          : 'Per-driver audible commissioning is for active crossover layouts.',
+        outputStepHint('safety', safetyActive
+          ? 'Start one driver at a time through the real crossover and limiter.'
+          : 'Per-driver audible commissioning is for active crossover layouts.'),
         topology,
         safetyActive ? renderCommissionCard() : renderActiveCommissionOnlyCard(),
         ''
@@ -2447,7 +2508,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       renderOutputStepCard(
         'profile',
         'Validate and apply',
-        'Test the combined speaker, save the active profile, then apply it if this hardware supports it.',
+        outputStepHint('profile', 'Test the combined speaker, then save and apply.'),
         topology,
         renderSummedValidationCard(topology) +
         renderBaselineProfileCard(),
@@ -4692,8 +4753,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
       outputStepOverride = options.nextStep;
       status(driverResearchCanPreparePreview() ?
-        'Working setup is already current. Continue with output mapping.' :
-        'Driver details are optional for now. Continue with output mapping.');
+        'Working setup is already current. Preview crossover before confirming outputs.' :
+        'Save driver names and crossover points before confirming outputs.');
       render();
       return true;
     }
@@ -4822,7 +4883,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (step === 'research') {
-      if (!await saveDriverResearchDraft({nextStep: 'map'})) return;
+      if (driverResearch.dirty || !driverResearchStepSatisfied()) {
+        if (!await saveDriverResearchDraft({forPreview: true})) return;
+      }
+      if (activeCommissionGroup(topology) &&
+          !crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) {
+        if (!await prepareCrossoverPreview()) return;
+      }
+      openOutputStep('map');
+      status('Driver and crossover values are ready. Confirm the outputs.');
       return;
     }
     if (step === 'map') {
