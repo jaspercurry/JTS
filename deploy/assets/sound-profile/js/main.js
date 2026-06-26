@@ -522,8 +522,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
 
   // Follower mode renders the local driver/crossover/commissioning surface as the
-  // page's primary content (expanded, not behind the "Advanced speaker setup"
-  // disclosure a solo box tucks it under). No EQ tabs/plot exist on a follower.
+  // page's primary content (expanded, not behind the Speaker setup disclosure a
+  // solo box tucks it under). No EQ tabs/plot exist on a follower.
   function renderFollower() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="active-speaker-setup">' +
@@ -1007,6 +1007,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return (order[a] || 99) - (order[b] || 99);
     });
   }
+  function driverResearchRoles(topology) {
+    var pairs = activeCrossoverPairs(topology);
+    if (!pairs.length) return outputRoleSummary(topology);
+    var roles = [];
+    pairs.forEach(function(pair) {
+      pair.forEach(function(role) {
+        if (roles.indexOf(role) < 0) roles.push(role);
+      });
+    });
+    var order = {full_range: 0, woofer: 1, mid: 2, tweeter: 3};
+    return roles.sort(function(a, b) {
+      return (order[a] || 99) - (order[b] || 99);
+    });
+  }
   function assignedOutputIndices(topology) {
     var used = {};
     outputGroups(topology).forEach(function(group) {
@@ -1234,7 +1248,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driver.notes);
   }
   function driverSafetyNoteRoles(topology) {
-    return outputRoleSummary(topology).filter(driverHasSafetyNotes);
+    return driverResearchRoles(topology).filter(driverHasSafetyNotes);
   }
   function workingCrossoverSummary(topology) {
     var pairs = activeCrossoverPairs(topology);
@@ -1292,7 +1306,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function driverResearchHasPreviewInputs(topology) {
     if (!topology || !outputGroups(topology).length) return false;
-    var rolesReady = outputRoleSummary(topology).every(driverHasInfo);
+    var rolesReady = driverResearchRoles(topology).every(driverHasInfo);
     var pairs = activeCrossoverPairs(topology);
     var crossoversReady = pairs.length > 0 && pairs.every(function(pair) {
       return currentCrossoverFrequency(pair) != null;
@@ -1303,7 +1317,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!topology || !outputGroups(topology).length) {
       return 'Choose and save a speaker layout before previewing the active crossover.';
     }
-    var missingDrivers = outputRoleSummary(topology).filter(function(role) {
+    var missingDrivers = driverResearchRoles(topology).filter(function(role) {
       return !driverHasInfo(role);
     });
     if (missingDrivers.length) {
@@ -1314,8 +1328,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function driverResearchPromptReady(topology) {
     if (!topology || !outputGroups(topology).length) return false;
-    return outputRoleSummary(topology).every(function(role) {
-      if (role === 'subwoofer') return true;
+    return driverResearchRoles(topology).every(function(role) {
       return !!String(driverResearch.inputs[role] || '').trim();
     });
   }
@@ -1333,7 +1346,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.dirty = true;
   }
   function manualSettingsPayload(topology) {
-    var drivers = outputRoleSummary(topology).map(function(role) {
+    var drivers = driverResearchRoles(topology).map(function(role) {
       var setting = driverSetting(role);
       var out = {
         role: role,
@@ -1467,7 +1480,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     proposeSensitivityTrims(driversByRole);
   }
   function driverResearchPrompt(topology) {
-    var roles = outputRoleSummary(topology);
+    var roles = driverResearchRoles(topology);
     var lines = roles.map(function(role) {
       var name = (driverResearch.inputs[role] || '').trim();
       return '- ' + role + ': ' + (name || '[user has not entered a model yet]');
@@ -1491,7 +1504,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '  "kind": "jts_active_crossover_driver_research",',
       '  "drivers": [',
       '    {',
-      '      "role": "full_range|woofer|mid|tweeter|subwoofer",',
+      '      "role": "full_range|woofer|mid|tweeter",',
       '      "model": "string",',
       '      "manufacturer": "string|null",',
       '      "nominal_impedance_ohm": 8,',
@@ -2178,7 +2191,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</div>';
   }
   function renderManualDriverSettings(topology) {
-    var roles = outputRoleSummary(topology);
+    var roles = driverResearchRoles(topology);
     return '<div class="driver-settings">' + roles.map(function(role) {
       var setting = driverSetting(role);
       return '<div class="driver-settings__row">' +

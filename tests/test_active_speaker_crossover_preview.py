@@ -17,7 +17,7 @@ from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_desig
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
-def _topology(*, mode: str = "active_2_way") -> OutputTopology:
+def _topology(*, mode: str = "active_2_way", with_subwoofer: bool = False) -> OutputTopology:
     channels = [
         {
             "role": "woofer",
@@ -62,6 +62,32 @@ def _topology(*, mode: str = "active_2_way") -> OutputTopology:
                 "identity_verified": True,
             }
         ]
+    groups = [
+        {
+            "id": "mono",
+            "label": "Mono cabinet",
+            "kind": "mono",
+            "mode": mode,
+            "channels": channels,
+        }
+    ]
+    routing = {"mono_group_id": "mono"}
+    if with_subwoofer:
+        groups.append({
+            "id": "sub",
+            "label": "Subwoofer",
+            "kind": "subwoofer",
+            "mode": "subwoofer",
+            "channels": [
+                {
+                    "role": "subwoofer",
+                    "physical_output_index": 3 if mode == "active_3_way" else 2,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                }
+            ],
+        })
+        routing["subwoofer_group_ids"] = ["sub"]
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -73,16 +99,8 @@ def _topology(*, mode: str = "active_2_way") -> OutputTopology:
             "device_label": "HiFiBerry DAC8x",
             "physical_output_count": 8,
         },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": mode,
-                "channels": channels,
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
+        "speaker_groups": groups,
+        "routing": routing,
     })
 
 
@@ -151,6 +169,26 @@ def test_crossover_preview_builds_no_audio_filter_intent() -> None:
     assert crossover["proposed_frequency_hz"] == 2500
     assert [item["filter"] for item in crossover["filters"]] == ["lowpass", "highpass"]
     assert crossover["filters"][1]["channel"]["startup_muted"] is True
+
+
+def test_crossover_preview_does_not_require_optional_subwoofer_research() -> None:
+    draft = build_design_draft(
+        _topology(with_subwoofer=True),
+        driver_research=_research(),
+        created_at="2026-06-10T12:00:00Z",
+    )
+
+    payload = build_crossover_preview(
+        draft,
+        created_at="2026-06-10T12:30:00Z",
+    )
+
+    assert draft["status"] == "ready_for_review"
+    assert draft["summary"]["topology_roles"] == ["woofer", "tweeter", "subwoofer"]
+    assert draft["summary"]["required_driver_info_roles"] == ["woofer", "tweeter"]
+    assert draft["summary"]["missing_driver_info_roles"] == []
+    assert payload["status"] == "ready_for_protected_staging"
+    assert payload["permissions"]["may_prepare_protected_startup_config"] is True
 
 
 def test_crossover_preview_blocks_missing_research() -> None:

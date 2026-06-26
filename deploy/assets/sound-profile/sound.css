@@ -643,32 +643,6 @@
   }
   .driver-research__notes li + li { margin-top: 4px; }
   .driver-research__error { color: var(--status-danger); }
-  .output-stage {
-    display: block; width: 100%; max-height: 180px;
-    border-radius: var(--radius-sm);
-    background: color-mix(in oklch, var(--secondary) 42%, transparent);
-    box-shadow: inset 0 0 0 1px var(--border);
-  }
-  .output-stage rect {
-    fill: color-mix(in oklch, var(--background) 72%, transparent);
-    stroke: var(--border);
-  }
-  .output-stage path {
-    fill: none; stroke: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
-    stroke-width: 2; stroke-dasharray: 4 5;
-  }
-  .output-stage text {
-    font-family: var(--font-display); font-size: 10px;
-    fill: var(--muted-foreground); text-anchor: middle;
-  }
-  .output-stage__speaker circle {
-    fill: var(--primary); stroke: var(--background); stroke-width: 3;
-  }
-  .output-stage__speaker text {
-    fill: var(--primary-foreground); font-size: 12px; font-weight: 700;
-  }
-  .output-stage__seat { font-size: 9px; }
-  .output-stage__empty { font-size: 12px; }
   .output-lane {
     display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
   }

@@ -18,12 +18,14 @@
 > emits muted/protected CamillaDSP startup templates with explicit
 > active-hardware playback device input, `volume_limit: 0.0`, startup
 > headroom, tweeter protective HP, per-driver mute, and per-driver
-> limiter chains. `/sound/` has an Advanced speaker setup entry point
+> limiter chains. `/sound/` has a collapsed **Speaker setup** entry point
 > with one primary **Active crossover setup** walkthrough over
 > `/sound/output-topology`. The UI renders detected physical outputs,
 > speaker groups, assigned/unassigned lanes, safety evidence, and no-audio
 > setup templates for mono/stereo passive, mono/stereo active 2-way, and
-> mono/stereo active 3-way wiring. Subwoofer is an optional add-on to the
+> mono/stereo active 3-way wiring. The active walkthrough step labels are **Choose speaker
+> layout**, **Add driver and crossover values**, **Confirm outputs**, **Test
+> each driver**, and **Validate and apply**. Subwoofer is an optional add-on to the
 > current draft rather than a duplicated template matrix: when an unused
 > physical output exists, the UI adds one `subwoofer` group and records it
 > in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
@@ -39,7 +41,7 @@
 > stereo active 3-way and active subwoofer add-ons remain modeled but are
 > disabled/blocked until outputd, staging, baseline compilation, and tests are
 > widened together. The UI organizes this work as collapsible task
-> cards — choose layout, add driver info, confirm outputs, test drivers,
+> cards — choose layout, add driver and crossover values, confirm outputs, test drivers,
 > validate the summed crossover, then save/apply the active profile. It
 > defaults to the first unfinished task card,
 > keeps one task card open at a time, prevents opening future prerequisite-gated
@@ -55,10 +57,12 @@
 > not web routes anymore; their remaining logic is backend implementation detail.
 > `/sound/active-speaker/channel-identity` now exposes and updates
 > operator-confirmed physical channel identity evidence for the saved
-> topology. The UI can mark or clear an assigned channel as physically
-> verified after wiring inspection, dummy-load/DMM checks, or a future
-> low-level channel test. This still does not play audio, reload
-> CamillaDSP, or grant playback permission; tweeter protection and path
+> topology. The Confirm outputs UI can run a guarded quiet **Play** audition for
+> an assigned driver before identity is confirmed; the backend treats that as
+> identity-audition mode and still requires the saved topology, staged protected
+> config, software guards, path-safety evidence, calibration floor, Stop/session
+> control, and CamillaDSP rollback gates. Marking or clearing identity evidence
+> still does not grant playback permission; tweeter protection and later path
 > safety remain separate blockers.
 > The bottom **Reset speaker setup** recovery action posts to
 > `/sound/output-topology/reset`: it stops any active-speaker tone/session,

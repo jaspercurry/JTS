@@ -191,6 +191,29 @@ function activeTwoWayTopologyPayload() {
   };
 }
 
+function activeTwoWayWithSubwooferTopologyPayload() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.hardware.physical_output_count = 3;
+  topology.hardware.outputs.push({ index: 2, human_label: "DAC output 3" });
+  topology.routing.subwoofer_group_ids = ["sub"];
+  topology.speaker_groups.push({
+    id: "sub",
+    label: "Subwoofer",
+    kind: "subwoofer",
+    mode: "subwoofer",
+    position: { x: 0, y: -0.72, rotation_degrees: 0 },
+    channels: [{
+      role: "subwoofer",
+      physical_output_index: 2,
+      identity_verified: true,
+      startup_muted: true,
+      protection_required: false,
+      protection_status: "not_required",
+    }],
+  });
+  return topology;
+}
+
 function activeThreeWayTopologyPayload() {
   return {
     status: "valid",
@@ -2416,6 +2439,72 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
   return { preparePreviewUpdatesWorkingSetupFirst: true };
 }
 
+async function testPreparePreviewIgnoresOptionalSubwooferDriverInfo() {
+  const designSaves = [];
+  const previewSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayWithSubwooferTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
+          manual_settings: body.manual_settings,
+          driver_research: body.driver_research,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") {
+        previewSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({
+          status: "ready_for_protected_staging",
+          summary: { ready_crossover_count: 1, blocker_count: 0 },
+          groups: [],
+          issues: [],
+          permissions: { may_prepare_protected_startup_config: true },
+        }));
+      }
+      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2100");
+  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
+  for (let i = 0; i < 8; i += 1) await harness.flush();
+
+  if (designSaves.length !== 1 || previewSaves.length !== 1) {
+    fail("Optional local subwoofer should not block active-main crossover preview", {
+      designSaves,
+      previewSaves,
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  const roles = (designSaves[0].manual_settings.drivers || []).map((driver) => driver.role);
+  if (roles.includes("subwoofer")) {
+    fail("Active-main driver research payload should not require the optional subwoofer", {
+      roles,
+      saved: designSaves[0],
+    });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes("- subwoofer:")) {
+    fail("AI helper prompt should not ask for optional subwoofer model details", { html });
+  }
+  return { preparePreviewIgnoresOptionalSubwooferDriverInfo: true };
+}
+
 async function testPreparePreviewWaitsForInFlightWorkingSetupUpdate() {
   const designSaves = [];
   const previewSaves = [];
@@ -3615,6 +3704,7 @@ results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
 results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
+results.push(await testPreparePreviewIgnoresOptionalSubwooferDriverInfo());
 results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testCommissionCardArmsAndSteps());
