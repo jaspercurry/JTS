@@ -30,7 +30,13 @@ from jasper.accessories import bridge as bridge_mod
 from jasper.accessories.bridge import (
     COALESCE_WINDOW_SEC, _Coalescer, _post_once, _read_device, _TapCounter,
 )
-from jasper.accessories.registry import Device, HoldAction, KeyAction, TapAction
+from jasper.accessories.registry import (
+    HoldAction,
+    KeyAction,
+    RemoteIdentity,
+    RemoteProfile,
+    TapAction,
+)
 from jasper.control.client import ControlError, ControlResponse
 
 
@@ -365,6 +371,22 @@ def _install_fake_evdev(monkeypatch, *, input_device) -> None:
     monkeypatch.setitem(sys.modules, "evdev", fake)
 
 
+def _profile(
+    *,
+    name: str = "WiiM Remote 2",
+    vendor_id: int = 0x2717,
+    product_id: int = 0x32B9,
+    keymap: dict[int, KeyAction | TapAction | HoldAction],
+    profile_id: str = "test_remote",
+) -> RemoteProfile:
+    return RemoteProfile(
+        id=profile_id,
+        name=name,
+        identity=RemoteIdentity(usb_ids=((vendor_id, product_id),)),
+        keymap=keymap,
+    )
+
+
 @pytest.mark.asyncio
 async def test_read_device_hold_action_posts_on_press_and_release(monkeypatch):
     calls: List[tuple[str, str, Optional[dict]]] = []
@@ -393,10 +415,7 @@ async def test_read_device_hold_action_posts_on_press_and_release(monkeypatch):
 
     _install_fake_evdev(monkeypatch, input_device=_FakeDev)
 
-    device = Device(
-        name="WiiM Remote 2",
-        vendor_id=0x2717,
-        product_id=0x32B9,
+    device = _profile(
         keymap={
             217: HoldAction(
                 on_press=KeyAction("POST", "/session/start", {}),
@@ -446,10 +465,7 @@ async def test_read_device_hold_action_preserves_press_release_order(monkeypatch
 
     _install_fake_evdev(monkeypatch, input_device=_FakeDev)
 
-    device = Device(
-        name="WiiM Remote 2",
-        vendor_id=0x2717,
-        product_id=0x32B9,
+    device = _profile(
         keymap={
             217: HoldAction(
                 on_press=KeyAction("POST", "/session/start", {}),
@@ -502,10 +518,7 @@ async def test_read_device_hold_action_releases_on_disconnect(monkeypatch):
 
     _install_fake_evdev(monkeypatch, input_device=_FakeDev)
 
-    device = Device(
-        name="WiiM Remote 2",
-        vendor_id=0x2717,
-        product_id=0x32B9,
+    device = _profile(
         keymap={
             217: HoldAction(
                 on_press=KeyAction("POST", "/session/start", {}),
@@ -557,10 +570,7 @@ async def test_read_device_counts_autorepeat_for_coalesced_volume(monkeypatch):
 
     _install_fake_evdev(monkeypatch, input_device=_FakeDev)
 
-    device = Device(
-        name="WiiM Remote 2",
-        vendor_id=0x2717,
-        product_id=0x32B9,
+    device = _profile(
         keymap={
             115: KeyAction(
                 "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
@@ -590,11 +600,12 @@ async def test_read_device_open_failure_emits_canonical_event(caplog, monkeypatc
 
     _install_fake_evdev(monkeypatch, input_device=_raises)
 
-    device = Device(
+    device = _profile(
         name="Anti cater VK-01",
         vendor_id=0x514C,
         product_id=0x8850,
         keymap={},
+        profile_id="anticater_vk01",
     )
 
     async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
@@ -603,7 +614,7 @@ async def test_read_device_open_failure_emits_canonical_event(caplog, monkeypatc
     with caplog.at_level(logging.WARNING, logger="jasper.accessories.bridge"):
         await _read_device("/dev/input/event9", device, post)
     assert caplog.records[-1].getMessage() == (
-        'event=knob.open.failed device="Anti cater VK-01" '
+        'event=knob.open.failed device="Anti cater VK-01" profile=anticater_vk01 '
         'path=/dev/input/event9 err="simulated: no such device"'
     )
 
@@ -631,11 +642,12 @@ async def test_read_device_close_emits_canonical_event(caplog, monkeypatch):
 
     _install_fake_evdev(monkeypatch, input_device=_FakeDev)
 
-    device = Device(
+    device = _profile(
         name="Anti cater VK-01",
         vendor_id=0x514C,
         product_id=0x8850,
         keymap={},
+        profile_id="anticater_vk01",
     )
 
     async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
@@ -645,6 +657,6 @@ async def test_read_device_close_emits_canonical_event(caplog, monkeypatch):
         await _read_device("/dev/input/event9", device, post)
     # The last line is knob.close; knob.open is emitted first (INFO).
     assert caplog.records[-1].getMessage() == (
-        'event=knob.close device="Anti cater VK-01" '
+        'event=knob.close device="Anti cater VK-01" profile=anticater_vk01 '
         'reason="simulated: device disconnected"'
     )

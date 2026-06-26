@@ -11,6 +11,11 @@ from __future__ import annotations
 import pytest
 
 from jasper.accessories.registry import (
+    CAP_MUTE,
+    CAP_TAP_GESTURES,
+    CAP_TRANSPORT,
+    CAP_VOICE_HOLD,
+    CAP_VOLUME,
     KEY_MUTE,
     KEY_NEXTSONG,
     KEY_PLAYPAUSE,
@@ -19,10 +24,12 @@ from jasper.accessories.registry import (
     KEY_VOLUMEDOWN,
     KEY_VOLUMEUP,
     KNOWN_DEVICES,
+    KNOWN_PROFILES,
     VK01,
     WIIM_REMOTE_2,
     HoldAction,
     KeyAction,
+    RemoteProfile,
     TapAction,
     lookup,
     lookup_by_name,
@@ -30,9 +37,17 @@ from jasper.accessories.registry import (
 
 
 def test_vk01_in_registry():
-    assert VK01 in KNOWN_DEVICES
+    assert KNOWN_DEVICES is KNOWN_PROFILES
+    assert VK01 in KNOWN_PROFILES
+    assert isinstance(VK01, RemoteProfile)
+    assert VK01.id == "anticater_vk01"
     assert VK01.vendor_id == 0x514C
     assert VK01.product_id == 0x8850
+    assert VK01.identity.usb_ids == ((0x514C, 0x8850),)
+    assert VK01.bt_name_regex == r"(?i)anticater"
+    assert VK01.capabilities == frozenset({
+        CAP_VOLUME, CAP_TRANSPORT, CAP_TAP_GESTURES,
+    })
 
 
 def test_lookup_finds_vk01_by_usb_ids():
@@ -89,7 +104,24 @@ def test_vk01_click_is_tap_action_for_transport():
     assert click.window_ms > 0
 
 
+def test_vk01_profile_reserves_hold_and_mic_extension_points():
+    assert VK01.mic.status == "reserved"
+    assert VK01.mic.capture_profile_id is None
+    assert "standard Linux audio capture device" in VK01.mic.detail
+    reserved = {feature.id: feature.detail for feature in VK01.reserved_features}
+    assert "true_hold" in reserved
+    assert "remote_mic" in reserved
+    assert "HoldAction" in reserved["true_hold"]
+    assert "voice pipeline" in reserved["remote_mic"]
+
+
 def test_wiim_remote_2_media_keymap_targets_control_routes():
+    assert WIIM_REMOTE_2.id == "wiim_remote_2"
+    assert WIIM_REMOTE_2.capabilities == frozenset({
+        CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD,
+    })
+    assert WIIM_REMOTE_2.mic.status == "reserved"
+    assert "MEMS mic" in WIIM_REMOTE_2.mic.detail
     keymap = WIIM_REMOTE_2.keymap
     assert keymap[KEY_VOLUMEUP] == KeyAction(
         "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
@@ -116,12 +148,12 @@ def test_wiim_remote_2_name_fallback_matches_bluez_name():
     assert lookup_by_name("wiim remote 2 consumer control") is WIIM_REMOTE_2
 
 
-@pytest.mark.parametrize("device", KNOWN_DEVICES)
+@pytest.mark.parametrize("device", KNOWN_PROFILES)
 def test_every_registered_device_has_unique_usb_ids(device):
     """Sanity guard for future additions — two devices on the same
     (vid, pid) would cause lookup to silently shadow one."""
     matches = [
-        d for d in KNOWN_DEVICES
+        d for d in KNOWN_PROFILES
         if d.vendor_id == device.vendor_id
         and d.product_id == device.product_id
     ]

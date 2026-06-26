@@ -2,18 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Known third-party HID accessories and their keycode → jasper-control
-action mappings.
+"""Known third-party HID remote profiles and keycode → control mappings.
 
 The bridge daemon (bridge.py) watches /dev/input/event* for any device
-whose USB VID/PID matches an entry below, and translates matched key
-events into HTTP calls against jasper-control on localhost.
+matching a profile below, and translates matched key events into HTTP
+calls against jasper-control on localhost.
 
-Adding a new HID accessory is a one-entry change in `KNOWN_DEVICES`.
+Adding a normal evdev-backed HID remote is a one-entry change in
+`KNOWN_PROFILES`. Hardware that needs vendor feature reports, LED
+feedback, or a real remote microphone should extend the profile
+metadata first, then add the narrow runtime adapter it needs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Union
 
 
@@ -27,6 +29,12 @@ KEY_PREVIOUSSONG = 165
 KEY_NEXTSONG = 163
 KEY_PLAYPAUSE = 164
 KEY_SEARCH = 217
+
+CAP_VOLUME = "volume"
+CAP_TRANSPORT = "transport"
+CAP_MUTE = "mute"
+CAP_TAP_GESTURES = "tap-gestures"
+CAP_VOICE_HOLD = "voice-hold"
 
 
 @dataclass(frozen=True)
@@ -87,20 +95,83 @@ Action = Union[KeyAction, TapAction, HoldAction]
 
 
 @dataclass(frozen=True)
-class Device:
-    """A supported HID accessory."""
+class RemoteIdentity:
+    """Stable matchers for one remote profile.
 
+    USB VID/PID is the strict match. Bluetooth HID devices often expose
+    different IDs from their USB mode, so profiles may also declare
+    advertised-name regexes for the pairing/runtime fallback path.
+    """
+
+    usb_ids: tuple[tuple[int, int], ...]
+    bt_name_regexes: tuple[str, ...] = ()
+
+    def matches_usb(self, vendor_id: int, product_id: int) -> bool:
+        return (vendor_id, product_id) in self.usb_ids
+
+    def matches_name(self, name: str) -> bool:
+        import re
+
+        if not name:
+            return False
+        return any(re.search(pattern, name) for pattern in self.bt_name_regexes)
+
+
+@dataclass(frozen=True)
+class RemoteMicSupport:
+    """Remote microphone integration state for this profile.
+
+    The HID bridge does not consume audio. This metadata records whether
+    a remote is known to expose a standard Linux capture device, or
+    whether a future vendor/profile-specific adapter is reserved.
+    """
+
+    status: str = "none"  # none | not_exposed | reserved | linux_audio
+    detail: str = "No remote microphone integration."
+    capture_profile_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReservedFeature:
+    """Intentional extension point for hardware behavior not wired yet."""
+
+    id: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class RemoteProfile:
+    """A supported evdev-backed HID remote or knob."""
+
+    id: str
     name: str
-    vendor_id: int   # USB VID
-    product_id: int  # USB PID
+    identity: RemoteIdentity
     keymap: Mapping[int, Action]
-    # Optional regex (Python `re` syntax) for the BT advertised name.
-    # When set, the pair wizard filters discovered devices through
-    # this — keeps us from grabbing an unrelated nearby HID device
-    # (a stray Apple Magic Mouse / Surface Dial in pair mode would
-    # otherwise be the "first match"). Match is `re.search`, so
-    # anchors are explicit.
-    bt_name_regex: str | None = None
+    capabilities: frozenset[str] = frozenset()
+    mic: RemoteMicSupport = field(default_factory=RemoteMicSupport)
+    reserved_features: tuple[ReservedFeature, ...] = ()
+
+    @property
+    def vendor_id(self) -> int:
+        """Primary USB VID, kept for concise logs/tests."""
+        return self.identity.usb_ids[0][0]
+
+    @property
+    def product_id(self) -> int:
+        """Primary USB PID, kept for concise logs/tests."""
+        return self.identity.usb_ids[0][1]
+
+    @property
+    def bt_name_regex(self) -> str | None:
+        """Compatibility view for older callers/tests."""
+        return (
+            self.identity.bt_name_regexes[0]
+            if self.identity.bt_name_regexes else None
+        )
+
+
+# Backward-compatible type alias. New code should say RemoteProfile.
+Device = RemoteProfile
 
 
 # Anticater VK-01 Desktop Volume Knob (USB-C / BT 5.1 HID).
@@ -114,10 +185,15 @@ class Device:
 # pause toggle, double = next, triple = previous — matching the dial's
 # semantics. The hardware sends KEY_MUTE per press but we treat the
 # keycode as opaque button-id and dispatch by tap count.
-VK01 = Device(
+VK01 = RemoteProfile(
+    id="anticater_vk01",
     name="Anticater VK-01",
-    vendor_id=0x514C,
-    product_id=0x8850,
+    identity=RemoteIdentity(
+        usb_ids=((0x514C, 0x8850),),
+        # Anticater's BT advertised name pattern (per the manual).
+        # Case-insensitive — some firmware revs lowercase it.
+        bt_name_regexes=(r"(?i)anticater",),
+    ),
     keymap={
         KEY_VOLUMEUP: KeyAction(
             "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
@@ -131,9 +207,34 @@ VK01 = Device(
             on_triple=KeyAction("POST", "/transport/previous", {}),
         ),
     },
-    # Anticater's BT advertised name pattern (per the manual). Case-
-    # insensitive — some firmware revs lowercase it.
-    bt_name_regex=r"(?i)anticater",
+    capabilities=frozenset({CAP_VOLUME, CAP_TRANSPORT, CAP_TAP_GESTURES}),
+    mic=RemoteMicSupport(
+        status="reserved",
+        detail=(
+            "No standard Linux audio capture device observed for the "
+            "tested VK-01. The profile reserves a remote-mic slot for "
+            "variants that expose one through ALSA, Bluetooth, or a "
+            "future vendor adapter."
+        ),
+    ),
+    reserved_features=(
+        ReservedFeature(
+            id="true_hold",
+            detail=(
+                "Factory firmware collapses physical long-press into a "
+                "short press+release. If a configured variant emits a "
+                "real hold edge, map it here with HoldAction."
+            ),
+        ),
+        ReservedFeature(
+            id="remote_mic",
+            detail=(
+                "If a variant exposes an internal mic, add a capture "
+                "profile and route that source into the voice pipeline; "
+                "do not fake it through the HID button bridge."
+            ),
+        ),
+    ),
 )
 
 
@@ -147,10 +248,13 @@ VK01 = Device(
 # Input/source needs a JTS source-selection semantic. Voice is mapped
 # as hold-to-talk against the normal JTS mic pipeline; the WiiM Remote
 # 2's MEMS mic does not expose as a standard Linux audio capture device.
-WIIM_REMOTE_2 = Device(
+WIIM_REMOTE_2 = RemoteProfile(
+    id="wiim_remote_2",
     name="WiiM Remote 2",
-    vendor_id=0x2717,
-    product_id=0x32B9,
+    identity=RemoteIdentity(
+        usb_ids=((0x2717, 0x32B9),),
+        bt_name_regexes=(r"(?i)\bwiim remote 2\b",),
+    ),
     keymap={
         KEY_VOLUMEUP: KeyAction(
             "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
@@ -167,23 +271,50 @@ WIIM_REMOTE_2 = Device(
             on_release=KeyAction("POST", "/session/end", {}),
         ),
     },
-    bt_name_regex=r"(?i)\bwiim remote 2\b",
+    capabilities=frozenset({CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD}),
+    mic=RemoteMicSupport(
+        status="reserved",
+        detail=(
+            "The remote has a built-in MEMS mic, but the tested pairing "
+            "does not expose a standard Linux audio capture device. A "
+            "future adapter can fill capture_profile_id when the audio "
+            "transport is understood."
+        ),
+    ),
+    reserved_features=(
+        ReservedFeature(
+            id="input_button",
+            detail=(
+                "KEY_BACK/input-source is captured but not mapped to a "
+                "JTS source semantic yet."
+            ),
+        ),
+        ReservedFeature(
+            id="remote_mic",
+            detail=(
+                "Wire only after the remote mic exposes a real audio "
+                "source; until then HoldAction starts the normal JTS mic path."
+            ),
+        ),
+    ),
 )
 
 
-KNOWN_DEVICES: list[Device] = [VK01, WIIM_REMOTE_2]
+KNOWN_PROFILES: list[RemoteProfile] = [VK01, WIIM_REMOTE_2]
+# Compatibility alias for the bridge and older tests/docs vocabulary.
+KNOWN_DEVICES = KNOWN_PROFILES
 
 
-def lookup(vendor_id: int, product_id: int) -> Device | None:
-    """Return the registry entry for a USB (vid, pid), or None."""
-    for d in KNOWN_DEVICES:
-        if d.vendor_id == vendor_id and d.product_id == product_id:
-            return d
+def lookup(vendor_id: int, product_id: int) -> RemoteProfile | None:
+    """Return the profile for a USB (vid, pid), or None."""
+    for profile in KNOWN_PROFILES:
+        if profile.identity.matches_usb(vendor_id, product_id):
+            return profile
     return None
 
 
-def lookup_by_name(name: str) -> Device | None:
-    """Return the registry entry whose `bt_name_regex` matches `name`.
+def lookup_by_name(name: str) -> RemoteProfile | None:
+    """Return the profile whose Bluetooth name matcher accepts `name`.
 
     Used as a fallback when VID/PID lookup misses — over BT-HID the
     kernel exposes whatever vendor/product the device's HID descriptor
@@ -192,11 +323,7 @@ def lookup_by_name(name: str) -> Device | None:
     we already know about. Name matching is the stable identity across
     transports.
     """
-    import re
-
-    if not name:
-        return None
-    for d in KNOWN_DEVICES:
-        if d.bt_name_regex and re.search(d.bt_name_regex, name):
-            return d
+    for profile in KNOWN_PROFILES:
+        if profile.identity.matches_name(name):
+            return profile
     return None
