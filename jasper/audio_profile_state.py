@@ -68,6 +68,9 @@ class RuntimeAecEnv:
     chip_beam_plan: str = ""
     chip_primary_leg: str = "chip_aec_150"
     chip_enabled: bool = False
+    raw_device: str = ""
+    dtln_device: str = ""
+    dtln_enabled: bool = False
     chip_aec_150_device: str = ""
     chip_aec_210_device: str = ""
     chip_aec_gate_dac_id: str = ""
@@ -332,6 +335,22 @@ def runtime_env_from_mapping(
             env_value(env, "JASPER_AEC_CHIP_AEC_ENABLED", "0", process_env=process_env),
             default=False,
         ),
+        raw_device=env_value(
+            env,
+            "JASPER_MIC_DEVICE_RAW",
+            "",
+            process_env=process_env,
+        ),
+        dtln_device=env_value(
+            env,
+            "JASPER_MIC_DEVICE_DTLN",
+            "",
+            process_env=process_env,
+        ),
+        dtln_enabled=parse_env_bool(
+            env_value(env, "JASPER_AEC_DTLN_ENABLED", "0", process_env=process_env),
+            default=False,
+        ),
         chip_aec_150_device=env_value(
             env,
             "JASPER_MIC_DEVICE_CHIP_AEC_150",
@@ -445,10 +464,29 @@ def build_audio_profile_status(
         if selection == PROFILE_XVF_CHIP_AEC_TESTING
         else gate_auto_allowed
     )
-    effective_intent = resolve_audio_input_intent(
+    requested_intent = resolve_audio_input_intent(
         intent,
         chip_available=chip_allowed_for_selection,
     )
+    if selection == PROFILE_AUTO:
+        requested_profile = (
+            PROFILE_XVF_CHIP_AEC
+            if requested_intent.chip_aec_enabled
+            else PROFILE_XVF_SOFTWARE_AEC3
+        )
+    elif selection in {
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+        PROFILE_XVF_SOFTWARE_AEC3,
+        PROFILE_DIRECT_MIC,
+    }:
+        requested_profile = selection
+    elif requested_intent.mode != "auto":
+        requested_profile = PROFILE_DIRECT_MIC
+    elif requested_intent.chip_aec_enabled:
+        requested_profile = PROFILE_XVF_CHIP_AEC
+    else:
+        requested_profile = PROFILE_XVF_SOFTWARE_AEC3
     direct_mic_configured = _direct_mic_configured(runtime)
     mic_variant = runtime.mic_variant or mic.variant_id
     mic_geometry = runtime.mic_geometry or mic.geometry
@@ -480,7 +518,7 @@ def build_audio_profile_status(
     )
 
     chip_runtime_active = bool(
-        effective_intent.mode == "auto"
+        requested_intent.mode == "auto"
         and bridge_active
         and chip_available
         and gate_permitted
@@ -489,105 +527,100 @@ def build_audio_profile_status(
         and runtime.chip_aec_150_device
         and runtime.chip_aec_210_device
     )
+    applied_raw_enabled = bool(runtime.raw_device)
+    applied_dtln_enabled = bool(runtime.dtln_enabled or runtime.dtln_device)
+    software_runtime_active = bool(
+        requested_intent.mode == "auto"
+        and bridge_active
+        and not chip_runtime_active
+        and not aec_device_mismatch
+        and (runtime.primary_device.startswith("udp:") or runtime.raw_device)
+    )
+    hardware_requested = requested_profile in {
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+    }
 
-    if effective_intent.mode != "auto":
+    if requested_intent.mode != "auto":
         processing_mode = "Direct mic"
         session_source = mic_source_label(runtime.primary_device)
         wake_legs = ["Direct mic"]
-        requested_profile = PROFILE_DIRECT_MIC
         active_profile = PROFILE_DIRECT_MIC
         profile_state = "disabled"
         profile_reason = "AEC mode is disabled."
-    elif effective_intent.chip_aec_enabled:
-        requested_profile = (
-            PROFILE_XVF_CHIP_AEC_TESTING
-            if selection == PROFILE_XVF_CHIP_AEC_TESTING
-            else PROFILE_XVF_CHIP_AEC
-        )
+    elif chip_runtime_active:
         processing_label = (
             "Chip-AEC testing"
             if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
             else "Chip-AEC"
         )
-        processing_mode = (
-            processing_label
-            if chip_runtime_active
-            else f"{processing_label} pending"
+        processing_mode = processing_label
+        session_source = (
+            "Chip AEC 210 beam via :9876"
+            if runtime.chip_primary_leg == "chip_aec_210"
+            else "Chip AEC 150 beam via :9876"
         )
-        if chip_runtime_active:
-            session_source = (
-                "Chip AEC 210 beam via :9876"
-                if runtime.chip_primary_leg == "chip_aec_210"
-                else "Chip AEC 150 beam via :9876"
+        profile_state = "active"
+        active_profile = requested_profile
+        profile_reason = (
+            "Chip-AEC testing runtime env is applied."
+            if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
+            else "Chip-AEC runtime env is applied."
+        )
+        wake_legs = ["Primary chip beam", "Chip AEC 150", "Chip AEC 210"]
+    else:
+        if software_runtime_active:
+            processing_mode = "Software AEC3"
+            session_source = "WebRTC AEC3 via :9876"
+            wake_legs = ["AEC3"]
+            if applied_raw_enabled:
+                wake_legs.append("Chip-direct raw")
+            if applied_dtln_enabled:
+                wake_legs.append("DTLN")
+            active_profile = PROFILE_XVF_SOFTWARE_AEC3
+        else:
+            processing_mode = (
+                "Chip-AEC pending" if hardware_requested else "Software AEC3 pending"
             )
-            profile_state = "active"
-            active_profile = requested_profile
-            profile_reason = (
-                "Chip-AEC testing runtime env is applied."
-                if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
-                else "Chip-AEC runtime env is applied."
-            )
-        elif not chip_available:
-            session_source = "waiting for AEC bridge"
-            profile_state = "unavailable"
+            session_source = "waiting for AEC runtime"
+            wake_legs = []
             active_profile = None
-            profile_reason = (
-                "Chip-AEC needs a validated XVF3800 chip beam plan for "
-                "the detected mic geometry."
-            )
-        elif not gate_permitted:
-            session_source = "waiting for AEC bridge"
-            profile_state = "unavailable"
-            active_profile = None
-            profile_reason = (
-                gate_detail
-                or "Chip-AEC is not permitted for this output DAC."
-            )
-        elif aec_device_mismatch:
-            session_source = "waiting for AEC bridge"
+        if aec_device_mismatch:
             profile_state = "pending" if bridge_active else "waiting_bridge"
-            active_profile = None
             profile_reason = (
                 "AEC bridge is not using the detected XVF card because "
                 f"{aec_device_mismatch_reason}."
             )
         elif not bridge_active:
-            session_source = "waiting for AEC bridge"
             profile_state = "waiting_bridge"
-            active_profile = None
             profile_reason = "AEC bridge is not active yet."
-        else:
-            session_source = "waiting for AEC bridge"
-            profile_state = "pending"
-            active_profile = None
-            profile_reason = "Chip-AEC selected but runtime env is not applied."
-        wake_legs = ["Primary chip beam", "Chip AEC 150", "Chip AEC 210"]
-    else:
-        processing_mode = "Software AEC3"
-        session_source = "WebRTC AEC3 via :9876" if bridge_active else "waiting for AEC bridge"
-        wake_legs = ["AEC3"]
-        if effective_intent.raw_enabled:
-            wake_legs.append("Chip-direct raw")
-        if effective_intent.dtln_enabled:
-            wake_legs.append("DTLN")
-        requested_profile = PROFILE_XVF_SOFTWARE_AEC3
-        if aec_device_mismatch:
-            active_profile = None
-            profile_state = "pending" if bridge_active else "waiting_bridge"
-        else:
-            active_profile = PROFILE_XVF_SOFTWARE_AEC3 if bridge_active else None
-            profile_state = "active" if bridge_active else "waiting_bridge"
-        if bridge_active and not aec_device_mismatch:
-            profile_reason = "Software AEC3 bridge is active."
-        elif aec_device_mismatch:
+        elif hardware_requested and not chip_available:
+            profile_state = "fallback" if software_runtime_active else "unavailable"
             profile_reason = (
-                "AEC bridge is not using the detected XVF card because "
-                f"{aec_device_mismatch_reason}."
+                "Chip-AEC needs a validated XVF3800 chip beam plan for "
+                "the detected mic geometry; using software AEC3."
             )
+        elif hardware_requested and not gate_permitted:
+            profile_state = "fallback" if software_runtime_active else "unavailable"
+            profile_reason = (
+                f"{gate_detail}; using software AEC3."
+                if gate_detail
+                else "Chip-AEC is not permitted for this output DAC."
+            )
+        elif hardware_requested:
+            profile_state = "pending"
+            profile_reason = (
+                "Hardware echo cancellation is selected; software AEC3 is "
+                "still active until the reconciler applies the chip-AEC path."
+            )
+        elif software_runtime_active:
+            profile_state = "active"
+            profile_reason = "Software AEC3 bridge is active."
         else:
-            profile_reason = "AEC bridge is not active yet."
+            profile_state = "pending"
+            profile_reason = "Software AEC3 is selected; waiting for runtime state."
 
-    if effective_intent.mode == "auto" and not bridge_active:
+    if requested_intent.mode == "auto" and not bridge_active:
         warnings.append("AEC bridge is not active yet.")
     if aec_device_mismatch:
         warnings.append(
@@ -595,18 +628,18 @@ def build_audio_profile_status(
             f"detected XVF card {detected_aec_device}; run the reconciler "
             "to update derived mic state."
         )
-    if effective_intent.chip_aec_enabled and not chip_available:
+    if hardware_requested and not chip_available:
         warnings.append(
             "Chip-AEC needs a validated XVF3800 chip beam plan for the "
             "detected mic geometry."
         )
-    if effective_intent.chip_aec_enabled and chip_available and not gate_permitted:
+    if hardware_requested and chip_available and not gate_permitted:
         if gate_status:
             warnings.append(f"Chip-AEC DAC gate is {gate_status}: {gate_detail}")
         else:
             warnings.append("Chip-AEC is not permitted for this output DAC.")
     if (
-        effective_intent.chip_aec_enabled
+        hardware_requested
         and chip_available
         and gate_permitted
         and bridge_active
@@ -616,12 +649,12 @@ def build_audio_profile_status(
             "Chip-AEC is selected but the reconciler has not applied it yet."
         )
     if not mic.xvf_present and (
-        effective_intent.mode == "auto" or effective_intent.chip_aec_enabled
+        requested_intent.mode == "auto" or hardware_requested
     ):
         warnings.append("XVF3800 mic is not detected.")
     if mic.probe_error:
         warnings.append(f"Microphone probe failed: {mic.probe_error}")
-    if effective_intent.chip_aec_enabled and gate_status == STATUS_TESTING:
+    if hardware_requested and gate_status == STATUS_TESTING:
         warnings.append(
             "Chip-AEC testing profile is active; this output DAC path is not "
             "approved for automatic production chip-AEC."

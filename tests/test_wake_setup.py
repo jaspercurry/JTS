@@ -354,11 +354,10 @@ def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
 
 # ---------- Threshold logic -----------------------------------------------
 # _parse_threshold + the threshold codepath in _apply_save were
-# removed when the sensitivity slider moved to /system/'s Wake
-# detection card (jasper/web/system_setup.py + jasper/control/server.py
-# POST /aec/threshold). _active_threshold stays — it's a clean
-# "read what the daemon will load" helper independent of the UI
-# location.
+# removed when the sensitivity slider became its own JSON POST through
+# jasper/control/server.py POST /aec/threshold. _active_threshold stays
+# as a clean "read what the daemon will load" helper independent of
+# where the UI control is rendered.
 #
 # Threshold-preservation across a /wake/ model save is now covered
 # by test_apply_save_preserves_threshold_in_state below; the daemon-
@@ -367,11 +366,10 @@ def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
 
 
 def test_apply_save_preserves_threshold_in_state(monkeypatch, tmp_path: Path):
-    """The sensitivity slider lives on /system/ but writes the same
-    wake_model.env file. A save from /wake/ (model-only form) must
-    preserve any JASPER_WAKE_THRESHOLD already in the state dict —
-    otherwise saving a new model would silently zap the slider's
-    value."""
+    """The sensitivity slider writes the same wake_model.env file. A
+    model save must preserve any JASPER_WAKE_THRESHOLD already in the
+    state dict, otherwise saving a new model would silently zap the
+    slider's value."""
     current = {
         "JASPER_WAKE_MODEL": "hey_jarvis",
         "JASPER_WAKE_THRESHOLD": "0.35",
@@ -463,19 +461,24 @@ def test_index_html_renders_custom_row_for_unknown_active(monkeypatch):
     assert custom_path in html
 
 
-def test_index_html_renders_detection_card():
-    """The detection-layers card sits at the top of /wake/ with one
-    row per layer (AEC, raw, DTLN, chip-AEC beams) — each row carries an
-    iOS toggle that the page hydrates from /detection.json on load."""
+def test_index_html_renders_echo_and_advanced_fusion_controls():
+    """The primary screen presents echo choices, while low-level wake
+    streams live under Advanced wake fusion."""
     html = wake_setup._index_html({}).decode()
-    assert 'id="layer-aec"' in html
+    assert "Echo cancellation" in html
+    assert 'id="profile-auto"' in html
+    assert 'id="profile-xvf_chip_aec"' in html
+    assert 'id="profile-xvf_software_aec3"' in html
+    assert 'id="profile-direct_mic"' in html
+    assert "Advanced wake fusion" in html
+    assert 'id="profile-xvf_chip_aec_testing"' in html
+    assert 'id="layer-aec"' not in html
     assert 'id="layer-raw"' in html
     assert 'id="layer-dtln"' in html
     assert 'id="layer-chip_aec"' in html
     # Toggle classes are styled by the shared app.css switch rules.
     assert 'class="toggle"' in html
     # Each row exposes a status element for the poll loop to fill.
-    assert 'id="layer-status-aec"' in html
     assert 'id="layer-status-raw"' in html
     assert 'id="layer-status-dtln"' in html
     assert 'id="layer-status-chip_aec"' in html
@@ -498,19 +501,17 @@ def test_index_html_renders_microphone_status_card():
         assert f'id="{dom_id}"' in html
 
 
-def test_index_html_chip_aec_row_explains_mutual_exclusion():
-    """The chip-AEC layer row tells the household it's mutually exclusive
-    with raw + DTLN (one chip can't do both) and needs a supported mic
-    profile — so a user understands why enabling it greys the others out."""
+def test_index_html_chip_aec_controls_are_advanced_not_primary():
+    """Chip beam scoring and validation stay available, but not as the
+    primary household-facing echo UX."""
     html = wake_setup._index_html({}).decode()
-    assert "Chip-AEC beams" in html
-    assert "Mutually exclusive" in html or "pauses them" in html
-    assert "supported mic profile" in html
+    assert "Hardware beam scoring" in html
+    assert "Hardware AEC validation mode" in html
+    assert "Advanced wake fusion" in html
 
 
 def test_index_html_includes_sensitivity_slider():
-    """Sensitivity is back on /wake/ as a native control next to the
-    detection layers — `type="range"` confirms the slider rendered."""
+    """Sensitivity is on /wake/ as a native wake-word tuning control."""
     html = wake_setup._index_html({}).decode()
     assert 'type="range"' in html
     assert 'id="sensitivity-input"' in html
@@ -529,9 +530,8 @@ def test_index_html_discloses_wake_event_recordings():
 
 
 def test_index_html_no_system_crosslink_for_wake_detection():
-    """The "Wake detection card moved to /system/" panel is gone now
-    that the controls live on /wake/. A stale link would mis-direct
-    users; assert it never re-appears."""
+    """The stale system-dashboard crosslink must not return now that
+    microphone and wake controls live together on /wake/."""
     html = wake_setup._index_html({}).decode()
     assert 'moved-panel' not in html
     assert '/system/' not in html
@@ -610,10 +610,10 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
     assert called == ["restart"]
 
 
-# ---------- Detection-card proxy routes ------------------------------------
+# ---------- Mic/wake proxy routes ------------------------------------------
 # These cover the /detection.json poll plus the /layer/<name> and
 # /sensitivity POST routes that forward to jasper-control with the
-# wizard's user-facing vocabulary (layer/aec, sensitivity) rewritten
+# wizard's user-facing vocabulary (legacy layer/aec, sensitivity) rewritten
 # to jasper-control's internal vocabulary (/aec/{toggle,leg,threshold}).
 
 

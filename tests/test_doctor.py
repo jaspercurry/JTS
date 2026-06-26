@@ -4989,7 +4989,7 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     result = doctor._assess_audio_profile(status)
 
     assert result.status == "warn"
-    assert "active=none" in result.detail
+    assert "active=xvf_software_aec3" in result.detail
     assert "not applied" in result.detail
 
 
