@@ -1485,6 +1485,87 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   return { channelSelectorKeepsConfirmOutputsOpenWhenDraftDirty: true };
 }
 
+async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels.forEach((channel) => {
+    channel.identity_verified = false;
+  });
+  let commissionState = {
+    commission_load: { status: "idle", target: {}, rollback_available: false },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+    })),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-load": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: body.role, audible_gain_db: -120 },
+          rollback_available: true,
+        },
+        ramp: { confirmed_roles: [], pending: null },
+        floor: { status: "floor_required", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({
+        status: "loaded",
+        load: { status: "loaded", target: { role: body.role } },
+      }));
+    },
+    "./active-speaker/commission-ramp-step": (p, o) => {
+      const body = JSON.parse(o.body || "{}");
+      posts.push({ path: p, body });
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: body.role, audible_gain_db: -80 },
+          rollback_available: true,
+        },
+        ramp: {
+          confirmed_roles: [],
+          pending: { role: body.role, gain_db: -80, frequency_hz: 120 },
+        },
+        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-output-step="map" open')) {
+    fail("unconfirmed active outputs should start on Confirm outputs", { html });
+  }
+  if (!html.includes('data-identity-audition="true"')) {
+    fail("Confirm outputs Play button should be explicitly marked as identity audition", { html });
+  }
+
+  harness.dispatchClick({
+    "data-act": "commission-step",
+    "data-role": "woofer",
+    "data-identity-audition": "true",
+  });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const load = posts.find((x) => x.path === "./active-speaker/commission-load");
+  const step = posts.find((x) => x.path === "./active-speaker/commission-ramp-step");
+  if (!load || load.body.identity_audition !== true) {
+    fail("Confirm outputs Play should arm using identity-audition mode", { posts });
+  }
+  if (!step || step.body.identity_audition !== true) {
+    fail("Confirm outputs Play should ramp using identity-audition mode", { posts });
+  }
+  return { confirmOutputsPlayUsesIdentityAuditionMode: true };
+}
+
 async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
   const topology = activeThreeWayTopologyPayload();
   topology.speaker_groups[0].channels[0].physical_output_index = null;
@@ -2049,8 +2130,16 @@ async function testCommissionCardArmsAndSteps() {
   if (loadPosts.length !== 1) {
     fail("rapid Start clicks should open the quiet driver test once", { posts });
   }
+  if (loadPosts[0].body.identity_audition) {
+    fail("normal driver-test arm must not use identity-audition mode", { posts });
+  }
   if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
     fail("commission-ramp-step not posted on step", { posts });
+  }
+  if (posts.some((x) =>
+      x.path === "./active-speaker/commission-ramp-step" &&
+      x.body.identity_audition)) {
+    fail("normal driver-test ramp must not use identity-audition mode", { posts });
   }
   html = harness.elements.get("view-body").innerHTML;
   let cardHtml = commissionCardHtml(html);
@@ -3012,6 +3101,7 @@ results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
 results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
+results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());

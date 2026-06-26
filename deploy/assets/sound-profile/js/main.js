@@ -2584,7 +2584,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         escapeHtml(tonePlaying ? 'Stop' : 'Starting') + '</button>';
     }
     return '<button type="button" class="btn btn--ghost btn--compact output-role__action" ' +
-      'data-act="commission-step" data-role="' + escapeHtml(role) + '"' +
+      'data-act="commission-step" data-identity-audition="true" ' +
+      'data-role="' + escapeHtml(role) + '"' +
       (disabled ? ' disabled' : '') + '>Play</button>';
   }
   function renderOutputGroupsCard(topology) {
@@ -3643,7 +3644,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'output-step-next') { advanceOutputStep(t.getAttribute('data-step') || ''); }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
     else if (act === 'reset-output-topology') { resetOutputTopology(); }
-    else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(); }
+    else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(t); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
@@ -3655,7 +3656,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'record-summed-validation') { recordSummedValidation(t); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
     else if (act === 'commission-step') {
-      startCommissionAutoRamp(t.getAttribute('data-role') || '', {confirm: false});
+      startCommissionAutoRamp(t.getAttribute('data-role') || '', {
+        confirm: false,
+        identityAudition: t.getAttribute('data-identity-audition') === 'true'
+      });
     }
     else if (act === 'commission-ack') { commissionAck(t.getAttribute('data-outcome') || ''); }
     else if (act === 'commission-abort') { commissionAbort(); }
@@ -4083,7 +4087,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     render();
     return {ok: true, payload: payload};
   }
-  async function commissionArm(role) {
+  async function commissionArm(role, options) {
+    options = options || {};
     var group = activeCommissionGroup(currentOutputTopology());
     if (!group || !role) return;
     var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
@@ -4091,10 +4096,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var targetGroup = target.speaker_group_id || group.id;
     var force = load.status === 'loaded' &&
       (targetGroup !== group.id || (target.role || '') !== role);
+    var body = {group: group.id, role: role, force: force};
+    if (options.identityAudition) body.identity_audition = true;
     return await postCommission('./active-speaker/commission-load',
-      {group: group.id, role: role, force: force}, 'Getting ' + humanRole(role) + ' ready');
+      body, 'Getting ' + humanRole(role) + ' ready');
   }
-  async function ensureCommissionArmed(role) {
+  async function ensureCommissionArmed(role, options) {
+    options = options || {};
     var group = activeCommissionGroup(currentOutputTopology());
     if (!group || !role) return {ok: false, error: 'Choose a driver first.'};
     var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
@@ -4105,7 +4113,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (target.role || '') === role) {
       return {ok: true, payload: {status: 'loaded', load: load}};
     }
-    return await commissionArm(role);
+    return await commissionArm(role, options);
   }
   async function commissionStep(role, options) {
     options = options || {};
@@ -4121,6 +4129,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       options.busyLabel : 'Stepping ' + humanRole(role);
     var body = {group: group.id, role: role};
     if (options.autoRetryPending) body.auto_retry_pending = true;
+    if (options.identityAudition) body.identity_audition = true;
     return await postCommission('./active-speaker/commission-ramp-step',
       body, busyLabel);
   }
@@ -4171,7 +4180,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var result = await commissionStep(role, {
         confirm: false,
         busyLabel: '',
-        autoRetryPending: !!commissionPendingStep()
+        autoRetryPending: !!commissionPendingStep(),
+        identityAudition: !!commissionAutoRamp.identityAudition
       });
       if (!commissionAutoRampCurrent(groupId, role, token)) return;
       if (!result || !result.ok) {
@@ -4232,11 +4242,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       targetKey: targetKey,
       stepCount: 0,
       levelDbfs: null,
+      identityAudition: !!options.identityAudition,
       message: options.message || 'Getting ' + humanRole(role) + ' ready.'
     };
-    var armed = await ensureCommissionArmed(role);
+    var armed = await ensureCommissionArmed(role, {
+      identityAudition: !!options.identityAudition
+    });
     if (!armed || !armed.ok) {
       stopCommissionAutoRamp('');
+      render();
       return;
     }
     if (!commissionAutoRampCurrent(group.id, role, token)) return;
@@ -4600,7 +4614,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var summary = el('driver-research-import-summary');
     if (summary) summary.innerHTML = renderDriverResearchSummary();
   }
-  async function copyDriverResearchPrompt() {
+  async function copyDriverResearchPrompt(button) {
     var prompt = el('driver-research-prompt');
     if (!prompt) return;
     if (!driverResearchPromptReady(currentOutputTopology())) {
@@ -4620,7 +4634,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
     }
     driverResearch.promptCopied = copied;
+    if (button && copied) {
+      button.textContent = 'Copied';
+      button.disabled = false;
+    }
     render();
+    updateDriverResearchPromptButton();
     status(copied ? 'Copied driver research prompt.' :
       'Could not copy automatically. Select the prompt text and copy it manually.', !copied);
   }

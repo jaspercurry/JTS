@@ -1946,6 +1946,7 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
 async def _active_speaker_check_path_safety_payload(
     *,
     camilla_factory: Callable[[], Any],
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Build and persist no-audio startup-load path-safety evidence."""
 
@@ -1983,6 +1984,7 @@ async def _active_speaker_check_path_safety_payload(
         calibration_level=calibration_level,
         current_config_path=current_config_path,
         current_config_error=current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     report = evaluate_path_safety_evidence(evidence)
     target = write_path_safety_evidence(evidence)
@@ -1992,6 +1994,7 @@ async def _active_speaker_check_path_safety_payload(
         calibration_level=calibration_level,
         path_safety_evidence_path=target,
         current_config_path=current_config_path,
+        require_physical_identity=require_physical_identity,
     )
     logger.info(
         "event=sound.active_speaker_path_safety action=check status=%s "
@@ -2017,6 +2020,7 @@ async def _active_speaker_check_path_safety_payload(
 async def _active_speaker_load_startup_config_payload(
     *,
     camilla_factory: Callable[[], Any],
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Load the protected startup config through the guarded backend."""
 
@@ -2029,6 +2033,7 @@ async def _active_speaker_load_startup_config_payload(
         load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
         path_safety_evidence_path=_active_speaker_path_safety_evidence_path(),
+        require_physical_identity=require_physical_identity,
     )
     logger.info(
         "event=sound.active_speaker_startup_load action=load status=%s "
@@ -3266,6 +3271,7 @@ async def _active_speaker_ensure_commission_startup_anchor(
     staged_config: dict[str, Any],
     current_config_path: str | None,
     camilla_factory: Callable[[], Any],
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Ensure commissioning has the silent startup graph as rollback anchor."""
 
@@ -3289,6 +3295,7 @@ async def _active_speaker_ensure_commission_startup_anchor(
 
     path_payload = await _active_speaker_check_path_safety_payload(
         camilla_factory=camilla_factory,
+        require_physical_identity=require_physical_identity,
     )
     path_report = path_payload.get("report") if isinstance(path_payload, dict) else {}
     if not isinstance(path_report, dict) or path_report.get("load_gate") != "ready":
@@ -3310,6 +3317,7 @@ async def _active_speaker_ensure_commission_startup_anchor(
 
     startup_load = await _active_speaker_load_startup_config_payload(
         camilla_factory=camilla_factory,
+        require_physical_identity=require_physical_identity,
     )
     load_state = (
         startup_load.get("load")
@@ -3380,6 +3388,8 @@ async def _active_speaker_commission_load_payload(
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     force = bool(raw.get("force"))
+    identity_audition = bool(raw.get("identity_audition"))
+    require_physical_identity = not identity_audition
     # Serialize against the other measurement flows (room correction / pair
     # balance / pair sync) — all play sweeps through the production graph, and
     # commissioning does not hold the measurement window, so this cooperative
@@ -3463,6 +3473,7 @@ async def _active_speaker_commission_load_payload(
         staged_config=staged,
         current_config_path=current_config_path,
         camilla_factory=camilla_factory,
+        require_physical_identity=require_physical_identity,
     )
     if startup_setup.get("status") == "blocked":
         logger.info(
@@ -3479,7 +3490,11 @@ async def _active_speaker_commission_load_payload(
         await read_current_config_path(cam)
     )
     evidence_path = write_commission_path_safety(
-        topology, staged, current_config_path, current_config_error
+        topology,
+        staged,
+        current_config_path,
+        current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     load_config, read_running_config, get_current_config_path = (
         commission_seams(cam)
@@ -3495,6 +3510,7 @@ async def _active_speaker_commission_load_payload(
         crossover_preview=crossover_preview,
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
+        require_physical_identity=require_physical_identity,
     )
     logger.info(
         "event=sound.active_speaker_commission action=load group=%s role=%s status=%s",
@@ -3550,6 +3566,8 @@ async def _active_speaker_commission_ramp_step_payload(
 
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
+    identity_audition = bool(raw.get("identity_audition"))
+    require_physical_identity = not identity_audition
     topology = load_output_topology()
     staged = load_staged_startup_config()
     preset, crossover_preview = resolve_commission_inputs()
@@ -3558,7 +3576,11 @@ async def _active_speaker_commission_ramp_step_payload(
         await read_current_config_path(cam)
     )
     evidence_path = write_commission_path_safety(
-        topology, staged, current_config_path, current_config_error
+        topology,
+        staged,
+        current_config_path,
+        current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     load_config, read_running_config, get_current_config_path = (
         commission_seams(cam)
@@ -3585,6 +3607,7 @@ async def _active_speaker_commission_ramp_step_payload(
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
         play_tone=_play_commission_tone,
+        require_physical_identity=require_physical_identity,
         confirmed_roles=_active_speaker_confirmed_driver_roles(
             topology,
             group=group,

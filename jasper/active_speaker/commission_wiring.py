@@ -93,6 +93,8 @@ def write_commission_path_safety(
     staged: dict[str, Any],
     current_config_path: str | None,
     current_config_error: str | None,
+    *,
+    require_physical_identity: bool = True,
 ) -> str:
     """Build + persist fresh no-audio startup-load path-safety evidence bound to
     the current config; return its path.
@@ -113,5 +115,6 @@ def write_commission_path_safety(
         calibration_level=load_calibration_level_state(),
         current_config_path=current_config_path,
         current_config_error=current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     return str(write_path_safety_evidence(evidence))
