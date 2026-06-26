@@ -133,13 +133,19 @@
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > selection, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
-> `/sound/active-speaker/driver-measurement`,
-> `/sound/active-speaker/driver-capture`,
-> `/sound/active-speaker/summed-validation`, and
-> `/sound/active-speaker/summed-capture` now persist the first product-grade
-> measurement evidence through `jasper.active_speaker.measurement` at
+> `/sound/active-speaker/driver-measurement` and
+> `/sound/active-speaker/summed-validation` (by-ear confirmations), plus the
+> HTTPS browser mic-capture path `/correction/crossover/` driver-capture /
+> summed-capture (`correction_crossover_backend` →
+> `web_measurement.record_driver_capture` / `record_summed_capture`), persist
+> the first product-grade measurement evidence through
+> `jasper.active_speaker.measurement` at
 > `/var/lib/jasper/active_speaker_measurements.json` with kind
-> `jts_active_speaker_measurements`. Driver evidence is bound to the current
+> `jts_active_speaker_measurements`. (The old `/sound/active-speaker/driver-capture`
+> + `/summed-capture` mic routes were a verbatim duplicate of the
+> `web_measurement` capture path that nothing reached after the move to
+> `/correction/`; they were deleted — Codex-week review C4a-1. `/sound/` is plain
+> HTTP and cannot `getUserMedia`.) Driver evidence is bound to the current
 > saved physical target fingerprint: topology id, detected hardware, active
 > speaker group/mode, driver role, assigned DAC output, and current identity
 > confirmation. The mic-capture path accepts a bounded browser WAV upload (or a

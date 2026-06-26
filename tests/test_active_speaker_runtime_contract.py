@@ -317,6 +317,147 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     assert graph.details["unmuted_outputs"] == [0, 1]
 
 
+# --- C3a-4: the active-baseline runtime graph's fail-closed protections ---
+#
+# When source == ACTIVE_BASELINE_SOURCE the classifier SUPPRESSES the
+# commission-mute checks and instead treats every output as unmuted, validating
+# them through a NEW block of per-driver blocker predicates
+# (runtime_contract.py:1047-1291). That block is the ENTIRE fail-closed safety
+# net for a tweeter-bearing active-baseline runtime graph, yet only the positive
+# path (test_mono_active_2way_allows_approved_baseline_runtime) was pinned. These
+# mutate the emitted baseline YAML to break one protection at a time and assert
+# the classifier rejects it with the matching blocker — so a fail-OPEN regression
+# (e.g. dropping the gain<=0 check) can't pass green. The baseline-source comment
+# header is preserved by mutating text rather than parse->dump (the classifier
+# reads the source from that comment; a YAML round-trip strips it).
+
+
+def _baseline_codes(graph) -> set[str]:
+    return {issue["code"] for issue in graph.issues}
+
+
+def _classify_baseline(text: str):
+    return classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"),
+        text=text,
+    )
+
+
+def test_baseline_headroom_unwired_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "names: [active_baseline_headroom]",
+        "names: []",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_headroom_unwired" in _baseline_codes(graph)
+
+
+def test_baseline_positive_headroom_gain_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "active_baseline_headroom:\n    type: Gain\n"
+        "    parameters: { gain: 0.0000,",
+        "active_baseline_headroom:\n    type: Gain\n"
+        "    parameters: { gain: 2.0000,",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_headroom_invalid" in _baseline_codes(graph)
+
+
+def test_baseline_missing_driver_chain_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "names: [as_woofer_woofer_tweeter_lp, as_woofer_delay, "
+        "as_woofer_baseline_gain, as_woofer_baseline_limiter]",
+        "names: [as_woofer_woofer_tweeter_lp, as_woofer_delay]",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_driver_chain_missing" in _baseline_codes(graph)
+
+
+def test_baseline_positive_driver_gain_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "as_woofer_baseline_gain:\n    type: Gain\n"
+        "    parameters: { gain: 0.0000,",
+        "as_woofer_baseline_gain:\n    type: Gain\n"
+        "    parameters: { gain: 3.0000,",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_gain_positive" in _baseline_codes(graph)
+
+
+def test_baseline_positive_limiter_clip_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "as_woofer_baseline_limiter:\n    type: Limiter\n"
+        "    parameters:\n      soft_clip: true\n      clip_limit: -1.0000",
+        "as_woofer_baseline_limiter:\n    type: Limiter\n"
+        "    parameters:\n      soft_clip: true\n      clip_limit: 1.0000",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_limiter_invalid" in _baseline_codes(graph)
+
+
+def test_baseline_limiter_without_soft_clip_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "as_woofer_baseline_limiter:\n    type: Limiter\n"
+        "    parameters:\n      soft_clip: true\n      clip_limit: -1.0000",
+        "as_woofer_baseline_limiter:\n    type: Limiter\n"
+        "    parameters:\n      soft_clip: false\n      clip_limit: -1.0000",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_limiter_invalid" in _baseline_codes(graph)
+
+
+def test_baseline_non_limiter_drive_protection_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "as_woofer_baseline_limiter:\n    type: Limiter",
+        "as_woofer_baseline_limiter:\n    type: Gain",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_limiter_invalid" in _baseline_codes(graph)
+
+
+def test_baseline_tweeter_without_highpass_is_blocked() -> None:
+    base = _active_baseline_yaml("mono", 2)
+    tampered = base.replace(
+        "names: [as_tweeter_woofer_tweeter_hp, as_tweeter_delay, "
+        "as_tweeter_baseline_gain, as_tweeter_baseline_limiter]",
+        "names: [as_tweeter_delay, as_tweeter_baseline_gain, "
+        "as_tweeter_baseline_limiter]",
+    )
+    assert tampered != base
+    graph = _classify_baseline(tampered)
+
+    assert graph.allowed is False
+    assert "active_baseline_tweeter_highpass_missing" in _baseline_codes(graph)
+
+
 # --- PR-3: preference EQ rides at unity in the active baseline, pre-split ---
 
 @pytest.mark.parametrize(
