@@ -76,7 +76,6 @@ import json
 import logging
 import math
 import os
-import socket
 import subprocess
 import threading
 import time
@@ -103,6 +102,29 @@ from jasper.active_speaker.commission_wiring import (
     read_current_config_path,
     resolve_commission_inputs,
     write_commission_path_safety,
+)
+
+# Commission-tone orchestration helpers are owned by the active-speaker domain
+# (jasper.active_speaker.web_commissioning) so the /sound/ and /correction/
+# operator surfaces share one implementation of the mux/fan-in/WAV/signal-plan
+# plumbing on this hardware-safe path. /sound/ imports them here rather than
+# keeping a hand-copied fork; the only commission-tone piece that stays local is
+# _stop_commission_tone_locked, which is bound to this module's own
+# _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK that the /sound/ play
+# orchestration owns. See L4-1 in the Codex-week review.
+from jasper.active_speaker.web_commissioning import (
+    _combined_speech_stimulus_wav_path,
+    _commission_summed_stimulus_issue,
+    _commission_tone_issue,
+    _commission_tone_mux_command,
+    _commission_tone_payload,
+    _commission_tone_release_fanin_lane,
+    _commission_tone_select_fanin_lane,
+    _commission_tone_signal_plan,
+    _commission_tone_target_key,
+    _commission_tone_wav_path,
+    _config_paths_match,
+    _summed_playback_with_issue,
 )
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
@@ -1669,15 +1691,6 @@ def _active_speaker_request_missing_software_guards(
     return updated, changed
 
 
-def _config_paths_match(a: str | Path | None, b: str | Path | None) -> bool:
-    if not a or not b:
-        return False
-    try:
-        return Path(str(a)).resolve() == Path(str(b)).resolve()
-    except (OSError, RuntimeError):
-        return Path(str(a)) == Path(str(b))
-
-
 def _active_speaker_safe_playback_payload() -> dict[str, Any]:
     """Return the current no-audio active-speaker safety session."""
 
@@ -2078,17 +2091,9 @@ COMMISSION_TONE_ALSA_DEVICE = "correction_substream"
 COMMISSION_TONE_DURATION_S = 35.0
 COMMISSION_TONE_RESTART_MARGIN_S = 3.0
 COMMISSION_TONE_STARTUP_CHECK_S = 0.08
-COMMISSION_TONE_SAMPLE_RATE = 48000
-COMMISSION_TONE_SOURCE_DBFS = 0.0
-COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
-SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
 SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 SUMMED_TEST_CONFIRM_STOP_REASONS = {"operator_confirmed"}
 SUMMED_TEST_MAX_LOOP_SECONDS = 10 * 60.0
-COMMISSION_TONE_MUX_SOCKET = os.environ.get(
-    "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
-)
-COMMISSION_TONE_FANIN_LABEL = "correction"
 _COMMISSION_TONE_LOCK = threading.Lock()
 _COMMISSION_TONE_SESSION: dict[str, Any] | None = None
 _SUMMED_TEST_TONE_LOCK = threading.Lock()
@@ -2101,98 +2106,6 @@ _SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
     "safe_playback": {},
     "issues": [],
 }
-
-
-def _commission_tone_target_key(
-    *,
-    role: str,
-    group_id: str | None,
-    target: dict[str, Any] | None,
-) -> str:
-    target = target or {}
-    output_index = target.get("output_index")
-    if output_index is None:
-        output_index = target.get("physical_output_index")
-    return ":".join(
-        [
-            str(target.get("speaker_group_id") or group_id or ""),
-            str(target.get("role") or target.get("driver_role") or role or ""),
-            "" if output_index is None else str(output_index),
-        ]
-    )
-
-
-def _commission_tone_wav_path(
-    *,
-    frequency_hz: float,
-    duration_s: float = COMMISSION_TONE_DURATION_S,
-) -> Path:
-    from jasper.correction.playback import _ensure_tone_wav
-
-    return _ensure_tone_wav(
-        freq_hz=frequency_hz,
-        duration_s=duration_s,
-        dbfs=COMMISSION_TONE_SOURCE_DBFS,
-        sample_rate=COMMISSION_TONE_SAMPLE_RATE,
-    )
-
-
-def _combined_speech_stimulus_wav_path() -> tuple[Path, dict[str, Any]]:
-    from jasper.active_speaker.speech_stimulus import ensure_combined_speech_stimulus
-
-    return ensure_combined_speech_stimulus()
-
-
-def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
-    data = b""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(2.0)
-        sock.connect(COMMISSION_TONE_MUX_SOCKET)
-        sock.sendall((cmd + "\n").encode("ascii"))
-        while b"\n" not in data:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-    if not data:
-        raise RuntimeError("jasper-mux returned no response")
-    payload = json.loads(data.decode("utf-8", "replace"))
-    if isinstance(payload, dict) and "error" in payload:
-        raise RuntimeError(str(payload["error"]))
-    if not isinstance(payload, dict):
-        raise RuntimeError("jasper-mux returned a non-object response")
-    return payload
-
-
-def _commission_tone_select_fanin_lane() -> dict[str, Any]:
-    return _commission_tone_mux_command(
-        f"TEST_SELECT {COMMISSION_TONE_FANIN_LABEL}",
-    )
-
-
-def _commission_tone_release_fanin_lane(*, reason: str) -> dict[str, Any]:
-    try:
-        payload = _commission_tone_mux_command("TEST_RELEASE")
-    except Exception as exc:  # noqa: BLE001 - stop still needs to continue.
-        payload = {
-            "status": "failed",
-            "reason": reason,
-            "error": str(exc),
-        }
-        logger.warning(
-            "event=sound.active_speaker_commission_tone action=fanin_release "
-            "reason=%s status=failed error=%s",
-            reason,
-            exc,
-        )
-        return payload
-    logger.info(
-        "event=sound.active_speaker_commission_tone action=fanin_release "
-        "reason=%s status=ok active_source=%s",
-        reason,
-        payload.get("active_source"),
-    )
-    return payload
 
 
 def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
@@ -2225,155 +2138,6 @@ def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
         "reason": reason,
         "state": payload,
     }
-
-
-def _commission_tone_issue(exc: BaseException) -> dict[str, str]:
-    return {
-        "severity": "blocker",
-        "code": "commission_tone_backend_failed",
-        "message": f"could not play commissioning tone: {exc}",
-    }
-
-
-def _commission_tone_driver_style(
-    *,
-    topology: Any,
-    group_id: str | None,
-    role: str,
-) -> str | None:
-    for group in getattr(topology, "speaker_groups", ()):
-        if group_id and getattr(group, "id", None) != group_id:
-            continue
-        for channel in getattr(group, "channels", ()):
-            if getattr(channel, "role", None) == role:
-                return getattr(channel, "driver_style", None)
-    return None
-
-
-def _commission_tone_signal_plan(
-    *,
-    role: str,
-    group_id: str | None,
-    topology: Any = None,
-    preset: Any = None,
-    crossover_preview: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    from jasper.active_speaker import (
-        DRIVER_TEST_SIGNAL_PLAN_KIND,
-        driver_test_signal_plan,
-        load_active_speaker_preset,
-    )
-
-    role_id = str(role or "").strip().lower()
-    source = "explicit_preset" if preset is not None else "preset_fallback"
-    bound_preset = preset
-    if bound_preset is None and crossover_preview is not None:
-        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
-
-        source = "crossover_preview"
-        topology = topology or load_output_topology()
-        bound_preset, preview_issues, _ = compile_preset_from_crossover_preview(
-            topology,
-            crossover_preview,
-        )
-        if bound_preset is None:
-            issues = [
-                issue for issue in preview_issues if isinstance(issue, dict)
-            ] or [
-                {
-                    "severity": "blocker",
-                    "code": "commission_tone_preset_unresolved",
-                    "message": (
-                        "could not compile the saved crossover preview into a "
-                        "driver test preset"
-                    ),
-                }
-            ]
-            return {
-                "artifact_schema_version": 1,
-                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
-                "status": "blocked",
-                "role": role_id,
-                "frequency_hz": None,
-                "preset_source": source,
-                "issues": issues,
-            }
-    if bound_preset is None:
-        try:
-            bound_preset = load_active_speaker_preset()
-        except (OSError, ValueError, TypeError) as exc:
-            return {
-                "artifact_schema_version": 1,
-                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
-                "status": "blocked",
-                "role": role_id,
-                "frequency_hz": None,
-                "preset_source": source,
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "commission_tone_preset_unreadable",
-                    "message": f"could not load active-speaker preset: {exc}",
-                }],
-            }
-
-    driver_style = (
-        _commission_tone_driver_style(
-            topology=topology,
-            group_id=group_id,
-            role=role_id,
-        )
-        if topology is not None
-        else None
-    )
-    plan = driver_test_signal_plan(
-        bound_preset,
-        role_id,
-        driver_style=driver_style,
-    )
-    plan["preset_source"] = source
-    plan["preset_id"] = getattr(bound_preset, "preset_id", None)
-    plan["preset_name"] = getattr(bound_preset, "name", None)
-    return plan
-
-
-def _commission_tone_payload(
-    *,
-    status: str,
-    playback_id: str,
-    role: str,
-    level_dbfs: float,
-    frequency_hz: float | None,
-    target: dict[str, Any] | None,
-    group_id: str | None,
-    audio_emitted: bool,
-    issues: list[dict[str, str]],
-    session_reused: bool = False,
-    fanin_gate: dict[str, Any] | None = None,
-    signal_plan: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    payload = {
-        "status": status,
-        "backend": COMMISSION_TONE_BACKEND,
-        "playback_id": playback_id,
-        "audio_emitted": audio_emitted,
-        "confirmable": audio_emitted and not issues,
-        "continuous": True,
-        "session_reused": session_reused,
-        "target": target or {"speaker_group_id": group_id, "driver_role": role},
-        "tone": {
-            "frequency_hz": frequency_hz,
-            "source_level_dbfs": COMMISSION_TONE_SOURCE_DBFS,
-            "commission_gain_db": level_dbfs,
-            "duration_ms": int(round(COMMISSION_TONE_DURATION_S * 1000)),
-        },
-        "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
-        "issues": issues,
-    }
-    if fanin_gate is not None:
-        payload["fanin_gate"] = fanin_gate
-    if signal_plan is not None:
-        payload["signal_plan"] = signal_plan
-    return payload
 
 
 def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
@@ -2885,42 +2649,6 @@ async def _active_speaker_rollback_summed_commissioning_config(
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     return await rollback_driver_commissioning_config(load_config=load_config)
-
-
-def _summed_playback_with_issue(
-    playback: dict[str, Any],
-    *,
-    issue: dict[str, str],
-    status: str = "failed",
-    commissioning_load: dict[str, Any] | None = None,
-    rollback: dict[str, Any] | None = None,
-    fanin_gate: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    out = dict(playback)
-    out.update({
-        "status": status,
-        "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
-        "audio_emitted": False,
-        "confirmable": False,
-        "issues": [
-            *(playback.get("issues") if isinstance(playback.get("issues"), list) else []),
-            issue,
-        ],
-    })
-    if commissioning_load is not None:
-        out["commissioning_load"] = commissioning_load
-    if rollback is not None:
-        out["rollback"] = rollback
-    if fanin_gate is not None:
-        out["fanin_gate"] = fanin_gate
-    return out
-
-
-def _commission_summed_stimulus_issue(exc: BaseException) -> dict[str, str]:
-    return _commission_setup_issue(
-        "tone_backend_failed",
-        f"could not prepare the combined test speech: {exc}",
-    )
 
 
 async def _active_speaker_play_summed_commission_tone(

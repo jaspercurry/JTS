@@ -154,7 +154,7 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _config_paths_match(a: str | None, b: str | None) -> bool:
+def _config_paths_match(a: str | Path | None, b: str | Path | None) -> bool:
     if not a or not b:
         return False
     try:
