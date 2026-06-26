@@ -262,28 +262,21 @@ def _parse_enabled(raw: str) -> bool:
     return raw.strip().lower() == "on"
 
 
-def _parse_bool_env_default_true(raw: str, *, key: str) -> tuple[bool, str | None]:
+def _parse_bool_env(raw: str, *, key: str, default: bool) -> tuple[bool, str | None]:
+    """Parse a grouping boolean env (on/off/true/false/yes/no/1/0).
+
+    Empty/unset falls back to ``default`` with no error. An UNRECOGNIZED value
+    returns ``default`` plus a fail-LOUD error string naming the key, which
+    load_config promotes to cfg.error — a broken knob is never silently honored.
+    """
     text = (raw or "").strip().lower()
     if not text:
-        return DEFAULT_MAINS_HIGHPASS_ENABLED, None
+        return default, None
     if text in {"1", "true", "yes", "on"}:
         return True, None
     if text in {"0", "false", "no", "off"}:
         return False, None
-    return DEFAULT_MAINS_HIGHPASS_ENABLED, (
-        f"{key}={raw!r} must be one of on/off/true/false/1/0"
-    )
-
-
-def _parse_bool_env_default_false(raw: str, *, key: str) -> tuple[bool, str | None]:
-    text = (raw or "").strip().lower()
-    if not text:
-        return False, None
-    if text in {"1", "true", "yes", "on"}:
-        return True, None
-    if text in {"0", "false", "no", "off"}:
-        return False, None
-    return False, f"{key}={raw!r} must be one of on/off/true/false/1/0"
+    return default, f"{key}={raw!r} must be one of on/off/true/false/1/0"
 
 
 def _parse_buffer_ms(raw: str) -> int:
@@ -627,15 +620,17 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         src.get("JASPER_GROUPING_CROSSOVER_HZ", "")
     )
     mains_highpass_enabled, mains_highpass_parse_error = (
-        _parse_bool_env_default_true(
+        _parse_bool_env(
             src.get("JASPER_GROUPING_MAINS_HIGHPASS", ""),
             key="JASPER_GROUPING_MAINS_HIGHPASS",
+            default=DEFAULT_MAINS_HIGHPASS_ENABLED,
         )
     )
     subwoofer_present, subwoofer_present_parse_error = (
-        _parse_bool_env_default_false(
+        _parse_bool_env(
             src.get("JASPER_GROUPING_SUBWOOFER_PRESENT", ""),
             key="JASPER_GROUPING_SUBWOOFER_PRESENT",
+            default=False,
         )
     )
 
