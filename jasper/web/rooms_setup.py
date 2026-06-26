@@ -13,10 +13,10 @@ Two parts:
 1. DIRECTORY + bond-forming (per docs/HANDOFF-multiroom.md §6): see every
    JTS speaker on the LAN, click through to configure each on its own web
    UI, see this speaker's grouping status (incl. the runtime-degraded health
-   from §0), and **create a stereo pair in one flow** — pick the speaker for
-   the right channel and Save. Bond-forming POSTs /bond, which fans the
-   config out SERVER-side to each member's jasper-control /grouping/set (this
-   speaker → leader/left, the picked one → follower/right). Configuration is
+   from §0), and **create a stereo pair in one flow** — pick one speaker to
+   pair with. Bond-forming POSTs /bond, which fans the config out SERVER-side
+   to each member's jasper-control /grouping/set (this speaker → leader/left,
+   the picked one → follower/right). Configuration is
    automatic — no per-speaker tinkering. Perfect sample-lock across the pair
    is the remaining on-hardware validation, so the UI carries an honest
    "preview" note (§8) rather than pretending the audio half is done.
@@ -53,9 +53,11 @@ URL surface (after nginx strips the /rooms/ prefix):
                     `peering` block (the module fetches this on a poll)
   POST /peering     write the wake-response state into peering.env +
                     restart voice/control (JSON body, CSRF-verified)
-  POST /bond        form a stereo pair: mint a bond id, then fan the
-                    grouping config out SERVER-side to each member's
-                    jasper-control /grouping/set (JSON body, CSRF-verified)
+  POST /bond        form a stereo pair from {peer_addr}; the server mints a
+                    bond id, builds the member plan, then fans the grouping
+                    config out SERVER-side to each member's jasper-control
+                    /grouping/set. Existing advanced callers may still post a
+                    full {members:[...]} body for same-bond edits.
   POST /unbond      dissolve the bond this speaker is in: disable self +
                     every sibling sharing this bond_id, SERVER-side via each
                     member's jasper-control /grouping/set (CSRF-verified)
@@ -149,6 +151,11 @@ DISCOVERY_TIMEOUT_SEC = 2.0
 # (mirrors the GBFS feed cache in jasper/citibike.py). A new speaker shows
 # within one TTL; on page open the first poll still does a live browse.
 DISCOVERY_CACHE_TTL_SEC = 30.0
+
+# Slow /rooms.json snapshots are actionable: this page is rare, but when it is
+# opened the household should not wait several seconds without a breadcrumb in
+# the journal. Fast snapshots stay quiet so a left-open tab does not spam logs.
+ROOMS_SNAPSHOT_SLOW_MS = 1000
 
 
 # ----------------------------------------------------------------------
@@ -398,29 +405,52 @@ def _build_rooms_payload() -> dict:
     calls. Peer `home_url` / `system_url` are derived from the advertised
     hostname and end in `.local`, never from the IP address.
     """
+    started = time.perf_counter()
+    stages: dict[str, int] = {}
+
+    stage = time.perf_counter()
     me = identity.read_identity()
+    stages["identity_ms"] = round((time.perf_counter() - stage) * 1000)
+
+    stage = time.perf_counter()
     own = _self_addresses()
+    stages["self_addr_ms"] = round((time.perf_counter() - stage) * 1000)
+
+    stage = time.perf_counter()
     grouping = with_airplay_latency_fit(read_grouping_state())
+    stages["grouping_ms"] = round((time.perf_counter() - stage) * 1000)
+
+    stage = time.perf_counter()
     balance = _pair_balance_snapshot(grouping, own)
+    stages["balance_ms"] = round((time.perf_counter() - stage) * 1000)
     if balance.get("applicable"):
         grouping = dict(grouping)
         grouping["balance"] = balance
+
+    stage = time.perf_counter()
+    peering = _read_peering_block()
+    stages["peering_ms"] = round((time.perf_counter() - stage) * 1000)
+    self_addr = _self_address(own)
     self_block = {
         "name": me.name,
         "hostname": me.hostname,
         "room": me.room,
-        "address": _self_address(own),
+        "address": self_addr,
         # with_airplay_latency_fit attaches airplay_latency_fit ({applicable:
         # false} unless this speaker is an active bonded leader) — the same
         # composer /state uses, so /rooms shows the bonded-leader lip-sync
         # status without re-deriving it.
         "grouping": grouping,
-        "peering": _read_peering_block(),
+        "peering": peering,
     }
+
+    stage = time.perf_counter()
+    discovered = _discover_speakers_cached()
+    stages["discovery_ms"] = round((time.perf_counter() - stage) * 1000)
 
     peers: list[dict] = []
     self_hostname_label = me.hostname.split(".")[0].casefold()
-    for s in _discover_speakers_cached():
+    for s in discovered:
         addr = s.get("address") or ""
         # Drop self two ways:
         #   1. by address — reliable when our own NIC IP is in `own`.
@@ -449,7 +479,57 @@ def _build_rooms_payload() -> dict:
     peers.sort(
         key=lambda p: (p.get("room") or "", p.get("name") or "", p.get("address") or "")
     )
-    return {"self": self_block, "peers": peers}
+    payload = {
+        "self": self_block,
+        "peers": peers,
+        "view": _rooms_view(grouping, peers, self_addr),
+    }
+    total_ms = round((time.perf_counter() - started) * 1000)
+    if total_ms >= ROOMS_SNAPSHOT_SLOW_MS:
+        log_event(
+            logger,
+            "rooms.snapshot",
+            total_ms=total_ms,
+            peer_count=len(peers),
+            **stages,
+        )
+    return payload
+
+
+def _rooms_view(grouping: dict, peers: list[dict], self_addr: str) -> dict:
+    """Small backend-owned view model for the rooms page.
+
+    The browser still renders, but it should not rediscover the grouping state
+    machine or decide whether advanced topology controls belong in the primary
+    flow. Keep this intentionally flat and conservative.
+    """
+    bonded = bool(grouping.get("enabled") and grouping.get("bond_id"))
+    if bonded and grouping.get("error"):
+        state = "degraded"
+    elif bonded:
+        state = "paired"
+    else:
+        state = "solo"
+    balance = grouping.get("balance")
+    can_balance = (
+        state == "paired"
+        and isinstance(balance, dict)
+        and bool(balance.get("applicable"))
+        and bool(balance.get("ok"))
+    )
+    return {
+        "state": state,
+        "bonded": bonded,
+        "can_create_pair": (
+            state == "solo"
+            and bool(self_addr)
+            and any(p.get("address") for p in peers)
+        ),
+        "can_balance_pair": can_balance,
+        # Full member-list POSTs remain available for scripted/admin same-bond
+        # edits, but the primary page must not surface sub/crossover controls.
+        "show_subwoofer_controls": False,
+    }
 
 
 # ----------------------------------------------------------------------
@@ -665,8 +745,9 @@ def _post_grouping_to_member(
     """Configure ONE member by POSTing to its jasper-control /grouping/set.
 
     This is the cross-speaker call that makes bond-forming one-flow: the
-    browser hands us the member list, and we fan the config out SERVER-side
-    (no CORS) to each member's control API on the LAN. ``addr`` empty or one of
+    browser sends a small intent for the primary stereo-pair flow, the backend
+    owns the member plan, and we fan the config out SERVER-side (no CORS) to
+    each member's control API on the LAN. ``addr`` empty or one of
     this host's own addresses routes
     to loopback (configure self). SSRF guard (via :func:`_lan_target`): a
     remote target must be a PRIVATE / loopback IPv4 — the control API is a
@@ -888,17 +969,42 @@ def _preflight_grouping_target(
     return True, "ready"
 
 
+def _peer_name_from_directory(addr: str) -> str:
+    """Best-effort display name for a peer address from the cached directory."""
+    target = str(addr or "").strip()
+    if not target:
+        return ""
+    for peer in _discover_speakers_cached():
+        if str(peer.get("address") or "").strip() == target:
+            return str(peer.get("name") or "").strip()
+    return ""
+
+
+def _stereo_pair_members_from_intent(peer_addr: str) -> list[dict]:
+    """Server-owned topology for the primary "create stereo pair" intent."""
+    return [
+        {"addr": "", "role": "leader", "channel": "left"},
+        {
+            "addr": peer_addr,
+            "role": "follower",
+            "channel": "right",
+            "name": _peer_name_from_directory(peer_addr),
+        },
+    ]
+
+
 def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /bond: form a bond by configuring every member's role.
 
-    One-flow Sonos-style: the browser sends ``{members: [{addr, role,
-    channel}, …]}`` (this speaker + the picked speaker(s), with their roles
-    and channels). We mint a bond_id, build one target per member, then fan
-    the config out concurrently to each member's control API via
-    :func:`_fan_out_grouping`. The leader is this speaker (it hosts this
-    page), so followers get its STABLE mDNS handle (:func:`_leader_handle`,
-    e.g. ``jts.local``) as ``leader_addr`` — a handle that survives DHCP IP
-    churn, not a NIC IP. No env editing, no per-speaker tinkering.
+    Primary flow: the browser sends ``{peer_addr}``; the backend builds the
+    stereo topology (this speaker leader/left, peer follower/right). Advanced
+    same-bond edits may still send ``{members: [...]}`` explicitly. We mint a
+    bond_id, build one target per member, then fan the config out concurrently
+    to each member's control API via :func:`_fan_out_grouping`. The leader is
+    this speaker (it hosts this page), so followers get its STABLE mDNS handle
+    (:func:`_leader_handle`, e.g. ``jts.local``) as ``leader_addr`` — a handle
+    that survives DHCP IP churn, not a NIC IP. No env editing, no per-speaker
+    tinkering.
 
     Per-member outcomes are returned so the UI can show exactly which
     speaker failed. A partial failure (some members configured, one
@@ -912,6 +1018,16 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         return
 
     members = parsed.get("members")
+    if members is None:
+        peer_addr = str(parsed.get("peer_addr") or "").strip()
+        if not peer_addr:
+            _send_json(
+                handler,
+                {"ok": False, "error": "peer_addr is required"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        members = _stereo_pair_members_from_intent(peer_addr)
     if not isinstance(members, list) or not members:
         _send_json(
             handler, {"ok": False, "error": "members must be a non-empty list"},
@@ -919,7 +1035,9 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         )
         return
 
-    bond_id = str(parsed.get("bond_id") or "").strip() or _generate_bond_id()
+    requested_bond_id = str(parsed.get("bond_id") or "").strip()
+    fresh_bond = not requested_bond_id
+    bond_id = requested_bond_id or _generate_bond_id()
     leader_addr = _leader_handle()  # stable mDNS handle of the leader (this speaker)
     if "mains_highpass_enabled" in parsed:
         mains_highpass_enabled = parsed.get("mains_highpass_enabled")
@@ -977,6 +1095,11 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "mains_highpass_enabled": mains_highpass_enabled,
             "subwoofer_present": subwoofer_present,
         }
+        if fresh_bond:
+            # A newly-created pair must not inherit stale balance trim from a
+            # previous bond/unbond cycle. Existing-bond edits, such as adding
+            # a subwoofer, omit trim_db so calibrated L/R balance is preserved.
+            body["trim_db"] = 0.0
         # Wireless-sub crossover: every member stores the same corner so the
         # sub's outputd low-pass and the mains' outputd high-pass are matched
         # by construction. When a sub is present, the sub member's corner is
@@ -1123,8 +1246,8 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     there's nothing to dissolve → 400. Otherwise we browse the sibling
     directory, GET each peer's ``/grouping``, and collect the peers whose
     ``bond_id`` EQUALS ours — a peer in a DIFFERENT bond is left alone, never
-    disabled. We then fan ``{enabled: false}`` out to self (empty addr → our
-    own loopback control API) plus every matched peer via
+    disabled. We then fan ``{enabled: false, trim_db: 0.0}`` out to self
+    (empty addr → our own loopback control API) plus every matched peer via
     :func:`_fan_out_grouping`.
 
     Self is ALWAYS in the disable set, so "leave the bond" works locally even
@@ -1192,8 +1315,9 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
 
     # Self first (empty addr → loopback), then each matching peer. Reuse the
     # same `known` set for the disable fan-out's SSRF guard.
-    targets: list[tuple[str, dict]] = [("", {"enabled": False})]
-    targets += [(addr, {"enabled": False}) for addr in peer_addrs]
+    disabled_body = {"enabled": False, "trim_db": 0.0}
+    targets: list[tuple[str, dict]] = [("", dict(disabled_body))]
+    targets += [(addr, dict(disabled_body)) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
 
     # Read the household credential ONCE before the fan-out. Each member's

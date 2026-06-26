@@ -47,9 +47,13 @@ class _SpyCalls:
 
     def __init__(self) -> None:
         self.called = False
+        self.args = ()
+        self.kwargs = {}
 
     async def __call__(self, *args, **kwargs) -> None:
         self.called = True
+        self.args = args
+        self.kwargs = kwargs
 
 
 def _make_wake_loop():
@@ -125,5 +129,61 @@ async def test_manual_start_begins_turn_when_unguarded():
 
     assert result == "OK"
     assert wl._begin_turn.called is True
+    assert wl._begin_turn.kwargs == {}
     assert wl._prepare_assistant_loudness_context.called is True
     assert wl._play_listening_chirp.called is True
+
+
+async def test_manual_start_unknown_source_refused_before_side_effects(caplog):
+    wl = _make_wake_loop()
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        result = await wl.manual_session_start("missing_remote")
+
+    assert result == "UNKNOWN_SOURCE"
+    _assert_no_turn_no_duck(wl)
+    assert "event=session.manual_refused" in caplog.text
+    assert "reason=unknown_source" in caplog.text
+    assert "source=missing_remote" in caplog.text
+
+
+async def test_manual_start_source_uses_source_audio_without_primary_preroll():
+    wl = _make_wake_loop()
+    wl._manual_mics = {"wiim_remote_2": object()}
+
+    result = await wl.manual_session_start("wiim_remote_2")
+    await asyncio.gather(
+        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
+    )
+
+    assert result == "OK"
+    assert wl._begin_turn.called is True
+    assert wl._begin_turn.kwargs == {"pre_roll": False}
+    assert wl._active_manual_source == "wiim_remote_2"
+    assert wl._acquiring is False
+
+
+async def test_manual_mic_loop_forwards_only_active_source():
+    from jasper.voice_daemon import State
+
+    class _FakeMic:
+        async def frames(self):
+            yield "frame-a"
+
+    wl = _make_wake_loop()
+    wl._state = State.SESSION
+    wl._manual_mics = {
+        "wiim_remote_2": types.SimpleNamespace(mic=_FakeMic()),
+    }
+    seen = []
+
+    async def handle(frame):
+        seen.append(frame)
+
+    wl._handle_session_frame = handle
+    await wl._manual_mic_loop("wiim_remote_2")
+    assert seen == []
+
+    wl._active_manual_source = "wiim_remote_2"
+    await wl._manual_mic_loop("wiim_remote_2")
+    assert seen == ["frame-a"]

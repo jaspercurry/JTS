@@ -82,6 +82,14 @@ IOSchedulingPriority=4
 LimitRTPRIO=99
 LimitMEMLOCK=infinity
 
+# CamillaDSP logs external, unstructured ALSA backend WARN lines. A degraded
+# capture graph can emit "Capture read ... instead of requested ..." many times
+# per second, crowding out previous-boot forensics. Keep a generous first burst
+# plus journald's native "messages suppressed" summary, but stop sustained
+# floods from consuming the persistent journal.
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=120
+
 # OOM protection (Stage 1 of the memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Camilla is the audio bottleneck:
 # silencing music = worst possible UX. -900 makes the kernel OOM

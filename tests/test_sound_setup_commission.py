@@ -502,6 +502,58 @@ def test_commission_load_payload_loads_silent_startup_anchor(
     assert load_commission_load_state()["status"] == "loaded"
 
 
+def test_commission_load_refreshes_stale_anchor_after_identity_confirmation(
+    monkeypatch, tmp_path
+):
+    controller = _FakeWebController("placeholder", tmp_path / "outputd-statefile.yml")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    controller.statefile = env["statefile"]
+
+    fresh_staged = json.loads(json.dumps(env["staged"]))
+    stale_staged = json.loads(json.dumps(env["staged"]))
+    for target in stale_staged["targets"]:
+        target["identity_verified"] = False
+
+    staged_holder = {"payload": stale_staged}
+    monkeypatch.setattr(
+        "jasper.active_speaker.staging.load_staged_startup_config",
+        lambda: staged_holder["payload"],
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.startup_load.load_staged_startup_config",
+        lambda: staged_holder["payload"],
+    )
+
+    setup_order: list[str] = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_crossover_preview_save_payload",
+        lambda: setup_order.append("preview") or {
+            "status": "ready_for_protected_staging",
+            "permissions": {"may_prepare_protected_startup_config": True},
+        },
+    )
+
+    def fake_stage(raw):
+        setup_order.append("stage")
+        staged_holder["payload"] = fresh_staged
+        return fresh_staged
+
+    monkeypatch.setattr(sound_setup, "_active_speaker_stage_config_payload", fake_stage)
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer"}, camilla_factory=lambda: controller
+        )
+    )
+
+    assert setup_order == ["preview", "stage"]
+    assert controller.path_loads == [env["staged_path"]]
+    assert payload["startup_setup"]["status"] == "loaded"
+    assert payload["load"]["status"] == "loaded"
+    assert load_commission_load_state()["status"] == "loaded"
+
+
 def test_commission_load_payload_clears_stale_pending_ramp(
     monkeypatch, tmp_path
 ):
@@ -688,6 +740,39 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     assert tone_stops == ["ack_heard_correct_driver"]
     assert load_ramp_state()["confirmed_roles"] == ["woofer"]
     assert load_commission_load_state()["status"] == "rolled_back"
+
+
+def test_confirm_output_identity_audition_can_play_tweeter_before_driver_sequence(
+    monkeypatch,
+    tmp_path,
+):
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+
+    load = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "tweeter", "identity_audition": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+    assert load["load"]["status"] == "loaded"
+    assert load_ramp_state()["confirmed_roles"] == []
+
+    step = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": "tweeter", "identity_audition": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    assert step["status"] == "stepped"
+    assert step["gate"]["predecessors_required"] == ["woofer"]
+    assert step["gate"]["checks"]["role_order_woofer_first"] is True
+    assert step["tone_playback"]["audio_emitted"] is True
+    assert env["tone_calls"][0]["role"] == "tweeter"
+    assert env["tone_calls"][0]["level_dbfs"] == -80.0
+    assert step["ramp"]["confirmed_roles"] == []
+    assert load_ramp_state()["confirmed_roles"] == []
 
 
 def test_commission_flow_uses_durable_driver_check_after_ramp_reset(

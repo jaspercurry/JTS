@@ -39,11 +39,9 @@ Renderer support:
     detect: presence of an a2dpsnk source PCM (best-effort —
             doesn't distinguish "phone connected, not playing"
             from "phone connected and streaming")
-    pause:  not gracefully supported. We log + no-op when
-            asked to preempt BT. Practical impact: starting
-            Spotify/AirPlay while a phone has BT open will mix
-            audio for a moment until the user pauses on their
-            phone. Better-than-nothing.
+    pause:  BlueZ AVRCP MediaPlayer1 Pause when the source phone/player
+            exposes a player object. If no AVRCP player exists, log and
+            degrade to phone-side pause.
   USB sink (jasper-usbsink):
     detect: read /run/jasper-usbsink/state.json (RMS-based
             playing flag, hysteresis-debounced, written by the
@@ -73,6 +71,7 @@ import httpx
 from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
+from .bluetooth.avrcp import bluetooth_avrcp_call
 from .control import restart_broker
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
@@ -137,8 +136,8 @@ def _usbsink_preempt_disabled() -> bool:
     Set JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env to
     short-circuit `_usbsink_set_preempt` — mux no longer tells the
     daemon to silence its output when another source wins. USB then
-    behaves like Bluetooth (no graceful pause API; audio briefly mixes
-    when a new source starts). Operator escape hatch for cases where
+    behaves like an unsupported source (audio briefly mixes when a new
+    source starts). Operator escape hatch for cases where
     the localhost HTTP POST is causing unexpected disruption, without
     requiring a redeploy or daemon restart. Default: enabled.
 
@@ -897,8 +896,8 @@ class Mux:
                 pass
 
     # ------------------------------------------------------------------
-    # Pause actions — Spotify and AirPlay have clean APIs; Bluetooth
-    # is a gap (no graceful pause from the receiver side).
+    # Pause actions — Spotify, AirPlay, and Bluetooth have receiver-side
+    # APIs when their upstream sender exposes the needed control surface.
     # ------------------------------------------------------------------
 
     async def _pause(self, source: Source) -> None:
@@ -931,14 +930,21 @@ class Mux:
         elif source == Source.AIRPLAY:
             await self._airplay_stop_for_preempt()
         elif source == Source.BLUETOOTH:
-            # No graceful pause API exposed by bluez-alsa. Phone
-            # continues sending audio; we just don't have a way to
-            # tell it to stop without disconnecting outright. User
-            # pauses on phone, or we disconnect on phone.
-            logger.info(
-                "bluetooth: no graceful pause API. "
-                "Audio may briefly mix until phone-side stops.",
-            )
+            try:
+                await bluetooth_avrcp_call("Pause")
+                log_event(
+                    logger, "bluetooth.preempt_pause",
+                    method="MediaPlayer1.Pause", result="ok",
+                )
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    logger,
+                    "bluetooth.preempt_pause_failed",
+                    method="MediaPlayer1.Pause",
+                    action="phone_side_pause_required",
+                    err=str(e),
+                    level=logging.WARNING,
+                )
         elif source == Source.USBSINK:
             await self._usbsink_set_preempt(True, reason="preempted_by_winner")
 

@@ -3,14 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Pair-balance walkthrough (#23 P2, equal-loudness redesign). One
-// speaker at a time: sample the room's noise floor, ask the server to
-// play that speaker's quiet-to-loud ramp, watch the phone's in-band
-// mic level, and POST /lock the moment it crosses the target. The
-// server derives the drive level from its own clock; this page never
-// uploads audio. Shared measurement-audio primitives own mono mic
-// capture and the no-monitoring graph invariant; this page owns the
-// 500 Hz–2 kHz meter policy so HVAC rumble moves neither the stimulus
-// nor the needle.
+// speaker at a time: stream this phone's in-band mic meter to the
+// backend, ask the server to play that speaker's quiet-to-loud ramp,
+// and render the backend's floor/target/lock decisions. Shared
+// measurement-audio primitives own mono mic capture and the
+// no-monitoring graph invariant; this page owns only the 500 Hz–2 kHz
+// meter policy so HVAC rumble moves neither the stimulus nor the needle.
 
 import {
   closeAudioGraph,
@@ -31,10 +29,6 @@ for (const id of ['status', 'meter', 'meter-fill', 'meter-target',
 }
 
 const REQUIRED_SR = 48000;
-const FLOOR_SAMPLE_MS = 1500;
-const TARGET_ABOVE_FLOOR_DB = 15;
-const TARGET_MIN_DB = -55;     // never lock on breathing-level noise
-const LOCK_FRAMES = 3;         // consecutive meter frames over target
 const METER_RANGE = [-80, -20]; // bar display range, dB
 
 let ctx = null;
@@ -44,7 +38,9 @@ let micStream = null;
 let latestDb = -120;
 let members = null;
 let rampDuration = 26;
-let session = null;  // {channel, target, hits, timer, pollTimer}
+let session = null;  // {channel, target, phase, timer, pollTimer}
+let meterInFlight = false;
+let pendingMeterDb = null;
 
 function setStatus(text, tone) {
   els.status.textContent = text || '';
@@ -118,6 +114,7 @@ async function openMic() {
       if (ev.data && ev.data.type === 'rms') {
         latestDb = rmsToDbfs(ev.data.value);
         onMeterFrame(latestDb);
+        queueMeterFrame(latestDb);
       }
     };
   } catch (e) {
@@ -142,13 +139,6 @@ async function closeMic() {
 function onMeterFrame(db) {
   if (!session) { renderMeter(db, null); return; }
   renderMeter(db, session.target);
-  if (session.phase === 'ramping' && session.target != null) {
-    session.hits = db >= session.target ? session.hits + 1 : 0;
-    if (session.hits >= LOCK_FRAMES && !session.locking) {
-      session.locking = true;
-      sendLock();
-    }
-  }
 }
 
 function clearSessionTimers() {
@@ -158,36 +148,60 @@ function clearSessionTimers() {
   }
 }
 
-async function sendLock() {
-  const ch = session.channel;
-  try {
-    const data = await post('lock', { channel: ch });
-    if (!data.ok && data.keep_listening) {
-      // Pre-ramp noise transient — keep watching this ramp.
-      session.hits = 0;
-      session.locking = false;
-      return;
-    }
-    if (!data.ok) {
-      failStep(data.error || 'lock failed');
-      return;
-    }
-    clearSessionTimers();
-    els.progress.append(progressRow(
-      'Heard the ' + speakerName(ch), 'drive '
-      + data.drive_dbfs.toFixed(1) + ' dB'));
-    els.progress.style.display = 'block';
-    if (data.phase === 'analyzed') {
-      session = null;
-      showMeter(false);
-      renderResult(data);
-    } else {
-      setStatus('Got it. Next: the ' + speakerName('right') + '.', 'ok');
-      setTimeout(() => runStep('right'), 1200);
-    }
-  } catch (e) {
-    failStep(e.message);
+function backendTarget(data) {
+  if (data && data.target_dbfs != null) return data.target_dbfs;
+  if (data && data.meter && data.meter.target_dbfs != null) {
+    return data.meter.target_dbfs;
   }
+  return null;
+}
+
+function floorWaitStatus(data) {
+  if (data && data.error) return data.error;
+  return 'Checking background noise…';
+}
+
+function handleBackendLock(data) {
+  if (!session || !data || !data.locked) return;
+  const ch = session.channel;
+  if (data.channel && data.channel !== ch) return;
+  clearSessionTimers();
+  els.progress.append(progressRow(
+    'Heard the ' + speakerName(ch), 'drive '
+    + data.drive_dbfs.toFixed(1) + ' dB'));
+  els.progress.style.display = 'block';
+  if (data.phase === 'analyzed') {
+    session = null;
+    showMeter(false);
+    renderResult(data);
+  } else {
+    const next = ch === 'left' ? 'right' : 'left';
+    setStatus('Got it. Next: the ' + speakerName(next) + '.', 'ok');
+    setTimeout(() => runStep(next), 1200);
+  }
+}
+
+async function flushMeterFrame() {
+  if (meterInFlight || pendingMeterDb == null) return;
+  const db = pendingMeterDb;
+  pendingMeterDb = null;
+  meterInFlight = true;
+  try {
+    const data = await post('meter', { db: db });
+    const target = backendTarget(data);
+    if (session && target != null) session.target = target;
+    handleBackendLock(data);
+  } catch (e) {
+    // Best effort: the status poll and explicit ramp calls surface hard errors.
+  } finally {
+    meterInFlight = false;
+    if (pendingMeterDb != null) flushMeterFrame();
+  }
+}
+
+function queueMeterFrame(db) {
+  pendingMeterDb = db;
+  flushMeterFrame();
 }
 
 function failStep(message) {
@@ -202,32 +216,27 @@ function failStep(message) {
 async function runStep(channel) {
   clearSessionTimers();
   session = { channel: channel, phase: 'floor', target: null,
-              hits: 0, locking: false, timer: null, pollTimer: null };
+              timer: null, pollTimer: null };
   els.retry.hidden = true;
   showMeter(true);
   setStatus('Checking background noise…');
 
-  // Sample the floor from live meter frames for FLOOR_SAMPLE_MS.
-  const floorSamples = [];
-  const collector = setInterval(() => floorSamples.push(latestDb), 100);
-  await new Promise((r) => setTimeout(r, FLOOR_SAMPLE_MS));
-  clearInterval(collector);
-  if (!session || session.channel !== channel) return;  // stopped
-  floorSamples.sort((a, b) => a - b);
-  const floor = floorSamples.length
-    ? floorSamples[Math.floor(floorSamples.length / 2)] : -90;
-  session.target = Math.max(floor + TARGET_ABOVE_FLOOR_DB,
-                            TARGET_MIN_DB);
-
-  setStatus('Listening for the ' + speakerName(channel)
-    + ' — it starts almost silent and slowly gets louder…');
-  const data = await post('ramp', { channel: channel });
+  let data = await post('ramp', { channel: channel });
+  while (session && session.channel === channel && data.need_floor) {
+    setStatus(floorWaitStatus(data));
+    await new Promise((r) => setTimeout(r, data.wait_ms || 300));
+    data = await post('ramp', { channel: channel });
+  }
+  if (!session || session.channel !== channel) return;
   if (!data.ok) {
     failStep(data.error || 'could not start the test sound');
     return;
   }
   rampDuration = data.duration_s || rampDuration;
+  session.target = backendTarget(data);
   session.phase = 'ramping';
+  setStatus('Listening for the ' + speakerName(channel)
+    + ' — it starts almost silent and slowly gets louder…');
 
   // If the ramp ends with no lock, the server marks not_heard; a
   // light status poll picks that up (and the local timer backstops).
@@ -238,7 +247,7 @@ async function runStep(channel) {
       if (session && session.channel === channel
           && lock && lock.not_heard) {
         failStep('Couldn’t hear the ' + speakerName(channel)
-          + ' even at maximum test level — check that it’s powered '
+          + ' during the normalized test ramp — check that it’s powered '
           + 'and connected, then retry.');
       }
     } catch (e) { /* poll is best-effort */ }

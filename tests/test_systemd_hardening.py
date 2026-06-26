@@ -33,6 +33,16 @@ TIER_A = {
     "jasper-input": ROOT / "deploy/systemd/jasper-input.service",
 }
 
+ACCESSORY_ADAPTERS = {
+    "jasper-wiim-remote-mic": ROOT / "deploy/systemd/jasper-wiim-remote-mic.service",
+}
+
+ACCESSORY_RECONCILERS = {
+    "jasper-accessory-reconcile": (
+        ROOT / "deploy/systemd/jasper-accessory-reconcile.service"
+    ),
+}
+
 # Directives every Tier-A unit must carry (key -> required value, or None = any value).
 REQUIRED_ALL = {
     "ProtectSystem": "strict",
@@ -91,6 +101,67 @@ def test_tier_a_required_directives(unit, path):
         f"{unit} ({path.name}) lost WS1 phase-1 hardening directive(s): "
         f"{missing}. See docs/HANDOFF-privilege-separation.md."
     )
+
+
+@pytest.mark.parametrize("unit,path", sorted(ACCESSORY_ADAPTERS.items()))
+def test_accessory_adapter_unit_is_hardened(unit, path):
+    directives = _directives(path)
+    pairs = set(directives)
+    keys = {k for k, _ in directives}
+    for key, want in REQUIRED_ALL.items():
+        if want is None:
+            assert key in keys, f"{unit}: missing {key}=<any>"
+        else:
+            assert (key, want) in pairs, f"{unit}: missing {key}={want}"
+    assert ("ProtectKernelLogs", "true") in pairs
+    assert ("User", "jasper-input") in pairs
+    assert ("Group", "jasper") in pairs
+    assert ("SupplementaryGroups", "bluetooth") in pairs
+    assert ("CapabilityBoundingSet", "") in pairs
+    assert ("SystemCallFilter", "@system-service") in pairs
+    assert ("PrivateDevices", "true") in pairs
+    assert ("ProtectClock", "true") in pairs
+    assert ("ProtectHostname", "true") in pairs
+    assert ("ProtectProc", "invisible") in pairs
+    assert ("ProcSubset", "pid") in pairs
+    assert ("RestrictRealtime", "true") in pairs
+    assert ("MemoryDenyWriteExecute", "true") in pairs
+    assert ("RestrictAddressFamilies", "AF_UNIX AF_INET") in pairs
+    assert ("IPAddressDeny", "any") in pairs
+    assert ("IPAddressAllow", "localhost") in pairs
+    assert ("RemoveIPC", "true") in pairs
+    assert ("UMask", "0077") in pairs
+
+
+@pytest.mark.parametrize("unit,path", sorted(ACCESSORY_RECONCILERS.items()))
+def test_accessory_reconciler_unit_is_hardened_root_oneshot(unit, path):
+    directives = _directives(path)
+    pairs = set(directives)
+    keys = {k for k, _ in directives}
+    for key, want in REQUIRED_ALL.items():
+        if want is None:
+            assert key in keys, f"{unit}: missing {key}=<any>"
+        else:
+            assert (key, want) in pairs, f"{unit}: missing {key}={want}"
+    assert ("Type", "oneshot") in pairs
+    assert ("User", "root") not in pairs
+    assert ("Group", "jasper") in pairs
+    assert ("ProtectKernelLogs", "true") in pairs
+    assert ("CapabilityBoundingSet", "") in pairs
+    assert ("SystemCallFilter", "@system-service") in pairs
+    assert ("PrivateDevices", "true") in pairs
+    assert ("ProtectClock", "true") in pairs
+    assert ("ProtectHostname", "true") in pairs
+    assert ("ProtectProc", "invisible") in pairs
+    assert ("ProcSubset", "pid") in pairs
+    assert ("RestrictRealtime", "true") in pairs
+    assert ("MemoryDenyWriteExecute", "true") in pairs
+    assert ("RestrictAddressFamilies", "AF_UNIX") in pairs
+    assert ("RemoveIPC", "true") in pairs
+    assert ("UMask", "0022") in pairs
+    rwpaths = " ".join(v for k, v in pairs if k == "ReadWritePaths")
+    assert "/var/lib/jasper" in rwpaths
+    assert "/etc/systemd/system" in rwpaths
 
 
 @pytest.mark.parametrize("unit,path", sorted(TIER_A.items()))
@@ -495,7 +566,30 @@ def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
         'RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} '
         'sset Headphone 100%% unmute"'
     ) in text
-    assert 'ATTR{power/control}="on"' in text
+    assert (
+        'ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", '
+        'ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", '
+        'ATTR{power/control}="on"'
+    ) in text
+    assert 'SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac"' not in text
+
+
+def test_camilla_unit_rate_limits_external_log_floods():
+    """External Camilla WARN floods must not consume persistent journal history."""
+    text = (ROOT / "deploy/systemd/jasper-camilla.service").read_text(
+        encoding="utf-8"
+    )
+    assert "LogRateLimitIntervalSec=60s" in text
+    assert "LogRateLimitBurst=120" in text
+
+
+def test_snapclient_unit_rate_limits_leader_offline_log_floods():
+    """Optional grouping must not let a refused-connection loop eat forensics."""
+    text = (ROOT / "deploy/systemd/jasper-snapclient.service").read_text(
+        encoding="utf-8"
+    )
+    assert "LogRateLimitIntervalSec=60s" in text
+    assert "LogRateLimitBurst=30" in text
 
 
 # The root audio daemons whose UDS the now-non-root voice/mux must connect to.

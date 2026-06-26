@@ -21,6 +21,13 @@ import pytest
 from jasper import source_state
 
 
+@pytest.fixture(autouse=True)
+def _reset_bluealsa_probe_state():
+    source_state.bluealsa_probe._reset_for_tests()
+    yield
+    source_state.bluealsa_probe._reset_for_tests()
+
+
 def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
     """Build an asyncio.create_subprocess_exec replacement that returns
     a mock proc with .communicate() pre-canned."""
@@ -249,6 +256,24 @@ async def test_bluetooth_playing_returns_false_on_empty_output():
 
 
 @pytest.mark.asyncio
+async def test_bluetooth_playing_suppresses_after_bluealsa_cli_failure():
+    calls = {"n": 0}
+
+    async def fake(*args, **kwargs):
+        calls["n"] += 1
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"", b"permission denied"))
+        proc.returncode = 1
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", new=fake):
+        assert await source_state.bluetooth_playing() is False
+        assert await source_state.bluetooth_playing() is False
+
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
 async def test_bluetooth_playing_handles_timeout():
     """bluealsa-cli hanging (DBus daemon stuck) should time out cleanly
     and return False — the mux's 1 Hz tick can't tolerate a probe that
@@ -258,6 +283,36 @@ async def test_bluetooth_playing_handles_timeout():
         side_effect=asyncio.TimeoutError(),
     ):
         assert await source_state.bluetooth_playing() is False
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_playing_kills_timed_out_bluealsa_cli():
+    class _HungProc:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.waited = False
+
+        async def communicate(self):
+            raise asyncio.TimeoutError()
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.waited = True
+
+    proc = _HungProc()
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", new=fake_exec):
+        assert await source_state.bluetooth_playing() is False
+
+    assert proc.killed is True
+    assert proc.waited is True
 
 
 @pytest.mark.asyncio

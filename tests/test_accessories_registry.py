@@ -10,27 +10,46 @@ from __future__ import annotations
 
 import pytest
 
+from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories.registry import (
+    CAP_MUTE,
+    CAP_TAP_GESTURES,
+    CAP_TRANSPORT,
+    CAP_VOICE_HOLD,
+    CAP_VOLUME,
     KEY_MUTE,
     KEY_NEXTSONG,
     KEY_PLAYPAUSE,
     KEY_PREVIOUSSONG,
+    KEY_SEARCH,
     KEY_VOLUMEDOWN,
     KEY_VOLUMEUP,
     KNOWN_DEVICES,
+    KNOWN_PROFILES,
     VK01,
     WIIM_REMOTE_2,
+    HoldAction,
     KeyAction,
+    RemoteProfile,
     TapAction,
     lookup,
     lookup_by_name,
 )
+from jasper.audio_io import parse_udp_device
 
 
 def test_vk01_in_registry():
-    assert VK01 in KNOWN_DEVICES
+    assert KNOWN_DEVICES is KNOWN_PROFILES
+    assert VK01 in KNOWN_PROFILES
+    assert isinstance(VK01, RemoteProfile)
+    assert VK01.id == "anticater_vk01"
     assert VK01.vendor_id == 0x514C
     assert VK01.product_id == 0x8850
+    assert VK01.identity.usb_ids == ((0x514C, 0x8850),)
+    assert VK01.bt_name_regex == r"(?i)anticater"
+    assert VK01.capabilities == frozenset({
+        CAP_VOLUME, CAP_TRANSPORT, CAP_TAP_GESTURES,
+    })
 
 
 def test_lookup_finds_vk01_by_usb_ids():
@@ -87,7 +106,25 @@ def test_vk01_click_is_tap_action_for_transport():
     assert click.window_ms > 0
 
 
+def test_vk01_profile_reserves_hold_and_mic_extension_points():
+    assert VK01.mic.status == "reserved"
+    assert VK01.mic.capture_profile_id is None
+    assert "standard Linux audio capture device" in VK01.mic.detail
+    reserved = {feature.id: feature.detail for feature in VK01.reserved_features}
+    assert "true_hold" in reserved
+    assert "remote_mic" in reserved
+    assert "HoldAction" in reserved["true_hold"]
+    assert "voice pipeline" in reserved["remote_mic"]
+
+
 def test_wiim_remote_2_media_keymap_targets_control_routes():
+    assert WIIM_REMOTE_2.id == "wiim_remote_2"
+    assert WIIM_REMOTE_2.capabilities == frozenset({
+        CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD,
+    })
+    assert WIIM_REMOTE_2.mic.status == "adapter"
+    assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
+    assert "MEMS mic" in WIIM_REMOTE_2.mic.detail
     keymap = WIIM_REMOTE_2.keymap
     assert keymap[KEY_VOLUMEUP] == KeyAction(
         "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
@@ -103,6 +140,12 @@ def test_wiim_remote_2_media_keymap_targets_control_routes():
         "POST", "/transport/previous", {},
     )
     assert keymap[KEY_MUTE] == KeyAction("POST", "/volume/mute", {})
+    assert keymap[KEY_SEARCH] == HoldAction(
+        on_press=KeyAction(
+            "POST", "/session/start", {"source": "wiim_remote_2"},
+        ),
+        on_release=KeyAction("POST", "/session/end", {}),
+    )
 
 
 def test_wiim_remote_2_name_fallback_matches_bluez_name():
@@ -110,15 +153,48 @@ def test_wiim_remote_2_name_fallback_matches_bluez_name():
     assert lookup_by_name("wiim remote 2 consumer control") is WIIM_REMOTE_2
 
 
-@pytest.mark.parametrize("device", KNOWN_DEVICES)
-def test_every_registered_device_has_unique_usb_ids(device):
-    """Sanity guard for future additions — two devices on the same
-    (vid, pid) would cause lookup to silently shadow one."""
-    matches = [
-        d for d in KNOWN_DEVICES
-        if d.vendor_id == device.vendor_id
-        and d.product_id == device.product_id
-    ]
-    assert matches == [device], (
-        f"VID/PID collision: {[d.name for d in matches]}"
-    )
+def test_wiim_remote_2_declares_adapter_mic_source():
+    assert WIIM_REMOTE_2.mic.status == "adapter"
+    assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
+    assert WIIM_REMOTE_2.mic.device == WIIM_REMOTE_2_MIC_DEVICE
+    assert WIIM_REMOTE_2.mic.adapter_service == "jasper-wiim-remote-mic.service"
+
+
+def test_adapter_mic_sources_do_not_reuse_reserved_voice_udp_ports():
+    """Adapter mics must not collide with AEC/wake/output-reference UDP ports."""
+    reserved_ports = {9876, 9877, 9878, 9880, 9887, 9888, 9891}
+    for profile in KNOWN_PROFILES:
+        if profile.mic.status != "adapter":
+            continue
+        parsed = parse_udp_device(profile.mic.device or "")
+        assert parsed is not None, f"{profile.id} adapter mic must be UDP-backed"
+        assert parsed[1] not in reserved_ports, (
+            f"{profile.id} mic source {profile.mic.device} reuses a reserved "
+            "voice/wake/reference UDP port"
+        )
+
+
+def test_every_registered_profile_has_unique_usb_ids():
+    """Sanity guard for future additions — two profiles sharing any
+    (vid, pid), including alternate transport IDs, would make lookup()
+    silently shadow one."""
+    seen: dict[tuple[int, int], RemoteProfile] = {}
+    for profile in KNOWN_PROFILES:
+        assert profile.identity.usb_ids, f"{profile.id} must declare a USB ID"
+        for usb_id in profile.identity.usb_ids:
+            assert usb_id not in seen, (
+                f"VID/PID collision {usb_id!r}: "
+                f"{seen[usb_id].name} and {profile.name}"
+            )
+            seen[usb_id] = profile
+
+
+@pytest.mark.parametrize("profile", KNOWN_PROFILES)
+def test_every_registered_profile_has_known_mic_status(profile):
+    assert profile.mic.status in {
+        "none", "not_exposed", "reserved", "linux_audio", "adapter",
+    }
+    if profile.mic.status == "adapter":
+        assert profile.mic.capture_profile_id
+        assert profile.mic.device
+        assert profile.mic.adapter_service

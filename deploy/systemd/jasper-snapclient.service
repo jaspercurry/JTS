@@ -52,6 +52,12 @@ EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
 ExecStart=/usr/bin/snapclient $JASPER_SNAPCLIENT_ARGS
 Restart=on-failure
 RestartSec=2s
+# Snapclient logs connection-refused loops once per second while a bonded
+# follower waits for its leader to return. Preserve the first burst and
+# journald's suppression summary, but don't let optional grouping consume the
+# persistent previous-boot evidence window.
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=30
 
 # Scheduling priority (NOT a cap): the audio chain runs hot.
 Nice=-10

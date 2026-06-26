@@ -188,7 +188,13 @@ The gaps are exactly where future hardware support would hurt:
    layer.
 2. **Observed truth beats intent.** A toggle says what the user wants;
    the runtime state says what actually happened. UI and doctor should
-   show both when they differ.
+   show both when they differ. `/aec.raw_intent` is the saved request;
+   `/aec.mode`, `/aec.bridge_role`, `/aec.software_aec3`, `/aec.legs`,
+   `/aec.audio_profile.active`, and `/aec.mic_settings` are the
+   reconciler-applied runtime truth. When no concrete profile is active
+   yet, `bridge_role=pending` is the honest answer; a live bridge
+   process alone is not proof that WebRTC AEC3 is running on the
+   detected mic.
 3. **Validation artifacts are product state.** DAC drift checks,
    chip-profile read-backs, outputd reference health, and mic level
    sanity should persist as small timestamped JSON artifacts, not just
@@ -654,5 +660,8 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-25 (chip-AEC gate vocabulary rechecked against
-`jasper/chip_aec_policy.py`, `/aec`, and `jasper-aec-reconcile`).
+Last verified: 2026-06-26 (`/aec` applied-runtime status contract rechecked
+against `jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`,
+and `tests/test_control_aec_state.py`. Prior pass 2026-06-25: chip-AEC gate
+vocabulary rechecked against `jasper/chip_aec_policy.py`, `/aec`, and
+`jasper-aec-reconcile`).

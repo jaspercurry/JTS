@@ -237,7 +237,10 @@ Increment 6 (per-follower calibration). What exists:
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
-  anti-storm `Restart`/`StartLimit`.
+  anti-storm `Restart`/`StartLimit`. `jasper-snapclient.service` also carries
+  a narrow `LogRateLimitBurst=30` per 60 s so a follower whose leader is
+  powered off remains visible as degraded without filling the persistent
+  journal with one refused-connection line per second.
 - **Reconciler `reset-failed`s before every deliberate restart
   (config-apply ≠ crash).** `_restart_unit` runs `systemctl reset-failed
   <unit>` before each restart it issues (outputd / `jasper-aec-reconcile`→voice
@@ -292,25 +295,32 @@ Increment 6 (per-follower calibration). What exists:
   `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
   (self block now includes a `peering: {enabled, primary}` wake-response
   block, read fresh via `jasper.peering.config`); self is
-  excluded from `peers`. **Four POSTs.** (1) `/peering`, the wake-response
+  excluded from `peers`. **Six POSTs.** (1) `/peering`, the wake-response
   toggle (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through
   `jasper.peering.config.PEERING_ENV_FILE`, preserving `JASPER_PEER_ROOM`;
   restarts voice + control). (2) `/bond`, **the Sonos-style one-flow
-  stereo-pair setup**: the browser sends the member list, the server mints a
-  `bond_id` and fans the grouping config out SERVER-side to each member's
-  `jasper-control /grouping/set` (this speaker → leader/left, the picked one
-  → follower/right), the follower's `leader_addr` set to the leader's
+  stereo-pair setup**: the primary browser flow sends only `peer_addr`; the
+  server owns the member plan, mints a `bond_id`, and fans the grouping config
+  out SERVER-side to each member's `jasper-control /grouping/set` (this speaker
+  → leader/left, the picked one → follower/right). Existing advanced callers
+  may still send the explicit member list for same-bond edits. The follower's
+  `leader_addr` is set to the leader's
   **stable mDNS `.local` handle** (survives the leader's DHCP IP churn — see
   the reconcile bullet above). (3) `/unbond`, **dissolve the bond**: the
   server reads each member's current grouping via `GET /grouping` to
-  discover bond membership, then fans `{enabled:false}` to the matches plus
-  self. (4) `/swap`, **exchange the pair's left/right channels** (the
+  discover bond membership, then fans `{enabled:false, trim_db:0.0}` to the
+  matches plus self. (4) `/swap`, **exchange the pair's left/right
+  channels** (the
   speakers stay put; each plays the other side): same discovery as
   `/unbond`, then requires EXACTLY one reachable same-bond peer and a
   {left,right} channel set — roles/bond_id/leader_addr are preserved,
   only `channel` flips, and each member's reconciler re-points its
   outputd ChannelPick. A mono or >2-member bond 400s (no well-defined
-  swap). The rooms-page button rides the bonded card next to Dissolve.
+  swap). (5) `/trim`, pair balance: the primary page sends `target=pair`
+  + signed `balance_db`, and the backend rewrites both member trims
+  attenuate-only. (6) `/mains-highpass`, the advanced wireless-sub bass
+  management toggle for an existing same-bond member list. The rooms-page
+  button rides the bonded card next to Dissolve.
   Configuration is automatic — no per-speaker tinkering. The
   bond/unbond fan-out runs **concurrently** across members (one slow/absent
   peer doesn't serialize the rest). An SSRF guard limits cross-speaker
@@ -1693,29 +1703,29 @@ flipping `JASPER_PEERING` on/off and setting/clearing `JASPER_PEER_PRIMARY`
 while **preserving** `JASPER_PEER_ROOM` (owned by `/speaker/`) and operator
 tuning knobs — then restarts voice + `jasper-control` and returns `{ok,
 peering:{enabled, primary}}`. **Bond/unbond now ships (stereo pair):** the
-bond card lets the household pick a sibling for the right channel and Save;
-the `/rooms/` wizard's `POST /bond` mints a `bond_id` and fans the grouping
-config out SERVER-side to each member's `jasper-control /grouping/set` (this
-speaker → leader/left, the picked one → follower/right), the follower's
-`leader_addr` set to the
+primary bond card lets the household pick one sibling; the browser posts only
+`peer_addr`, and the `/rooms/` backend owns the topology (this speaker →
+leader/left, the picked one → follower/right). `POST /bond` mints a `bond_id`
+and fans the grouping config out SERVER-side to each member's
+`jasper-control /grouping/set`, with the follower's `leader_addr` set to the
 leader's **stable mDNS `.local` handle** so the bond survives the leader's
 DHCP IP churn (see §0 reconcile bullet). `POST /unbond` **dissolves** the
 bond: the server discovers membership by reading each member's `GET
 /grouping` (the new CSRF-free read on `jasper-control`) and fans
-`{enabled:false}` to the matches plus self. Both fan-outs run
+`{enabled:false, trim_db:0.0}` to the matches plus self. Both fan-outs run
 **concurrently** across members (a slow/absent peer never serializes the
 rest) over the LAN to each member's `jasper-control`, SSRF-guarded to
 private/loopback IPv4 (bare hostnames rejected) — see §7 "Grouping control
 plane — threat model" for the auth posture (token-gated browser→own-speaker;
 the household credential authenticates the device-to-device fan-out).
-Configuration is fully automatic (no per-speaker tinkering). What's honestly
-*not* done: **audio does not yet flow to followers** — the outputd snapfifo
-producer is unwired (`SNAPFIFO_PRODUCER_WIRED` is `False`, blocked on TTS
-separation, §2), so a formed leader reads `degraded`; plus perfect sample-lock
-(§2 inv. 2) and the >2-member / 2.1 / sub picker. The card carries a "not yet
-streaming / preview" note rather than pretending the audio half works. Sibling rows in the directory stay read-only
-by design beyond the pair-forming flow (configure each speaker's own knobs
-on its own UI).
+Configuration is fully automatic (no per-speaker tinkering). The primary card
+intentionally stays simple: create/dissolve/swap and pair balance. Subwoofer /
+2.1 member-list edits remain an advanced/API path, not a default household
+control. What's still honest preview scope: perfect sample-lock / follower
+clock-lock remains partly unobservable from Snapcast RPC, so the card keeps the
+hardware-validation note rather than implying a stronger guarantee than the
+system can measure. Sibling rows in the directory stay read-only by design
+beyond the pair-forming flow (configure each speaker's own knobs on its own UI).
 
 #### Friendly names + identity on the directory (shared primitives)
 
@@ -1983,10 +1993,11 @@ contract). `_save_bond` records it for any N while keeping
 `PEER_ADDR/_NAME` = the primary L/R sibling (so swap/trim stay on the
 stereo pair). `_unbond` takes a full-roster path — disable self + EVERY
 recorded member — so a 2.1's sub is never orphaned (the legacy single-
-sibling/discovery path remains for pre-roster bonds). `/rooms/` gains an
-"Add a subwoofer" affordance on a bonded stereo-pair leader (pure
-`addSubPlan` in grouping-view.js) that re-posts the SAME bond_id with the
-existing members + the new `channel=sub` follower. Regression tests:
+sibling/discovery path remains for pre-roster bonds). The full member-list
+`POST /bond` path still supports adding a `channel=sub` follower to the SAME
+bond_id, and the pure `addSubPlan` in grouping-view.js remains the policy
+helper for that advanced shape; the primary `/rooms/` card no longer exposes
+subwoofer/crossover controls by default. Regression tests:
 tests/test_web_rooms_setup.py (foreign-claimer matrix, DHCP
 rediscovery, named unreachable error, unbond containment, bond-body
 roster), test_web_balance_flow.py (start survives a foreign claimer),
@@ -2009,16 +2020,28 @@ ramp WAV (silence-lead-in, then 500 Hz–2 kHz seeded noise rising
 -42 → -12 dBFS at 1.5 dB/s with a 4 s ceiling hold; the other channel
 silent, so each bonded member's outputd channel pick emits it from
 exactly one physical speaker through the FULL normal chain including
-its current trim). The phone at the listening position meters its own
-in-band level (biquad band-pass in the AudioWorklet — no audio is
-uploaded) and POSTs /balance/lock when it crosses noise-floor + 15 dB;
-the server derives the DRIVE level from monotonic-since-playback via
-the pure ramp_emission_dbfs function. Spawn/buffer/LAN/detection
-latencies are identical across the two passes and cancel in
-drive_delta_db; locks inside the lead-in get keep_listening (noise
-transient); a ramp that ends unheard marks that channel not_heard —
-the actionable per-speaker error ("check it's powered"), retryable
-per-speaker. recommend_trims is unchanged from v1 (attenuate-only,
+its current trim during normal playback). The balance session now
+normalizes the owned measurement path before playing: inside
+`measurement_window`, `jasper.measurement.volume_guard` snapshots
+CamillaDSP `main_volume` plus both Snapcast clients' volume/mute/group
+mute state, sets Camilla to the bounded calibration level and the pair's
+Snapcast clients to 100% unmuted, then restores the snapshot in
+`finally` before renderers resume. If Snapcast/Camilla cannot be
+resolved or normalized, `/balance/start` fails visibly rather than
+measuring through hidden attenuation. The phone at the listening
+position meters its own in-band level (biquad band-pass in the
+AudioWorklet — no audio is uploaded) and streams dBFS frames to
+`/balance/meter`; the server computes recent floor, target (floor + 15
+dB, min −55 dBFS), frame liveness, bounded floor-wait failure, and
+lock. `/balance/lock` remains as a compatibility/manual seam, but the
+shipped page no longer decides locks client-side. The server derives the
+DRIVE level from monotonic-since-playback via the pure
+`ramp_emission_dbfs` function.
+Spawn/buffer/LAN/detection latencies are identical across the two passes
+and cancel in `drive_delta_db`; locks inside the lead-in get
+`keep_listening` (noise transient); a ramp that ends unheard marks that
+channel `not_heard` — the actionable per-speaker error, retryable
+per-speaker. `recommend_trims` is unchanged from v1 (attenuate-only,
 quieter side renormalized to 0 dB, −24 floor surfaced as clamped).
 The wizard (https://<host>/balance/, linked from the /rooms bonded
 card; jasper/web/balance_flow.py riding INSIDE the correction
@@ -2035,18 +2058,23 @@ idle check. /balance/apply writes one absolute /grouping/set per
 member (peer first; partial failure reported per-member; idempotent
 retry). Tests: tests/test_multiroom_balance.py (emission-function
 contract incl. WAV-envelope relative-law tracking, determinism,
-channel exclusivity, drive-delta sign, trim matrix) and
+channel exclusivity, drive-delta sign, trim matrix),
 tests/test_web_balance_flow.py (real background loop, terminable fake
-playback, exact lock offsets via t0 rewind: gates, single held window,
-keep_listening, not_heard + retry, full walkthrough → trims, stop,
-apply order/bodies, correction exclusion). Updated 2026-06-24: `/rooms/`
-now exposes pair balance as one centered slider. `POST /trim` still
+playback, backend mic floor, backend meter-frame locks, exact lock
+offsets via t0 rewind: gates, single held window, keep_listening,
+not_heard + retry, full walkthrough → trims, stop, apply order/bodies,
+correction exclusion), tests/test_measurement_volume_guard.py
+(Camilla/Snapcast snapshot-normalize-restore), and
+tests/test_multiroom_snapcast_rpc.py (Snapcast volume/mute RPC seams).
+Updated 2026-06-24: `/rooms/`
+now exposes pair balance as one centered slider (the UI clamps the ordinary
+household adjustment to ±6 dB; the backend/grouping safety envelope remains the
+validated attenuate-only -24..0 dB contract). `POST /trim` still
 supports the legacy `target=self|peer` ±0.5 dB nudge, but the page uses
 `target=pair` + signed `balance_db`, which rewrites BOTH member trims
 absolutely and re-normalizes wasted attenuation so one side is always
-0 dB. `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent,
-validated attenuate-only -24..0 — the LOUDER speaker trims down, never a
-boost; outputd re-validates fail-closed. For dumb endpoints the
+0 dB. `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent — the LOUDER
+speaker trims down, never a boost; outputd re-validates fail-closed. For dumb endpoints the
 reconciler derives `JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB` into
 grouping-outputd.env (empty on solo = unset to env_f32) and outputd
 applies one precomputed linear gain to the whole dac_content-armed path
@@ -2061,7 +2089,9 @@ the active-content PCM has been released, then starts camilla#2 from that
 statefile; trim-only graph rewrites are picked up by process start, never by
 trusting an idempotent `systemctl enable --now` to reload a running process.
 Settable via /grouping/set (optional trim_db; PRESERVED when omitted, so
-bond/unbond/swap fan-outs never clobber a calibrated balance). Earlier
+same-bond structural edits such as add-sub and swap never clobber a calibrated
+balance). Fresh pair creation and unbond explicitly send `trim_db=0.0` so stale
+balance from a prior bond cannot leak into the next topology. Earlier
 same day (DUMB-FOLLOWER PR-C — the role-state contract
 + mode-aware interfaces. NEW §7.5: the unit×role table with transition
 ownership, the interface contract, and the DSP two-kinds split (content
@@ -2553,7 +2583,7 @@ raw DHCP IP, so a follower survives the leader changing IP —
 at connect time (no reconcile change needed; literal IPv4 still accepted).
 (2) New operational surface: `POST /unbond` on `/rooms` dissolves a bond by
 discovering membership via the new CSRF-free `GET /grouping` read on
-`jasper-control` and fanning `{enabled:false}` to matches + self; the
+`jasper-control` and fanning `{enabled:false, trim_db:0.0}` to matches + self; the
 bond/unbond fan-out now runs concurrently across members. (3) Documented
 the grouping control plane's threat model (§7): `POST /grouping/set` / `GET
 /grouping` / the fan-out are UNAUTHENTICATED by design — the same home-LAN
@@ -2661,7 +2691,15 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-25 (Camilla pipe-guard/recovery-budget wording
+Last verified: 2026-06-26 (`/rooms/` backend-owned stereo-pair intent,
+primary subwoofer-control hiding, ±6 dB UI balance range, and fresh
+pair/unbond trim reset rechecked against `jasper/web/rooms_setup.py`,
+`deploy/assets/rooms/js/main.js`, `deploy/assets/rooms/js/grouping-view.js`,
+`tests/test_web_rooms_setup.py`, and live jts4/jts5 browser + SSH trim
+verification; pair-balance backend-meter flow and
+Camilla/Snapcast volume guard rechecked against `jasper/web/balance_flow.py`,
+`jasper/measurement/volume_guard.py`, and `deploy/assets/balance/js/main.js`;
+Camilla pipe-guard/recovery-budget wording
 rechecked against `deploy/systemd/jasper-camilla.service` and
 `deploy/bin/jasper-camilla-recover`; 2026-06-24 pair-lock runtime surface
 rechecked against
@@ -2677,4 +2715,5 @@ exceptions rechecked against
 `jasper.multiroom.reconcile`, and `jasper.cli.doctor.grouping`;
 local-source follower parking rechecked against `jasper/local_sources/registry.py`
 and `jasper.multiroom.reconcile`; wireless-sub 2.1 path from 2026-06-23
-unchanged)
+unchanged; snapclient journal rate limit rechecked against
+`deploy/systemd/jasper-snapclient.service`)

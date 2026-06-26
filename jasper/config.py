@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from . import home_assistant as _ha_env
 from .assistant_loudness import (
@@ -81,6 +82,30 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
+
+
+def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
+    raw = os.environ.get(name, default)
+    result: dict[str, str] = {}
+    if not raw or not raw.strip():
+        return MappingProxyType(result)
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        key, sep, value = item.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not sep or not key or not value:
+            raise RuntimeError(
+                f"{name} entries must be source_id=device, separated by commas"
+            )
+        if any(ch.isspace() for ch in key):
+            raise RuntimeError(f"{name} source ids must not contain whitespace")
+        if key in result:
+            raise RuntimeError(f"{name} contains duplicate source id {key!r}")
+        result[key] = value
+    return MappingProxyType(result)
 
 
 def _validate(cfg: "Config") -> "Config":
@@ -192,6 +217,7 @@ class Config:
     wake_model: str
     wake_threshold: float
     mic_device: str
+    manual_mic_sources: MappingProxyType[str, str]
     mic_device_raw: str
     mic_device_dtln: str
     # Optional XVF3800 chip-AEC beam legs (the fixed 150°/210° ASR beams
@@ -511,6 +537,15 @@ class Config:
             # the XVF3800's "Array: USB Audio (hw:N,0)"; "UMIK-2" matches
             # the MiniDSP UMIK-2). Empty/absent → PortAudio default.
             mic_device=_env("JASPER_MIC_DEVICE", "Array"),
+            # JASPER_MANUAL_MIC_SOURCES declares active push-to-talk audio
+            # sources that bypass wake detection. The key is an internal source
+            # id carried by /session/start; the value is any make_mic_capture()
+            # device string. This defaults empty: accessory reconcilers write
+            # sources here only when a matching remote profile is paired.
+            manual_mic_sources=_env_mapping(
+                "JASPER_MANUAL_MIC_SOURCES",
+                "",
+            ),
             # JASPER_MIC_DEVICE_RAW: optional second mic source for
             # dual-stream wake detection. When set (typically to
             # `udp:9877` paired with the bridge's chip-direct stream
@@ -925,9 +960,11 @@ class Config:
             # The UDS where jasper-control's peering daemon listens.
             # Matches PEERING_UDS_PATH in jasper.peering.config —
             # duplicated here so voice_daemon doesn't have to import
-            # the peering package just to know where to connect.
+            # the peering package just to know where to connect. The
+            # path lives under jasper-control's RuntimeDirectory because
+            # jasper-control owns the server side of this socket.
             peering_uds_socket=_env(
-                "JASPER_PEERING_UDS", "/run/jasper/peering.sock",
+                "JASPER_PEERING_UDS", "/run/jasper-control/peering.sock",
             ),
         ))
 

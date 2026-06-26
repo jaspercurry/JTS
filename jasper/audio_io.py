@@ -80,6 +80,26 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     `try/except` and falls through to `logger.warning` rather than
     raising. The caller still re-raises the original exception.
     """
+    # A missing mic is already the reconciler's single source of truth. When it
+    # has confirmed "no microphone", a capture-open failure here is that same
+    # expected fact — not a new incident — so log one line and skip the full
+    # portaudio/arecord/aplay/dmesg snapshot. Keeps absence one flag, not a
+    # cascade. Playback failures, and capture failures with a present/unknown
+    # mic, still get the full snapshot below. See jasper/mic_presence.py.
+    if role == "capture":
+        try:
+            from jasper.mic_presence import read_mic_presence
+            if read_mic_presence().absent_confirmed:
+                logger.warning(
+                    "audio open failed (expected): role=capture device=%r — no "
+                    "microphone present per the AEC reconciler; voice parked, "
+                    "auto-starts on reconnect (%s)",
+                    device, type(exc).__name__,
+                )
+                return
+        except Exception:  # noqa: BLE001 — the gate must never mask the failure
+            pass
+
     import sounddevice as sd  # Pi-side dep, lazy — see module top.
 
     logger.error(

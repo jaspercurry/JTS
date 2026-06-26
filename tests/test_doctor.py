@@ -4068,6 +4068,92 @@ def test_check_wifi_guardian_registered_in_sync_checks():
     assert "check_wifi_guardian" in _registered_check_names()
 
 
+def test_check_wifi_link_local_ipv6_ok(monkeypatch):
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home:802-11-wireless:wlan0\n",
+        "link-local\n",
+        "2: wlan0    inet6 fe80::1/64 scope link\n",
+    ])
+    r = doctor.check_wifi_link_local_ipv6()
+    assert r.status == "ok"
+    assert "link-local IPv6" in r.detail
+
+
+def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch):
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home Speaker:802-11-wireless:wlan0\n",
+        "ignore\n",
+    ])
+    r = doctor.check_wifi_link_local_ipv6()
+    assert r.status == "warn"
+    assert "ipv6.method=ignore" in r.detail
+    assert "Apple clients" in r.detail
+    assert "nmcli connection modify 'Home Speaker' ipv6.method link-local" in r.detail
+
+
+def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home:802-11-wireless:wlan0\n",
+        "auto\n",
+        "",
+    ])
+    r = doctor.check_wifi_link_local_ipv6()
+    assert r.status == "warn"
+    assert "no link-local IPv6" in r.detail
+
+
+def test_check_wifi_link_local_ipv6_registered_in_sync_checks():
+    assert "check_wifi_link_local_ipv6" in _registered_check_names()
+
+
+def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
+    """Resolved avahi-browse can hang on stale sibling records after seeing
+    the local service. That is still evidence that jasper-control is
+    advertised; it should not crash the whole doctor run."""
+    monkeypatch.setattr(
+        doctor.network.shutil,
+        "which",
+        lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout,
+            output=(
+                "+ wlan0 IPv4 JTS jasper-control on jts5 "
+                "_jasper-control._tcp local\n"
+            ),
+        )
+
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+
+    r = doctor.check_avahi_jasper_control()
+
+    assert r.status == "ok"
+    assert "stale peer" in r.detail
+
+
+def test_check_avahi_jasper_control_fails_on_timeout_without_service(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        doctor.network.shutil,
+        "which",
+        lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        raise subprocess.TimeoutExpired(cmd, timeout, output="")
+
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+
+    r = doctor.check_avahi_jasper_control()
+
+    assert r.status == "fail"
+    assert "timed out" in r.detail
+
+
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     def fake_run(cmd, timeout=5.0):
         unit = cmd[-1]
@@ -4903,7 +4989,7 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     result = doctor._assess_audio_profile(status)
 
     assert result.status == "warn"
-    assert "active=none" in result.detail
+    assert "active=xvf_software_aec3" in result.detail
     assert "not applied" in result.detail
 
 

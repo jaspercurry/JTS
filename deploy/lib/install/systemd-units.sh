@@ -333,9 +333,30 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    reload_audio_recovery_udev_rules_for_install
+}
+
+pin_attached_apple_dongle_power_control() {
+    # Preserve the udev rule's autosuspend-off side effect for already-attached
+    # Apple dongles without synthesizing a full USB/sound hotplug event during
+    # deploy. The explicit output-hardware reconciler run below owns mixer
+    # pinning and service restarts after the live graph has been parked.
+    local device vendor product control
+    for device in /sys/bus/usb/devices/*; do
+        [[ -d "${device}" ]] || continue
+        [[ -r "${device}/idVendor" && -r "${device}/idProduct" ]] || continue
+        read -r vendor < "${device}/idVendor" || continue
+        read -r product < "${device}/idProduct" || continue
+        [[ "${vendor}" == "05ac" && "${product}" == "110a" ]] || continue
+        control="${device}/power/control"
+        [[ -w "${control}" ]] || continue
+        printf 'on\n' 2>/dev/null > "${control}" || true
+    done
+}
+
+reload_audio_recovery_udev_rules_for_install() {
     udevadm control --reload-rules
-    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
-    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
+    pin_attached_apple_dongle_power_control
 }
 
 install_streambox_audio_slices() {
@@ -536,6 +557,20 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-input.service" \
         "${SYSTEMD_DIR}/jasper-input.service"
+    # Optional accessory mic profiles are activated by this root oneshot:
+    # it reads BlueZ's paired-device state, writes
+    # /var/lib/jasper/accessory-mics.env for jasper-voice, and owns the
+    # matching adapter unit state. This keeps rare remotes from imposing
+    # resident cost on every speaker.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
+    # WiiM Remote 2 BLE microphone adapter. Button events still flow through
+    # jasper-input; this companion daemon only decodes the remote's GATT voice
+    # report into the wiim_remote_2 manual mic UDP source.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
+        "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
     # AEC bridge + boot-time chip init + reconciler. The reconciler is
     # the policy layer that keeps JASPER_MIC_DEVICE, AEC services, and
     # the currently attached mic hardware in sync.
@@ -829,13 +864,7 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
-    udevadm control --reload-rules
-    # Trigger the rule once for the currently-attached dongle so we
-    # don't have to wait for the next replug. ATTR{} match is
-    # idempotent: amixer setting Headphone=100% on an already-pinned
-    # control is a no-op.
-    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
-    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
+    reload_audio_recovery_udev_rules_for_install
 
     # We own the full systemd units for each renderer + nqptp + the
     # no-code Bluetooth pairing agent.
@@ -959,6 +988,7 @@ install_systemd_units() {
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service \
         jasper-audio-hardware-reconcile.service \
+        jasper-accessory-reconcile.service \
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
@@ -1010,6 +1040,11 @@ install_systemd_units() {
     # jasper-input is always-on (HID accessory bridge) — restart so any
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true
+    # Optional adapter-backed mic sources are profile-gated. Reconcile after
+    # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
+    # without one keep the BLE decoder stopped/disabled.
+    /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 
     # Reconcile software AEC against whatever mic hardware is actually
     # present right now. This replaces the old one-way "enable if

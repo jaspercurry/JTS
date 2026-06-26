@@ -1,7 +1,7 @@
 /* wake.css — page-specific visuals for /wake/.
  *
- * Only what app.css doesn't already cover: the detection-layer rows, the
- * sensitivity slider, and the wake-word model-picker radio cards. Shared
+ * Only what app.css doesn't already cover: microphone/echo rows, advanced
+ * fusion rows, the sensitivity slider, and wake-word radio cards. Shared
  * chrome (.app-header, .page, .section, .info-card, .badge, .btn--*, .field)
  * comes from app.css. Everything here is themed off the canonical design
  * tokens — no hardcoded palette — so it re-skins with the rest of the UI. */
@@ -13,7 +13,7 @@
   line-height: 1.5;
 }
 
-/* ----- Input profile + detection layers ---------------------------------- */
+/* ----- Microphone, echo profile, and fusion rows -------------------------- */
 
 .mic-status-card .info-card {
   padding-bottom: 1rem;
@@ -52,13 +52,22 @@
   line-height: 1.4;
 }
 
-.profile-card .info-card {
+.echo-card .info-card {
   padding-bottom: 0.85rem;
 }
-.profile-status {
+.echo-status {
+  margin-bottom: 0.8rem;
+}
+.echo-status__title {
   color: var(--foreground);
-  font-size: 0.92rem;
-  margin-bottom: 0.75rem;
+  font-size: 1rem;
+  font-weight: 650;
+}
+.echo-status__detail {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin-top: 0.18rem;
 }
 .profile-row {
   display: flex;
@@ -97,6 +106,13 @@
 .profile-row.is-active .profile-name {
   color: var(--primary);
 }
+.profile-choice-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 6.5rem;
+  text-align: right;
+}
 
 @media (max-width: 620px) {
   .mic-status-grid {
@@ -108,11 +124,23 @@
   .profile-row .badge {
     margin-top: 0.05rem;
   }
+  .profile-choice-status {
+    min-width: 0;
+    text-align: left;
+  }
 }
 
 /* The card body is an .info-card from app.css; these style the rows inside. */
-.layers-card .info-card__note {
+.advanced-fusion-card .info-card__note {
   margin: 0 0 0.4rem;
+}
+.advanced-fusion-card .disclosure-body {
+  padding-top: 0.75rem;
+}
+.fusion-summary {
+  color: var(--foreground);
+  font-size: 0.9rem;
+  margin: 0.35rem 0 0.5rem;
 }
 
 .layer-row {
@@ -154,19 +182,30 @@
   font-variant-numeric: tabular-nums;
 }
 
-.sensitivity-row {
-  padding-top: 0.9rem;
-  margin-top: 0.4rem;
+.sensitivity-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.9fr);
+  gap: 1rem;
+  align-items: center;
+  padding: 0.8rem 0;
   border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 1rem;
 }
-.sensitivity-row .layer-body {
-  width: 100%;
+.sensitivity-title {
+  color: var(--foreground);
+  font-weight: 650;
+}
+.sensitivity-desc {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin-top: 0.12rem;
 }
 .sensitivity-control {
   display: flex;
   gap: 0.6rem;
   align-items: center;
-  margin-top: 0.6rem;
 }
 .sensitivity-control input[type="range"] {
   flex: 1;
@@ -180,6 +219,11 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--foreground);
+}
+@media (max-width: 720px) {
+  .sensitivity-panel {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ----- Wake-word model picker -------------------------------------------- */

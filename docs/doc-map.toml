@@ -566,6 +566,7 @@ safety = "audio-output-risk"
 code = [
   "jasper/active_speaker/**",
   "jasper/correction/**",
+  "jasper/measurement/**",
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",
   "deploy/jasper-correction-web.*",
@@ -588,6 +589,7 @@ requires_docs_when = [
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
+  "pytest tests/test_measurement_volume_guard.py tests/test_web_balance_flow.py tests/test_web_sync_flow.py",
 ]
 
 [[subsystem]]

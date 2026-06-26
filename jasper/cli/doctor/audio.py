@@ -31,7 +31,7 @@ from ...output_hardware import (
     OutputHardwareState,
     load_state as _load_output_hardware_state,
 )
-from ...voice.input_presence import voice_parked_no_mic
+from ...mic_presence import read_mic_presence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -126,6 +126,24 @@ def _check_arecord_l_card_device(card: int, device: int) -> bool:
             return True
     return False
 
+@doctor_check(order=3.5, group="audio", label="microphone")
+def check_microphone() -> CheckResult:
+    """Single headline for microphone presence — the one flag for "is there
+    a mic?".
+
+    Reads the reconciler's one canonical record via
+    ``jasper.mic_presence.read_mic_presence`` and states present/absent + *why*
+    in a single line. The downstream ``mic ALSA card`` / ``mic capture`` checks
+    and the audio-open-failure log all defer to this same verdict instead of
+    independently re-probing ALSA, so a missing mic is one yellow advisory —
+    not a scatter of contradicting red failures. Absent is ``warn`` (never
+    ``fail``): the reconciler parked voice and it auto-starts when a mic is
+    reconnected, so it's noteworthy, not broken."""
+    mp = read_mic_presence()
+    status = "warn" if mp.absent_confirmed else "ok"
+    return CheckResult("microphone", status, mp.summary)
+
+
 @doctor_check(order=4, group="audio", label="mic ALSA card", needs_cfg=True)
 def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     """Validate the card configured in JASPER_MIC_DEVICE is actually
@@ -144,6 +162,17 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             "mic ALSA card", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
+        )
+    # No usable mic: the reconciler's single source of truth already
+    # classified this and parked voice. Defer to the `microphone` headline —
+    # independently re-probing `arecord -L` here only to report a red FAILURE
+    # for an expected, auto-recovering state was the exact contradiction this
+    # check used to create. See jasper/mic_presence.py.
+    if read_mic_presence().absent_confirmed:
+        return CheckResult(
+            "mic ALSA card", "ok",
+            "no microphone present — see the `microphone` check "
+            "(voice parked, auto-starts when a mic is reconnected)",
         )
     # UDP transport has no ALSA card to validate; just say so. The
     # `jasper-aec-bridge` running check covers transport liveness.
@@ -260,18 +289,17 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
         )
-    # Intentionally idle, not broken: the AEC reconciler found no usable
-    # mic and parked jasper-voice behind its ConditionPathExists gate.
-    # Report ok+expected (mirrors the bonded-follower idiom above) so a
-    # mic-less box / a unit mid-unplug isn't a red doctor line. A genuine
-    # open failure (marker ABSENT but the device won't open — custom or
-    # busy mic) still falls through to the probe + its fail below. See
-    # docs/HANDOFF-hotplug-resilience.md "Layer 3".
-    if voice_parked_no_mic():
+    # Intentionally idle, not broken: the reconciler's single source of truth
+    # confirms no usable mic and parked jasper-voice. Defer to the `microphone`
+    # headline so a mic-less box / a unit mid-unplug is one advisory, not a red
+    # line. A genuine open failure (no absent verdict but the device won't open
+    # — custom or busy mic) still falls through to the probe + its fail below.
+    # See jasper/mic_presence.py and docs/HANDOFF-hotplug-resilience.md "Layer 3".
+    if read_mic_presence().absent_confirmed:
         return CheckResult(
             "mic capture", "ok",
-            "no microphone present (expected) — jasper-voice is parked by "
-            "the AEC reconciler; plug a mic and it starts automatically",
+            "no microphone present (expected) — see the `microphone` check; "
+            "voice auto-starts when a mic is reconnected",
         )
     # UDP transport: no PortAudio probe possible. The bridge's
     # heartbeat (Tier 1) and `check_aec_bridge_running` already cover

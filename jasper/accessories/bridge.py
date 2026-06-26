@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""evdev → jasper-control HTTP bridge for HID accessories.
+"""evdev → jasper-control HTTP bridge for HID remote profiles.
 
-Watches /dev/input/event* for any device matching `registry.KNOWN_DEVICES`
-(by USB VID/PID). For each match, opens an async evdev reader and
-translates key events into HTTP calls against jasper-control on
-localhost. Volume-rotation bursts are coalesced into one POST per
-~80 ms window so a fast spin doesn't hammer the daemon.
+Watches /dev/input/event* for any device matching
+`registry.KNOWN_PROFILES` (by USB VID/PID or Bluetooth name fallback).
+For each match, opens an async reader and translates key events into
+HTTP calls against jasper-control on localhost. Volume bursts are
+coalesced into at most one POST per ~80 ms window so a fast spin or
+held remote button doesn't hammer the daemon while still moving
+promptly during the gesture.
 
 Hot-plug: a pyudev monitor catches "add" events on /dev/input/* and
 opens a reader for matched devices. "remove" is handled passively —
@@ -36,7 +38,13 @@ from jasper.log_event import log_event
 # jasper/control/server.py's _dispatch_transport.
 
 from .registry import (
-    KNOWN_DEVICES, Device, KeyAction, TapAction, lookup, lookup_by_name,
+    KNOWN_PROFILES,
+    HoldAction,
+    KeyAction,
+    RemoteProfile,
+    TapAction,
+    lookup,
+    lookup_by_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,58 +66,69 @@ Poster = Callable[[str, str, Optional[dict]], Awaitable[ControlResponse]]
 
 class _Coalescer:
     """Per-keycode accumulator: sums `delta_percent` over a short
-    window, fires one HTTP POST when the window quiets.
+    window, fires one HTTP POST per window while hits continue.
 
-    A new event resets the flush timer — the POST goes out after
-    COALESCE_WINDOW_SEC of idle, so a continuous fast spin emits
-    one POST every ~80 ms with the summed delta in between."""
+    The first event starts the timer; later events add to the pending
+    delta without pushing the timer out. If new hits arrive while the
+    HTTP POST is in flight, this task keeps ownership and flushes the
+    next batch after another window."""
 
     def __init__(
         self,
         post: Poster,
         action: KeyAction,
         device_name: str,
+        profile_id: str | None = None,
     ) -> None:
         self._post = post
         self._path = action.path
         self._per_hit_delta = int(action.body.get("delta_percent", 0))
         self._device_name = device_name
+        self._profile_id = profile_id
         self._pending = 0
         self._flush: asyncio.Task | None = None
 
     def hit(self) -> None:
         self._pending += self._per_hit_delta
-        if self._flush is not None and not self._flush.done():
-            self._flush.cancel()
-        self._flush = asyncio.create_task(self._flush_after_delay())
+        if self._flush is None or self._flush.done():
+            self._flush = asyncio.create_task(self._flush_loop())
 
-    async def _flush_after_delay(self) -> None:
-        try:
-            await asyncio.sleep(COALESCE_WINDOW_SEC)
-        except asyncio.CancelledError:
-            return
-        delta = self._pending
-        self._pending = 0
-        try:
-            resp = await self._post(
-                "POST", self._path, {"delta_percent": delta},
-            )
-            log_event(
-                logger,
-                "knob.adjust",
-                device=self._device_name,
-                delta=f"{delta:+d}",
-                status=resp.status,
-            )
-        except ControlError as e:
-            log_event(
-                logger,
-                "knob.adjust.failed",
-                level=logging.WARNING,
-                device=self._device_name,
-                delta=f"{delta:+d}",
-                err=str(e),
-            )
+    async def _flush_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(COALESCE_WINDOW_SEC)
+            except asyncio.CancelledError:
+                return
+            delta = self._pending
+            self._pending = 0
+            if delta == 0:
+                return
+            try:
+                resp = await self._post(
+                    "POST", self._path, {"delta_percent": delta},
+                )
+                fields = {
+                    "device": self._device_name,
+                    "delta": f"{delta:+d}",
+                    "status": resp.status,
+                }
+                if self._profile_id:
+                    fields["profile"] = self._profile_id
+                log_event(logger, "knob.adjust", fields=fields)
+            except ControlError as e:
+                fields = {
+                    "device": self._device_name,
+                    "delta": f"{delta:+d}",
+                    "err": str(e),
+                }
+                if self._profile_id:
+                    fields["profile"] = self._profile_id
+                log_event(
+                    logger, "knob.adjust.failed",
+                    level=logging.WARNING, fields=fields,
+                )
+            if self._pending == 0:
+                return
 
 
 async def _post_once(
@@ -117,6 +136,7 @@ async def _post_once(
     action: KeyAction,
     device_name: str,
     key_name: str,
+    profile_id: str | None = None,
 ) -> None:
     """Fire-once HTTP call for a non-coalescing key (mute, etc.)."""
     try:
@@ -125,22 +145,26 @@ async def _post_once(
             action.path,
             action.body or None,
         )
-        log_event(
-            logger,
-            "knob.action",
-            device=device_name,
-            key=key_name,
-            path=action.path,
-            status=resp.status,
-        )
+        fields = {
+            "device": device_name,
+            "key": key_name,
+            "path": action.path,
+            "status": resp.status,
+        }
+        if profile_id:
+            fields["profile"] = profile_id
+        log_event(logger, "knob.action", fields=fields)
     except ControlError as e:
+        fields = {
+            "device": device_name,
+            "key": key_name,
+            "err": str(e),
+        }
+        if profile_id:
+            fields["profile"] = profile_id
         log_event(
-            logger,
-            "knob.action.failed",
-            level=logging.WARNING,
-            device=device_name,
-            key=key_name,
-            err=str(e),
+            logger, "knob.action.failed",
+            level=logging.WARNING, fields=fields,
         )
 
 
@@ -168,11 +192,13 @@ class _TapCounter:
         action: TapAction,
         device_name: str,
         key_name: str,
+        profile_id: str | None = None,
     ) -> None:
         self._post = post
         self._action = action
         self._device_name = device_name
         self._key_name = key_name
+        self._profile_id = profile_id
         self._window_sec = action.window_ms / 1000.0
         self._count = 0
         self._timer: asyncio.Task | None = None
@@ -222,13 +248,14 @@ class _TapCounter:
             # Tap-count has no mapping — silently drop with a log so
             # the operator can confirm taps are registering but the
             # gesture isn't defined for this device.
-            log_event(
-                logger,
-                "knob.tap.unmapped",
-                device=self._device_name,
-                key=self._key_name,
-                count=count,
-            )
+            fields = {
+                "device": self._device_name,
+                "key": self._key_name,
+                "count": count,
+            }
+            if self._profile_id:
+                fields["profile"] = self._profile_id
+            log_event(logger, "knob.tap.unmapped", fields=fields)
             return
         try:
             resp = await self._post(
@@ -236,25 +263,29 @@ class _TapCounter:
                 target.path,
                 target.body or None,
             )
-            log_event(
-                logger,
-                "knob.tap",
-                device=self._device_name,
-                key=self._key_name,
-                count=count,
-                path=target.path,
-                status=resp.status,
-            )
+            fields = {
+                "device": self._device_name,
+                "key": self._key_name,
+                "count": count,
+                "path": target.path,
+                "status": resp.status,
+            }
+            if self._profile_id:
+                fields["profile"] = self._profile_id
+            log_event(logger, "knob.tap", fields=fields)
         except ControlError as e:
+            fields = {
+                "device": self._device_name,
+                "key": self._key_name,
+                "count": count,
+                "path": target.path,
+                "err": str(e),
+            }
+            if self._profile_id:
+                fields["profile"] = self._profile_id
             log_event(
-                logger,
-                "knob.tap.failed",
-                level=logging.WARNING,
-                device=self._device_name,
-                key=self._key_name,
-                count=count,
-                path=target.path,
-                err=str(e),
+                logger, "knob.tap.failed",
+                level=logging.WARNING, fields=fields,
             )
 
 
@@ -263,14 +294,15 @@ def _key_name(code: int) -> str:
     from evdev import ecodes  # type: ignore
 
     name = ecodes.keys.get(code, code)
-    if isinstance(name, list):  # multiple aliases — pick the first
-        name = name[0]
+    if isinstance(name, (list, tuple)):  # multiple aliases — pick a stable key name
+        key_names = [n for n in name if isinstance(n, str) and n.startswith("KEY_")]
+        name = key_names[0] if key_names else name[0]
     return str(name)
 
 
 async def _read_device(
     device_path: str,
-    device: Device,
+    device: RemoteProfile,
     post: Poster,
 ) -> None:
     """Translate key events from one matched device into HTTP calls.
@@ -285,6 +317,7 @@ async def _read_device(
             "knob.open.failed",
             level=logging.WARNING,
             device=device.name,
+            profile=device.id,
             path=device_path,
             err=str(e),
         )
@@ -300,6 +333,7 @@ async def _read_device(
         logger,
         "knob.open",
         device=device.name,
+        profile=device.id,
         path=device_path,
         transport=transport,
         vid=f"{dev.info.vendor:04x}",
@@ -308,34 +342,54 @@ async def _read_device(
 
     coalescers: dict[int, _Coalescer] = {}
     tap_counters: dict[int, _TapCounter] = {}
+    active_holds: dict[int, tuple[HoldAction, str]] = {}
     tasks: set[asyncio.Task] = set()  # retain non-coalescing dispatch tasks
 
     try:
         async for ev in dev.async_read_loop():
             if ev.type != ecodes.EV_KEY:
                 continue
-            if ev.value != 1:  # press only; ignore release + autorepeat
-                continue
             action = device.keymap.get(ev.code)
             if action is None:
                 continue
+            key_name = _key_name(ev.code)
+            if isinstance(action, HoldAction):
+                if ev.value == 1:
+                    target = action.on_press
+                    active_holds[ev.code] = (action, key_name)
+                elif ev.value == 0:
+                    target = action.on_release
+                    active_holds.pop(ev.code, None)
+                else:
+                    continue
+                # Hold actions encode stateful press→release edges
+                # (e.g. push-to-talk). Preserve wire order instead of
+                # firing independent tasks that can race each other.
+                await _post_once(post, target, device.name, key_name, device.id)
+                continue
             if isinstance(action, TapAction):
+                if ev.value != 1:  # taps are press-only; ignore release + autorepeat
+                    continue
                 tc = tap_counters.get(ev.code)
                 if tc is None:
                     tc = _TapCounter(
-                        post, action, device.name, _key_name(ev.code),
+                        post, action, device.name, key_name, device.id,
                     )
                     tap_counters[ev.code] = tc
                 tc.hit()
             elif action.coalesce:
+                if ev.value not in (1, 2):  # press + autorepeat; ignore release
+                    continue
                 cz = coalescers.get(ev.code)
                 if cz is None:
-                    cz = _Coalescer(post, action, device.name)
+                    cz = _Coalescer(post, action, device.name, device.id)
                     coalescers[ev.code] = cz
                 cz.hit()
             else:
+                if ev.value != 1:  # press only; ignore release + autorepeat
+                    continue
                 t = asyncio.create_task(_post_once(
-                    post, action, device.name, _key_name(ev.code),
+                    post, action, device.name, key_name, device.id,
                 ))
                 tasks.add(t)
                 t.add_done_callback(tasks.discard)
@@ -346,9 +400,15 @@ async def _read_device(
             logger,
             "knob.close",
             device=device.name,
+            profile=device.id,
             reason=str(e),
         )
     finally:
+        for _code, (action, key_name) in list(active_holds.items()):
+            await _post_once(
+                post, action.on_release, device.name, key_name, device.id,
+            )
+        active_holds.clear()
         try:
             dev.close()
         except Exception:  # noqa: BLE001
@@ -401,7 +461,7 @@ async def _supervise(control_url: str) -> None:
             logger,
             "knob.bridge.idle",
             note="no known accessories attached; waiting for hot-plug",
-            known=", ".join(d.name for d in KNOWN_DEVICES),
+            known=", ".join(d.name for d in KNOWN_PROFILES),
         )
 
     loop = asyncio.get_running_loop()

@@ -182,12 +182,14 @@ directly and `install.sh` stamps the build SHA into it exactly as it does for
 `deploy/index.html`. That's the static-page analog of the shell — same
 canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
 one `#icon-back` sprite symbol it needs. Its Proceed button targets
-`/correction/proceed`; nginx temporarily redirects that to
-`https://$host/correction/` with `Cache-Control: no-store` so non-default
-hostnames such as `jts3.local` do not depend on client-side JavaScript to
-survive the HTTP → HTTPS hop, and mobile browsers do not cache stale local
-hostname or scheme rules. Safe `?next=/correction/...` subflows become
-`/correction/proceed/<subflow>`, with the same temporary no-store redirect.
+`/correction/proceed` with a build-token fallback query string; JavaScript
+replaces that with a fresh `jts_cb` token on each page load. Nginx temporarily
+redirects that to `https://$host/correction/` with `Cache-Control: no-store`
+and preserves query args, so non-default hostnames such as `jts3.local` do not
+depend on client-side JavaScript to survive the HTTP → HTTPS hop, and mobile
+browsers do not cache stale local hostname or scheme rules. Safe
+`?next=/correction/...` subflows become `/correction/proceed/<subflow>`, with
+the same temporary no-store redirect and query preservation.
 
 ### Archetype recipes
 
@@ -201,7 +203,7 @@ canonical classes; all wrap their body in `canonical_header(title)` +
   `input`/`select` + a `.form-hint`); close with a `.form-actions` row holding
   a `.btn.btn--primary` submit. A destructive secondary action is a
   `.btn.btn--ghost` or `.btn.btn--danger` in the same row.
-- **Toggle list** (`/sources/`, `/wake/` detection legs): an `.info-card`
+- **Toggle list** (`/sources/`, `/wake/` advanced fusion): an `.info-card`
   (or one per group) containing rows of "label + `toggle_html(id,
   checked=…)`" laid out with `.control-head` / flex; the checkbox POSTs (or
   fetches via `postJSON` from `http.js`). One `.section__title` names each
@@ -419,7 +421,7 @@ reordering better than the prior flat enumeration):
 |---|---|
 | **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
 | **Sound** | Sound profile → `/sound/` · Room correction → `https://…/correction/` (HTTPS, preflight first) · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
-| **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Wake detection → `/wake/` |
+| **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Microphone & wake → `/wake/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
 | **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
 | **Accessories** | Dial → `/dial/` |
@@ -460,7 +462,7 @@ surfaces such as `/bluetooth/`, `/dial/`, `/system/`, `/chat/`, and
 | `/airplay/` | `airplay_setup.py` | 8771 | Sync mode |
 | `/system/` | `system_setup.py` | 8772 | Dashboard |
 | `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify/USB toggles |
-| `/wake/` | `wake_setup.py` | 8774 | Wake-word + sensitivity + detection layers |
+| `/wake/` | `wake_setup.py` | 8774 | Microphone, echo cancellation, wake word, sensitivity, advanced fusion |
 | `/wifi/` | `wifi_setup.py` | 8775 | NetworkManager wrapper |
 | `/transit/` | `transit_setup.py` | 8777 | Transit address + providers |
 | `/ha/` | `home_assistant_setup.py` | 8778 | Home Assistant connection |
@@ -522,7 +524,7 @@ Sources
 
 Assistant
   Voice                   OpenAI · Marin
-  Wake detection          Jarvis · 0.50
+  Microphone & wake       Jarvis · Chip AEC
 
 Integrations
   Weather                 Sunset Park · F
@@ -615,7 +617,7 @@ System
 | AirPlay sync mode | Sources › AirPlay sync | Sub-setting, not a section |
 | Bluetooth | Sources › Bluetooth devices | Multi-purpose, but one canonical BT home for now |
 | Voice provider | Assistant › Voice | The assistant's speech backend |
-| Wake word | Assistant › Wake detection | How the assistant starts listening |
+| Wake word | Assistant › Microphone & wake | How the assistant starts listening |
 | Transit | Integrations › Transit | External data capability tied to location |
 | Weather | Integrations › Weather | External data capability tied to location |
 | Google | Integrations › Google | Calendar/Gmail account capability |
@@ -679,7 +681,7 @@ Critical path — speaker is much less useful without these:
 Recommended:
 
   4. Speaker name       Shown in AirPlay, Spotify, Bluetooth, USB
-  5. Wake detection     Default "Jarvis" works; choose / tune
+  5. Microphone & wake  Default mic/AEC path works; choose wake phrase / tune
   6. Room correction    ~5 min iPhone measurement
   7. Sound profile      Flat default works; pick preference curve
 
@@ -747,22 +749,23 @@ then everything else" shape. Each step is an existing wizard where practical
 For each row on `/`:
 
 - **Icon**: small, familiar, decorative unless the label is hidden.
-- **Title**: noun phrase (the thing — "Voice", "Wake detection", "Peering")
+- **Title**: noun phrase (the thing — "Voice", "Microphone & wake", "Peering")
 - **Status line**: current value, dot-separated where multi-part
   (`Gemini · Aoede`, not "currently set to Gemini with voice Aoede")
 - **Chevron**: navigates to the dedicated wizard/page.
 - **No long description.** The destination explains itself.
 
 The long explainers don't disappear — they move to where they're useful.
-"Why peering" lives on `/rooms/`; "what AEC does" lives on the AEC toggle
-inside Advanced. The index doesn't need to teach; the destination does.
+"Why peering" lives on `/rooms/`; "what AEC does" lives on the Echo
+cancellation section and the advanced fusion controls. The index doesn't need
+to teach; the destination does.
 
 ### 6.2 Side-by-side
 
 | Today (verbose) | Proposed (terse) |
 |---|---|
 | **JTS speaker** / `Manage your speaker.` | **JTS** *(speaker display name; no redundant subhead)* |
-| **Wake word ›** — Pick which phrase wakes the speaker — "Jarvis", "Hey Jarvis", "Alexa", or "Hey Mycroft". New models can be added by updating `jasper/wake_models.py`. | **Wake detection** · Jarvis · 0.50 |
+| **Wake word ›** — Pick which phrase wakes the speaker — "Jarvis", "Hey Jarvis", "Alexa", or "Hey Mycroft". New models can be added by updating `jasper/wake_models.py`. | **Microphone & wake** · Jarvis · Chip AEC |
 | **Wake response ›** — Off by default. When you have multiple JTS speakers on the same network, turn this on so only one responds to each wake word instead of all of them at once. | **Peering** · Off |
 | **Room correction ›** — Measure your room from your iPhone and apply correction filters to CamillaDSP. Browser will warn "Not Private" the first time — see the note below. | **Room correction** · Off |
 | **Voice provider ›** — Choose which real-time voice backend the speaker uses (Gemini, OpenAI, or Grok) and paste API keys. | **Voice** · OpenAI · Marin |
@@ -1406,7 +1409,11 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-25 (correction preflight/proceed redirects and the
+Last verified: 2026-06-26 (`/wake/` now presents microphone, echo
+cancellation, wake-word, and advanced fusion settings as separate concerns;
+verified against `jasper/web/wake_setup.py`, `deploy/assets/wake/js/main.js`,
+and `tests/test_web_wake_setup.py`. Prior pass 2026-06-25: correction
+preflight/proceed redirects and the
 HTTPS catch-all are temporary + no-store so iOS Safari does not cache stale
 local hostname or scheme rules; verified against `deploy/nginx-jasper.conf`,
 `deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`.

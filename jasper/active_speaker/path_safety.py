@@ -38,6 +38,10 @@ DEFAULT_PATH_SAFETY_EVIDENCE_PATH = Path(
 )
 OPERATOR_EVIDENCE_SOURCE = "operator"
 HARDWARE_PROBE_EVIDENCE_SOURCE = "hardware_probe"
+STARTUP_LOAD_EVIDENCE_MODE = "startup_load_preflight"
+IDENTITY_AUDITION_EVIDENCE_MODE = "identity_audition_startup_load"
+STARTUP_LOAD_SCOPE = "load_only_no_audio"
+IDENTITY_AUDITION_SCOPE = "identity_audition_load_only_no_audio"
 SUPPORTED_EVIDENCE_SOURCES = {
     OPERATOR_EVIDENCE_SOURCE,
     HARDWARE_PROBE_EVIDENCE_SOURCE,
@@ -209,6 +213,17 @@ def topology_target_signature(topology: OutputTopology) -> list[dict[str, Any]]:
     return sorted(targets, key=lambda item: (item["speaker_group_id"], item["role"]))
 
 
+def target_assignment_signature(
+    signature: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a target signature that ignores only the verified/unverified bit."""
+
+    return [
+        {key: value for key, value in item.items() if key != "identity_verified"}
+        for item in signature
+    ]
+
+
 def staged_target_signature(staged_config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the staged startup config's path-safety-relevant target identity."""
 
@@ -275,7 +290,14 @@ def _topology_blockers(
 def _staged_topology_matches(
     topology: OutputTopology,
     staged_config: dict[str, Any],
+    *,
+    require_physical_identity: bool = True,
 ) -> bool:
+    staged_signature = staged_target_signature(staged_config)
+    topology_signature = topology_target_signature(topology)
+    if not require_physical_identity:
+        staged_signature = target_assignment_signature(staged_signature)
+        topology_signature = target_assignment_signature(topology_signature)
     staged_topology = (
         staged_config.get("topology")
         if isinstance(staged_config.get("topology"), dict)
@@ -294,7 +316,7 @@ def _staged_topology_matches(
         staged_hardware.get("physical_output_count")
         == topology.hardware.physical_output_count,
         staged_hardware.get("clock_domain_id") == topology.hardware.clock_domain_id,
-        staged_target_signature(staged_config) == topology_target_signature(topology),
+        staged_signature == topology_signature,
     ))
 
 
@@ -330,13 +352,15 @@ def startup_load_evidence_fingerprint(
     staged = staged_config if isinstance(staged_config, dict) else {}
     staged_path = _staged_config_path(staged)
     current_path = Path(current_config_path) if current_config_path else None
+    target_signature = topology_target_signature(topology)
     return {
         "topology_id": topology.topology_id,
         "hardware_device_id": topology.hardware.device_id,
         "hardware_card_id": topology.hardware.card_id,
         "hardware_output_count": topology.hardware.physical_output_count,
         "hardware_clock_domain_id": topology.hardware.clock_domain_id,
-        "target_signature": topology_target_signature(topology),
+        "target_signature": target_signature,
+        "target_assignment_signature": target_assignment_signature(target_signature),
         "staged_config_path": str(staged_path or ""),
         "staged_config_sha256": _file_sha256(staged_path),
         "current_config_path": str(current_config_path or ""),
@@ -350,6 +374,7 @@ def validate_startup_load_evidence_binding(
     *,
     staged_config: dict[str, Any] | None = None,
     current_config_path: str | Path | None = None,
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Check that path-safety evidence still matches this startup-load attempt."""
 
@@ -359,9 +384,22 @@ def validate_startup_load_evidence_binding(
         staged_config=staged_config,
         current_config_path=current_config_path,
     )
+    expected_mode = (
+        STARTUP_LOAD_EVIDENCE_MODE
+        if require_physical_identity
+        else IDENTITY_AUDITION_EVIDENCE_MODE
+    )
+    expected_scope = (
+        STARTUP_LOAD_SCOPE if require_physical_identity else IDENTITY_AUDITION_SCOPE
+    )
+    target_check_name = (
+        "target_signature"
+        if require_physical_identity
+        else "target_assignment_signature"
+    )
     checks: dict[str, bool] = {
-        "evidence_mode": raw.get("evidence_mode") == "startup_load_preflight",
-        "scope": raw.get("scope") == "load_only_no_audio",
+        "evidence_mode": raw.get("evidence_mode") == expected_mode,
+        "scope": raw.get("scope") == expected_scope,
         "topology_id": provenance.get("topology_id") == expected["topology_id"],
         "hardware_device_id": (
             provenance.get("hardware_device_id") == expected["hardware_device_id"]
@@ -377,8 +415,8 @@ def validate_startup_load_evidence_binding(
             provenance.get("hardware_clock_domain_id")
             == expected["hardware_clock_domain_id"]
         ),
-        "target_signature": (
-            provenance.get("target_signature") == expected["target_signature"]
+        target_check_name: (
+            provenance.get(target_check_name) == expected[target_check_name]
         ),
         "staged_config_path": (
             provenance.get("staged_config_path") == expected["staged_config_path"]
@@ -618,6 +656,7 @@ def build_startup_load_path_safety_evidence(
     current_config_path: str | Path | None = None,
     current_config_error: str | None = None,
     generated_at: str | None = None,
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Build no-audio hardware-probe evidence for startup-load safety.
 
@@ -641,10 +680,17 @@ def build_startup_load_path_safety_evidence(
     identity = channel_identity_report(topology)
     assigned = int(identity.get("assigned_channel_count") or 0)
     unverified = int(identity.get("unverified_channel_count") or 0)
-    topology_ready = assigned > 0 and unverified == 0 and not topology_blockers
+    identity_ready = assigned > 0 and (
+        unverified == 0 if require_physical_identity else True
+    )
+    topology_ready = identity_ready and not topology_blockers
     candidate_ready = (
         _staged_candidate_ready(staged)
-        and _staged_topology_matches(topology, staged)
+        and _staged_topology_matches(
+            topology,
+            staged,
+            require_physical_identity=require_physical_identity,
+        )
         and software_guard_ready
     )
     level_controlled = _calibration_level_controlled(calibration_level)
@@ -740,13 +786,17 @@ def build_startup_load_path_safety_evidence(
             "no_assigned_outputs",
             "no saved active-speaker DAC outputs are assigned",
         ))
-    if unverified:
+    if require_physical_identity and unverified:
         observed_issues.append(_issue(
             "blocker",
             "physical_identity_unverified",
             "assigned DAC outputs must be physically verified",
         ))
-    if not _staged_topology_matches(topology, staged):
+    if not _staged_topology_matches(
+        topology,
+        staged,
+        require_physical_identity=require_physical_identity,
+    ):
         observed_issues.append(_issue(
             "blocker",
             "staged_topology_mismatch",
@@ -768,8 +818,12 @@ def build_startup_load_path_safety_evidence(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": PATH_SAFETY_EVIDENCE_KIND,
         "evidence_source": HARDWARE_PROBE_EVIDENCE_SOURCE,
-        "evidence_mode": "startup_load_preflight",
-        "scope": "load_only_no_audio",
+        "evidence_mode": (
+            STARTUP_LOAD_EVIDENCE_MODE
+            if require_physical_identity
+            else IDENTITY_AUDITION_EVIDENCE_MODE
+        ),
+        "scope": STARTUP_LOAD_SCOPE if require_physical_identity else IDENTITY_AUDITION_SCOPE,
         "generated_at": generated_at or _utc_now(),
         "paths": paths,
         "provenance": {
@@ -778,6 +832,7 @@ def build_startup_load_path_safety_evidence(
                 staged_config=staged,
                 current_config_path=current_config_path,
             ),
+            "physical_identity_required": require_physical_identity,
             "rollback_classification": rollback.get("classification"),
             "rollback_restore_available": rollback.get("restore_available"),
             "assigned_channel_count": assigned,

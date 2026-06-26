@@ -192,7 +192,7 @@ Current mapping:
 |---|---|
 | Spotify Connect | Spotify Web API against the resolved account/device. |
 | AirPlay | Generic MPRIS/DACP when available; Spotify-over-AirPlay title-match fallback is provider-assisted. |
-| Bluetooth | Currently unsupported for bluez-alsa A2DP sink; return a spoken unsupported result. |
+| Bluetooth | BlueZ AVRCP through `org.bluez.MediaPlayer1` when the active phone/player exposes a player object; otherwise return a concrete unavailable result. |
 | USB sink | Host-owned; unsupported. |
 
 ### Metadata Capability
@@ -232,6 +232,10 @@ Implemented in the current workstream:
 
 - Spotify/BT degraded push guards clear after a later successful push
   dispatch or confirmed same-level active-source observation.
+- Bluetooth transport and source preemption now use the shared BlueZ
+  AVRCP helper (`org.bluez.MediaPlayer1`) when the active A2DP source
+  exposes a player object. Extraction into a source capability adapter
+  is still future work.
 - `jasper-mux` loads the wizard-owned Spotify credential env file so
   guarded Spotify handoff has the same Web API inputs as voice/control.
 - Spotify credential/account/default changes restart `jasper-voice`,
@@ -371,7 +375,9 @@ Move `jasper/tools/transport.py` toward source transport adapters:
 
 - AirPlay adapter
 - Spotify Connect adapter
-- unsupported adapters for Bluetooth/USB with explicit user messages
+- Bluetooth AVRCP adapter, with explicit unavailable results when no
+  BlueZ player object exists
+- unsupported adapter for USB with explicit user messages
 - provider-assisted fallback for Spotify-over-AirPlay remains a special
   routing helper, not generic AirPlay capability
 
@@ -457,4 +463,4 @@ capability unsupported and return a clear user-facing result.
   source-addition checklist changes, `HANDOFF-volume.md` for volume
   behavior, and `HANDOFF-voice-music-control.md` for transport behavior.
 
-Last verified: 2026-06-04
+Last verified: 2026-06-25

@@ -68,6 +68,7 @@ from ..voice_daemon import (
     FanInDucker,
     WakeLoop,
     _LegRuntime,
+    _ManualMicRuntime,
     _cancel_tracked_tasks,
     _configured_wake_legs,
     _track_task,
@@ -422,7 +423,7 @@ async def _start_control_socket(
     JSON object terminated by `\\n`.
 
     Commands:
-        START               → manual_session_start  (long-press begin)
+        START [source]      → manual_session_start  (long-press begin)
         END                 → manual_session_end    (long-press release)
         STATUS              → session_status        (diagnostic snapshot)
         CUE_PLAY <slug>     → play a registered audio cue through the
@@ -456,7 +457,9 @@ async def _start_control_socket(
             cmd = parts[0].upper() if parts else ""
             arg = parts[1] if len(parts) > 1 else ""
             if cmd == "START":
-                result = {"result": await wake_loop.manual_session_start()}
+                result = {
+                    "result": await wake_loop.manual_session_start(arg or None),
+                }
             elif cmd == "END":
                 result = {"result": await wake_loop.manual_session_end()}
             elif cmd == "STATUS":
@@ -965,6 +968,39 @@ async def run() -> None:
                     deque(maxlen=CAPTURE_RING_FRAMES),
                     shadow_vad=SpeechVAD() if spec.token == "off" else None,
                 ))
+            manual_mics: list[_ManualMicRuntime] = []
+            for source_id, device in cfg.manual_mic_sources.items():
+                try:
+                    manual_mic = await stack.enter_async_context(
+                        make_mic_capture(
+                            device,
+                            capture_rate=cfg.mic_capture_rate,
+                            capture_channels=cfg.mic_capture_channels,
+                        )
+                    )
+                except (
+                    InputDeviceUnavailable,
+                    OSError,
+                    RuntimeError,
+                    TimeoutError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    log_event(
+                        logger,
+                        "manual_mic.source_skipped",
+                        source=source_id,
+                        device=device,
+                        reason="mic_open_failed",
+                        err=str(exc),
+                        level=logging.WARNING,
+                    )
+                    continue
+                manual_mics.append(_ManualMicRuntime(
+                    source_id,
+                    manual_mic,
+                    device,
+                ))
             tts = await stack.enter_async_context(make_tts_playout(
                 transport=cfg.tts_transport,
                 device=cfg.tts_device,
@@ -1019,6 +1055,7 @@ async def run() -> None:
                 wake_event_store=wake_event_store,
                 tool_packs=outcomes_to_state(registry.pack_outcomes),
                 conversation_store=conversation_store,
+                manual_mics=manual_mics,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after

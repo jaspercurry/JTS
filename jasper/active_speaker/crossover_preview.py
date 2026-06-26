@@ -184,13 +184,11 @@ def _range_ceiling(driver: Mapping[str, Any] | None) -> float | None:
     return None
 
 
-def _upper_soft_floor(driver: Mapping[str, Any] | None) -> float | None:
-    """Lowest frequency a crossover may be *raised up to* for the upper driver.
+def _upper_recommended_floor(driver: Mapping[str, Any] | None) -> float | None:
+    """Lowest researched/recommended crossover point for the upper driver.
 
-    Prefers the researched ``recommended_highpass_hz`` and the usable-range
-    floor. It deliberately excludes ``do_not_test_below_hz``: that value is the
-    hard "never cross at or below this" protection line, enforced separately as
-    a blocker, not a target a crossover may land on.
+    This is advisory. The operator-entered crossover remains the proposed value
+    unless it crosses a hard protection line such as ``do_not_test_below_hz``.
     """
     values = [
         _range_floor(driver),
@@ -287,18 +285,21 @@ def _build_crossover(
         )
 
     proposed_frequency = candidate_frequency
-    soft_floor = _upper_soft_floor(upper_driver)
+    recommended_floor = _upper_recommended_floor(upper_driver)
     if (
         proposed_frequency is not None
-        and soft_floor is not None
-        and proposed_frequency < soft_floor
+        and recommended_floor is not None
+        and proposed_frequency < recommended_floor
     ):
-        proposed_frequency = soft_floor
         issues.append(
             _issue(
                 "warning",
-                "crossover_frequency_raised_for_driver_floor",
-                f"{upper_role} research requires at least {round(soft_floor)} Hz",
+                "crossover_below_recommended_driver_floor",
+                (
+                    f"{upper_role} research recommends at least "
+                    f"{round(recommended_floor)} Hz; keeping the operator value "
+                    f"of {round(proposed_frequency)} Hz"
+                ),
             )
         )
     do_not_test = _do_not_test_floor(upper_driver)

@@ -3067,6 +3067,40 @@ def test_session_start_proxies_to_voice_socket(server_with_voice_socket):
     assert received == ["START"]
 
 
+def test_session_start_source_proxies_to_voice_socket(server_with_voice_socket):
+    base, voice_responses, received = server_with_voice_socket
+    voice_responses.append({"result": "OK"})
+    status, body = _post(
+        f"{base}/session/start",
+        {"source": "wiim_remote_2"},
+    )
+    assert status == 200
+    assert body["result"] == "OK"
+    assert received == ["START wiim_remote_2"]
+
+
+def test_session_start_rejects_invalid_source_token(server_with_voice_socket):
+    base, _voice_responses, received = server_with_voice_socket
+    status, body = _post(
+        f"{base}/session/start",
+        {"source": "wiim remote 2"},
+    )
+    assert status == 400
+    assert "source" in body["error"]
+    assert received == []
+
+
+def test_session_start_unknown_source_400(server_with_voice_socket):
+    base, voice_responses, _received = server_with_voice_socket
+    voice_responses.append({"result": "UNKNOWN_SOURCE"})
+    status, body = _post(
+        f"{base}/session/start",
+        {"source": "missing_remote"},
+    )
+    assert status == 400
+    assert body["result"] == "UNKNOWN_SOURCE"
+
+
 def test_session_end_proxies_to_voice_socket(server_with_voice_socket):
     base, voice_responses, received = server_with_voice_socket
     voice_responses.append({"result": "OK"})
@@ -3532,6 +3566,52 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
     assert isinstance(router.clients, dict)
     assert "jasper" in router.clients
     assert router.statuses[0].state == ACCOUNT_OK
+
+
+def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
+    tmp_path, monkeypatch,
+):
+    """Control builds a per-request coordinator for `/volume` and transport
+    requests. If every Spotify account is revoked, repeated dashboard polls
+    should not re-hit Spotify's token endpoint until either the short cooldown
+    expires or the wizard rewrites an account cache."""
+    from unittest.mock import patch
+    from jasper.control import volume_ops
+    from jasper.control.server import _build_spotify_router_or_none
+    from jasper.spotify_router import (
+        ACCOUNT_REVOKED, AccountStatus, BuildResult,
+    )
+
+    cache_path = tmp_path / "jasper-cache.json"
+    cache_path.write_text("revoked-v1")
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
+    monkeypatch.setenv(
+        "JASPER_SPOTIFY_ACCOUNTS_PATH", str(tmp_path / "accounts.json"),
+    )
+    monkeypatch.setenv("SPOTIFY_CACHE_PATH", str(tmp_path / "legacy.json"))
+    monkeypatch.setattr(volume_ops, "_spotify_empty_router_cache", None)
+    (tmp_path / "accounts.json").write_text(
+        '{"accounts": [{"name": "jasper", "cache_path": "'
+        + str(cache_path)
+        + '"}], "default": "jasper"}'
+    )
+    calls = {"n": 0}
+
+    def fake_build_clients(_registry, *, client_id, redirect_uri):
+        calls["n"] += 1
+        return BuildResult(
+            clients={},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_REVOKED)],
+            default_name="jasper",
+        )
+
+    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+        assert _build_spotify_router_or_none() is None
+        assert _build_spotify_router_or_none() is None
+        cache_path.write_text("revoked-v2-but-file-changed")
+        assert _build_spotify_router_or_none() is None
+
+    assert calls["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -4021,6 +4101,33 @@ def test_follower_source_select_forwards_to_leader(follower_server):
     req, _ = seen[0]
     assert req.full_url.endswith("/source/select")
     assert json.loads(req.data) == {"source": "airplay"}
+
+
+def test_follower_get_mic_reports_pair_parked_state(follower_server):
+    """A bonded follower has no local voice socket by design. GET /mic
+    must surface the intentional parked state, not generic offline."""
+    base, _fake, _seen = follower_server
+    status, body = _get(f"{base}/mic")
+    assert status == 200
+    assert body["status"] == "parked"
+    assert body["reason"] == "bonded_follower"
+    assert body["available"] is False
+    assert body["muted"] is True
+    assert body["pair_leader"] == "jts.local"
+    assert "pair leader" in body["message"]
+
+
+def test_follower_mic_mute_refuses_with_pair_parked_state(follower_server):
+    """The UI disables this, but direct clients should still get the same
+    pair story instead of a misleading voice_daemon-not-running error."""
+    base, _fake, _seen = follower_server
+    status, body = _post(f"{base}/mic/mute", {"muted": True})
+    assert status == 409
+    assert body["status"] == "parked"
+    assert body["reason"] == "bonded_follower"
+    assert body["available"] is False
+    assert body["pair_leader"] == "jts.local"
+    assert "pair leader" in body["error"]
 
 
 def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):

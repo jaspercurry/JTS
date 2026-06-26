@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from jasper.bluetooth.avrcp import bluetooth_avrcp_call, bluetooth_player_path
 from jasper.tools.transport import (
     _detect_source,
     make_transport_dispatcher,
@@ -15,9 +16,14 @@ from jasper.tools.transport import (
 
 
 class FakeRenderer:
-    def __init__(self, renderers=None, currentsong=None) -> None:
+    def __init__(
+        self, renderers=None, currentsong=None, selected_source=None,
+        selected_source_error=None,
+    ) -> None:
         self._renderers = renderers or {}
         self._currentsong = currentsong or {}
+        self._selected_source = selected_source
+        self._selected_source_error = selected_source_error
         self.pause_airplay = AsyncMock()
 
     async def active_renderers(self) -> dict:
@@ -25,6 +31,11 @@ class FakeRenderer:
 
     async def get_currentsong(self) -> dict:
         return self._currentsong
+
+    async def selected_source(self):
+        if self._selected_source_error is not None:
+            raise self._selected_source_error
+        return self._selected_source
 
 
 class FakeSpotify:
@@ -125,8 +136,32 @@ def test_detect_source_returns_none_when_no_renderer_active():
 
 
 def test_detect_source_airplay_wins_over_others():
-    renderer = FakeRenderer(renderers={"aplactive": True, "spotactive": True})
+    renderer = FakeRenderer(
+        renderers={"aplactive": True, "spotactive": True},
+        selected_source=None,
+    )
     assert asyncio.run(_detect_source(renderer)) == "airplay"
+
+
+def test_detect_source_prefers_mux_selected_source():
+    renderer = FakeRenderer(
+        renderers={"aplactive": True, "spotactive": True},
+        selected_source="spotify",
+    )
+    assert asyncio.run(_detect_source(renderer)) == "spotify"
+
+
+def test_detect_source_supports_usbsink():
+    renderer = FakeRenderer(renderers={"usbsinkactive": True})
+    assert asyncio.run(_detect_source(renderer)) == "usbsink"
+
+
+def test_detect_source_falls_back_when_mux_unavailable():
+    renderer = FakeRenderer(
+        renderers={"btactive": True},
+        selected_source_error=OSError("mux socket unavailable"),
+    )
+    assert asyncio.run(_detect_source(renderer)) == "bluetooth"
 
 
 # --- AirPlay dispatch: title-match path ---
@@ -326,12 +361,76 @@ def test_dispatch_no_source_returns_nothing_playing_error():
     assert result["source"] == "none"
 
 
-def test_dispatch_bluetooth_returns_unsupported_error():
+def test_bluetooth_player_path_prefers_active_a2dp_device():
+    with patch(
+        "jasper.bluetooth.avrcp.bluetooth_active_device_path",
+        new=AsyncMock(return_value="/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"),
+    ), patch(
+        "jasper.bluetooth.avrcp.bluetooth_player_paths",
+        new=AsyncMock(return_value=[
+            "/org/bluez/hci0/dev_11_22_33_44_55_66/player0",
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0",
+        ]),
+    ):
+        assert asyncio.run(bluetooth_player_path()) == (
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0"
+        )
+
+
+def test_bluetooth_player_path_falls_back_to_first_player():
+    with patch(
+        "jasper.bluetooth.avrcp.bluetooth_active_device_path",
+        new=AsyncMock(return_value=None),
+    ), patch(
+        "jasper.bluetooth.avrcp.bluetooth_player_paths",
+        new=AsyncMock(return_value=[
+            "/org/bluez/hci0/dev_11_22_33_44_55_66/player0",
+        ]),
+    ):
+        assert asyncio.run(bluetooth_player_path()) == (
+            "/org/bluez/hci0/dev_11_22_33_44_55_66/player0"
+        )
+
+
+def test_dispatch_bluetooth_routes_to_bluez_avrcp():
     renderer = FakeRenderer(renderers={"btactive": True})
     tools = _by_name(make_transport_tools(renderer, None))
-    result = asyncio.run(tools["pause"]())
-    assert "error" in result
-    assert "bluetooth" in result["error"].lower()
+    with patch(
+        "jasper.tools.transport._bluetooth_call",
+        new=AsyncMock(),
+    ) as bt_call:
+        result = asyncio.run(tools["next_track"]())
+    bt_call.assert_awaited_once_with("Next")
+    assert result == {"ok": True, "source": "bluetooth"}
+
+
+def test_bluetooth_playpause_uses_status_to_call_pause_when_playing():
+    captured = []
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **_kwargs):
+        captured.append(args)
+        return _Proc()
+
+    with patch(
+        "jasper.bluetooth.avrcp.bluetooth_player_path",
+        new=AsyncMock(return_value="/org/bluez/hci0/dev_AA/player0"),
+    ), patch(
+        "jasper.bluetooth.avrcp.bluetooth_player_status",
+        new=AsyncMock(return_value="playing"),
+    ), patch(
+        "jasper.bluetooth.avrcp.asyncio.create_subprocess_exec",
+        new=fake_exec,
+    ):
+        asyncio.run(bluetooth_avrcp_call("PlayPause"))
+
+    assert captured
+    assert captured[0][-1] == "Pause"
 
 
 def test_resume_aliases_play_action():
@@ -453,11 +552,36 @@ def test_toggle_airplay_no_match_uses_mpris_playpause():
     assert result == {"ok": True, "source": "airplay"}
 
 
-def test_toggle_bluetooth_returns_unsupported_error():
+def test_toggle_bluetooth_routes_to_bluez_playpause():
     renderer = FakeRenderer(renderers={"btactive": True})
     dispatch = make_transport_dispatcher(renderer, None)
-    result = asyncio.run(dispatch("toggle"))
+    with patch(
+        "jasper.tools.transport._bluetooth_call",
+        new=AsyncMock(),
+    ) as bt_call:
+        result = asyncio.run(dispatch("toggle"))
+    bt_call.assert_awaited_once_with("PlayPause")
+    assert result == {"ok": True, "source": "bluetooth"}
+
+
+def test_dispatch_bluetooth_avrcp_failure_returns_error():
+    renderer = FakeRenderer(renderers={"btactive": True})
+    dispatch = make_transport_dispatcher(renderer, None)
+    with patch(
+        "jasper.tools.transport._bluetooth_call",
+        new=AsyncMock(side_effect=RuntimeError("no player")),
+    ):
+        result = asyncio.run(dispatch("pause"))
     assert "error" in result
+    assert "no player" in result["error"]
+
+
+def test_dispatch_usbsink_returns_host_owned_error():
+    renderer = FakeRenderer(renderers={"usbsinkactive": True})
+    dispatch = make_transport_dispatcher(renderer, None)
+    result = asyncio.run(dispatch("pause"))
+    assert result["source"] == "usbsink"
+    assert "host computer" in result["error"]
 
 
 # --- get_now_playing ---

@@ -202,6 +202,11 @@ re-link via the wizard.
 - Daemon startup log (`journalctl -u jasper-voice`) includes
   `event=spotify.startup_empty statuses=[('jasper', 'revoked')] setup_url=...`
   if the token was already revoked when the daemon started.
+- Account-build failures emit `event=spotify.account_unavailable` at WARN
+  once per account/state/detail window, then
+  `event=spotify.account_unavailable_suppressed` at DEBUG for repeats. This
+  keeps a revoked token from dumping the flight recorder on every dashboard
+  poll while preserving the first transition.
 
 **How recovery works (no daemon restart needed):**
 
@@ -238,6 +243,11 @@ re-link via the wizard.
   health probe, calls `build_clients` and caches the result for 60s.
   Cache is busted on every mutation (OAuth callback, account remove,
   credentials reset, credentials change).
+- `jasper.control.volume_ops._build_spotify_router_or_none` — control-side
+  best-effort router for dial/web volume and transport. Empty builds are cached
+  for 30s, keyed by the account-cache file mtimes, so a persistently revoked
+  account does not hit Spotify's token endpoint on every `/state`/`/volume`
+  poll but an OAuth re-link takes effect as soon as the cache file changes.
 - `jasper.accounts.build_cache_handler` — spotipy cache adapter used by
   every Spotify OAuth client. It publishes refreshed token JSON via a
   tempfile + `os.replace` at mode `0640`, instead of spotipy's stock
@@ -261,9 +271,11 @@ rebuild covers any path that doesn't go through the wizard.
 
 When you say "next song" / "previous" / "pause" / "resume":
 
-1. `_detect_source` reads the renderer's per-source flags and figures
-   out the active source: `airplay`, `spotify` (Connect), `bluetooth`,
-   or `none` (nothing playing).
+1. `_detect_source` asks mux for `RendererClient.selected_source()` and
+   uses the effective audible source chosen by manual source selection
+   or auto handoff policy. If mux is unavailable, it falls back to raw
+   renderer flags. The result is `airplay`, `spotify` (Connect),
+   `bluetooth`, `usbsink`, or `none` (nothing playing).
 2. For **AirPlay**: read shairport's MPRIS `xesam:title` and the
    AirPlay `ClientName`. Then call
    `Router.resolve_for_transport(client_name, mpris_title)`:

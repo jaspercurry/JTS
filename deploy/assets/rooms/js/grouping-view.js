@@ -60,34 +60,6 @@ export function subCornerLabel(hz) {
   return `${Math.round(corner)} Hz low-pass`;
 }
 
-// Create-face copy for the role the household picked, so the card's title,
-// intro, picker label, and BUTTON all match what clicking actually does — a
-// button reading "Create stereo pair" must never be how you add a subwoofer.
-// Pure (no DOM); main.js applies these strings to its h()-built nodes in
-// syncRoleControls. Anything other than "sub" is the stereo-pair default
-// (unchanged wording), so a future/unknown role degrades to the safe pair copy.
-export function createFaceCopy(role) {
-  if (role === "sub") {
-    return {
-      title: "Optional wireless subwoofer",
-      intro:
-        "Optional: keep this speaker playing the full range and make the " +
-        "speaker you pick play only the low end, low-passed locally on that box.",
-      label: "This speaker is the main — add",
-      button: "Add subwoofer",
-    };
-  }
-  return {
-    title: "Create a stereo pair",
-    intro:
-      "Create a stereo pair: this speaker plays the left channel and the one " +
-      "you pick plays the right. Both are configured automatically — no " +
-      "settings files, no per-speaker setup.",
-    label: "This speaker is Left — pair with",
-    button: "Create stereo pair",
-  };
-}
-
 // Decide whether the bonded-leader DISSOLVE face should offer "add a
 // subwoofer", and (when it should) the existing-members list to re-post as
 // part of the SAME bond. PURE (no DOM) so node can unit-test the decision —

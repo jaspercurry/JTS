@@ -2,16 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /wake/ input-profile/detection card + model-form affordance.
+// main.js — /wake/ microphone/echo/wake card + model-form affordance.
 //
 // The page is server-rendered. Two pieces of behaviour ride on top:
 //
-//   1. The input-profile + "Wake detection" cards are live: they poll
-//      jasper-control's /aec state (proxied through this page's
-//      /detection.json) every few seconds and reconcile the profile radios,
-//      layer toggles, and sensitivity slider. User interaction POSTs back to
-//      /profile, /layer/<name>, and /sensitivity, which proxy on to
-//      jasper-control. This mirrors the
+//   1. The microphone, echo-cancellation, and advanced-fusion cards are live:
+//      they poll jasper-control's backend-owned `mic_settings` view model
+//      (proxied through this page's /detection.json) and render it. User
+//      interaction POSTs intent back to /profile, /layer/<name>, and
+//      /sensitivity, which proxy on to jasper-control. This mirrors the
 //      optimistic-flip-with-reconcile pattern used elsewhere: a per-control
 //      `dirty` flag keeps an in-flight click from being clobbered by a poll.
 //
@@ -29,97 +28,76 @@
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
-const PROFILES = [
-  "auto",
-  "xvf_chip_aec",
-  "xvf_chip_aec_testing",
-  "xvf_software_aec3",
-  "direct_mic",
-];
-const LAYERS = ["aec", "raw", "dtln", "chip_aec"];
+const LAYERS = ["raw", "dtln", "chip_aec"];
 const POLL_MS = 3000;
 
 const dirty = {};
 let ignorePollUntil = 0;
 let lastServerThreshold = null;
+let profileChoices = {};
 
 const el = (id) => document.getElementById(id);
-
-function statusLine(active, layerOn, mode) {
-  if (mode !== "auto") return "— requires AEC on";
-  if (!layerOn) return "— off";
-  if (active) return "✓ active";
-  return "⏳ starting…";
-}
 
 function setText(id, value) {
   const node = el(id);
   if (node) node.textContent = value || "—";
 }
 
-function profileLabel(id) {
-  switch (id) {
-    case "auto":
-      return "Automatic";
-    case "xvf_chip_aec":
-      return "XVF chip-AEC";
-    case "xvf_chip_aec_testing":
-      return "XVF chip-AEC testing";
-    case "xvf_software_aec3":
-      return "XVF software AEC3";
-    case "direct_mic":
-      return "Direct mic";
-    case "custom":
-      return "Custom";
-    default:
-      return id || "Unknown";
-  }
+function profileInputs() {
+  return Array.from(document.querySelectorAll('input[name="profile-choice"]'));
+}
+
+function choicesByProfile(settings) {
+  const out = {};
+  const echoChoices = ((settings.echo || {}).choices || []);
+  echoChoices.forEach((choice) => {
+    if (choice && choice.profile) out[choice.profile] = choice;
+  });
+  const validation = (settings.advanced || {}).validation_profile || {};
+  if (validation.profile) out[validation.profile] = validation;
+  return out;
 }
 
 function applyProfileStatus(s) {
+  const settings = s.mic_settings || {};
+  const echo = settings.echo || {};
+  const choices = choicesByProfile(settings);
+  profileChoices = choices;
   const profile = s.audio_profile || {};
-  const legs = s.legs || {};
-  const gate = s.chip_aec_gate || {};
-  const chipProductionAvailable = !!gate.production_available;
-  const chipTestingAvailable = !!gate.testing_available;
   const selection = profile.selection || s.profile || profile.requested || "custom";
-  const requested = profile.requested || profile.resolved || selection;
-  const active = profile.active || "pending";
-  const state = profile.state || "unknown";
-  const status = el("profile-status");
-  if (status) {
-    const bits = [profileLabel(selection)];
-    if (requested && requested !== selection) bits.push("resolves to " + profileLabel(requested));
-    bits.push(state === "active" ? "active" : state.replace(/_/g, " "));
-    if (active && active !== "pending" && active !== requested) {
-      bits.push("running " + profileLabel(active));
-    }
-    if ((selection === "xvf_chip_aec" || selection === "xvf_chip_aec_testing") && gate.status) {
-      bits.push("gate " + String(gate.status).replace(/_/g, " "));
-    }
-    status.textContent = bits.join(" · ");
+
+  setText("echo-status-title", echo.title || "Microphone input");
+  setText("echo-status-detail", echo.detail || profile.reason || "—");
+
+  const warning = el("echo-status-warning");
+  const hardware = echo.hardware || {};
+  if (warning) {
+    const showGateWarning =
+      hardware.selected && !hardware.active && hardware.gate_detail;
+    warning.hidden = !showGateWarning;
+    warning.textContent = showGateWarning ? hardware.gate_detail : "";
   }
 
-  PROFILES.forEach((id) => {
-    const input = el("profile-" + id);
+  profileInputs().forEach((input) => {
+    const id = input.value;
     const row = el("profile-row-" + id);
     if (!input || !row) return;
+    const choice = choices[id];
+    const visible = choice ? choice.visible !== false : id === selection;
+    row.hidden = !visible;
     if (!dirty.profile) {
-      input.checked = selection === id;
-      input.disabled =
-        (id === "xvf_chip_aec" && !chipProductionAvailable && selection !== id) ||
-        (id === "xvf_chip_aec_testing" && !chipTestingAvailable && selection !== id);
+      input.checked = choice ? !!choice.selected : selection === id;
+      input.disabled = choice ? !choice.enabled : true;
     }
-    row.classList.toggle("is-active", selection === id);
+    const selected = choice ? !!choice.selected : selection === id;
+    row.classList.toggle("is-active", selected);
     row.classList.toggle("is-disabled", input.disabled);
+    setText("profile-name-" + id, choice && choice.label);
+    setText("profile-desc-" + id, choice && choice.description);
+    setText("profile-badge-" + id, choice && choice.badge);
+    const status = el("profile-status-" + id);
+    if (status) status.textContent = choice && choice.status ? choice.status : "—";
   });
-
-  const custom = el("profile-custom-warning");
-  if (custom) {
-    custom.hidden = selection !== "custom";
-    custom.textContent =
-      "Custom profile active. The layer switches below now own the low-level AEC/wake-leg configuration.";
-  }
 }
 
 function wakePhraseText(wakeWord, threshold) {
@@ -132,10 +110,12 @@ function wakePhraseText(wakeWord, threshold) {
 }
 
 function applyMicStatus(s) {
+  const settings = s.mic_settings || {};
+  const micView = settings.mic || {};
   const mic = s.microphone || {};
   const firmware = mic.firmware || {};
-  setText("mic-status-name", mic.name || "unknown");
-  setText("mic-status-firmware", firmware.label || "unknown");
+  setText("mic-status-name", micView.title || mic.name || "unknown");
+  setText("mic-status-firmware", micView.subtitle || firmware.label || "unknown");
   setText("mic-status-mode", mic.processing_mode || "unknown");
   setText("mic-status-session-source", mic.session_source || "unknown");
   setText(
@@ -157,82 +137,30 @@ function applyMicStatus(s) {
 // Reconcile server state into the toggles + slider. Skips any control the user
 // is mid-interaction with (tracked via `dirty` / the slider's unsaved state).
 function applyState(s) {
-  const mode = s.mode;
-  const bridgeOn = !!s.bridge_active;
-  const legs = s.legs || {};
-  const gate = s.chip_aec_gate || {};
-  const software = s.software_aec3 || {};
-  const aecOn = mode === "auto";
-  const rawOn = !!(legs.raw && legs.raw.configured);
-  const dtlnOn = !!(legs.dtln && legs.dtln.configured);
-  const chipOn = !!(legs.chip_aec && legs.chip_aec.configured);
-  const chipProductionAvailable = !!gate.production_available;
-  const softwareBypassed = !!software.bypassed;
-  const softwareConfigured =
-    Object.prototype.hasOwnProperty.call(software, "configured")
-      ? !!software.configured
-      : aecOn && !chipOn;
-  const softwareActive =
-    Object.prototype.hasOwnProperty.call(software, "active")
-      ? !!software.active
-      : bridgeOn && softwareConfigured;
+  const settings = s.mic_settings || {};
+  const fusion = settings.fusion || {};
+  const toggles = {};
+  ((fusion && fusion.toggles) || []).forEach((toggle) => {
+    if (toggle && toggle.id) toggles[toggle.id] = toggle;
+  });
 
   applyProfileStatus(s);
   applyMicStatus(s);
 
-  // Software AEC3 row. Chip-AEC still uses jasper-aec-bridge as a UDP
-  // carrier, but WebRTC AEC3 itself is bypassed and should not be toggled.
-  if (!dirty.aec) {
-    el("layer-aec").checked = softwareConfigured;
-    el("layer-aec").disabled = softwareBypassed;
-  }
-  el("layer-status-aec").textContent = softwareBypassed
-    ? "— bypassed (chip-AEC active)"
-    : softwareConfigured
-      ? softwareActive
-        ? "✓ active"
-        : "⏳ starting…"
-      : "— disabled";
-  el("layer-row-aec").classList.toggle(
-    "is-disabled",
-    softwareBypassed || !softwareConfigured,
-  );
-
-  // Raw + DTLN legs require AEC, AND are mutually exclusive with the
-  // chip-AEC beams — one chip can't emit both, so when chip-AEC is on the
-  // reconciler clears them: grey them out and say why.
-  [
-    ["raw", rawOn],
-    ["dtln", dtlnOn],
-  ].forEach(([name, on]) => {
-    const blocked = !aecOn || chipOn;
+  setText("fusion-summary", fusion.summary || "—");
+  LAYERS.forEach((name) => {
+    const toggle = toggles[name] || {};
+    const input = el("layer-" + name);
+    const row = el("layer-row-" + name);
+    if (!input || !row) return;
     if (!dirty[name]) {
-      el("layer-" + name).checked = on;
-      el("layer-" + name).disabled = blocked;
+      input.checked = !!toggle.checked;
+      input.disabled = !toggle.enabled;
     }
-    el("layer-status-" + name).textContent = chipOn
-      ? "— paused (chip-AEC active)"
-      : statusLine(bridgeOn, on, mode);
-    el("layer-row-" + name).classList.toggle("is-disabled", blocked);
+    const reason = toggle.disabled_reason || "";
+    el("layer-status-" + name).textContent = reason || (toggle.status || "—");
+    row.classList.toggle("is-disabled", input.disabled);
   });
-
-  // Chip-AEC beams: require AEC + production-approved mic/DAC gate. Testing
-  // unapproved DACs is an explicit input profile, not this expert layer.
-  const chipBlocked = !aecOn || !chipProductionAvailable;
-  if (!dirty.chip_aec) {
-    el("layer-chip_aec").checked = chipOn;
-    el("layer-chip_aec").disabled = chipBlocked;
-  }
-  el("layer-status-chip_aec").textContent = !aecOn
-    ? "— requires AEC on"
-    : !chipProductionAvailable
-      ? "— use chip-AEC testing profile"
-      : chipOn
-        ? bridgeOn
-          ? "✓ active"
-          : "⏳ starting…"
-        : "— off";
-  el("layer-row-chip_aec").classList.toggle("is-disabled", chipBlocked);
 
   // Sensitivity — only overwrite from the server when the user isn't mid-drag
   // and hasn't queued an unsaved change.
@@ -265,7 +193,14 @@ async function pollDetection() {
     LAYERS.forEach((name) => {
       el("layer-status-" + name).textContent = "Disconnected";
     });
-    setText("profile-status", "Disconnected");
+    profileInputs().forEach((input) => {
+      input.disabled = true;
+      const row = el("profile-row-" + input.value);
+      if (row) row.classList.add("is-disabled");
+      setText("profile-status-" + input.value, "Disconnected");
+    });
+    setText("echo-status-title", "Disconnected");
+    setText("echo-status-detail", "Could not reach jasper-control.");
     setText("mic-status-name", "Disconnected");
     setText("mic-status-firmware", "—");
     setText("mic-status-mode", "—");
@@ -322,66 +257,30 @@ async function postLayer(name, wanted) {
   }
 }
 
-PROFILES.forEach((profile) => {
-  const input = el("profile-" + profile);
+profileInputs().forEach((input) => {
+  const profile = input.value;
   if (!input) return;
   input.addEventListener("change", async () => {
     if (!input.checked) return;
-    if (
-      profile === "direct_mic" &&
-      !(await jtsConfirm(
-        "Use direct mic input?\n\n" +
-          "This disables the AEC bridge. Wake while music is playing may be unreliable until you choose an AEC profile again.",
-        { danger: true },
-      ))
-    ) {
-      setTimeout(pollDetection, 0);
-      return;
-    }
-    if (
-      profile === "xvf_chip_aec" &&
-      !(await jtsConfirm(
-        "Use the XVF chip-AEC profile?\n\n" +
-          "This uses the active mic profile's validated hardware AEC beam plan and disables the software raw/DTLN wake legs.",
-      ))
-    ) {
-      setTimeout(pollDetection, 0);
-      return;
-    }
-    if (
-      profile === "xvf_chip_aec_testing" &&
-      !(await jtsConfirm(
-        "Use XVF chip-AEC testing?\n\n" +
-          "This routes the live mic path through hardware AEC on an unapproved DAC so you can validate it. Use software AEC3 again if wake reliability drops.",
-        { danger: true },
-      ))
-    ) {
-      setTimeout(pollDetection, 0);
-      return;
+    const confirm = (profileChoices[profile] || {}).confirm;
+    if (confirm) {
+      const message = [confirm.title || "", confirm.body || ""]
+        .filter(Boolean)
+        .join("\n\n");
+      if (!(await jtsConfirm(message, { danger: !!confirm.danger }))) {
+        setTimeout(pollDetection, 0);
+        return;
+      }
     }
     postProfile(profile);
   });
 });
 
-// Wire each toggle. AEC-off and DTLN-on get an extra confirm because both carry
-// a real cost (restart + RAM); the others apply immediately.
+// Wire each advanced stream toggle. DTLN and hardware beam scoring get an
+// extra confirm because both carry a real restart/resource cost.
 LAYERS.forEach((name) => {
   el("layer-" + name).addEventListener("change", async () => {
     const cb = el("layer-" + name);
-    if (
-      name === "aec" &&
-      !cb.checked &&
-      !(await jtsConfirm(
-        "Disable software AEC3?\n\n" +
-          "jasper-voice will restart — wake unavailable ~15 s. Turning AEC " +
-          "off also pauses the raw + DTLN layers (they need the bridge running). " +
-          "Chip-AEC profiles bypass software AEC3 automatically.",
-        { danger: true },
-      ))
-    ) {
-      cb.checked = true;
-      return;
-    }
     if (
       name === "dtln" &&
       cb.checked &&

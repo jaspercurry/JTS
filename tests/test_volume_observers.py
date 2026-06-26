@@ -22,8 +22,17 @@ from __future__ import annotations
 
 import pytest
 
+from jasper import bluealsa_probe
+from jasper import volume_observers as observer_mod
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_coordinator import Source
+
+
+@pytest.fixture(autouse=True)
+def _reset_bluealsa_probe_state():
+    bluealsa_probe._reset_for_tests()
+    yield
+    bluealsa_probe._reset_for_tests()
 
 
 class _FakeCoordinator:
@@ -188,6 +197,29 @@ async def test_read_bluetooth_parses_uint16(monkeypatch):
         "jasper.volume_observers._busctl_get_property_value", fake_busctl,
     )
     assert await obs._read_bluetooth_volume() == 95
+
+
+async def test_bluealsa_transport_path_suppresses_after_cli_failure(monkeypatch):
+    class _Proc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b"permission denied"
+
+    calls = {"n": 0}
+
+    async def fake_exec(*args, **kwargs):
+        calls["n"] += 1
+        return _Proc()
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        fake_exec,
+    )
+
+    assert await observer_mod._bluez_alsa_active_transport_path() is None
+    assert await observer_mod._bluez_alsa_active_transport_path() is None
+    assert calls["n"] == 1
 
 
 # ---------- _maybe_observe filtering --------------------------------------

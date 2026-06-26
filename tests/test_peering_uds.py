@@ -163,8 +163,7 @@ async def test_session_started_missing_epoch(server_setup):
 
 
 async def test_socket_chmod_is_0660(server_setup):
-    """Match the voice_daemon UDS pattern (root:root, group rw).
-    A wider mode would be a security regression."""
+    """The shared jasper group can connect; other local users cannot."""
     mode = os.stat(server_setup["path"]).st_mode & 0o777
     assert mode == 0o660
 

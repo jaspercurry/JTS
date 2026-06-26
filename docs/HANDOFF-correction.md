@@ -23,9 +23,14 @@
   low-frequency tuning. The plain-HTTP preflight accepts
   `?next=/correction/...` so HTTP-only setup flows can link directly to a
   secure subflow after showing the certificate warning; its Proceed
-  button uses `/correction/proceed[/subflow]`, and nginx uses temporary,
-  non-cacheable redirects to `https://$host/...` so non-default hostnames
-  survive the scheme switch without teaching mobile browsers a permanent rule.
+  button has a no-JS fallback through `/correction/proceed[/subflow]`.
+  When JavaScript is available, the page validates the `next` path against
+  the correction subflow allowlist and goes directly to the final
+  `https://<current-host>/correction/...` URL with a per-page-load `jts_cb`
+  cache-bust token. The nginx fallback redirects are temporary and carry
+  strong no-cache headers so non-default hostnames survive the scheme switch
+  without teaching mobile browsers a permanent rule or reusing a stale
+  handoff URL.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /correction/`, `/correction/balance`, and
@@ -41,14 +46,17 @@
   `https://jts.local/correction/`.
 - ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial.**
   Implemented 2026-05-28; hostname-safe proceed redirect added
-  2026-06-24. `http://jts.local/correction/` now serves a static
-  preflight page that explains the browser's self-signed-cert warning.
-  Its default OK button targets `/correction/proceed`, with optional
-  `/room`, `/crossover`, or `/bass` proceed suffixes when a safe
-  `?next=/correction/...` target is present. Nginx owns the final temporary
-  `https://$host/...` redirect, so `jts3.local` and other configured
-  hostnames do not depend on client-side hostname rewriting or sticky 308
-  state in Safari. The landing
+  2026-06-24; JS-enabled direct HTTPS handoff added 2026-06-26.
+  `http://jts.local/correction/` now serves a static preflight page that
+  explains the browser's self-signed-cert warning. Its default OK button
+  targets `/correction/proceed` with a build-token fallback query string;
+  JavaScript replaces that with a fresh `jts_cb` token on each preflight
+  page load and a direct HTTPS URL for the current host, with optional
+  `/room`, `/crossover`, or `/bass` suffixes when a safe
+  `?next=/correction/...` target is present. Nginx keeps temporary,
+  strongly non-cacheable `/correction/proceed` redirects for no-JS fallback,
+  so `jts3.local` and other configured hostnames do not depend on hard-coded
+  `jts.local` or sticky 308 state in Safari. The landing
   page links to the HTTP preflight, and the HTTPS correction page's Home
   link points back to
   `http://jts.local/` so relative navigation does not inherit the
@@ -693,10 +701,15 @@ loses the YouTube hook.
   historical `jts.local`, and `127.0.0.1`.
 - Port 80 serves `http://jts.local/correction/` as a static preflight
   page, `/correction/proceed[/room|/crossover|/bass]` as no-JS
-  `302` + `Cache-Control: no-store` redirects to `https://$host/...`, and
-  `http://jts.local/jts-root-ca.crt` with `application/x-x509-ca-cert`. The
-  preflight HTML and proceed redirects are non-cacheable so a phone cannot keep
-  an old hard-coded or wrong-scheme target after deploy.
+  `302` redirects to `https://$host/...`, and
+  `http://jts.local/jts-root-ca.crt` with `application/x-x509-ca-cert`.
+  The preflight HTML, fallback proceed redirects, and HTTPS catch-all
+  redirects use `no-store, no-cache, max-age=0, must-revalidate` plus
+  legacy `Pragma` / `Expires` headers. The Proceed link carries a
+  build-token fallback plus a JavaScript-generated `jts_cb` token; JS-enabled
+  browsers go directly to the final HTTPS measurement URL for the current
+  host, so a phone cannot keep an old hard-coded or wrong-scheme target after
+  deploy.
 - Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
   `/assets/` statically. The measurement UI's canonical look links
   `/assets/app.css` + its ES module by absolute path; without an `/assets/`
@@ -745,10 +758,13 @@ HTTP port 80:
 GET  /correction/            static preflight explaining the HTTPS warning;
                              OK button links to /correction/proceed, or
                              /correction/proceed/<subflow> for safe
-                             ?next=/correction/... targets
-GET  /correction/proceed     redirect to https://$host/correction/
+                             ?next=/correction/... targets; JS validates the
+                             target and rewrites the link to the final HTTPS
+                             URL with a fresh jts_cb token
+GET  /correction/proceed     redirect to https://$host/correction/$is_args$args
 GET  /correction/proceed/room|crossover|bass
-                             redirect to the matching https://$host/correction/ subflow
+                             redirect to the matching https://$host/correction/
+                             subflow, preserving query args
 GET  /jts-root-ca.crt        download private root CA for iOS trust
 
 HTTPS port 443 after nginx strips /correction/:
@@ -803,12 +819,14 @@ allows it.
 
 **Decision:** `http://jts.local/correction/` is the user-facing entry
 route. It serves a static preflight page on port 80, then the
-measurement flow switches through `/correction/proceed` to
-`https://$host/correction/` because browser microphone capture requires
-a secure context. `$host` is important for non-default speakers such as
-`jts3.local`; the preflight must not hard-code `jts.local` or depend on
-client-side JavaScript for the hostname. The nginx port-80 landing page
-at `/usr/share/jasper-web/index.html` links to the preflight instead of
+measurement flow switches to `https://<current-host>/correction/`
+because browser microphone capture requires a secure context. The JS-enabled
+path goes directly to the final HTTPS URL after allowlist validation; the
+no-JS fallback uses nginx's `/correction/proceed` temporary redirect to
+`https://$host/...`. `$host` is important for non-default speakers such as
+`jts3.local`; the preflight must not hard-code `jts.local`. The nginx
+port-80 landing page at `/usr/share/jasper-web/index.html` links to the
+preflight instead of
 directly to HTTPS. The 443 catch-all redirects non-correction paths back
 to HTTP with a temporary, non-cacheable redirect — the one exception is
 `/assets/`, served statically so the measurement UI's CSS/JS aren't
@@ -1862,11 +1880,13 @@ Internal:
 
 ---
 
-Last verified: 2026-06-25 (`/correction/` hub routing, HTTP preflight
-`?next=/correction/...` + `/correction/proceed` temporary no-store redirects,
-and HTTPS asset serving rechecked against `deploy/correction-preflight.html`,
-`deploy/nginx-jasper.conf`, `deploy/nginx-jasper-streambox.conf`, and
-`tests/test_landing_page_html.py`; prior 2026-06-24 pass covered
+Last verified: 2026-06-26 (`/correction/` hub routing, HTTP preflight
+`?next=/correction/...` allowlist + JS direct HTTPS handoff with fresh
+`jts_cb` tokens, `/correction/proceed` temporary strongly non-cacheable
+fallback redirects, and HTTPS asset serving rechecked
+against `deploy/correction-preflight.html`, `deploy/nginx-jasper.conf`,
+`deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`;
+prior 2026-06-24 pass covered
 topology-preserving correction start/apply/reset behavior,
 correction-native active-crossover playback/capture routing, and the mapped
 runtime files listed in that verification pass; prior 2026-06-18 pass covered

@@ -17,7 +17,7 @@ from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_desig
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
-def _topology(*, mode: str = "active_2_way") -> OutputTopology:
+def _topology(*, mode: str = "active_2_way", with_subwoofer: bool = False) -> OutputTopology:
     channels = [
         {
             "role": "woofer",
@@ -62,6 +62,32 @@ def _topology(*, mode: str = "active_2_way") -> OutputTopology:
                 "identity_verified": True,
             }
         ]
+    groups = [
+        {
+            "id": "mono",
+            "label": "Mono cabinet",
+            "kind": "mono",
+            "mode": mode,
+            "channels": channels,
+        }
+    ]
+    routing = {"mono_group_id": "mono"}
+    if with_subwoofer:
+        groups.append({
+            "id": "sub",
+            "label": "Subwoofer",
+            "kind": "subwoofer",
+            "mode": "subwoofer",
+            "channels": [
+                {
+                    "role": "subwoofer",
+                    "physical_output_index": 3 if mode == "active_3_way" else 2,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                }
+            ],
+        })
+        routing["subwoofer_group_ids"] = ["sub"]
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -73,16 +99,8 @@ def _topology(*, mode: str = "active_2_way") -> OutputTopology:
             "device_label": "HiFiBerry DAC8x",
             "physical_output_count": 8,
         },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": mode,
-                "channels": channels,
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
+        "speaker_groups": groups,
+        "routing": routing,
     })
 
 
@@ -153,6 +171,26 @@ def test_crossover_preview_builds_no_audio_filter_intent() -> None:
     assert crossover["filters"][1]["channel"]["startup_muted"] is True
 
 
+def test_crossover_preview_does_not_require_optional_subwoofer_research() -> None:
+    draft = build_design_draft(
+        _topology(with_subwoofer=True),
+        driver_research=_research(),
+        created_at="2026-06-10T12:00:00Z",
+    )
+
+    payload = build_crossover_preview(
+        draft,
+        created_at="2026-06-10T12:30:00Z",
+    )
+
+    assert draft["status"] == "ready_for_review"
+    assert draft["summary"]["topology_roles"] == ["woofer", "tweeter", "subwoofer"]
+    assert draft["summary"]["required_driver_info_roles"] == ["woofer", "tweeter"]
+    assert draft["summary"]["missing_driver_info_roles"] == []
+    assert payload["status"] == "ready_for_protected_staging"
+    assert payload["permissions"]["may_prepare_protected_startup_config"] is True
+
+
 def test_crossover_preview_blocks_missing_research() -> None:
     payload = build_crossover_preview(
         _draft(research=None),
@@ -200,7 +238,7 @@ def test_crossover_preview_prefers_manual_settings_over_imported_research() -> N
     assert crossover["proposed_frequency_hz"] == 3200
 
 
-def test_crossover_preview_raises_frequency_to_driver_floor() -> None:
+def test_crossover_preview_warns_below_recommended_driver_floor() -> None:
     research = _research()
     research["crossover_candidates"][0]["frequency_hz"] = 1800
 
@@ -211,8 +249,8 @@ def test_crossover_preview_raises_frequency_to_driver_floor() -> None:
     crossover = payload["groups"][0]["crossovers"][0]
 
     assert payload["status"] == "ready_for_protected_staging"
-    assert crossover["proposed_frequency_hz"] == 2500
-    assert "crossover_frequency_raised_for_driver_floor" in {
+    assert crossover["proposed_frequency_hz"] == 1800
+    assert "crossover_below_recommended_driver_floor" in {
         issue["code"] for issue in crossover["issues"]
     }
 
@@ -322,11 +360,9 @@ def test_load_crossover_preview_fails_soft_on_bad_json(tmp_path: Path) -> None:
 
 # --- Compression-driver protection-floor gate (do-not-test vs recommended_highpass) ---
 #
-# Regression cover for the DE250-on-a-horn commissioning bug: the working-setup
-# form selected the low-confidence 1600 Hz candidate (== the tweeter's
-# do_not_test_below_hz) while the preview corrected upward to 2000 Hz, so the two
-# surfaces disagreed and a value sitting on the do-not-test line could slip
-# through as a mere warning.
+# Regression cover for the DE250-on-a-horn commissioning path: the preview must
+# preserve operator-entered crossover values instead of silently raising them,
+# while still failing closed at or below the tweeter's do-not-test line.
 
 
 def _de250_research(
@@ -375,14 +411,13 @@ def _crossover(payload: dict) -> dict:
     return payload["groups"][0]["crossovers"][0]
 
 
-def test_crossover_floor_prefers_recommended_highpass_over_do_not_test() -> None:
-    # The reported case: candidate at 1600 Hz (== do_not_test floor) is raised to
-    # the recommended 2000 Hz highpass and allowed — not blocked — because 2000 Hz
-    # clears the do-not-test line with margin.
+def test_crossover_keeps_operator_value_above_do_not_test_floor() -> None:
+    # The reported case: 1800 Hz is below the recommended 2000 Hz highpass but
+    # above the 1600 Hz do-not-test line. Keep the operator value and warn.
     payload = build_crossover_preview(
         build_design_draft(
             _topology(),
-            driver_research=_de250_research(candidate_hz=1600),
+            driver_research=_de250_research(candidate_hz=1800),
             created_at="2026-06-19T12:00:00Z",
         ),
         created_at="2026-06-19T12:30:00Z",
@@ -390,13 +425,13 @@ def test_crossover_floor_prefers_recommended_highpass_over_do_not_test() -> None
     crossover = _crossover(payload)
 
     assert payload["status"] == "ready_for_protected_staging"
-    assert crossover["proposed_frequency_hz"] == 2000
+    assert crossover["proposed_frequency_hz"] == 1800
     assert crossover["do_not_test_below_hz"] == 1600
     codes = {issue["code"] for issue in crossover["issues"]}
-    assert "crossover_frequency_raised_for_driver_floor" in codes
+    assert "crossover_below_recommended_driver_floor" in codes
     assert "crossover_below_do_not_test_floor" not in codes
     assert [item["filter"] for item in crossover["filters"]] == ["lowpass", "highpass"]
-    assert all(item["frequency_hz"] == 2000 for item in crossover["filters"])
+    assert all(item["frequency_hz"] == 1800 for item in crossover["filters"])
 
 
 def test_crossover_blocks_at_do_not_test_floor_without_safe_highpass() -> None:
@@ -427,10 +462,9 @@ def test_crossover_blocks_at_do_not_test_floor_without_safe_highpass() -> None:
     }
 
 
-def test_crossover_hard_floor_wins_even_after_soft_raise() -> None:
+def test_crossover_hard_floor_blocks_below_operator_value() -> None:
     # Pathological research where recommended_highpass sits below do_not_test:
-    # the soft raise lands on 1500 Hz but the hard do-not-test line (1600) still
-    # blocks it. The protection line is the final authority.
+    # the protection line remains the final authority.
     payload = build_crossover_preview(
         build_design_draft(
             _topology(),
@@ -453,12 +487,12 @@ def test_crossover_hard_floor_wins_even_after_soft_raise() -> None:
     }
 
 
-def test_crossover_persisted_low_confidence_value_does_not_compile_below_floor() -> None:
+def test_crossover_persisted_low_value_blocks_instead_of_overriding() -> None:
     # Reproduces the exact persisted draft from the bug: the form saved the
     # low-confidence 1600 candidate into manual_settings (which outranks the
     # research candidates), alongside the research candidates [2000 medium,
-    # 1600 low]. The preview must still land on the safe 2000 Hz, never the
-    # persisted 1600.
+    # 1600 low]. The preview must not silently replace the persisted manual
+    # value with 2000 Hz; it should block until the operator changes the value.
     payload = build_crossover_preview(
         build_design_draft(
             _topology(),
@@ -500,7 +534,9 @@ def test_crossover_persisted_low_confidence_value_does_not_compile_below_floor()
     )
     crossover = _crossover(payload)
 
-    assert crossover["proposed_frequency_hz"] == 2000
-    assert "crossover_below_do_not_test_floor" not in {
+    assert payload["status"] == "blocked"
+    assert crossover["proposed_frequency_hz"] is None
+    assert crossover["filters"] == []
+    assert "crossover_below_do_not_test_floor" in {
         issue["code"] for issue in crossover["issues"]
     }

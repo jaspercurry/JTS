@@ -9,6 +9,7 @@ import logging
 import os
 import re
 
+from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from . import tool
 from ..spotify_router import airplay_client_name
 
@@ -114,12 +115,29 @@ async def _mpris_now_playing() -> dict[str, str]:
 
 async def _detect_source(renderer) -> str:
     """Return the active playback source: 'airplay' / 'spotify' /
-    'bluetooth' / 'none'.
+    'bluetooth' / 'usbsink' / 'none'.
 
-    Reads the renderer's per-source flags. Order matters when more
-    than one is somehow active: airplay > spotify > bluetooth.
-    'none' means no renderer is currently producing audio.
+    Prefer mux's effective audible source when available: manual source
+    selection and guarded handoff policy live there. Fall back to raw
+    renderer flags for older RendererClient fakes or when mux is
+    unavailable. Raw-probe priority matters when more than one renderer
+    is somehow active: airplay > spotify > bluetooth > usbsink.
+    'none' means no renderer is currently producing audio that transport
+    can target.
     """
+    selected_source = getattr(renderer, "selected_source", None)
+    if selected_source is not None:
+        try:
+            selected = await selected_source()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("selected_source failed; falling back to probes: %s", e)
+        else:
+            if selected in {"airplay", "spotify", "bluetooth", "usbsink"}:
+                return selected
+            if selected == "idle":
+                return "none"
+            if selected:
+                logger.debug("selected_source returned unknown source %r", selected)
     renderers = await renderer.active_renderers()
     if renderers.get("aplactive"):
         return "airplay"
@@ -127,6 +145,8 @@ async def _detect_source(renderer) -> str:
         return "spotify"
     if renderers.get("btactive"):
         return "bluetooth"
+    if renderers.get("usbsinkactive"):
+        return "usbsink"
     return "none"
 
 
@@ -188,9 +208,9 @@ def make_transport_dispatcher(renderer, router):
     Spotify Connect (no AirPlay): router picks the active or default
     account; spotipy targets that account's active device.
 
-    Bluetooth: "not supported" (no clean pause API on bluez-alsa A2DP
-    sink — phone stays in control). No-source: error response telling
-    the model nothing is playing.
+    Bluetooth: AVRCP via BlueZ MediaPlayer1 when the source phone
+    exposes a player object. No-source: error response telling the
+    model nothing is playing.
 
     Toggle action: query the current is-playing state for the active
     source and dispatch pause-or-play accordingly. MPRIS exposes a
@@ -301,9 +321,22 @@ def make_transport_dispatcher(renderer, router):
                     "account": active.account.name,
                 }
             if source == "bluetooth":
+                method = {
+                    "next": "Next",
+                    "previous": "Previous",
+                    "pause": "Pause",
+                    "play": "Play",
+                    "toggle": "PlayPause",
+                }[action]
+                await _bluetooth_call(method)
+                return {"ok": True, "source": "bluetooth"}
+            if source == "usbsink":
                 return {
-                    "error": "bluetooth transport not yet supported. "
-                    "tell the user to use the controls on their phone.",
+                    "error": (
+                        "usb audio input is playing from the host computer; "
+                        "control playback on the computer."
+                    ),
+                    "source": "usbsink",
                 }
             # source == "none" — no renderer is currently producing
             # audio, so there's nothing to pause/skip.

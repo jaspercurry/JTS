@@ -1067,10 +1067,12 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-aec-bridge` (software AEC) | **Active** on 6-ch firmware, **disabled** on 2-ch | +85 MB | +3% of one core |
 | `jasper-aec-init` (boot-time chip init) | follows aec-bridge | one-shot, ~0 | ~0 |
 | `jasper-wifi-guardian` (NM keyfile/profile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
-| `jasper-wifi-recover` (Wi-Fi-down periodic nudge) | Active timer | ~0 resident; one-shot only | healthy tick is one NM read every ~3 min; repair path only when Wi-Fi is down |
+| `jasper-wifi-recover` (Wi-Fi periodic recovery nudge) | Active timer | ~0 resident; one-shot only | healthy tick is one NM read + narrow kernel-log check every ~3 min; repair path only for brcmfmac scan suppression or Wi-Fi down |
 | `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~16 MB | ~0% idle |
+| `jasper-accessory-reconcile` (optional accessory mic profile gate) | Active oneshot | ~0 resident | boot/deploy and Bluetooth pair/connect/forget only |
+| `jasper-wiim-remote-mic` (WiiM Remote 2 BLE mic adapter) | Profile-gated; active only when paired WiiM Remote 2 is present | 0 MB off; ~15 MB on, bounded by MemoryMax=100M | ~0% idle; decode only while the remote mic streams |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source) | **Disabled by default**, ~22 MB when on | 0 MB off, ~22 MB on | ~3% of one core while host streams |
 | `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |

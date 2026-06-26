@@ -15,9 +15,10 @@ Consults each renderer daemon directly for its playback state:
 per renderer (`spotactive`, `aplactive`, `btactive`,
 `usbsinkactive`).
 
-For source-aware AirPlay/Spotify transport, callers should use
-`jasper.tools.transport.make_transport_dispatcher`, which delegates
-to MPRIS / Spotify Web API based on the active source.
+For source-aware AirPlay/Spotify/Bluetooth transport, callers should use
+`jasper.tools.transport.make_transport_dispatcher`, which asks mux for
+the effective audible source, then delegates to MPRIS / Spotify Web API
+/ Bluetooth AVRCP as appropriate.
 """
 from __future__ import annotations
 
@@ -174,9 +175,9 @@ class RendererClient:
     # ------------------------------------------------------------------
     # pause_airplay — pauses an active AirPlay session via MPRIS so
     # another source can take the speaker. Spotify pause goes via the
-    # Spotify Web API at the caller's spotify_router instance (librespot
-    # has no local control HTTP); Bluetooth has no graceful pause API
-    # on bluez-alsa, so its caller logs and moves on.
+    # Spotify Web API at the caller's spotify_router instance
+    # (librespot has no local control HTTP); Bluetooth transport lives
+    # in jasper.bluetooth.avrcp.
     # ------------------------------------------------------------------
 
     async def pause_airplay(self) -> None:

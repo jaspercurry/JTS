@@ -98,6 +98,19 @@ instantiated. Operator surfaces expose this as `software_aec3.bypassed=true`;
 turning off the software-AEC3 layer must not stop the chip-AEC carrier. To
 stop the carrier entirely, choose the `direct_mic` profile.
 
+`/aec` separates saved intent from applied runtime truth. `raw_intent` mirrors
+`/var/lib/jasper/aec_mode.env`; active fields such as `mode`, `bridge_role`,
+`software_aec3`, `legs`, `audio_profile.active`, and `/wake/`'s
+`mic_settings` are derived from the reconciler-applied `/etc/jasper/jasper.env`
+snapshot. If an explicit hardware-AEC request is rejected by the mic/DAC gate,
+the reconciler falls back to software AEC3 and `/aec` reports software AEC3 as
+active while leaving the selected hardware profile visible with the fallback
+reason. If runtime env is stale during a mic-card change, `/aec.bridge_role`
+reports `pending` and `software_aec3.active=false` until a concrete profile is
+actually applied. Status surfaces must not infer the active AEC engine from
+`JASPER_AUDIO_INPUT_PROFILE` alone or from `jasper-aec-bridge.service` being
+up.
+
 To turn the bridge OFF entirely (or back to direct mic for A/B testing),
 choose the `direct_mic` profile or set the state file to disabled and run the
 reconciler:
@@ -2654,7 +2667,10 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-25 (central chip-AEC DAC gate,
-`xvf_chip_aec_testing`, profile-managed XVF mic-card derivation, and the
-chip-AEC bridge-carrier / software-AEC3-bypass distinction rechecked against
-the reconciler, `/aec`, doctor, and validation paths).
+Last verified: 2026-06-26 (`/aec` intent-vs-applied-runtime status contract
+rechecked against `jasper/audio_profile_state.py`,
+`jasper/control/aec_endpoints.py`, and `tests/test_control_aec_state.py`.
+Prior pass 2026-06-25: central chip-AEC DAC gate, `xvf_chip_aec_testing`,
+profile-managed XVF mic-card derivation, and the chip-AEC bridge-carrier /
+software-AEC3-bypass distinction rechecked against the reconciler, `/aec`,
+doctor, and validation paths).

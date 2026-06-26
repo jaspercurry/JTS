@@ -100,7 +100,7 @@ def test_connect_new_success_writes_stash(stash_path, monkeypatch):
 
 def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
     """A successful wizard connect should persist NM settings that survive
-    router flaps: retry forever and keep Wi-Fi power-save disabled."""
+    router flaps and keep `.local` mDNS fast for Apple clients."""
     import jasper.web.wifi_setup as wifi_setup
 
     calls: list[list[str]] = []
@@ -126,6 +126,7 @@ def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
         "connection.autoconnect", "yes",
         "connection.autoconnect-retries", "0",
         "802-11-wireless.powersave", "2",
+        "ipv6.method", "link-local",
     ] in calls
 
 

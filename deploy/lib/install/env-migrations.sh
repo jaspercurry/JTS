@@ -74,6 +74,13 @@ heal_shared_state_modes() {
         chgrp jasper "${base}" 2>/dev/null || true
         chmod 0660 "${base}" 2>/dev/null || true
     done
+    # Output topology is read by jasper-control before accepting grouping
+    # writes. Older root-run setup paths left it root:root 0640, which made
+    # active-speaker readiness fail closed even for passive/draft topologies.
+    if [[ -e "${STATE_DIR}/output_topology.json" ]]; then
+        chgrp jasper "${STATE_DIR}/output_topology.json" 2>/dev/null || true
+        chmod 0640 "${STATE_DIR}/output_topology.json" 2>/dev/null || true
+    fi
     # Grouping config + its write-lock. jasper-control (/grouping/set) and the
     # install-time migrations rewrite grouping.env under .grouping.env.lock
     # (jasper.atomic_io.locked_update_env_file). A lock created BEFORE UMask=0007

@@ -160,6 +160,45 @@ def set_client_latency(
     return result is not None
 
 
+def set_client_volume(
+    client_id: str,
+    *,
+    percent: int,
+    muted: bool,
+    url: str = SNAPSERVER_RPC_URL,
+    transport: Transport = rpc_call,
+) -> bool:
+    """Set Snapcast's per-client software volume/mute.
+
+    Used only by guarded calibration sessions: callers snapshot first and
+    restore after measurement. Returns a boolean so calibration can fail loudly
+    when a hidden software mixer cannot be normalized.
+    """
+    pct = max(0, min(100, int(percent)))
+    result = transport(
+        "Client.SetVolume",
+        {"id": client_id, "volume": {"percent": pct, "muted": bool(muted)}},
+        url=url,
+    )
+    return result is not None
+
+
+def set_group_mute(
+    group_id: str,
+    muted: bool,
+    *,
+    url: str = SNAPSERVER_RPC_URL,
+    transport: Transport = rpc_call,
+) -> bool:
+    """Set Snapcast group mute state, fail-soft."""
+    result = transport(
+        "Group.SetMute",
+        {"id": group_id, "mute": bool(muted)},
+        url=url,
+    )
+    return result is not None
+
+
 class _ProbeCache:
     """Thread-safe TTL cache for the stream-clients probe.
 

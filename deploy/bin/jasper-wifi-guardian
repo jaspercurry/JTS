@@ -163,8 +163,9 @@ nm_unescape() {
 
 # Persist the JTS WiFi resilience contract on a profile we just recovered:
 # autoconnect on, retry forever (`0`, not NM's small default), power-save
-# off. Best-effort — a failure here must never undo the recovery we just
-# achieved. The identical key set is written by the /wifi/ wizard
+# off, and link-local IPv6 for fast `.local` mDNS resolution. Best-effort —
+# a failure here must never undo the recovery we just achieved. The identical
+# key set is written by the /wifi/ wizard
 # (jasper.web.wifi_setup._harden_wifi_profile) and at install
 # (tune_wifi_for_airplay); drift across the three is guarded by
 # tests/test_wifi_profile_hardening_contract.py.
@@ -172,7 +173,8 @@ harden_profile() {
     "$NMCLI" connection modify "$1" \
         connection.autoconnect yes \
         connection.autoconnect-retries 0 \
-        802-11-wireless.powersave 2 >/dev/null 2>&1 \
+        802-11-wireless.powersave 2 \
+        ipv6.method link-local >/dev/null 2>&1 \
         || emit harden_fail "profile=$1"
 }
 

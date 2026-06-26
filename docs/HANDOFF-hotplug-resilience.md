@@ -44,6 +44,7 @@ For every hot-pluggable component, all four must hold:
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park | udev → reconcile restart | **Fixed 2026-06-21.** Was the original gap: crash-loop → reboot |
 | **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
+| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
 
 The original Workstream C gap was the **microphone**. A later JTS5
 dual-Apple unplug incident found one output-side edge too: when one Apple
@@ -138,24 +139,41 @@ than retrying. This is the price of "never reboot-loop," and it is the
 right call: a persistent open failure is a real fault that should be
 visible (doctor/journal), not retried into a reboot.
 
-### Layer 3 — observability: idle vs broken
+### Layer 3 — observability: idle vs broken (one source of truth)
 
-- **`jasper-doctor`.** `check_mic_capture`
-  ([`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py)) returns
-  **ok** with "no microphone present (expected) — voice parked; plug a
-  mic and it starts automatically" when the marker is present, mirroring
-  the `_parked_as_bonded_follower()` idiom. `check_service_runtime_state`
+The read side is unified behind one reader,
+[`jasper.mic_presence.read_mic_presence()`](../jasper/mic_presence.py): every
+status surface *displays* its verdict instead of independently re-probing
+ALSA / `lsusb` / PortAudio (which is how "no mic" used to surface as a scatter
+of contradicting lines). **It is mic-agnostic** — `present` is driven by the
+generic gate marker (true for the XVF `Array`, the `L16K6Ch` variant, or a
+custom non-XVF mic such as a UMIK-2), while the XVF runtime-profile JSON
+(`/run/jasper-mic-profile/xvf3800.json`) is XVF-only *enrichment* layered on
+top. Driving presence off the XVF profile would report a working non-XVF mic
+as "absent"; the separation exists to prevent that, and generalises when a
+second mic profile + `jasper/mics/base.py` land (see
+[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)).
+
+- **`jasper-doctor`.** One headline, `check_microphone`
+  ([`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py)), states
+  present/absent + why in a single line — `warn` (one yellow flag) when
+  absent, never `fail`. The per-device checks defer to it via
+  `read_mic_presence().absent_confirmed`: `check_mic_card_matches_config` no
+  longer re-runs `arecord -L` to emit a contradicting red ✗, and
+  `check_mic_capture` reports the same expected idle. A genuine open failure
+  with a mic *present* (custom/busy) still falls through to the probe + its
+  **fail** — a real signal. `check_service_runtime_state`
   ([`jasper/cli/doctor/resilience.py`](../jasper/cli/doctor/resilience.py))
-  already treats `inactive` as ok and `failed`/`activating` as fail — so
-  a Layer-1 park reads ok there, while a genuine crash still reads fail.
-  When the marker is **absent** but the device still won't open
-  (custom/busy), `check_mic_capture` keeps its existing **fail** — a real
-  signal.
-- **`/state`.** The voice block gains `parked_no_mic` (read fresh from
-  the marker by
-  [`jasper/voice/input_presence.py`](../jasper/voice/input_presence.py)),
-  so a consumer can tell `reachable:false` "idle, no mic" from
-  `reachable:false` "crashed."
+  treats `inactive` as ok and `failed`/`activating` as fail, so a Layer-1 park
+  reads ok while a crash reads fail.
+- **`/state`.** A top-level `microphone` block carries the full record
+  (present, reason, card, variant, channels, a ready-made `summary`); the
+  voice block's `parked_no_mic` is derived from the **same** read so the
+  boolean and the record can't drift.
+- **Open-failure log.** `_log_audio_open_failure`
+  ([`jasper/audio_io.py`](../jasper/audio_io.py)) logs one line and skips its
+  portaudio/`arecord`/`aplay`/`dmesg` dump when the mic is confirmed-absent —
+  the dump is for *surprise* failures, not the expected no-mic state.
 - **Journal.** PID 1 logs the condition skip; the reconciler logs the
   marker write with its reason.
 
@@ -212,10 +230,29 @@ absent satellite is reported "offline" by `jasper-control`'s TCP probe
 `_probe_dial_reachable`) — never a crash. The HID accessory bridge
 [`jasper-input`](../deploy/systemd/jasper-input.service) runs a pyudev
 hot-plug monitor in-process and opens evdev fds as devices appear, so it
-already converges both directions without per-device units. Adding a
-satellite-presence concern would only matter if a future satellite is a
-wired device whose daemon opens it directly; that daemon should adopt
-the same `ConditionPathExists`/`ExecCondition` gate.
+already converges both directions without per-device units. The WiiM
+Remote 2 microphone is different from ordinary HID buttons because its
+audio arrives over a BLE GATT notification stream; its adapter
+[`jasper-wiim-remote-mic`](../deploy/systemd/jasper-wiim-remote-mic.service)
+is profile-gated by
+[`jasper-accessory-reconcile`](../deploy/systemd/jasper-accessory-reconcile.service).
+When BlueZ has no paired WiiM Remote 2, the reconciler removes
+`/var/lib/jasper/accessory-mics.env` and disables the adapter, so there
+is no resident BLE decoder and no UDP listener in `jasper-voice`. When
+the profile is paired, the reconciler writes `wiim_remote_2=udp:9892`,
+enables/restarts the adapter, and restarts `jasper-voice` only if voice
+is already active. Reconcile runs at boot/deploy and after successful
+Bluetooth pair/connect/forget operations, so the UI pairing flow converges
+without a second deploy. Adapter service changes are queued with
+`systemctl --no-block` and the boot reconciler orders only before
+`jasper-voice`, not before the adapter it may start, so optional accessory
+state cannot wedge voice startup. A paired-but-sleeping remote still self-heals:
+missing GATT report logs `event=wiim_remote_mic.not_ready` (throttled
+after the first visible event) and retries; `jasper-voice` keeps the
+normal primary mic path alive and only routes the manual source when
+`/session/start` names it. Adding a satellite-presence concern would
+only matter if a future satellite is a wired device whose daemon opens
+it directly; that daemon should adopt the same profile/reconciler gate.
 
 ## Verified vs needs-hardware
 
@@ -276,13 +313,16 @@ session):**
 - [`deploy/systemd/jasper-voice.service`](../deploy/systemd/jasper-voice.service) — `ConditionPathExists` gate, exit-66 park
 - [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) — single writer of the marker
 - [`jasper/voice/input_presence.py`](../jasper/voice/input_presence.py) — marker path + `voice_parked_no_mic()`
-- [`jasper/audio_io.py`](../jasper/audio_io.py) — `InputDeviceUnavailable`
+- [`jasper/mic_presence.py`](../jasper/mic_presence.py) — the mic-presence SSOT reader (mic-agnostic presence + XVF enrichment)
+- [`jasper/audio_io.py`](../jasper/audio_io.py) — `InputDeviceUnavailable`; absent-aware open-failure log
 - [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) — raise on primary mic-open failure, exit 66
-- [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — marker-aware `check_mic_capture`
-- [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `voice.parked_no_mic`
+- [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — `check_microphone` headline + mic checks deferring to the reader
+- [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `microphone` block + `voice.parked_no_mic`
 - [`deploy/udev/99-jasper-audio-hardware-reconcile.rules`](../deploy/udev/99-jasper-audio-hardware-reconcile.rules) — output-DAC add/remove/change triggers
 - [`deploy/bin/jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug) — Apple USB remove reconciler request
 - [`deploy/bin/jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile) — outputd retry-time env refresh
 - [`deploy/systemd/jasper-outputd.service`](../deploy/systemd/jasper-outputd.service) — output device gate + failure-time reconcile hook
+- [`deploy/systemd/jasper-accessory-reconcile.service`](../deploy/systemd/jasper-accessory-reconcile.service) — optional accessory mic profile gate
+- [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 
-Last verified: 2026-06-22
+Last verified: 2026-06-26

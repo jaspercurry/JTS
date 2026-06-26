@@ -63,7 +63,7 @@
     </p>
 
     <div class="form-actions">
-      <a class="btn btn--primary" id="proceed" href="/correction/proceed">OK, proceed</a>
+      <a class="btn btn--primary" id="proceed" href="/correction/proceed?jts_cb=__APP_CSS_VERSION__">OK, proceed</a>
       <a class="btn btn--ghost" href="/">Cancel</a>
     </div>
   </main>
@@ -75,25 +75,39 @@
       var params = new URLSearchParams(window.location.search || '');
       var requested = params.get('next') || '/correction/';
       var allowed = {
-        '/correction/': '',
-        '/correction/room/': '/room',
-        '/correction/crossover/': '/crossover',
-        '/correction/bass/': '/bass'
+        '/correction/': '/correction/',
+        '/correction/room/': '/correction/room/',
+        '/correction/crossover/': '/correction/crossover/',
+        '/correction/bass/': '/correction/bass/'
       };
-      var proceedPath = '/correction/proceed';
+      var cacheToken = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      function httpsOrigin() {
+        var current = new URL(window.location.href);
+        current.protocol = 'https:';
+        if (current.port === '80') current.port = '';
+        return current.origin;
+      }
+      function withCacheBust(url) {
+        url.searchParams.set('jts_cb', cacheToken);
+        return url.toString();
+      }
+      var targetPath = '/correction/';
       try {
         var parsed = new URL(requested, window.location.origin);
         if (parsed.origin === window.location.origin) {
           var path = parsed.pathname;
           if (path.slice(-1) !== '/') path += '/';
           if (Object.prototype.hasOwnProperty.call(allowed, path)) {
-            proceedPath += allowed[path];
+            targetPath = allowed[path];
           }
         }
       } catch (_) {
-        proceedPath = '/correction/proceed';
+        targetPath = '/correction/';
       }
-      proceed.href = proceedPath;
+      // JS-enabled browsers go straight to the final HTTPS measurement URL.
+      // The href above remains a no-JS fallback through nginx's temporary
+      // /correction/proceed redirect.
+      proceed.href = withCacheBust(new URL(targetPath, httpsOrigin()));
     }());
   </script>
 </body>

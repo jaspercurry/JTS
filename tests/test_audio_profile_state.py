@@ -58,7 +58,7 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
     assert status["microphone"]["warnings"] == []
 
 
-def test_chip_aec_pending_when_runtime_env_not_applied():
+def test_chip_aec_request_reports_runtime_software_until_chip_applied():
     status = build_audio_profile_status(
         AecIntent(mode="auto", chip_aec_enabled=True),
         RuntimeAecEnv(primary_device="udp:9876", chip_enabled=False),
@@ -68,9 +68,9 @@ def test_chip_aec_pending_when_runtime_env_not_applied():
     )
 
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
-    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["active"] == "xvf_software_aec3"
     assert status["audio_profile"]["state"] == "pending"
-    assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
+    assert status["microphone"]["processing_mode"] == "Software AEC3"
     assert "not applied" in " ".join(status["microphone"]["warnings"])
 
 
@@ -129,6 +129,8 @@ def test_chip_aec_active_requires_detected_aec_card_match():
 
     assert status["audio_profile"]["active"] is None
     assert status["audio_profile"]["state"] == "pending"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
+    assert status["microphone"]["wake_legs"] == []
     assert "Configured AEC mic L16K6Ch" in " ".join(
         status["microphone"]["warnings"]
     )
@@ -137,7 +139,11 @@ def test_chip_aec_active_requires_detected_aec_card_match():
 def test_software_aec3_profile_reports_optional_legs():
     status = build_audio_profile_status(
         AecIntent(mode="auto", raw_enabled=True, dtln_enabled=True),
-        RuntimeAecEnv(primary_device="udp:9876"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            raw_device="udp:9877",
+            dtln_device="udp:9878",
+        ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
         chip_available=True,

@@ -247,6 +247,24 @@ def test_control_socket_paths_agree_across_processes():
         f"control socket {outputd_sock}"
     )
 
+    peering_sock = "/run/jasper-control/peering.sock"
+    assert f'PEERING_UDS_PATH = "{peering_sock}"' in (
+        REPO / "jasper/peering/config.py"
+    ).read_text()
+    assert f'"JASPER_PEERING_UDS", "{peering_sock}"' in (
+        REPO / "jasper/config.py"
+    ).read_text(), (
+        "voice config must default to the same peering UDS path that "
+        "jasper-control's peering daemon binds"
+    )
+    control_unit = (REPO / "deploy/systemd/jasper-control.service").read_text()
+    voice_unit = (REPO / "deploy/systemd/jasper-voice.service").read_text()
+    assert "User=jasper-control" in control_unit
+    assert "Group=jasper" in control_unit
+    assert "RuntimeDirectory=jasper-control" in control_unit
+    assert "RuntimeDirectoryMode=0750" in control_unit
+    assert "Group=jasper" in voice_unit
+
 
 # ---------------------------------------------------------------------------
 # 2. JASPER_OUTPUTD_* / JASPER_FANIN_* env name-set drift

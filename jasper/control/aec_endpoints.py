@@ -12,13 +12,16 @@ from typing import Any
 from ..audio_profile_state import (
     AecIntent,
     MicProbe,
+    PROFILE_DIRECT_MIC,
+    PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
+    PROFILE_XVF_SOFTWARE_AEC3,
+    RuntimeAecEnv,
     build_audio_profile_status,
     infer_audio_input_profile,
     normalize_audio_input_profile,
     parse_env_bool as _parse_audio_profile_bool,
     profile_env_updates,
-    resolve_audio_input_intent,
     runtime_env_from_mapping,
     validation_profile,
 )
@@ -27,6 +30,7 @@ from ..audio_validation import (
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
+from ..audio_input_view import build_microphone_settings_view
 from ..chip_aec_policy import gate_from_runtime_env, resolve_chip_aec_dac_gate
 from ..wake_models import WAKE_MODEL_FILE
 
@@ -280,6 +284,9 @@ def _audio_profile_status(
     bridge_active: bool,
     chip_available: bool,
     chip_gate: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    runtime: RuntimeAecEnv | None = None,
+    mic_probe: MicProbe | None = None,
 ) -> dict[str, Any]:
     """Read-only mic/profile status for the /wake/ page.
 
@@ -288,30 +295,12 @@ def _audio_profile_status(
     then classifies intent vs observed runtime. It does not probe audio
     streams or open devices on the hot polling path.
     """
-    env = _fresh_jasper_env()
-    runtime = runtime_env_from_mapping(env, process_env=os.environ)
-    try:
-        from ..mics import xvf3800
-        runtime_profile = xvf3800.detect_runtime_profile()
-        xvf_present = runtime_profile.present
-        capture_channels = runtime_profile.capture_channels
-        recommended_channels = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
-        display_name = runtime_profile.display_name
-        alsa_card_name = runtime_profile.alsa_card_name
-        variant_id = runtime_profile.variant_id
-        geometry = runtime_profile.geometry
-        chip_beam_plan = runtime_profile.chip_beam_plan_id
-        probe_error = None
-    except Exception:  # noqa: BLE001
-        xvf_present = False
-        capture_channels = None
-        recommended_channels = 6
-        display_name = "Seeed ReSpeaker XVF3800 (USB UA)"
-        alsa_card_name = ""
-        variant_id = ""
-        geometry = ""
-        chip_beam_plan = ""
-        probe_error = "firmware probe failed"
+    if env is None:
+        env = _fresh_jasper_env()
+    if runtime is None:
+        runtime = runtime_env_from_mapping(env, process_env=os.environ)
+    if mic_probe is None:
+        mic_probe = _xvf_mic_probe()
 
     return build_audio_profile_status(
         AecIntent(
@@ -322,21 +311,42 @@ def _audio_profile_status(
             profile_selection=str(state.get("profile") or ""),
         ),
         runtime,
-        MicProbe(
-            xvf_present=xvf_present,
-            capture_channels=capture_channels,
-            recommended_channels=recommended_channels,
-            display_name=display_name,
-            alsa_card_name=alsa_card_name,
-            variant_id=variant_id,
-            geometry=geometry,
-            chip_beam_plan=chip_beam_plan,
-            probe_error=probe_error,
-        ),
+        mic_probe,
         bridge_active=bridge_active,
         chip_available=chip_available,
         chip_gate=chip_gate,
     )
+
+
+def _xvf_mic_probe() -> MicProbe:
+    """Return one cheap XVF profile snapshot for a status request."""
+
+    try:
+        from ..mics import xvf3800
+        runtime_profile = xvf3800.detect_runtime_profile()
+        return MicProbe(
+            xvf_present=runtime_profile.present,
+            capture_channels=runtime_profile.capture_channels,
+            recommended_channels=xvf3800.RECOMMENDED_CAPTURE_CHANNELS,
+            display_name=runtime_profile.display_name,
+            alsa_card_name=runtime_profile.alsa_card_name,
+            variant_id=runtime_profile.variant_id,
+            geometry=runtime_profile.geometry,
+            chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            probe_error=None,
+        )
+    except Exception:  # noqa: BLE001
+        return MicProbe(
+            xvf_present=False,
+            capture_channels=None,
+            recommended_channels=6,
+            display_name="Seeed ReSpeaker XVF3800 (USB UA)",
+            alsa_card_name="",
+            variant_id="",
+            geometry="",
+            chip_beam_plan="",
+            probe_error="firmware probe failed",
+        )
 
 
 def _chip_aec_available() -> bool:
@@ -436,26 +446,37 @@ def _aec_full_status() -> dict:
     state = _read_aec_state()
     bridge_active = _aec_bridge_active()
     env = _fresh_jasper_env()
+    runtime = runtime_env_from_mapping(env, process_env=os.environ)
     # Wrap defensively so a profile probe failure can never 500 a status
     # GET the /wake/ page polls every 3 s.
-    chip_available = _chip_aec_available()
+    mic_probe = _xvf_mic_probe()
+    chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
     chip_gate = _chip_aec_gate(env, state, mic_available=chip_available)
-    effective = resolve_audio_input_intent(
-        AecIntent(
-            mode=state["mode"],
-            raw_enabled=bool(state["leg_raw"]),
-            dtln_enabled=bool(state["leg_dtln"]),
-            chip_aec_enabled=bool(state["leg_chip_aec"]),
-            profile_selection=str(state.get("profile") or ""),
-        ),
-        chip_available=bool(chip_gate.get("available")),
+    requested_intent = AecIntent(
+        mode=state["mode"],
+        raw_enabled=bool(state["leg_raw"]),
+        dtln_enabled=bool(state["leg_dtln"]),
+        chip_aec_enabled=bool(state["leg_chip_aec"]),
+        profile_selection=str(state.get("profile") or ""),
     )
-    software_aec3 = _software_aec3_status(effective, bridge_active=bridge_active)
     profile_status = _audio_profile_status(
         state,
         bridge_active=bridge_active,
         chip_available=chip_available,
         chip_gate=chip_gate,
+        env=env,
+        runtime=runtime,
+        mic_probe=mic_probe,
+    )
+    effective = _applied_aec_intent(
+        requested_intent,
+        runtime=runtime,
+        profile_status=profile_status["audio_profile"],
+    )
+    software_aec3 = _software_aec3_status(
+        effective,
+        bridge_active=bridge_active,
+        profile_status=profile_status["audio_profile"],
     )
     requested_profile = (
         profile_status["audio_profile"].get("validation_profile")
@@ -465,7 +486,7 @@ def _aec_full_status() -> dict:
         requested_profile=requested_profile,
         system_env=env,
     )
-    return {
+    payload = {
         "mode": effective.mode,
         "profile": state["profile"],
         "raw_intent": {
@@ -475,7 +496,10 @@ def _aec_full_status() -> dict:
             "leg_chip_aec": state["leg_chip_aec"],
         },
         "bridge_active": bridge_active,
-        "bridge_role": _bridge_role(effective),
+        "bridge_role": _bridge_role(
+            effective,
+            profile_status=profile_status["audio_profile"],
+        ),
         "software_aec3": software_aec3,
         "legs": {
             "raw": {"configured": effective.raw_enabled},
@@ -494,20 +518,75 @@ def _aec_full_status() -> dict:
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
     }
+    payload["mic_settings"] = build_microphone_settings_view(payload)
+    return payload
 
 
-def _bridge_role(intent: AecIntent) -> str:
-    if intent.mode != "auto":
+def _applied_aec_intent(
+    requested: AecIntent,
+    *,
+    runtime: RuntimeAecEnv,
+    profile_status: dict[str, Any],
+) -> AecIntent:
+    """Translate reconciler-applied runtime env into the active AEC path.
+
+    ``aec_mode.env`` is user intent. ``/etc/jasper/jasper.env`` is what the
+    reconciler actually applied after mic/DAC gates, hotplug, and fail-closed
+    fallback. Status surfaces must expose the latter for active engine/leg state
+    while keeping the former visible as raw intent.
+    """
+
+    selection = str(profile_status.get("selection") or requested.profile_selection)
+    active = str(profile_status.get("active") or "")
+    if requested.mode != "auto" or active == PROFILE_DIRECT_MIC:
+        return AecIntent(
+            mode="disabled",
+            raw_enabled=False,
+            dtln_enabled=False,
+            chip_aec_enabled=False,
+            profile_selection=selection,
+        )
+    if active in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
+        return AecIntent(
+            mode="auto",
+            raw_enabled=False,
+            dtln_enabled=False,
+            chip_aec_enabled=True,
+            profile_selection=selection,
+        )
+    if active != PROFILE_XVF_SOFTWARE_AEC3:
+        return AecIntent(
+            mode="auto",
+            raw_enabled=False,
+            dtln_enabled=False,
+            chip_aec_enabled=False,
+            profile_selection=selection,
+        )
+    return AecIntent(
+        mode="auto",
+        raw_enabled=bool(runtime.raw_device),
+        dtln_enabled=bool(runtime.dtln_enabled or runtime.dtln_device),
+        chip_aec_enabled=False,
+        profile_selection=selection or PROFILE_XVF_SOFTWARE_AEC3,
+    )
+
+
+def _bridge_role(intent: AecIntent, *, profile_status: dict[str, Any]) -> str:
+    active_profile = str(profile_status.get("active") or "")
+    if intent.mode != "auto" or active_profile == PROFILE_DIRECT_MIC:
         return "off"
-    if intent.chip_aec_enabled:
+    if active_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
         return "chip_aec_carrier"
-    return "software_aec3"
+    if active_profile == PROFILE_XVF_SOFTWARE_AEC3:
+        return "software_aec3"
+    return "pending"
 
 
 def _software_aec3_status(
     intent: AecIntent,
     *,
     bridge_active: bool,
+    profile_status: dict[str, Any],
 ) -> dict[str, Any]:
     """Derived WebRTC/AEC3 status, separate from the shared bridge carrier.
 
@@ -516,14 +595,18 @@ def _software_aec3_status(
     Keep that distinction explicit so operator surfaces never present "bridge
     running" as "software AEC3 running."
     """
-    if intent.mode != "auto":
+    active_profile = str(profile_status.get("active") or "")
+    requested_profile = str(profile_status.get("requested") or "")
+    profile_reason = str(profile_status.get("reason") or "")
+
+    if intent.mode != "auto" or active_profile == PROFILE_DIRECT_MIC:
         return {
             "configured": False,
             "active": False,
             "bypassed": False,
             "reason": "AEC bridge is disabled by the direct-mic profile.",
         }
-    if intent.chip_aec_enabled:
+    if active_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
         return {
             "configured": False,
             "active": False,
@@ -533,13 +616,27 @@ def _software_aec3_status(
                 "the bridge carries the chip beam to voice."
             ),
         }
+    software_selected = bool(
+        active_profile == PROFILE_XVF_SOFTWARE_AEC3
+        or requested_profile == PROFILE_XVF_SOFTWARE_AEC3
+    )
+    software_active = bool(
+        bridge_active and active_profile == PROFILE_XVF_SOFTWARE_AEC3
+    )
+    if not software_active and profile_reason:
+        return {
+            "configured": software_selected,
+            "active": False,
+            "bypassed": False,
+            "reason": profile_reason,
+        }
     return {
-        "configured": True,
-        "active": bool(bridge_active),
+        "configured": software_selected,
+        "active": software_active,
         "bypassed": False,
         "reason": (
             "Software AEC3 bridge is active."
-            if bridge_active
+            if software_active
             else "Software AEC3 is selected; waiting for the bridge."
         ),
     }

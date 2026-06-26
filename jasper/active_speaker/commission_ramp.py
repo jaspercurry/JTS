@@ -479,6 +479,8 @@ async def ramp_audible_step(
     play_tone: ToneEmitter | None = None,
     auto_retry_pending: bool = False,
     confirmed_roles: Iterable[str] | None = None,
+    role_order_confirmed_roles: Iterable[str] | None = None,
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
 
@@ -490,6 +492,10 @@ async def ramp_audible_step(
     (the operator must confirm the correct driver before any louder step or any
     sibling driver). Fails closed: a blocked gate or a failed load emits no new
     audible level.
+
+    ``confirmed_roles`` is persisted ramp evidence. ``role_order_confirmed_roles``
+    is gate-only and lets a caller satisfy ordering for a transient audition
+    without recording fake heard-driver evidence.
     """
     role = (role or "").strip().lower()
     group_id = (speaker_group_id or "").strip()
@@ -519,6 +525,15 @@ async def ramp_audible_step(
         ramp_state,
         speaker_group_id=group_id,
         confirmed_roles=confirmed_roles,
+    )
+    gate_confirmed_roles = (
+        ramp_confirmed_roles
+        if role_order_confirmed_roles is None
+        else effective_confirmed_roles(
+            ramp_state,
+            speaker_group_id=group_id,
+            confirmed_roles=role_order_confirmed_roles,
+        )
     )
     pending = ramp_state.get("pending")
     replaced_pending: dict[str, Any] | None = None
@@ -612,7 +627,7 @@ async def ramp_audible_step(
         protective_hp_hz=evidence.get("protective_highpass_hz"),
         current_gain_db=current_gain_db,
         next_gain_db=next_gain_db,
-        confirmed_roles=set(ramp_confirmed_roles),
+        confirmed_roles=set(gate_confirmed_roles),
         prior_step_cleared=prior_step_cleared,
     )
     if not gate["passed"]:
@@ -718,6 +733,7 @@ async def ramp_audible_step(
         statefile_path=statefile_path,
         state_path=commission_load_state_path,
         reconcile_output_hardware=False,
+        require_physical_identity=require_physical_identity,
         **load_kwargs,
     )
     if (load_payload.get("load") or {}).get("status") != "loaded":

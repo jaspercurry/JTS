@@ -11,7 +11,9 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
+import subprocess
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -64,6 +66,20 @@ def _format_phy_regdom_detail(phy_countries: dict[str, str]) -> str:
             detail += " (world/unset; not actionable by itself)"
         parts.append(detail)
     return "; ".join(parts)
+
+def _active_wifi_connection(nmcli: str) -> tuple[str | None, str | None]:
+    """Return the active Wi-Fi NetworkManager profile name and device."""
+    proc = _run(
+        [nmcli, "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"],
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        return None, None
+    for raw in proc.stdout.splitlines():
+        parts = raw.split(":", 2)
+        if len(parts) >= 2 and parts[1] in ("802-11-wireless", "wifi"):
+            return parts[0], parts[2] if len(parts) == 3 and parts[2] else None
+    return None, None
 
 @doctor_check(order=63, group="network")
 def check_wifi_regdom() -> CheckResult:
@@ -222,6 +238,62 @@ def check_wifi_guardian() -> CheckResult:
         f"network.",
     )
 
+@doctor_check(order=64.2, group="network")
+def check_wifi_link_local_ipv6() -> CheckResult:
+    """Active Wi-Fi profiles must keep link-local IPv6 enabled for mDNS.
+
+    Apple clients commonly resolve `.local` with IPv6 mDNS before falling
+    back to IPv4. A NetworkManager profile with `ipv6.method=ignore` can
+    make `jts.local` navigations wait several seconds even though IPv4 and
+    Avahi are otherwise healthy. JTS only needs link-local IPv6 here, not
+    routed IPv6.
+    """
+    label = "WiFi link-local IPv6"
+    nmcli = shutil.which("nmcli")
+    if nmcli is None:
+        return CheckResult(label, "ok", "skipped — no nmcli on PATH")
+
+    profile, device = _active_wifi_connection(nmcli)
+    if profile is None:
+        return CheckResult(label, "ok", "no active WiFi profile")
+    if device is None:
+        device = "wlan0"
+
+    method_proc = _run(
+        [nmcli, "-g", "ipv6.method", "connection", "show", profile],
+        timeout=5,
+    )
+    method = method_proc.stdout.strip().splitlines()[0] if method_proc.stdout.strip() else ""
+    if method_proc.returncode != 0 or not method:
+        return CheckResult(
+            label, "warn",
+            f"could not read ipv6.method for active WiFi profile {profile!r}",
+        )
+    if method in {"ignore", "disabled"}:
+        quoted_profile = shlex.quote(profile)
+        quoted_device = shlex.quote(device)
+        return CheckResult(
+            label, "warn",
+            f"active WiFi profile {profile!r} has ipv6.method={method}; "
+            "Apple clients may stall resolving `<hostname>.local`. Fix: "
+            f"`sudo nmcli connection modify {quoted_profile} ipv6.method link-local` "
+            f"then `sudo nmcli dev reapply {quoted_device}`.",
+        )
+
+    addr_proc = _run(["ip", "-6", "addr", "show", "dev", device, "scope", "link"], timeout=5)
+    if "inet6 fe80:" not in addr_proc.stdout:
+        quoted_device = shlex.quote(device)
+        return CheckResult(
+            label, "warn",
+            f"active WiFi profile {profile!r} uses ipv6.method={method}, but "
+            f"{device} has no link-local IPv6 address; `.local` may resolve "
+            f"slowly. Try `sudo nmcli dev reapply {quoted_device}`.",
+        )
+    return CheckResult(
+        label, "ok",
+        f"{profile} keeps link-local IPv6 on {device} (ipv6.method={method})",
+    )
+
 @doctor_check(order=64.5, group="network")
 def check_wifi_recover_timer() -> CheckResult:
     """The Wi-Fi flap recovery timer must stay enabled so the Wi-Fi-down
@@ -368,7 +440,23 @@ def check_avahi_jasper_control() -> CheckResult:
             "verify the service is being advertised. Dial may still "
             "find us if avahi-daemon is publishing it.",
         )
-    proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
+    try:
+        proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if "_jasper-control._tcp" in stdout:
+            return CheckResult(
+                label, "ok",
+                "advertised — browse timed out resolving one or more stale "
+                "peer records, but a jasper-control service was visible",
+            )
+        return CheckResult(
+            label, "fail",
+            "avahi-browse timed out before any `_jasper-control._tcp` "
+            "service appeared. Check avahi-daemon and local service XML.",
+        )
     if proc.returncode != 0:
         return CheckResult(
             label, "fail",

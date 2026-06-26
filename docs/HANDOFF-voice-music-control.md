@@ -58,13 +58,15 @@ in v1.yml is identity and not the ducker.
 ### 2. Transport (next / previous / pause / resume)
 
 `make_transport_dispatcher(renderer, router).dispatch(action)`
-queries `renderer.active_renderers()` and picks the right backend:
+asks mux for `renderer.selected_source()` first so manual source
+selection and guarded handoff policy decide the backend. If mux is
+unavailable, it falls back to `renderer.active_renderers()`:
 
 | Active source | Backend |
 |---|---|
-| AirPlay (`aplactive`) | shairport-sync MPRIS over busctl. AirPlay-carrying-Spotify gets short-circuited via the title-match path (see below). |
+| AirPlay (`aplactive`) | AirPlay-carrying-Spotify gets short-circuited via the title-match path (see below); otherwise shairport-sync MPRIS/DACP is used when the sender exposes remote control. |
 | Spotify Connect (`spotactive`) | spotipy `next_track()` / `previous_track()` / `pause_playback()` against the user's account |
-| Bluetooth (`btactive`) | Not supported — no transport API on bluez-alsa A2DP sink. Returns a spoken explanation. |
+| Bluetooth (`btactive`) | BlueZ AVRCP via the active `org.bluez.MediaPlayer1` object (`Next`, `Previous`, `Pause`, `Play`). Requires the source phone/player to expose a BlueZ player object. |
 | USB sink (`usbsinkactive`) | Not supported — the host computer owns its player transport. Returns a spoken explanation if exposed through future tools. |
 | No active source | Returns "nothing is playing" error so the model can tell the user something concrete instead of silently no-op'ing. |
 
@@ -78,19 +80,19 @@ Search-and-play. The non-obvious case:
 - The user's Spotify account is OAuth'd in our `spotify_router`.
 - User says "Hey Jarvis, play Kanye West."
 
-What happens: `resolve_target` notices that AirPlay metadata
-(title + artist) matches what Spotify Web API reports the user is
-currently playing. It targets the **iPhone's** Spotify Connect
-device (not the Pi's librespot), so `start_playback` rides the
-existing AirPlay stream — the iPhone changes track, the Pi just
-keeps receiving the same AirPlay session. Net effect: voice
-command works seamlessly without the Pi having direct AirPlay
-control.
+What happens: `resolve_target` notices that AirPlay title metadata
+matches what Spotify Web API reports the user is currently playing.
+It targets the **iPhone's** Spotify Connect device (not the Pi's
+librespot), so `start_playback` rides the existing AirPlay stream —
+the iPhone changes track, the Pi just keeps receiving the same AirPlay
+session. Net effect: voice command works seamlessly without the Pi
+having direct AirPlay control.
 
-The matcher in `_match_track` is conservative — title AND artist
-must align after normalisation. A paused Spotify session on the
-user's laptop with the same song title coincidentally won't fool
-it (we require `is_playing=True`).
+The matcher in `_match_track` is title-only after normalization because
+Spotify and AirPlay often disagree on artist strings for collaborations,
+remasters, and compilations. A paused Spotify session on the user's
+laptop with the same song title coincidentally won't fool it because
+we require `is_playing=True`.
 
 ## Multi-account Spotify routing
 
@@ -109,9 +111,10 @@ full design.
 
 - **AirPlay active, user asks "next song" but the source is NOT
   Spotify** (Apple Music, podcast, YouTube Music, etc.) → the
-  dispatcher tries the title-match short-circuit, fails, returns
-  "AirPlay transport isn't supported — control playback on your
-  phone." Spoken back to the user.
+  dispatcher tries the title-match short-circuit, then checks
+  shairport-sync's `RemoteControl.Available`. If DACP is available,
+  MPRIS forwards the command to the sender. If not, it returns a
+  concrete "the AirPlay sender doesn't accept remote control" error.
 - **No active source, user asks "play Kanye West"** →
   `start_playback` targets the Pi's librespot endpoint
   using the shared speaker display name from `/speaker/` (default
@@ -120,9 +123,10 @@ full design.
   Spotify target device available — visit `<management URL>` to
   link your account or open Spotify and cast to the speaker once
   to register it."
-- **Bluetooth active, user asks for transport** → returns
-  "Bluetooth transport isn't supported — control playback on your
-  phone."
+- **Bluetooth active, user asks for transport** → uses BlueZ AVRCP
+  when a `MediaPlayer1` object exists under the active A2DP device.
+  If the phone/player did not register an AVRCP player, the tool
+  returns a concrete "bluetooth AVRCP player not available" error.
 - **USB sink active, user asks for transport** → host-owned player;
   control playback on the computer.
 
@@ -141,13 +145,13 @@ invite further conversation.
   that's the daemon's ducking knob, the camilla-master user volume
   surface, and the 0% content-mute carrier. Use the `VolumeCoordinator`
   instead.
-- Don't try to control AirPlay generically — only the
-  AirPlay-carrying-Spotify case has a workaround. Be honest with
-  the user about other AirPlay sources.
+- Don't assume AirPlay remote control is always available. Try the
+  Spotify title-match path first; otherwise only call MPRIS/DACP after
+  shairport-sync reports `RemoteControl.Available=true`.
 
 ---
 
-Last verified: 2026-06-22 (Spotify token-cache location rechecked against
-`jasper.accounts`; source registry, 0% content mute, USB Camilla-master volume,
-guarded handoff path, and source-capabilities plan link were last rechecked
-2026-06-17)
+Last verified: 2026-06-26 (transport dispatcher rechecked for
+mux-selected source priority, USB-sink host-owned errors,
+AirPlay+Spotify title-match, AirPlay DACP gating, Spotify Connect,
+Bluetooth AVRCP, no-source errors, and 0% content mute behavior)

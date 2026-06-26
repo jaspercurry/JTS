@@ -46,6 +46,7 @@ from .path_safety import (
     evaluate_path_safety_evidence,
     software_guard_ready_for_startup,
     staged_target_signature,
+    target_assignment_signature,
     topology_target_signature,
     validate_startup_load_evidence_binding,
 )
@@ -254,6 +255,8 @@ def _staged_config_path(staged_config: dict[str, Any]) -> Path | None:
 def _staged_topology_payload(
     topology: OutputTopology,
     staged_config: dict[str, Any],
+    *,
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Return whether staged metadata still matches the saved topology."""
 
@@ -274,6 +277,11 @@ def _staged_topology_payload(
         if isinstance(staged_config.get("hardware"), dict)
         else {}
     )
+    staged_signature = staged_target_signature(staged_config)
+    topology_signature = topology_target_signature(topology)
+    if not require_physical_identity:
+        staged_signature = target_assignment_signature(staged_signature)
+        topology_signature = target_assignment_signature(topology_signature)
     checks = {
         "topology_id": staged_topology.get("topology_id") == topology.topology_id,
         "hardware_device": staged_hardware.get("device_id") == topology.hardware.device_id,
@@ -285,8 +293,7 @@ def _staged_topology_payload(
         "hardware_clock_domain": (
             staged_hardware.get("clock_domain_id") == topology.hardware.clock_domain_id
         ),
-        "targets": staged_target_signature(staged_config)
-        == topology_target_signature(topology),
+        "targets": staged_signature == topology_signature,
     }
     for check, passed in checks.items():
         if not passed:
@@ -307,6 +314,21 @@ def _staged_topology_payload(
         "checks": checks,
         "issues": issues,
     }
+
+
+def staged_topology_match_status(
+    topology: OutputTopology,
+    staged_config: dict[str, Any],
+    *,
+    require_physical_identity: bool = True,
+) -> dict[str, Any]:
+    """Return whether staged startup metadata still matches saved topology."""
+
+    return _staged_topology_payload(
+        topology,
+        staged_config,
+        require_physical_identity=require_physical_identity,
+    )
 
 
 def _candidate_payload(
@@ -458,6 +480,7 @@ def build_startup_load_preflight(
     path_safety_evidence_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
     stop_control_available: bool = True,
+    require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -475,7 +498,11 @@ def build_startup_load_preflight(
     )
     staged_path = _staged_config_path(staged)
     candidate = _candidate_payload(staged_path, validate=validate)
-    staged_topology = _staged_topology_payload(topology, staged)
+    staged_topology = _staged_topology_payload(
+        topology,
+        staged,
+        require_physical_identity=require_physical_identity,
+    )
     path_safety = _path_safety_payload(path_safety_evidence_path)
     if isinstance(path_safety.get("raw_evidence"), dict):
         path_safety_binding = validate_startup_load_evidence_binding(
@@ -483,6 +510,7 @@ def build_startup_load_preflight(
             topology,
             staged_config=staged,
             current_config_path=current_config_path,
+            require_physical_identity=require_physical_identity,
         )
     else:
         path_safety_binding = {
@@ -555,11 +583,19 @@ def build_startup_load_preflight(
         _gate(
             "physical_identity_verified",
             label="Assigned physical outputs are verified",
-            passed=assigned > 0 and unverified == 0,
+            passed=assigned > 0 and (
+                unverified == 0 if require_physical_identity else True
+            ),
             message=(
                 "Physical output identity is verified"
-                if assigned > 0 and unverified == 0
-                else "Verify assigned DAC outputs before loading active DSP"
+                if assigned > 0 and (
+                    unverified == 0 if require_physical_identity else True
+                )
+                else (
+                    "Assign DAC outputs before loading active DSP"
+                    if not require_physical_identity
+                    else "Verify assigned DAC outputs before loading active DSP"
+                )
             ),
         ),
         _gate(
@@ -684,6 +720,7 @@ def build_startup_load_preflight(
             "status": identity.get("status"),
             "assigned_channel_count": assigned,
             "unverified_channel_count": unverified,
+            "physical_identity_required": require_physical_identity,
         },
         "calibration_level": {
             "requested_level_dbfs": _level_value(
@@ -746,6 +783,7 @@ async def load_protected_startup_config(
     get_current_config_path: ConfigPathReader,
     path_safety_evidence_path: str | Path | None = None,
     state_path: str | Path | None = None,
+    require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -758,6 +796,7 @@ async def load_protected_startup_config(
         preflight = build_startup_load_preflight(
             topology,
             path_safety_evidence_path=path_safety_evidence_path,
+            require_physical_identity=require_physical_identity,
             validate=validate,
         )
         candidate_path = preflight.get("candidate", {}).get("path")
@@ -782,6 +821,7 @@ async def load_protected_startup_config(
         topology,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=prior_config_path,
+        require_physical_identity=require_physical_identity,
         validate=validate,
     )
     candidate_path = preflight.get("candidate", {}).get("path")
@@ -1362,6 +1402,7 @@ def build_driver_commission_load_preflight(
     current_config_path: str | Path | None = None,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
+    require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1387,6 +1428,7 @@ def build_driver_commission_load_preflight(
         calibration_level=calibration_level,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=current_config_path,
+        require_physical_identity=require_physical_identity,
         validate=validate,
     )
     prepare = prepare_driver_commissioning_config(
@@ -1509,6 +1551,7 @@ async def load_driver_commissioning_config(
     statefile_path: str | Path | None = None,
     state_path: str | Path | None = None,
     reconcile_output_hardware: bool = True,
+    require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1571,6 +1614,7 @@ async def load_driver_commissioning_config(
         current_config_path=prior_config_path,
         config_dir=config_dir,
         config_path=config_path,
+        require_physical_identity=require_physical_identity,
         validate=validate,
     )
     target = preflight.get("target") or {}

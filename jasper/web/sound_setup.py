@@ -1946,6 +1946,7 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
 async def _active_speaker_check_path_safety_payload(
     *,
     camilla_factory: Callable[[], Any],
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Build and persist no-audio startup-load path-safety evidence."""
 
@@ -1983,6 +1984,7 @@ async def _active_speaker_check_path_safety_payload(
         calibration_level=calibration_level,
         current_config_path=current_config_path,
         current_config_error=current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     report = evaluate_path_safety_evidence(evidence)
     target = write_path_safety_evidence(evidence)
@@ -1992,6 +1994,7 @@ async def _active_speaker_check_path_safety_payload(
         calibration_level=calibration_level,
         path_safety_evidence_path=target,
         current_config_path=current_config_path,
+        require_physical_identity=require_physical_identity,
     )
     logger.info(
         "event=sound.active_speaker_path_safety action=check status=%s "
@@ -2017,6 +2020,7 @@ async def _active_speaker_check_path_safety_payload(
 async def _active_speaker_load_startup_config_payload(
     *,
     camilla_factory: Callable[[], Any],
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Load the protected startup config through the guarded backend."""
 
@@ -2029,6 +2033,7 @@ async def _active_speaker_load_startup_config_payload(
         load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
         path_safety_evidence_path=_active_speaker_path_safety_evidence_path(),
+        require_physical_identity=require_physical_identity,
     )
     logger.info(
         "event=sound.active_speaker_startup_load action=load status=%s "
@@ -3266,12 +3271,29 @@ async def _active_speaker_ensure_commission_startup_anchor(
     staged_config: dict[str, Any],
     current_config_path: str | None,
     camilla_factory: Callable[[], Any],
+    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Ensure commissioning has the silent startup graph as rollback anchor."""
 
     staged_path = (staged_config.get("config") or {}).get("path")
-    if _config_paths_match(current_config_path, staged_path):
+    topology = load_output_topology()
+    from jasper.active_speaker.startup_load import staged_topology_match_status
+
+    staged_topology = staged_topology_match_status(
+        topology,
+        staged_config,
+        require_physical_identity=require_physical_identity,
+    )
+    staged_matches = bool(staged_topology.get("matched"))
+    if _config_paths_match(current_config_path, staged_path) and staged_matches:
         return {"status": "already_loaded", "staged_config_path": staged_path}
+    if _config_paths_match(current_config_path, staged_path):
+        logger.info(
+            "event=sound.active_speaker_commission action=startup_anchor "
+            "group=%s role=%s status=refresh_required reason=staged_topology_mismatch",
+            group,
+            role,
+        )
 
     preview = _active_speaker_crossover_preview_save_payload()
     stage = _active_speaker_stage_config_payload({})
@@ -3289,6 +3311,7 @@ async def _active_speaker_ensure_commission_startup_anchor(
 
     path_payload = await _active_speaker_check_path_safety_payload(
         camilla_factory=camilla_factory,
+        require_physical_identity=require_physical_identity,
     )
     path_report = path_payload.get("report") if isinstance(path_payload, dict) else {}
     if not isinstance(path_report, dict) or path_report.get("load_gate") != "ready":
@@ -3310,6 +3333,7 @@ async def _active_speaker_ensure_commission_startup_anchor(
 
     startup_load = await _active_speaker_load_startup_config_payload(
         camilla_factory=camilla_factory,
+        require_physical_identity=require_physical_identity,
     )
     load_state = (
         startup_load.get("load")
@@ -3358,6 +3382,40 @@ def _active_speaker_confirmed_driver_roles(
     return confirmed_driver_roles(topology, speaker_group_id=group)
 
 
+def _active_speaker_identity_audition_role_order_roles(
+    topology: OutputTopology,
+    *,
+    group: str,
+    role: str,
+    confirmed_roles: list[str],
+) -> list[str]:
+    """Gate-only lower-role evidence for confirm-output channel auditions."""
+
+    from jasper.active_speaker.commission_ramp import RAMP_ROLE_ORDER
+
+    group_id = str(group or "").strip()
+    role = str(role or "").strip().lower()
+    if not group_id or role not in RAMP_ROLE_ORDER:
+        return list(confirmed_roles)
+
+    lower_roles = set(RAMP_ROLE_ORDER[: RAMP_ROLE_ORDER.index(role)])
+    present_lower_roles: set[str] = set()
+    for speaker_group in topology.speaker_groups:
+        if speaker_group.id != group_id:
+            continue
+        present_lower_roles = {
+            channel.role
+            for channel in speaker_group.channels
+            if channel.role in lower_roles
+        }
+        break
+
+    roles = set(confirmed_roles) | present_lower_roles
+    ordered_roles = [candidate for candidate in RAMP_ROLE_ORDER if candidate in roles]
+    ordered_roles.extend(sorted(roles - set(RAMP_ROLE_ORDER)))
+    return ordered_roles
+
+
 async def _active_speaker_commission_load_payload(
     raw: dict[str, Any],
     *,
@@ -3380,6 +3438,8 @@ async def _active_speaker_commission_load_payload(
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     force = bool(raw.get("force"))
+    identity_audition = bool(raw.get("identity_audition"))
+    require_physical_identity = not identity_audition
     # Serialize against the other measurement flows (room correction / pair
     # balance / pair sync) — all play sweeps through the production graph, and
     # commissioning does not hold the measurement window, so this cooperative
@@ -3463,6 +3523,7 @@ async def _active_speaker_commission_load_payload(
         staged_config=staged,
         current_config_path=current_config_path,
         camilla_factory=camilla_factory,
+        require_physical_identity=require_physical_identity,
     )
     if startup_setup.get("status") == "blocked":
         logger.info(
@@ -3479,7 +3540,11 @@ async def _active_speaker_commission_load_payload(
         await read_current_config_path(cam)
     )
     evidence_path = write_commission_path_safety(
-        topology, staged, current_config_path, current_config_error
+        topology,
+        staged,
+        current_config_path,
+        current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     load_config, read_running_config, get_current_config_path = (
         commission_seams(cam)
@@ -3495,6 +3560,7 @@ async def _active_speaker_commission_load_payload(
         crossover_preview=crossover_preview,
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
+        require_physical_identity=require_physical_identity,
     )
     logger.info(
         "event=sound.active_speaker_commission action=load group=%s role=%s status=%s",
@@ -3550,6 +3616,8 @@ async def _active_speaker_commission_ramp_step_payload(
 
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
+    identity_audition = bool(raw.get("identity_audition"))
+    require_physical_identity = not identity_audition
     topology = load_output_topology()
     staged = load_staged_startup_config()
     preset, crossover_preview = resolve_commission_inputs()
@@ -3558,7 +3626,11 @@ async def _active_speaker_commission_ramp_step_payload(
         await read_current_config_path(cam)
     )
     evidence_path = write_commission_path_safety(
-        topology, staged, current_config_path, current_config_error
+        topology,
+        staged,
+        current_config_path,
+        current_config_error,
+        require_physical_identity=require_physical_identity,
     )
     load_config, read_running_config, get_current_config_path = (
         commission_seams(cam)
@@ -3572,6 +3644,20 @@ async def _active_speaker_commission_ramp_step_payload(
             crossover_preview=crossover_preview,
         )
 
+    confirmed_roles = _active_speaker_confirmed_driver_roles(
+        topology,
+        group=group,
+    )
+    role_order_confirmed_roles = (
+        _active_speaker_identity_audition_role_order_roles(
+            topology,
+            group=group,
+            role=role,
+            confirmed_roles=confirmed_roles,
+        )
+        if identity_audition
+        else confirmed_roles
+    )
     payload = await ramp_audible_step(
         topology,
         speaker_group_id=group,
@@ -3585,10 +3671,9 @@ async def _active_speaker_commission_ramp_step_payload(
         staged_config=staged,
         path_safety_evidence_path=evidence_path,
         play_tone=_play_commission_tone,
-        confirmed_roles=_active_speaker_confirmed_driver_roles(
-            topology,
-            group=group,
-        ),
+        require_physical_identity=require_physical_identity,
+        confirmed_roles=confirmed_roles,
+        role_order_confirmed_roles=role_order_confirmed_roles,
     )
     logger.info(
         "event=sound.active_speaker_commission action=ramp_step group=%s role=%s "
@@ -3802,6 +3887,8 @@ async def _active_speaker_commissioning_view_payload(
     )
     view = build_commissioning_view(
         topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
         measurements=measurements,
         commission=commission,
         startup_load={"state": load_startup_load_state()},
@@ -4723,9 +4810,36 @@ async def _active_speaker_finish_commissioning_payload(
     sequence, so the UI cannot wedge itself between "saved" and "applied".
     """
 
+    summed_stop = _active_speaker_stop_summed_test_tone(reason="finish_commissioning")
+    try:
+        from jasper.active_speaker.commission_ramp import load_ramp_state
+        from jasper.active_speaker.startup_load import load_commission_load_state
+
+        ramp_state = load_ramp_state()
+        commission_load = load_commission_load_state()
+        cleanup_needed = isinstance(ramp_state.get("pending"), dict) or (
+            commission_load.get("status") == "loaded"
+        )
+        if cleanup_needed:
+            commissioning_cleanup = await _active_speaker_commission_ramp_abort_payload(
+                camilla_factory=camilla_factory,
+            )
+        else:
+            commissioning_cleanup = {
+                "status": "idle",
+                "ramp": ramp_state,
+                "commission_load": commission_load,
+            }
+    except (OSError, RuntimeError, ValueError) as exc:
+        commissioning_cleanup = {"status": "error", "error": str(exc)}
+
     payload = await _active_speaker_baseline_profile_apply_payload(
         camilla_factory=camilla_factory,
     )
+    payload["commissioning_cleanup"] = {
+        "summed_test": summed_stop,
+        "ramp": commissioning_cleanup,
+    }
     profile = (
         payload.get("profile")
         if isinstance(payload.get("profile"), dict)

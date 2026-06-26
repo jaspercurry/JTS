@@ -399,12 +399,26 @@ def _active_crossover_pairs(topology: OutputTopology) -> list[tuple[str, str]]:
     return pairs
 
 
+def _required_driver_info_roles(topology: OutputTopology) -> list[str]:
+    pairs = _active_crossover_pairs(topology)
+    if not pairs:
+        return _topology_roles(topology)
+    roles: list[str] = []
+    for pair in pairs:
+        for role in pair:
+            if role not in roles:
+                roles.append(role)
+    order = {"full_range": 0, "woofer": 1, "mid": 2, "tweeter": 3}
+    return sorted(roles, key=lambda role: order.get(role, 99))
+
+
 def _summary(
     topology: OutputTopology,
     driver_research: dict[str, Any] | None,
     manual_settings: dict[str, Any] | None,
 ) -> dict[str, Any]:
     topology_roles = _topology_roles(topology)
+    required_roles = _required_driver_info_roles(topology)
     research_roles = []
     if driver_research:
         for driver in driver_research.get("drivers", []):
@@ -431,10 +445,11 @@ def _summary(
     return {
         "speaker_group_count": len(topology.speaker_groups),
         "topology_roles": topology_roles,
+        "required_driver_info_roles": required_roles,
         "driver_count": len(driver_research.get("drivers", [])) if driver_research else 0,
         "research_roles": research_roles,
         "missing_research_roles": [
-            role for role in topology_roles if role not in research_roles
+            role for role in required_roles if role not in research_roles
         ],
         "extra_research_roles": [
             role for role in research_roles if role not in topology_roles
@@ -444,7 +459,7 @@ def _summary(
         "manual_crossover_candidate_count": len(manual_candidates),
         "manual_roles": manual_roles,
         "missing_driver_info_roles": [
-            role for role in topology_roles if role not in combined_roles
+            role for role in required_roles if role not in combined_roles
         ],
         "missing_crossover_candidate_pairs": missing_candidate_pairs,
         "candidate_frequencies_hz": [

@@ -497,7 +497,7 @@ JTS ladder, descending priority:
 | `jasper-aec-bridge` | -700 | Real-time mic processing |
 | `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
 | `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
-| `jasper-mux`, `jasper-input` | -300 | Restartable control-plane daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane |
+| `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic` | -300 | Restartable control/accessory daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane; WiiM mic is profile-gated and loss falls back to the normal voice mic path |
 | `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
 
 Critical: **nothing operator-launched through SSH should inherit
@@ -778,8 +778,9 @@ across the K3s / Docker / Home Assistant Supervised communities; no
 known stability regressions on JTS-relevant workloads.
 
 **Once on, the `MemoryHigh=` / `MemoryMax=` directives that already
-exist in 6 unit files** (`jasper-mux.service`, `jasper-input.service`,
-`jasper-usbsink.service`, `jasper-system-web.service`,
+exist in 7 unit files** (`jasper-mux.service`, `jasper-input.service`,
+`jasper-wiim-remote-mic.service`, `jasper-usbsink.service`,
+`jasper-system-web.service`,
 `jasper-bluetooth-web.service`, `librespot.service`) **start
 enforcing**. Today they're silent no-ops — systemd accepts them,
 kernel ignores them because there's no memory cgroup. This is a
@@ -797,7 +798,7 @@ jts-audio.slice    ← jasper-fanin, jasper-camilla, shairport-sync, librespot, 
 jts-mic.slice      ← jasper-aec-bridge
                      MemorySwapMax=0          # realtime mic, same logic
 
-jts-control.slice  ← jasper-control, jasper-mux, jasper-input
+jts-control.slice  ← jasper-control, jasper-mux, jasper-input, jasper-wiim-remote-mic (profile-gated)
                      MemoryHigh=120M MemoryMax=180M
 
 jts-voice.slice    ← jasper-voice
@@ -999,11 +1000,14 @@ The 2026-06-19 JTS3 flap added a second class: the AP went up/down
 several times, the Pi 5 brcmfmac driver logged repeated
 `brcmf_cfg80211_scan: Scanning suppressed: status (4)`, and
 NetworkManager eventually stopped retrying the seeded netplan profile
-after a `no-secrets` failure. A power cycle brought it back. The fix
-for this class is not a resident watchdog; it is a tiny systemd timer
-that periodically asks whether WiFi is actually down, then runs the
-same bounded scan-suppression repair used by `/wifi/scan` before
-delegating profile activation to the guardian.
+after a `no-secrets` failure. A power cycle brought it back. The
+2026-06-26 JTS flap added the nastier sibling: NetworkManager still
+reported an active profile while the brcmfmac scan path was wedged and
+the box disappeared from `jts.local`. The fix for these classes is not a
+resident watchdog; it is a tiny systemd timer that periodically checks
+for the narrow brcmfmac scan-suppression signature, runs the same bounded
+scan-suppression repair used by `/wifi/scan` when warranted, and only
+delegates profile activation to the guardian when WiFi is actually down.
 
 Core guardian shape mirrors `jasper-aec-reconcile`; the flap recovery
 layer is a periodic nudge around that same policy:
@@ -1020,18 +1024,21 @@ layer is a periodic nudge around that same policy:
   is down.
 - **Low-footprint recovery timer**:
   `jasper-wifi-recover.timer` runs every ~3 min with no resident RAM.
-  The steady-state path is one `nmcli connection show --active` read and
-  **no script output** — the `event=wifi_recover.*` lines fire only on a
-  manual run or real down-path work. (systemd still logs ~2 activation
-  lines per tick regardless; that, plus the fact that NM's
+  The steady-state path is one `nmcli connection show --active` read plus
+  a narrow recent-kernel-log check for
+  `brcmf_cfg80211_scan: Scanning suppressed` and **no script output** —
+  the `event=wifi_recover.*` lines fire only on a manual run or real
+  recovery work. (systemd still logs ~2 activation lines per tick
+  regardless; that, plus the fact that NM's
   retry-forever autoconnect already covers ordinary flaps, is why the
   cadence is minutes rather than seconds — the timer's unique job is the
-  rare scan-suppression wedge, where a few-minutes window is fine.) Only
-  when no WiFi connection is active does `jasper-wifi-recover` inspect
-  recent kernel logs for brcmfmac scan suppression, run
-  `python -m jasper.wifi_scan_repair --iface wlan0` if warranted (skipped
-  with `event=wifi_recover.scan_repair_skip` if the venv python is
-  absent), then call the guardian. `jasper-doctor`'s
+  rare scan-suppression wedge, where a few-minutes window is fine.) When
+  recent brcmfmac scan suppression is present, `jasper-wifi-recover` runs
+  `python -m jasper.wifi_scan_repair --iface wlan0` even if NetworkManager
+  still reports an active profile (skipped with
+  `event=wifi_recover.scan_repair_skip` if the venv python is absent).
+  If no WiFi connection is active, it then calls the guardian.
+  `jasper-doctor`'s
   `check_wifi_recover_timer` warns if the timer is disabled.
 - **Scan-suppression helper for the web wizard**:
   `jasper-wifi-scan-repair.service` is a root-only oneshot that runs the
@@ -1047,7 +1054,12 @@ layer is a periodic nudge around that same policy:
   Successful connects also harden the NM profile:
   `connection.autoconnect=yes`, `connection.autoconnect-retries=0`
   (NetworkManager's retry-forever value), and
-  `802-11-wireless.powersave=2`.
+  `802-11-wireless.powersave=2`. As of 2026-06-25 they also set
+  `ipv6.method=link-local`: this keeps `.local` mDNS resolution fast on
+  iOS/macOS without enabling routed IPv6. Profiles with
+  `ipv6.method=ignore` leave Apple clients waiting on IPv6 mDNS before
+  falling back to IPv4, which made `jts5.local/correction` look like a
+  stalled page load.
 - **Install-time seed** in `install.sh`'s `migrate_wifi_guardian`
   so SSH-driven setup paths arm recovery on the first deploy
   rather than waiting for the user to open the wizard.
@@ -1311,13 +1323,16 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-25 (Camilla start-limit recovery contract rechecked
+Last verified: 2026-06-26 (WiiM Remote 2 BLE mic adapter added to the
+restartable accessory/OOM/memory-limit inventory; Camilla start-limit recovery contract rechecked
 against `deploy/systemd/jasper-camilla.service`,
 `deploy/systemd/jasper-camilla-recover.service`,
 `deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;
 AEC reconciler mic-profile ownership rechecked: `JASPER_AEC_MIC_DEVICE` is
 derived from detected XVF profile for selectable profiles; Wi-Fi
-scan-suppression root helper path verified on `jts3.local` 2026-06-22;
+scan-suppression root helper path verified on `jts3.local` 2026-06-22 and
+active-profile scan-suppression recovery verified from `jts.local` incident
+logs 2026-06-26;
 broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
 `/state.resilience` supervisor doctor surface and multiroom cascade ring
 rechecked against current code)

@@ -759,8 +759,11 @@ async def _get_state(
         research_state = None
 
     # Lazy import (mirrors read_active_provider_state above) so jasper-control
-    # doesn't pull jasper.voice.* at module load. Cheap file stat per /state.
-    from ..voice.input_presence import voice_parked_no_mic
+    # doesn't pull jasper.voice.* at module load. mic_presence reads the
+    # reconciler's SSOT (one JSON read + a marker stat per /state) — cheap, and
+    # it composes voice.input_presence's tiny marker reader.
+    from ..mic_presence import read_mic_presence
+    mic_presence = read_mic_presence()
 
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -816,8 +819,16 @@ async def _get_state(
             # "crashed". Read fresh from the marker each call (jasper-control
             # isn't restarted on a mic plug/unplug). See
             # docs/HANDOFF-hotplug-resilience.md "Layer 3".
-            "parked_no_mic": voice_parked_no_mic(),
+            # Derived from the same read as the top-level `microphone` block
+            # below, so the boolean and the rich record can never disagree.
+            "parked_no_mic": mic_presence.parked,
         },
+        # Single source of truth for mic presence (jasper.mic_presence): the
+        # reconciler's one canonical record, surfaced so the dashboard / any
+        # client renders "no microphone" as one fact (present + reason + card +
+        # variant + channels + a ready-made `summary`) instead of inferring it
+        # from voice.reachable:false.
+        "microphone": mic_presence.as_dict(),
         "audio": {
             "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,

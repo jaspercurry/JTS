@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import MagicMock
 
 from jasper.accounts import Account
@@ -653,3 +654,43 @@ def test_build_clients_passes_requests_timeout_to_spotipy(tmp_path):
         "spotipy.Spotify must be built with a bounded requests_timeout so "
         "a hung API socket can't block the caller forever"
     )
+
+
+def test_build_clients_dedupes_persistent_account_warnings(
+    tmp_path, monkeypatch, caplog,
+):
+    """A revoked token is persistent account state. Rebuilding clients
+    repeatedly inside one daemon should warn once, then demote repeats so the
+    flight recorder and journal don't get spammed by dashboard polling."""
+    from unittest.mock import patch
+    from jasper import spotify_router as router_mod
+    from jasper.spotify_router import build_clients
+    from jasper.accounts import Account, Registry
+
+    cache_path = tmp_path / "jasper.json"
+    cache_path.write_text("{}")
+    registry = Registry(
+        accounts=[Account(name="jasper", cache_path=str(cache_path))],
+        default_name="jasper",
+    )
+    fake_auth = MagicMock()
+    fake_auth.get_cached_token.side_effect = Exception("invalid_grant")
+    monkeypatch.setattr(router_mod, "_ACCOUNT_FAILURE_LOG_CACHE", {})
+    caplog.set_level(logging.DEBUG, logger="jasper.spotify_router")
+
+    with patch("spotipy.oauth2.SpotifyPKCE", return_value=fake_auth), \
+            patch("jasper.spotify_router._now", side_effect=[1000.0, 1005.0]):
+        build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
+        build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
+
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.message.startswith("event=spotify.account_unavailable ")
+    ]
+    suppressed = [
+        r for r in caplog.records
+        if r.message.startswith("event=spotify.account_unavailable_suppressed ")
+    ]
+    assert len(warnings) == 1
+    assert len(suppressed) == 1

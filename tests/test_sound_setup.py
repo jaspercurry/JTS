@@ -497,12 +497,12 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Test each driver" in js
     assert "Validate and apply" in js
     assert "Save and apply" in js
-    assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
+    assert "Choose layout, set crossover values, confirm outputs" in js
     assert "Start tone" in js
     assert "Stop tone" in js
     assert "Save floor" in js
     assert "save-volume-floor" in js
-    assert "Back to configuration" in js
+    assert "Back to outputs" in js
     assert "Back to adjust crossover" in js
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
@@ -573,16 +573,20 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"refresh-active-speaker\"" not in js
     assert "data-act=\"save-driver-design\"" in js
     assert "data-act=\"prepare-crossover-preview\"" in js
-    assert "Update working setup" in js
-    assert "Prepare crossover preview" in js
+    assert "Save values" in js
+    assert "Preview crossover" in js
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "function driverResearchCanPreparePreview()" in js
     assert "function driverResearchStepSatisfied()" in js
-    assert "driverResearchSatisfied: driverResearchStepSatisfied()" in js
+    assert "function driverResearchFlowComplete(topology)" in js
+    assert "driverResearchSatisfied: driverResearchFlowComplete(topology)" in js
+    assert "function commissioningStepView(step)" in js
+    assert "function commissioningCurrentStep()" in js
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in (
         _ACTIVE_SPEAKER_UI_MODULE.read_text()
     )
-    assert "Driver details are optional for now. Continue with output mapping." in js
+    assert "Preview crossover before confirming outputs." in js
+    assert "Save driver names and crossover points before confirming outputs." in js
     assert "Working setup updated. No filters are active and no sound was played." in js
     assert "Updates the working setup, then builds a no-audio crossover preview." in js
     assert "data-act=\"arm-active-speaker\"" not in js
@@ -684,17 +688,17 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-protection-status="' not in js
     assert "headers: jsonHeaders()" in js
     assert "Saved speaker layout. No sound was played." in js
-    assert "Save channel assignments" in js
+    assert "data-act=\"save-output-topology\"" in js
     assert "data-output-channel" in js
-    assert "Assign each driver to one unique DAC channel" in js
-    assert "Confirm each DAC output after you check the wiring." in js
+    assert "Assign each driver to one DAC channel. Play starts quiet and ramps." in js
+    assert "Play a quiet ramp if needed, then confirm each DAC output." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
     assert "observedHardware" in js
     assert "topology_revision" in js
     assert "resp.status === 409" in js
-    assert "Saved speaker topology" in js
-    assert "Currently attached hardware" in js
+    assert "channelCount" in js
+    assert "Hardware details" in js
     assert "Hardware mismatch" in js
     assert "Saved topology expects" in js
     assert "Detected output hardware" not in js
@@ -3111,6 +3115,92 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
         "reason": None,
         "active_config_path": baseline_path,
     }
+
+
+async def test_active_speaker_finish_commissioning_clears_pending_ramp(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from jasper.active_speaker.commission_ramp import (
+        _ramp_base_state,
+        _record_ramp_state,
+        load_ramp_state,
+        ramp_state_path,
+    )
+
+    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
+        str(tmp_path / "ramp.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
+        str(tmp_path / "commission-load.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    _record_ramp_state(
+        {
+            **_ramp_base_state(ramp_state_path()),
+            "speaker_group_id": "main",
+            "confirmed_roles": ["woofer"],
+            "pending": {
+                "role": "tweeter",
+                "gain_db": -20.0,
+                "playback_id": "late-auto-ramp-step",
+            },
+            "last_action": "late_step",
+        }
+    )
+
+    async def fake_apply_baseline_profile(_topology, **_kwargs):
+        return {
+            "status": "applied",
+            "profile": {
+                "status": "applied",
+                "config": {
+                    "path": baseline_path,
+                    "basename": "active_speaker_baseline.yml",
+                },
+                "permissions": {"may_apply": False},
+                "issues": [],
+            },
+            "apply": {"result": "success", "active_config_path": baseline_path},
+            "issues": [],
+        }
+
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.load_measurement_state",
+        lambda topology: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
+        fake_apply_baseline_profile,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_commission_tone_mux_command",
+        lambda command: {"mode": "auto", "command": command},
+    )
+
+    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+        camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
+    )
+
+    assert payload["status"] == "applied"
+    assert payload["commissioning_cleanup"]["ramp"]["status"] == "aborted"
+    assert load_ramp_state()["pending"] is None
 
 
 def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
