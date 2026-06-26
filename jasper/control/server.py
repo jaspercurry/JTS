@@ -2630,10 +2630,10 @@ def _make_handler(
             # Map non-OK outcomes to non-2xx so the dial's HTTP
             # error path can show the right LED color.
             http_status = 200
-            if result.get("result") not in ("OK", None):
+            if result.get("result") not in ("OK", "ALREADY_ENDED", None):
                 if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
                     http_status = 503
-                elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
+                elif result.get("result") in ("BUSY", "NO_SESSION"):
                     http_status = 409
                 elif result.get("result") == "UNKNOWN_SOURCE":
                     http_status = 400

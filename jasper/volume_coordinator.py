@@ -1303,8 +1303,9 @@ class VolumeCoordinator:
         # jasper-control between our own set/adjust calls reflects
         # in `_level` before we compute the expected dB.
         self._refresh_from_disk()
-        expected_db = percent_to_db(self._level)
-        expected_mute = self._main_mute_for_level(self._level)
+        expected_level = 0 if self._pre_mute_level is not None else self._level
+        expected_db = percent_to_db(expected_level)
+        expected_mute = self._main_mute_for_level(expected_level)
         current_db, current_mute = await self._read_camilla_volume_and_mute()
         if current_db is None:
             # Camilla restart blip; next tick retries.
@@ -1328,7 +1329,7 @@ class VolumeCoordinator:
             # `level` collides with log_event's level= param → fields=.
             fields={
                 "source": source.value,
-                "level": f"{self._level}%",
+                "level": f"{expected_level}%",
                 "current_db": f"{current_db:.2f}",
                 "expected_db": f"{expected_db:.2f}",
                 "drift_db": f"{drift:+.2f}",

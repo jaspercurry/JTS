@@ -464,6 +464,10 @@ self-healing property no matter how the drift was introduced.
 3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — dead band above camilla's
    normal jitter (~0.1 dB). Mute-state drift is also repaired: if dB is
    already at −50 but `main_mute=false`, 0% is not converged.
+   A persisted `pre_mute_level` is treated as active mute intent: the
+   reconciler expects the 0% floor and `main_mute=true` while preserving
+   the restore level for the next unmute, instead of "repairing" back to
+   the prior audible `listening_level`.
 4. Deep quiet drift is skipped (`expected - current >=
    RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
    setting `_voice_session_active`, so a 25 dB drop below expected can
@@ -660,4 +664,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-22 (volume floor calibration checked against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-06-26 (reconciler mute-intent semantics checked against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration checked against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

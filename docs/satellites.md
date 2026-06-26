@@ -128,11 +128,16 @@ writes `/var/lib/jasper/accessory-mics.env` only when BlueZ has a paired
 WiiM Remote 2. Speakers without that paired profile keep both the UDP
 voice source and BLE decoder stopped. The Bluetooth pair/connect/forget
 flows run the same reconciler, so the optional mic pipeline follows the
-actual BlueZ pair record rather than requiring a deploy. Its HID profile sends
-`POST /session/start` with `{"source":"wiim_remote_2"}` on voice-button
-press, and `POST /session/end` on release, so the voice turn bypasses
-wake detection and routes only that source while held; the normal
-always-on mic path remains active outside that manual turn. Code-level
+actual BlueZ pair record rather than requiring a deploy. Its HID profile
+sends `POST /session/start` with `{"source":"wiim_remote_2"}` on
+voice-button press, and `POST /session/end` on release, so the voice turn
+bypasses wake detection and routes only that source while held; the normal
+always-on mic path remains active outside that manual turn. `session/end`
+closes the input side only: the turn remains active while the assistant
+responds and then exits through the normal session-end cue path. HID
+bridges retry a busy `/session/start` while the button remains held, so a
+press that lands during that short closing window can still begin the next
+manual turn without a separate tap. Code-level
 profiles live in [`jasper/accessories/registry.py`](../jasper/accessories/registry.py);
 a profile may reserve future hold-to-talk or remote-mic metadata, but
 that metadata is not a runtime audio path until a capture source is
@@ -528,7 +533,8 @@ Satellites POST control actions to `jasper-control` on the Pi
 - `POST /session/start` — manual wake bypass (long-press / push-to-talk);
   optional body `{"source": "<manual-mic-source>"}` selects a configured
   push-to-talk mic instead of the speaker's primary mic
-- `POST /session/end` — finalize input
+- `POST /session/end` — finalize input; the session itself stays open
+  until the assistant finishes responding and plays the normal end cue
 - `POST /cue/play` — body `{"slug": "<cue-slug>"}` — play a registered
   audio cue through the daemon's gain-tracked TtsPlayout
 - `GET  /dial/status` — heartbeat snapshot for `jasper-doctor`

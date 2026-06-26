@@ -1304,6 +1304,31 @@ async def test_reconcile_repairs_zero_percent_mute_drift(tmp_path):
     assert cam.mute_calls[-1] is True
 
 
+async def test_reconcile_preserves_toggle_mute_restore_level(tmp_path):
+    """Toggle mute persists the restore level separately from audible 0%.
+
+    The voice daemon's 1 Hz reconciler must treat `pre_mute_level` as the
+    active mute intent. Otherwise it sees listening_level=59%, expects
+    main_mute=false, and immediately undoes a remote mute button press.
+    """
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=percent_to_db(0))
+    cam.muted = True
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    persistence.save_listening_level(59, mark_user_change=True)
+    persistence.save_now(percent_to_db(0))
+    persistence.save_pre_mute_level(59)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert cam.set_calls == []
+    assert cam.mute_calls == []
+
+
 async def test_reconcile_noop_when_drift_looks_like_duck(tmp_path):
     """CueDuck plays proactive cues with `_voice_session_active=False`.
     During a CueDuck, main_volume is JASPER_DUCK_DB below expected

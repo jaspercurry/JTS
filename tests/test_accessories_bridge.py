@@ -240,7 +240,7 @@ async def test_post_once_failure_emits_canonical_event(caplog):
         await _post_once(post, action, "fake", "KEY_MUTE")
     assert caplog.records[-1].getMessage() == (
         'event=knob.action.failed device=fake key=KEY_MUTE '
-        'err="simulated: jasper-control down"'
+        'path=/mic/mute err="simulated: jasper-control down"'
     )
 
 
@@ -539,10 +539,14 @@ async def test_read_device_hold_action_releases_on_disconnect(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_read_device_counts_autorepeat_for_coalesced_volume(monkeypatch):
-    """Held remote volume keys surface as EV_KEY autorepeat. Coalesced
-    volume actions should treat repeat as another step, while still
-    ignoring release."""
+async def test_read_device_ignores_kernel_autorepeat_during_host_repeat(
+    monkeypatch,
+):
+    """Host-side repeat owns held coalesced keys after the press edge.
+
+    Kernel repeat cadence varies by remote; counting both kernel repeat and
+    host repeat would double-step devices that emit EV_KEY value=2.
+    """
     monkeypatch.setattr(bridge_mod, "COALESCE_WINDOW_SEC", 0.01)
     calls: List[tuple[str, str, Optional[dict]]] = []
 
@@ -585,8 +589,161 @@ async def test_read_device_counts_autorepeat_for_coalesced_volume(monkeypatch):
     await _read_device("/dev/input/event9", device, post)
     await asyncio.sleep(0.03)
     assert calls == [
-        ("POST", "/volume/adjust", {"delta_percent": 6}),
+        ("POST", "/volume/adjust", {"delta_percent": 2}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_read_device_repeats_coalesced_volume_while_held(monkeypatch):
+    """A held volume key should keep moving even when the remote emits no
+    kernel autorepeat events."""
+    monkeypatch.setattr(bridge_mod, "COALESCE_WINDOW_SEC", 0.005)
+    monkeypatch.setattr(bridge_mod, "HOLD_REPEAT_INITIAL_DELAY_SEC", 0.01)
+    monkeypatch.setattr(bridge_mod, "HOLD_REPEAT_INTERVAL_SEC", 0.01)
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 115
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            yield _Event(1)
+            await asyncio.sleep(0.04)
+            yield _Event(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = _profile(
+        keymap={
+            115: KeyAction(
+                "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        return ControlResponse(200, b"")
+
+    await _read_device("/dev/input/event9", device, post)
+    await asyncio.sleep(0.03)
+    deltas = [call[2]["delta_percent"] for call in calls if call[2]]
+    assert sum(deltas) >= 6
+    assert all(delta > 0 for delta in deltas)
+
+
+@pytest.mark.asyncio
+async def test_read_device_hold_action_retries_busy_start_until_held_ready(
+    monkeypatch,
+):
+    monkeypatch.setattr(bridge_mod, "HOLD_START_RETRY_SEC", 0.01)
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 217
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            yield _Event(1)
+            await asyncio.sleep(0.03)
+            yield _Event(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = _profile(
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        if path == "/session/start" and len(calls) == 1:
+            return ControlResponse(409, b'{"result":"BUSY"}')
+        return ControlResponse(200, b'{"result":"OK"}')
+
+    await _read_device("/dev/input/event9", device, post)
+
+    assert calls == [
+        ("POST", "/session/start", None),
+        ("POST", "/session/start", None),
+        ("POST", "/session/end", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_read_device_hold_action_skips_release_when_start_never_lands(
+    monkeypatch,
+):
+    monkeypatch.setattr(bridge_mod, "HOLD_START_RETRY_SEC", 0.01)
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 217
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            yield _Event(1)
+            await asyncio.sleep(0)
+            yield _Event(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = _profile(
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        return ControlResponse(409, b'{"result":"BUSY"}')
+
+    await _read_device("/dev/input/event9", device, post)
+
+    assert calls == [("POST", "/session/start", None)]
 
 
 @pytest.mark.asyncio

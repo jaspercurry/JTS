@@ -3131,6 +3131,14 @@ def test_session_end_no_session_409(server_with_voice_socket):
     assert status == 409
 
 
+def test_session_end_already_ended_is_idempotent_200(server_with_voice_socket):
+    base, voice_responses, _ = server_with_voice_socket
+    voice_responses.append({"result": "ALREADY_ENDED"})
+    status, body = _post(f"{base}/session/end", None)
+    assert status == 200
+    assert body["result"] == "ALREADY_ENDED"
+
+
 def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator):
     base, _ = server_with_coordinator
     # Fixture passes /nonexistent.sock — connect will FileNotFoundError.
