@@ -138,24 +138,41 @@ than retrying. This is the price of "never reboot-loop," and it is the
 right call: a persistent open failure is a real fault that should be
 visible (doctor/journal), not retried into a reboot.
 
-### Layer 3 — observability: idle vs broken
+### Layer 3 — observability: idle vs broken (one source of truth)
 
-- **`jasper-doctor`.** `check_mic_capture`
-  ([`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py)) returns
-  **ok** with "no microphone present (expected) — voice parked; plug a
-  mic and it starts automatically" when the marker is present, mirroring
-  the `_parked_as_bonded_follower()` idiom. `check_service_runtime_state`
+The read side is unified behind one reader,
+[`jasper.mic_presence.read_mic_presence()`](../jasper/mic_presence.py): every
+status surface *displays* its verdict instead of independently re-probing
+ALSA / `lsusb` / PortAudio (which is how "no mic" used to surface as a scatter
+of contradicting lines). **It is mic-agnostic** — `present` is driven by the
+generic gate marker (true for the XVF `Array`, the `L16K6Ch` variant, or a
+custom non-XVF mic such as a UMIK-2), while the XVF runtime-profile JSON
+(`/run/jasper-mic-profile/xvf3800.json`) is XVF-only *enrichment* layered on
+top. Driving presence off the XVF profile would report a working non-XVF mic
+as "absent"; the separation exists to prevent that, and generalises when a
+second mic profile + `jasper/mics/base.py` land (see
+[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)).
+
+- **`jasper-doctor`.** One headline, `check_microphone`
+  ([`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py)), states
+  present/absent + why in a single line — `warn` (one yellow flag) when
+  absent, never `fail`. The per-device checks defer to it via
+  `read_mic_presence().absent_confirmed`: `check_mic_card_matches_config` no
+  longer re-runs `arecord -L` to emit a contradicting red ✗, and
+  `check_mic_capture` reports the same expected idle. A genuine open failure
+  with a mic *present* (custom/busy) still falls through to the probe + its
+  **fail** — a real signal. `check_service_runtime_state`
   ([`jasper/cli/doctor/resilience.py`](../jasper/cli/doctor/resilience.py))
-  already treats `inactive` as ok and `failed`/`activating` as fail — so
-  a Layer-1 park reads ok there, while a genuine crash still reads fail.
-  When the marker is **absent** but the device still won't open
-  (custom/busy), `check_mic_capture` keeps its existing **fail** — a real
-  signal.
-- **`/state`.** The voice block gains `parked_no_mic` (read fresh from
-  the marker by
-  [`jasper/voice/input_presence.py`](../jasper/voice/input_presence.py)),
-  so a consumer can tell `reachable:false` "idle, no mic" from
-  `reachable:false` "crashed."
+  treats `inactive` as ok and `failed`/`activating` as fail, so a Layer-1 park
+  reads ok while a crash reads fail.
+- **`/state`.** A top-level `microphone` block carries the full record
+  (present, reason, card, variant, channels, a ready-made `summary`); the
+  voice block's `parked_no_mic` is derived from the **same** read so the
+  boolean and the record can't drift.
+- **Open-failure log.** `_log_audio_open_failure`
+  ([`jasper/audio_io.py`](../jasper/audio_io.py)) logs one line and skips its
+  portaudio/`arecord`/`aplay`/`dmesg` dump when the mic is confirmed-absent —
+  the dump is for *surprise* failures, not the expected no-mic state.
 - **Journal.** PID 1 logs the condition skip; the reconciler logs the
   marker write with its reason.
 
@@ -276,13 +293,14 @@ session):**
 - [`deploy/systemd/jasper-voice.service`](../deploy/systemd/jasper-voice.service) — `ConditionPathExists` gate, exit-66 park
 - [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) — single writer of the marker
 - [`jasper/voice/input_presence.py`](../jasper/voice/input_presence.py) — marker path + `voice_parked_no_mic()`
-- [`jasper/audio_io.py`](../jasper/audio_io.py) — `InputDeviceUnavailable`
+- [`jasper/mic_presence.py`](../jasper/mic_presence.py) — the mic-presence SSOT reader (mic-agnostic presence + XVF enrichment)
+- [`jasper/audio_io.py`](../jasper/audio_io.py) — `InputDeviceUnavailable`; absent-aware open-failure log
 - [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) — raise on primary mic-open failure, exit 66
-- [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — marker-aware `check_mic_capture`
-- [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `voice.parked_no_mic`
+- [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — `check_microphone` headline + mic checks deferring to the reader
+- [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `microphone` block + `voice.parked_no_mic`
 - [`deploy/udev/99-jasper-audio-hardware-reconcile.rules`](../deploy/udev/99-jasper-audio-hardware-reconcile.rules) — output-DAC add/remove/change triggers
 - [`deploy/bin/jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug) — Apple USB remove reconciler request
 - [`deploy/bin/jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile) — outputd retry-time env refresh
 - [`deploy/systemd/jasper-outputd.service`](../deploy/systemd/jasper-outputd.service) — output device gate + failure-time reconcile hook
 
-Last verified: 2026-06-22
+Last verified: 2026-06-25
