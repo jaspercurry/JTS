@@ -797,22 +797,70 @@ def test_failure_log_cache_eviction_does_not_affect_other_accounts(
 ):
     """Evicting one account's failure-log entries on recovery must not
     clear entries for other accounts — those other accounts may still
-    be in a failure state and their dedup should be preserved."""
+    be in a failure state and their dedup should be preserved.
+
+    Includes a PREFIX-named sibling ("jasper2") so the eviction's key
+    match must be EXACT, not a prefix. Mutation: changing
+    `k[0] == account_name` to `k[0].startswith(account_name)` wrongly
+    evicts "jasper2" when "jasper" recovers, and this test fails."""
     from jasper import spotify_router as router_mod
     from jasper.spotify_router import _evict_failure_log_cache
 
-    # Seed the cache with entries for two accounts
+    # Seed the cache: an unrelated account ("brittany") AND a sibling
+    # whose name has "jasper" as a prefix ("jasper2").
     monkeypatch.setattr(router_mod, "_ACCOUNT_FAILURE_LOG_CACHE", {
         ("jasper", "revoked", "refresh token revoked — re-link required", ""): 1000.0,
         ("jasper", "error", "network error", ""): 1001.0,
         ("brittany", "revoked", "refresh token revoked — re-link required", ""): 1002.0,
+        ("jasper2", "revoked", "refresh token revoked — re-link required", ""): 1003.0,
     })
 
-    # Recover jasper → only jasper's entries evicted
+    # Recover jasper → only jasper's exact-match entries evicted
     _evict_failure_log_cache("jasper")
 
-    remaining = list(router_mod._ACCOUNT_FAILURE_LOG_CACHE.keys())
-    assert all(k[0] == "brittany" for k in remaining), (
-        "eviction of 'jasper' must leave 'brittany' entries intact"
+    remaining = sorted(k[0] for k in router_mod._ACCOUNT_FAILURE_LOG_CACHE)
+    assert remaining == ["brittany", "jasper2"], (
+        "eviction of 'jasper' must leave 'brittany' AND prefix-sibling "
+        "'jasper2' intact — the key match must be exact, not a prefix"
     )
-    assert len(remaining) == 1
+
+
+def test_failure_log_cache_hard_cap_bounds_never_recovering_account(
+    tmp_path, monkeypatch, caplog,
+):
+    """Backstop bound: an account that never recovers but keeps emitting
+    ACCOUNT_ERROR with varying detail strings (network errors with
+    changing addresses/ports/request-IDs → distinct cache keys) must not
+    grow the cache without limit. The hard cap drops oldest-first so the
+    cache never exceeds _ACCOUNT_FAILURE_LOG_CACHE_MAX.
+
+    Mutation: removing the _cap_failure_log_cache() call lets the cache
+    grow to the full number of distinct keys, and this test fails."""
+    from jasper import spotify_router as router_mod
+    from jasper.spotify_router import (
+        _ACCOUNT_FAILURE_LOG_CACHE_MAX, _log_account_unavailable, ACCOUNT_ERROR,
+    )
+    from jasper.accounts import Account
+
+    monkeypatch.setattr(router_mod, "_ACCOUNT_FAILURE_LOG_CACHE", {})
+    caplog.set_level(logging.DEBUG, logger="jasper.spotify_router")
+
+    account = Account(name="jasper")
+    # Emit far more distinct-detail failures than the cap allows. Each
+    # distinct detail string is a fresh key (first-seen → WARNING + insert).
+    n = _ACCOUNT_FAILURE_LOG_CACHE_MAX * 3
+    for i in range(n):
+        _log_account_unavailable(
+            account, ACCOUNT_ERROR, f"connection reset from 10.0.0.{i}:443",
+        )
+
+    size = len(router_mod._ACCOUNT_FAILURE_LOG_CACHE)
+    assert size <= _ACCOUNT_FAILURE_LOG_CACHE_MAX, (
+        f"cache grew to {size} entries despite the hard cap of "
+        f"{_ACCOUNT_FAILURE_LOG_CACHE_MAX} — never-recovering account is unbounded"
+    )
+    # Oldest-first drop: the most-recently inserted key must survive,
+    # the earliest must have been evicted.
+    keys = router_mod._ACCOUNT_FAILURE_LOG_CACHE
+    assert ("jasper", ACCOUNT_ERROR, f"connection reset from 10.0.0.{n - 1}:443", "") in keys
+    assert ("jasper", ACCOUNT_ERROR, "connection reset from 10.0.0.0:443", "") not in keys

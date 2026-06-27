@@ -88,11 +88,18 @@ _REFRESH_MIN_INTERVAL_SEC = 30.0
 # flight recorder and persistent journal focused on state transitions while the
 # wizard remains the recovery surface.
 #
-# Bounded by eviction: when an account transitions back to ACCOUNT_OK, all of its
-# failure-log entries are dropped. This ensures (a) the cache can't grow
-# unboundedly on a 1 GB Pi and (b) a future failure after recovery logs at WARNING
-# again rather than silently falling through to DEBUG.
+# The cache is bounded two ways on a 1 GB Pi:
+#  - Recovery eviction (primary, meaningful): when an account transitions back
+#    to ACCOUNT_OK, all of its failure-log entries are dropped — so a future
+#    failure after recovery logs at WARNING again rather than silently falling
+#    through to DEBUG.
+#  - Hard cap (backstop): an account that never recovers but keeps emitting
+#    ACCOUNT_ERROR with varying detail (detail=msg[:200] — network errors with
+#    changing addresses/ports/request-IDs) would otherwise mint distinct keys
+#    forever. When the cache exceeds _ACCOUNT_FAILURE_LOG_CACHE_MAX entries we
+#    drop oldest-first (a plain dict preserves insertion order).
 _ACCOUNT_FAILURE_LOG_INTERVAL_SEC = 600.0
+_ACCOUNT_FAILURE_LOG_CACHE_MAX = 128
 _ACCOUNT_FAILURE_LOG_CACHE: dict[tuple[str, str, str, str], float] = {}
 
 
@@ -103,6 +110,15 @@ def _evict_failure_log_cache(account_name: str) -> None:
     to_drop = [k for k in _ACCOUNT_FAILURE_LOG_CACHE if k[0] == account_name]
     for k in to_drop:
         del _ACCOUNT_FAILURE_LOG_CACHE[k]
+
+
+def _cap_failure_log_cache() -> None:
+    """Drop oldest entries (insertion order) until the cache is within
+    _ACCOUNT_FAILURE_LOG_CACHE_MAX. Backstop for a never-recovering
+    account that keeps minting distinct keys via varying error detail."""
+    while len(_ACCOUNT_FAILURE_LOG_CACHE) > _ACCOUNT_FAILURE_LOG_CACHE_MAX:
+        oldest = next(iter(_ACCOUNT_FAILURE_LOG_CACHE))
+        del _ACCOUNT_FAILURE_LOG_CACHE[oldest]
 
 
 def _now() -> float:
@@ -134,6 +150,7 @@ def _log_account_unavailable(
     )
     if last is None or remaining <= 0:
         _ACCOUNT_FAILURE_LOG_CACHE[key] = now
+        _cap_failure_log_cache()
         log_event(
             logger,
             "spotify.account_unavailable",
