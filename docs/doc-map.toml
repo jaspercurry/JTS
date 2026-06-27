@@ -551,12 +551,34 @@ docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-fan-in-daemon.md",
   "docs/HANDOFF-volume.md",
+  "docs/HANDOFF-audio-latency-foundation.md",
 ]
+
 requires_docs_when = [
   "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
 ]
 verification = [
   "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py",
+]
+
+[[subsystem]]
+id = "audio-latency-lean-lane"
+title = "Audio-latency foundation / lean File-capture lane"
+safety = "boot-risk"
+code = [
+  "jasper/lean_lane.py",
+  "jasper/camilla_config_contract.py",
+  "jasper/sound/camilla_yaml.py",
+  "jasper/active_speaker/camilla_yaml.py",
+]
+docs = [
+  "docs/HANDOFF-audio-latency-foundation.md",
+]
+requires_docs_when = [
+  "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
+]
+verification = [
+  "pytest tests/test_sound_camilla_yaml.py tests/test_lean_lane.py tests/test_active_speaker_runtime_contract.py",
 ]
 
 [[subsystem]]
