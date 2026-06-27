@@ -81,16 +81,15 @@ install_renderers() {
         need_build=1
     elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "AirPlay2"; then
         need_build=1
-    elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q -- "-pipe-"; then
+    elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -qE -- '-pipe(-|$)'; then
         # The pipe output backend (--with-pipe) was added to the configure
         # line; an older source build (or apt AP1) lacks it. shairport-sync's
-        # -V feature string gains a "-pipe-" token only when the backend is
-        # compiled in, so this forces exactly one rebuild on upgrade and is a
-        # no-op once the pipe-capable binary is installed.
-        # PRE-MERGE: confirm the exact token on the first rebuilt -V before
-        # relying on this (Stage 5 of docs/HANDOFF-audio-latency-foundation.md);
-        # if upstream emits a trailing "-pipe" with no following dash, switch
-        # to: grep -qE -- '-pipe(-|$)'.
+        # -V feature string gains a "pipe" feature token only when the backend
+        # is compiled in, so this forces exactly one rebuild on upgrade and is
+        # a no-op once the pipe-capable binary is installed. The pattern
+        # matches the token whether it is followed by another "-<feature>"
+        # token or sits at the end of the string, so a future trim of the -V
+        # feature list cannot leave us rebuilding on every deploy.
         need_build=1
     fi
     if [[ "$need_build" == "1" ]]; then

@@ -885,9 +885,10 @@ def test_shairport_configure_enables_airplay2_and_pipe_backend():
 
     # The rebuild trigger must feature-detect the pipe backend, or a flag-only
     # change is a silent no-op on already-built Pis (-V already has "AirPlay2").
-    # NOTE: if the on-device token check changes this literal (item 2 of the
-    # Stage 5 spec), update it here in the same edit.
-    assert 'grep -q -- "-pipe-"' in text
+    # The pattern is anchored so the "pipe" token matches whether it is
+    # followed by another feature token or sits at the end of the -V string,
+    # so a future trim of the feature list can't cause an infinite rebuild.
+    assert "grep -qE -- '-pipe(-|$)'" in text
 
 
 def test_install_curl_fetches_are_bounded_and_retried():
