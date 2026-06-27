@@ -10,7 +10,7 @@
 //! nudging a precomputed windowed-sinc interpolator by a few ppm.
 
 use anyhow::{Context, Result};
-use jasper_clock::{Dll, DllConfig};
+use jasper_clock::{Dll, DllConfig, DllSnapshot};
 
 use crate::config::ContentBridgeConfig;
 use crate::types::SAMPLE_RATE;
@@ -39,6 +39,12 @@ pub struct ContentBridgeMetrics {
     pub ratio_clamp_count: u64,
     pub lock_count: u64,
     pub unlock_count: u64,
+    /// The shared-DLL rate-diff snapshot (Inc 4): the rate controller's loop
+    /// internals (ppm, error stats, bandwidth, the DLL's OWN lock/resync
+    /// counters) in the one consistent telemetry shape every DLL site publishes.
+    /// Distinct from the bridge-level `lock_count`/`resync_count`/`ratio_ppm`
+    /// above, which count ring/cursor events, not loop events.
+    pub rate_diff: DllSnapshot,
 }
 
 pub struct ContentBridge {
@@ -211,6 +217,7 @@ impl ContentBridge {
             ratio_clamp_count: self.controller.clamp_count(),
             lock_count: self.lock_count,
             unlock_count: self.unlock_count,
+            rate_diff: self.controller.dll_snapshot(),
         }
     }
 
@@ -477,6 +484,12 @@ impl RateController {
 
     fn clamp_count(&self) -> u64 {
         self.clamp_count
+    }
+
+    /// The shared-DLL snapshot — the consistent `clock.rate_diff` telemetry
+    /// shape (Inc 4) the state layer publishes for every DLL instance.
+    fn dll_snapshot(&self) -> DllSnapshot {
+        self.dll.snapshot()
     }
 }
 

@@ -228,6 +228,27 @@ pub struct DllSnapshot {
     pub resync_count: u64,
 }
 
+impl DllSnapshot {
+    /// A fresh / unfed loop: unity ratio (0 ppm), unlocked, all counters zero.
+    /// Useful as a telemetry placeholder before a DLL has been ticked (so a
+    /// `/state` reader sees a coherent "idle" rate_diff, not a partial/garbage
+    /// snapshot).
+    pub fn idle() -> Self {
+        Self {
+            ratio: 1.0,
+            ratio_ppm: 0.0,
+            error_mean: 0.0,
+            error_var: 0.0,
+            bandwidth: BW_MAX,
+            locked: false,
+            updates: 0,
+            lock_count: 0,
+            unlock_count: 0,
+            resync_count: 0,
+        }
+    }
+}
+
 /// Number of `update` calls a freshly-(re)initialised loop must run before its
 /// lock verdict is trusted. Below this the integrators are still filling and a
 /// transient low error would mislead a lock decision.
@@ -814,6 +835,15 @@ mod tests {
         assert!((d.w2 - (w / 1.5)).abs() < 1e-15);
         // The bare update returns 1 - (z2 + z3) and is finite for a finite err.
         assert!(d.update(1.0).is_finite());
+    }
+
+    /// A fresh DLL's snapshot equals the `idle()` placeholder (unity ratio,
+    /// 0 ppm, unlocked, zero counters) — so a telemetry consumer reads the same
+    /// shape whether it holds a real loop or the placeholder.
+    #[test]
+    fn fresh_snapshot_matches_idle_placeholder() {
+        let dll = audio_dll();
+        assert_eq!(dll.snapshot(), DllSnapshot::idle());
     }
 
     /// Error statistics stay non-negative (variance) and finite under a noisy

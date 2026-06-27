@@ -26,6 +26,7 @@ use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_content::DacContentMetrics;
 use crate::software_aec_clock::SoftwareAecRefClock;
 use crate::tts::TtsMetrics;
+use jasper_clock::DllSnapshot;
 use std::sync::OnceLock;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
@@ -85,6 +86,13 @@ pub struct OutputdState {
     content_bridge_ratio_clamp_count: AtomicU64,
     content_bridge_lock_count: AtomicU64,
     content_bridge_unlock_count: AtomicU64,
+    // The content-bridge rate controller's shared-DLL snapshot (Inc 4): the
+    // loop's OWN rate_diff (ppm, error stats, bandwidth, DLL-internal lock /
+    // resync counters), published in the one consistent telemetry shape. Mutex
+    // (not atomics) because it is a small multi-field Copy struct written once
+    // per period by `mark_content_bridge` and read only by the state server —
+    // mirrors the `sro_estimator` / `software_aec_ref` pattern.
+    content_bridge_rate_diff: Mutex<DllSnapshot>,
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
@@ -237,6 +245,7 @@ impl OutputdState {
             content_bridge_ratio_clamp_count: AtomicU64::new(0),
             content_bridge_lock_count: AtomicU64::new(0),
             content_bridge_unlock_count: AtomicU64::new(0),
+            content_bridge_rate_diff: Mutex::new(DllSnapshot::idle()),
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
@@ -600,6 +609,12 @@ impl OutputdState {
             .store(metrics.lock_count, Ordering::Relaxed);
         self.content_bridge_unlock_count
             .store(metrics.unlock_count, Ordering::Relaxed);
+        // The rate controller's shared-DLL rate_diff (Inc 4). `try_lock` so this
+        // per-period mark never blocks on a concurrent /state read; on the rare
+        // contention we skip one update (the next period refreshes it).
+        if let Ok(mut slot) = self.content_bridge_rate_diff.try_lock() {
+            *slot = metrics.rate_diff;
+        }
     }
 
     pub fn snapshot_json(&self) -> String {
@@ -785,6 +800,17 @@ impl OutputdState {
             "unlock_count",
             self.content_bridge_unlock_count.load(Ordering::Relaxed),
         );
+        buf.push(',');
+        // The rate controller's shared-DLL rate_diff (Inc 4) — the loop's OWN
+        // ppm / error stats / bandwidth / lock+resync counters, in the same
+        // shape every DLL site publishes. `try_lock`; on contention emit the
+        // idle placeholder rather than block or panic.
+        let cb_rate_diff = self
+            .content_bridge_rate_diff
+            .try_lock()
+            .map(|s| *s)
+            .unwrap_or_else(|_| DllSnapshot::idle());
+        push_dll_rate_diff(&mut buf, "rate_diff", &cb_rate_diff);
         buf.push('}');
         buf.push(',');
 
@@ -1254,18 +1280,23 @@ impl OutputdState {
         let verdict = verdict.as_str();
         // Observe-only software-AEC reference drift (Inc 2). `try_lock` so a
         // /state read never blocks the playback loop's tick; on contention or a
-        // (never-expected) poisoned lock, report a not-yet-locked fallback
-        // snapshot rather than waiting or panicking.
-        let software_aec = match self.software_aec_ref.try_lock() {
-            Ok(clock) => clock.snapshot(),
-            Err(_) => crate::software_aec_clock::SoftwareAecRefSnapshot {
-                locked: false,
-                sro_ppm: 0.0,
-                error_mean: 0.0,
-                error_var: 0.0,
-                updates: 0,
-                resync_count: 0,
-            },
+        // (never-expected) poisoned lock, report a not-yet-locked idle snapshot
+        // rather than waiting or panicking. We read BOTH the AEC-specific
+        // snapshot (the named ppm + verdict) and the raw shared-DLL snapshot
+        // (the Inc-4 rate_diff) under one lock acquisition.
+        let (software_aec, software_aec_rate_diff) = match self.software_aec_ref.try_lock() {
+            Ok(clock) => (clock.snapshot(), clock.dll_snapshot()),
+            Err(_) => (
+                crate::software_aec_clock::SoftwareAecRefSnapshot {
+                    locked: false,
+                    sro_ppm: 0.0,
+                    error_mean: 0.0,
+                    error_var: 0.0,
+                    updates: 0,
+                    resync_count: 0,
+                },
+                DllSnapshot::idle(),
+            ),
         };
         let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
         let playback_queue_ms = frames_to_ms_opt(
@@ -1296,6 +1327,7 @@ impl OutputdState {
         // NEVER warps audio — it is the measure-before-fix signal for software
         // AEC, distinct from the chip-AEC `chip_ref_sro_ppm` above.
         buf.push_str(r#""software_aec_ref":{"#);
+        // AEC-specific surface: the named ppm + the doctor-readable verdict.
         push_kv_f64(
             &mut buf,
             "software_aec_ref_sro_ppm",
@@ -1307,13 +1339,12 @@ impl OutputdState {
         buf.push(',');
         push_kv_str(&mut buf, "verdict", software_aec.verdict());
         buf.push(',');
-        push_kv_f64(&mut buf, "error_mean_frames", software_aec.error_mean, 3);
-        buf.push(',');
-        push_kv_f64(&mut buf, "error_var_frames2", software_aec.error_var, 3);
-        buf.push(',');
-        push_kv_u64(&mut buf, "updates", software_aec.updates);
-        buf.push(',');
-        push_kv_u64(&mut buf, "resync_count", software_aec.resync_count);
+        // Shared rate_diff (Inc 4): the loop's full state in the one consistent
+        // shape — error stats, bandwidth, DLL lock/resync counters — so this DLL
+        // site reads identically to the content-bridge controller's. The named
+        // ppm above and `rate_diff.ppm` are the same value (the AEC surface
+        // keeps the named field for the doctor; the shape stays DRY).
+        push_dll_rate_diff(&mut buf, "rate_diff", &software_aec_rate_diff);
         buf.push('}');
         buf.push(',');
         buf.push_str(r#""latency":{"#);
@@ -1518,6 +1549,36 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
         Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
         None => buf.push_str("null"),
     }
+}
+
+/// The ONE shared `clock.rate_diff` telemetry writer (Inc 4). Every DLL
+/// instance in outputd publishes its loop state through this single shape, so
+/// `/state` / doctor read every clock-domain boundary identically (mirrors
+/// PipeWire's `clock.rate_diff`). Emits a nested object under `key`:
+/// `{ppm, error_mean, error_var, bandwidth, locked, updates, lock_count,
+/// unlock_count, resync_count}`.
+fn push_dll_rate_diff(buf: &mut String, key: &str, snap: &DllSnapshot) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":{"#);
+    push_kv_f64(buf, "ppm", snap.ratio_ppm, 3);
+    buf.push(',');
+    push_kv_f64(buf, "error_mean", snap.error_mean, 4);
+    buf.push(',');
+    push_kv_f64(buf, "error_var", snap.error_var, 4);
+    buf.push(',');
+    push_kv_f64(buf, "bandwidth", snap.bandwidth, 4);
+    buf.push(',');
+    push_kv_bool(buf, "locked", snap.locked);
+    buf.push(',');
+    push_kv_u64(buf, "updates", snap.updates);
+    buf.push(',');
+    push_kv_u64(buf, "lock_count", snap.lock_count);
+    buf.push(',');
+    push_kv_u64(buf, "unlock_count", snap.unlock_count);
+    buf.push(',');
+    push_kv_u64(buf, "resync_count", snap.resync_count);
+    buf.push('}');
 }
 
 const PACKED_I64_NONE: i64 = i64::MIN;
@@ -1957,6 +2018,9 @@ mod tests {
             // locked, ppm 0, fallback verdict.
             r#""software_aec_ref":{"software_aec_ref_sro_ppm":0.000"#,
             r#""locked":false"#,
+            // Inc 4: the shared rate_diff shape, idle placeholder values.
+            r#""rate_diff":{"ppm":0.000"#,
+            r#""bandwidth":0.1280"#,
             r#""updates":0"#,
             r#""resync_count":0"#,
             r#""latency":{"dac_presentation_ms":null"#,
@@ -1971,6 +2035,60 @@ mod tests {
         assert!(
             j.contains(r#""software_aec_ref":{"#) && j.contains(r#""verdict":"fallback""#),
             "software_aec_ref block must be present with a fallback verdict: {j}"
+        );
+    }
+
+    #[test]
+    fn every_dll_site_publishes_the_same_rate_diff_shape() {
+        // Inc 4: both DLL instances (the content-bridge rate controller and the
+        // software-AEC reference observer) publish their loop state through the
+        // single shared `rate_diff` writer. The shape must appear under BOTH
+        // blocks with the same field set, so /state / doctor read every
+        // clock-domain boundary identically.
+        let state = OutputdState::new(&test_config());
+        // Push a content-bridge metrics sample so its rate_diff slot is set.
+        state.mark_content_bridge(ContentBridgeMetrics {
+            locked: true,
+            ring_capacity_frames: 16_384,
+            target_fill_frames: 4096,
+            fill_frames: 4096,
+            min_fill_frames: 4000,
+            max_fill_frames: 4200,
+            ratio_ppm: 12.5,
+            input_frames: 1000,
+            output_frames: 1000,
+            silence_frames: 0,
+            underrun_frames: 0,
+            overrun_frames: 0,
+            resync_count: 0,
+            reset_count: 0,
+            ratio_clamp_count: 0,
+            lock_count: 1,
+            unlock_count: 0,
+            rate_diff: jasper_clock::DllSnapshot {
+                ratio: 1.000_05,
+                ratio_ppm: 50.0,
+                error_mean: -0.5,
+                error_var: 0.25,
+                bandwidth: 0.05,
+                locked: true,
+                updates: 1234,
+                lock_count: 1,
+                unlock_count: 0,
+                resync_count: 2,
+            },
+        });
+        let j = state.snapshot_json();
+        // Exactly two rate_diff objects: content_bridge + software_aec_ref.
+        assert_eq!(
+            j.matches(r#""rate_diff":{"ppm":"#).count(),
+            2,
+            "exactly two rate_diff blocks (one per DLL site) in {j}"
+        );
+        // The content-bridge rate_diff carries the loop's OWN values.
+        assert!(
+            j.contains(r#""rate_diff":{"ppm":50.000,"error_mean":-0.5000,"error_var":0.2500,"bandwidth":0.0500,"locked":true,"updates":1234,"lock_count":1,"unlock_count":0,"resync_count":2}"#),
+            "content_bridge rate_diff must carry the DLL snapshot fields: {j}"
         );
     }
 

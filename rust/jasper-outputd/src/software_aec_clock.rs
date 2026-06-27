@@ -225,6 +225,14 @@ impl SoftwareAecRefClock {
         self.dll.is_locked()
     }
 
+    /// The raw shared-DLL snapshot — the consistent `clock.rate_diff` telemetry
+    /// shape (Inc 4) every DLL instance publishes. The `/state` serializer
+    /// renders this with the one shared `rate_diff` writer so all DLL sites read
+    /// identically.
+    pub fn dll_snapshot(&self) -> DllSnapshot {
+        self.dll.snapshot()
+    }
+
     /// An immutable snapshot for `/state` / doctor.
     pub fn snapshot(&self) -> SoftwareAecRefSnapshot {
         let DllSnapshot {
