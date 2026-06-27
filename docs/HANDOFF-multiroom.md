@@ -2090,9 +2090,10 @@ correction exclusion), tests/test_measurement_volume_guard.py
 (Camilla/Snapcast snapshot-normalize-restore), and
 tests/test_multiroom_snapcast_rpc.py (Snapcast volume/mute RPC seams).
 Updated 2026-06-24: `/rooms/`
-now exposes pair balance as one centered slider (the UI clamps the ordinary
-household adjustment to ±6 dB; the backend/grouping safety envelope remains the
-validated attenuate-only -24..0 dB contract). `POST /trim` takes only
+now exposes pair balance as one centered slider (the UI accepts ±24 dB,
+controlled by `BALANCE_MIN_DB`/`BALANCE_MAX_DB` in `grouping-view.js`;
+the backend/grouping safety envelope remains the validated attenuate-only
+-24..0 dB contract). `POST /trim` takes only
 `target=pair` + signed `balance_db`, which rewrites BOTH member trims
 absolutely and re-normalizes wasted attenuation so one side is always
 0 dB. (The legacy `target=self|peer` ±0.5 dB nudge was removed once the
@@ -2715,7 +2716,7 @@ deferred/unmeasured until the spike runs on hardware.)
 ---
 
 Last verified: 2026-06-26 (`/rooms/` backend-owned stereo-pair intent,
-primary subwoofer-control hiding, ±6 dB UI balance range, and fresh
+primary subwoofer-control hiding, ±24 dB UI balance range (reverted from ±6 dB after PR #1034; verified against `deploy/assets/rooms/js/grouping-view.js` `BALANCE_MIN_DB`/`BALANCE_MAX_DB`), and fresh
 pair/unbond trim reset rechecked against `jasper/web/rooms_setup.py`,
 `deploy/assets/rooms/js/main.js`, `deploy/assets/rooms/js/grouping-view.js`,
 `tests/test_web_rooms_setup.py`, and live jts4/jts5 browser + SSH trim
