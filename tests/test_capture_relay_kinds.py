@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Generalization to more measurement kinds (phone-mic relay step 8).
+
+The headline architectural claim (plan §6, §15): adding a measurement kind is a
+**page + Pi** change with **zero relay change**. This suite proves the boundary
+from the Pi side — every shipped kind builds a valid spec, carries its own
+per-kind validity policy as DATA, and uses ONLY the closed UI component
+vocabulary (so the page renderer needs no new component either). The relay's own
+opacity is proven separately in tests/js/relay_worker_test.mjs.
+"""
+from __future__ import annotations
+
+import pytest
+
+from jasper.capture_relay import spec as spec_mod
+from jasper.capture_relay.spec import (
+    UI_COMPONENT_TYPES,
+    BUILDERS,
+    CaptureSpec,
+    SHIPPED_KINDS,
+    build_balance_burst_spec,
+    build_crossover_sweep_spec,
+    build_sync_marker_spec,
+)
+
+
+@pytest.mark.parametrize("kind", SHIPPED_KINDS)
+def test_every_shipped_kind_builds_a_valid_spec(kind):
+    s = BUILDERS[kind]()
+    assert s.kind == kind
+    s.validate()  # raises on any drift
+    # Round-trips through the opaque-JSON form the relay stores.
+    assert CaptureSpec.from_dict(s.to_dict()).kind == kind
+
+
+@pytest.mark.parametrize("kind", SHIPPED_KINDS)
+def test_window_contains_stimulus(kind):
+    s = BUILDERS[kind]()
+    assert s.duration_ms == s.pre_roll_ms + s.post_roll_ms + (
+        s.duration_ms - s.pre_roll_ms - s.post_roll_ms
+    )
+    assert s.duration_ms > s.pre_roll_ms + s.post_roll_ms  # room for the stimulus
+
+
+@pytest.mark.parametrize("kind", SHIPPED_KINDS)
+def test_kinds_reuse_closed_component_vocabulary(kind):
+    # Zero page-renderer change: every component a kind emits is already drawable.
+    s = BUILDERS[kind]()
+    for component in s.screen:
+        assert component["type"] in UI_COMPONENT_TYPES
+    # And the button action stays in the allowlist.
+    buttons = [c for c in s.screen if c["type"] == "button"]
+    assert buttons and buttons[0]["action"] in spec_mod.UI_BUTTON_ACTIONS
+
+
+def test_per_kind_validity_policy_is_the_differentiation():
+    # Sync timing must stay within one recording so clock drift cancels (§9).
+    sync = build_sync_marker_spec()
+    assert sync.validity.clock_drift == "single_window"
+    assert sync.validity.require_alignment is True
+
+    # Balance is a level comparison: AGC would flatten it (refuse), but it is not
+    # an alignment measurement.
+    balance = build_balance_burst_spec()
+    assert balance.validity.clean_capture == "refuse"
+    assert balance.validity.require_alignment is False
+    assert balance.validity.clock_drift == "ignore"
+
+    # Crossover is magnitude FR like room: drift-insensitive, alignment matters.
+    xover = build_crossover_sweep_spec(driver_label="tweeter")
+    assert xover.validity.clock_drift == "ignore"
+    assert xover.validity.require_alignment is True
+
+
+def test_server_driven_copy_names_the_driver():
+    # The crossover UI copy comes from the Pi (no web deploy to relabel a driver).
+    s = build_crossover_sweep_spec(driver_label="woofer")
+    headings = [c for c in s.screen if c["type"] == "heading"]
+    assert headings and "woofer" in headings[0]["text"]
+
+
+def test_builders_registry_is_complete():
+    assert set(BUILDERS) == set(SHIPPED_KINDS)
+    assert all(callable(b) for b in BUILDERS.values())
+
+
+def test_adding_a_kind_touched_neither_relay_nor_validator():
+    # The validator never enumerates kinds (so the schema/relay are kind-blind):
+    import inspect
+
+    source = inspect.getsource(CaptureSpec.validate)
+    for kind in SHIPPED_KINDS:
+        assert kind not in source

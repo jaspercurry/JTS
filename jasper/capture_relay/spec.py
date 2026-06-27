@@ -553,3 +553,178 @@ def build_room_sweep_spec(
         max_upload_bytes=max_upload_bytes,
     )
     return spec.validate()
+
+
+# The sibling builders below are the plan §14 step-8 generalization. Each is a
+# new measurement KIND added with **zero relay change** (the relay is opaque) and
+# **zero page-renderer change** (every screen reuses the closed component
+# vocabulary — `ui_heading` / `ui_steps` / `ui_level_meter` / `ui_button` /
+# `ui_note`). The only per-kind differences are copy (server-driven) and the
+# validity policy, both carried as DATA in the spec. Pinned by
+# tests/test_capture_relay_kinds.py.
+
+
+def build_balance_burst_spec(
+    *,
+    stimulus_duration_ms: int = 2400,
+    pre_roll_ms: int = 800,
+    post_roll_ms: int = 600,
+    accent: str = "sage",
+    font: str = "figtree",
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+) -> CaptureSpec:
+    """`kind="balance_burst"` — left/right level balance.
+
+    Clean capture is mandatory: auto-gain would normalize away the very L/R level
+    difference being measured (`clean_capture="refuse"`). It is a level
+    comparison, not an arrival-timing one, so alignment is not required and clock
+    drift is irrelevant (`require_alignment=False`, `clock_drift="ignore"`).
+    """
+    duration_ms = pre_roll_ms + stimulus_duration_ms + post_roll_ms
+    return CaptureSpec(
+        kind="balance_burst",
+        duration_ms=duration_ms,
+        pre_roll_ms=pre_roll_ms,
+        post_roll_ms=post_roll_ms,
+        constraints=CaptureConstraints(),
+        stimulus=CaptureStimulus(played_by="pi", label="left then right level bursts"),
+        validity=CaptureValidity(
+            clean_capture="refuse",
+            allow_capability_fallback=True,
+            require_alignment=False,
+            clock_drift="ignore",
+        ),
+        theme=build_theme(accent=accent, font=font),
+        screen=(
+            ui_heading("Speaker balance"),
+            ui_steps(
+                [
+                    "Sit centred between the two speakers",
+                    "Hold the phone up at ear height",
+                    "Tap Start and stay still while each side plays",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button("Start", action="begin_capture"),
+            ui_note("Keep the screen on — leaving this page stops the recording."),
+        ),
+        max_upload_bytes=max_upload_bytes,
+    ).validate()
+
+
+def build_sync_marker_spec(
+    *,
+    stimulus_duration_ms: int = 2000,
+    pre_roll_ms: int = 800,
+    post_roll_ms: int = 600,
+    accent: str = "sage",
+    font: str = "figtree",
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+) -> CaptureSpec:
+    """`kind="sync_marker"` — left/right arrival-time delta.
+
+    Both L and R markers land inside ONE recording so the independent mic/playback
+    clock drift is common-mode and cancels (`clock_drift="single_window"`, §9) —
+    the timing answer comes from comparing the two markers within the single
+    capture, never across separate captures. Arrival alignment is the signal, so
+    `require_alignment=True`. The window must contain both markers (the Pi plays
+    them at ~0.5 s and ~1.5 s); `stimulus_duration_ms` spans that.
+    """
+    duration_ms = pre_roll_ms + stimulus_duration_ms + post_roll_ms
+    return CaptureSpec(
+        kind="sync_marker",
+        duration_ms=duration_ms,
+        pre_roll_ms=pre_roll_ms,
+        post_roll_ms=post_roll_ms,
+        constraints=CaptureConstraints(),
+        stimulus=CaptureStimulus(played_by="pi", label="left/right sync markers"),
+        validity=CaptureValidity(
+            clean_capture="refuse",
+            allow_capability_fallback=True,
+            require_alignment=True,
+            clock_drift="single_window",
+        ),
+        theme=build_theme(accent=accent, font=font),
+        screen=(
+            ui_heading("Speaker sync"),
+            ui_steps(
+                [
+                    "Sit at your listening position",
+                    "Hold the phone up at ear height",
+                    "Tap Start and stay quiet for the two clicks",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button("Start", action="begin_capture"),
+            ui_note("Keep the screen on — leaving this page stops the recording."),
+        ),
+        max_upload_bytes=max_upload_bytes,
+    ).validate()
+
+
+def build_crossover_sweep_spec(
+    *,
+    driver_label: str = "driver",
+    stimulus_duration_ms: int = 10000,
+    pre_roll_ms: int = 800,
+    post_roll_ms: int = 700,
+    accent: str = "sage",
+    font: str = "figtree",
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+) -> CaptureSpec:
+    """`kind="crossover_sweep"` — per-driver frequency response for active
+    crossover work. Same acoustic shape as `room_sweep` (a clean log sweep,
+    magnitude FR, drift-insensitive), but the copy names the driver under test
+    (server-driven UI), so the household measures each driver in turn.
+    """
+    duration_ms = pre_roll_ms + stimulus_duration_ms + post_roll_ms
+    seconds = round(stimulus_duration_ms / 1000)
+    return CaptureSpec(
+        kind="crossover_sweep",
+        duration_ms=duration_ms,
+        pre_roll_ms=pre_roll_ms,
+        post_roll_ms=post_roll_ms,
+        constraints=CaptureConstraints(),
+        stimulus=CaptureStimulus(
+            played_by="pi", label=f"log sweep — {driver_label}"
+        ),
+        validity=CaptureValidity(
+            clean_capture="refuse",
+            allow_capability_fallback=True,
+            require_alignment=True,
+            clock_drift="ignore",
+        ),
+        theme=build_theme(accent=accent, font=font),
+        screen=(
+            ui_heading(f"Crossover — {driver_label}"),
+            ui_steps(
+                [
+                    "Hold the phone close to the speaker baffle",
+                    f"Tap Start, then stay quiet for about {seconds} seconds",
+                    "Keep the phone still until the sweep finishes",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button("Start", action="begin_capture"),
+            ui_note("Keep the screen on — leaving this page stops the recording."),
+        ),
+        max_upload_bytes=max_upload_bytes,
+    ).validate()
+
+
+# The kinds JTS ships a builder for today. The relay never sees this list — it is
+# Pi-side only. Adding a kind appends one builder above; the relay and page need
+# no change.
+SHIPPED_KINDS = (
+    "room_sweep",
+    "balance_burst",
+    "sync_marker",
+    "crossover_sweep",
+)
+
+BUILDERS = {
+    "room_sweep": build_room_sweep_spec,
+    "balance_burst": build_balance_burst_spec,
+    "sync_marker": build_sync_marker_spec,
+    "crossover_sweep": build_crossover_sweep_spec,
+}

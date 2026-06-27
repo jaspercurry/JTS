@@ -46,15 +46,22 @@ from jasper.capture_relay.session import (
     run_capture,
 )
 from jasper.capture_relay.spec import (
+    BUILDERS,
+    SHIPPED_KINDS,
     CaptureConstraints,
     CaptureSpec,
     CaptureSpecError,
     CaptureStimulus,
     CaptureValidity,
+    build_balance_burst_spec,
+    build_crossover_sweep_spec,
     build_room_sweep_spec,
+    build_sync_marker_spec,
 )
 
 __all__ = [
+    "BUILDERS",
+    "SHIPPED_KINDS",
     "CaptureConstraints",
     "CaptureFailed",
     "CaptureSpec",
@@ -67,7 +74,10 @@ __all__ = [
     "PiCaptureSession",
     "RelayClient",
     "RelayError",
+    "build_balance_burst_spec",
+    "build_crossover_sweep_spec",
     "build_room_sweep_spec",
+    "build_sync_marker_spec",
     "crypto",
     "decrypt_and_verify",
     "generate_content_key",
